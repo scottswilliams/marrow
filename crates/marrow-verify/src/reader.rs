@@ -4,7 +4,7 @@
 //! every length/offset is validated against the remaining input *before* it is
 //! used to slice or allocate. A short read is a typed envelope/table rejection, not
 //! a panic. This reader is private to the verifier: no decode utility is shared
-//! across the trust boundary (design §F deletes the prototype's shared reader).
+//! across the trust boundary: the verifier shares no reader with the encoder.
 
 /// A cursor over a byte slice that never reads past the end.
 pub(crate) struct Reader<'a> {

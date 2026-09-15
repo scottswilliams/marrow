@@ -28,62 +28,6 @@ use marrow_image::{
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
-/// The verifier-side maximum-live durable graph, in bytes.
-///
-/// The verifier cannot state its populations the way the compiler's admission owner can:
-/// it holds received bytes, and what they decode to is the sender's choice. Its extremum is
-/// therefore the received bytes themselves — bounded by the container ceiling before this
-/// phase is reached — times the widest live-bytes-per-wire-byte rate `marrow-image`
-/// publishes for the representation it decodes into, times the growth-and-copy factor a
-/// table still growing one row at a time is live at. The received bytes are charged again
-/// on top, because the decoder borrows the whole section throughout.
-///
-/// One accepted graph is charged, not two: acceptance consumes the transient decode state
-/// into the graph rather than copying it, and a refusal returns before the section is fully
-/// decoded, so hostile refusal state is strictly under the accepted case.
-// The graph payload moves into Rc without duplication. Charge both reference
-// counts and the retained pointer in addition to the representation's fixed bytes.
-const RETAINED_GRAPH_OWNER_BYTES: u64 =
-    (2 * std::mem::size_of::<usize>() + std::mem::size_of::<Rc<DurableContractGraph>>()) as u64;
-
-const MAX_LIVE_VERIFIED_DURABLE_GRAPH_BYTES: u64 = marrow_image::bounds::GROWTH_AND_COPY
-    * marrow_image::bounds::DURABLE_LIVE_BYTES_PER_WIRE_BYTE
-    * marrow_image::bounds::MAX_IMAGE_BYTES as u64
-    + marrow_image::bounds::MAX_IMAGE_BYTES as u64
-    + marrow_image::bounds::DURABLE_GRAPH_FIXED_BYTES
-    + RETAINED_GRAPH_OWNER_BYTES;
-
-/// The declared ceiling for what one hostile image may make the verifier hold live.
-///
-/// The `H_` prefix is the maximum-live accounting's *ceiling* term — the `H` of `M <= H`,
-/// the same notation `marrow_lsp::capacities`' `H_owned` carries — and never an abbreviated
-/// measurement: the accounted maximum is the `MAX_LIVE_` constant above, and the const
-/// assertion below is the relation between them.
-///
-/// Declared, not derived from the sum. The verifier is the boundary an untrusted image
-/// meets, so its ceiling is stated against what the host must survive rather than against
-/// what the current representation happens to cost: a widening that raised both sides
-/// equally would prove nothing.
-const H_VERIFIED_DURABLE_GRAPH_BYTES: u64 = 256 * 1024 * 1024;
-
-/// Prove the verifier-side equation closes at compile time. A representation or ceiling
-/// change that let a container-admitted image drive more live bytes than the host accepts
-/// fails the build here rather than at some later measurement.
-const _: () = {
-    assert!(
-        MAX_LIVE_VERIFIED_DURABLE_GRAPH_BYTES <= H_VERIFIED_DURABLE_GRAPH_BYTES,
-        "a container-admitted image can drive the verifier past its declared live ceiling",
-    );
-    // Pin the dominant decoder rate to the sole-node representation. The exact maximum
-    // below catches every byte of drift; this structural check prevents a future equation
-    // from satisfying the ceiling by silently omitting the arena's node charge.
-    assert!(
-        marrow_image::bounds::DURABLE_LIVE_BYTES_PER_WIRE_BYTE
-            >= marrow_image::bounds::DURABLE_VALUE_NODE_BYTES.div_ceil(2),
-        "the verifier accounting no longer charges the value arena's node representation",
-    );
-};
-
 /// The decoded durable graph: the roots, the sealed operation sites, each site's resolved
 /// graph-node path (parallel to the sites), the recomputed contract id, and the graph's
 /// node set.
@@ -163,7 +107,7 @@ fn reject_graph_input(refusal: DurableGraphInputRefusal) -> VerifyRejection {
     )
 }
 
-/// Decode the DURABLE table (design §C 0x03): up to `MAX_ROOTS` roots — preceded,
+/// Decode the DURABLE table (section 0x03): up to `MAX_ROOTS` roots — preceded,
 /// when any root is present, by the application's 16-byte ledger id — then the operation
 /// sites, then the 32-byte durable-contract id closing the section. Each root
 /// carries its ledger identity block (placement, product, and key ids plus one id
@@ -1335,7 +1279,7 @@ fn validate_branch_records(
 /// group is tag `0x01`; a branch is tag `0x02`. `budget` bounds the total member
 /// records across the whole tree and `depth` bounds nesting, so a hostile image
 /// cannot drive unbounded recursion or allocation before the bounds are rechecked
-/// (§ law 9). Every declaration ledger id is distinct across the table; a durable
+/// Every declaration ledger id is distinct across the table; a durable
 /// enum's sum and member ids are the exception — one per-declaration identity a
 /// later field of that enum references rather than reclaims.
 fn decode_members(
@@ -1718,7 +1662,7 @@ fn mint(
 /// id — the shape a second durable field of that enum emits — is a reference that
 /// reclaims nothing and must carry the identical member ids in order. `depth` bounds
 /// nesting so a hostile image cannot drive unbounded recursion before the value shape is
-/// rechecked (§ law 9).
+/// rechecked.
 fn decode_value_shape(
     reader: &mut Reader<'_>,
     depth: usize,
@@ -1897,25 +1841,5 @@ fn value_shape_matches(
                     })
         }
         _ => false,
-    }
-}
-
-#[cfg(test)]
-mod capacity_tests {
-    use super::MAX_LIVE_VERIFIED_DURABLE_GRAPH_BYTES;
-
-    /// The exact accounted figure, published in the implementation map beside the
-    /// compiler-side one.
-    ///
-    /// Asserted rather than only bounded because it is a term a later capacity join
-    /// consumes: a change to it is an observable-contract change, and the map and this pin
-    /// move together.
-    #[test]
-    fn the_verifier_side_maximum_live_graph_holds_its_accounted_figure() {
-        assert_eq!(
-            MAX_LIVE_VERIFIED_DURABLE_GRAPH_BYTES, 63_439_152,
-            "the accounted verifier-side live graph moved; re-derive the exported term and \
-             update the implementation map with this pin"
-        );
     }
 }

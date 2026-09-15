@@ -1212,7 +1212,7 @@ pub(super) fn is_mutation(instr: &SealedInstr) -> bool {
     instr.op_class() == OpClass::DurableMutation
 }
 
-/// Phase-3 type check for durable opcodes and transaction markers (design §D). The
+/// Phase-3 type check for durable opcodes and transaction markers. The
 /// transaction markers leave the stack unchanged; phase 5 checks their flow.
 fn apply_durable(
     ctx: &Ctx,

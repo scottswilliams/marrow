@@ -1,4 +1,4 @@
-//! The canonical container encoder (design §C).
+//! The canonical container encoder.
 //!
 //! Turns a validated [`ImageDraft`] into the sectioned, length-prefixed,
 //! big-endian image bytes with a computed digest. The encoder sorts the string and
@@ -6,7 +6,7 @@
 //! maps, and lays out each function's bytecode so jump targets — held as
 //! instruction indices while drafting — become container byte offsets.
 //!
-//! # Row law and token law (design §C)
+//! # Row law and token law
 //!
 //! Each canonicalized pool — strings, constants, exports, test entries — is its one
 //! retained base row set plus one permutation computed by the pool's one comparator;
@@ -28,14 +28,14 @@
 //! same two-part derivation, stated once here rather than at each site:
 //!
 //! 1. The measure core's coherence and policy walks (`crate::measure`) run before any
-//!    section is counted or built and refuse a draft whose row count exceeds the §E
+//!    section is built and refuse a draft whose row count exceeds the
 //!    bound for that table, so the value converted is at most that bound.
 //! 2. The `const _` encoded-width block in [`bounds`] asserts at compile time that
 //!    every one of those bounds fits the width its count is spelled in, so widening a
 //!    bound past its encoded width breaks the build rather than truncating a count in
 //!    an emitted image.
 //!
-//! The counts that are *not* covered by a §E bound — a function's span table, a
+//! The counts that are *not* covered by a `bounds` maximum — a function's span table, a
 //! sparse-write key path, and a section body's own byte length — carry their own
 //! derivation at their site.
 
@@ -73,7 +73,7 @@ pub struct EncodedImage {
 
 impl ImageDraft {
     /// Encode the draft into canonical container bytes, or fail with a producer-side
-    /// [`ImageBuildError`] when a reference is incoherent, a §E bound is exceeded, or
+    /// [`ImageBuildError`] when a reference is incoherent, a bound is exceeded, or
     /// the measured image cannot fit.
     ///
     /// The thin driver over the measure core's three steps: coherence, the policy
@@ -393,7 +393,7 @@ impl CoherentDraft<'_> {
     /// Encode the SPANS section: per function in table order, a `u16` span count then
     /// that many `u32(offset) ‖ u32(line) ‖ u32(column)` rows.
     ///
-    /// A span table is the one encoder row set no §E bound guards — spans are debug
+    /// A span table is the one encoder row set no bound guards — spans are debug
     /// positions the producer supplies, not a declared program shape, and nothing ties
     /// their number to the instruction count. The whole-image ceiling is the binder
     /// instead: a count the `u16` prefix cannot spell needs at least
@@ -586,7 +586,7 @@ fn encode_code<S: ImageByteSink>(
 /// `map[base] = final index` — the inverse of one canonical permutation (row law).
 ///
 /// The permutation is the base-row indices sorted into emitted order, so inverting it
-/// is the whole remap; the narrowing rests on the same §E-bound derivation the module
+/// is the whole remap; the narrowing rests on the same bound derivation the module
 /// doc states for every row count.
 pub(crate) fn remap_of(permutation: &[usize]) -> Vec<u16> {
     let mut map = vec![0u16; permutation.len()];
@@ -712,21 +712,14 @@ fn push_u32(out: &mut impl ImageByteSink, value: u32) {
     out.extend_bytes(&value.to_be_bytes());
 }
 
-/// Counted==emitted known-answer tests (design §C): each of the ten section writers,
-/// driven once with a counting sink over the base rows with constant tokens and once
-/// with a byte sink over the permutation-mapped rows with the real remap, produces the
-/// same byte length. Fixed-width tokens and one shared per-item writer are exactly what
-/// make a section's length independent of permutation and remap values; these KATs pin
-/// that per section, so a later counting caller may measure before sorting.
-///
-/// The fixtures are built directly through the draft API — this crate cannot compile
-/// the frozen corpus programs, whose byte digests stay pinned in `marrow-compile` — and
-/// cover every section family those programs cover: sorted strings and constants of
-/// every tag, records, enums, collections, a keyed and an indexed durable root with
+/// Encoder fixtures built directly through the draft API — this crate cannot compile
+/// the frozen corpus programs, whose byte digests stay pinned in `marrow-compile`.
+/// They cover every section family those programs cover: sorted strings and constants
+/// of every tag, records, enums, collections, a keyed and an indexed durable root with
 /// group/branch/struct-shape members and an operation site, functions with jumps and
 /// remapped operands, spans, exports, and test entries.
 #[cfg(test)]
-mod counted_equals_emitted {
+mod encoder_fixtures {
     use super::checked_code_offset;
     use crate::draft::{
         AdmittedGraphInputPlan, CollectionTypeDef, FieldDef, FunctionDef, ImageDraft,

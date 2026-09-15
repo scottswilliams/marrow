@@ -122,29 +122,6 @@ impl ValueShapeFingerprintPredecessor {
     }
 }
 
-/// The live bytes one interned value-shape node occupies in the arena: the node itself,
-/// its `depth` word, and the interning entry that finds it again. A dense composite's
-/// reference vector is charged separately by the owner that states how many leaves it
-/// admits, because a node's own width is not fixed.
-///
-/// Published for the same reason as the declaration-row charges: an admission owner sizes
-/// its maximum-live equation against this representation, so widening a node moves the
-/// equation rather than costing silently.
-pub(crate) const VALUE_SHAPE_NODE_BYTES: u64 = size_of::<ValueShapeNode>() as u64
-    + size_of::<u32>() as u64
-    + size_of::<ValueShapeNodeStamp>() as u64
-    + size_of::<ValueShapeFingerprintPredecessor>() as u64
-    + size_of::<(ValueShapeFingerprint, ValueShapeNodeId)>() as u64;
-
-/// The live bytes one reference inside a value shape occupies, at the widest of the three
-/// kinds: a dense composite's leaf id, an enum's member (its ledger identity and the
-/// pointer triple of its own payload vector), or one payload leaf id.
-pub(crate) const VALUE_SHAPE_REFERENCE_BYTES: u64 = {
-    let leaf = size_of::<ValueShapeNodeId>() as u64;
-    let member = size_of::<ValueShapeEnumMember>() as u64;
-    if member > leaf { member } else { leaf }
-};
-
 /// One distinct durable value shape. Nested positions are references, so this type
 /// cannot express a tree and cloning it copies one level.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

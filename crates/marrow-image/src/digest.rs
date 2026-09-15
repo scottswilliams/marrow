@@ -1,4 +1,4 @@
-//! The `ImageId` integrity digest (design §C).
+//! The `ImageId` integrity digest.
 //!
 //! `image_id = SHA-256( kind ‖ len ‖ payload )` with `kind` the 15 ASCII bytes
 //! `marrow.image.v1`, `len` the big-endian `u64` byte length of `payload`, and

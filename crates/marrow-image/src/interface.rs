@@ -1,4 +1,4 @@
-//! The host-neutral wire interface descriptor and the `InterfaceId` identity (G00a).
+//! The host-neutral wire interface descriptor and the `InterfaceId` identity.
 //!
 //! A program's **wire interface** is the set of its concrete root-package exports,
 //! each described host-neutrally by a [`FunctionDescriptor`]: the export's stable
@@ -22,7 +22,7 @@
 //! covered), a product (`struct`/record), a sum (a user `enum`, or a built-in
 //! `Option`/`Result`, both represented as image enums), a finite `List<T>`, a finite
 //! ordered `Map<K, V>`, and an entry identity `Id(^root)` (the earned transfer
-//! extension, G00b). The graph covers every [`ImageType`] kind. Because a record
+//! extension). The graph covers every [`ImageType`] kind. Because a record
 //! field, enum payload, list element, or map key/value may itself be a composite
 //! type, a signature is expanded structurally
 //! under a node budget ([`bounds::MAX_INTERFACE_TRANSFER_NODES`](crate::bounds::MAX_INTERFACE_TRANSFER_NODES)).
@@ -876,7 +876,7 @@ mod tests {
         assert_ne!(base, redemanded.interface_id());
     }
 
-    /// The three earned carriers (G00b) project into the transfer graph rather than
+    /// The three earned carriers project into the transfer graph rather than
     /// being excluded: a `List<T>` return, a `Map<K, V>` return, and an `Id(^root)`
     /// return each build, including a collection reached through a record field, and
     /// a rename of the projected root moves the id.

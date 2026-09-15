@@ -2,7 +2,7 @@
 //!
 //! This crate owns the only path from image bytes to a checked, sealed
 //! [`VerifiedImage`]: it is the single container decoder and the phased verifier
-//! (design §E). The compiler emits bytes but never constructs a `VerifiedImage`;
+//! The compiler emits bytes but never constructs a `VerifiedImage`;
 //! the VM accepts only one this crate produced. Verification reconstructs every
 //! executable claim from the bytes — it trusts no serialized compiler summary —
 //! and rejects a malformed or hostile image at the earliest phase whose invariant

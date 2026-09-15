@@ -1,4 +1,4 @@
-//! The typed validating `ImageDraft` (design §C).
+//! The typed validating `ImageDraft`.
 //!
 //! The compiler builds an image through this owner: it interns strings and
 //! constants, adds record types, roots, sites, functions, and exports, and calls
@@ -7,7 +7,7 @@
 //! sorts the string and constant pools into their canonical order and rewrites
 //! every reference, so the compiler never reasons about final pool positions.
 //!
-//! The draft enforces the §E operation-site bound as it is built: sites are minted
+//! The draft enforces the operation-site bound as it is built: sites are minted
 //! through one bounded [`SiteDemandPlan`] that checks vacant capacity before it mints an
 //! id, so no site id is ever a narrowed table length. A site is named by binding a live
 //! root occurrence to a live canonical declaration path, so a producer cannot address a
@@ -24,7 +24,7 @@
 //! nonblocking provisional-commit law). The id itself never carries a wire width: the
 //! only narrowing to the wire's `u16` spelling is the measure core's policy-clean
 //! checked path (`crate::measure::wire_ordinal`/`wire_len`), which runs strictly after
-//! the policy walk has refused any draft past its §E bound (`MAX_STRINGS`,
+//! the policy walk has refused any draft past its bound (`MAX_STRINGS`,
 //! `MAX_CONSTS`, `MAX_TYPES`, `MAX_ENUMS`, `MAX_COLLECTIONS`, `MAX_FUNCTIONS`) — every
 //! one at or below `u16::MAX` by the `const _` encoded-width block in
 //! [`crate::bounds`].
@@ -613,7 +613,7 @@ pub enum ReferenceKind {
     VariantName,
 }
 
-/// A failure to build a well-formed draft: a §E bound exceeded or an invalid
+/// A failure to build a well-formed draft: a bound exceeded or an invalid
 /// cross-reference. These are producer-side (compiler) faults, not artifact
 /// rejections.
 #[derive(Debug, Clone, PartialEq, Eq)]

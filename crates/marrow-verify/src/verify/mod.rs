@@ -1,4 +1,4 @@
-//! The phased image verifier (design §E).
+//! The phased image verifier.
 //!
 //! Phases run in order; each consumes only prior output; every failure is a typed
 //! [`VerifyRejection`], never a panic. The compiler emits image bytes but cannot

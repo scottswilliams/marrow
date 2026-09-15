@@ -25,6 +25,15 @@ built, the instruction set, the canonical encoder, and the `ImageId` digest — 
 no decoder. `IMAGE_FORMAT_VERSION` names the admitted generation and separates
 digest domains across them ([compatibility](../compatibility.md#versioning)).
 
+`marrow_image::bounds` holds the representational bounds. A bound is a decode-time
+allocation guard, never a stored-format byte — the image encodes actual counts — so
+widening one is monotone: every image a narrower bound accepted a wider one still
+accepts byte for byte, and an older toolchain meeting a newer image either accepts it
+unchanged or refuses it with a typed bound rejection. No container or profile version
+bump is required today. That changes once images cross a trust or version boundary
+(signed artifacts, cross-node acceptance, a capability-gated profile), where a widen
+becomes an acceptance-set change a version or capability descriptor must record.
+
 **Verify.** `marrow-verify` is the only decoder. It rebuilds every executable claim
 — types, control flow, transaction structure, durable demand, presence proofs — from
 the image bytes alone, without consulting compiler state, and seals a

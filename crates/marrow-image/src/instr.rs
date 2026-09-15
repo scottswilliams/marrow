@@ -1,4 +1,4 @@
-//! The opcode set (design §D).
+//! The opcode set.
 //!
 //! The byte encoding is the frozen container contract: opcode `u8` followed by
 //! big-endian immediate operands. `marrow-image` owns the *encoder* side; the
@@ -108,7 +108,7 @@ pub const OP_TXN_COMMIT: u8 = 0x3D;
 // entry read. Both name the store root by its ROOTS-table index.
 pub const OP_MAKE_IDENTITY: u8 = 0x3E;
 pub const OP_IDENTITY_KEY_PATH: u8 = 0x3F;
-// Finite collection values (design §D collections). Element/key/value shapes come
+// Finite collection values. Element/key/value shapes come
 // from the COLLTYPES entry the `*New` operand names; the runtime enforces the
 // length and aggregate-byte bounds as typed `run.collection_limit` faults.
 pub const OP_LIST_NEW: u8 = 0x90;

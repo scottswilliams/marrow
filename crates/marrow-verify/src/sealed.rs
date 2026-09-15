@@ -1,4 +1,4 @@
-//! The sealed, verified image the VM accepts (design §A/§E phase 6).
+//! The sealed, verified image the VM accepts.
 //!
 //! [`VerifiedImage`] has all-private fields and a single constructor,
 //! [`crate::verify`]. Sealing produces a typed instruction tape per function:
@@ -421,7 +421,7 @@ impl SealedFunction {
     }
 
     /// The source line/column for the instruction at `pc`, using the greatest span
-    /// offset ≤ `pc` (design §C SPANS lookup rule). Every function with code has a
+    /// offset ≤ `pc` — the SPANS lookup rule. Every function with code has a
     /// span at instruction 0, so a mapping always exists.
     pub fn span_at(&self, pc: usize) -> Option<(u32, u32)> {
         self.spans

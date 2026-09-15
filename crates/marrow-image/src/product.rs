@@ -48,53 +48,6 @@ use crate::durable_id::{
 };
 use crate::value_dag::{CanonicalValueShapeDag, ValueShapeNodeId};
 
-/// The live bytes one flat member command occupies in the vector a caller hands
-/// [`crate::ImageDraft::declare_product`].
-///
-/// Published so the admission owners that size their maximum-live equations charge this
-/// representation rather than a sampled fixture: widening a command row moves every
-/// equation that consumes it, which is a build failure where the equation is asserted, not
-/// a silent cost.
-pub(crate) const DECLARATION_COMMAND_BYTES: u64 = size_of::<DeclarationMemberDef>() as u64;
-
-/// The live bytes one materialized member row occupies in a Product's flat member graph.
-pub(crate) const DECLARATION_ROW_BYTES: u64 = size_of::<DeclarationNode>() as u64;
-
-/// The live bytes one Product declaration row occupies beside its member rows: the row
-/// itself plus the identity index entry that finds it. The index entry is charged with a
-/// `BTreeMap` node's own key/value pair and its link word, which is the shape of the
-/// per-entry cost a balanced node amortizes.
-pub(crate) const PRODUCT_DECLARATION_ROW_BYTES: u64 = size_of::<ProductDeclaration>() as u64
-    + size_of::<(DurableProductIdentity, usize)>() as u64
-    + size_of::<usize>() as u64;
-
-/// The live bytes one root-occurrence row occupies: the row itself plus its full key
-/// tuple, which is a heap vector the row owns and `size_of` cannot see, plus the shared
-/// index list's `Rc` control block — sixteen bytes of strong/weak counts that exist per
-/// list even when the occurrence declares no index. The occurrence's managed indexes are
-/// charged per index by [`MANAGED_INDEX_BYTES`], so an occurrence declaring none is not
-/// charged for thirty-two.
-pub(crate) const ROOT_OCCURRENCE_ROW_BYTES: u64 = size_of::<RootOccurrence>() as u64
-    + crate::bounds::MAX_KEY_COLUMNS as u64 * size_of::<KeyColumn>() as u64
-    + 2 * size_of::<usize>() as u64;
-
-/// The live bytes one managed-index declaration occupies apart from its projection.
-pub(crate) const MANAGED_INDEX_SHAPE_BYTES: u64 = size_of::<DurableIndexShape>() as u64;
-
-/// The live bytes one projected index component occupies.
-pub(crate) const MANAGED_INDEX_COMPONENT_BYTES: u64 =
-    size_of::<crate::durable_id::DurableIndexComponent>() as u64;
-
-/// The live bytes one managed-index declaration occupies: the shape itself plus its full
-/// leaf projection.
-pub(crate) const MANAGED_INDEX_BYTES: u64 = MANAGED_INDEX_SHAPE_BYTES
-    + crate::bounds::MAX_INDEX_COMPONENTS as u64 * MANAGED_INDEX_COMPONENT_BYTES;
-
-/// The live bytes an empty durable contract graph occupies before it holds a row: the
-/// application identity, the two empty tables, the empty arena, and the draft identity and
-/// stamp counter that keep its published selectors distinguishable.
-pub(crate) const CONTRACT_GRAPH_FIXED_BYTES: u64 = size_of::<DurableContractGraph>() as u64;
-
 /// The stamp one appended row carries.
 ///
 /// Row ordinals are reused deterministically — a proof pass appends rows and the rewind

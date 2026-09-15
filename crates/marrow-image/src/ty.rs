@@ -1,4 +1,4 @@
-//! The image-level type reference (design §C). It is named `ImageType` rather than
+//! The image-level type reference. It is named `ImageType` rather than
 //! the design's Rust spelling because that spelling is a forbidden identifier the
 //! syntax crate reserves for its deleted string-carrier — this structural tag,
 //! carrying no source text, is a different concept.
