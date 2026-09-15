@@ -18,21 +18,21 @@ use crate::uri::DocumentKey;
 
 /// The coordinator's single checked monotonic revision source. Every accepted
 /// open/change/close obtains its successor; exhaustion is a fixed terminal.
-pub struct RevisionCounter {
+pub(crate) struct RevisionCounter {
     /// The next revision to hand out, or `None` once the maximum has been issued.
     next: Option<u64>,
 }
 
 impl RevisionCounter {
     /// The counter installed at initialization, seeded to a fixed initial revision.
-    pub fn initial() -> (Self, InputRevision) {
+    pub(crate) fn initial() -> (Self, InputRevision) {
         // The fixed initial revision is 0; the first successor an accepted transition
         // takes is 1.
         (Self { next: Some(1) }, InputRevision::new(0))
     }
 
     /// The next revision, or [`RevisionExhausted`] once every value has been issued.
-    pub fn advance(&mut self) -> Result<InputRevision, RevisionExhausted> {
+    pub(crate) fn advance(&mut self) -> Result<InputRevision, RevisionExhausted> {
         let value = self.next.ok_or(RevisionExhausted)?;
         // The successor is `None` once the maximum value has been handed out, so the
         // maximum is usable and the following call fails closed.
@@ -44,12 +44,12 @@ impl RevisionCounter {
 /// The checked revision counter would overflow. A fixed terminal: the server fail-stops
 /// before reuse, wrap, or saturation.
 #[derive(Debug, PartialEq, Eq)]
-pub struct RevisionExhausted;
+pub(crate) struct RevisionExhausted;
 
 /// Bounded evidence for why an open document is unavailable, already rendered through
 /// the capture facade's operational writer (never re-rendered by the ledger).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct UnavailableEvidence {
+pub(crate) struct UnavailableEvidence {
     /// The stable marrow diagnostic code string.
     pub code: &'static str,
     /// The bounded operational message.
@@ -58,7 +58,7 @@ pub struct UnavailableEvidence {
 
 /// The state of one open document. Full-document sync: the text is the whole body.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DocumentState {
+pub(crate) enum DocumentState {
     /// The document is open with an admitted whole-document body at a version.
     OpenText {
         /// The client-assigned version.
@@ -77,7 +77,7 @@ pub enum DocumentState {
 
 impl DocumentState {
     /// The version of this state.
-    pub fn version(&self) -> i32 {
+    pub(crate) fn version(&self) -> i32 {
         match self {
             DocumentState::OpenText { version, .. }
             | DocumentState::OpenUnavailable { version, .. } => *version,
@@ -85,14 +85,14 @@ impl DocumentState {
     }
 
     /// Whether this state carries admitted text.
-    pub fn is_text(&self) -> bool {
+    pub(crate) fn is_text(&self) -> bool {
         matches!(self, DocumentState::OpenText { .. })
     }
 }
 
 /// Why a document notification was refused at the ledger.
 #[derive(Debug, PartialEq, Eq)]
-pub enum LedgerRefusal {
+pub(crate) enum LedgerRefusal {
     /// The ledger is full; a fixed terminal.
     Exhausted,
     /// The notification is malformed against ledger state (duplicate open, unknown
@@ -101,31 +101,31 @@ pub enum LedgerRefusal {
 }
 
 /// The bounded open-document ledger.
-pub struct DocumentLedger {
+pub(crate) struct DocumentLedger {
     entries: HashMap<DocumentKey, DocumentState>,
 }
 
 impl DocumentLedger {
     /// An empty ledger.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             entries: HashMap::new(),
         }
     }
 
     /// The state of an open document.
-    pub fn get(&self, key: &DocumentKey) -> Option<&DocumentState> {
+    pub(crate) fn get(&self, key: &DocumentKey) -> Option<&DocumentState> {
         self.entries.get(key)
     }
 
     /// Whether every open entry currently carries text (no `OpenUnavailable`). An empty
     /// ledger is trivially all-text.
-    pub fn all_available(&self) -> bool {
+    pub(crate) fn all_available(&self) -> bool {
         self.entries.values().all(DocumentState::is_text)
     }
 
     /// Iterate the open text entries as `(relative key, text)` for overlay construction.
-    pub fn text_entries(&self) -> impl Iterator<Item = (&DocumentKey, &str)> {
+    pub(crate) fn text_entries(&self) -> impl Iterator<Item = (&DocumentKey, &str)> {
         self.entries.iter().filter_map(|(key, state)| match state {
             DocumentState::OpenText { text, .. } => Some((key, text.as_str())),
             DocumentState::OpenUnavailable { .. } => None,
@@ -135,7 +135,7 @@ impl DocumentLedger {
     /// Validate a `didOpen`: the key must not already be open, and a fresh key must fit
     /// the bounded ledger. On success the coordinator advances the revision and installs
     /// the new state.
-    pub fn validate_open(&self, key: &DocumentKey) -> Result<(), LedgerRefusal> {
+    pub(crate) fn validate_open(&self, key: &DocumentKey) -> Result<(), LedgerRefusal> {
         if self.entries.contains_key(key) {
             // A duplicate open is discarded with no mutation.
             return Err(LedgerRefusal::Discard);
@@ -147,13 +147,17 @@ impl DocumentLedger {
     }
 
     /// Install an open state after a successful `validate_open` and revision advance.
-    pub fn insert(&mut self, key: DocumentKey, state: DocumentState) {
+    pub(crate) fn insert(&mut self, key: DocumentKey, state: DocumentState) {
         self.entries.insert(key, state);
     }
 
     /// Validate a `didChange`: the key must be open and the new version strictly
     /// greater than the current one.
-    pub fn validate_change(&self, key: &DocumentKey, version: i32) -> Result<(), LedgerRefusal> {
+    pub(crate) fn validate_change(
+        &self,
+        key: &DocumentKey,
+        version: i32,
+    ) -> Result<(), LedgerRefusal> {
         match self.entries.get(key) {
             Some(state) if version > state.version() => Ok(()),
             // Unknown key, or an equal/decreasing version: discard.
@@ -162,7 +166,7 @@ impl DocumentLedger {
     }
 
     /// Validate a `didClose`: the key must be open.
-    pub fn validate_close(&self, key: &DocumentKey) -> Result<(), LedgerRefusal> {
+    pub(crate) fn validate_close(&self, key: &DocumentKey) -> Result<(), LedgerRefusal> {
         if self.entries.contains_key(key) {
             Ok(())
         } else {
@@ -171,7 +175,7 @@ impl DocumentLedger {
     }
 
     /// Remove a closed entry after a successful `validate_close` and revision advance.
-    pub fn remove(&mut self, key: &DocumentKey) {
+    pub(crate) fn remove(&mut self, key: &DocumentKey) {
         self.entries.remove(key);
     }
 }

@@ -10,7 +10,7 @@
 
 /// The lifecycle phase.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Phase {
+pub(crate) enum Phase {
     /// No `initialize` accepted yet.
     AwaitInitialize,
     /// `initialize` accepted; its response has not been delivered. `initialized` may be
@@ -34,7 +34,7 @@ pub enum Phase {
 /// What the coordinator should do with an inbound request in the current phase, before
 /// method-specific routing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum RequestGate {
+pub(crate) enum RequestGate {
     /// Route to the method handler (the request is admissible in this phase).
     Route,
     /// Reply `-32002`: the server is not initialized.
@@ -58,46 +58,46 @@ pub(crate) enum IngressGate {
 }
 
 /// `-32002`: a request arrived before the server was initialized.
-pub const SERVER_NOT_INITIALIZED: i32 = -32002;
+pub(crate) const SERVER_NOT_INITIALIZED: i32 = -32002;
 /// `-32600`: the request is structurally invalid or invalid in the current phase.
-pub const INVALID_REQUEST: i32 = -32600;
+pub(crate) const INVALID_REQUEST: i32 = -32600;
 /// `-32601`: an unknown request method.
-pub const METHOD_NOT_FOUND: i32 = -32601;
+pub(crate) const METHOD_NOT_FOUND: i32 = -32601;
 /// `-32602`: malformed parameters for an otherwise-known request.
-pub const INVALID_PARAMS: i32 = -32602;
+pub(crate) const INVALID_PARAMS: i32 = -32602;
 /// `-32801`: a query result was invalidated by a newer revision or document state.
-pub const CONTENT_MODIFIED: i32 = -32801;
+pub(crate) const CONTENT_MODIFIED: i32 = -32801;
 /// `-32803`: a request could not be served (capture unavailable or analysis
 /// resource-limited); recoverable.
-pub const REQUEST_FAILED: i32 = -32803;
+pub(crate) const REQUEST_FAILED: i32 = -32803;
 /// `-32603`: an internal server error.
-pub const INTERNAL_ERROR: i32 = -32603;
+pub(crate) const INTERNAL_ERROR: i32 = -32603;
 /// `-32700`: the message was not valid JSON.
-pub const PARSE_ERROR: i32 = -32700;
+pub(crate) const PARSE_ERROR: i32 = -32700;
 
 /// The lifecycle owner. First-wins termination is enforced by the coordinator (which
 /// stops on the first terminal event); this owner only maps events to phases and exit
 /// codes.
-pub struct Lifecycle {
+pub(crate) struct Lifecycle {
     phase: Phase,
 }
 
 impl Lifecycle {
     /// A fresh lifecycle awaiting `initialize`.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             phase: Phase::AwaitInitialize,
         }
     }
 
     /// The current phase.
-    pub fn phase(&self) -> Phase {
+    pub(crate) fn phase(&self) -> Phase {
         self.phase
     }
 
     /// Gate an ordinary (non-lifecycle) request by phase. Lifecycle methods
     /// (`initialize`, `shutdown`) are handled by their own methods, not here.
-    pub fn gate_request(&self) -> RequestGate {
+    pub(crate) fn gate_request(&self) -> RequestGate {
         match self.phase {
             Phase::Running => RequestGate::Route,
             Phase::AwaitInitialize
@@ -120,7 +120,7 @@ impl Lifecycle {
     /// Handle a valid, well-formed `initialize` request. Returns whether it is accepted
     /// (moving to `InitializeReplyPending`) or rejected as invalid-in-phase (`-32600`
     /// for a retried initialize).
-    pub fn on_initialize(&mut self) -> RequestGate {
+    pub(crate) fn on_initialize(&mut self) -> RequestGate {
         match self.phase {
             Phase::AwaitInitialize => {
                 self.phase = Phase::InitializeReplyPending {
@@ -137,7 +137,7 @@ impl Lifecycle {
     /// `initialized` was already latched, otherwise to `AwaitInitialized`. Returns
     /// whether the server entered `Running` (so the coordinator enqueues the first
     /// analysis).
-    pub fn on_initialize_delivered(&mut self) -> bool {
+    pub(crate) fn on_initialize_delivered(&mut self) -> bool {
         if let Phase::InitializeReplyPending {
             initialized_latched,
         } = self.phase
@@ -157,7 +157,7 @@ impl Lifecycle {
     /// Handle a valid `initialized` notification. Returns whether the server entered
     /// `Running` (so the coordinator enqueues the first analysis). An early, duplicate,
     /// or late `initialized` is ignored.
-    pub fn on_initialized(&mut self) -> bool {
+    pub(crate) fn on_initialized(&mut self) -> bool {
         match self.phase {
             Phase::InitializeReplyPending {
                 initialized_latched: false,
@@ -179,7 +179,7 @@ impl Lifecycle {
 
     /// Handle a valid `shutdown` request. Returns whether it is accepted (moving to
     /// `ShutdownReplyPending`) or invalid-in-phase.
-    pub fn on_shutdown(&mut self) -> RequestGate {
+    pub(crate) fn on_shutdown(&mut self) -> RequestGate {
         match self.phase {
             Phase::Running => {
                 self.phase = Phase::ShutdownReplyPending;
@@ -194,7 +194,7 @@ impl Lifecycle {
     }
 
     /// Record delivery of the `shutdown` response, moving to `AwaitExit`.
-    pub fn on_shutdown_delivered(&mut self) {
+    pub(crate) fn on_shutdown_delivered(&mut self) {
         if self.phase == Phase::ShutdownReplyPending {
             self.phase = Phase::AwaitExit;
         }
@@ -202,7 +202,7 @@ impl Lifecycle {
 
     /// The process exit code for a valid `exit` notification: `0` after an accepted
     /// shutdown, `1` before.
-    pub fn on_exit(&self) -> u8 {
+    pub(crate) fn on_exit(&self) -> u8 {
         match self.phase {
             Phase::ShutdownReplyPending | Phase::AwaitExit => 0,
             _ => 1,
@@ -210,7 +210,7 @@ impl Lifecycle {
     }
 
     /// The exit code for a terminal from EOF or a producer fault (no exit): `1`.
-    pub fn on_terminal(&self) -> u8 {
+    pub(crate) fn on_terminal(&self) -> u8 {
         1
     }
 }

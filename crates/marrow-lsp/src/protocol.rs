@@ -22,7 +22,7 @@ use crate::capacities::MAX_REQUEST_ID_STRING_BYTES;
 /// bounded UTF-8 string. Integer `1` and string `"1"` are deliberately distinct. A
 /// null, fractional, out-of-range, or over-length id never becomes a `RequestId`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum RequestId {
+pub(crate) enum RequestId {
     /// A bounded integer id.
     Integer(i32),
     /// A bounded UTF-8 string id.
@@ -56,7 +56,7 @@ impl IdToken {
 }
 
 /// The closed outcome of decoding one message body. The decoder produces exactly one.
-pub enum Inbound {
+pub(crate) enum Inbound {
     /// A well-formed request: a bounded id, a method, and owned method parameters.
     Request {
         /// The recovered request id.
@@ -81,7 +81,7 @@ pub enum Inbound {
 }
 
 /// Why a message was rejected, and the bounded id a reply may carry.
-pub enum Reject {
+pub(crate) enum Reject {
     /// Invalid UTF-8/JSON, malformed array syntax, or trailing/concatenated JSON.
     /// Replied to as `-32700` with a null id.
     ParseError,
@@ -96,7 +96,7 @@ pub enum Reject {
 
 /// Why a structurally invalid request is invalid.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum InvalidReason {
+pub(crate) enum InvalidReason {
     /// A scalar/null top level, or an object that is neither a request, a
     /// notification, nor a valid response.
     Structural,
@@ -107,7 +107,7 @@ pub enum InvalidReason {
 
 /// Decode one framed message body into exactly one closed [`Inbound`] outcome. Reads
 /// and mutates no ledger state.
-pub fn decode(bytes: &[u8]) -> Inbound {
+pub(crate) fn decode(bytes: &[u8]) -> Inbound {
     match serde_json::from_slice::<TopLevel>(bytes) {
         Ok(TopLevel::Object(envelope)) => envelope.classify(),
         Ok(TopLevel::Array) => Inbound::Reject(Reject::InvalidRequest {

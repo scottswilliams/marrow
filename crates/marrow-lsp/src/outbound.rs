@@ -22,7 +22,7 @@ use crate::protocol::RequestId;
 /// A window/showMessage severity. Background capture failures and whole-analysis
 /// stops use `ERROR`; the type is closed to what the server sends.
 #[derive(Clone, Copy)]
-pub enum MessageType {
+pub(crate) enum MessageType {
     /// `MessageType.Error` (1).
     Error,
 }
@@ -37,7 +37,7 @@ impl MessageType {
 
 /// A closed outbound message. The coordinator constructs exactly one per acquired
 /// outbound credit.
-pub enum Outbound {
+pub(crate) enum Outbound {
     /// An `initialize` result.
     Initialize {
         /// The request id.
@@ -115,7 +115,7 @@ pub enum Outbound {
 /// Why encoding an outbound frame failed. Both are internal-error class before handoff:
 /// no bytes are emitted.
 #[derive(Debug)]
-pub enum EncodeError {
+pub(crate) enum EncodeError {
     /// Serialization failed (a payload could not be encoded).
     Serialize,
     /// The encoded body exceeded [`MAX_OUTBOUND_FRAME_BYTES`].
@@ -125,7 +125,7 @@ pub enum EncodeError {
 /// Serialize one outbound message into a bounded immutable frame body. On any failure
 /// no partial bytes escape: the returned error carries nothing and the caller emits
 /// zero bytes.
-pub fn encode(outbound: &Outbound) -> Result<Vec<u8>, EncodeError> {
+pub(crate) fn encode(outbound: &Outbound) -> Result<Vec<u8>, EncodeError> {
     let mut sink = BoundedWriter::new(MAX_OUTBOUND_FRAME_BYTES);
     let result = match outbound {
         Outbound::Initialize { id, result } => write_result(&mut sink, id, result.as_ref()),

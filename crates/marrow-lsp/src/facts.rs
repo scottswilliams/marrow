@@ -26,12 +26,16 @@ use marrow_syntax::{Severity, SourceSpan};
 use crate::position::{LineMap, Position, Range};
 use crate::uri::{SelectedRoot, diagnostic_uri};
 
-/// The internal-error class returned when a canonically-encoded diagnostic URI fails to
-/// parse back into an `lsp_types::Uri`. The encoder produces canonical URIs, so this is
-/// a compiler-coherence-class failure, never a normal outcome; it is surfaced fallibly
-/// rather than by an `unwrap`.
+/// Why a payload could not be projected. Both are refusals, never a repaired result: a
+/// misplaced range would point an editor at the wrong text.
 #[derive(Debug)]
-pub struct UriEncodingError;
+pub(crate) enum ProjectionRefusal {
+    /// A canonically-encoded diagnostic URI did not parse back into an `lsp_types::Uri`.
+    /// The encoder produces canonical URIs, so this is a coherence-class failure.
+    Uri,
+    /// The file's bytes are not UTF-8, so no byte span in it has a UTF-16 range.
+    NotUtf8,
+}
 
 fn to_lsp_position(position: Position) -> LspPosition {
     LspPosition::new(position.line, position.character)
@@ -41,8 +45,8 @@ fn to_lsp_range(range: Range) -> LspRange {
     LspRange::new(to_lsp_position(range.start), to_lsp_position(range.end))
 }
 
-fn to_uri(root: &SelectedRoot, identity: &FileIdentity) -> Result<Uri, UriEncodingError> {
-    Uri::from_str(&diagnostic_uri(root, identity)).map_err(|_| UriEncodingError)
+fn to_uri(root: &SelectedRoot, identity: &FileIdentity) -> Result<Uri, ProjectionRefusal> {
+    Uri::from_str(&diagnostic_uri(root, identity)).map_err(|_| ProjectionRefusal::Uri)
 }
 
 /// The LSP severity of a diagnostic, projected from the payload's typed severity —
@@ -54,16 +58,17 @@ fn to_lsp_severity(severity: Severity) -> DiagnosticSeverity {
     }
 }
 
-/// Build the per-file publish-diagnostics parameters for one snapshot file. The source
-/// bytes drive the UTF-16 range projection; a non-UTF-8 file (never span-bearing)
-/// produces an empty list.
-pub fn diagnostics_for_file(
+/// Build the per-file publish-diagnostics parameters for one snapshot file. The file's
+/// own bytes drive the UTF-16 range projection, so a file that is not UTF-8 is refused
+/// rather than published with every diagnostic collapsed onto the first character.
+pub(crate) fn diagnostics_for_file(
     snapshot: &AnalysisSnapshot,
     root: &SelectedRoot,
     file: &FileIdentity,
-    source: &str,
+    source: &[u8],
     version: Option<i32>,
-) -> Result<PublishDiagnosticsParams, UriEncodingError> {
+) -> Result<PublishDiagnosticsParams, ProjectionRefusal> {
+    let source = std::str::from_utf8(source).map_err(|_| ProjectionRefusal::NotUtf8)?;
     let map = LineMap::new(source);
     let diagnostics = snapshot
         .diagnostics_for(file)
@@ -95,7 +100,7 @@ pub fn diagnostics_for_file(
 /// The hover payload at an LSP position. `Ok(None)` covers a legitimately absent fact,
 /// an unavailable (syntax/dependency) fact, and an out-of-range or unknown position —
 /// the LSP `null` hover result. The type display comes verbatim from the compiler.
-pub fn hover(
+pub(crate) fn hover(
     snapshot: &AnalysisSnapshot,
     file: &FileIdentity,
     source: &str,
@@ -120,14 +125,14 @@ pub fn hover(
 /// The definition location at an LSP position, or `None` (LSP `null`). The target file,
 /// selection range, and source are the snapshot's; the range projects through the
 /// target file's own source bytes.
-pub fn definition(
+pub(crate) fn definition(
     snapshot: &AnalysisSnapshot,
     root: &SelectedRoot,
     file: &FileIdentity,
     source: &str,
     target_source: impl Fn(&FileIdentity) -> Option<String>,
     position: LspPosition,
-) -> Result<Option<Location>, UriEncodingError> {
+) -> Result<Option<Location>, ProjectionRefusal> {
     let offset = LineMap::new(source).byte_at(Position {
         line: position.line,
         character: position.character,
@@ -136,21 +141,15 @@ pub fn definition(
         Ok(Fact::Present(definition)) => definition,
         Ok(Fact::Absent | Fact::Unavailable(_)) | Err(_) => return Ok(None),
     };
-    // Project the target name span through the target file's own source. When the
-    // target file's source is unavailable, fall back to a zero range at the span start.
+    // The range projects through the target file's own source. Without that source there
+    // is no UTF-16 projection, and a range rebuilt from the compiler's 1-based line and
+    // byte column would misplace every non-ASCII line, so the definition is refused.
     let name_span = target.name_span();
-    let range = match target_source(target.file()) {
-        Some(text) => {
-            to_lsp_range(LineMap::new(&text).range_of(name_span.start_byte, name_span.end_byte))
-        }
-        None => {
-            let point = to_lsp_position(Position {
-                line: name_span.line.saturating_sub(1),
-                character: name_span.column.saturating_sub(1),
-            });
-            LspRange::new(point, point)
-        }
+    let Some(text) = target_source(target.file()) else {
+        return Ok(None);
     };
+    let range =
+        to_lsp_range(LineMap::new(&text).range_of(name_span.start_byte, name_span.end_byte));
     Ok(Some(Location {
         uri: to_uri(root, target.file())?,
         range,
@@ -161,7 +160,7 @@ pub fn definition(
 /// refused (unparsed source, a diagnostic-limited parse, or comment loss), the file is
 /// not valid UTF-8, or the output exceeds its bound. A successful format is one
 /// whole-document replacement edit.
-pub fn formatting(
+pub(crate) fn formatting(
     snapshot: &AnalysisSnapshot,
     file: &FileIdentity,
     source: &str,
@@ -186,14 +185,14 @@ pub fn formatting(
 /// A query-local analysis resource refusal: the in-scope candidate set or rendered
 /// display exceeded a per-query bound. The server maps it to the recoverable `-32803`
 /// law — never a truncated prefix or display.
-pub struct ResourceLimited;
+pub(crate) struct ResourceLimited;
 
 /// The completion payload at an LSP position. `Ok(None)` covers a legitimately absent
 /// classification, an unavailable (syntax) owner, and an unknown/out-of-range position —
 /// the LSP `null` completion result. `Err(ResourceLimited)` is an over-cap candidate set.
 /// Every candidate is projected verbatim from the compiler's fact; the set is the
 /// complete in-scope namespace, never filtered, ranked, or truncated here.
-pub fn completion(
+pub(crate) fn completion(
     snapshot: &AnalysisSnapshot,
     file: &FileIdentity,
     source: &str,
@@ -253,7 +252,7 @@ fn completion_item_kind(kind: CandidateKind) -> CompletionItemKind {
 /// no resolvable call. `Err(ResourceLimited)` is an over-cap rendered display. The active
 /// parameter and the parameter pieces come verbatim from the compiler, so no consumer
 /// substring-searches the rendered signature.
-pub fn signature_help(
+pub(crate) fn signature_help(
     snapshot: &AnalysisSnapshot,
     file: &FileIdentity,
     source: &str,
@@ -299,7 +298,7 @@ fn to_signature_help(active: &ActiveCall) -> SignatureHelp {
 /// pure projection of the compiler's document-symbol fact: the bound is enforced at
 /// snapshot admission and its consequence is that one file's outline, so a query here
 /// carries no resource refusal and no other file's outline is affected.
-pub fn document_symbols(
+pub(crate) fn document_symbols(
     snapshot: &AnalysisSnapshot,
     file: &FileIdentity,
     source: &str,
@@ -418,9 +417,14 @@ mod tests {
     fn diagnostics_project_span_to_utf16_range() {
         let main = "module main\n\npub fn f(): int {\n    return \n}\n";
         let (snapshot, root, base) = analyze_source("diag", main);
-        let params =
-            diagnostics_for_file(&snapshot, &root, &identity("src/main.mw"), main, Some(3))
-                .unwrap();
+        let params = diagnostics_for_file(
+            &snapshot,
+            &root,
+            &identity("src/main.mw"),
+            main.as_bytes(),
+            Some(3),
+        )
+        .unwrap();
         assert!(!params.diagnostics.is_empty());
         assert_eq!(params.version, Some(3));
         assert_eq!(
@@ -439,9 +443,14 @@ mod tests {
     fn clean_project_has_empty_diagnostic_list() {
         let main = "module main\n\npub fn f(): int {\n    return 1\n}\n";
         let (snapshot, root, base) = analyze_source("clean", main);
-        let params =
-            diagnostics_for_file(&snapshot, &root, &identity("src/main.mw"), main, Some(1))
-                .unwrap();
+        let params = diagnostics_for_file(
+            &snapshot,
+            &root,
+            &identity("src/main.mw"),
+            main.as_bytes(),
+            Some(1),
+        )
+        .unwrap();
         assert!(params.diagnostics.is_empty());
         std::fs::remove_dir_all(&base).ok();
     }

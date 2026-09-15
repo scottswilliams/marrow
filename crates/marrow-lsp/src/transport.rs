@@ -16,7 +16,7 @@ use std::io::{self, BufRead, Write};
 use crate::capacities::{MAX_FRAME_BODY_BYTES, MAX_HEADER_BLOCK_BYTES};
 
 /// One framing step: a complete message body, or a clean end of input.
-pub enum FrameEvent {
+pub(crate) enum FrameEvent {
     /// A complete framed message body.
     Frame(Vec<u8>),
     /// The stream ended cleanly between frames.
@@ -26,7 +26,7 @@ pub enum FrameEvent {
 /// A typed framing fault. Every variant is terminal: the transport cannot recover a
 /// frame boundary after one.
 #[derive(Debug, PartialEq, Eq)]
-pub enum FramingFault {
+pub(crate) enum FramingFault {
     /// The header block exceeded [`MAX_HEADER_BLOCK_BYTES`] before a blank line.
     HeaderBlockTooLarge,
     /// A header line was not `Name: value`.
@@ -38,10 +38,7 @@ pub enum FramingFault {
     /// The `Content-Length` value was not a non-negative integer.
     InvalidContentLength,
     /// The declared body length exceeded [`MAX_FRAME_BODY_BYTES`].
-    BodyTooLarge {
-        /// The declared `Content-Length` that exceeded the bound.
-        declared: usize,
-    },
+    BodyTooLarge,
     /// The stream ended after a partial frame (header or body).
     TruncatedFrame,
     /// A memory reservation for the bounded body failed.
@@ -49,41 +46,38 @@ pub enum FramingFault {
 }
 
 /// The result of one framing step.
-pub type FrameResult = Result<FrameEvent, FrameError>;
+type FrameResult = Result<FrameEvent, FrameError>;
 
-/// A framing step failed with an I/O error or a typed framing fault.
-/// A framing step failed with an I/O error or a typed framing fault. Production
-/// terminates on any framing fault without inspecting its detail; the typed payloads are
-/// the transport's fault vocabulary, retained for tests and a future diagnostic surface,
-/// so the wrapped values are legitimately unread by production code.
-#[allow(dead_code)]
+/// A framing step failed. The coordinator terminates on either, so the stream error
+/// carries no detail; [`FramingFault`] names which bound or grammar rule the bytes
+/// broke, which the transport's own tests distinguish.
 #[derive(Debug)]
-pub enum FrameError {
+pub(crate) enum FrameError {
     /// The underlying stream reported an I/O error.
-    Io(io::Error),
+    Io,
     /// The bytes did not frame under the LSP header grammar and bounds.
     Fault(FramingFault),
 }
 
 impl From<io::Error> for FrameError {
-    fn from(error: io::Error) -> Self {
-        FrameError::Io(error)
+    fn from(_: io::Error) -> Self {
+        FrameError::Io
     }
 }
 
 /// A bounded frame reader over a buffered byte stream.
-pub struct FrameReader<R> {
+pub(crate) struct FrameReader<R> {
     reader: R,
 }
 
 impl<R: BufRead> FrameReader<R> {
     /// Wrap a buffered reader.
-    pub fn new(reader: R) -> Self {
+    pub(crate) fn new(reader: R) -> Self {
         Self { reader }
     }
 
     /// Read the next complete frame, a clean end of input, or a framing fault.
-    pub fn next_frame(&mut self) -> FrameResult {
+    pub(crate) fn next_frame(&mut self) -> FrameResult {
         let Some(length) = self.read_header_block()? else {
             return Ok(FrameEvent::Eof);
         };
@@ -133,9 +127,7 @@ impl<R: BufRead> FrameReader<R> {
 
     fn read_body(&mut self, length: usize) -> Result<Vec<u8>, FrameError> {
         if length > MAX_FRAME_BODY_BYTES {
-            return Err(FrameError::Fault(FramingFault::BodyTooLarge {
-                declared: length,
-            }));
+            return Err(FrameError::Fault(FramingFault::BodyTooLarge));
         }
         let mut body = Vec::new();
         body.try_reserve_exact(length)
@@ -146,7 +138,7 @@ impl<R: BufRead> FrameReader<R> {
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
                 Err(FrameError::Fault(FramingFault::TruncatedFrame))
             }
-            Err(error) => Err(FrameError::Io(error)),
+            Err(_) => Err(FrameError::Io),
         }
     }
 }
@@ -225,7 +217,7 @@ fn parse_content_length_line(content: &[u8]) -> Result<Option<usize>, FrameError
 
 /// Write one framed message: a `Content-Length` header, a blank line, then the body.
 /// The whole frame is written and flushed as one unit.
-pub fn write_frame<W: Write>(writer: &mut W, body: &[u8]) -> io::Result<()> {
+pub(crate) fn write_frame<W: Write>(writer: &mut W, body: &[u8]) -> io::Result<()> {
     write!(writer, "Content-Length: {}\r\n\r\n", body.len())?;
     writer.write_all(body)?;
     writer.flush()
@@ -337,7 +329,7 @@ mod tests {
         let mut reader = FrameReader::new(Cursor::new(frame.into_bytes()));
         assert!(matches!(
             reader.next_frame(),
-            Err(FrameError::Fault(FramingFault::BodyTooLarge { .. }))
+            Err(FrameError::Fault(FramingFault::BodyTooLarge))
         ));
     }
 

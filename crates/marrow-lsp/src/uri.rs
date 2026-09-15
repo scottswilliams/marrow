@@ -18,7 +18,7 @@ use crate::capacities::MAX_URI_BYTES;
 
 /// Why a `file` URI was refused.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum UriError {
+pub(crate) enum UriError {
     /// The URI exceeded [`MAX_URI_BYTES`].
     TooLong,
     /// The scheme was not `file` (with empty authority).
@@ -39,14 +39,14 @@ pub enum UriError {
 /// case, Unicode, symlink, or physical-identity canonicalization is applied — a
 /// symlinked or percent-spelled root is retained exactly and re-encoded faithfully.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SelectedRoot {
+pub(crate) struct SelectedRoot {
     /// Decoded absolute path components (no leading empty component).
     components: Vec<String>,
 }
 
 impl SelectedRoot {
     /// Admit a `file` URI as the selected root.
-    pub fn from_uri(uri: &str) -> Result<Self, UriError> {
+    pub(crate) fn from_uri(uri: &str) -> Result<Self, UriError> {
         let components = decode_file_uri_path(uri)?;
         if components.is_empty() {
             return Err(UriError::NonCanonicalPath);
@@ -55,7 +55,7 @@ impl SelectedRoot {
     }
 
     /// The decoded absolute path components.
-    pub fn components(&self) -> &[String] {
+    pub(crate) fn components(&self) -> &[String] {
         &self.components
     }
 }
@@ -64,7 +64,7 @@ impl SelectedRoot {
 /// spellings that decode to the same admitted path produce one key; filesystem case,
 /// Unicode, symlink, and hardlink aliases are never coalesced here.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct DocumentKey {
+pub(crate) struct DocumentKey {
     /// Forward-slash-joined root-relative path, e.g. `src/foo.mw`.
     relative: String,
 }
@@ -73,7 +73,7 @@ impl DocumentKey {
     /// Admit a `file` document URI under a selected root. The document must be a
     /// proper descendant of the root — a sibling sharing a name prefix is not
     /// containment.
-    pub fn from_uri(uri: &str, root: &SelectedRoot) -> Result<Self, UriError> {
+    pub(crate) fn from_uri(uri: &str, root: &SelectedRoot) -> Result<Self, UriError> {
         let components = decode_file_uri_path(uri)?;
         let root_len = root.components.len();
         if components.len() <= root_len {
@@ -87,13 +87,13 @@ impl DocumentKey {
     }
 
     /// The forward-slash-joined root-relative path.
-    pub fn relative(&self) -> &str {
+    pub(crate) fn relative(&self) -> &str {
         &self.relative
     }
 
     /// The document key for a snapshot file identity (already a canonical root-relative
     /// path such as `src/foo.mw`).
-    pub fn from_identity(identity: &FileIdentity) -> Self {
+    pub(crate) fn from_identity(identity: &FileIdentity) -> Self {
         Self {
             relative: identity.as_str().to_owned(),
         }
@@ -103,7 +103,7 @@ impl DocumentKey {
 /// Re-encode a snapshot [`FileIdentity`] to a diagnostic `file` URI over the retained
 /// selected-root spelling. The client's own document-URI spelling is never echoed; the
 /// caller-selected root spelling is deliberately retained and canonically re-encoded.
-pub fn diagnostic_uri(root: &SelectedRoot, identity: &FileIdentity) -> String {
+pub(crate) fn diagnostic_uri(root: &SelectedRoot, identity: &FileIdentity) -> String {
     let mut uri = String::from("file://");
     for component in &root.components {
         uri.push('/');

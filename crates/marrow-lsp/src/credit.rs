@@ -1,90 +1,72 @@
 //! Affine capacity credits: move-only tokens that bound concurrent server work.
 //!
-//! Each credit type is non-`Clone` and `#[must_use]`. A fixed number exists; a holder
-//! moves a credit through its states and it is destroyed (not reissued) at a terminal
-//! outcome. The credits are the type-level enforcement of the outbound and publication
-//! bounds: work that needs a credit cannot begin without acquiring one, and the pools
-//! mint exactly the frozen counts.
+//! A credit is non-`Clone` and `#[must_use]`, so work that needs one cannot begin
+//! without acquiring it and cannot run twice on the same token.
 //!
-//! - [`OutboundCredit`]: exactly [`OUTBOUND_CREDITS`] (`W`). Every response, error,
+//! - [`OutboundCredit`]: exactly [`OUTBOUND_CREDITS`] exist. Every response, error,
 //!   null-id protocol frame, `showMessage`, and diagnostic frame acquires one before it
 //!   is handed to the writer, and it returns only when the writer's delivery receipt is
-//!   consumed — so no more than `W` frames are ever outstanding toward the writer.
-//! - [`PublicationPlanCredit`]: exactly one. Held from plan construction through the
-//!   final delivery receipt so the delivered ledger cannot drift under a precomputed
-//!   union.
+//!   consumed — so no more than that many frames are ever outstanding toward the writer.
+//! - [`PublicationPlanCredit`]: exactly one, held by the coordinator in an `Option` from
+//!   plan construction through the final delivery receipt, so the delivered ledger
+//!   cannot drift under a precomputed union.
 //!
-//! Two other bounds the design frames as credits are enforced by simpler owned state and
-//! are not credit types here: single-analysis serialization is the coordinator's
-//! `worker_busy` flag over its cap-one work channel, and retained-snapshot count is the
-//! coordinator's current ready result plus the worker's arriving result (at most
-//! [`MAX_RETAINED_SNAPSHOTS`]). Pending publication holds only a revision number;
-//! a current analysis stop holds a typed bound instead of a snapshot.
+//! Single-analysis serialization and the retained-snapshot count are owned state rather
+//! than credits: the coordinator's `worker_busy` flag over its cap-one work channel, and
+//! its current ready result plus the worker's arriving result.
 
 use crate::capacities::OUTBOUND_CREDITS;
 
 /// One outbound-frame credit. Non-`Clone`: acquired before a frame is handed to the
 /// writer, and returned only when the writer's delivery receipt is consumed.
 #[must_use]
-pub struct OutboundCredit(());
+pub(crate) struct OutboundCredit(());
 
 /// The single exclusive publication-plan credit. Non-`Clone`: held for the whole life
 /// of one analysis publication set, including a resource-stop notice and retractions.
 #[must_use]
-pub struct PublicationPlanCredit(());
+pub(crate) struct PublicationPlanCredit(());
 
-/// A fixed-capacity pool of move-only credits. It mints exactly `capacity` tokens over
-/// its whole life: acquisition removes one, release returns one, and the pool never
-/// exceeds its capacity.
-pub struct CreditPool<T> {
-    available: Vec<T>,
-    capacity: usize,
+impl PublicationPlanCredit {
+    /// The one credit, minted once into the coordinator's slot at startup.
+    pub(crate) fn mint() -> Self {
+        Self(())
+    }
 }
 
-impl<T> CreditPool<T> {
-    fn new(mint: impl Fn() -> T, capacity: usize) -> Self {
-        let mut available = Vec::with_capacity(capacity);
-        for _ in 0..capacity {
-            available.push(mint());
-        }
+/// The outbound credits not currently outstanding. The credit is a zero-sized token, so
+/// the pool is the count of how many remain: it hands out at most [`OUTBOUND_CREDITS`]
+/// and can never hold back more than it minted.
+pub(crate) struct OutboundCredits {
+    available: usize,
+}
+
+impl OutboundCredits {
+    pub(crate) fn new() -> Self {
         Self {
-            available,
-            capacity,
+            available: OUTBOUND_CREDITS,
         }
     }
 
     /// Acquire one credit, or `None` when all are outstanding.
-    pub fn acquire(&mut self) -> Option<T> {
-        self.available.pop()
+    pub(crate) fn acquire(&mut self) -> Option<OutboundCredit> {
+        self.available = self.available.checked_sub(1)?;
+        Some(OutboundCredit(()))
     }
 
-    /// Return a credit to the pool. A credit can only exist if it came from a pool of
-    /// this type, and the pool never holds more than its capacity.
-    pub fn release(&mut self, credit: T) {
+    /// Return a credit. A credit exists only because this pool minted it.
+    pub(crate) fn release(&mut self, credit: OutboundCredit) {
+        let OutboundCredit(()) = credit;
         debug_assert!(
-            self.available.len() < self.capacity,
+            self.available < OUTBOUND_CREDITS,
             "returned more credits than the pool minted"
         );
-        self.available.push(credit);
+        self.available += 1;
     }
 
     /// The number of credits currently available.
-    pub fn available(&self) -> usize {
-        self.available.len()
-    }
-}
-
-impl CreditPool<OutboundCredit> {
-    /// The `W`-credit outbound pool.
-    pub fn outbound() -> Self {
-        Self::new(|| OutboundCredit(()), OUTBOUND_CREDITS)
-    }
-}
-
-impl CreditPool<PublicationPlanCredit> {
-    /// The single publication-plan pool.
-    pub fn publication() -> Self {
-        Self::new(|| PublicationPlanCredit(()), 1)
+    pub(crate) fn available(&self) -> usize {
+        self.available
     }
 }
 
@@ -93,24 +75,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn outbound_pool_mints_exactly_w_credits() {
-        let mut pool = CreditPool::outbound();
+    fn outbound_pool_mints_exactly_its_capacity() {
+        let mut pool = OutboundCredits::new();
         let mut held = Vec::new();
         for _ in 0..OUTBOUND_CREDITS {
             held.push(pool.acquire().expect("credit within capacity"));
         }
-        assert!(pool.acquire().is_none(), "credits are exhausted at W");
+        assert!(
+            pool.acquire().is_none(),
+            "credits are exhausted at capacity"
+        );
         for credit in held {
             pool.release(credit);
         }
         assert_eq!(pool.available(), OUTBOUND_CREDITS);
-    }
-
-    #[test]
-    fn publication_pool_is_exclusive() {
-        let mut pool = CreditPool::publication();
-        let credit = pool.acquire().unwrap();
-        assert!(pool.acquire().is_none(), "publication credit is exclusive");
-        pool.release(credit);
     }
 }

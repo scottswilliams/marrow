@@ -29,7 +29,7 @@ const MAX_OPERATIONAL_MESSAGE_BYTES: usize = 8 * 1024;
 
 /// One borrowed overlay input: a canonical root-relative key and replacement bytes,
 /// gathered from an open `OpenText` entry before capture.
-pub struct OverlayInput<'a> {
+pub(crate) struct OverlayInput<'a> {
     /// The canonical root-relative key, e.g. `src/foo.mw`.
     pub key: &'a str,
     /// The open-document body bytes.
@@ -37,7 +37,7 @@ pub struct OverlayInput<'a> {
 }
 
 /// The outcome of one analysis job.
-pub enum AnalysisOutcome {
+pub(crate) enum AnalysisOutcome {
     /// A complete immutable snapshot at the job's revision.
     Snapshot(Arc<AnalysisSnapshot>),
     /// Capture (or overlay admission before capture) was refused. The rendered bounded
@@ -58,7 +58,7 @@ pub enum AnalysisOutcome {
 /// The one shape the server presents, whether the failure came from overlay input or
 /// physical capture.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CaptureRejection {
+pub(crate) struct CaptureRejection {
     /// The revision the rejected capture belonged to.
     pub revision: InputRevision,
     /// The rendered bounded evidence, or `None` when the operational message overflowed
@@ -69,7 +69,7 @@ pub struct CaptureRejection {
 impl SelectedRoot {
     /// The reconstructed absolute filesystem path of this root. No physical
     /// canonicalization — the caller-selected lexical spelling is retained.
-    pub fn to_path(&self) -> PathBuf {
+    fn to_path(&self) -> PathBuf {
         let mut path = PathBuf::from("/");
         for component in self.components() {
             path.push(component);
@@ -79,7 +79,7 @@ impl SelectedRoot {
 }
 
 /// Run one analysis job: build the overlay, capture, and analyze.
-pub fn run_analysis(
+pub(crate) fn run_analysis(
     root: &SelectedRoot,
     overlay: &[OverlayInput<'_>],
     revision: InputRevision,
@@ -118,7 +118,7 @@ fn run_analyze(input: ProjectInput, revision: InputRevision) -> AnalysisOutcome 
 /// The coordinator calls this at document open/change to classify a document as available
 /// (`Ok`) or unavailable; on refusal it returns the rendered bounded evidence (or `None`
 /// when even the operational message overflows its sink).
-pub fn validate_overlay(
+pub(crate) fn validate_overlay(
     root: &SelectedRoot,
     overlay: &[OverlayInput<'_>],
 ) -> Result<(), Option<UnavailableEvidence>> {

@@ -18,7 +18,7 @@
 //! test-only production entry point or any timing dependence.
 
 use std::collections::VecDeque;
-use std::io::BufReader;
+use std::io::{BufReader, Write};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::thread::JoinHandle;
@@ -36,10 +36,10 @@ use crate::analysis::{
     AnalysisOutcome, CaptureRejection, OverlayInput, run_analysis, validate_overlay,
 };
 use crate::capacities::{
-    B_PUBLICATION_PLAN_BYTES, MAX_ANONYMOUS_ERROR_SLOTS, MAX_LIVE_REQUEST_ENTRIES,
+    MAX_ANONYMOUS_ERROR_SLOTS, MAX_LIVE_REQUEST_ENTRIES, MAX_PUBLICATION_PLAN_BYTES,
     OUTBOUND_QUEUE_CAPACITY, RECEIPT_QUEUE_CAPACITY, THREAD_STACK_BYTES,
 };
-use crate::credit::{CreditPool, OutboundCredit, PublicationPlanCredit};
+use crate::credit::{OutboundCredit, OutboundCredits, PublicationPlanCredit};
 use crate::document::{DocumentLedger, DocumentState, RevisionCounter, UnavailableEvidence};
 use crate::facts;
 use crate::lifecycle::{
@@ -189,7 +189,12 @@ fn reader_loop(ingress: SyncSender<ReaderEvent>, wake: SyncSender<()>) {
     loop {
         let event = match reader.next_frame() {
             Ok(crate::transport::FrameEvent::Frame(body)) => ReaderEvent::Frame(body),
-            Ok(crate::transport::FrameEvent::Eof) | Err(_) => {
+            outcome => {
+                // Either end of the stream is terminal; a framing fault is named on
+                // stderr so an editor's log says why the server stopped reading.
+                if let Err(crate::transport::FrameError::Fault(fault)) = outcome {
+                    let _ = writeln!(std::io::stderr().lock(), "marrow-lsp: {fault:?}");
+                }
                 let _ = ingress.send(ReaderEvent::Terminal);
                 let _ = wake.try_send(());
                 return;
@@ -253,7 +258,7 @@ enum ReqState {
 
 /// The terminal classification of a request that never delivered.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum TerminalClass {
+enum TerminalClass {
     /// A terminal event before the response frame was handed off.
     AbandonedByTerminal,
     /// A terminal event after handoff but before the matching delivered receipt.
@@ -405,7 +410,7 @@ struct Coordinator {
     anonymous_capacity: usize,
     held_queries: Vec<HeldQuery>,
 
-    outbound_credits: CreditPool<OutboundCredit>,
+    outbound_credits: OutboundCredits,
     /// Handed-off frames awaiting a delivery receipt, each carrying the affine outbound
     /// credit it consumed. FIFO: the front is the oldest, matching the single writer.
     in_flight: VecDeque<(FrameOwner, OutboundCredit)>,
@@ -418,7 +423,7 @@ struct Coordinator {
     episode: CaptureEpisode,
     next_episode: u64,
 
-    publication_credits: CreditPool<PublicationPlanCredit>,
+    publication_credit: Option<PublicationPlanCredit>,
     publication: Option<PublicationState>,
     pending_publication: Option<InputRevision>,
 
@@ -449,14 +454,14 @@ impl Coordinator {
             anonymous_slots: 0,
             anonymous_capacity: MAX_ANONYMOUS_ERROR_SLOTS,
             held_queries: Vec::new(),
-            outbound_credits: CreditPool::outbound(),
+            outbound_credits: OutboundCredits::new(),
             in_flight: VecDeque::new(),
             pending_frames: VecDeque::new(),
             worker_busy: false,
             pending_recompute: false,
             episode: CaptureEpisode::Eligible,
             next_episode: 0,
-            publication_credits: CreditPool::publication(),
+            publication_credit: Some(PublicationPlanCredit::mint()),
             publication: None,
             pending_publication: None,
             outbox: VecDeque::new(),
@@ -1036,7 +1041,7 @@ impl Coordinator {
             self.pending_publication = Some(self.current_revision);
             return;
         }
-        let Some(credit) = self.publication_credits.acquire() else {
+        let Some(credit) = self.publication_credit.take() else {
             self.pending_publication = Some(self.current_revision);
             return;
         };
@@ -1053,7 +1058,7 @@ impl Coordinator {
                 (self.plan_resource_stop(limit), Vec::new(), None)
             }
             CurrentAnalysis::Pending => {
-                self.publication_credits.release(credit);
+                self.publication_credit = Some(credit);
                 return;
             }
         };
@@ -1066,13 +1071,13 @@ impl Coordinator {
         let mut retained: u64 = 0;
         for outbound in &frames {
             let Ok(bytes) = encode(outbound) else {
-                self.publication_credits.release(credit);
+                self.publication_credit = Some(credit);
                 self.terminate(1);
                 return;
             };
             retained = retained.saturating_add(bytes.len() as u64);
-            if retained > B_PUBLICATION_PLAN_BYTES {
-                self.publication_credits.release(credit);
+            if retained > MAX_PUBLICATION_PLAN_BYTES {
+                self.publication_credit = Some(credit);
                 self.terminate(1);
                 return;
             }
@@ -1082,7 +1087,7 @@ impl Coordinator {
             // A zero-frame commit resets the episode immediately (no frame to await), and
             // still commits the (empty) ledger transition.
             self.published = new_published;
-            self.publication_credits.release(credit);
+            self.publication_credit = Some(credit);
             self.reset_episode_if_observed(observed_episode);
             return;
         }
@@ -1112,10 +1117,9 @@ impl Coordinator {
         for module in snapshot.input().modules() {
             let identity = module.identity();
             let key = DocumentKey::from_identity(identity);
-            let source = std::str::from_utf8(module.source()).unwrap_or("");
             let version = self.ledger.get(&key).map(DocumentState::version);
             if let Ok(params) =
-                facts::diagnostics_for_file(snapshot, &root, identity, source, version)
+                facts::diagnostics_for_file(snapshot, &root, identity, module.source(), version)
             {
                 let has = !params.diagnostics.is_empty();
                 frames.push(Outbound::PublishDiagnostics(Box::new(params)));
@@ -1211,7 +1215,7 @@ impl Coordinator {
             // The whole committed set is delivered: release the exclusive credit and reset
             // the episode only if the commit observed the still-current latch.
             let state = self.publication.take().expect("publication present");
-            self.publication_credits.release(state.credit);
+            self.publication_credit = Some(state.credit);
             self.reset_episode_if_observed(state.observed_episode);
             // A newer result that waited may now build its plan and derive tombstones from
             // the final ledger.

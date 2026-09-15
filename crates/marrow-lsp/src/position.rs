@@ -11,7 +11,7 @@
 
 /// A zero-based LSP position: a line and a UTF-16 code-unit offset within that line.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Position {
+pub(crate) struct Position {
     /// Zero-based line number.
     pub line: u32,
     /// Zero-based UTF-16 code-unit offset within the line.
@@ -20,7 +20,7 @@ pub struct Position {
 
 /// A zero-based half-open LSP range.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Range {
+pub(crate) struct Range {
     /// Inclusive start.
     pub start: Position,
     /// Exclusive end.
@@ -33,7 +33,7 @@ pub struct Range {
 /// For the small spans the analysis facts carry, this is well within the instant-
 /// response requirement; a source is re-scanned only per query, never retained beyond
 /// the snapshot it maps.
-pub struct LineMap<'a> {
+pub(crate) struct LineMap<'a> {
     source: &'a str,
 }
 
@@ -41,14 +41,14 @@ impl<'a> LineMap<'a> {
     /// Build a map over source bytes. The bytes must be valid UTF-8 (the snapshot's
     /// input files that parsed always are; a non-UTF-8 file is never queried for a
     /// span-bearing fact).
-    pub fn new(source: &'a str) -> Self {
+    pub(crate) fn new(source: &'a str) -> Self {
         Self { source }
     }
 
     /// The LSP position of a UTF-8 byte offset. An offset past the end clamps to the
     /// end-of-source position; an offset that falls inside a multi-byte character
     /// snaps to that character's start.
-    pub fn position_at(&self, byte_offset: usize) -> Position {
+    pub(crate) fn position_at(&self, byte_offset: usize) -> Position {
         let clamped = byte_offset.min(self.source.len());
         let mut line = 0u32;
         let mut line_start_byte = 0usize;
@@ -76,7 +76,7 @@ impl<'a> LineMap<'a> {
     }
 
     /// The LSP range spanning a half-open byte range.
-    pub fn range_of(&self, start_byte: usize, end_byte: usize) -> Range {
+    pub(crate) fn range_of(&self, start_byte: usize, end_byte: usize) -> Range {
         Range {
             start: self.position_at(start_byte),
             end: self.position_at(end_byte),
@@ -86,7 +86,7 @@ impl<'a> LineMap<'a> {
     /// The UTF-8 byte offset of an LSP position. A line past the end clamps to the end
     /// of source; a character past the line end clamps to the line end (the LSP
     /// convention). Total and defensive: a stale client position never panics.
-    pub fn byte_at(&self, position: Position) -> usize {
+    pub(crate) fn byte_at(&self, position: Position) -> usize {
         // Find the byte offset of the requested line's start.
         let mut line = 0u32;
         let mut line_start = 0usize;
@@ -118,7 +118,7 @@ impl<'a> LineMap<'a> {
     }
 
     /// The end-of-source position — the range end of a whole-document edit.
-    pub fn end_position(&self) -> Position {
+    pub(crate) fn end_position(&self) -> Position {
         self.position_at(self.source.len())
     }
 }
