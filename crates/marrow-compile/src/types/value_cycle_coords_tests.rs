@@ -87,7 +87,7 @@ fn durable_projection_survives_syntax_poison() {
                 row.file().as_str(),
                 span.line,
                 span.column,
-                row.code(),
+                row.code().as_str(),
                 row.message()
             )
         })

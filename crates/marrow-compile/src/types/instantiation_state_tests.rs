@@ -708,7 +708,7 @@ fn divergent_limit_rejects_dependents_and_reports_once() {
     assert!(registry.generics.borrow().fill_stack.is_empty());
     let first = ordered(registry.take_generic_diagnostics());
     assert_eq!(first.len(), 1);
-    assert_eq!(first[0].code(), Code::CheckInstantiationLimit.as_str());
+    assert_eq!(first[0].code(), Code::CheckInstantiationLimit);
     assert_eq!((first[0].line(), first[0].column()), (10, 9));
     assert_eq!(
         registry.mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(20),),
@@ -3150,7 +3150,7 @@ fn value_cycle_invariant_precedes_and_preserves_source_diagnostics() {
     };
     let mut diagnostics = DiagnosticCollector::new();
     diagnostics.push(SourceDiagnostic::at(
-        Code::CheckType.as_str(),
+        Code::CheckType,
         crate::test_main_file_identity(),
         SourceSpan::default(),
         "earlier source failure".to_string(),
@@ -3326,7 +3326,7 @@ fn scalar_consumer_refusal_conversion_preserves_ledger_drift() {
             at: FileRef::admitted(0),
             span,
         },
-        Code::CheckType.as_str(),
+        Code::CheckType,
         "invalid constant".into(),
     );
     constants

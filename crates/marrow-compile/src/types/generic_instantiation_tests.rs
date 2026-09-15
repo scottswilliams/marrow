@@ -95,7 +95,7 @@ pub fn driver(): int {\n    const ignored = deepen(1)\n    return 0\n}\n";
     };
     assert_eq!(rows.as_slice().len(), 1);
     let row = &rows.as_slice()[0];
-    assert_eq!(row.code(), Code::CheckInstantiationLimit.as_str());
+    assert_eq!(row.code(), Code::CheckInstantiationLimit);
     assert_eq!(row.file().as_str(), "src/main.mw");
     assert_eq!(
         row.span(),

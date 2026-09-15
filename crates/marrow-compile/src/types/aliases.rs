@@ -86,7 +86,7 @@ impl AliasTable {
                     at: input.at,
                     span: input.decl.name_span,
                 },
-                Code::CheckRecursion.as_str(),
+                Code::CheckRecursion,
                 format!("alias `{name}` is part of a cyclic alias chain"),
             );
             named.declare(name.clone(), DeclarationOccurrence::Refused(refusal))?;

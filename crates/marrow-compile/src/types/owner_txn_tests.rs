@@ -697,7 +697,7 @@ fn template_proof_savepoint_isolates_a_failed_proof_and_transfers_once() {
     registry.adopt_generic_diagnostics(outcome);
     let adopted = ordered(registry.take_generic_diagnostics());
     assert_eq!(adopted.len(), 2);
-    assert_eq!(adopted[0].code(), Code::CheckInstantiationLimit.as_str());
-    assert_eq!(adopted[1].code(), Code::CheckUnsupported.as_str());
+    assert_eq!(adopted[0].code(), Code::CheckInstantiationLimit);
+    assert_eq!(adopted[1].code(), Code::CheckUnsupported);
     assert!(ordered(registry.take_generic_diagnostics()).is_empty());
 }

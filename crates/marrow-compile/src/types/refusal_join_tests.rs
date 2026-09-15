@@ -30,7 +30,7 @@ fn handles() -> (ResolveRefusal, ResolveRefusal) {
         ledger
             .declare(
                 name.to_string(),
-                DeclarationOccurrence::Refused(refuse_covered(declared, Code::CheckType.as_str())),
+                DeclarationOccurrence::Refused(refuse_covered(declared, Code::CheckType)),
             )
             .expect("within budget");
         match ledger.lookup(&name.to_string()) {
@@ -97,7 +97,7 @@ fn handles_from_two_namespaces_never_merge() {
         ledger
             .declare(
                 "x".to_string(),
-                DeclarationOccurrence::Refused(refuse_covered(declared, Code::CheckType.as_str())),
+                DeclarationOccurrence::Refused(refuse_covered(declared, Code::CheckType)),
             )
             .expect("within budget");
         match ledger.lookup(&"x".to_string()) {

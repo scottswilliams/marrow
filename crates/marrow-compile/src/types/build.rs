@@ -13,7 +13,7 @@ fn name_conflict(
     holder: NameHolder,
 ) {
     diagnostics.push(SourceDiagnostic::at(
-        Code::CheckNameConflict.as_str(),
+        Code::CheckNameConflict,
         file,
         span,
         format!("`{name}` is already declared as {}", holder.spelling()),
@@ -364,7 +364,7 @@ fn unknown_template_member(
     match ty {
         TypeExpr::Name { text, span, .. } => (!declares(text)).then(|| {
             SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 file,
                 *span,
                 format!("`{text}` does not name a known type"),
@@ -381,7 +381,7 @@ fn unknown_template_member(
         } => {
             if !declares(head) {
                 return Some(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     file,
                     *head_span,
                     format!("`{head}` does not name a known type"),
@@ -571,7 +571,7 @@ pub(super) fn build_alias_table(
         }
         if raw.contains_key(&decl.name) || named.declared(&decl.name) {
             diagnostics.push(SourceDiagnostic::at(
-                Code::CheckNameConflict.as_str(),
+                Code::CheckNameConflict,
                 file,
                 decl.name_span,
                 format!("an alias named `{}` is already declared", decl.name),
@@ -662,7 +662,7 @@ pub(super) fn validate_alias_targets(
                 Binding::Accepted(_) | Binding::Absent => refuse(
                     diagnostics,
                     declared,
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     format!("alias `{}` does not name a known type: `{text}`", decl.name),
                 ),
             })
@@ -820,7 +820,7 @@ fn nominal_interval(
 ) -> Result<(i64, i64), Box<SourceDiagnostic>> {
     let error = |span, message: &str| {
         Err(Box::new(SourceDiagnostic::at(
-            Code::CheckType.as_str(),
+            Code::CheckType,
             file,
             span,
             message.to_string(),
@@ -894,7 +894,7 @@ fn support_set(
             "scale" => &mut supports.scale,
             other => {
                 return Err(Box::new(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     file,
                     spelling.span,
                     format!(
@@ -905,7 +905,7 @@ fn support_set(
         };
         if *flag {
             return Err(Box::new(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 file,
                 spelling.span,
                 format!("capability `{}` is repeated", spelling.name),
@@ -1106,10 +1106,9 @@ fn struct_fields(
         (Some(refusal), _) => DeclarationOccurrence::Refused(refusal),
         // The shared instantiation limit reports once, at the monomorphization
         // owner; this declaration is refused for a cause that pass owns.
-        (None, true) => DeclarationOccurrence::Refused(refuse_covered(
-            declared,
-            Code::CheckInstantiationLimit.as_str(),
-        )),
+        (None, true) => {
+            DeclarationOccurrence::Refused(refuse_covered(declared, Code::CheckInstantiationLimit))
+        }
         (None, false) => DeclarationOccurrence::Accepted((fields, field_defs)),
     })
 }
@@ -1163,7 +1162,7 @@ pub(super) fn declare_enums<'a>(
             let refusal = refuse(
                 diagnostics,
                 declared,
-                Code::CheckResourceLimit.as_str(),
+                Code::CheckResourceLimit,
                 format!(
                     "an enum declares {} members; the fixed limit is {}",
                     decl.members.len(),
@@ -1340,7 +1339,7 @@ fn enum_payload(
             diagnostics,
             declared,
             SourceDiagnostic::at(
-                Code::CheckResourceLimit.as_str(),
+                Code::CheckResourceLimit,
                 file,
                 member.span,
                 format!(
@@ -1423,7 +1422,7 @@ pub(super) fn declare_records<'a>(
             // so a repeat is a precise typed rejection and the first stands.
             Some(NameHolder::Kind(NamedTypeKind::Resource)) => {
                 diagnostics.push(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     file,
                     resource.name_span,
                     format!("`{}` is already declared as a resource", resource.name),
@@ -1773,7 +1772,7 @@ fn resource_member(
                     // pass owns.
                     None => DeclarationOccurrence::Refused(refuse_covered(
                         at,
-                        Code::CheckInstantiationLimit.as_str(),
+                        Code::CheckInstantiationLimit,
                     )),
                 }
             }

@@ -2853,7 +2853,7 @@ impl TypeRegistry {
                 ),
             };
             generics.limit = LimitState::Pending(SourceDiagnostic::at(
-                Code::CheckInstantiationLimit.as_str(),
+                Code::CheckInstantiationLimit,
                 site.file,
                 site.span,
                 message,
@@ -2881,7 +2881,7 @@ impl TypeRegistry {
             .borrow_mut()
             .collection_payloads
             .push(SourceDiagnostic::at(
-                Code::CheckUnsupported.as_str(),
+                Code::CheckUnsupported,
                 site.file,
                 site.span,
                 format!(
@@ -3880,7 +3880,7 @@ fn value_cycle_diagnostic(
     path: &[String],
 ) -> SourceDiagnostic {
     SourceDiagnostic::at(
-        Code::CheckRecursion.as_str(),
+        Code::CheckRecursion,
         file,
         span,
         format!(
@@ -4137,7 +4137,7 @@ impl ValueGraph {
 /// The diagnostic for a declaration that reuses a built-in generic type name.
 fn reserved_name(file: &FileIdentity, span: SourceSpan, name: &str) -> SourceDiagnostic {
     SourceDiagnostic::at(
-        Code::CheckNameConflict.as_str(),
+        Code::CheckNameConflict,
         file,
         span,
         format!("`{name}` is a built-in generic type and cannot be redeclared"),
@@ -4146,7 +4146,7 @@ fn reserved_name(file: &FileIdentity, span: SourceSpan, name: &str) -> SourceDia
 
 fn unsupported(file: &FileIdentity, span: SourceSpan, subject: &str) -> SourceDiagnostic {
     SourceDiagnostic::at(
-        Code::CheckUnsupported.as_str(),
+        Code::CheckUnsupported,
         file,
         span,
         format!("{subject} is not yet supported on the beta line"),

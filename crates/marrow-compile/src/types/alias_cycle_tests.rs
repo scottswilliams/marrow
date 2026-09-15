@@ -67,7 +67,7 @@ fn an_alias_to_an_unsupported_application_refuses_typed() {
     assert!(
         diagnostics
             .iter()
-            .all(|row| row.code() == "check.unsupported"),
+            .all(|row| row.code().as_str() == "check.unsupported"),
         "every row refuses the unsupported target itself",
     );
 }
@@ -92,7 +92,7 @@ fn composed_optional_aliases_refuse_at_each_dependent_declaration() {
     };
     let rows: Vec<_> = diagnostics
         .iter()
-        .map(|row| (row.code(), row.line(), row.column()))
+        .map(|row| (row.code().as_str(), row.line(), row.column()))
         .collect();
     assert_eq!(
         rows,
