@@ -143,10 +143,7 @@ pub(crate) fn project_durable_run(
             };
         }
         DurableRun::Parked => reject(Code::RunnerDurableUnsupported).encode_frame(turn),
-        DurableRun::Failed(code) => ServerMessage::Reject {
-            code: code.to_string(),
-        }
-        .encode_frame(turn),
+        DurableRun::Failed(code) => ServerMessage::Reject { code }.encode_frame(turn),
     };
     RunProjection::Reply(response)
 }
@@ -166,7 +163,7 @@ pub(crate) fn value_frame(
 /// Encode a source-mapped runtime fault into a `Fault` response.
 pub(crate) fn fault_message(fault: &marrow_vm::RuntimeFault) -> ServerMessage {
     ServerMessage::Fault {
-        code: fault.code().to_string(),
+        code: fault.code(),
         span: Span {
             line: fault.line(),
             column: fault.column(),
@@ -184,7 +181,7 @@ pub(crate) fn incomplete_message(
         DurableCommitState::Unknown => DurableState::Unknown,
     };
     ServerMessage::Incomplete {
-        code: fault.code().to_string(),
+        code: fault.code(),
         durable,
         span: Span {
             line: fault.line(),
@@ -196,6 +193,6 @@ pub(crate) fn incomplete_message(
 /// A typed reject naming the runner's reason, carrying no wire or lifecycle vocabulary.
 pub(crate) fn reject(code: Code) -> ServerMessage {
     ServerMessage::Reject {
-        code: code.as_str().to_string(),
+        code: code.as_str(),
     }
 }

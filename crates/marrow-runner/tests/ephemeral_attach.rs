@@ -59,7 +59,7 @@ impl<'a> Session<'a> {
         }
     }
 
-    fn fault(&mut self, name: &str, args: Vec<Json>) -> String {
+    fn fault(&mut self, name: &str, args: Vec<Json>) -> &'static str {
         match self.call(name, args) {
             CallOutcome::Fault { code, .. } => code,
             CallOutcome::Value(_) => panic!("`{name}` completed"),

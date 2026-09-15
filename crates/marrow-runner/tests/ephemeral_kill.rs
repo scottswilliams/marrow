@@ -413,12 +413,10 @@ fn post_handshake_hello_and_provision_are_rejected() {
     let (after_hello, after_provision) = client.join().unwrap();
     channel.teardown();
 
-    let handshake = marrow_codes::Code::RunnerHandshake.as_str().to_string();
+    let handshake = marrow_codes::Code::RunnerHandshake.as_str();
     assert_eq!(
         after_hello,
-        Some(ServerMessage::Reject {
-            code: handshake.clone(),
-        }),
+        Some(ServerMessage::Reject { code: handshake }),
         "a second Hello is a typed handshake reject",
     );
     assert_eq!(

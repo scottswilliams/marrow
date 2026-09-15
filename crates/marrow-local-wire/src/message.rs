@@ -15,6 +15,8 @@
 //! turn once and the runner channel echoes it on that request's sole response, so a
 //! delayed response from an earlier turn cannot settle a later call.
 
+use marrow_codes::Code;
+
 use crate::error::WireError;
 use crate::id::Id32;
 use crate::json::{self, Json, ObjectWriter, ValueWriter};
@@ -80,19 +82,19 @@ pub enum ServerMessage {
     /// A successful call result (JSON `null` for a unit return).
     Value { data: Json },
     /// A source-mapped runtime fault raised while running the export.
-    Fault { code: String, span: Span },
+    Fault { code: &'static str, span: Span },
     /// The invocation stopped without returning. Its durable state is reported
     /// independently of the source-mapped fault; no recovery witness crosses
     /// the wire.
     Incomplete {
-        code: String,
+        code: &'static str,
         durable: DurableState,
         span: Span,
     },
     /// The request could not be admitted or run (an unknown export, an argument
     /// mismatch, or a durable export the stock runner will not execute). The
     /// `code` is the runner's typed reason.
-    Reject { code: String },
+    Reject { code: &'static str },
     /// A store was provisioned: `instance` is the fresh store instance identity
     /// (lowercase hex). The receipt of a completed provision.
     Provisioned { instance: String },
@@ -104,7 +106,7 @@ pub enum ServerMessage {
     /// Provision failed before publication and cleanup of its private stage also failed.
     /// `stage` is a generated sibling component of the requested destination, not a child.
     ProvisionFailed {
-        code: String,
+        code: &'static str,
         stage: String,
         os_error: Option<i32>,
     },
@@ -281,7 +283,7 @@ impl ServerMessage {
                 } => {
                     object.field("cleanup", |slot| {
                         slot.object(|cleanup| {
-                            cleanup.field("code", |slot| slot.string("store.io"))?;
+                            cleanup.field("code", |slot| slot.string(Code::StoreIo.as_str()))?;
                             cleanup.field("os_error", |slot| match os_error {
                                 Some(value) => slot.integer(i64::from(*value)),
                                 None => slot.json(&Json::Null),
@@ -320,7 +322,7 @@ impl ServerMessage {
             }
             "activation_uncertain" => {
                 object.exact(&["code", "instance", "interface", "kind", "session"])?;
-                if object.code("code")? != marrow_codes::Code::StoreActivationUncertain.as_str() {
+                if object.code("code")? != Code::StoreActivationUncertain {
                     return Err(WireError::Malformed);
                 }
                 let instance = object.string("instance")?;
@@ -347,7 +349,7 @@ impl ServerMessage {
                 object.exact(&["code", "kind", "span", "turn"])?;
                 Ok((
                     ServerMessage::Fault {
-                        code: object.code("code")?,
+                        code: object.code_str("code")?,
                         span: object.span("span")?,
                     },
                     Some(object.u32("turn")?),
@@ -357,7 +359,7 @@ impl ServerMessage {
                 object.exact(&["code", "durable", "kind", "span", "turn"])?;
                 Ok((
                     ServerMessage::Incomplete {
-                        code: object.code("code")?,
+                        code: object.code_str("code")?,
                         durable: object.durable_state("durable")?,
                         span: object.span("span")?,
                     },
@@ -368,7 +370,7 @@ impl ServerMessage {
                 object.exact(&["code", "kind", "turn"])?;
                 Ok((
                     ServerMessage::Reject {
-                        code: object.code("code")?,
+                        code: object.code_str("code")?,
                     },
                     Some(object.u32("turn")?),
                 ))
@@ -384,8 +386,7 @@ impl ServerMessage {
             }
             "provision_uncertain" => {
                 object.exact(&["code", "instance", "kind"])?;
-                let reason = marrow_codes::Code::from_code(&object.code("code")?)
-                    .and_then(marrow_codes::StoreUncertainty::from_code)
+                let reason = marrow_codes::StoreUncertainty::from_code(object.code("code")?)
                     .ok_or(WireError::Malformed)?;
                 let instance = object.string("instance")?;
                 validate_store_instance(&instance)?;
@@ -395,7 +396,7 @@ impl ServerMessage {
                 object.exact(&["cleanup", "code", "kind"])?;
                 let cleanup = Fields::new(object.get("cleanup")?)?;
                 cleanup.exact(&["code", "os_error", "stage"])?;
-                if cleanup.code("code")? != "store.io" {
+                if cleanup.code("code")? != Code::StoreIo {
                     return Err(WireError::Malformed);
                 }
                 let stage = cleanup.string("stage")?;
@@ -409,7 +410,7 @@ impl ServerMessage {
                 };
                 Ok((
                     ServerMessage::ProvisionFailed {
-                        code: object.code("code")?,
+                        code: object.code_str("code")?,
                         stage,
                         os_error,
                     },
@@ -533,20 +534,20 @@ impl<'a> Fields<'a> {
         }
     }
 
-    /// A dotted diagnostic-code string: non-empty and lowercase-dotted ASCII. The
-    /// wire carries it opaquely; the runner produces it from a typed code.
-    fn code(&self, key: &str) -> Result<String, WireError> {
+    /// A registered diagnostic code. The wire spells it as its dotted string; a string
+    /// the published registry does not carry is malformed, so a decoded code is always
+    /// one this toolchain knows.
+    fn code(&self, key: &str) -> Result<Code, WireError> {
         match self.get(key)? {
-            Json::Str(s)
-                if !s.is_empty()
-                    && s.bytes().all(|b| {
-                        b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'_'
-                    }) =>
-            {
-                Ok(s.clone())
-            }
+            Json::Str(s) => Code::from_code(s).ok_or(WireError::Malformed),
             _ => Err(WireError::Malformed),
         }
+    }
+
+    /// The registered code's own static spelling, so a decoded message carries the
+    /// interned string rather than a fresh allocation the reader must re-intern.
+    fn code_str(&self, key: &str) -> Result<&'static str, WireError> {
+        self.code(key).map(Code::as_str)
     }
 
     fn span(&self, key: &str) -> Result<Span, WireError> {
@@ -575,7 +576,7 @@ impl<'a> Fields<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClientMessage, DurableState, ServerMessage};
+    use super::{ClientMessage, Code, DurableState, ServerMessage};
     use crate::id::Id32;
     use crate::json::{self, Json};
     use crate::span::Span;
@@ -593,7 +594,7 @@ mod tests {
     fn provision_cleanup_failure_round_trips_without_a_call_turn() {
         for errno in ["null", "-2147483648", "2147483647"] {
             let text = format!(
-                "{{\"cleanup\":{{\"code\":\"store.io\",\"os_error\":{errno},\"stage\":\".marrow-provisioning.4294967295.18446744073709551615\"}},\"code\":\"store.already_provisioned\",\"kind\":\"provision_failed\"}}"
+                "{{\"cleanup\":{{\"code\":\"store.io\",\"os_error\":{errno},\"stage\":\".marrow-provisioning.4294967295.18446744073709551615\"}},\"code\":\"store.locked\",\"kind\":\"provision_failed\"}}"
             );
             let mut body = vec![crate::PROTOCOL_VERSION];
             body.extend_from_slice(text.as_bytes());
@@ -639,7 +640,7 @@ mod tests {
         }
         assert!(
             ServerMessage::ProvisionFailed {
-                code: "store.io".into(),
+                code: Code::StoreIo.as_str(),
                 stage: "../stage".into(),
                 os_error: None,
             }
@@ -696,7 +697,7 @@ mod tests {
         assert_eq!(
             json_of(
                 &ServerMessage::Fault {
-                    code: "run.overflow".to_string(),
+                    code: Code::RunOverflow.as_str(),
                     span: Span { line: 7, column: 2 },
                 }
                 .encode()
@@ -707,7 +708,7 @@ mod tests {
         assert_eq!(
             json_of(
                 &ServerMessage::Incomplete {
-                    code: "run.commit".to_string(),
+                    code: Code::RunCommit.as_str(),
                     durable: DurableState::KnownNew,
                     span: Span { line: 9, column: 4 },
                 }
@@ -719,7 +720,7 @@ mod tests {
         assert_eq!(
             json_of(
                 &ServerMessage::Reject {
-                    code: "runner.unknown_export".to_string()
+                    code: Code::RunnerUnknownExport.as_str()
                 }
                 .encode()
                 .unwrap()
@@ -869,7 +870,7 @@ mod tests {
             data: Json::Array(vec![Json::Int(-1)]),
         });
         server_round_trip(ServerMessage::Fault {
-            code: "run.budget".to_string(),
+            code: Code::RunBudget.as_str(),
             span: Span { line: 1, column: 1 },
         });
         for durable in [
@@ -878,13 +879,13 @@ mod tests {
             DurableState::Unknown,
         ] {
             server_round_trip(ServerMessage::Incomplete {
-                code: "run.commit".to_string(),
+                code: Code::RunCommit.as_str(),
                 durable,
                 span: Span { line: 2, column: 3 },
             });
         }
         server_round_trip(ServerMessage::Reject {
-            code: "runner.arg_mismatch".to_string(),
+            code: Code::RunnerArgMismatch.as_str(),
         });
     }
 

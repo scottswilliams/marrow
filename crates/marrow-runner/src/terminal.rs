@@ -327,20 +327,20 @@ pub enum CallOutcome {
     Value(Option<Value>),
     /// A source-mapped runtime fault.
     Fault {
-        code: String,
+        code: &'static str,
         line: u32,
         column: u32,
     },
     /// The export did not return. The source fault and classified durable state
     /// are orthogonal; no recovery witness is exposed to the terminal.
     Incomplete {
-        code: String,
+        code: &'static str,
         durable: DurableState,
         line: u32,
         column: u32,
     },
     /// The runner declined the request with a typed code.
-    Reject { code: String },
+    Reject { code: &'static str },
     /// The request was dispatched to the runner, but no exact valid correlated reply could be
     /// accepted, so the call's durable outcome is unknowable from this side
     /// ([`LossClass::OutcomeUnknown`](marrow_local_wire::LossClass::OutcomeUnknown)). It is

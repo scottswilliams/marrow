@@ -105,7 +105,7 @@ fn provision_reply(
             },
             None => match error.cleanup() {
                 Some(cleanup) => ServerMessage::ProvisionFailed {
-                    code: error.code().to_string(),
+                    code: error.code(),
                     stage: cleanup
                         .stage
                         .file_name()
@@ -114,9 +114,7 @@ fn provision_reply(
                         .to_string(),
                     os_error: cleanup.source.raw_os_error(),
                 },
-                None => ServerMessage::Reject {
-                    code: error.code().to_string(),
-                },
+                None => ServerMessage::Reject { code: error.code() },
             },
         },
     }
@@ -124,7 +122,7 @@ fn provision_reply(
 
 fn reject(code: Code) -> ServerMessage {
     ServerMessage::Reject {
-        code: code.as_str().to_string(),
+        code: code.as_str(),
     }
 }
 

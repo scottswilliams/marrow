@@ -223,7 +223,7 @@ impl Terminal {
         }
     }
 
-    fn fault(&self, name: &str, args: Vec<Json>) -> String {
+    fn fault(&self, name: &str, args: Vec<Json>) -> &'static str {
         match self.call(name, args) {
             CallOutcome::Fault { code, .. } => code,
             CallOutcome::Value(_) => panic!("`{name}` completed"),

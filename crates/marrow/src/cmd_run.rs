@@ -435,7 +435,7 @@ fn call_outcome_to_record(outcome: marrow_runner::CallOutcome) -> Record {
     match outcome {
         marrow_runner::CallOutcome::Value(value) => Record::Value(value),
         marrow_runner::CallOutcome::Fault { code, line, column } => Record::Fault {
-            code: fault_code(&code),
+            code,
             line,
             column,
             detail: None,
@@ -446,7 +446,7 @@ fn call_outcome_to_record(outcome: marrow_runner::CallOutcome) -> Record {
             line,
             column,
         } => Record::Incomplete {
-            code: fault_code(&code),
+            code,
             durable: match durable {
                 marrow_runner::DurableState::KnownOld => marrow_vm::DurableCommitState::KnownOld,
                 marrow_runner::DurableState::KnownNew => marrow_vm::DurableCommitState::KnownNew,
@@ -459,7 +459,7 @@ fn call_outcome_to_record(outcome: marrow_runner::CallOutcome) -> Record {
             code: if code == marrow_codes::Code::RunnerDurableUnsupported.as_str() {
                 marrow_codes::Code::CliDurableUnsupported.as_str()
             } else {
-                fault_code(&code)
+                code
             },
             detail: None,
         },
@@ -470,15 +470,6 @@ fn call_outcome_to_record(outcome: marrow_runner::CallOutcome) -> Record {
             cause_code: cause.code(),
         },
     }
-}
-
-/// Intern a wire-carried dotted code back to its static form so the record renders the stable
-/// code without allocating; an unrecognized code (never expected on the beta line) falls back
-/// to an internal invariant code rather than leaking an unstyled string.
-fn fault_code(code: &str) -> &'static str {
-    marrow_codes::Code::from_code(code)
-        .map(marrow_codes::Code::as_str)
-        .unwrap_or_else(|| marrow_codes::Code::CliCompilerInvariant.as_str())
 }
 
 /// Project a validated command-line argument value onto its wire JSON. Total over the scalar

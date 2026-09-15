@@ -215,7 +215,7 @@ impl Handler for UnknownIncompleteHandler {
         turn: Option<u32>,
     ) -> Result<EncodedFrame, WireError> {
         ServerMessage::Incomplete {
-            code: "run.commit".to_string(),
+            code: "run.commit",
             durable: DurableState::Unknown,
             span: Span { line: 4, column: 2 },
         }
@@ -294,7 +294,7 @@ impl Handler for ClassifiedBeforeReplyHandler {
         self.classified.send(()).expect("signal classification");
         self.release.recv().expect("release response");
         ServerMessage::Incomplete {
-            code: "run.commit".to_string(),
+            code: "run.commit",
             durable: DurableState::KnownNew,
             span: Span { line: 7, column: 3 },
         }
@@ -493,7 +493,7 @@ fn an_oversized_pre_dispatch_request_keeps_its_typed_reject() {
         reject,
         Some((
             ServerMessage::Reject {
-                code: "wire.frame_too_large".to_string(),
+                code: "wire.frame_too_large",
             },
             Some(0),
         )),

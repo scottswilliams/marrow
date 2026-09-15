@@ -21,9 +21,9 @@ pub struct RefusalService {
 
 impl RefusalService {
     /// A refusal service that rejects every request with `code`.
-    pub fn new(code: impl Into<String>) -> Self {
+    pub fn new(code: &'static str) -> Self {
         Self {
-            response: ServerMessage::Reject { code: code.into() },
+            response: ServerMessage::Reject { code },
         }
     }
 }
