@@ -84,7 +84,7 @@ impl Text {
         let enum_def = enums.get(enum_idx as usize);
         let variant_def = enum_def.and_then(|e| e.variants().get(variant as usize));
         let enum_name = enum_def.map(SealedEnumType::name).unwrap_or("enum");
-        let member = variant_def.map(|v| v.name.as_ref()).unwrap_or("?");
+        let member = variant_def.map(|v| v.name().as_ref()).unwrap_or("?");
         self.append(enum_name)?;
         self.append("::")?;
         self.append(member)?;
@@ -129,7 +129,7 @@ impl Text {
                         self.append(", ")?;
                     }
                     if let Some(field) = fields.and_then(|fields| fields.get(position)) {
-                        self.append(&field.name)?;
+                        self.append(field.name())?;
                         self.append(": ")?;
                     }
                     match slot {

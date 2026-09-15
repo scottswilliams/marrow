@@ -850,7 +850,7 @@ impl<'i> Frame<'i> {
         let mut slots: Vec<Option<Value>> = vec![None; fields.len()];
         for (index, field) in fields.iter().enumerate().rev() {
             let value = pop(&mut self.stack);
-            slots[index] = if field.required {
+            slots[index] = if field.required() {
                 Some(value)
             } else {
                 as_optional(value)
@@ -864,7 +864,7 @@ impl<'i> Frame<'i> {
         let image = self.image;
         let (ty, slots) = as_record(pop(&mut self.stack));
         let cell = slots[field as usize].clone();
-        let required = image.record_type(ty).fields()[field as usize].required;
+        let required = image.record_type(ty).fields()[field as usize].required();
         if required {
             self.stack
                 .push(cell.expect("verifier proved a required field is present"));
@@ -904,7 +904,7 @@ impl<'i> Frame<'i> {
 
     fn enum_construct(&mut self, enum_idx: u16, variant: u16) {
         let arity = self.image.enums()[enum_idx as usize].variants()[variant as usize]
-            .payload
+            .payload()
             .len();
         // p0 was pushed first, so the popped values fill slots in reverse.
         let mut payload: Vec<Value> = vec![Value::Bool(false); arity];

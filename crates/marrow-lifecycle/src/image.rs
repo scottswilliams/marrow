@@ -573,7 +573,7 @@ fn derive_root_schema(
     // record and parked the root when any of them was not storable. Deriving and discarding
     // keeps that parking condition exactly.
     for slot in split.group_slots {
-        value_shape(image, slot.ty)?;
+        value_shape(image, slot.ty())?;
     }
 
     // Each root-level group derives its own materialized record from the image; a group is a
@@ -695,9 +695,9 @@ fn emit_fields(
 ) -> Option<()> {
     for field in fields {
         builder.field(
-            field.name.to_string(),
-            value_shape(image, field.ty)?,
-            field.required,
+            field.name().to_string(),
+            value_shape(image, field.ty())?,
+            field.required(),
         );
     }
     builder.refusal().map_or(Some(()), |_| None)
@@ -792,7 +792,7 @@ fn value_shape(image: &VerifiedImage, ty: ImageType) -> Option<ValueShape> {
                         .fields()
                         .iter()
                         .rev()
-                        .map(|field| ShapeStep::Ty(field.ty)),
+                        .map(|field| ShapeStep::Ty(field.ty())),
                 );
             }
             ShapeStep::Ty(ImageType::Enum { idx, .. }) => {
@@ -813,7 +813,7 @@ fn value_shape(image: &VerifiedImage, ty: ImageType) -> Option<ValueShape> {
             ) => return None,
             ShapeStep::Variant { enum_idx, variant } => {
                 let sealed = image.enums().get(enum_idx as usize)?;
-                let payload = &sealed.variants().get(variant)?.payload;
+                let payload = sealed.variants().get(variant)?.payload();
                 builder.open_variant();
                 pending.push(ShapeStep::Close);
                 pending.extend(payload.iter().rev().map(|leaf| ShapeStep::Ty(*leaf)));

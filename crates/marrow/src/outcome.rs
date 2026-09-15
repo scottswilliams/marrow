@@ -514,7 +514,7 @@ impl JsonData {
             .map(|(position, slot)| {
                 let name = fields
                     .and_then(|fields| fields.get(position))
-                    .map(|field| field.name.as_ref())
+                    .map(|field| field.name().as_ref())
                     .unwrap_or("");
                 (name, slot.as_ref())
             })
@@ -545,7 +545,7 @@ impl JsonData {
         self.append(r#"{"enum":"#)?;
         self.string(enum_def.map(SealedEnumType::name).unwrap_or(""))?;
         self.append(r#","member":"#)?;
-        self.string(variant_def.map(|v| v.name.as_ref()).unwrap_or(""))?;
+        self.string(variant_def.map(|v| v.name().as_ref()).unwrap_or(""))?;
         self.append(r#","payload":["#)?;
         for (position, value) in payload.iter().enumerate() {
             if position > 0 {

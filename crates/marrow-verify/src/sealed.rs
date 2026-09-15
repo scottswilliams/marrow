@@ -317,9 +317,24 @@ impl SealedIndex {
 /// physical field leaves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealedField {
-    pub name: Rc<str>,
-    pub ty: ImageType,
-    pub required: bool,
+    pub(crate) name: Rc<str>,
+    pub(crate) ty: ImageType,
+    pub(crate) required: bool,
+}
+
+impl SealedField {
+    /// The field's declared name, which the path kernel keys physical leaves by.
+    pub fn name(&self) -> &Rc<str> {
+        &self.name
+    }
+    /// The field's bare value type.
+    pub fn ty(&self) -> ImageType {
+        self.ty
+    }
+    /// Whether the field is required rather than sparse.
+    pub fn required(&self) -> bool {
+        self.required
+    }
 }
 
 /// A sealed record type: an ordered field list in declaration order.
@@ -340,9 +355,24 @@ impl SealedRecordType {
 /// instantiation carries whatever concrete type its argument monomorphized to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealedVariant {
-    pub name: Rc<str>,
-    pub category: bool,
-    pub payload: Vec<ImageType>,
+    pub(crate) name: Rc<str>,
+    pub(crate) category: bool,
+    pub(crate) payload: Vec<ImageType>,
+}
+
+impl SealedVariant {
+    /// The variant's member name.
+    pub fn name(&self) -> &Rc<str> {
+        &self.name
+    }
+    /// Whether the variant is a category member (no payload of its own).
+    pub fn category(&self) -> bool {
+        self.category
+    }
+    /// The variant's dense payload leaves, in declaration order.
+    pub fn payload(&self) -> &[ImageType] {
+        &self.payload
+    }
 }
 
 /// A sealed collection value type: a finite `List<T>` or ordered `Map<K, V>`. The
@@ -651,7 +681,7 @@ impl VerifiedImage {
     /// classification from the call closure — which places are read, written, erased,
     /// probed, or traversed, and by whom. Nothing here is serialized in the image;
     /// it is rebuilt from the exports' reconstructed demand.
-    pub fn demand_incidence(&self) -> Vec<NodeIncidence> {
+    pub fn demand_incidence(&self) -> impl Iterator<Item = NodeIncidence> {
         use std::collections::BTreeMap;
         let mut by_path: BTreeMap<SemanticPath, Vec<AtomIncidence>> = BTreeMap::new();
         for export in &self.exports {
@@ -668,7 +698,6 @@ impl VerifiedImage {
         by_path
             .into_iter()
             .map(|(path, touched_by)| NodeIncidence { path, touched_by })
-            .collect()
     }
 
     /// The test entries, in ascending report-name order. Execution follows each

@@ -338,7 +338,7 @@ impl Members {
         let field_count = record.fields().len().saturating_sub(group_count);
         let fields = record.fields()[..field_count]
             .iter()
-            .map(|field| field.name.to_string())
+            .map(|field| field.name().to_string())
             .collect();
         let groups = root
             .groups()
@@ -347,7 +347,11 @@ impl Members {
                 let record = image.record_type(group.record());
                 (
                     group.name().to_string(),
-                    record.fields().iter().map(|f| f.name.to_string()).collect(),
+                    record
+                        .fields()
+                        .iter()
+                        .map(|f| f.name().to_string())
+                        .collect(),
                 )
             })
             .collect();
@@ -371,7 +375,11 @@ fn branch_members(image: &VerifiedImage, branch: &SealedBranch) -> BranchMembers
     BranchMembers {
         name: branch.name().to_string(),
         members: Members {
-            fields: record.fields().iter().map(|f| f.name.to_string()).collect(),
+            fields: record
+                .fields()
+                .iter()
+                .map(|f| f.name().to_string())
+                .collect(),
             groups: Vec::new(),
             branches: branch
                 .branches()

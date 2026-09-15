@@ -29,9 +29,9 @@ fn interface_of(image: &VerifiedImage) -> Result<Interface, InterfaceError> {
                 .fields()
                 .iter()
                 .map(|field| FieldShape {
-                    name: field.name.to_string(),
-                    ty: field.ty,
-                    required: field.required,
+                    name: field.name().to_string(),
+                    ty: field.ty(),
+                    required: field.required(),
                 })
                 .collect(),
         })
@@ -44,9 +44,9 @@ fn interface_of(image: &VerifiedImage) -> Result<Interface, InterfaceError> {
                 .variants()
                 .iter()
                 .map(|variant| VariantShape {
-                    name: variant.name.to_string(),
-                    category: variant.category,
-                    payload: variant.payload.clone(),
+                    name: variant.name().to_string(),
+                    category: variant.category(),
+                    payload: variant.payload().to_vec(),
                 })
                 .collect(),
         })

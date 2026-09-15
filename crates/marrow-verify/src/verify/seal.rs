@@ -9,50 +9,15 @@ use super::presence::{EntryFamilies, check_presence_flow, verify_function};
 use super::reject;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{
-    SealedExport, SealedFunction, SealedIndex, SealedInstr, SealedRoot, SealedSite,
-    SealedTestEntry, VerifiedImage,
+    SealedExport, SealedFunction, SealedIndex, SealedInstr, SealedRecordType, SealedRoot,
+    SealedSite, SealedTestEntry, VerifiedImage,
 };
 use marrow_image::ImageType;
 
 pub(super) fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
     let types = decoded.types.clone();
     let enums = decoded.enums.clone();
-    let roots: Vec<SealedRoot> = decoded
-        .roots
-        .iter()
-        .map(|root| {
-            let flat = is_flat_executable_root(root);
-            // A flat-executable root's branches are all scalar-field keyed
-            // branches, each carrying its own nested branches; seal the whole tree in
-            // declaration order so a BranchEntry branch path indexes it level by level. A
-            // non-flat root parks every branch site, so it needs no sealed branch list.
-            let branches = if flat {
-                seal_branches(&root.members, &decoded.strings)
-            } else {
-                Vec::new()
-            };
-            let groups = if flat {
-                seal_groups(root, &types)
-            } else {
-                Vec::new()
-            };
-            SealedRoot {
-                name: decoded.strings[root.name as usize].clone(),
-                keys: root.keys.iter().map(|(scalar, _)| *scalar).collect(),
-                record: root.record,
-                // A root's members are extra-free when every direct member keeps it flat:
-                // a field (scalar or widened composite), a root-level unkeyed group of
-                // storable-value fields, or a simple branch. A nested/composite branch, or
-                // a group nested below the root, is an extra that parks the root's
-                // operations; a widened field no longer parks (it is framed inline). This
-                // is a member-shape predicate independent of keyed-ness — a keyless
-                // singleton parks separately.
-                has_extras: !root.members.iter().all(member_flat_at_root),
-                branches,
-                groups,
-            }
-        })
-        .collect();
+    let roots = seal_roots(&decoded, &types);
     // The managed indexes seal from the decoded roots, each carrying the index of the
     // root it belongs to. Their projections were re-resolved against the decoded graph
     // in `decode_indexes`, so the sealed set trusts no image-side incidence summary. Each
@@ -292,4 +257,42 @@ fn check_test_entries(
             func: *func,
         })
         .collect())
+}
+
+/// Project the decoded roots into sealed ones. A flat-executable root carries its
+/// branch tree and its groups; a non-flat root parks every branch and group site, so it
+/// needs neither list.
+fn seal_roots(decoded: &DecodedImage, types: &[SealedRecordType]) -> Vec<SealedRoot> {
+    decoded
+        .roots
+        .iter()
+        .map(|root| {
+            let flat = is_flat_executable_root(root);
+            SealedRoot {
+                name: decoded.strings[root.name as usize].clone(),
+                keys: root.keys.iter().map(|(scalar, _)| *scalar).collect(),
+                record: root.record,
+                // A root's members are extra-free when every direct member keeps it flat:
+                // a field (scalar or widened composite), a root-level unkeyed group of
+                // storable-value fields, or a simple branch. A nested/composite branch, or
+                // a group nested below the root, is an extra that parks the root's
+                // operations; a widened field no longer parks (it is framed inline). This
+                // is a member-shape predicate independent of keyed-ness — a keyless
+                // singleton parks separately.
+                has_extras: !root.members.iter().all(member_flat_at_root),
+                // Sealed in declaration order so a BranchEntry branch path indexes the
+                // tree level by level.
+                branches: if flat {
+                    seal_branches(&root.members, &decoded.strings)
+                } else {
+                    Vec::new()
+                },
+                groups: if flat {
+                    seal_groups(root, types)
+                } else {
+                    Vec::new()
+                },
+            }
+        })
+        .collect()
 }

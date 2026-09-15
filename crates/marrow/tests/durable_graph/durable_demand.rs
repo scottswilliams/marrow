@@ -274,7 +274,7 @@ fn reachable_sites_are_image_local_and_not_in_the_demand_id() {
 #[test]
 fn demand_incidence_reverses_the_export_map() {
     let (image, _) = compile_verify(&two_export_source("", ""));
-    let incidence = image.demand_incidence();
+    let incidence: Vec<_> = image.demand_incidence().collect();
 
     // Both exports touch the `value` field and `bump`'s guard probes the root, so there
     // are exactly two incidence nodes; the field node carries the export map below.

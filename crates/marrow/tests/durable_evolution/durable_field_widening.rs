@@ -129,10 +129,10 @@ fn a_widened_field_resource_completes_its_identity_and_verifies() {
         .record_type(root.record())
         .fields()
         .iter()
-        .find(|field| field.name.as_ref() == "balance")
+        .find(|field| field.name().as_ref() == "balance")
         .expect("balance field");
-    assert_eq!(balance.ty, ImageType::scalar(Scalar::Int));
-    assert!(!balance.required, "balance remains sparse");
+    assert_eq!(balance.ty(), ImageType::scalar(Scalar::Int));
+    assert!(!balance.required(), "balance remains sparse");
     assert_eq!(
         image.durable_contract(),
         contract_of(ACCOUNT_SOURCE, ACCOUNT_IDS),

@@ -27,14 +27,9 @@ mod tables;
 mod type_ref;
 
 #[cfg(test)]
-#[path = "../../../marrow-image/tests/common/admitted_plan.rs"]
-mod admitted_plan;
+mod fixtures;
 #[cfg(test)]
-#[path = "../../../marrow-image/tests/common/image_forgery.rs"]
-mod image_forgery;
-#[cfg(test)]
-#[path = "../../../marrow-image/tests/common/site_seam.rs"]
-mod site_seam;
+use fixtures::{admitted_plan, image_forgery, site_seam};
 
 use container::decode_container;
 use seal::seal;

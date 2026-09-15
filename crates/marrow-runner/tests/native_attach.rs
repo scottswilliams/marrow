@@ -372,7 +372,7 @@ pub fn setMovesRequired(v: int): Result<int, string> {
             let variant = u16::try_from(
                 variants
                     .iter()
-                    .position(|candidate| candidate.name.as_ref() == member)
+                    .position(|candidate| candidate.name().as_ref() == member)
                     .expect("verified Result member"),
             )
             .expect("verified member index fits u16");

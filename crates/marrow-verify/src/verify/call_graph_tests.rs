@@ -430,7 +430,7 @@ fn unequal_function_demands_borrow_the_same_atoms() {
     assert_eq!(verified.demand_union(), a);
     assert_eq!(verified.test_demand_union(), both);
     assert_eq!(
-        verified.demand_incidence(),
+        verified.demand_incidence().collect::<Vec<_>>(),
         vec![crate::NodeIncidence {
             path: a.atoms()[0].path().clone(),
             touched_by: vec![crate::AtomIncidence {

@@ -1212,8 +1212,21 @@ pub(super) fn is_mutation(instr: &SealedInstr) -> bool {
     instr.op_class() == OpClass::DurableMutation
 }
 
-/// Phase-3 type check for durable opcodes and transaction markers. The
-/// transaction markers leave the stack unchanged; phase 5 checks their flow.
+/// One durable opcode's resolved place: the flat site's root, its target, the record a
+/// whole-entry operation reads or writes, the addressed layer's own key arity, and the
+/// whole key-path in stack-pop order (deepest last column first).
+struct DurablePlace<'a> {
+    root_index: u16,
+    root: &'a SealedRoot,
+    target: &'a SealedSiteTarget,
+    entry_record: TypeId,
+    traversed_arity: usize,
+    key_path: Vec<VType>,
+}
+
+/// Phase-3 type check for durable opcodes and transaction markers: resolve the site to
+/// an executable place, then dispatch by operation class. The transaction markers leave
+/// the stack unchanged; phase 5 checks their flow.
 fn apply_durable(
     ctx: &Ctx,
     instr: &SealedInstr,
@@ -1323,10 +1336,34 @@ fn apply_durable(
     // top of the stack, popped first).
     let mut key_path = columns;
     key_path.reverse();
+    let place = DurablePlace {
+        root_index: site_root,
+        root,
+        target: site_target,
+        entry_record,
+        traversed_arity,
+        key_path,
+    };
+    match instr.op_class() {
+        OpClass::DurableMutation => durable_mutation(ctx, instr, frame, &place)?,
+        OpClass::DurableRead => durable_read(ctx, instr, frame, &place)?,
+        OpClass::Pure => unreachable!("a site-bearing opcode is never pure"),
+    }
+    Ok(Control::Fallthrough)
+}
+
+/// The durable reads: presence probes, field/entry/group reads, and the bounded
+/// traversal.
+fn durable_read(
+    ctx: &Ctx,
+    instr: &SealedInstr,
+    frame: &mut Frame,
+    place: &DurablePlace<'_>,
+) -> Result<(), VerifyRejection> {
     let stack = &mut frame.stack;
     match instr {
         SealedInstr::DurExists(_) => {
-            pop_key_path(stack, &key_path, site_root)?;
+            pop_key_path(stack, &place.key_path, place.root_index)?;
             stack.push(VType::bare_scalar(Scalar::Bool));
         }
         SealedInstr::DurFamilyExists(_) => {
@@ -1335,8 +1372,8 @@ fn apply_durable(
             // immediate children. Like bounded traversal it iterates a single-column
             // family — the current language spells no composite-key family probe — so a
             // composite-keyed family parks with a typed rejection.
-            require_entry(site_target)?;
-            if traversed_arity != 1 {
+            require_entry(place.target)?;
+            if place.traversed_arity != 1 {
                 return Err(reject(
                     VerifyPhase::Function,
                     "family-populated probe over a composite-keyed family is not yet executable",
@@ -1346,64 +1383,85 @@ fn apply_durable(
             // locating the family's parent entry sits on the stack (none for a root
             // family, the parent columns for a branch family). Drop the traversed
             // column — never pushed — and pop the ancestor path.
-            let (_traversed_key, ancestor_path) = key_path
+            let (_traversed_key, ancestor_path) = place
+                .key_path
                 .split_first()
                 .expect("an entry site has a non-empty key-path");
             // The ancestor key-path locates the probed family's fixed parent entry; an
             // entry-identity parent column carries its root, re-proven exactly as the
             // whole key-path pop does.
             for ty in ancestor_path {
-                pop_key_column(stack, *ty, site_root)?;
+                pop_key_column(stack, *ty, place.root_index)?;
             }
             stack.push(VType::bare_scalar(Scalar::Bool));
         }
         SealedInstr::DurReadField(_) => {
-            let field = field_of(ctx, site_target, root)?;
+            let field = field_of(ctx, place.target, place.root)?;
             let value = durable_field_vtype(field).to_optional();
-            pop_key_path(stack, &key_path, site_root)?;
+            pop_key_path(stack, &place.key_path, place.root_index)?;
             stack.push(value);
         }
         SealedInstr::DurReadFieldPresent { key_slots, .. } => {
-            let field = field_of(ctx, site_target, root)?;
+            let field = field_of(ctx, place.target, place.root)?;
             if !field.required {
                 return Err(reject(
                     VerifyPhase::Function,
                     "a present field read requires a required field",
                 ));
             }
-            require_key_slots(frame, key_slots, &key_path, site_root)?;
+            require_key_slots(frame, key_slots, &place.key_path, place.root_index)?;
             frame.stack.push(durable_field_vtype(field));
         }
         SealedInstr::DurReadEntry(_) => {
-            require_entry(site_target)?;
-            pop_key_path(stack, &key_path, site_root)?;
-            stack.push(VType::bare_record(entry_record).to_optional());
+            require_entry(place.target)?;
+            pop_key_path(stack, &place.key_path, place.root_index)?;
+            stack.push(VType::bare_record(place.entry_record).to_optional());
         }
         SealedInstr::DurReadGroup(_) => {
-            require_group(site_target)?;
-            pop_key_path(stack, &key_path, site_root)?;
-            stack.push(VType::bare_record(entry_record).to_optional());
+            require_group(place.target)?;
+            pop_key_path(stack, &place.key_path, place.root_index)?;
+            stack.push(VType::bare_record(place.entry_record).to_optional());
         }
         SealedInstr::DurReadGroupPresent { key_slots, .. } => {
             // The present-entry group read keys off the place's pre-evaluated slots and
             // pushes the bare group record: the presence lattice proves the containing
             // entry present here, so the read cannot be absent.
-            require_group(site_target)?;
-            require_key_slots(frame, key_slots, &key_path, site_root)?;
-            frame.stack.push(VType::bare_record(entry_record));
+            require_group(place.target)?;
+            require_key_slots(frame, key_slots, &place.key_path, place.root_index)?;
+            frame.stack.push(VType::bare_record(place.entry_record));
         }
+        SealedInstr::DurIterateBounded {
+            limit,
+            from,
+            list_ty,
+            ..
+        } => return bounded_traversal(ctx, frame, place, *limit, *from, *list_ty),
+        _ => unreachable!("op_class classified this opcode as a durable read"),
+    }
+    Ok(())
+}
+
+/// The durable mutations: the field set, entry/group create, replace, and erase.
+fn durable_mutation(
+    ctx: &Ctx,
+    instr: &SealedInstr,
+    frame: &mut Frame,
+    place: &DurablePlace<'_>,
+) -> Result<(), VerifyRejection> {
+    let stack = &mut frame.stack;
+    match instr {
         SealedInstr::DurReplaceGroup { key_slots, .. } => {
-            require_group(site_target)?;
-            expect(pop(stack)?, VType::bare_record(entry_record))?;
-            require_key_slots(frame, key_slots, &key_path, site_root)?;
+            require_group(place.target)?;
+            expect(pop(stack)?, VType::bare_record(place.entry_record))?;
+            require_key_slots(frame, key_slots, &place.key_path, place.root_index)?;
         }
         SealedInstr::DurEraseGroup(_) => {
             // A group holding a required leaf is part of every present entry and is
             // erased only with its entry.
-            require_group(site_target)?;
+            require_group(place.target)?;
             let holds_required = ctx
                 .types
-                .get(entry_record.index() as usize)
+                .get(place.entry_record.index() as usize)
                 .is_some_and(|record| record.fields.iter().any(|field| field.required));
             if holds_required {
                 return Err(reject(
@@ -1411,7 +1469,7 @@ fn apply_durable(
                     "erase targets a group with a required leaf",
                 ));
             }
-            pop_key_path(stack, &key_path, site_root)?;
+            pop_key_path(stack, &place.key_path, place.root_index)?;
         }
         SealedInstr::DurSetField { key_slots, .. } => {
             // The field set reads its containing entry's whole key-path from place slots
@@ -1420,7 +1478,7 @@ fn apply_durable(
             // (`FieldLeaf`) or a branch field (`BranchField`); a whole-payload,
             // branch-entry, or index site is not a field set and is refused.
             if !matches!(
-                site_target,
+                place.target,
                 SealedSiteTarget::FieldLeaf(_) | SealedSiteTarget::BranchField { .. }
             ) {
                 return Err(reject(
@@ -1428,104 +1486,111 @@ fn apply_durable(
                     "set-field requires a field-leaf site",
                 ));
             }
-            let field = field_of(ctx, site_target, root)?;
+            let field = field_of(ctx, place.target, place.root)?;
             expect(pop(&mut frame.stack)?, durable_field_vtype(field))?;
-            require_key_slots(frame, key_slots, &key_path, site_root)?;
+            require_key_slots(frame, key_slots, &place.key_path, place.root_index)?;
         }
         SealedInstr::DurCreateEntry(_) | SealedInstr::DurReplaceEntry(_) => {
-            require_entry(site_target)?;
-            expect(pop(stack)?, VType::bare_record(entry_record))?;
-            pop_key_path(stack, &key_path, site_root)?;
+            require_entry(place.target)?;
+            expect(pop(stack)?, VType::bare_record(place.entry_record))?;
+            pop_key_path(stack, &place.key_path, place.root_index)?;
         }
         SealedInstr::DurEraseField(_) => {
-            let field = field_of(ctx, site_target, root)?;
+            let field = field_of(ctx, place.target, place.root)?;
             if field.required {
                 return Err(reject(
                     VerifyPhase::Function,
                     "erase targets a required field",
                 ));
             }
-            pop_key_path(stack, &key_path, site_root)?;
+            pop_key_path(stack, &place.key_path, place.root_index)?;
         }
         SealedInstr::DurEraseEntry(_) => {
-            require_entry(site_target)?;
-            pop_key_path(stack, &key_path, site_root)?;
+            require_entry(place.target)?;
+            pop_key_path(stack, &place.key_path, place.root_index)?;
         }
-        SealedInstr::DurIterateBounded {
-            limit,
-            from,
-            list_ty,
-            ..
-        } => {
-            // Bounded traversal iterates the layer the site's placement belongs to: a
-            // root site (WholePayload) the root's entry family, a branch site
-            // (BranchEntry) that branch's children under a fixed root key. A field site
-            // names no traversable layer.
-            require_entry(site_target)?;
-            // The `at most N` bound is a positive compile-time constant no larger than
-            // the frozen-list ceiling.
-            if *limit == 0 || *limit > marrow_image::bounds::MAX_TRAVERSAL_BOUND {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "bounded traversal bound is out of range",
-                ));
-            }
-            // Bounded traversal iterates a single key column: the loop binds one immediate
-            // key and takes one inclusive `from`. A composite-keyed traversed layer has no
-            // spelled single-column iteration in the current language, so it parks with a
-            // typed rejection rather than inventing a last-column-under-prefix semantics.
-            if traversed_arity != 1 {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "bounded traversal over a composite-keyed layer is not yet executable",
-                ));
-            }
-            // The traversed key is what iteration enumerates — the first element of the
-            // site's whole-entry key-path (the single traversed column); the remainder is
-            // the ancestor key-path locating the traversed layer's parent entry (empty for
-            // a root site, the parent columns for a branch site).
-            let (traversed_key, ancestor_path) = key_path
-                .split_first()
-                .expect("an entry site has a non-empty key-path");
-            let VType::Scalar {
-                scalar: key_scalar,
-                optional: false,
-            } = *traversed_key
-            else {
-                unreachable!("a durable key-path element is a bare scalar");
-            };
-            // The inclusive `from` key sits on top of the ancestor key-path and types
-            // as the traversed key `K`. It is a source key expression, never an identity
-            // column, so it pops as a bare scalar.
-            if *from {
-                expect(pop(stack)?, *traversed_key)?;
-            }
-            // The ancestor key-path locates the traversed layer's fixed parent entry. A
-            // column spread from an entry-identity parent (`^root[Id(…)].branch`, or an
-            // identity-keyed place base) carries its root, re-proven here exactly as a
-            // whole key-path pop does.
-            for ty in ancestor_path {
-                pop_key_column(stack, *ty, site_root)?;
-            }
-            // `list_ty` must name exactly `List[K]`: the frozen keys materialize into
-            // this one list value, so a hostile image naming a wider or wrong-element
-            // list is refused before the runtime builds it.
-            match ctx.collections.get(*list_ty as usize) {
-                Some(SealedCollectionType::List { elem })
-                    if *elem == ImageType::scalar(key_scalar) => {}
-                _ => {
-                    return Err(reject(
-                        VerifyPhase::Function,
-                        "bounded traversal list type does not name a list of the traversed key",
-                    ));
-                }
-            }
-            stack.push(VType::bare_collection(CollTypeId::from_index(*list_ty)));
-            stack.push(VType::bare_scalar(Scalar::Bool));
-        }
-        _ => unreachable!("durable_site returned a site for this opcode"),
+        _ => unreachable!("op_class classified this opcode as a durable mutation"),
     }
-    Ok(Control::Fallthrough)
+    Ok(())
+}
+
+/// The bounded traversal `for … at most N … on more` over the layer the site's
+/// placement belongs to.
+fn bounded_traversal(
+    ctx: &Ctx,
+    frame: &mut Frame,
+    place: &DurablePlace<'_>,
+    limit: u32,
+    from: bool,
+    list_ty: u16,
+) -> Result<(), VerifyRejection> {
+    let stack = &mut frame.stack;
+    // Bounded traversal iterates the layer the site's placement belongs to: a
+    // root site (WholePayload) the root's entry family, a branch site
+    // (BranchEntry) that branch's children under a fixed root key. A field site
+    // names no traversable layer.
+    require_entry(place.target)?;
+    // The `at most N` bound is a positive compile-time constant no larger than
+    // the frozen-list ceiling.
+    if limit == 0 || limit > marrow_image::bounds::MAX_TRAVERSAL_BOUND {
+        return Err(reject(
+            VerifyPhase::Function,
+            "bounded traversal bound is out of range",
+        ));
+    }
+    // Bounded traversal iterates a single key column: the loop binds one immediate
+    // key and takes one inclusive `from`. A composite-keyed traversed layer has no
+    // spelled single-column iteration in the current language, so it parks with a
+    // typed rejection rather than inventing a last-column-under-prefix semantics.
+    if place.traversed_arity != 1 {
+        return Err(reject(
+            VerifyPhase::Function,
+            "bounded traversal over a composite-keyed layer is not yet executable",
+        ));
+    }
+    // The traversed key is what iteration enumerates — the first element of the
+    // site's whole-entry key-path (the single traversed column); the remainder is
+    // the ancestor key-path locating the traversed layer's parent entry (empty for
+    // a root site, the parent columns for a branch site).
+    let (traversed_key, ancestor_path) = place
+        .key_path
+        .split_first()
+        .expect("an entry site has a non-empty key-path");
+    let VType::Scalar {
+        scalar: key_scalar,
+        optional: false,
+    } = *traversed_key
+    else {
+        unreachable!("a durable key-path element is a bare scalar");
+    };
+    // The inclusive `from` key sits on top of the ancestor key-path and types
+    // as the traversed key `K`. It is a source key expression, never an identity
+    // column, so it pops as a bare scalar.
+    if from {
+        expect(pop(stack)?, *traversed_key)?;
+    }
+    // The ancestor key-path locates the traversed layer's fixed parent entry. A
+    // column spread from an entry-identity parent (`^root[Id(…)].branch`, or an
+    // identity-keyed place base) carries its root, re-proven here exactly as a
+    // whole key-path pop does.
+    for ty in ancestor_path {
+        pop_key_column(stack, *ty, place.root_index)?;
+    }
+    // `list_ty` must name exactly `List[K]`: the frozen keys materialize into
+    // this one list value, so a hostile image naming a wider or wrong-element
+    // list is refused before the runtime builds it.
+    match ctx.collections.get(list_ty as usize) {
+        Some(SealedCollectionType::List { elem }) if *elem == ImageType::scalar(key_scalar) => {}
+        _ => {
+            return Err(reject(
+                VerifyPhase::Function,
+                "bounded traversal list type does not name a list of the traversed key",
+            ));
+        }
+    }
+    stack.push(VType::bare_collection(CollTypeId::from_index(list_ty)));
+    stack.push(VType::bare_scalar(Scalar::Bool));
+    Ok(())
 }
 
 /// The base scalar an index projection component holds: an identity key reads the

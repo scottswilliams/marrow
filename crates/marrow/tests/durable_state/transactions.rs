@@ -563,7 +563,7 @@ fn result_value(image: &VerifiedImage, name: &str, variant: &str, payload: Value
         image.enums()[usize::from(idx)]
             .variants()
             .iter()
-            .position(|candidate| candidate.name.as_ref() == variant)
+            .position(|candidate| candidate.name().as_ref() == variant)
             .expect("verified Result variant"),
     )
     .expect("verified variant index fits u16");

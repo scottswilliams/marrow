@@ -91,10 +91,10 @@ fn decode_record(image: &VerifiedImage, idx: u16, json: &Json) -> Option<Value> 
     for field in record.fields() {
         match pairs
             .iter()
-            .find(|(key, _)| key.as_str() == field.name.as_ref())
+            .find(|(key, _)| key.as_str() == field.name().as_ref())
         {
-            Some((_, value)) => slots.push(Some(decode_arg(image, &field.ty, value)?)),
-            None if !field.required => slots.push(None),
+            Some((_, value)) => slots.push(Some(decode_arg(image, &field.ty(), value)?)),
+            None if !field.required() => slots.push(None),
             None => return None, // a required field is missing
         }
     }
@@ -125,12 +125,12 @@ fn decode_enum(image: &VerifiedImage, idx: u16, json: &Json) -> Option<Value> {
         .variants()
         .iter()
         .enumerate()
-        .find(|(_, v)| v.name.as_ref() == member)?;
-    if variant.payload.len() != payload_json.len() {
+        .find(|(_, v)| v.name().as_ref() == member)?;
+    if variant.payload().len() != payload_json.len() {
         return None;
     }
     let mut values = Vec::with_capacity(payload_json.len());
-    for (leaf_ty, leaf_json) in variant.payload.iter().zip(payload_json) {
+    for (leaf_ty, leaf_json) in variant.payload().iter().zip(payload_json) {
         values.push(decode_arg(image, leaf_ty, leaf_json)?);
     }
     Some(Value::Enum(
@@ -269,7 +269,7 @@ pub(crate) fn encode_value(
                 .iter()
                 .zip(slots.iter())
                 .filter_map(|(field, value)| {
-                    value.as_ref().map(|value| (field.name.as_ref(), value))
+                    value.as_ref().map(|value| (field.name().as_ref(), value))
                 })
                 .collect();
             fields.sort_unstable_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
@@ -281,7 +281,7 @@ pub(crate) fn encode_value(
             })
         }
         Value::Enum(idx, variant, payload) => {
-            let variant_name = &image.enums()[*idx as usize].variants()[*variant as usize].name;
+            let variant_name = &image.enums()[*idx as usize].variants()[*variant as usize].name();
             slot.object(|object| {
                 object.field("member", |slot| slot.string(variant_name))?;
                 object.field("payload", |slot| {
