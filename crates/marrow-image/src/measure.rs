@@ -1123,10 +1123,6 @@ fn exports_relations(draft: &ImageDraft) -> Result<FunctionRelations, ImageBuild
     };
     let mut seen_ids: HashSet<&crate::export_id::ExportId> = HashSet::with_capacity(rows.len());
     for export in rows {
-        #[cfg(test)]
-        crate::encode::bump_image_algorithm_counts(|counts| {
-            counts.export_target_uniqueness_probes += 1
-        });
         let Some(flags) = relations.flags.get_mut(export.func() as usize) else {
             return Err(ImageBuildError::InvalidReference("export table"));
         };
@@ -1135,10 +1131,6 @@ fn exports_relations(draft: &ImageDraft) -> Result<FunctionRelations, ImageBuild
         }
         *flags |= EXPORTED_FUNCTION;
 
-        #[cfg(test)]
-        crate::encode::bump_image_algorithm_counts(|counts| {
-            counts.export_id_uniqueness_probes += 1
-        });
         if !seen_ids.insert(export.id()) {
             return Err(ImageBuildError::InvalidReference("export table"));
         }
@@ -1183,10 +1175,6 @@ fn test_entry_relations(
     // for every membership question that follows.
     let mut seen_names = vec![false; draft.strings().len()];
     for entry in entries {
-        #[cfg(test)]
-        crate::encode::bump_image_algorithm_counts(|counts| {
-            counts.test_name_uniqueness_probes += 1
-        });
         let Some(seen_name) = seen_names.get_mut(entry.name().index() as usize) else {
             return Err(ImageBuildError::InvalidReference("test table"));
         };
@@ -1195,10 +1183,6 @@ fn test_entry_relations(
         }
         *seen_name = true;
 
-        #[cfg(test)]
-        crate::encode::bump_image_algorithm_counts(|counts| {
-            counts.test_target_uniqueness_probes += 1
-        });
         let Some(flags) = function_relations.flags.get_mut(entry.func() as usize) else {
             return Err(ImageBuildError::InvalidReference("test table"));
         };
@@ -1208,10 +1192,6 @@ fn test_entry_relations(
         *flags |= TEST_ENTRY_FUNCTION;
     }
     let is_test_entry = |func: u16| {
-        #[cfg(test)]
-        crate::encode::bump_image_algorithm_counts(|counts| {
-            counts.test_entry_membership_probes += 1
-        });
         function_relations
             .flags
             .get(func as usize)
@@ -1233,8 +1213,6 @@ fn test_entry_relations(
         let function = draft.functions()[entry.func() as usize]
             .as_ref()
             .ok_or(ImageBuildError::InvalidReference("vacant function"))?;
-        #[cfg(test)]
-        crate::encode::bump_image_algorithm_counts(|counts| counts.export_membership_probes += 1);
         if function_relations.flags[entry.func() as usize] & EXPORTED_FUNCTION != 0 {
             return Err(ImageBuildError::InvalidReference("test table"));
         }

@@ -144,9 +144,6 @@ pub(super) fn check_flow(
         return Err(reject(VerifyPhase::Function, "unreachable instruction"));
     }
 
-    #[cfg(test)]
-    tests::record_success(&entry);
-
     let instrs = code.iter().map(|decoded| decoded.instr.clone()).collect();
     Ok((instrs, max_stack))
 }

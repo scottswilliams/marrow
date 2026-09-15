@@ -19,8 +19,8 @@ mod family_lookup_tests;
 #[cfg(test)]
 use super::{admitted_plan, site_seam};
 #[cfg(test)]
-#[path = "presence/retention_tests.rs"]
-mod retention_tests;
+#[path = "presence/guarded_read_tests.rs"]
+mod guarded_read_tests;
 
 /// The validated entry sites indexed by canonical path for the presence phase.
 /// Rows borrow both paths and branch coordinates; no key-column reconstruction is
@@ -38,20 +38,12 @@ impl<'a> EntryFamilies<'a> {
             }
         }
         rows.sort_unstable_by(|left, right| left.0.cmp(right.0));
-        #[cfg(test)]
-        family_lookup_tests::record_build(rows.len(), rows.capacity());
         Self { rows }
     }
 
     fn get(&self, path: &SemanticPath) -> Option<(u16, &'a [u16])> {
-        #[cfg(test)]
-        family_lookup_tests::record_lookup();
         self.rows
-            .binary_search_by(|(candidate, _, _)| {
-                #[cfg(test)]
-                family_lookup_tests::record_comparison();
-                candidate.cmp(&path)
-            })
+            .binary_search_by(|(candidate, _, _)| candidate.cmp(&path))
             .ok()
             .map(|index| {
                 let (_, root, branch) = self.rows[index];
@@ -182,8 +174,6 @@ pub(super) fn check_presence_flow(
             break;
         }
     }
-    #[cfg(test)]
-    retention_tests::record_success(&entry, entry.capacity(), &facts);
     Ok(())
 }
 

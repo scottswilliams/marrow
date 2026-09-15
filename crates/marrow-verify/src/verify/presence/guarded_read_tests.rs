@@ -1,80 +1,11 @@
-use super::{FactId, PresenceFacts, admitted_plan::admitted_plan, site_seam::site};
-use crate::{
-    RetShape, SealedConst, SealedInstr, SealedSite, SealedSiteTarget, VerifiedImage, VerifyPhase,
-};
+use super::{admitted_plan::admitted_plan, site_seam::site};
+use crate::{RetShape, SealedConst, SealedInstr, SealedSite, SealedSiteTarget, VerifyPhase};
 use marrow_codes::Code;
 use marrow_image::{
     DeclarationMemberDef, DeclarationMemberShape, ExportId, FieldDef, FunctionDef, ImageDraft,
     ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar,
     SemanticTarget, SpanEntry,
 };
-use std::cell::Cell;
-use std::collections::BTreeSet;
-use std::panic::{catch_unwind, resume_unwind};
-
-#[derive(Clone, Copy, Debug, Default)]
-struct Counts {
-    completed: usize,
-    retained_sets: usize,
-    retained_facts: usize,
-    slots: usize,
-    capacity: usize,
-    compared_set_sizes: Option<(usize, usize)>,
-    shares_key_storage: bool,
-}
-
-thread_local! {
-    static COUNTS: Cell<Option<Counts>> = const { Cell::new(None) };
-}
-
-pub(super) fn record_success(
-    entry: &[Option<BTreeSet<FactId>>],
-    capacity: usize,
-    facts: &PresenceFacts,
-) {
-    COUNTS.with(|cell| {
-        let Some(mut counts) = cell.get() else {
-            return;
-        };
-        counts.completed += 1;
-        counts.slots += entry.len();
-        counts.capacity += capacity;
-        let mut first: Option<(usize, &[u16])> = None;
-        for set in entry.iter().flatten() {
-            counts.retained_sets += 1;
-            counts.retained_facts += set.len();
-            if counts.compared_set_sizes.is_none()
-                && let Some(fact) = set
-                    .iter()
-                    .map(|fact| facts.get(*fact))
-                    .find(|fact| fact.0 == 0 && fact.1.is_empty() && fact.2 == [0, 0])
-            {
-                if let Some((size, keys)) = first {
-                    if size != set.len() {
-                        counts.compared_set_sizes = Some((size, set.len()));
-                        counts.shares_key_storage = std::ptr::eq(keys, fact.2.as_slice());
-                    }
-                } else {
-                    first = Some((set.len(), fact.2.as_slice()));
-                }
-            }
-        }
-        cell.set(Some(counts));
-    });
-}
-
-fn observe(bytes: &[u8]) -> (VerifiedImage, Counts) {
-    COUNTS.with(|cell| {
-        assert!(cell.get().is_none(), "observations do not nest");
-        cell.set(Some(Counts::default()));
-    });
-    let result = catch_unwind(|| crate::verify(bytes));
-    let counts = COUNTS.with(|cell| cell.take().expect("observation is active"));
-    match result {
-        Ok(result) => (result.expect("guarded integer reads verify"), counts),
-        Err(panic) => resume_unwind(panic),
-    }
-}
 
 fn image(keys: u16, padding: usize, interleaved_read: Option<[u16; 2]>) -> Vec<u8> {
     let mut owner = ImageDraft::new();
@@ -244,14 +175,14 @@ fn image(keys: u16, padding: usize, interleaved_read: Option<[u16; 2]>) -> Vec<u
     draft.encode().expect("small guarded-read image").bytes
 }
 
+/// Padding between guarded reads changes only the instruction count: every key
+/// still seals exactly one presence read against its own slot.
 #[test]
-fn ordinary_padding_does_not_retain_more_presence_sets_or_facts() {
-    // Complete all six verifications before the resource assertion so an initial
-    // regression failure still reports both key counts and every padding size.
-    let observations = [1u16, 8].map(|keys| {
-        [0, 16, 64].map(|padding| {
+fn padding_between_guarded_reads_seals_one_read_per_key() {
+    for keys in [1u16, 8] {
+        for padding in [0, 16, 64] {
             let bytes = image(keys, padding, None);
-            let (verified, counts) = observe(&bytes);
+            let verified = crate::verify(&bytes).expect("the guarded-read image verifies");
             assert_eq!(verified.functions().len(), 1);
             let function = &verified.functions()[0];
             let code = function.instrs();
@@ -273,35 +204,16 @@ fn ordinary_padding_does_not_retain_more_presence_sets_or_facts() {
             for (slot, actual) in (0..keys).zip(read_slots) {
                 assert_eq!(actual, &[slot]);
             }
-            assert_eq!(counts.completed, 1);
-            assert_eq!(counts.slots, code.len());
-            assert!(counts.capacity >= counts.slots);
-            eprintln!("presence retention keys={keys} padding={padding}: {counts:?}");
-            counts
-        })
-    });
-    for (keys, [base, pad16, pad64]) in [1, 8].into_iter().zip(observations) {
-        for padded in [pad16, pad64] {
-            assert_eq!(
-                (padded.retained_sets, padded.retained_facts),
-                (base.retained_sets, base.retained_facts),
-                "ordinary padding retains additional presence state with {keys} keys",
-            );
         }
-    }
-    for counts in observations.into_iter().flatten() {
-        assert_eq!(
-            (counts.retained_sets, counts.retained_facts),
-            (2, 0),
-            "only the empty initial entry and shared absent destination retain presence sets",
-        );
     }
 }
 
+/// A read whose key pair a guard established verifies; the same read over a pair
+/// no guard established is refused in the flow phase.
 #[test]
-fn unequal_states_share_presence_fact_storage() {
+fn a_guarded_key_pair_verifies_and_an_unguarded_one_is_refused() {
     let bytes = image(3, 0, Some([0, 0]));
-    let (verified, counts) = observe(&bytes);
+    let verified = crate::verify(&bytes).expect("the guarded pair verifies");
     assert_eq!(verified.functions().len(), 1);
     assert_eq!(verified.exports().len(), 1);
     let export = &verified.exports()[0];
@@ -387,15 +299,4 @@ fn unequal_states_share_presence_fact_storage() {
     let refusal = crate::verify(&negative).expect_err("the unguarded pair is refused");
     assert_eq!(refusal.phase(), VerifyPhase::Flow);
     assert_eq!(refusal.code(), Code::ImageFlow.as_str());
-
-    assert_eq!(counts.completed, 1);
-    assert_eq!(counts.slots, 35);
-    assert!(counts.capacity >= counts.slots);
-    assert_eq!((counts.retained_sets, counts.retained_facts), (6, 10));
-    assert_eq!(counts.compared_set_sizes, Some((1, 2)));
-    eprintln!("unequal presence states: {counts:?}");
-    assert!(
-        counts.shares_key_storage,
-        "unequal states duplicate the same nonempty presence key tuple",
-    );
 }

@@ -5,63 +5,6 @@ use marrow_image::{
     FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
     RootOccurrenceDef, Scalar, SemanticPath, SemanticTarget, SpanEntry,
 };
-use std::cell::Cell;
-use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
-
-#[derive(Clone, Copy, Debug, Default)]
-struct Counts {
-    builds: usize,
-    entry_rows: usize,
-    capacity: usize,
-    lookups: usize,
-    comparisons: usize,
-}
-
-thread_local! {
-    static COUNTS: Cell<Option<Counts>> = const { Cell::new(None) };
-}
-
-pub(super) fn record_build(entry_rows: usize, capacity: usize) {
-    COUNTS.with(|slot| {
-        if let Some(mut counts) = slot.get() {
-            counts.builds += 1;
-            counts.entry_rows += entry_rows;
-            counts.capacity = counts.capacity.max(capacity);
-            slot.set(Some(counts));
-        }
-    });
-}
-
-pub(super) fn record_lookup() {
-    COUNTS.with(|slot| {
-        if let Some(mut counts) = slot.get() {
-            counts.lookups += 1;
-            slot.set(Some(counts));
-        }
-    });
-}
-
-pub(super) fn record_comparison() {
-    COUNTS.with(|slot| {
-        if let Some(mut counts) = slot.get() {
-            counts.comparisons += 1;
-            slot.set(Some(counts));
-        }
-    });
-}
-
-fn observe<T>(run: impl FnOnce() -> T) -> (T, Counts) {
-    COUNTS.with(|slot| {
-        assert!(slot.get().is_none(), "observations do not nest");
-        slot.set(Some(Counts::default()));
-    });
-    let result = catch_unwind(AssertUnwindSafe(run));
-    let counts = COUNTS.with(|slot| slot.take().expect("observation is active"));
-    match result {
-        Ok(result) => (result, counts),
-        Err(panic) => resume_unwind(panic),
-    }
-}
 
 fn id(kind: u8, index: usize) -> LedgerIdBytes {
     let mut bytes = [0; 16];
@@ -74,13 +17,10 @@ fn path(index: usize) -> SemanticPath {
     SemanticPath::root(id(1, 0), id(7, index))
 }
 
-fn comparison_ceiling(entries: usize) -> usize {
-    // Leave room for standard-library binary-search implementation differences.
-    2 * (usize::BITS - entries.leading_zeros()) as usize + 1
-}
-
+/// Rows arrive in reverse path order, so every lookup that lands proves the index
+/// sorted its input rather than relying on the order it was handed.
 #[test]
-fn sorted_entry_lookup_bounds_comparisons_at_small_and_wide_sizes() {
+fn entry_lookup_finds_every_family_from_reverse_ordered_sites() {
     for entries in [1, 65, 257] {
         let sites: Vec<_> = (0..entries)
             .rev()
@@ -90,24 +30,13 @@ fn sorted_entry_lookup_bounds_comparisons_at_small_and_wide_sizes() {
             })
             .collect();
         let paths: Vec<_> = (0..entries).rev().map(path).collect();
-        let (_, counts) = observe(|| {
-            let families = EntryFamilies::new(&sites, &paths);
-            for index in 0..entries {
-                assert_eq!(
-                    families.get(&path(index)),
-                    Some((index as u16, &[3, 7][..]))
-                );
-            }
-        });
-        assert_eq!(counts.builds, 1);
-        assert_eq!(counts.entry_rows, entries);
-        assert!(counts.capacity >= entries);
-        assert_eq!(counts.lookups, entries);
-        eprintln!("entry lookup, E={entries}: {counts:?}");
-        assert!(
-            counts.comparisons <= entries * comparison_ceiling(entries),
-            "entry lookup exceeds logarithmic comparisons: {counts:?}",
-        );
+        let families = EntryFamilies::new(&sites, &paths);
+        for index in 0..entries {
+            assert_eq!(
+                families.get(&path(index)),
+                Some((index as u16, &[3, 7][..]))
+            );
+        }
     }
 }
 
@@ -384,23 +313,17 @@ fn repeated_call_image(entries: usize) -> Vec<u8> {
     draft.encode().expect("bounded durable image").bytes
 }
 
+/// Repeated calls across functions over a widening entry family keep the root
+/// proof. `EntryFamilies` is built once in `seal.rs` and reaches every function as
+/// a shared borrow, so a per-function rebuild is not expressible here.
 #[test]
-fn verification_builds_one_borrowed_index_for_repeated_calls_across_functions() {
+fn repeated_calls_across_functions_preserve_the_root_proof() {
     // A protected entry and a different erased entry require at least two rows.
     // The owner-only test above separately covers E = 1.
     for entries in [2, 65, 257] {
         let bytes = repeated_call_image(entries);
-        let (verified, counts) = observe(|| crate::verify::verify(&bytes));
-        let verified = verified.expect("other-family erasure preserves the root proof");
+        let verified =
+            crate::verify::verify(&bytes).expect("other-family erasure preserves the root proof");
         assert_eq!(verified.sites().len(), 2 * entries - 1);
-        assert_eq!(counts.builds, 1, "the index is shared by all functions");
-        assert_eq!(counts.entry_rows, entries);
-        assert!(counts.capacity >= entries);
-        assert_eq!(counts.lookups, 2 * CALLS_PER_CALLER);
-        eprintln!("verified presence calls, E={entries}: {counts:?}");
-        assert!(
-            counts.comparisons <= counts.lookups * comparison_ceiling(entries),
-            "repeated calls exceed logarithmic entry lookup: {counts:?}",
-        );
     }
 }

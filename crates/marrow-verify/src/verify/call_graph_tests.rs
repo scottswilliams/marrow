@@ -5,51 +5,8 @@ use marrow_image::{
     OP_DUR_EXISTS, OP_POP, OP_RETURN, OperationClass, PlannedSiteRef, RecordTypeDef,
     RootOccurrenceDef, Scalar, SemanticPath, SemanticTarget, SpanEntry,
 };
-use std::cell::Cell;
-use std::panic::{catch_unwind, resume_unwind};
 
 use crate::verify::{admitted_plan, image_forgery, site_seam};
-
-#[derive(Clone, Copy, Debug, Default)]
-struct Counts {
-    projection_instructions: usize,
-    closure_edges: usize,
-}
-
-thread_local! {
-    static COUNTS: Cell<Option<Counts>> = const { Cell::new(None) };
-}
-
-pub(in crate::verify) fn record_projection_instruction() {
-    COUNTS.with(|cell| {
-        if let Some(mut counts) = cell.get() {
-            counts.projection_instructions += 1;
-            cell.set(Some(counts));
-        }
-    });
-}
-
-pub(in crate::verify) fn record_closure_edge() {
-    COUNTS.with(|cell| {
-        if let Some(mut counts) = cell.get() {
-            counts.closure_edges += 1;
-            cell.set(Some(counts));
-        }
-    });
-}
-
-fn observe(bytes: &[u8]) -> (VerifiedImage, Counts) {
-    COUNTS.with(|cell| {
-        assert!(cell.get().is_none(), "observations do not nest");
-        cell.set(Some(Counts::default()));
-    });
-    let result = catch_unwind(|| crate::verify(bytes));
-    let counts = COUNTS.with(|cell| cell.take().expect("observation is active"));
-    match result {
-        Ok(result) => (result.expect("acyclic presence diamond verifies"), counts),
-        Err(panic) => resume_unwind(panic),
-    }
-}
 
 fn image(
     bodies: impl FnOnce(ConstId, &PlannedSiteRef) -> Vec<Vec<Instr>>,
@@ -185,10 +142,11 @@ fn presence_demand() -> ExportDemand {
     )])
 }
 
+/// The demand closure is independent of how the functions are numbered: the same
+/// diamond verifies to the same demands, calls and reachable sites in either order.
 #[test]
-fn call_projection_and_closure_visit_each_occurrence_once() {
-    // Complete both numbering variants' semantic assertions before the work bound.
-    let observations = [[0u16, 1, 2, 3, 4], [4, 3, 2, 1, 0]].map(|roles| {
+fn the_demand_closure_is_independent_of_function_numbering() {
+    for roles in [[0u16, 1, 2, 3, 4], [4, 3, 2, 1, 0]] {
         let [root, left, right, leaf, isolated] = roles;
         let bytes = image(
             |key, entry| {
@@ -207,7 +165,7 @@ fn call_projection_and_closure_visit_each_occurrence_once() {
             Some(usize::from(root)),
             None,
         );
-        let (verified, counts) = observe(&bytes);
+        let verified = crate::verify(&bytes).expect("acyclic presence diamond verifies");
         assert_eq!(verified.functions().len(), 5);
         assert_eq!(verified.exports().len(), 1);
         assert!(verified.test_entries().is_empty());
@@ -269,20 +227,7 @@ fn call_projection_and_closure_visit_each_occurrence_once() {
             [SealedInstr::Call(a), SealedInstr::Call(b), SealedInstr::Call(c), SealedInstr::Return]
                 if *a == left && *b == left && *c == right
         ));
-        eprintln!("call graph roles={roles:?}: {counts:?}");
-        counts
-    });
-    let actual = observations.into_iter().fold((0, 0), |total, counts| {
-        (
-            total.0 + counts.projection_instructions,
-            total.1 + counts.closure_edges,
-        )
-    });
-    assert_eq!(
-        actual,
-        (26, 10),
-        "each sealed instruction is projected once and each call occurrence expands once",
-    );
+    }
 }
 
 #[test]

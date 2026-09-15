@@ -56,8 +56,6 @@ impl CallGraph {
         calls.offsets.push(0);
         for function in functions {
             for instr in function.instrs() {
-                #[cfg(test)]
-                call_graph_tests::record_projection_instruction();
                 if let SealedInstr::Call(target) = instr {
                     calls.targets.push(*target);
                 }
@@ -203,8 +201,6 @@ impl Effects {
         let mut scratch = Vec::new();
         for &caller in &calls.callee_first {
             for &callee in calls.callees(caller) {
-                #[cfg(test)]
-                call_graph_tests::record_closure_edge();
                 let callee = usize::from(callee);
                 let (dst, src) = borrow_two(&mut demands.rows, caller, callee);
                 dst.union_with(src, &mut scratch);

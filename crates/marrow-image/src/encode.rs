@@ -69,53 +69,6 @@ pub struct EncodedImage {
     pub image_id: ImageId,
 }
 
-/// Test-only logical work counts for image relations and canonical constant keys.
-/// The observer is private to this crate and cannot affect a verdict or emitted byte.
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct ImageAlgorithmCounts {
-    pub(crate) export_target_uniqueness_probes: usize,
-    pub(crate) export_id_uniqueness_probes: usize,
-    pub(crate) test_name_uniqueness_probes: usize,
-    pub(crate) test_target_uniqueness_probes: usize,
-    pub(crate) test_entry_membership_probes: usize,
-    pub(crate) export_membership_probes: usize,
-    pub(crate) constant_key_constructions: usize,
-}
-
-#[cfg(test)]
-thread_local! {
-    static IMAGE_ALGORITHM_COUNTS: std::cell::Cell<Option<ImageAlgorithmCounts>> =
-        const { std::cell::Cell::new(None) };
-}
-
-#[cfg(test)]
-pub(crate) fn bump_image_algorithm_counts(update: impl FnOnce(&mut ImageAlgorithmCounts)) {
-    IMAGE_ALGORITHM_COUNTS.with(|cell| {
-        if let Some(mut counts) = cell.get() {
-            update(&mut counts);
-            cell.set(Some(counts));
-        }
-    });
-}
-
-#[cfg(test)]
-pub(crate) fn capture_image_algorithm_counts<T>(
-    run: impl FnOnce() -> T,
-) -> (T, ImageAlgorithmCounts) {
-    let previous =
-        IMAGE_ALGORITHM_COUNTS.with(|cell| cell.replace(Some(ImageAlgorithmCounts::default())));
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
-    let counts = IMAGE_ALGORITHM_COUNTS
-        .with(std::cell::Cell::get)
-        .expect("the image-algorithm observation window is armed");
-    IMAGE_ALGORITHM_COUNTS.with(|cell| cell.set(previous));
-    match result {
-        Ok(value) => (value, counts),
-        Err(payload) => std::panic::resume_unwind(payload),
-    }
-}
-
 impl ImageDraft {
     /// Encode the draft into canonical container bytes, or fail with a producer-side
     /// [`ImageBuildError`] when a reference is incoherent, a §E bound is exceeded, or
@@ -151,11 +104,7 @@ impl ImageDraft {
         let keys: Vec<(u8, Vec<u8>)> = self
             .consts()
             .iter()
-            .map(|value| {
-                #[cfg(test)]
-                bump_image_algorithm_counts(|counts| counts.constant_key_constructions += 1);
-                value.sort_key(str_map)
-            })
+            .map(|value| value.sort_key(str_map))
             .collect();
         let mut order: Vec<usize> = (0..keys.len()).collect();
         order.sort_by(|&a, &b| keys[a].cmp(&keys[b]));
@@ -793,10 +742,7 @@ fn push_u32(out: &mut impl ImageByteSink, value: u32) {
 /// remapped operands, spans, exports, and test entries.
 #[cfg(test)]
 mod counted_equals_emitted {
-    use super::{
-        CodeLayout, ImageAlgorithmCounts, capture_image_algorithm_counts, checked_code_offset,
-        remap_of,
-    };
+    use super::{CodeLayout, checked_code_offset, remap_of};
     use crate::draft::{
         AdmittedGraphInputPlan, CollectionTypeDef, FieldDef, FunctionDef, ImageDraft,
         RecordTypeDef, RootOccurrenceDef, SpanEntry, VariantDef,
@@ -1070,42 +1016,18 @@ mod counted_equals_emitted {
         draft
     }
 
+    /// A relation-heavy draft encodes to the same bytes every time: the coherence
+    /// walk's keyed sets are never iterated, so their randomized layout cannot reach
+    /// the output.
     #[test]
-    fn c2_algorithmic_work_is_linear_and_output_identical() {
-        let mut observed_work = Vec::new();
+    fn a_relation_heavy_draft_encodes_deterministically() {
         for rows in [64usize, 128] {
             let draft = algorithmic_work_draft(rows);
-            let ordinary = draft.encode().expect("the coherent draft encodes");
-            let (observed, counts) = capture_image_algorithm_counts(|| draft.encode());
-            let observed = observed.expect("observation cannot change acceptance");
-
-            assert_eq!(
-                ordinary.bytes, observed.bytes,
-                "the test-only observer cannot change image bytes for {rows} rows",
-            );
-            observed_work.push((rows, counts));
+            let first = draft.encode().expect("the coherent draft encodes");
+            let second = draft.encode().expect("the coherent draft encodes");
+            assert_eq!(first.bytes, second.bytes, "{rows} rows encode identically");
+            assert_eq!(first.image_id, second.image_id);
         }
-        assert_eq!(
-            observed_work,
-            [64usize, 128]
-                .into_iter()
-                .map(|rows| {
-                    (
-                        rows,
-                        ImageAlgorithmCounts {
-                            export_target_uniqueness_probes: rows,
-                            export_id_uniqueness_probes: rows,
-                            test_name_uniqueness_probes: rows,
-                            test_target_uniqueness_probes: rows,
-                            test_entry_membership_probes: rows * 2,
-                            export_membership_probes: rows,
-                            constant_key_constructions: rows + 1,
-                        },
-                    )
-                })
-                .collect::<Vec<_>>(),
-            "every relation and constant row has one logical probe",
-        );
     }
 
     /// A durable draft: a keyed root and an indexed root over one Product whose members

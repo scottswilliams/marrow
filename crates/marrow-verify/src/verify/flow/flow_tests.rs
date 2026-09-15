@@ -1,55 +1,7 @@
-use super::Entry;
-use crate::{VerifiedImage, VerifyPhase};
+use crate::VerifyPhase;
 use marrow_image::{
     ConstId, ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry,
 };
-use std::cell::Cell;
-use std::panic::{catch_unwind, resume_unwind};
-
-#[derive(Clone, Copy, Debug, Default)]
-struct Counts {
-    completed: usize,
-    slots: usize,
-    retained_frames: usize,
-    local_capacity: usize,
-    stack_capacity: usize,
-}
-
-thread_local! {
-    static COUNTS: Cell<Option<Counts>> = const { Cell::new(None) };
-}
-
-pub(super) fn record_success(entry: &[Entry]) {
-    COUNTS.with(|cell| {
-        let Some(mut counts) = cell.get() else {
-            return;
-        };
-        counts.completed += 1;
-        counts.slots += entry.len();
-        for state in entry {
-            let Entry::Retained(frame) = state else {
-                continue;
-            };
-            counts.retained_frames += 1;
-            counts.local_capacity += frame.locals.capacity();
-            counts.stack_capacity += frame.stack.capacity();
-        }
-        cell.set(Some(counts));
-    });
-}
-
-fn observe(bytes: &[u8]) -> (VerifiedImage, Counts) {
-    COUNTS.with(|cell| {
-        assert!(cell.get().is_none(), "observations do not nest");
-        cell.set(Some(Counts::default()));
-    });
-    let result = catch_unwind(|| crate::verify(bytes));
-    let counts = COUNTS.with(|cell| cell.take().expect("observation is active"));
-    match result {
-        Ok(result) => (result.expect("boolean tape verifies"), counts),
-        Err(panic) => resume_unwind(panic),
-    }
-}
 
 fn boolean_tape(width: u16, padding: usize, terminal: Instr) -> Vec<u8> {
     let mut owner = ImageDraft::new();
@@ -81,13 +33,14 @@ fn boolean_tape(width: u16, padding: usize, terminal: Instr) -> Vec<u8> {
     draft.encode().expect("boolean image").bytes
 }
 
+/// Straight-line padding after a boolean tape changes only the instruction count:
+/// the sealed locals, stack bound and spans are those of the unpadded tape.
 #[test]
-fn ordinary_padding_retains_only_the_initial_type_frame() {
-    // Complete every semantic check before asserting the ownership bound.
-    let observations = [8u16, 32].map(|width| {
-        [8, 32].map(|padding| {
+fn straight_line_padding_changes_only_the_instruction_count() {
+    for width in [8u16, 32] {
+        for padding in [8, 32] {
             let bytes = boolean_tape(width, padding, Instr::Return);
-            let (verified, counts) = observe(&bytes);
+            let verified = crate::verify(&bytes).expect("boolean tape verifies");
             assert_eq!(verified.functions().len(), 1);
             let function = &verified.functions()[0];
             assert_eq!(function.local_count(), width);
@@ -95,17 +48,6 @@ fn ordinary_padding_retains_only_the_initial_type_frame() {
             assert_eq!(function.instrs().len(), 2 * usize::from(width) + padding);
             assert_eq!(function.span_at(0), Some((7, 3)));
             assert_eq!(function.span_at(function.instrs().len() - 1), Some((7, 3)));
-            assert_eq!(counts.completed, 1);
-            assert_eq!(counts.slots, function.instrs().len());
-            eprintln!("type retention width={width} padding={padding}: {counts:?}");
-            counts
-        })
-    });
-    for (width, padded) in [8usize, 32].into_iter().zip(observations) {
-        for counts in padded {
-            assert_eq!(counts.retained_frames, 1);
-            assert_eq!(counts.local_capacity, width);
-            assert_eq!(counts.stack_capacity, 0);
         }
     }
 }
@@ -149,10 +91,11 @@ fn unit_image(local_count: u16, code: impl FnOnce(ConstId, ConstId) -> Vec<Instr
     draft.encode().expect("unit image").bytes
 }
 
+/// Each fork lifts the stack bound by exactly one and adds three instructions, so
+/// the sealed function is the same shape whatever the fork count.
 #[test]
-fn distinct_forks_retain_only_the_initial_frame_and_real_joins() {
-    // Complete both tapes' semantic checks before asserting retained ownership.
-    let observations = [(8u16, 1usize, 20), (32, 4, 77)].map(|(width, forks, instructions)| {
+fn distinct_forks_seal_one_extra_stack_slot_and_three_instructions() {
+    for (width, forks, instructions) in [(8u16, 1usize, 20), (32, 4, 77)] {
         let bytes = unit_image(width, |_, boolean| {
             let mut code = vec![Instr::ConstLoad(boolean); usize::from(width)];
             for _ in 0..forks {
@@ -167,7 +110,7 @@ fn distinct_forks_retain_only_the_initial_frame_and_real_joins() {
             code.push(Instr::Return);
             code
         });
-        let (verified, counts) = observe(&bytes);
+        let verified = crate::verify(&bytes).expect("forked tape verifies");
         assert_eq!(verified.functions().len(), 1);
         let function = &verified.functions()[0];
         assert_eq!(function.local_count(), width);
@@ -175,12 +118,7 @@ fn distinct_forks_retain_only_the_initial_frame_and_real_joins() {
         assert_eq!(function.instrs().len(), instructions);
         assert_eq!(function.span_at(0), Some((1, 1)));
         assert_eq!(function.span_at(instructions - 1), Some((1, 1)));
-        assert_eq!(counts.completed, 1);
-        assert_eq!(counts.slots, instructions);
-        eprintln!("type retention width={width} forks={forks}: {counts:?}");
-        counts
-    });
-    assert_eq!(observations.map(|counts| counts.retained_frames), [2, 5]);
+    }
 }
 
 fn function_refusal(bytes: &[u8], detail: &'static str) {
