@@ -13,6 +13,7 @@ use crate::diag::{DiagnosticCollector, MAX_DIAGNOSTIC_COUNT, SourceDiagnostic};
 use crate::lower::FunctionRegistry;
 use crate::types::{GenericInvariant, TemplateProofError};
 use marrow_codes::Code;
+use marrow_image::ReferenceKind;
 use marrow_syntax::SourceSpan;
 use std::collections::BTreeMap;
 
@@ -559,8 +560,9 @@ fn image_build_errors_classify_without_a_fabricated_location() {
         "a compiler draft past the source-prechecked code-byte bound is an opaque invariant"
     );
 
-    let contradiction =
-        super::image_build_outcome(marrow_image::ImageBuildError::InvalidReference("x"));
+    let contradiction = super::image_build_outcome(
+        marrow_image::ImageBuildError::InvalidReference(ReferenceKind::TypeTable),
+    );
     assert!(
         matches!(contradiction, super::ImagePolicyOutcome::Invariant(_)),
         "a producer-state contradiction is an opaque invariant, not a diagnostic"

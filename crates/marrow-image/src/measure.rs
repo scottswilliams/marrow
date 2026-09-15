@@ -51,7 +51,7 @@ use crate::bounds;
 use crate::digest::image_id;
 use crate::draft::{
     CollTypeId, CollectionTypeDef, ConstId, ConstValue, FillState, ImageBuildError, ImageDraft,
-    StrId, TypeId,
+    ReferenceKind, StrId, TypeId,
 };
 use crate::durable_id::DurableGraphTooLarge;
 use crate::encode::{
@@ -400,9 +400,9 @@ fn invariant_bounds(draft: &ImageDraft) -> Result<(), ImageBuildError> {
         }
     }
     for function in draft.functions() {
-        let function = function
-            .as_ref()
-            .ok_or(ImageBuildError::InvalidReference("vacant function"))?;
+        let function = function.as_ref().ok_or(ImageBuildError::InvalidReference(
+            ReferenceKind::VacantFunction,
+        ))?;
         if function.params.len() > bounds::MAX_PARAMS {
             return Err(ImageBuildError::TooManyParams);
         }
@@ -422,7 +422,7 @@ fn invariant_bounds(draft: &ImageDraft) -> Result<(), ImageBuildError> {
 /// [`bounds::MAX_KEY_COLUMNS`], and each field value's nesting within
 /// [`bounds::MAX_DURABLE_VALUE_DEPTH`] — through a *checked* arena lookup, so a field
 /// referencing a node this draft's arena never minted (an id from a foreign arena's
-/// wider range) is the typed `InvalidReference("value shape")` rather than an abort.
+/// wider range) is the typed `InvalidReference(ReferenceKind::ValueShape)` rather than an abort.
 ///
 /// Every row carries its parent's ordinal and a parent always precedes its children,
 /// so this is one forward pass over the rows rather than a descent. The nesting check
@@ -445,7 +445,7 @@ fn validate_declaration_graph(
             // depth the same node reaches under some other field.
             DeclarationMemberShape::Field { value, .. } => {
                 let Some(value_depth) = values.depth(*value) else {
-                    return Err(ImageBuildError::InvalidReference("value shape"));
+                    return Err(ImageBuildError::InvalidReference(ReferenceKind::ValueShape));
                 };
                 if value_depth > bounds::MAX_DURABLE_VALUE_DEPTH {
                     return Err(ImageBuildError::DurableValueTooDeep);
@@ -475,7 +475,7 @@ fn validate_declaration_graph(
 fn validate_value_shapes(values: &CanonicalValueShapeDag) -> Result<(), ImageBuildError> {
     for node in values.nodes() {
         let Some(view) = values.view(node) else {
-            return Err(ImageBuildError::InvalidReference("value shape"));
+            return Err(ImageBuildError::InvalidReference(ReferenceKind::ValueShape));
         };
         match view {
             ValueShapeView::Scalar(_) => {}
@@ -505,7 +505,9 @@ fn anchor_and_sites(draft: &ImageDraft) -> Result<(), ImageBuildError> {
     // A non-empty durable graph is anchored by the application's ledger id; the legacy
     // encoder demanded it at the head of the DURABLE section, before any member row.
     if !draft.root_occurrences().is_empty() && draft.application_identity().is_none() {
-        return Err(ImageBuildError::InvalidReference("application identity"));
+        return Err(ImageBuildError::InvalidReference(
+            ReferenceKind::ApplicationIdentity,
+        ));
     }
     // The projection is validated by streaming each row's steps through the one
     // projection grammar, materializing no path: the coherence walk stays
@@ -516,14 +518,16 @@ fn anchor_and_sites(draft: &ImageDraft) -> Result<(), ImageBuildError> {
     // recheck, never a numeric projection: an over-policy ref is live provenance the
     // Sites policy candidate reports.
     for function in draft.functions() {
-        let function = function
-            .as_ref()
-            .ok_or(ImageBuildError::InvalidReference("vacant function"))?;
+        let function = function.as_ref().ok_or(ImageBuildError::InvalidReference(
+            ReferenceKind::VacantFunction,
+        ))?;
         for instr in &function.code {
             if let Some(site) = instr.site_operand()
                 && !draft.site_ref_is_live(site)
             {
-                return Err(ImageBuildError::InvalidReference("operation site"));
+                return Err(ImageBuildError::InvalidReference(
+                    ReferenceKind::OperationSite,
+                ));
             }
         }
     }
@@ -534,7 +538,7 @@ fn anchor_and_sites(draft: &ImageDraft) -> Result<(), ImageBuildError> {
 
 /// One drafted string-pool reference, checked against the pool: the range predicate
 /// the raw sort-map indexing decided by aborting.
-fn string_ref(draft: &ImageDraft, id: StrId, site: &'static str) -> Result<(), ImageBuildError> {
+fn string_ref(draft: &ImageDraft, id: StrId, site: ReferenceKind) -> Result<(), ImageBuildError> {
     if (id.raw() as usize) < draft.strings().len() {
         Ok(())
     } else {
@@ -546,11 +550,11 @@ fn const_ref(draft: &ImageDraft, id: ConstId) -> Result<(), ImageBuildError> {
     if (id.index() as usize) < draft.consts().len() {
         Ok(())
     } else {
-        Err(ImageBuildError::InvalidReference("constant"))
+        Err(ImageBuildError::InvalidReference(ReferenceKind::Constant))
     }
 }
 
-fn func_ref(draft: &ImageDraft, raw: u16, site: &'static str) -> Result<(), ImageBuildError> {
+fn func_ref(draft: &ImageDraft, raw: u16, site: ReferenceKind) -> Result<(), ImageBuildError> {
     if (raw as usize) < draft.functions().len() {
         Ok(())
     } else {
@@ -562,7 +566,7 @@ fn type_row_ref(draft: &ImageDraft, id: TypeId) -> Result<(), ImageBuildError> {
     if (id.index() as usize) < draft.types().len() {
         Ok(())
     } else {
-        Err(ImageBuildError::InvalidReference("type table"))
+        Err(ImageBuildError::InvalidReference(ReferenceKind::TypeTable))
     }
 }
 
@@ -570,7 +574,9 @@ fn collection_row_ref(draft: &ImageDraft, id: CollTypeId) -> Result<(), ImageBui
     if (id.index() as usize) < draft.collections().len() {
         Ok(())
     } else {
-        Err(ImageBuildError::InvalidReference("collection type"))
+        Err(ImageBuildError::InvalidReference(
+            ReferenceKind::CollectionType,
+        ))
     }
 }
 
@@ -585,7 +591,7 @@ fn image_type_ref(draft: &ImageDraft, ty: ImageType) -> Result<(), ImageBuildErr
             if (idx.index() as usize) < draft.enums().len() {
                 Ok(())
             } else {
-                Err(ImageBuildError::InvalidReference("enum type"))
+                Err(ImageBuildError::InvalidReference(ReferenceKind::EnumType))
             }
         }
         ImageType::Collection { idx, .. } => collection_row_ref(draft, idx),
@@ -593,7 +599,7 @@ fn image_type_ref(draft: &ImageDraft, ty: ImageType) -> Result<(), ImageBuildErr
             if (root.index() as usize) < draft.root_occurrences().len() {
                 Ok(())
             } else {
-                Err(ImageBuildError::InvalidReference("root table"))
+                Err(ImageBuildError::InvalidReference(ReferenceKind::RootTable))
             }
         }
     }
@@ -603,11 +609,11 @@ fn image_type_ref(draft: &ImageDraft, ty: ImageType) -> Result<(), ImageBuildErr
 /// order, then the return), then the tape's operands exactly as the tape visits them.
 fn function_references(draft: &ImageDraft) -> Result<(), ImageBuildError> {
     for function in draft.functions() {
-        let function = function
-            .as_ref()
-            .ok_or(ImageBuildError::InvalidReference("vacant function"))?;
-        string_ref(draft, function.name, "function name")?;
-        string_ref(draft, function.source, "function source")?;
+        let function = function.as_ref().ok_or(ImageBuildError::InvalidReference(
+            ReferenceKind::VacantFunction,
+        ))?;
+        string_ref(draft, function.name, ReferenceKind::FunctionName)?;
+        string_ref(draft, function.source, ReferenceKind::FunctionSource)?;
         for param in &function.params {
             image_type_ref(draft, *param)?;
         }
@@ -628,7 +634,7 @@ fn tape_references(draft: &ImageDraft, code: &[Instr]) -> Result<(), ImageBuildE
         if (target as usize) < instruction_count {
             Ok(())
         } else {
-            Err(ImageBuildError::InvalidReference("jump target"))
+            Err(ImageBuildError::InvalidReference(ReferenceKind::JumpTarget))
         }
     };
     for instr in code {
@@ -636,7 +642,7 @@ fn tape_references(draft: &ImageDraft, code: &[Instr]) -> Result<(), ImageBuildE
             Instr::ConstLoad(raw) | Instr::Unreachable(raw) | Instr::Todo(raw) => {
                 const_ref(draft, *raw)?
             }
-            Instr::Call(target) => func_ref(draft, *target, "call target")?,
+            Instr::Call(target) => func_ref(draft, *target, ReferenceKind::CallTarget)?,
             Instr::RecordNew(idx) => type_row_ref(draft, *idx)?,
             Instr::ListNew(idx)
             | Instr::MapNew(idx)
@@ -646,10 +652,10 @@ fn tape_references(draft: &ImageDraft, code: &[Instr]) -> Result<(), ImageBuildE
             // not a table of its own.
             Instr::EnumConstruct { enum_idx, variant } => {
                 let Some(enum_def) = draft.enums().get(enum_idx.index() as usize) else {
-                    return Err(ImageBuildError::InvalidReference("enum type"));
+                    return Err(ImageBuildError::InvalidReference(ReferenceKind::EnumType));
                 };
                 if (*variant as usize) >= enum_def.variants.len() {
-                    return Err(ImageBuildError::InvalidReference("enum type"));
+                    return Err(ImageBuildError::InvalidReference(ReferenceKind::EnumType));
                 }
             }
             Instr::VacantLoad(ty) => image_type_ref(draft, *ty)?,
@@ -660,10 +666,10 @@ fn tape_references(draft: &ImageDraft, code: &[Instr]) -> Result<(), ImageBuildE
             // referenced root's key arity, and it is reachable only past a valid root.
             Instr::MakeIdentity { root, cols } => {
                 let Some(occurrence) = draft.root_occurrences().get(root.index() as usize) else {
-                    return Err(ImageBuildError::InvalidReference("root table"));
+                    return Err(ImageBuildError::InvalidReference(ReferenceKind::RootTable));
                 };
                 if (*cols as usize) != occurrence.keys().len() {
-                    return Err(ImageBuildError::InvalidReference("root table"));
+                    return Err(ImageBuildError::InvalidReference(ReferenceKind::RootTable));
                 }
             }
             Instr::Jump(target)
@@ -686,7 +692,7 @@ fn tape_references(draft: &ImageDraft, code: &[Instr]) -> Result<(), ImageBuildE
 /// descendants at their body positions).
 fn durable_references(draft: &ImageDraft) -> Result<(), ImageBuildError> {
     for occurrence in draft.root_occurrences() {
-        string_ref(draft, occurrence.name(), "root name")?;
+        string_ref(draft, occurrence.name(), ReferenceKind::RootName)?;
         let declaration = draft.declaration_of(occurrence);
         type_row_ref(draft, declaration.root_entry_record())?;
         let graph = declaration.graph();
@@ -709,7 +715,7 @@ fn member_references(
                 member_references(draft, graph, graph.members_of(member))?;
             }
             DeclarationMemberShape::Branch { name, record, .. } => {
-                string_ref(draft, *name, "branch name")?;
+                string_ref(draft, *name, ReferenceKind::BranchName)?;
                 type_row_ref(draft, *record)?;
                 member_references(draft, graph, graph.members_of(member))?;
             }
@@ -724,12 +730,14 @@ fn member_references(
 /// a valid filled-empty definition.
 fn types_references(draft: &ImageDraft) -> Result<(), ImageBuildError> {
     if draft.types_fill().contains(&FillState::Unfilled) {
-        return Err(ImageBuildError::InvalidReference("vacant record type"));
+        return Err(ImageBuildError::InvalidReference(
+            ReferenceKind::VacantRecordType,
+        ));
     }
     for record in draft.types() {
-        string_ref(draft, record.name, "record name")?;
+        string_ref(draft, record.name, ReferenceKind::RecordName)?;
         for field in &record.fields {
-            string_ref(draft, field.name, "field name")?;
+            string_ref(draft, field.name, ReferenceKind::FieldName)?;
             image_type_ref(draft, field.ty)?;
         }
     }
@@ -742,7 +750,7 @@ fn types_references(draft: &ImageDraft) -> Result<(), ImageBuildError> {
 fn consts_references(draft: &ImageDraft) -> Result<(), ImageBuildError> {
     for value in draft.consts() {
         if let ConstValue::Text(id) = value {
-            string_ref(draft, *id, "text constant")?;
+            string_ref(draft, *id, ReferenceKind::TextConstant)?;
         }
     }
     Ok(())
@@ -760,7 +768,7 @@ const TEST_ENTRY_FUNCTION: u8 = 0b10;
 fn exports_relations(draft: &ImageDraft) -> Result<FunctionRelations, ImageBuildError> {
     let rows = draft.export_rows();
     for export in rows {
-        func_ref(draft, export.func(), "export target")?;
+        func_ref(draft, export.func(), ReferenceKind::ExportTarget)?;
     }
 
     // Function indices are dense, so one flag byte is the keyed relation owner for
@@ -773,15 +781,21 @@ fn exports_relations(draft: &ImageDraft) -> Result<FunctionRelations, ImageBuild
     let mut seen_ids: HashSet<&crate::export_id::ExportId> = HashSet::with_capacity(rows.len());
     for export in rows {
         let Some(flags) = relations.flags.get_mut(export.func() as usize) else {
-            return Err(ImageBuildError::InvalidReference("export table"));
+            return Err(ImageBuildError::InvalidReference(
+                ReferenceKind::ExportTable,
+            ));
         };
         if *flags & EXPORTED_FUNCTION != 0 {
-            return Err(ImageBuildError::InvalidReference("export table"));
+            return Err(ImageBuildError::InvalidReference(
+                ReferenceKind::ExportTable,
+            ));
         }
         *flags |= EXPORTED_FUNCTION;
 
         if !seen_ids.insert(export.id()) {
-            return Err(ImageBuildError::InvalidReference("export table"));
+            return Err(ImageBuildError::InvalidReference(
+                ReferenceKind::ExportTable,
+            ));
         }
     }
     Ok(relations)
@@ -791,12 +805,14 @@ fn exports_relations(draft: &ImageDraft) -> Result<FunctionRelations, ImageBuild
 /// function.
 fn span_references(draft: &ImageDraft) -> Result<(), ImageBuildError> {
     for function in draft.functions() {
-        let function = function
-            .as_ref()
-            .ok_or(ImageBuildError::InvalidReference("vacant function"))?;
+        let function = function.as_ref().ok_or(ImageBuildError::InvalidReference(
+            ReferenceKind::VacantFunction,
+        ))?;
         for span in &function.spans {
             if (span.instr_index as usize) >= function.code.len() {
-                return Err(ImageBuildError::InvalidReference("span instruction"));
+                return Err(ImageBuildError::InvalidReference(
+                    ReferenceKind::SpanInstruction,
+                ));
             }
         }
     }
@@ -814,10 +830,10 @@ fn test_entry_relations(
 ) -> Result<(), ImageBuildError> {
     let entries = draft.test_entry_rows();
     for entry in entries {
-        string_ref(draft, entry.name(), "test name")?;
+        string_ref(draft, entry.name(), ReferenceKind::TestName)?;
     }
     for entry in entries {
-        func_ref(draft, entry.func(), "test target")?;
+        func_ref(draft, entry.func(), ReferenceKind::TestTarget)?;
     }
     // Names are dense string ordinals and targets are dense function ordinals, so
     // both uniqueness laws are direct keyed insertion. The function flags are kept
@@ -825,18 +841,18 @@ fn test_entry_relations(
     let mut seen_names = vec![false; draft.strings().len()];
     for entry in entries {
         let Some(seen_name) = seen_names.get_mut(entry.name().index() as usize) else {
-            return Err(ImageBuildError::InvalidReference("test table"));
+            return Err(ImageBuildError::InvalidReference(ReferenceKind::TestTable));
         };
         if *seen_name {
-            return Err(ImageBuildError::InvalidReference("test table"));
+            return Err(ImageBuildError::InvalidReference(ReferenceKind::TestTable));
         }
         *seen_name = true;
 
         let Some(flags) = function_relations.flags.get_mut(entry.func() as usize) else {
-            return Err(ImageBuildError::InvalidReference("test table"));
+            return Err(ImageBuildError::InvalidReference(ReferenceKind::TestTable));
         };
         if *flags & TEST_ENTRY_FUNCTION != 0 {
-            return Err(ImageBuildError::InvalidReference("test table"));
+            return Err(ImageBuildError::InvalidReference(ReferenceKind::TestTable));
         }
         *flags |= TEST_ENTRY_FUNCTION;
     }
@@ -847,53 +863,53 @@ fn test_entry_relations(
             .is_some_and(|flags| *flags & TEST_ENTRY_FUNCTION != 0)
     };
     for (index, function) in draft.functions().iter().enumerate() {
-        let function = function
-            .as_ref()
-            .ok_or(ImageBuildError::InvalidReference("vacant function"))?;
+        let function = function.as_ref().ok_or(ImageBuildError::InvalidReference(
+            ReferenceKind::VacantFunction,
+        ))?;
         let has_assert = function
             .code
             .iter()
             .any(|instr| matches!(instr, Instr::Assert));
         if has_assert && !is_test_entry(index as u16) {
-            return Err(ImageBuildError::InvalidReference("test table"));
+            return Err(ImageBuildError::InvalidReference(ReferenceKind::TestTable));
         }
     }
     for entry in entries {
-        let function = draft.functions()[entry.func() as usize]
-            .as_ref()
-            .ok_or(ImageBuildError::InvalidReference("vacant function"))?;
+        let function = draft.functions()[entry.func() as usize].as_ref().ok_or(
+            ImageBuildError::InvalidReference(ReferenceKind::VacantFunction),
+        )?;
         if function_relations.flags[entry.func() as usize] & EXPORTED_FUNCTION != 0 {
-            return Err(ImageBuildError::InvalidReference("test table"));
+            return Err(ImageBuildError::InvalidReference(ReferenceKind::TestTable));
         }
         if !function.params.is_empty() {
-            return Err(ImageBuildError::InvalidReference("test table"));
+            return Err(ImageBuildError::InvalidReference(ReferenceKind::TestTable));
         }
         if function.ret != ImageType::Unit {
-            return Err(ImageBuildError::InvalidReference("test table"));
+            return Err(ImageBuildError::InvalidReference(ReferenceKind::TestTable));
         }
     }
     for function in draft.functions() {
-        let function = function
-            .as_ref()
-            .ok_or(ImageBuildError::InvalidReference("vacant function"))?;
+        let function = function.as_ref().ok_or(ImageBuildError::InvalidReference(
+            ReferenceKind::VacantFunction,
+        ))?;
         for instr in &function.code {
             if let Instr::Call(target) = instr
                 && is_test_entry(*target)
             {
-                return Err(ImageBuildError::InvalidReference("test table"));
+                return Err(ImageBuildError::InvalidReference(ReferenceKind::TestTable));
             }
         }
     }
     for entry in entries {
-        let function = draft.functions()[entry.func() as usize]
-            .as_ref()
-            .ok_or(ImageBuildError::InvalidReference("vacant function"))?;
+        let function = draft.functions()[entry.func() as usize].as_ref().ok_or(
+            ImageBuildError::InvalidReference(ReferenceKind::VacantFunction),
+        )?;
         let has_direct_durable = function
             .code
             .iter()
             .any(|instr| instr.site_operand().is_some());
         if has_direct_durable {
-            return Err(ImageBuildError::InvalidReference("test table"));
+            return Err(ImageBuildError::InvalidReference(ReferenceKind::TestTable));
         }
     }
     Ok(())
@@ -904,12 +920,14 @@ fn test_entry_relations(
 /// fence is the coherence invariant, exactly as for records.
 fn enums_references(draft: &ImageDraft) -> Result<(), ImageBuildError> {
     if draft.enums_fill().contains(&FillState::Unfilled) {
-        return Err(ImageBuildError::InvalidReference("vacant enum type"));
+        return Err(ImageBuildError::InvalidReference(
+            ReferenceKind::VacantEnumType,
+        ));
     }
     for enum_def in draft.enums() {
-        string_ref(draft, enum_def.name, "enum name")?;
+        string_ref(draft, enum_def.name, ReferenceKind::EnumName)?;
         for variant in &enum_def.variants {
-            string_ref(draft, variant.name, "variant name")?;
+            string_ref(draft, variant.name, ReferenceKind::VariantName)?;
             for ty in &variant.payload {
                 image_type_ref(draft, *ty)?;
             }

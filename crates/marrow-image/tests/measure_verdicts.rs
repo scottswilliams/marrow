@@ -17,8 +17,8 @@ use marrow_image::{
     CollTypeId, CollectionTypeDef, ConstId, DeclarationMemberDef, DeclarationMemberShape,
     DraftStateError, DraftTxn, DurableIndexComponent, DurableIndexShape, EnumId, EnumTypeDef,
     ExportId, FieldDef, FuncId, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr,
-    KeyColumn, LedgerIdBytes, RecordTypeDef, RootId, Scalar, SemanticTarget, SpanEntry, StrId,
-    TypeId, ValueShapeNodeId, VariantDef,
+    KeyColumn, LedgerIdBytes, RecordTypeDef, ReferenceKind, RootId, Scalar, SemanticTarget,
+    SpanEntry, StrId, TypeId, ValueShapeNodeId, VariantDef,
 };
 
 #[path = "common/admitted_plan.rs"]
@@ -951,7 +951,7 @@ const CASES: &[(&[Fault], ImageBuildError)] = &[
             Fault::BodyPastCeiling,
             Fault::OverCodeBytes,
         ],
-        ImageBuildError::InvalidReference("application identity"),
+        ImageBuildError::InvalidReference(ReferenceKind::ApplicationIdentity),
     ),
     (
         &[Fault::WithoutApplication, Fault::OverWideKey],
@@ -988,7 +988,7 @@ const CASES: &[(&[Fault], ImageBuildError)] = &[
     ),
     (
         &[Fault::Policy(Overflow::Roots), Fault::WithoutApplication],
-        ImageBuildError::InvalidReference("application identity"),
+        ImageBuildError::InvalidReference(ReferenceKind::ApplicationIdentity),
     ),
     (
         &[Fault::Policy(Overflow::Roots), Fault::OverWideKey],
@@ -1028,35 +1028,35 @@ const CASES: &[(&[Fault], ImageBuildError)] = &[
     // Each checked conversion on a caller-supplied id, alone and crossed.
     (
         &[Fault::ForgedValueNode],
-        ImageBuildError::InvalidReference("value shape"),
+        ImageBuildError::InvalidReference(ReferenceKind::ValueShape),
     ),
     (
         &[Fault::ForgedValueNode, Fault::Policy(Overflow::Strings)],
-        ImageBuildError::InvalidReference("value shape"),
+        ImageBuildError::InvalidReference(ReferenceKind::ValueShape),
     ),
     (
         &[Fault::BadConst],
-        ImageBuildError::InvalidReference("constant"),
+        ImageBuildError::InvalidReference(ReferenceKind::Constant),
     ),
     (
         &[Fault::BadConst, Fault::OverCodeBytes],
-        ImageBuildError::InvalidReference("constant"),
+        ImageBuildError::InvalidReference(ReferenceKind::Constant),
     ),
     (
         &[Fault::BadSpan],
-        ImageBuildError::InvalidReference("span instruction"),
+        ImageBuildError::InvalidReference(ReferenceKind::SpanInstruction),
     ),
     (
         &[Fault::BadSpan, Fault::BodyPastCeiling],
-        ImageBuildError::InvalidReference("span instruction"),
+        ImageBuildError::InvalidReference(ReferenceKind::SpanInstruction),
     ),
     (
         &[Fault::BadJump],
-        ImageBuildError::InvalidReference("jump target"),
+        ImageBuildError::InvalidReference(ReferenceKind::JumpTarget),
     ),
     (
         &[Fault::BadJump, Fault::OverCodeBytes],
-        ImageBuildError::InvalidReference("jump target"),
+        ImageBuildError::InvalidReference(ReferenceKind::JumpTarget),
     ),
     // One error variant, two decision sites: the declaration branch decides before the
     // root-occurrence loop, and each site draws the variant alone.
@@ -1070,55 +1070,55 @@ const CASES: &[(&[Fault], ImageBuildError)] = &[
     // order (Strings) and the last (TestEntries).
     (
         &[Fault::ForgedRecordName, Fault::Policy(Overflow::Strings)],
-        ImageBuildError::InvalidReference("record name"),
+        ImageBuildError::InvalidReference(ReferenceKind::RecordName),
     ),
     (
         &[Fault::BadConst, Fault::Policy(Overflow::Strings)],
-        ImageBuildError::InvalidReference("constant"),
+        ImageBuildError::InvalidReference(ReferenceKind::Constant),
     ),
     (
         &[Fault::BadJump, Fault::Policy(Overflow::Strings)],
-        ImageBuildError::InvalidReference("jump target"),
+        ImageBuildError::InvalidReference(ReferenceKind::JumpTarget),
     ),
     (
         &[Fault::BadSpan, Fault::Policy(Overflow::Strings)],
-        ImageBuildError::InvalidReference("span instruction"),
+        ImageBuildError::InvalidReference(ReferenceKind::SpanInstruction),
     ),
     (
         &[
             Fault::ForgedRecordName,
             Fault::Policy(Overflow::TestEntries),
         ],
-        ImageBuildError::InvalidReference("record name"),
+        ImageBuildError::InvalidReference(ReferenceKind::RecordName),
     ),
     (
         &[Fault::BadConst, Fault::Policy(Overflow::TestEntries)],
-        ImageBuildError::InvalidReference("constant"),
+        ImageBuildError::InvalidReference(ReferenceKind::Constant),
     ),
     (
         &[Fault::BadJump, Fault::Policy(Overflow::TestEntries)],
-        ImageBuildError::InvalidReference("jump target"),
+        ImageBuildError::InvalidReference(ReferenceKind::JumpTarget),
     ),
     (
         &[Fault::BadSpan, Fault::Policy(Overflow::TestEntries)],
-        ImageBuildError::InvalidReference("span instruction"),
+        ImageBuildError::InvalidReference(ReferenceKind::SpanInstruction),
     ),
     // The same families crossed with the two byte-shaped results.
     (
         &[Fault::BadSpan, Fault::OverCodeBytes],
-        ImageBuildError::InvalidReference("span instruction"),
+        ImageBuildError::InvalidReference(ReferenceKind::SpanInstruction),
     ),
     (
         &[Fault::ForgedFunctionName, Fault::OverCodeBytes],
-        ImageBuildError::InvalidReference("function name"),
+        ImageBuildError::InvalidReference(ReferenceKind::FunctionName),
     ),
     (
         &[Fault::ForgedRecordName, Fault::BodyPastCeiling],
-        ImageBuildError::InvalidReference("record name"),
+        ImageBuildError::InvalidReference(ReferenceKind::RecordName),
     ),
     (
         &[Fault::ForgedEnumName, Fault::BodyPastCeiling],
-        ImageBuildError::InvalidReference("enum name"),
+        ImageBuildError::InvalidReference(ReferenceKind::EnumName),
     ),
     // Two forged references in one draft, in different sections: the EARLIER site's
     // check decides, so the pair proves the coherence walk kept the emission-order
@@ -1130,207 +1130,207 @@ const CASES: &[(&[Fault], ImageBuildError)] = &[
     // public path binds a raw `StrId` to a constant.
     (
         &[Fault::ForgedFunctionName, Fault::ForgedRecordName],
-        ImageBuildError::InvalidReference("function name"),
+        ImageBuildError::InvalidReference(ReferenceKind::FunctionName),
     ),
     (
         &[Fault::BadSpan, Fault::ForgedTestEntryName],
-        ImageBuildError::InvalidReference("span instruction"),
+        ImageBuildError::InvalidReference(ReferenceKind::SpanInstruction),
     ),
     (
         &[Fault::ForgedBranchName, Fault::ForgedRecordName],
-        ImageBuildError::InvalidReference("branch name"),
+        ImageBuildError::InvalidReference(ReferenceKind::BranchName),
     ),
     // Once-unchecked table ordinals crossed with each policy boundary.
     (
         &[Fault::BadCallTarget, Fault::OverCodeBytes],
-        ImageBuildError::InvalidReference("call target"),
+        ImageBuildError::InvalidReference(ReferenceKind::CallTarget),
     ),
     (
         &[Fault::ForgedTestEntryTarget, Fault::OverCodeBytes],
-        ImageBuildError::InvalidReference("test target"),
+        ImageBuildError::InvalidReference(ReferenceKind::TestTarget),
     ),
     (
         &[Fault::BadCallTarget, Fault::BodyPastCeiling],
-        ImageBuildError::InvalidReference("call target"),
+        ImageBuildError::InvalidReference(ReferenceKind::CallTarget),
     ),
     (
         &[Fault::ForgedExportTarget, Fault::BodyPastCeiling],
-        ImageBuildError::InvalidReference("export target"),
+        ImageBuildError::InvalidReference(ReferenceKind::ExportTarget),
     ),
     (
         &[Fault::BadRecordNewOrdinal, Fault::BodyPastCeiling],
-        ImageBuildError::InvalidReference("type table"),
+        ImageBuildError::InvalidReference(ReferenceKind::TypeTable),
     ),
     (
         &[Fault::BadRecordNewOrdinal, Fault::Policy(Overflow::Strings)],
-        ImageBuildError::InvalidReference("type table"),
+        ImageBuildError::InvalidReference(ReferenceKind::TypeTable),
     ),
     (
         &[Fault::BadListNewOrdinal, Fault::Policy(Overflow::Strings)],
-        ImageBuildError::InvalidReference("collection type"),
+        ImageBuildError::InvalidReference(ReferenceKind::CollectionType),
     ),
     (
         &[
             Fault::BadEnumConstructOrdinal,
             Fault::Policy(Overflow::Strings),
         ],
-        ImageBuildError::InvalidReference("enum type"),
+        ImageBuildError::InvalidReference(ReferenceKind::EnumType),
     ),
     (
         &[Fault::BadVacantLoadType, Fault::Policy(Overflow::Strings)],
-        ImageBuildError::InvalidReference("type table"),
+        ImageBuildError::InvalidReference(ReferenceKind::TypeTable),
     ),
     (
         &[Fault::BadMakeIdentityRoot, Fault::Policy(Overflow::Strings)],
-        ImageBuildError::InvalidReference("root table"),
+        ImageBuildError::InvalidReference(ReferenceKind::RootTable),
     ),
     (
         &[Fault::ForgedFieldType, Fault::Policy(Overflow::Strings)],
-        ImageBuildError::InvalidReference("type table"),
+        ImageBuildError::InvalidReference(ReferenceKind::TypeTable),
     ),
     (
         &[
             Fault::ForgedEnumPayloadType,
             Fault::Policy(Overflow::Strings),
         ],
-        ImageBuildError::InvalidReference("type table"),
+        ImageBuildError::InvalidReference(ReferenceKind::TypeTable),
     ),
     (
         &[
             Fault::ForgedCollectionElem,
             Fault::Policy(Overflow::Strings),
         ],
-        ImageBuildError::InvalidReference("type table"),
+        ImageBuildError::InvalidReference(ReferenceKind::TypeTable),
     ),
     // Across two functions, in both orders: all of coherence precedes all policy, so
     // the reference decides whichever function carries it.
     (
         &[Fault::BadConst, Fault::LaterFunctionOverCodeBytes],
-        ImageBuildError::InvalidReference("constant"),
+        ImageBuildError::InvalidReference(ReferenceKind::Constant),
     ),
     (
         &[Fault::OverCodeBytes, Fault::LaterFunctionBadConst],
-        ImageBuildError::InvalidReference("constant"),
+        ImageBuildError::InvalidReference(ReferenceKind::Constant),
     ),
     (
         &[Fault::BadJump, Fault::LaterFunctionOverCodeBytes],
-        ImageBuildError::InvalidReference("jump target"),
+        ImageBuildError::InvalidReference(ReferenceKind::JumpTarget),
     ),
     (
         &[Fault::BadCallTarget, Fault::LaterFunctionOverCodeBytes],
-        ImageBuildError::InvalidReference("call target"),
+        ImageBuildError::InvalidReference(ReferenceKind::CallTarget),
     ),
     // The two DURABLE type-table ordinals: the root entry record and a branch's.
     (
         &[Fault::ForgedEntryRecord, Fault::Policy(Overflow::Strings)],
-        ImageBuildError::InvalidReference("type table"),
+        ImageBuildError::InvalidReference(ReferenceKind::TypeTable),
     ),
     (
         &[Fault::ForgedBranchRecord, Fault::Policy(Overflow::Strings)],
-        ImageBuildError::InvalidReference("type table"),
+        ImageBuildError::InvalidReference(ReferenceKind::TypeTable),
     ),
     (
         &[Fault::ForgedEntryRecord, Fault::BodyPastCeiling],
-        ImageBuildError::InvalidReference("type table"),
+        ImageBuildError::InvalidReference(ReferenceKind::TypeTable),
     ),
     (
         &[Fault::ForgedBranchRecord, Fault::BodyPastCeiling],
-        ImageBuildError::InvalidReference("type table"),
+        ImageBuildError::InvalidReference(ReferenceKind::TypeTable),
     ),
     (
         &[
             Fault::ForgedEntryRecord,
             Fault::Policy(Overflow::TestEntries),
         ],
-        ImageBuildError::InvalidReference("type table"),
+        ImageBuildError::InvalidReference(ReferenceKind::TypeTable),
     ),
     (
         &[Fault::ForgedEntryRecord, Fault::OverCodeBytes],
-        ImageBuildError::InvalidReference("type table"),
+        ImageBuildError::InvalidReference(ReferenceKind::TypeTable),
     ),
     // The remaining boundary × {call, export target, test target, type table} cells.
     (
         &[Fault::BadCallTarget, Fault::Policy(Overflow::Strings)],
-        ImageBuildError::InvalidReference("call target"),
+        ImageBuildError::InvalidReference(ReferenceKind::CallTarget),
     ),
     (
         &[Fault::ForgedExportTarget, Fault::Policy(Overflow::Strings)],
-        ImageBuildError::InvalidReference("export target"),
+        ImageBuildError::InvalidReference(ReferenceKind::ExportTarget),
     ),
     (
         &[
             Fault::ForgedTestEntryTarget,
             Fault::Policy(Overflow::Strings),
         ],
-        ImageBuildError::InvalidReference("test target"),
+        ImageBuildError::InvalidReference(ReferenceKind::TestTarget),
     ),
     (
         &[Fault::BadCallTarget, Fault::Policy(Overflow::TestEntries)],
-        ImageBuildError::InvalidReference("call target"),
+        ImageBuildError::InvalidReference(ReferenceKind::CallTarget),
     ),
     (
         &[
             Fault::ForgedExportTarget,
             Fault::Policy(Overflow::TestEntries),
         ],
-        ImageBuildError::InvalidReference("export target"),
+        ImageBuildError::InvalidReference(ReferenceKind::ExportTarget),
     ),
     (
         &[
             Fault::ForgedTestEntryTarget,
             Fault::Policy(Overflow::TestEntries),
         ],
-        ImageBuildError::InvalidReference("test target"),
+        ImageBuildError::InvalidReference(ReferenceKind::TestTarget),
     ),
     (
         &[
             Fault::BadRecordNewOrdinal,
             Fault::Policy(Overflow::TestEntries),
         ],
-        ImageBuildError::InvalidReference("type table"),
+        ImageBuildError::InvalidReference(ReferenceKind::TypeTable),
     ),
     (
         &[Fault::ForgedExportTarget, Fault::OverCodeBytes],
-        ImageBuildError::InvalidReference("export target"),
+        ImageBuildError::InvalidReference(ReferenceKind::ExportTarget),
     ),
     (
         &[Fault::BadRecordNewOrdinal, Fault::OverCodeBytes],
-        ImageBuildError::InvalidReference("type table"),
+        ImageBuildError::InvalidReference(ReferenceKind::TypeTable),
     ),
     (
         &[Fault::ForgedTestEntryTarget, Fault::BodyPastCeiling],
-        ImageBuildError::InvalidReference("test target"),
+        ImageBuildError::InvalidReference(ReferenceKind::TestTarget),
     ),
     (
         &[Fault::DanglingTraversal, Fault::Policy(Overflow::Strings)],
-        ImageBuildError::InvalidReference("collection type"),
+        ImageBuildError::InvalidReference(ReferenceKind::CollectionType),
     ),
     (
         &[Fault::DanglingIndexScan, Fault::Policy(Overflow::Strings)],
-        ImageBuildError::InvalidReference("collection type"),
+        ImageBuildError::InvalidReference(ReferenceKind::CollectionType),
     ),
     (
         &[Fault::ForgedParamType, Fault::Policy(Overflow::Strings)],
-        ImageBuildError::InvalidReference("type table"),
+        ImageBuildError::InvalidReference(ReferenceKind::TypeTable),
     ),
     (
         &[Fault::ForgedParamType, Fault::OverCodeBytes],
-        ImageBuildError::InvalidReference("type table"),
+        ImageBuildError::InvalidReference(ReferenceKind::TypeTable),
     ),
     (
         &[Fault::DuplicateExport, Fault::Policy(Overflow::Strings)],
-        ImageBuildError::InvalidReference("export table"),
+        ImageBuildError::InvalidReference(ReferenceKind::ExportTable),
     ),
     // The measured ceiling's own cells: a draft every coherence item and every cap
     // admits, refused only by the measured whole-image total.
     (&[Fault::FinalOverage], ImageBuildError::ImageTooLarge),
     (
         &[Fault::FinalOverage, Fault::DuplicateExport],
-        ImageBuildError::InvalidReference("export table"),
+        ImageBuildError::InvalidReference(ReferenceKind::ExportTable),
     ),
     (
         &[Fault::FinalOverage, Fault::BadSpan],
-        ImageBuildError::InvalidReference("span instruction"),
+        ImageBuildError::InvalidReference(ReferenceKind::SpanInstruction),
     ),
 ];
 
@@ -1440,7 +1440,9 @@ fn vacant_functions_refuse_and_fill_order_does_not_change_image_order() {
         assert!(owner.function_code(ids[missing]).is_none());
         assert_eq!(
             owner.encode().map(|_| ()),
-            Err(ImageBuildError::InvalidReference("vacant function"))
+            Err(ImageBuildError::InvalidReference(
+                ReferenceKind::VacantFunction
+            ))
         );
         let mut txn = admitted(&mut owner);
         txn.fill_function(ids[missing], defs[missing].clone())

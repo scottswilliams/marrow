@@ -6,7 +6,7 @@
 
 use marrow_image::{
     CollectionTypeDef, DraftTxn, EnumId, EnumTypeDef, ExportId, FunctionDef, ImageBuildError,
-    ImageDraft, ImageType, Instr, Scalar, SpanEntry, VariantDef,
+    ImageDraft, ImageType, Instr, ReferenceKind, Scalar, SpanEntry, VariantDef,
 };
 use marrow_verify::verify;
 
@@ -173,7 +173,7 @@ fn an_enum_param_index_out_of_range_is_refused_by_the_producer() {
             ImageType::Unit,
             code,
         ),
-        Err(ImageBuildError::InvalidReference("enum type")),
+        Err(ImageBuildError::InvalidReference(ReferenceKind::EnumType)),
     );
 }
 
@@ -192,7 +192,7 @@ fn an_enum_return_index_out_of_range_is_refused_by_the_producer() {
             },
             code,
         ),
-        Err(ImageBuildError::InvalidReference("enum type")),
+        Err(ImageBuildError::InvalidReference(ReferenceKind::EnumType)),
     );
 }
 
@@ -261,7 +261,7 @@ fn an_out_of_range_construct_variant_is_refused_by_the_producer() {
             },
             code,
         ),
-        Err(ImageBuildError::InvalidReference("enum type")),
+        Err(ImageBuildError::InvalidReference(ReferenceKind::EnumType)),
     );
 }
 

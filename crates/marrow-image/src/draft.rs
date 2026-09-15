@@ -550,6 +550,69 @@ pub(crate) enum ConstValue {
     Duration(i128),
 }
 
+/// What an incoherent draft reference names. The encode fence reports the first
+/// one it reaches, so the kind is the whole payload: there is no second reference of
+/// the same kind to disambiguate within one verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReferenceKind {
+    /// The application ledger identity a non-empty durable graph must be anchored by.
+    ApplicationIdentity,
+    /// A durable branch's name string.
+    BranchName,
+    /// A `Call` operand's function-table position.
+    CallTarget,
+    /// A COLLTYPES-table position.
+    CollectionType,
+    /// A constant-pool position.
+    Constant,
+    /// An enum definition's name string.
+    EnumName,
+    /// An ENUMS-table position, or a variant of the enum it names.
+    EnumType,
+    /// An EXPORTS-table relation: one export per function, one row per id.
+    ExportTable,
+    /// An export row's function-table position.
+    ExportTarget,
+    /// A record field's name string.
+    FieldName,
+    /// A function's name string.
+    FunctionName,
+    /// A function's source-path string.
+    FunctionSource,
+    /// A transfer operand's position in its own instruction list.
+    JumpTarget,
+    /// A durable operation site's live provenance.
+    OperationSite,
+    /// A record type's name string.
+    RecordName,
+    /// A root occurrence's name string.
+    RootName,
+    /// A ROOTS-table position, or a root's key arity.
+    RootTable,
+    /// A span row's instruction position in its own function.
+    SpanInstruction,
+    /// A test entry's name string.
+    TestName,
+    /// A TEST-ENTRY relation: uniqueness, disjointness, signature, or reachability.
+    TestTable,
+    /// A test entry's function-table position.
+    TestTarget,
+    /// A text constant's string-pool position.
+    TextConstant,
+    /// A TYPES-table position.
+    TypeTable,
+    /// A reserved enum row still unfilled at the encode fence.
+    VacantEnumType,
+    /// A reserved function row still unfilled at the encode fence.
+    VacantFunction,
+    /// A reserved record row still unfilled at the encode fence.
+    VacantRecordType,
+    /// A durable value-shape arena node.
+    ValueShape,
+    /// An enum variant's name string.
+    VariantName,
+}
+
 /// A failure to build a well-formed draft: a §E bound exceeded or an invalid
 /// cross-reference. These are producer-side (compiler) faults, not artifact
 /// rejections.
@@ -591,7 +654,7 @@ pub enum ImageBuildError {
     /// applications wearing one draft. The first identity is retained and the
     /// divergence is latched as a sticky coherence fact the fence reports.
     ApplicationIdentityConflict,
-    InvalidReference(&'static str),
+    InvalidReference(ReferenceKind),
 }
 
 impl std::fmt::Display for ImageBuildError {
@@ -2035,7 +2098,9 @@ impl ImageDraft {
         }
         let application = self
             .application_identity()
-            .ok_or(ImageBuildError::InvalidReference("application identity"))?;
+            .ok_or(ImageBuildError::InvalidReference(
+                ReferenceKind::ApplicationIdentity,
+            ))?;
         let graph = self.graph();
         for row in self.sites.rows() {
             // A count already past the ceiling is decided; further rows only grow it.
@@ -2045,7 +2110,9 @@ impl ImageDraft {
             let mut steps = 0usize;
             graph
                 .project_steps(application, row.key(), |_| steps += 1)
-                .ok_or(ImageBuildError::InvalidReference("operation site"))?;
+                .ok_or(ImageBuildError::InvalidReference(
+                    ReferenceKind::OperationSite,
+                ))?;
             let step_count = u8::try_from(steps)
                 .expect("a bounded semantic path's step count fits the site-path width");
             sink.push(step_count);
@@ -2054,7 +2121,9 @@ impl ImageDraft {
                     sink.push(step.kind.ledger_kind());
                     sink.extend_bytes(step.id.bytes());
                 })
-                .ok_or(ImageBuildError::InvalidReference("operation site"))?;
+                .ok_or(ImageBuildError::InvalidReference(
+                    ReferenceKind::OperationSite,
+                ))?;
             sink.push(match row.key().target() {
                 SemanticTarget::WholePayload => 0x00,
                 SemanticTarget::FieldLeaf => 0x01,
@@ -2075,12 +2144,14 @@ impl ImageDraft {
         }
         let application = self
             .application_identity()
-            .ok_or(ImageBuildError::InvalidReference("application identity"))?;
+            .ok_or(ImageBuildError::InvalidReference(
+                ReferenceKind::ApplicationIdentity,
+            ))?;
         let graph = self.graph();
         for row in self.sites.rows() {
-            graph
-                .project_steps(application, row.key(), |_| {})
-                .ok_or(ImageBuildError::InvalidReference("operation site"))?;
+            graph.project_steps(application, row.key(), |_| {}).ok_or(
+                ImageBuildError::InvalidReference(ReferenceKind::OperationSite),
+            )?;
         }
         Ok(())
     }
@@ -2126,7 +2197,9 @@ impl ImageDraft {
     /// numeric site id exists before fitting policy-clean capped measurement.
     pub(crate) fn site_wire_ordinal(&self, site: &PlannedSiteRef) -> Result<u16, ImageBuildError> {
         if self.graph().revalidate(&site.demand()).is_err() {
-            return Err(ImageBuildError::InvalidReference("operation site"));
+            return Err(ImageBuildError::InvalidReference(
+                ReferenceKind::OperationSite,
+            ));
         }
         self.sites.wire_ordinal(self.durable.identity(), site)
     }

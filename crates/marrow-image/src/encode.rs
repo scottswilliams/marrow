@@ -41,7 +41,9 @@
 
 use crate::bounds;
 use crate::digest::ImageId;
-use crate::draft::{CollectionTypeDef, ConstValue, ImageBuildError, ImageDraft, KeyColumn};
+use crate::draft::{
+    CollectionTypeDef, ConstValue, ImageBuildError, ImageDraft, KeyColumn, ReferenceKind,
+};
 use crate::durable_id::{DurableGraphTooLarge, DurableIndexComponent, DurableIndexShape};
 use crate::instr::Instr;
 use crate::measure::{CoherentDraft, wire_len, wire_ordinal};
@@ -271,9 +273,11 @@ impl ImageDraft {
         // The application's ledger id anchors a non-empty durable graph; a
         // storeless image carries none.
         if !self.root_occurrences().is_empty() {
-            let application = self
-                .application_identity()
-                .ok_or(ImageBuildError::InvalidReference("application identity"))?;
+            let application =
+                self.application_identity()
+                    .ok_or(ImageBuildError::InvalidReference(
+                        ReferenceKind::ApplicationIdentity,
+                    ))?;
             sink.extend_bytes(application.bytes());
         }
         // v0 carries the whole member graph per root, so each occurrence projects the
@@ -512,7 +516,7 @@ fn encode_code<S: ImageByteSink>(
                 let byte_offset = *layout
                     .offsets
                     .get(*target as usize)
-                    .ok_or(ImageBuildError::InvalidReference("jump target"))?;
+                    .ok_or(ImageBuildError::InvalidReference(ReferenceKind::JumpTarget))?;
                 push_u32(sink, byte_offset);
             }
             Instr::VacantLoad(ty) => ty.encode(sink),

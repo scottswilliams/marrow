@@ -7,8 +7,9 @@
 use marrow_image::{
     AdmittedRoot, CollTypeId, CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape,
     DraftTxn, EncodedImage, EnumId, EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef,
-    ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootId,
-    RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, TypeId, VariantDef,
+    ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
+    ReferenceKind, RootId, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, TypeId,
+    VariantDef,
 };
 use marrow_image::{DurableIndexComponent, DurableIndexShape};
 use marrow_verify::verify;
@@ -147,7 +148,7 @@ fn an_out_of_range_call_target_draws_the_call_target_refusal() {
         main_draft(Vec::new(), vec![Instr::Call(u16::MAX), Instr::Return])
             .encode()
             .map(|_| ()),
-        Err(ImageBuildError::InvalidReference("call target")),
+        Err(ImageBuildError::InvalidReference(ReferenceKind::CallTarget)),
     );
 }
 
@@ -158,7 +159,9 @@ fn an_out_of_range_export_target_draws_the_export_target_refusal() {
     draft.add_export(ExportId::of_local("", "ghost"), forged_func_id());
     assert_eq!(
         draft.encode().map(|_| ()),
-        Err(ImageBuildError::InvalidReference("export target")),
+        Err(ImageBuildError::InvalidReference(
+            ReferenceKind::ExportTarget
+        )),
     );
 }
 
@@ -170,7 +173,7 @@ fn an_out_of_range_test_entry_target_draws_the_test_target_refusal() {
     draft.add_test_entry(entry_name, forged_func_id());
     assert_eq!(
         draft.encode().map(|_| ()),
-        Err(ImageBuildError::InvalidReference("test target")),
+        Err(ImageBuildError::InvalidReference(ReferenceKind::TestTarget)),
     );
 }
 
@@ -180,7 +183,7 @@ fn an_out_of_range_param_type_draws_the_type_table_refusal() {
         main_draft(vec![FORGED_TYPE], short_code())
             .encode()
             .map(|_| ()),
-        Err(ImageBuildError::InvalidReference("type table")),
+        Err(ImageBuildError::InvalidReference(ReferenceKind::TypeTable)),
     );
 }
 
@@ -201,7 +204,7 @@ fn an_out_of_range_record_new_ordinal_draws_the_type_table_refusal() {
         )
         .encode()
         .map(|_| ()),
-        Err(ImageBuildError::InvalidReference("type table")),
+        Err(ImageBuildError::InvalidReference(ReferenceKind::TypeTable)),
     );
 }
 
@@ -217,7 +220,9 @@ fn an_out_of_range_list_new_ordinal_draws_the_collection_type_refusal() {
         )
         .encode()
         .map(|_| ()),
-        Err(ImageBuildError::InvalidReference("collection type")),
+        Err(ImageBuildError::InvalidReference(
+            ReferenceKind::CollectionType
+        )),
     );
 }
 
@@ -236,7 +241,7 @@ fn an_out_of_range_enum_construct_ordinal_draws_the_enum_type_refusal() {
         )
         .encode()
         .map(|_| ()),
-        Err(ImageBuildError::InvalidReference("enum type")),
+        Err(ImageBuildError::InvalidReference(ReferenceKind::EnumType)),
     );
 }
 
@@ -266,7 +271,7 @@ fn an_out_of_range_vacant_load_type_draws_the_type_table_refusal() {
         with_decoy_record(main_draft(Vec::new(), body(u16::MAX)))
             .encode()
             .map(|_| ()),
-        Err(ImageBuildError::InvalidReference("type table")),
+        Err(ImageBuildError::InvalidReference(ReferenceKind::TypeTable)),
     );
 }
 
@@ -285,7 +290,7 @@ fn an_out_of_range_make_identity_root_draws_the_root_table_refusal() {
         )
         .encode()
         .map(|_| ()),
-        Err(ImageBuildError::InvalidReference("root table")),
+        Err(ImageBuildError::InvalidReference(ReferenceKind::RootTable)),
     );
 }
 
@@ -307,7 +312,7 @@ fn an_out_of_range_field_type_draws_the_type_table_refusal() {
         .expect("a within-domain mint");
     assert_eq!(
         draft.encode().map(|_| ()),
-        Err(ImageBuildError::InvalidReference("type table")),
+        Err(ImageBuildError::InvalidReference(ReferenceKind::TypeTable)),
     );
 }
 
@@ -329,7 +334,7 @@ fn an_out_of_range_enum_payload_type_draws_the_type_table_refusal() {
         .expect("a within-domain mint");
     assert_eq!(
         draft.encode().map(|_| ()),
-        Err(ImageBuildError::InvalidReference("type table")),
+        Err(ImageBuildError::InvalidReference(ReferenceKind::TypeTable)),
     );
 }
 
@@ -342,7 +347,7 @@ fn an_out_of_range_collection_elem_type_draws_the_type_table_refusal() {
         .expect("a within-domain mint");
     assert_eq!(
         draft.encode().map(|_| ()),
-        Err(ImageBuildError::InvalidReference("type table")),
+        Err(ImageBuildError::InvalidReference(ReferenceKind::TypeTable)),
     );
 }
 
@@ -525,7 +530,7 @@ fn an_out_of_range_root_entry_record_draws_the_type_table_refusal() {
         durable_draft(TableRef::Forged, None, short_code())
             .encode()
             .map(|_| ()),
-        Err(ImageBuildError::InvalidReference("type table")),
+        Err(ImageBuildError::InvalidReference(ReferenceKind::TypeTable)),
     );
 }
 
@@ -535,7 +540,7 @@ fn an_out_of_range_branch_record_draws_the_type_table_refusal() {
         durable_draft(TableRef::Valid, Some(TableRef::Forged), short_code())
             .encode()
             .map(|_| ()),
-        Err(ImageBuildError::InvalidReference("type table")),
+        Err(ImageBuildError::InvalidReference(ReferenceKind::TypeTable)),
     );
 }
 
@@ -557,7 +562,7 @@ fn a_make_identity_cols_arity_mismatch_draws_the_root_table_refusal() {
         )
         .encode()
         .map(|_| ()),
-        Err(ImageBuildError::InvalidReference("root table")),
+        Err(ImageBuildError::InvalidReference(ReferenceKind::RootTable)),
     );
 }
 
@@ -599,7 +604,9 @@ fn a_dangling_iterate_list_type_draws_the_collection_type_refusal() {
         )
         .encode()
         .map(|_| ()),
-        Err(ImageBuildError::InvalidReference("collection type")),
+        Err(ImageBuildError::InvalidReference(
+            ReferenceKind::CollectionType
+        )),
     );
 }
 
@@ -655,7 +662,9 @@ fn a_dangling_index_scan_list_type_draws_the_collection_type_refusal() {
         scan_draft(CollTypeId::from_index(u16::MAX))
             .encode()
             .map(|_| ()),
-        Err(ImageBuildError::InvalidReference("collection type")),
+        Err(ImageBuildError::InvalidReference(
+            ReferenceKind::CollectionType
+        )),
     );
 }
 
@@ -700,7 +709,7 @@ fn with_decoy_enum(mut owner: ImageDraft) -> ImageDraft {
 
 /// A decoy: with TYPES empty and ENUMS populated at index 0, a producer check
 /// consulting the wrong table would accept this draft; the exact
-/// `InvalidReference("type table")` refusal pins the correct domain.
+/// `InvalidReference(ReferenceKind::TypeTable)` refusal pins the correct domain.
 #[test]
 fn a_record_type_decoy_draws_the_types_domain_refusal() {
     let draft = with_decoy_enum(main_draft(
@@ -712,13 +721,13 @@ fn a_record_type_decoy_draws_the_types_domain_refusal() {
     ));
     assert_eq!(
         draft.encode().map(|_| ()),
-        Err(ImageBuildError::InvalidReference("type table")),
+        Err(ImageBuildError::InvalidReference(ReferenceKind::TypeTable)),
     );
 }
 
 /// A decoy: with ENUMS empty and TYPES populated at index 0, a producer check
 /// consulting the wrong table would accept this draft; the exact
-/// `InvalidReference("enum type")` refusal pins the correct domain.
+/// `InvalidReference(ReferenceKind::EnumType)` refusal pins the correct domain.
 #[test]
 fn an_enum_type_decoy_draws_the_enums_domain_refusal() {
     let draft = with_decoy_record(main_draft(
@@ -730,13 +739,13 @@ fn an_enum_type_decoy_draws_the_enums_domain_refusal() {
     ));
     assert_eq!(
         draft.encode().map(|_| ()),
-        Err(ImageBuildError::InvalidReference("enum type")),
+        Err(ImageBuildError::InvalidReference(ReferenceKind::EnumType)),
     );
 }
 
 /// A decoy: with COLLTYPES empty and TYPES populated at index 0, a producer check
 /// consulting the wrong table would accept this draft; the exact
-/// `InvalidReference("collection type")` refusal pins the correct domain.
+/// `InvalidReference(ReferenceKind::CollectionType)` refusal pins the correct domain.
 #[test]
 fn a_collection_type_decoy_draws_the_colltypes_domain_refusal() {
     let draft = with_decoy_record(main_draft(
@@ -748,13 +757,15 @@ fn a_collection_type_decoy_draws_the_colltypes_domain_refusal() {
     ));
     assert_eq!(
         draft.encode().map(|_| ()),
-        Err(ImageBuildError::InvalidReference("collection type")),
+        Err(ImageBuildError::InvalidReference(
+            ReferenceKind::CollectionType
+        )),
     );
 }
 
 /// A decoy: with ROOTS empty and TYPES populated at index 0, a producer check
 /// consulting the wrong table would accept this draft; the exact
-/// `InvalidReference("root table")` refusal pins the correct domain.
+/// `InvalidReference(ReferenceKind::RootTable)` refusal pins the correct domain.
 #[test]
 fn an_identity_type_decoy_draws_the_roots_domain_refusal() {
     let draft = with_decoy_record(main_draft(
@@ -766,7 +777,7 @@ fn an_identity_type_decoy_draws_the_roots_domain_refusal() {
     ));
     assert_eq!(
         draft.encode().map(|_| ()),
-        Err(ImageBuildError::InvalidReference("root table")),
+        Err(ImageBuildError::InvalidReference(ReferenceKind::RootTable)),
     );
 }
 
@@ -796,7 +807,7 @@ fn an_out_of_range_enum_construct_variant_draws_the_enum_type_refusal() {
         with_decoy_enum(main_draft(Vec::new(), body(5)))
             .encode()
             .map(|_| ()),
-        Err(ImageBuildError::InvalidReference("enum type")),
+        Err(ImageBuildError::InvalidReference(ReferenceKind::EnumType)),
     );
 }
 
@@ -835,7 +846,9 @@ fn an_out_of_range_map_new_ordinal_draws_the_collection_type_refusal() {
     assert!(outcome.is_ok(), "{outcome:?}");
     assert_eq!(
         with_map_row(body(u16::MAX)).encode().map(|_| ()),
-        Err(ImageBuildError::InvalidReference("collection type")),
+        Err(ImageBuildError::InvalidReference(
+            ReferenceKind::CollectionType
+        )),
     );
 }
 
@@ -852,7 +865,9 @@ fn a_duplicate_export_target_draws_the_export_table_refusal() {
     draft.add_export(ExportId::of_local("", "again"), main);
     assert_eq!(
         draft.encode().map(|_| ()),
-        Err(ImageBuildError::InvalidReference("export table")),
+        Err(ImageBuildError::InvalidReference(
+            ReferenceKind::ExportTable
+        )),
     );
 }
 
@@ -867,7 +882,7 @@ fn a_duplicate_test_target_draws_the_test_table_refusal() {
     draft.add_test_entry(second, test_fn);
     assert_eq!(
         draft.encode().map(|_| ()),
-        Err(ImageBuildError::InvalidReference("test table")),
+        Err(ImageBuildError::InvalidReference(ReferenceKind::TestTable)),
     );
 }
 
@@ -882,7 +897,7 @@ fn a_duplicate_test_name_draws_the_test_table_refusal() {
     draft.add_test_entry(name, second);
     assert_eq!(
         draft.encode().map(|_| ()),
-        Err(ImageBuildError::InvalidReference("test table")),
+        Err(ImageBuildError::InvalidReference(ReferenceKind::TestTable)),
     );
 }
 
@@ -907,7 +922,7 @@ fn an_export_test_overlap_draws_the_test_table_refusal() {
     assert!(outcome.is_ok(), "{outcome:?}");
     assert_eq!(
         build(true).encode().map(|_| ()),
-        Err(ImageBuildError::InvalidReference("test table")),
+        Err(ImageBuildError::InvalidReference(ReferenceKind::TestTable)),
     );
 }
 
@@ -928,7 +943,9 @@ fn a_duplicate_export_id_draws_the_export_table_refusal() {
     draft.add_export(ExportId::of_local("", "main"), second);
     assert_eq!(
         draft.encode().map(|_| ()),
-        Err(ImageBuildError::InvalidReference("export table")),
+        Err(ImageBuildError::InvalidReference(
+            ReferenceKind::ExportTable
+        )),
     );
 }
 
@@ -974,7 +991,7 @@ fn a_test_entry_with_params_draws_the_test_table_refusal() {
         build(vec![ImageType::scalar(Scalar::Int)])
             .encode()
             .map(|_| ()),
-        Err(ImageBuildError::InvalidReference("test table")),
+        Err(ImageBuildError::InvalidReference(ReferenceKind::TestTable)),
     );
 }
 
@@ -1003,7 +1020,7 @@ fn an_assert_outside_a_test_entry_draws_the_test_table_refusal() {
     draft.add_export(ExportId::of_local("", "t"), asserting);
     assert_eq!(
         draft.encode().map(|_| ()),
-        Err(ImageBuildError::InvalidReference("test table")),
+        Err(ImageBuildError::InvalidReference(ReferenceKind::TestTable)),
     );
 }
 
@@ -1085,7 +1102,7 @@ fn a_direct_test_operation_draws_the_test_table_refusal() {
         for mutates in [false, true] {
             assert_eq!(
                 build(Some(mutates), drives_owner).encode().map(|_| ()),
-                Err(ImageBuildError::InvalidReference("test table")),
+                Err(ImageBuildError::InvalidReference(ReferenceKind::TestTable)),
             );
         }
     }
@@ -1120,7 +1137,7 @@ fn a_call_into_a_test_entry_draws_the_test_table_refusal() {
     assert!(outcome.is_ok(), "{outcome:?}");
     assert_eq!(
         build(true).encode().map(|_| ()),
-        Err(ImageBuildError::InvalidReference("test table")),
+        Err(ImageBuildError::InvalidReference(ReferenceKind::TestTable)),
     );
 }
 
@@ -1143,6 +1160,6 @@ fn a_bad_test_signature_draws_the_test_table_refusal() {
     draft.add_test_entry(name, test_fn);
     assert_eq!(
         draft.encode().map(|_| ()),
-        Err(ImageBuildError::InvalidReference("test table")),
+        Err(ImageBuildError::InvalidReference(ReferenceKind::TestTable)),
     );
 }

@@ -9,7 +9,7 @@ use marrow_image::bounds::{
 use marrow_image::{
     CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, DraftStateError, DraftTxn,
     EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr,
-    LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, VariantDef,
+    LedgerIdBytes, RecordTypeDef, ReferenceKind, RootOccurrenceDef, Scalar, VariantDef,
 };
 
 #[path = "common/admitted_plan.rs"]
@@ -180,7 +180,9 @@ fn a_rolled_back_fill_of_a_pre_transaction_row_is_reverted() {
     txn.commit();
     assert_eq!(
         owner.encode().map(|_| ()),
-        Err(ImageBuildError::InvalidReference("vacant record type")),
+        Err(ImageBuildError::InvalidReference(
+            ReferenceKind::VacantRecordType
+        )),
         "a reservation left vacant is the fence's coherence invariant",
     );
     {
@@ -198,7 +200,9 @@ fn a_rolled_back_fill_of_a_pre_transaction_row_is_reverted() {
     }
     assert_eq!(
         owner.encode().map(|_| ()),
-        Err(ImageBuildError::InvalidReference("vacant record type")),
+        Err(ImageBuildError::InvalidReference(
+            ReferenceKind::VacantRecordType
+        )),
         "the rollback reverted the fill, so the row is vacant again",
     );
     let mut txn = admitted(&mut owner);
@@ -313,7 +317,9 @@ fn function_prefix_fills_restore_on_return_error_and_unwind() {
         );
         assert_eq!(
             owner.encode().map(|_| ()),
-            Err(ImageBuildError::InvalidReference("vacant function"))
+            Err(ImageBuildError::InvalidReference(
+                ReferenceKind::VacantFunction
+            ))
         );
         let mut txn = admitted(&mut owner);
         fill(&mut txn, vacant);

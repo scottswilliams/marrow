@@ -26,7 +26,7 @@
 use std::collections::HashMap;
 
 use crate::bounds::MAX_SITES;
-use crate::draft::{DraftIdentity, ImageBuildError, SiteId};
+use crate::draft::{DraftIdentity, ImageBuildError, ReferenceKind, SiteId};
 use crate::product::RowStamp;
 use crate::product::{BindRefusal, BoundDemand, OccurrenceSiteDemandKey};
 
@@ -370,7 +370,9 @@ impl SiteDemandPlan {
         site: &PlannedSiteRef,
     ) -> Result<u16, ImageBuildError> {
         if self.validate(draft, site).is_err() {
-            return Err(ImageBuildError::InvalidReference("operation site"));
+            return Err(ImageBuildError::InvalidReference(
+                ReferenceKind::OperationSite,
+            ));
         }
         match site.kind {
             PlannedSiteRefKind::Fitting(id) => Ok(id.index()),

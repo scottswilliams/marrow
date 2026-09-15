@@ -5,7 +5,7 @@
 
 use marrow_image::{
     CollectionTypeDef, ExportId, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr,
-    Scalar, SpanEntry,
+    ReferenceKind, Scalar, SpanEntry,
 };
 use marrow_verify::verify;
 
@@ -176,7 +176,9 @@ fn a_list_new_index_out_of_range_is_refused_by_the_producer() {
     draft.add_export(ExportId::of_local("", "main"), main);
     assert_eq!(
         draft.encode().map(|_| ()),
-        Err(ImageBuildError::InvalidReference("collection type")),
+        Err(ImageBuildError::InvalidReference(
+            ReferenceKind::CollectionType
+        )),
     );
 }
 
