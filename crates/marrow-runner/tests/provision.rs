@@ -4,8 +4,10 @@
 
 #[path = "common/output.rs"]
 mod output;
-
-use std::path::PathBuf;
+#[path = "common/program.rs"]
+mod program;
+#[path = "common/scratch.rs"]
+mod scratch;
 
 use marrow_lifecycle::ProvisionReport;
 use marrow_local_wire::{ClientMessage, ServerMessage};
@@ -35,44 +37,11 @@ const IDS: &str = "marrow ids v0\n\
      high-water 0\n\
      end\n";
 
-/// Compile the durable fixture to image bytes (deterministic — the same bytes verify to the
-/// same image, so the test can build both a Service and a separate image for the report).
-fn image_bytes() -> Vec<u8> {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        SOURCE.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    marrow_compile::compile(&project)
-        .expect("compile")
-        .image
-        .bytes
-}
-
-fn scratch() -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "marrow-runner-provision-{}-{nonce}-{counter}",
-        std::process::id()
-    ))
-}
-
 /// The report token the owner accepts: derived from the same image the service serves.
 fn approval_token(store: &std::path::Path) -> String {
-    let image = marrow_verify::verify(&image_bytes()).expect("verify");
+    let image =
+        marrow_verify::verify(&program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes)
+            .expect("verify");
     ProvisionReport::new(store, &marrow_lifecycle::prepare(image))
         .expect("flat-executable")
         .token()
@@ -82,11 +51,14 @@ fn approval_token(store: &std::path::Path) -> String {
 /// instance; opening the destination confirms the store is complete.
 #[test]
 fn a_provision_request_with_a_matching_approval_provisions() {
-    let base = scratch();
+    let base = scratch::path("runner-provision");
     std::fs::create_dir_all(&base).expect("scratch base");
     let store = base.join("store");
-    let service = Service::build(marrow_verify::verify(&image_bytes()).expect("verify"))
-        .expect("service builds");
+    let service = Service::build(
+        marrow_verify::verify(&program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes)
+            .expect("verify"),
+    )
+    .expect("service builds");
 
     let response = service
         .handle(
@@ -115,11 +87,14 @@ fn a_provision_request_with_a_matching_approval_provisions() {
 /// rejected, and no store is published.
 #[test]
 fn a_provision_request_with_a_wrong_approval_is_rejected() {
-    let base = scratch();
+    let base = scratch::path("runner-provision");
     std::fs::create_dir_all(&base).expect("scratch base");
     let store = base.join("store");
-    let service = Service::build(marrow_verify::verify(&image_bytes()).expect("verify"))
-        .expect("service builds");
+    let service = Service::build(
+        marrow_verify::verify(&program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes)
+            .expect("verify"),
+    )
+    .expect("service builds");
 
     let response = service
         .handle(
@@ -146,9 +121,9 @@ fn a_provision_request_with_a_wrong_approval_is_rejected() {
 fn provision_receipt_failure_preserves_the_published_store() {
     use std::process::{Command, Stdio};
 
-    let base = scratch();
+    let base = scratch::path("runner-provision");
     std::fs::create_dir_all(&base).expect("scratch base");
-    let bytes = image_bytes();
+    let bytes = program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes;
     let image_path = base.join("program.image");
     std::fs::write(&image_path, &bytes).expect("write image");
     let store = base.join("store");
@@ -197,9 +172,9 @@ fn recovery_output_failure_keeps_completed_activation_and_preserved_bytes() {
     use std::process::{Command, Stdio};
 
     for format in ["text", "jsonl"] {
-        let base = scratch();
+        let base = scratch::path("runner-provision");
         std::fs::create_dir_all(&base).expect("scratch base");
-        let bytes = image_bytes();
+        let bytes = program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes;
         let image_path = base.join("program.image");
         std::fs::write(&image_path, &bytes).expect("image");
         let store = base.join("store");
@@ -273,10 +248,10 @@ fn logical_transfer_keeps_completed_effects_when_receipt_delivery_fails() {
     use std::process::{Command, Stdio};
     for restore in [false, true] {
         for close_diagnostic in [false, true] {
-            let base = scratch();
+            let base = scratch::path("runner-provision");
             std::fs::create_dir_all(&base).expect("scratch");
             eprintln!("preserved transfer output failure: {}", base.display());
-            let bytes = image_bytes();
+            let bytes = program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes;
             let image = marrow_verify::verify(&bytes).expect("image");
             let image_path = base.join("program.image");
             std::fs::write(&image_path, &bytes).expect("image file");
@@ -374,10 +349,10 @@ fn logical_transfer_keeps_completed_effects_when_receipt_delivery_fails() {
 #[test]
 fn restore_command_refuses_incomplete_input_without_a_usable_destination() {
     use std::process::Command;
-    let base = scratch();
+    let base = scratch::path("runner-provision");
     std::fs::create_dir_all(&base).expect("scratch");
     eprintln!("preserved invalid transfer inputs: {}", base.display());
-    let bytes = image_bytes();
+    let bytes = program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes;
     let source = base.join("source");
     let prepared = marrow_lifecycle::prepare(marrow_verify::verify(&bytes).expect("image"));
     let report = ProvisionReport::new(&source, &prepared).expect("report");
@@ -445,9 +420,9 @@ fn import_with_closed_stream(destination: ImportStore, closed: ClosedStream) {
     use marrow_runner::{AttachedService, Handler};
     use std::process::{Command, Stdio};
 
-    let base = scratch();
+    let base = scratch::path("runner-provision");
     std::fs::create_dir_all(&base).expect("scratch base");
-    let bytes = image_bytes();
+    let bytes = program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes;
     let image = marrow_verify::verify(&bytes).expect("verify image");
     assert_eq!(image.exports().len(), 1);
     let read = Id32::from_bytes(*image.exports()[0].id().bytes());
@@ -565,10 +540,14 @@ fn runner_usage_stderr_failure_keeps_usage_status() {
 #[test]
 fn provision_report_failure_precedes_publication() {
     use std::process::{Command, Stdio};
-    let base = scratch();
+    let base = scratch::path("runner-provision");
     std::fs::create_dir_all(&base).expect("scratch base");
     let image = base.join("program.image");
-    std::fs::write(&image, image_bytes()).expect("image");
+    std::fs::write(
+        &image,
+        program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes,
+    )
+    .expect("image");
     let store = base.join("store");
     assert!(!store.exists(), "fresh destination: {}", store.display());
     let writer = broken_output();
@@ -593,7 +572,7 @@ fn provision_report_failure_precedes_publication() {
 #[test]
 fn invalid_image_with_closed_stderr_leaves_store_absent() {
     use std::process::{Command, Stdio};
-    let base = scratch();
+    let base = scratch::path("runner-provision");
     std::fs::create_dir_all(&base).expect("scratch base");
     let invalid = base.join("invalid.image");
     std::fs::write(&invalid, b"not an image").expect("invalid image");

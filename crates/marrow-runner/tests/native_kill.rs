@@ -16,6 +16,11 @@
 //! (end-of-stream) rather than replying, which is exactly the boundary the client maps to
 //! `OutcomeUnknown` for a `Dispatched` handoff stage.
 
+#[path = "common/program.rs"]
+mod program;
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -26,74 +31,11 @@ use marrow_local_wire::{
     ClientMessage, HandoffStage, Id32, Json, LossClass, ServerMessage, classify, frame_body_len,
 };
 use marrow_runner::{CallOutcome, attach_and_call};
-use marrow_verify::{VerifiedImage, verify};
+use marrow_verify::VerifiedImage;
 use marrow_vm::Value;
-
-fn fixture_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("workspace root")
-        .join("fixtures/v01/conformance/workshop")
-}
 
 fn runner_exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_marrow-runner"))
-}
-
-fn compile_verify() -> (VerifiedImage, Vec<u8>) {
-    let source = std::fs::read(fixture_dir().join("src/main.mw")).expect("read fixture source");
-    let ids = std::fs::read(fixture_dir().join(".marrow/ids")).expect("read fixture ledger");
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source,
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(&ids),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let bytes = marrow_compile::compile(&project)
-        .expect("compile")
-        .image
-        .bytes;
-    (verify(&bytes).expect("verify"), bytes)
-}
-
-fn export_id(image: &VerifiedImage, name: &str) -> Id32 {
-    Id32::from_bytes(
-        *image
-            .exports()
-            .iter()
-            .find(|export| {
-                image
-                    .function(export.function())
-                    .expect("verified function")
-                    .body()
-                    .name()
-                    == name
-            })
-            .unwrap_or_else(|| panic!("export `{name}` present"))
-            .id()
-            .bytes(),
-    )
-}
-
-fn scratch(tag: &str) -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "marrow-native-kill-{tag}-{}-{nonce}-{counter}",
-        std::process::id()
-    ))
 }
 
 fn provision(store: &Path, image: &VerifiedImage) {
@@ -143,7 +85,7 @@ impl Drop for KillOnDrop {
 }
 
 fn launch_attached(image_bytes: &[u8], store: &Path) -> (KillOnDrop, UnixStream, PathBuf) {
-    let image_path = scratch("img").with_extension("mwi");
+    let image_path = scratch::path("native-kill-img").with_extension("mwi");
     std::fs::write(&image_path, image_bytes).expect("stage image");
 
     let nonce = marrow_runner::mint_id().expect("nonce");
@@ -195,7 +137,7 @@ fn call_value(
         image,
         bytes,
         store,
-        *export_id(image, name).bytes(),
+        program::export_id(image, name),
         args,
     );
     completion.cleanup.expect("post-crash companion settled");
@@ -247,7 +189,7 @@ fn new_snapshot(name: &str) -> (Option<Value>, Option<Value>, Option<Value>, Opt
 
 fn add_request(image: &VerifiedImage, id: i64, name: &str) -> ClientMessage {
     ClientMessage::Request {
-        export: export_id(image, "add"),
+        export: Id32::from_bytes(program::export_id(image, "add")),
         args: vec![
             Json::Int(id),
             Json::Str(format!("T-{id}")),
@@ -264,8 +206,8 @@ fn add_request(image: &VerifiedImage, id: i64, name: &str) -> ClientMessage {
 #[test]
 #[ignore = "spawns a runner that binds a Unix socket; run with the sandbox disabled"]
 fn native_death_before_request_is_not_started_and_leaves_the_old_state() {
-    let (image, bytes) = compile_verify();
-    let store = scratch("before-send-store").join("store");
+    let program::Program { image, bytes } = program::workshop();
+    let store = scratch::path("native-kill-before-send").join("store");
     std::fs::create_dir_all(store.parent().expect("parent")).expect("scratch dir");
     provision(&store, &image);
 
@@ -291,8 +233,8 @@ fn native_death_before_request_is_not_started_and_leaves_the_old_state() {
 #[test]
 #[ignore = "spawns a runner that binds a Unix socket; run with the sandbox disabled"]
 fn native_death_after_reply_preserves_the_exact_committed_state() {
-    let (image, bytes) = compile_verify();
-    let store = scratch("after-reply-store").join("store");
+    let program::Program { image, bytes } = program::workshop();
+    let store = scratch::path("native-kill-after-reply").join("store");
     std::fs::create_dir_all(store.parent().expect("parent")).expect("scratch dir");
     provision(&store, &image);
 
@@ -331,8 +273,8 @@ fn native_death_after_reply_preserves_the_exact_committed_state() {
 #[test]
 #[ignore = "spawns a runner that binds a Unix socket; run with the sandbox disabled"]
 fn a_native_call_lost_to_runner_death_after_dispatch_is_outcome_unknown() {
-    let (image, bytes) = compile_verify();
-    let store = scratch("store").join("store");
+    let program::Program { image, bytes } = program::workshop();
+    let store = scratch::path("native-kill").join("store");
     std::fs::create_dir_all(store.parent().expect("parent")).expect("scratch dir");
     provision(&store, &image);
 

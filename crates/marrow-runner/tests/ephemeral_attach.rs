@@ -1,6 +1,6 @@
 //! The ephemeral-memory terminal path over a real companion process and a real socket.
 //!
-//! This is the G02b exit-gate journey: the E06 Workshop image is attached to a *fresh in-memory*
+//! The Workshop image is attached to a *fresh in-memory*
 //! store held by one spawned `marrow-runner attach-ephemeral` process, and the whole
 //! add / read / move / cross-root rollback / re-read journey runs over that one session. Unlike
 //! the native path — where each call is its own process against a persistent store — every call
@@ -9,62 +9,17 @@
 //! under test is [`EphemeralSession`]; the memory store is never provisioned (it is minted empty
 //! in the runner) and never persists.
 
+#[path = "common/program.rs"]
+mod program;
+
 use std::path::PathBuf;
 
 use marrow_runner::{CallOutcome, EphemeralCall, EphemeralSession, Json};
 use marrow_verify::VerifiedImage;
 use marrow_vm::Value;
 
-fn fixture_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("workspace root")
-        .join("fixtures/v01/conformance/workshop")
-}
-
 fn runner_exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_marrow-runner"))
-}
-
-fn compile_verify() -> (VerifiedImage, Vec<u8>) {
-    let source = std::fs::read(fixture_dir().join("src/main.mw")).expect("read fixture source");
-    let ids = std::fs::read(fixture_dir().join(".marrow/ids")).expect("read fixture ledger");
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source,
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(&ids),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let bytes = marrow_compile::compile(&project)
-        .expect("compile")
-        .image
-        .bytes;
-    let image = marrow_verify::verify(&bytes).expect("verify");
-    (image, bytes)
-}
-
-fn export_id(image: &VerifiedImage, name: &str) -> [u8; 32] {
-    *image
-        .exports()
-        .iter()
-        .find(|export| {
-            image
-                .function(export.function())
-                .expect("verified function")
-                .body()
-                .name()
-                == name
-        })
-        .unwrap_or_else(|| panic!("export `{name}` present"))
-        .id()
-        .bytes()
 }
 
 fn present_name(name: &str) -> Option<Value> {
@@ -81,7 +36,7 @@ impl<'a> Session<'a> {
     fn call(&mut self, name: &str, args: Vec<Json>) -> CallOutcome {
         match self
             .inner
-            .call(export_id(self.image, name), args)
+            .call(program::export_id(self.image, name), args)
             .unwrap_or_else(|error| panic!("call `{name}` failed: {}", error.code()))
         {
             EphemeralCall::Replied(outcome) => outcome,
@@ -124,7 +79,7 @@ impl<'a> Session<'a> {
 /// root at its prior committed value — all within one in-memory store that never touched disk.
 #[test]
 fn workshop_journey_over_one_ephemeral_session() {
-    let (image, bytes) = compile_verify();
+    let program::Program { image, bytes } = program::workshop();
     let inner =
         EphemeralSession::open(&runner_exe(), &image, &bytes).expect("open the ephemeral session");
     let mut session = Session {
@@ -199,7 +154,7 @@ fn workshop_journey_over_one_ephemeral_session() {
 /// the asset name and its first note entry both read back from the one in-memory store.
 #[test]
 fn a_committed_add_is_observable_with_its_log_descendant() {
-    let (image, bytes) = compile_verify();
+    let program::Program { image, bytes } = program::workshop();
     let inner =
         EphemeralSession::open(&runner_exe(), &image, &bytes).expect("open the ephemeral session");
     let mut session = Session {
@@ -234,7 +189,7 @@ fn a_committed_add_is_observable_with_its_log_descendant() {
 /// ephemeral contract — no persistence across sessions.
 #[test]
 fn a_new_session_starts_from_an_empty_store() {
-    let (image, bytes) = compile_verify();
+    let program::Program { image, bytes } = program::workshop();
     let epoch = marrow_temporal::format_instant(0).expect("epoch instant");
 
     {

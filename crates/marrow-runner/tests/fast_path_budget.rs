@@ -1,6 +1,6 @@
-//! Measured fast-path costs for the persistent terminal path (F02b), recorded against the
-//! interactive budget the A02a control freezes (a durable terminal call must complete well
-//! within a human-interactive threshold). These are recorded numbers, not asserted
+//! Measured fast-path costs for the persistent terminal path, recorded against the
+//! interactive budget (a durable terminal call must complete well within a
+//! human-interactive threshold). These are recorded numbers, not asserted
 //! durability or latency claims: the test prints each measured median and enforces only a
 //! generous non-regression ceiling so it never flakes, while the completion packet carries
 //! the recorded table.
@@ -16,76 +16,22 @@
 //!
 //! Run with `--nocapture` to see the recorded medians.
 
+#[path = "common/program.rs"]
+mod program;
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use marrow_runner::{Json, attach_and_call};
 use marrow_verify::VerifiedImage;
 
-fn fixture_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("workspace root")
-        .join("fixtures/v01/conformance/workshop")
-}
-
-fn workshop() -> (Vec<u8>, VerifiedImage) {
-    let source = std::fs::read(fixture_dir().join("src/main.mw")).expect("source");
-    let ids = std::fs::read(fixture_dir().join(".marrow/ids")).expect("ids");
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source,
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(&ids),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let bytes = marrow_compile::compile(&project)
-        .expect("compile")
-        .image
-        .bytes;
-    let image = marrow_verify::verify(&bytes).expect("verify");
-    (bytes, image)
-}
-
-fn scratch(tag: &str) -> PathBuf {
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    std::env::temp_dir().join(format!(
-        "marrow-fastpath-{tag}-{}-{nonce}/store",
-        std::process::id()
-    ))
-}
-
 fn provision(store: &Path, image: &VerifiedImage) {
     let prepared = marrow_lifecycle::prepare(image.clone());
     let report = marrow_lifecycle::ProvisionReport::new(store, &prepared).expect("flat");
     let approval = marrow_lifecycle::ProvisionApproval::accept(&report);
     marrow_lifecycle::provision_image(store, &prepared, &approval).expect("provision");
-}
-
-fn export_id(image: &VerifiedImage, name: &str) -> [u8; 32] {
-    *image
-        .exports()
-        .iter()
-        .find(|e| {
-            image
-                .function(e.function())
-                .expect("verified function")
-                .body()
-                .name()
-                == name
-        })
-        .expect("export")
-        .id()
-        .bytes()
 }
 
 fn median(mut samples: Vec<Duration>) -> Duration {
@@ -106,7 +52,7 @@ fn measure(runs: usize, mut f: impl FnMut()) -> Duration {
 
 #[test]
 fn fast_path_costs_are_recorded() {
-    let (bytes, image) = workshop();
+    let program::Program { image, bytes } = program::workshop();
 
     // verification
     let verify = measure(21, || {
@@ -115,7 +61,7 @@ fn fast_path_costs_are_recorded() {
 
     // open (lock + decode + admission + engine open): provision once, then attach the active
     // image and close repeatedly.
-    let store = scratch("open");
+    let store = scratch::path("fastpath-open").join("store");
     std::fs::create_dir_all(store.parent().unwrap()).unwrap();
     provision(&store, &image);
     let open = measure(21, || {
@@ -126,25 +72,7 @@ fn fast_path_costs_are_recorded() {
 
     // head commit: a binding-only rebind's atomic envelope+head rewrite. Rebind back and
     // forth between two body-only-different images so each attach performs one head commit.
-    let edited = {
-        let mut src = std::fs::read(fixture_dir().join("src/main.mw")).unwrap();
-        src.extend_from_slice(b"\nfn _budgetProbe(): int {\n    return 0\n}\n");
-        let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").unwrap();
-        let ids = std::fs::read(fixture_dir().join(".marrow/ids")).unwrap();
-        let files = vec![marrow_project::CapturedFile::new(
-            "src/main.mw".to_string(),
-            src,
-        )];
-        let project = marrow_project::capture(
-            &manifest,
-            files,
-            Some(&ids),
-            &marrow_project::CaptureLimits::DEFAULT,
-        )
-        .unwrap();
-        let b = marrow_compile::compile(&project).unwrap().image.bytes;
-        marrow_verify::verify(&b).unwrap()
-    };
+    let edited = program::workshop_with("\nfn _budgetProbe(): int {\n    return 0\n}\n").image;
     let mut toggle = false;
     let head_commit = measure(11, || {
         // Alternate the active image so every attach is a real rebind (a head commit).
@@ -159,11 +87,11 @@ fn fast_path_costs_are_recorded() {
     });
 
     // end-to-end companion call (spawn + attach + open + run + commit + teardown).
-    let call_store = scratch("call");
+    let call_store = scratch::path("fastpath-call").join("store");
     std::fs::create_dir_all(call_store.parent().unwrap()).unwrap();
     provision(&call_store, &image);
     let runner = PathBuf::from(env!("CARGO_BIN_EXE_marrow-runner"));
-    let present = export_id(&image, "present");
+    let present = program::export_id(&image, "present");
     let end_to_end = measure(11, || {
         let completion = attach_and_call(
             &runner,
@@ -177,7 +105,7 @@ fn fast_path_costs_are_recorded() {
         completion.outcome.expect("call");
     });
 
-    println!("F02b fast-path measured medians (this host):");
+    println!("fast-path measured medians (this host):");
     println!("  verification        : {verify:?}");
     println!("  open (lock+decode+engine): {open:?}");
     println!("  head commit (rebind): {head_commit:?}");

@@ -1,4 +1,4 @@
-//! The G03 term-3 (D08) refusal surfaced end-to-end through the production native path.
+//! The effect-ceiling refusal surfaced end-to-end through the production native path.
 //!
 //! A store is provisioned under a read-only image, recording its demand union as the accepted
 //! deployment ceiling. A later, broadened image (the same read-only export edited to also
@@ -6,15 +6,21 @@
 //! lifecycle actor refuses it before opening the store, and the runner serves that refusal as a
 //! typed wire reject: the terminal receives `CallOutcome::Reject { code:
 //! "store.demand_exceeds_ceiling" }`, the store head is byte-unchanged (zero engine calls), and
-//! the prior program still runs. This is the client-visible half of the effect-ceiling MUST-WIN.
+//! the prior program still runs.
 //!
 //! Spawns a runner that binds a Unix socket, which the sandbox denies; run with the sandbox
 //! disabled (the workspace battery already runs that way).
 
+#[path = "common/program.rs"]
+mod program;
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::path::{Path, PathBuf};
 
 use marrow_runner::{CallOutcome, Json, attach_and_call};
-use marrow_verify::{VerifiedImage, verify};
+use marrow_verify::VerifiedImage;
+use program::Program;
 
 const IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
@@ -48,24 +54,8 @@ fn source_broadened() -> String {
     )
 }
 
-fn compile(source: &str) -> (VerifiedImage, Vec<u8>) {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    (
-        verify(&compiled.image.bytes).expect("verify"),
-        compiled.image.bytes,
-    )
+fn compile(source: &str) -> Program {
+    program::build(source.as_bytes().to_vec(), IDS.as_bytes())
 }
 
 fn provision(store: &Path, image: &VerifiedImage) {
@@ -75,46 +65,17 @@ fn provision(store: &Path, image: &VerifiedImage) {
     marrow_lifecycle::provision_image(store, &prepared, &approval).expect("provision");
 }
 
-fn export_id(image: &VerifiedImage, name: &str) -> [u8; 32] {
-    *image
-        .exports()
-        .iter()
-        .find(|export| {
-            image
-                .function(export.function())
-                .expect("verified function")
-                .body()
-                .name()
-                == name
-        })
-        .unwrap_or_else(|| panic!("export `{name}` present"))
-        .id()
-        .bytes()
-}
-
 fn runner_exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_marrow-runner"))
 }
 
-fn scratch() -> PathBuf {
-    let base = std::env::temp_dir().join(format!(
-        "marrow-g03-reject-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0),
-    ));
-    std::fs::create_dir_all(&base).expect("scratch base");
-    base.join("store")
-}
-
 #[test]
 fn a_broadened_image_is_rejected_end_to_end_through_the_native_path() {
-    let (read_only, _) = compile(&source_read_only());
-    let (broadened, broadened_bytes) = compile(&source_broadened());
-    let store = scratch();
-    provision(&store, &read_only);
+    let read_only = compile(&source_read_only());
+    let broadened = compile(&source_broadened());
+    let scratch = scratch::Scratch::new("ceiling-reject");
+    let store = scratch.store();
+    provision(&store, &read_only.image);
 
     let head_before = std::fs::read(store.join("head")).expect("head");
 
@@ -122,10 +83,10 @@ fn a_broadened_image_is_rejected_end_to_end_through_the_native_path() {
     // runner refuses it before opening the store and serves a typed reject.
     let outcome = attach_and_call(
         &runner_exe(),
-        &broadened,
-        &broadened_bytes,
+        &broadened.image,
+        &broadened.bytes,
         &store,
-        export_id(&broadened, "readValue"),
+        broadened.export_id("readValue"),
         vec![Json::Int(1)],
     );
     outcome.cleanup.expect("rejected companion settled");
@@ -154,10 +115,10 @@ fn a_broadened_image_is_rejected_end_to_end_through_the_native_path() {
     );
     let prior = attach_and_call(
         &runner_exe(),
-        &read_only,
-        &compile(&source_read_only()).1,
+        &read_only.image,
+        &read_only.bytes,
         &store,
-        export_id(&read_only, "readValue"),
+        read_only.export_id("readValue"),
         vec![Json::Int(1)],
     );
     prior.cleanup.expect("prior companion settled");
@@ -174,6 +135,4 @@ fn a_broadened_image_is_rejected_end_to_end_through_the_native_path() {
         }
         CallOutcome::OutcomeUnknown { .. } => panic!("the prior program outcome was unknown"),
     }
-
-    let _ = std::fs::remove_dir_all(store.parent().expect("parent"));
 }

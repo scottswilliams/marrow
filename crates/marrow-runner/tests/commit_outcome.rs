@@ -1,3 +1,8 @@
+#[path = "common/program.rs"]
+mod program;
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use marrow_local_wire::{
     ClientMessage, DurableState, EncodedFrame, Id32, Json, ServerMessage, WireError,
 };
@@ -54,59 +59,8 @@ pub fn readValue(id: int): int? {
 }
 "#;
 
-struct Scratch(std::path::PathBuf);
-
-impl Scratch {
-    fn new() -> Self {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_nanos())
-            .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!(
-            "marrow-runner-commit-outcome-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).expect("scratch directory");
-        Self(dir)
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-fn compile() -> (marrow_verify::VerifiedImage, Vec<(String, Id32)>) {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        SOURCE.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    let ids = compiled
-        .exports
-        .iter()
-        .map(|export| (export.item.clone(), Id32::from_bytes(*export.id.bytes())))
-        .collect();
-    (
-        marrow_verify::verify(&compiled.image.bytes).expect("verify"),
-        ids,
-    )
-}
-
-fn id_of(ids: &[(String, Id32)], name: &str) -> Id32 {
-    ids.iter()
-        .find(|(item, _)| item == name)
-        .map(|(_, id)| *id)
-        .unwrap_or_else(|| panic!("missing export {name}"))
+fn id_of(fixture: &program::Program, name: &str) -> Id32 {
+    Id32::from_bytes(fixture.export_id(name))
 }
 
 /// A unique-index collision faults at the colliding write, before the commit: the wire
@@ -114,13 +68,14 @@ fn id_of(ids: &[(String, Id32)], name: &str) -> Id32 {
 /// back, and the owner stays usable.
 #[test]
 fn a_unique_index_fault_is_typed_and_does_not_retire_a_healthy_ephemeral_owner() {
-    let (image, ids) = compile();
-    let mut service = AttachedEphemeralService::mint(marrow_lifecycle::prepare(image));
+    let fixture = program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes());
+    let mut service =
+        AttachedEphemeralService::mint(marrow_lifecycle::prepare(fixture.image.clone()));
 
     // A committed value, then a second entry whose `value` collides in the unique index.
     match decoded(service.handle(
         ClientMessage::Request {
-            export: id_of(&ids, "set"),
+            export: id_of(&fixture, "set"),
             args: vec![Json::Int(1), Json::Int(5)],
         },
         Some(0),
@@ -130,7 +85,7 @@ fn a_unique_index_fault_is_typed_and_does_not_retire_a_healthy_ephemeral_owner()
     }
     let response = decoded(service.handle(
         ClientMessage::Request {
-            export: id_of(&ids, "set"),
+            export: id_of(&fixture, "set"),
             args: vec![Json::Int(2), Json::Int(5)],
         },
         Some(0),
@@ -150,7 +105,7 @@ fn a_unique_index_fault_is_typed_and_does_not_retire_a_healthy_ephemeral_owner()
     assert_eq!(
         decoded(service.handle(
             ClientMessage::Request {
-                export: id_of(&ids, "two"),
+                export: id_of(&fixture, "two"),
                 args: Vec::new(),
             },
             Some(0)
@@ -160,7 +115,7 @@ fn a_unique_index_fault_is_typed_and_does_not_retire_a_healthy_ephemeral_owner()
     assert_eq!(
         decoded(service.handle(
             ClientMessage::Request {
-                export: id_of(&ids, "readValue"),
+                export: id_of(&fixture, "readValue"),
                 args: vec![Json::Int(1)],
             },
             Some(0)
@@ -170,10 +125,10 @@ fn a_unique_index_fault_is_typed_and_does_not_retire_a_healthy_ephemeral_owner()
     );
 }
 
-fn assert_known_new_then_read(service: &mut impl Handler, ids: &[(String, Id32)]) {
+fn assert_known_new_then_read(service: &mut impl Handler, fixture: &program::Program) {
     let response = decoded(service.handle(
         ClientMessage::Request {
-            export: id_of(ids, "writeThenFault"),
+            export: id_of(fixture, "writeThenFault"),
             args: vec![Json::Int(4)],
         },
         Some(0),
@@ -197,7 +152,7 @@ fn assert_known_new_then_read(service: &mut impl Handler, ids: &[(String, Id32)]
     assert_eq!(
         decoded(service.handle(
             ClientMessage::Request {
-                export: id_of(ids, "readValue"),
+                export: id_of(fixture, "readValue"),
                 args: vec![Json::Int(4)],
             },
             Some(0)
@@ -209,17 +164,18 @@ fn assert_known_new_then_read(service: &mut impl Handler, ids: &[(String, Id32)]
 
 #[test]
 fn confirmed_commit_then_fault_is_known_new_and_keeps_the_ephemeral_owner() {
-    let (image, ids) = compile();
-    let mut service = AttachedEphemeralService::mint(marrow_lifecycle::prepare(image));
-    assert_known_new_then_read(&mut service, &ids);
+    let fixture = program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes());
+    let mut service =
+        AttachedEphemeralService::mint(marrow_lifecycle::prepare(fixture.image.clone()));
+    assert_known_new_then_read(&mut service, &fixture);
 }
 
 #[test]
 fn confirmed_commit_then_fault_is_known_new_through_the_native_attached_service() {
-    let (image, ids) = compile();
-    let scratch = Scratch::new();
-    let store = scratch.0.join("store");
-    let prepared = marrow_lifecycle::prepare(image);
+    let fixture = program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes());
+    let scratch = scratch::Scratch::new("commit-outcome");
+    let store = scratch.store();
+    let prepared = marrow_lifecycle::prepare(fixture.image.clone());
     let report = marrow_lifecycle::ProvisionReport::new(&store, &prepared)
         .expect("fixture is native executable");
     let approval = marrow_lifecycle::ProvisionApproval::accept(&report);
@@ -233,5 +189,5 @@ fn confirmed_commit_then_fault_is_known_new_through_the_native_attached_service(
             }
         };
     let mut service = AttachedService::new(attachment);
-    assert_known_new_then_read(&mut service, &ids);
+    assert_known_new_then_read(&mut service, &fixture);
 }

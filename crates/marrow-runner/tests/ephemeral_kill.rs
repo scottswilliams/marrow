@@ -14,9 +14,12 @@
 //! stays on the test thread; the client side runs on a spawned thread and speaks the wire
 //! directly.
 
+#[path = "common/program.rs"]
+mod program;
+
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -26,57 +29,8 @@ use marrow_local_wire::{ClientMessage, Id32, Json, ServerMessage, frame_body_len
 use marrow_runner::{AttachedEphemeralService, Channel, Deadlines, LaunchSecrets, mint_id};
 use marrow_verify::VerifiedImage;
 
-fn fixture_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("workspace root")
-        .join("fixtures/v01/conformance/workshop")
-}
-
-fn compile_verify() -> VerifiedImage {
-    let source = std::fs::read(fixture_dir().join("src/main.mw")).expect("read fixture source");
-    let ids = std::fs::read(fixture_dir().join(".marrow/ids")).expect("read fixture ledger");
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source,
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(&ids),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let bytes = marrow_compile::compile(&project)
-        .expect("compile")
-        .image
-        .bytes;
-    marrow_verify::verify(&bytes).expect("verify")
-}
-
 fn identity_of(image: &VerifiedImage) -> Id32 {
     Id32::from_bytes(image.image_id().0)
-}
-
-fn export_id(image: &VerifiedImage, name: &str) -> Id32 {
-    Id32::from_bytes(
-        *image
-            .exports()
-            .iter()
-            .find(|export| {
-                image
-                    .function(export.function())
-                    .expect("verified function")
-                    .body()
-                    .name()
-                    == name
-            })
-            .unwrap_or_else(|| panic!("export `{name}` present"))
-            .id()
-            .bytes(),
-    )
 }
 
 /// Brisk deadlines so the timeout-shaped tests finish quickly.
@@ -131,7 +85,7 @@ fn read_full(stream: &mut UnixStream, buf: &mut [u8]) -> Option<()> {
 /// these tests drive is caught even in the sandboxed default battery.
 #[test]
 fn embedded_workshop_source_compiles_and_verifies() {
-    let image = compile_verify();
+    let image = program::workshop().image;
     assert!(
         !image.exports().is_empty(),
         "the workshop image exports calls"
@@ -143,7 +97,7 @@ fn embedded_workshop_source_compiles_and_verifies() {
 #[test]
 #[ignore = "binds a Unix socket; run with the sandbox disabled"]
 fn a_refused_handshake_never_opens_the_memory_attachment() {
-    let image = compile_verify();
+    let image = program::workshop().image;
     let identity = identity_of(&image);
     let channel = Channel::bind().expect("bind");
     let path = channel.socket_path().to_path_buf();
@@ -187,10 +141,10 @@ fn a_refused_handshake_never_opens_the_memory_attachment() {
 #[test]
 #[ignore = "binds a Unix socket; run with the sandbox disabled"]
 fn an_authenticated_client_commits_and_reads_back() {
-    let image = compile_verify();
+    let image = program::workshop().image;
     let identity = identity_of(&image);
-    let add = export_id(&image, "add");
-    let catalogued = export_id(&image, "catalogued");
+    let add = Id32::from_bytes(program::export_id(&image, "add"));
+    let catalogued = Id32::from_bytes(program::export_id(&image, "catalogued"));
     let epoch = marrow_temporal::format_instant(0).expect("epoch instant");
     let channel = Channel::bind().expect("bind");
     let path = channel.socket_path().to_path_buf();
@@ -270,7 +224,7 @@ fn an_authenticated_client_commits_and_reads_back() {
 fn death_before_send_classifies_not_started() {
     use marrow_local_wire::{HandoffStage, LossClass, classify};
 
-    let image = compile_verify();
+    let image = program::workshop().image;
     let identity = identity_of(&image);
     let channel = Channel::bind().expect("bind");
     let path = channel.socket_path().to_path_buf();
@@ -304,9 +258,9 @@ fn death_before_send_classifies_not_started() {
 fn death_after_dispatch_classifies_outcome_unknown() {
     use marrow_local_wire::{HandoffStage, LossClass, classify};
 
-    let image = compile_verify();
+    let image = program::workshop().image;
     let identity = identity_of(&image);
-    let add = export_id(&image, "add");
+    let add = Id32::from_bytes(program::export_id(&image, "add"));
     let channel = Channel::bind().expect("bind");
     let path = channel.socket_path().to_path_buf();
     let nonce = mint_id().unwrap();
@@ -353,9 +307,9 @@ fn death_after_dispatch_classifies_outcome_unknown() {
 #[test]
 #[ignore = "binds a Unix socket; run with the sandbox disabled"]
 fn a_request_before_hello_fails_the_handshake() {
-    let image = compile_verify();
+    let image = program::workshop().image;
     let identity = identity_of(&image);
-    let add = export_id(&image, "add");
+    let add = Id32::from_bytes(program::export_id(&image, "add"));
     let channel = Channel::bind().expect("bind");
     let path = channel.socket_path().to_path_buf();
     let nonce = mint_id().unwrap();
@@ -389,7 +343,7 @@ fn a_request_before_hello_fails_the_handshake() {
 #[test]
 #[ignore = "binds a Unix socket; run with the sandbox disabled"]
 fn a_provision_before_hello_fails_the_handshake() {
-    let image = compile_verify();
+    let image = program::workshop().image;
     let identity = identity_of(&image);
     let channel = Channel::bind().expect("bind");
     let path = channel.socket_path().to_path_buf();
@@ -420,7 +374,7 @@ fn a_provision_before_hello_fails_the_handshake() {
 #[test]
 #[ignore = "binds a Unix socket; run with the sandbox disabled"]
 fn post_handshake_hello_and_provision_are_rejected() {
-    let image = compile_verify();
+    let image = program::workshop().image;
     let identity = identity_of(&image);
     let channel = Channel::bind().expect("bind");
     let path = channel.socket_path().to_path_buf();
@@ -479,7 +433,7 @@ fn post_handshake_hello_and_provision_are_rejected() {
 #[test]
 #[ignore = "binds a Unix socket; run with the sandbox disabled"]
 fn a_client_refuses_a_mismatched_identity() {
-    let image = compile_verify();
+    let image = program::workshop().image;
     let identity = identity_of(&image);
     let channel = Channel::bind().expect("bind");
     let path = channel.socket_path().to_path_buf();

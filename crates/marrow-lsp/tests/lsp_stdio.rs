@@ -1,11 +1,7 @@
-//! Production probes for `marrow-lsp`: spawn the real binary and drive the JSON-RPC
-//! protocol over stdio.
-//!
-//! These are boundary tests. They establish protocol framing, the initialize/initialized
-//! handshake, diagnostic publication over an opened document, hover/formatting responses,
-//! clean shutdown/exit, and prompt nonzero termination on EOF without a test-only
-//! production entry point. The client side uses `serde_json` generically — a dev-only,
-//! std-only edge that does not weaken the server's closed production boundary.
+//! The stdio boundary of the real `marrow-lsp` binary: header framing, the
+//! initialize/initialized handshake, the not-initialized refusal, clean shutdown/exit, and
+//! nonzero termination on EOF. Payload semantics belong to the in-process coordinator and
+//! fact tests; the queries kept here are the ones those tests cannot reach.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -20,49 +16,32 @@ struct Connection {
     stdout: BufReader<ChildStdout>,
 }
 
-/// The source revision a diagnostic publication must identify.
-#[derive(Clone, Copy)]
-enum DiagnosticPublication {
-    /// A whole-project scan for a file outside the open-document ledger.
-    ProjectScan,
-    /// An analysis that includes this exact client-owned document version.
-    OpenDocument(i64),
-}
-
-/// One bounded inbound wait. Diagnostic waits must select a publication source revision;
-/// waiting for an arbitrary publication by URI is deliberately not representable.
+/// One bounded inbound wait. A diagnostic wait must name the client-owned document version
+/// the publication analyzed; waiting for an arbitrary publication by URI is deliberately not
+/// representable.
 enum ExpectedMessage<'a> {
     Response(i64),
-    Diagnostics {
-        uri: &'a str,
-        publication: DiagnosticPublication,
-    },
+    Diagnostics { uri: &'a str, version: i64 },
 }
 
 impl ExpectedMessage<'_> {
     fn matches(&self, message: &Value) -> bool {
         match self {
             Self::Response(id) => message.get("id").and_then(Value::as_i64) == Some(*id),
-            Self::Diagnostics { uri, publication } => {
+            Self::Diagnostics { uri, version } => {
                 message.get("method").and_then(Value::as_str)
                     == Some("textDocument/publishDiagnostics")
                     && message["params"]["uri"].as_str() == Some(*uri)
-                    && match publication {
-                        DiagnosticPublication::ProjectScan => {
-                            message["params"].get("version").is_none()
-                        }
-                        DiagnosticPublication::OpenDocument(version) => {
-                            message["params"]["version"].as_i64() == Some(*version)
-                        }
-                    }
+                    && message["params"]["version"].as_i64() == Some(*version)
             }
         }
     }
 }
 
 impl Connection {
-    fn spawn(root: &Path) -> Self {
-        let _ = root;
+    /// The server takes no arguments and never reads the working directory: it selects its
+    /// project from the `rootUri` of `initialize`.
+    fn spawn() -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_marrow-lsp"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -140,8 +119,8 @@ impl Connection {
         self.recv_until(ExpectedMessage::Response(id))
     }
 
-    fn recv_diagnostics(&mut self, uri: &str, publication: DiagnosticPublication) -> Value {
-        self.recv_until(ExpectedMessage::Diagnostics { uri, publication })
+    fn recv_diagnostics(&mut self, uri: &str, version: i64) -> Value {
+        self.recv_until(ExpectedMessage::Diagnostics { uri, version })
     }
 
     fn wait(mut self) -> i32 {
@@ -254,7 +233,7 @@ fn handshake_and_clean_shutdown() {
         "handshake",
         "module main\n\npub fn f(): int {\n    return 1\n}\n",
     );
-    let mut conn = Connection::spawn(&dir);
+    let mut conn = Connection::spawn();
     initialize(&mut conn, &dir);
     conn.request(9, "shutdown", Value::Null);
     let reply = conn.recv_response(9);
@@ -265,158 +244,35 @@ fn handshake_and_clean_shutdown() {
 }
 
 #[test]
-fn open_invalid_document_publishes_diagnostics() {
-    let dir = temp_project(
-        "diag",
-        "module main\n\npub fn f(): int {\n    return 1\n}\n",
-    );
-    let mut conn = Connection::spawn(&dir);
-    initialize(&mut conn, &dir);
-    // Open with an invalid overlay body: expect a nonempty diagnostic publication for it.
-    did_open(
-        &mut conn,
-        &dir,
-        "module main\n\npub fn f(): int {\n    return \n}\n",
-        1,
-    );
-    let target = document_uri(&dir);
-    let publish = conn.recv_diagnostics(&target, DiagnosticPublication::OpenDocument(1));
-    assert!(
-        publish["params"]["diagnostics"]
-            .as_array()
-            .is_some_and(|diagnostics| !diagnostics.is_empty()),
-        "the invalid overlay publishes diagnostics"
-    );
-    let diagnostic = &publish["params"]["diagnostics"][0];
-    assert!(
-        diagnostic.get("range").is_some(),
-        "diagnostic carries a range"
-    );
-    assert!(diagnostic["code"].is_string(), "diagnostic carries a code");
-    conn.request(9, "shutdown", Value::Null);
-    conn.recv_response(9);
-    conn.notify("exit", Value::Null);
-    assert_eq!(conn.wait(), 0);
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-#[test]
-fn clean_project_publishes_empty_diagnostics() {
-    let dir = temp_project(
-        "clean",
-        "module main\n\npub fn f(): int {\n    return 1\n}\n",
-    );
-    let mut conn = Connection::spawn(&dir);
-    initialize(&mut conn, &dir);
-    did_open(
-        &mut conn,
-        &dir,
-        "module main\n\npub fn f(): int {\n    return 1\n}\n",
-        1,
-    );
-    let target = document_uri(&dir);
-    let publish = conn.recv_diagnostics(&target, DiagnosticPublication::OpenDocument(1));
-    assert_eq!(
-        publish["params"]["diagnostics"].as_array().unwrap().len(),
-        0,
-        "a clean file publishes an empty diagnostic list"
-    );
-    conn.request(9, "shutdown", Value::Null);
-    conn.recv_response(9);
-    conn.notify("exit", Value::Null);
-    assert_eq!(conn.wait(), 0);
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-#[test]
-fn project_scan_publishes_unversioned_diagnostics_for_unopened_document() {
-    let dir = temp_project(
-        "unopened",
-        "module main\n\npub fn f(): int {\n    return 1\n}\n",
-    );
-    let mut conn = Connection::spawn(&dir);
-    initialize(&mut conn, &dir);
-    let target = document_uri(&dir);
-    let publish = conn.recv_diagnostics(&target, DiagnosticPublication::ProjectScan);
-    assert!(
-        publish["params"]["diagnostics"].is_array(),
-        "the unopened project file receives a diagnostic list"
-    );
-    conn.request(9, "shutdown", Value::Null);
-    conn.recv_response(9);
-    conn.notify("exit", Value::Null);
-    assert_eq!(conn.wait(), 0);
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-#[test]
-fn opened_publication_wait_skips_queued_project_scan() {
-    let dir = temp_project(
-        "publication-order",
-        "module main\n\npub fn f(): int {\n    return 1\n}\n",
-    );
-    std::fs::write(
-        dir.join("src/a.mw"),
-        "module a\n\npub fn before_main(): int {\n    return 0\n}\n",
-    )
-    .unwrap();
-    let mut conn = Connection::spawn(&dir);
-    initialize(&mut conn, &dir);
-    let preceding = format!("{}/src/a.mw", root_uri(&dir));
-    conn.recv_diagnostics(&preceding, DiagnosticPublication::ProjectScan);
-    let unformatted = "module main\n\npub fn f():int{\n return 1\n}\n";
-    did_open(&mut conn, &dir, unformatted, 1);
-    // The unversioned main-file publication is already queued behind `preceding`.
-    // Waiting for version 1 must skip it and observe the overlay analysis.
-    let target = document_uri(&dir);
-    let publish = conn.recv_diagnostics(&target, DiagnosticPublication::OpenDocument(1));
-    assert_eq!(publish["params"]["version"].as_i64(), Some(1));
-    conn.request(9, "shutdown", Value::Null);
-    conn.recv_response(9);
-    conn.notify("exit", Value::Null);
-    assert_eq!(conn.wait(), 0);
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-#[test]
-fn formatting_returns_edits() {
-    let dir = temp_project("fmt", "module main\n\npub fn f(): int {\n    return 1\n}\n");
-    let mut conn = Connection::spawn(&dir);
-    initialize(&mut conn, &dir);
-    let target = document_uri(&dir);
-    // Make a disk snapshot ready, then issue `didOpen` and the query with no publication
-    // barrier between them. Initialized-followup ingress ordering admits the open first;
-    // exact-revision query gating refuses the stale disk snapshot.
-    conn.recv_diagnostics(&target, DiagnosticPublication::ProjectScan);
-    let unformatted = "module main\n\npub fn f():int{\n return 1\n}\n";
-    did_open(&mut conn, &dir, unformatted, 1);
-    conn.request(
-        5,
-        "textDocument/formatting",
-        serde_json::json!({
-            "textDocument": { "uri": target },
-            "options": { "tabSize": 4, "insertSpaces": true },
-        }),
-    );
-    let reply = conn.recv_response(5);
-    let edits = reply["result"]
-        .as_array()
-        .expect("formatting returns edits");
-    assert_eq!(edits.len(), 1, "one whole-document edit");
-    conn.request(9, "shutdown", Value::Null);
-    conn.recv_response(9);
-    conn.notify("exit", Value::Null);
-    assert_eq!(conn.wait(), 0);
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-#[test]
 fn eof_without_exit_is_nonzero() {
     let dir = temp_project("eof", "module main\n");
-    let mut conn = Connection::spawn(&dir);
+    let mut conn = Connection::spawn();
     initialize(&mut conn, &dir);
     // Close stdin without sending exit: the server must terminate promptly, nonzero.
     assert_eq!(conn.wait(), 1, "EOF without exit is nonzero");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn request_before_initialize_is_server_not_initialized() {
+    let dir = temp_project("preinit", "module main\n");
+    let mut conn = Connection::spawn();
+    conn.request(
+        2,
+        "textDocument/formatting",
+        serde_json::json!({
+            "textDocument": { "uri": document_uri(&dir) },
+            "options": { "tabSize": 4, "insertSpaces": true },
+        }),
+    );
+    let reply = conn.recv_response(2);
+    assert_eq!(reply["error"]["code"].as_i64(), Some(-32002));
+    // Now initialize and exit cleanly.
+    initialize(&mut conn, &dir);
+    conn.request(9, "shutdown", Value::Null);
+    conn.recv_response(9);
+    conn.notify("exit", Value::Null);
+    assert_eq!(conn.wait(), 0);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -424,8 +280,7 @@ fn eof_without_exit_is_nonzero() {
 /// diagnostic publication, leaving a ready snapshot for a follow-up semantic query.
 fn open_graph_report(conn: &mut Connection, dir: &Path) {
     did_open(conn, dir, GRAPH_REPORT, 1);
-    let target = document_uri(dir);
-    conn.recv_diagnostics(&target, DiagnosticPublication::OpenDocument(1));
+    conn.recv_diagnostics(&document_uri(dir), 1);
 }
 
 #[test]
@@ -435,11 +290,10 @@ fn completion_at_enum_path_returns_members() {
     // bounded parser recovery still classifies the enum-path position.
     let editing = GRAPH_REPORT.replacen("return Role::isolated", "return Role::", 1);
     let dir = temp_project("completion", &editing);
-    let mut conn = Connection::spawn(&dir);
+    let mut conn = Connection::spawn();
     initialize(&mut conn, &dir);
     did_open(&mut conn, &dir, &editing, 1);
-    let target = document_uri(&dir);
-    conn.recv_diagnostics(&target, DiagnosticPublication::OpenDocument(1));
+    conn.recv_diagnostics(&document_uri(&dir), 1);
     // Just past the typed `Role::` — an enum-path position whose namespace is the enum's
     // members.
     let (line, character) = lsp_position(&editing, after(&editing, "return Role::"));
@@ -475,7 +329,7 @@ fn completion_at_enum_path_returns_members() {
 #[test]
 fn signature_help_inside_call_marks_active_parameter() {
     let dir = temp_project("sighelp", GRAPH_REPORT);
-    let mut conn = Connection::spawn(&dir);
+    let mut conn = Connection::spawn();
     initialize(&mut conn, &dir);
     open_graph_report(&mut conn, &dir);
     // Inside `getOr(reached, e.src, false)` at the second argument slot.
@@ -515,7 +369,7 @@ fn signature_help_inside_call_marks_active_parameter() {
 #[test]
 fn document_symbol_returns_declaration_outline() {
     let dir = temp_project("symbols", GRAPH_REPORT);
-    let mut conn = Connection::spawn(&dir);
+    let mut conn = Connection::spawn();
     initialize(&mut conn, &dir);
     open_graph_report(&mut conn, &dir);
     conn.request(
@@ -551,72 +405,6 @@ fn document_symbol_returns_declaration_outline() {
     for member in ["source", "sink", "internal", "isolated"] {
         assert!(members.contains(&member), "enum member {member} nested");
     }
-    conn.request(9, "shutdown", Value::Null);
-    conn.recv_response(9);
-    conn.notify("exit", Value::Null);
-    assert_eq!(conn.wait(), 0);
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-#[test]
-fn advertises_completion_signature_and_symbol() {
-    let dir = temp_project("caps", GRAPH_REPORT);
-    let mut conn = Connection::spawn(&dir);
-    conn.request(
-        1,
-        "initialize",
-        serde_json::json!({
-            "processId": Value::Null,
-            "rootUri": root_uri(&dir),
-            "capabilities": {},
-        }),
-    );
-    let reply = conn.recv_response(1);
-    let caps = &reply["result"]["capabilities"];
-    assert!(
-        caps["completionProvider"].is_object(),
-        "advertises completion"
-    );
-    assert!(
-        caps["signatureHelpProvider"].is_object(),
-        "advertises signature help"
-    );
-    assert_eq!(
-        caps["documentSymbolProvider"].as_bool(),
-        Some(true),
-        "advertises document symbols"
-    );
-    // The refused surface is never advertised.
-    assert!(
-        !caps["completionProvider"]["resolveProvider"]
-            .as_bool()
-            .unwrap_or(false),
-        "no completionItem/resolve"
-    );
-    conn.notify("initialized", serde_json::json!({}));
-    conn.request(9, "shutdown", Value::Null);
-    conn.recv_response(9);
-    conn.notify("exit", Value::Null);
-    assert_eq!(conn.wait(), 0);
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-#[test]
-fn request_before_initialize_is_server_not_initialized() {
-    let dir = temp_project("preinit", "module main\n");
-    let mut conn = Connection::spawn(&dir);
-    conn.request(
-        2,
-        "textDocument/formatting",
-        serde_json::json!({
-            "textDocument": { "uri": document_uri(&dir) },
-            "options": { "tabSize": 4, "insertSpaces": true },
-        }),
-    );
-    let reply = conn.recv_response(2);
-    assert_eq!(reply["error"]["code"].as_i64(), Some(-32002));
-    // Now initialize and exit cleanly.
-    initialize(&mut conn, &dir);
     conn.request(9, "shutdown", Value::Null);
     conn.recv_response(9);
     conn.notify("exit", Value::Null);

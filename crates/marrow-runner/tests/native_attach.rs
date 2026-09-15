@@ -1,6 +1,6 @@
 //! The persistent terminal path over a real native store and a real companion process.
 //!
-//! This is the F02b exit-gate journey: the E06 Workshop image is provisioned to a native
+//! The Workshop image is provisioned to a native
 //! store, then driven through add / read / move / cross-root rollback / re-read entirely
 //! over the companion path — each call spawning a fresh `marrow-runner attach` process that
 //! opens the store, runs one call against a durable session, commits, and closes. Because
@@ -11,6 +11,10 @@
 
 #[path = "common/output.rs"]
 mod output;
+#[path = "common/program.rs"]
+mod program;
+#[path = "common/scratch.rs"]
+mod scratch;
 
 use std::path::{Path, PathBuf};
 
@@ -18,14 +22,6 @@ use marrow_runner::{CallOutcome, Json, attach_and_call};
 use marrow_verify::{RetShape, VerifiedImage};
 use marrow_vm::Value;
 use output::broken_output;
-
-fn fixture_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("workspace root")
-        .join("fixtures/v01/conformance/workshop")
-}
 
 fn runner_exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_marrow-runner"))
@@ -35,8 +31,8 @@ fn runner_exe() -> PathBuf {
 #[ignore = "spawns a native runner inside a controlled lingering direct child"]
 fn exact_reply_survives_unconfirmed_native_cleanup_and_explicit_reap() {
     use std::os::unix::fs::PermissionsExt;
-    let (image, bytes) = compile_verify();
-    let store = scratch();
+    let program::Program { image, bytes } = program::workshop();
+    let store = scratch::path("native-attach").join("store");
     let root = store.parent().expect("fixture parent");
     std::fs::create_dir_all(root).expect("fixture directory");
     provision(&store, &image);
@@ -66,7 +62,7 @@ fn exact_reply_survives_unconfirmed_native_cleanup_and_explicit_reap() {
         &image,
         &bytes,
         &store,
-        export_id(&image, "catalogued"),
+        program::export_id(&image, "catalogued"),
         vec![],
     );
     let elapsed = started.elapsed();
@@ -101,9 +97,9 @@ fn exact_reply_survives_unconfirmed_native_cleanup_and_explicit_reap() {
 #[test]
 #[ignore = "spawns executable child controls"]
 fn startup_loss_distinguishes_native_spawn_from_spawn_failure() {
-    let (image, bytes) = compile_verify();
-    let store = scratch();
-    let export = export_id(&image, "assetName");
+    let program::Program { image, bytes } = program::workshop();
+    let store = scratch::path("native-attach").join("store");
+    let export = program::export_id(&image, "assetName");
     let failed_spawn = attach_and_call(
         &store.join("absent-runner"),
         &image,
@@ -137,11 +133,12 @@ fn startup_loss_distinguishes_native_spawn_from_spawn_failure() {
 #[ignore = "spawns native attach and binds a Unix socket"]
 fn closed_launch_descriptor_does_not_undo_a_completed_rebind() {
     use std::process::{Command, Stdio};
-    let (old, _) = compile_verify();
-    let (new, bytes) = compile_verify_with("\nfn version(): int { return 2 }\n");
+    let old = program::workshop().image;
+    let program::Program { image: new, bytes } =
+        program::workshop_with("\nfn version(): int { return 2 }\n");
     assert_ne!(old.image_id(), new.image_id());
     for capture_diagnostic in [true, false] {
-        let store = scratch();
+        let store = scratch::path("native-attach").join("store");
         let base = store.parent().expect("parent");
         std::fs::create_dir(base).expect("fixture directory");
         provision(&store, &old);
@@ -183,70 +180,11 @@ fn closed_launch_descriptor_does_not_undo_a_completed_rebind() {
     }
 }
 
-fn compile_verify() -> (VerifiedImage, Vec<u8>) {
-    compile_verify_with("")
-}
-
-/// Compile the Workshop image with additional source over its existing durable schema.
-fn compile_verify_with(extra: &str) -> (VerifiedImage, Vec<u8>) {
-    let mut source = std::fs::read(fixture_dir().join("src/main.mw")).expect("read fixture source");
-    source.extend_from_slice(extra.as_bytes());
-    let ids = std::fs::read(fixture_dir().join(".marrow/ids")).expect("read fixture ledger");
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source,
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(&ids),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let bytes = marrow_compile::compile(&project)
-        .expect("compile")
-        .image
-        .bytes;
-    let image = marrow_verify::verify(&bytes).expect("verify");
-    (image, bytes)
-}
-
 fn provision(store: &Path, image: &VerifiedImage) {
     let prepared = marrow_lifecycle::prepare(image.clone());
     let report = marrow_lifecycle::ProvisionReport::new(store, &prepared).expect("flat-executable");
     let approval = marrow_lifecycle::ProvisionApproval::accept(&report);
     marrow_lifecycle::provision_image(store, &prepared, &approval).expect("provision");
-}
-
-fn export_id(image: &VerifiedImage, name: &str) -> [u8; 32] {
-    let export = image
-        .exports()
-        .iter()
-        .find(|export| {
-            image
-                .function(export.function())
-                .expect("verified function")
-                .body()
-                .name()
-                == name
-        })
-        .unwrap_or_else(|| panic!("export `{name}` present"));
-    *export.id().bytes()
-}
-
-fn scratch() -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "marrow-native-attach-{}-{nonce}-{counter}/store",
-        std::process::id()
-    ))
 }
 
 /// Drive one call over a freshly spawned companion process attached to the store.
@@ -264,7 +202,7 @@ impl Terminal {
             &self.image,
             &self.bytes,
             &self.store,
-            export_id(&self.image, name),
+            program::export_id(&self.image, name),
             args,
         );
         completion.cleanup.expect("companion settled");
@@ -309,7 +247,7 @@ fn present_name(name: &str) -> Option<Value> {
 /// at its prior committed value — all surviving the close/reopen between every call.
 #[test]
 fn workshop_journey_over_the_companion_path() {
-    let (image, bytes) = compile_verify_with(
+    let program::Program { image, bytes } = program::workshop_with(
         r#"
 pub fn setMovesExplicit(v: int): Result<int, string> {
     transaction {
@@ -330,7 +268,7 @@ pub fn setMovesRequired(v: int): Result<int, string> {
 }
 "#,
     );
-    let store = scratch();
+    let store = scratch::path("native-attach").join("store");
     std::fs::create_dir_all(store.parent().expect("parent")).expect("scratch dir");
     provision(&store, &image);
     let epoch = marrow_temporal::format_instant(0).expect("epoch instant");
@@ -405,7 +343,7 @@ pub fn setMovesRequired(v: int): Result<int, string> {
 
     // Each returned Result is followed by a fresh companion reading a changed tally.
     for name in ["setMovesExplicit", "setMovesRequired"] {
-        let id = export_id(&terminal.image, name);
+        let id = program::export_id(&terminal.image, name);
         let export = terminal
             .image
             .exports()
@@ -449,27 +387,9 @@ pub fn setMovesRequired(v: int): Result<int, string> {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod image_input {
-    use super::{compile_verify, runner_exe, scratch};
-    use std::path::PathBuf;
+    use super::{program, runner_exe, scratch};
     use std::process::{Child, Command, Output, Stdio};
     use std::time::{Duration, Instant};
-
-    struct Scratch(PathBuf);
-
-    impl Scratch {
-        fn new() -> Self {
-            let store = scratch();
-            let directory = store.parent().expect("scratch parent").to_path_buf();
-            std::fs::create_dir_all(&directory).expect("create scratch directory");
-            Self(directory)
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            std::fs::remove_dir_all(&self.0).ok();
-        }
-    }
 
     struct ChildGuard(Option<Child>);
 
@@ -519,8 +439,8 @@ mod image_input {
     #[test]
     fn image_ingress_refuses_a_bounded_stream_without_waiting_for_eof() {
         // The directory outlives both guarded children, including panic cleanup.
-        let scratch = Scratch::new();
-        let fifo = scratch.0.join("image.fifo");
+        let scratch = scratch::Scratch::new("native-attach-image-input");
+        let fifo = scratch.dir().join("image.fifo");
         let made = Command::new("/usr/bin/mkfifo")
             .arg(&fifo)
             .output()
@@ -570,11 +490,11 @@ IFS= read -r hold
 
     #[test]
     fn a_small_valid_image_loads_for_provision_preview() {
-        let scratch = Scratch::new();
-        let (image, bytes) = compile_verify();
+        let scratch = scratch::Scratch::new("native-attach-image-input");
+        let program::Program { image, bytes } = program::workshop();
         assert!(bytes.len() < marrow_image::bounds::MAX_IMAGE_BYTES);
-        let path = scratch.0.join("image.mwi");
-        let store = scratch.0.join("store");
+        let path = scratch.dir().join("image.mwi");
+        let store = scratch.dir().join("store");
         std::fs::write(&path, bytes).expect("write valid image");
         let prepared = marrow_lifecycle::prepare(image);
         let report = marrow_lifecycle::ProvisionReport::new(&store, &prepared)
@@ -607,8 +527,14 @@ IFS= read -r hold
 /// committed durable data stands intact.
 #[test]
 fn a_body_edit_rebinds_and_preserves_committed_data() {
-    let (image_a, bytes_a) = compile_verify();
-    let (image_b, bytes_b) = compile_verify_with("\nfn _f02bEditProbe(): int {\n    return 0\n}\n");
+    let program::Program {
+        image: image_a,
+        bytes: bytes_a,
+    } = program::workshop();
+    let program::Program {
+        image: image_b,
+        bytes: bytes_b,
+    } = program::workshop_with("\nfn _editProbe(): int {\n    return 0\n}\n");
     // Same durable contract / interface / ceiling, different code.
     assert_ne!(
         image_a.image_id().0,
@@ -616,7 +542,7 @@ fn a_body_edit_rebinds_and_preserves_committed_data() {
         "the body edit must change the image identity",
     );
 
-    let store = scratch();
+    let store = scratch::path("native-attach").join("store");
     std::fs::create_dir_all(store.parent().expect("parent")).expect("scratch dir");
     provision(&store, &image_a);
     let epoch = marrow_temporal::format_instant(0).expect("epoch instant");
@@ -628,7 +554,7 @@ fn a_body_edit_rebinds_and_preserves_committed_data() {
         &image_a,
         &bytes_a,
         &store,
-        export_id(&image_a, "add"),
+        program::export_id(&image_a, "add"),
         vec![
             Json::Int(3),
             Json::Str("T-300".into()),
@@ -650,7 +576,7 @@ fn a_body_edit_rebinds_and_preserves_committed_data() {
         &image_b,
         &bytes_b,
         &store,
-        export_id(&image_b, "assetName"),
+        program::export_id(&image_b, "assetName"),
         vec![Json::Int(3)],
     );
     read.cleanup.expect("image B companion settled");
@@ -681,8 +607,8 @@ fn describe(outcome: &CallOutcome) -> String {
 /// reads back both the asset name and its first note entry.
 #[test]
 fn a_committed_add_is_durable_with_its_log_descendant() {
-    let (image, bytes) = compile_verify();
-    let store = scratch();
+    let program::Program { image, bytes } = program::workshop();
+    let store = scratch::path("native-attach").join("store");
     std::fs::create_dir_all(store.parent().expect("parent")).expect("scratch dir");
     provision(&store, &image);
     let epoch = marrow_temporal::format_instant(0).expect("epoch instant");
