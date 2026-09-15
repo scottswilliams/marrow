@@ -1,4 +1,4 @@
-//! Surface forms whose meaning is fixed by lowering: bracket lookup and assignment,
+//! Written forms whose meaning is fixed by lowering: bracket lookup and assignment,
 //! the integer-bound value builtins, and the `require ... else` guard.
 //!
 //! Each form is exercised through the production `compile` path and asserted by typed
