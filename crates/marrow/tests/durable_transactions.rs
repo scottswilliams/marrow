@@ -1457,7 +1457,7 @@ fn an_unreachable_fault_inside_a_transaction_rolls_back() {
 /// the seed and follow-up invocations are cheap). Run it with:
 ///     cargo test -p marrow --test durable_transactions -- --ignored budget
 #[test]
-#[ignore = "burns the whole 1<<26 instruction budget (private VM const, no override) — ~1.3s debug; E07-gating evidence, run with --ignored"]
+#[ignore = "burns the whole 1<<26 instruction budget (private VM const, no override) — ~1.3s debug; run with --ignored"]
 fn a_budget_exhaustion_inside_a_transaction_rolls_back_without_poisoning() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -1509,7 +1509,7 @@ fn a_budget_exhaustion_inside_a_transaction_rolls_back_without_poisoning() {
 ///
 /// Ignored for the same private-budget reason as the sibling above.
 #[test]
-#[ignore = "burns the whole 1<<26 instruction budget (private VM const, no override) — ~1.3s debug; E07-gating evidence, run with --ignored"]
+#[ignore = "burns the whole 1<<26 instruction budget (private VM const, no override) — ~1.3s debug; run with --ignored"]
 fn a_budget_exhaustion_outside_a_region_is_the_plain_fault_death() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
