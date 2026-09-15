@@ -1,5 +1,6 @@
 //! A handler that serves nothing but one typed refusal.
 
+use marrow_codes::Code;
 use marrow_local_wire::{ClientMessage, EncodedFrame, ServerMessage, WireError};
 
 use crate::channel::Handler;
@@ -21,7 +22,7 @@ pub struct RefusalService {
 
 impl RefusalService {
     /// A refusal service that rejects every request with `code`.
-    pub fn new(code: &'static str) -> Self {
+    pub fn new(code: Code) -> Self {
         Self {
             response: ServerMessage::Reject { code },
         }

@@ -18,6 +18,7 @@ mod scratch;
 
 use std::path::{Path, PathBuf};
 
+use marrow_codes::Code;
 use marrow_runner::{CallOutcome, Json, attach_and_call};
 use marrow_verify::VerifiedImage;
 use program::Program;
@@ -96,13 +97,17 @@ fn a_broadened_image_is_rejected_end_to_end_through_the_native_path() {
 
     match outcome {
         CallOutcome::Reject { code } => assert_eq!(
-            code, "store.demand_exceeds_ceiling",
+            code,
+            Code::StoreDemandExceedsCeiling,
             "the broadened image is rejected as demand-exceeds-ceiling over the wire",
         ),
         CallOutcome::Value(_) => panic!("the broadened image must be rejected, not run"),
-        CallOutcome::Fault { code, .. } => panic!("expected a reject, got fault {code}"),
+        CallOutcome::Fault { code, .. } => panic!("expected a reject, got fault {}", code.as_str()),
         CallOutcome::Incomplete { code, durable, .. } => {
-            panic!("expected a reject, got incomplete {code} ({durable:?})")
+            panic!(
+                "expected a reject, got incomplete {} ({durable:?})",
+                code.as_str()
+            )
         }
         CallOutcome::OutcomeUnknown { .. } => panic!("expected a reject, got outcome-unknown"),
     }
@@ -128,10 +133,13 @@ fn a_broadened_image_is_rejected_end_to_end_through_the_native_path() {
         CallOutcome::Value(other) => {
             panic!("the prior program returned an unexpected value: {other:?}")
         }
-        CallOutcome::Reject { code } => panic!("the prior program was rejected: {code}"),
-        CallOutcome::Fault { code, .. } => panic!("the prior program faulted: {code}"),
+        CallOutcome::Reject { code } => panic!("the prior program was rejected: {}", code.as_str()),
+        CallOutcome::Fault { code, .. } => panic!("the prior program faulted: {}", code.as_str()),
         CallOutcome::Incomplete { code, durable, .. } => {
-            panic!("the prior program was incomplete: {code} ({durable:?})")
+            panic!(
+                "the prior program was incomplete: {} ({durable:?})",
+                code.as_str()
+            )
         }
         CallOutcome::OutcomeUnknown { .. } => panic!("the prior program outcome was unknown"),
     }

@@ -2,6 +2,7 @@
 //! compiled through the production pipeline. No socket is bound here, so these run
 //! under the ordinary sandbox; the channel discipline is covered by `channel.rs`.
 
+use marrow_codes::Code;
 use marrow_local_wire::{
     ClientMessage, EncodedFrame, Json, MAX_FRAME, ServerMessage, WireError, frame_body_len,
 };
@@ -163,7 +164,7 @@ fn a_runtime_fault_maps_to_a_fault_response() {
         vec![Json::Int(i64::MAX), Json::Int(1)],
     );
     match response {
-        ServerMessage::Fault { code, .. } => assert_eq!(code, "run.overflow"),
+        ServerMessage::Fault { code, .. } => assert_eq!(code, Code::RunOverflow),
         other => panic!("expected a fault, got {other:?}"),
     }
 }
@@ -175,7 +176,7 @@ fn an_unknown_export_is_rejected() {
     assert_eq!(
         response,
         ServerMessage::Reject {
-            code: "runner.unknown_export"
+            code: Code::RunnerUnknownExport
         }
     );
 }
@@ -187,7 +188,7 @@ fn an_argument_count_mismatch_is_rejected() {
     assert_eq!(
         response,
         ServerMessage::Reject {
-            code: "runner.arg_mismatch"
+            code: Code::RunnerArgMismatch
         }
     );
 }
@@ -214,7 +215,7 @@ pub fn growAtCap(m: Map<int, int>): int {
 "#;
     let (service, ids) = build(source, None);
     let reject = ServerMessage::Reject {
-        code: "runner.arg_mismatch",
+        code: Code::RunnerArgMismatch,
     };
     // Nine structural bytes per pair isolate cardinality from the byte limit.
     for (count, frame_bytes, expected) in [
@@ -291,7 +292,7 @@ pub fn growAtCap(m: Map<int, int>): int {
         match (name, reply) {
             ("replaceAtCap", ServerMessage::Value { data: Json::Int(9) }) => {}
             ("growAtCap", ServerMessage::Fault { code, .. }) => {
-                assert_eq!(code, "run.collection_limit");
+                assert_eq!(code, Code::RunCollectionLimit);
             }
             _ => panic!("unexpected exact-cap Map {name} outcome"),
         }
@@ -339,7 +340,7 @@ pub fn choiceCount(value: Option<Items>): int {
                 ServerMessage::Value { data: Json::Int(1) }
             } else {
                 ServerMessage::Reject {
-                    code: "runner.arg_mismatch",
+                    code: Code::RunnerArgMismatch,
                 }
             };
             assert_eq!(
@@ -379,7 +380,7 @@ fn an_argument_type_mismatch_is_rejected() {
     assert_eq!(
         response,
         ServerMessage::Reject {
-            code: "runner.arg_mismatch"
+            code: Code::RunnerArgMismatch
         }
     );
 }
@@ -402,7 +403,7 @@ pub fn readValue(n: int): int {
     assert_eq!(
         response,
         ServerMessage::Reject {
-            code: "runner.durable_unsupported"
+            code: Code::RunnerDurableUnsupported
         }
     );
 }
@@ -516,7 +517,7 @@ fn framed_list_arguments_enforce_the_element_limit() {
             131_193,
         ),
         ServerMessage::Reject {
-            code: "runner.arg_mismatch"
+            code: Code::RunnerArgMismatch
         }
     );
 }
@@ -543,7 +544,7 @@ fn framed_nested_lists_enforce_the_parent_byte_limit() {
     assert_eq!(
         framed_call(&service, export, vec![array(excess)], 262_267),
         ServerMessage::Reject {
-            code: "runner.arg_mismatch"
+            code: Code::RunnerArgMismatch
         }
     );
 }
@@ -555,7 +556,7 @@ fn a_hostile_list_argument_is_rejected() {
     assert_eq!(
         call(&service, id_of(&ids, "total"), vec![Json::Int(3)]),
         ServerMessage::Reject {
-            code: "runner.arg_mismatch"
+            code: Code::RunnerArgMismatch
         }
     );
     // A list element of the wrong scalar type.
@@ -566,7 +567,7 @@ fn a_hostile_list_argument_is_rejected() {
             vec![array(vec![Json::Int(1), Json::Str("x".to_string())])],
         ),
         ServerMessage::Reject {
-            code: "runner.arg_mismatch"
+            code: Code::RunnerArgMismatch
         }
     );
 }
@@ -732,7 +733,7 @@ pub fn observe_{kind}(m: Map<{kind}, int>, k: {kind}): Observed_{kind} {{
             assert_eq!(
                 call(&service, export, vec![input, keys[0].clone()]),
                 ServerMessage::Reject {
-                    code: "runner.arg_mismatch"
+                    code: Code::RunnerArgMismatch
                 },
                 "{kind}/{case}"
             );
@@ -783,7 +784,7 @@ pub fn observe_{kind}(m: Map<{kind}, int>, k: {kind}): Observed_{kind} {{
 fn a_hostile_map_argument_is_rejected() {
     let (service, ids) = build(COLLECTIONS, None);
     let reject = ServerMessage::Reject {
-        code: "runner.arg_mismatch",
+        code: Code::RunnerArgMismatch,
     };
     let key = Json::Str("k".to_string());
     // A duplicate key.
@@ -854,7 +855,7 @@ fn an_identity_argument_round_trips_and_hostiles_are_rejected() {
         }
     );
     let reject = ServerMessage::Reject {
-        code: "runner.arg_mismatch",
+        code: Code::RunnerArgMismatch,
     };
     // Wrong arity: two keys for a single-column root.
     assert_eq!(
@@ -902,7 +903,7 @@ pub fn shift(p: Point, dx: int): Point {
     assert_eq!(
         response,
         ServerMessage::Reject {
-            code: "runner.arg_mismatch"
+            code: Code::RunnerArgMismatch
         }
     );
 }

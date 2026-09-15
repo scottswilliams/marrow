@@ -141,16 +141,20 @@ fn call_value(
         args,
     );
     completion.cleanup.expect("post-crash companion settled");
-    match completion
-        .outcome
-        .unwrap_or_else(|error| panic!("post-crash `{name}` call failed: {}", error.code()))
-    {
+    match completion.outcome.unwrap_or_else(|error| {
+        panic!("post-crash `{name}` call failed: {}", error.code().as_str())
+    }) {
         CallOutcome::Value(value) => value,
-        CallOutcome::Fault { code, .. } => panic!("post-crash `{name}` faulted: {code}"),
+        CallOutcome::Fault { code, .. } => panic!("post-crash `{name}` faulted: {}", code.as_str()),
         CallOutcome::Incomplete { code, durable, .. } => {
-            panic!("post-crash `{name}` was incomplete: {code} ({durable:?})")
+            panic!(
+                "post-crash `{name}` was incomplete: {} ({durable:?})",
+                code.as_str()
+            )
         }
-        CallOutcome::Reject { code } => panic!("post-crash `{name}` was rejected: {code}"),
+        CallOutcome::Reject { code } => {
+            panic!("post-crash `{name}` was rejected: {}", code.as_str())
+        }
         CallOutcome::OutcomeUnknown { .. } => panic!("post-crash `{name}` lost its reply"),
     }
 }

@@ -206,31 +206,31 @@ impl Terminal {
             args,
         );
         completion.cleanup.expect("companion settled");
-        completion
-            .outcome
-            .unwrap_or_else(|error| panic!("companion call `{name}` failed: {}", error.code()))
+        completion.outcome.unwrap_or_else(|error| {
+            panic!("companion call `{name}` failed: {}", error.code().as_str())
+        })
     }
 
     fn value(&self, name: &str, args: Vec<Json>) -> Option<Value> {
         match self.call(name, args) {
             CallOutcome::Value(value) => value,
-            CallOutcome::Fault { code, .. } => panic!("`{name}` faulted: {code}"),
+            CallOutcome::Fault { code, .. } => panic!("`{name}` faulted: {}", code.as_str()),
             CallOutcome::Incomplete { code, durable, .. } => {
-                panic!("`{name}` was incomplete: {code} ({durable:?})")
+                panic!("`{name}` was incomplete: {} ({durable:?})", code.as_str())
             }
-            CallOutcome::Reject { code } => panic!("`{name}` rejected: {code}"),
+            CallOutcome::Reject { code } => panic!("`{name}` rejected: {}", code.as_str()),
             CallOutcome::OutcomeUnknown { .. } => panic!("`{name}` outcome unknown"),
         }
     }
 
     fn fault(&self, name: &str, args: Vec<Json>) -> &'static str {
         match self.call(name, args) {
-            CallOutcome::Fault { code, .. } => code,
+            CallOutcome::Fault { code, .. } => code.as_str(),
             CallOutcome::Value(_) => panic!("`{name}` completed"),
             CallOutcome::Incomplete { code, durable, .. } => {
-                panic!("`{name}` was incomplete: {code} ({durable:?})")
+                panic!("`{name}` was incomplete: {} ({durable:?})", code.as_str())
             }
-            CallOutcome::Reject { code } => panic!("`{name}` rejected: {code}"),
+            CallOutcome::Reject { code } => panic!("`{name}` rejected: {}", code.as_str()),
             CallOutcome::OutcomeUnknown { .. } => panic!("`{name}` outcome unknown"),
         }
     }
@@ -594,11 +594,11 @@ fn a_body_edit_rebinds_and_preserves_committed_data() {
 fn describe(outcome: &CallOutcome) -> String {
     match outcome {
         CallOutcome::Value(value) => format!("value {value:?}"),
-        CallOutcome::Fault { code, .. } => format!("fault {code}"),
+        CallOutcome::Fault { code, .. } => format!("fault {}", code.as_str()),
         CallOutcome::Incomplete { code, durable, .. } => {
-            format!("incomplete {code} ({durable:?})")
+            format!("incomplete {} ({durable:?})", code.as_str())
         }
-        CallOutcome::Reject { code } => format!("reject {code}"),
+        CallOutcome::Reject { code } => format!("reject {}", code.as_str()),
         CallOutcome::OutcomeUnknown { .. } => "outcome unknown".to_string(),
     }
 }

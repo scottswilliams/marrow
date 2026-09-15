@@ -21,6 +21,7 @@ use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
+use marrow_codes::Code;
 use marrow_local_wire::{
     ClientMessage, DurableState, Id32, Json, ServerMessage, WireError, frame_body_len, parse_strict,
 };
@@ -326,21 +327,17 @@ pub enum CallOutcome {
     /// The export returned: `None` is unit, `Some` a decoded value.
     Value(Option<Value>),
     /// A source-mapped runtime fault.
-    Fault {
-        code: &'static str,
-        line: u32,
-        column: u32,
-    },
+    Fault { code: Code, line: u32, column: u32 },
     /// The export did not return. The source fault and classified durable state
     /// are orthogonal; no recovery witness is exposed to the terminal.
     Incomplete {
-        code: &'static str,
+        code: Code,
         durable: DurableState,
         line: u32,
         column: u32,
     },
     /// The runner declined the request with a typed code.
-    Reject { code: &'static str },
+    Reject { code: Code },
     /// The request was dispatched to the runner, but no exact valid correlated reply could be
     /// accepted, so the call's durable outcome is unknowable from this side
     /// ([`LossClass::OutcomeUnknown`](marrow_local_wire::LossClass::OutcomeUnknown)). It is
@@ -370,24 +367,47 @@ pub enum OutcomeUnknownCause {
 
 impl OutcomeUnknownCause {
     /// The stable cause discriminator, independent of its diagnostic code.
-    pub fn kind(&self) -> &'static str {
+    pub fn kind(&self) -> CauseKind {
         match self {
-            Self::Io(_) => "io",
-            Self::Wire(_) => "wire",
-            Self::TurnMismatch { .. } => "turn_mismatch",
-            Self::UnsolicitedMessage => "unsolicited_message",
-            Self::ReplyDecode => "reply_decode",
+            Self::Io(_) => CauseKind::Io,
+            Self::Wire(_) => CauseKind::Wire,
+            Self::TurnMismatch { .. } => CauseKind::TurnMismatch,
+            Self::UnsolicitedMessage => CauseKind::UnsolicitedMessage,
+            Self::ReplyDecode => CauseKind::ReplyDecode,
         }
     }
 
     /// The stable code for the distinct post-dispatch cause.
-    pub fn code(&self) -> &'static str {
-        use marrow_codes::Code;
+    pub fn code(&self) -> Code {
         match self {
-            Self::Io(_) => Code::IoRead.as_str(),
-            Self::Wire(error) => error.code_str(),
-            Self::TurnMismatch { .. } | Self::UnsolicitedMessage => Code::WireMalformed.as_str(),
-            Self::ReplyDecode => Code::RunnerReplyEncode.as_str(),
+            Self::Io(_) => Code::IoRead,
+            Self::Wire(error) => error.code(),
+            Self::TurnMismatch { .. } | Self::UnsolicitedMessage => Code::WireMalformed,
+            Self::ReplyDecode => Code::RunnerReplyEncode,
+        }
+    }
+}
+
+/// The stable discriminator a reporter names for an outcome-unknown cause, kept
+/// apart from the cause's diagnostic code. One renderer spells it for output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CauseKind {
+    Io,
+    Wire,
+    TurnMismatch,
+    UnsolicitedMessage,
+    ReplyDecode,
+}
+
+impl CauseKind {
+    /// The reported spelling of this discriminator.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Io => "io",
+            Self::Wire => "wire",
+            Self::TurnMismatch => "turn_mismatch",
+            Self::UnsolicitedMessage => "unsolicited_message",
+            Self::ReplyDecode => "reply_decode",
         }
     }
 }
@@ -451,17 +471,16 @@ pub enum ClientError {
 
 impl ClientError {
     /// The stable dotted code the terminal reports.
-    pub fn code(&self) -> &'static str {
-        use marrow_codes::Code;
+    pub fn code(&self) -> Code {
         match self {
-            ClientError::ActivationUncertain { .. } => Code::StoreActivationUncertain.as_str(),
+            ClientError::ActivationUncertain { .. } => Code::StoreActivationUncertain,
             ClientError::ActivationOutcomeUnknown { cause } => cause.code(),
-            ClientError::ImageStage(_) => Code::IoWrite.as_str(),
-            ClientError::Spawn(_) => Code::RunnerSpawn.as_str(),
-            ClientError::Descriptor | ClientError::Handshake => Code::RunnerHandshake.as_str(),
-            ClientError::Io(_) => Code::IoRead.as_str(),
-            ClientError::Wire(wire) => wire.code_str(),
-            ClientError::ReplyDecode => Code::RunnerReplyEncode.as_str(),
+            ClientError::ImageStage(_) => Code::IoWrite,
+            ClientError::Spawn(_) => Code::RunnerSpawn,
+            ClientError::Descriptor | ClientError::Handshake => Code::RunnerHandshake,
+            ClientError::Io(_) => Code::IoRead,
+            ClientError::Wire(wire) => wire.code(),
+            ClientError::ReplyDecode => Code::RunnerReplyEncode,
         }
     }
 

@@ -37,7 +37,7 @@ impl<'a> Session<'a> {
         match self
             .inner
             .call(program::export_id(self.image, name), args)
-            .unwrap_or_else(|error| panic!("call `{name}` failed: {}", error.code()))
+            .unwrap_or_else(|error| panic!("call `{name}` failed: {}", error.code().as_str()))
         {
             EphemeralCall::Replied(outcome) => outcome,
             EphemeralCall::Lost(class) => panic!("call `{name}` lost the session: {class:?}"),
@@ -50,23 +50,23 @@ impl<'a> Session<'a> {
     fn value(&mut self, name: &str, args: Vec<Json>) -> Option<Value> {
         match self.call(name, args) {
             CallOutcome::Value(value) => value,
-            CallOutcome::Fault { code, .. } => panic!("`{name}` faulted: {code}"),
+            CallOutcome::Fault { code, .. } => panic!("`{name}` faulted: {}", code.as_str()),
             CallOutcome::Incomplete { code, durable, .. } => {
-                panic!("`{name}` was incomplete: {code} ({durable:?})")
+                panic!("`{name}` was incomplete: {} ({durable:?})", code.as_str())
             }
-            CallOutcome::Reject { code } => panic!("`{name}` rejected: {code}"),
+            CallOutcome::Reject { code } => panic!("`{name}` rejected: {}", code.as_str()),
             CallOutcome::OutcomeUnknown { .. } => panic!("`{name}` outcome unknown"),
         }
     }
 
     fn fault(&mut self, name: &str, args: Vec<Json>) -> &'static str {
         match self.call(name, args) {
-            CallOutcome::Fault { code, .. } => code,
+            CallOutcome::Fault { code, .. } => code.as_str(),
             CallOutcome::Value(_) => panic!("`{name}` completed"),
             CallOutcome::Incomplete { code, durable, .. } => {
-                panic!("`{name}` was incomplete: {code} ({durable:?})")
+                panic!("`{name}` was incomplete: {} ({durable:?})", code.as_str())
             }
-            CallOutcome::Reject { code } => panic!("`{name}` rejected: {code}"),
+            CallOutcome::Reject { code } => panic!("`{name}` rejected: {}", code.as_str()),
             CallOutcome::OutcomeUnknown { .. } => panic!("`{name}` outcome unknown"),
         }
     }

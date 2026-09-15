@@ -111,7 +111,7 @@ pub(super) fn run(command: Command) -> io::Result<ExitCode> {
             ("ceiling".into(), text(receipt.ceiling.to_hex())),
         ]),
         Err(error) => {
-            fields.push(("code".into(), text(error.code().into())));
+            fields.push(("code".into(), text(error.code().as_str().into())));
             if let ApplyError::Lifecycle(marrow_lifecycle::LifecycleError::ActivationUncertain {
                 instance,
                 ..
@@ -146,7 +146,7 @@ pub(super) fn run(command: Command) -> io::Result<ExitCode> {
                     ),
                 ));
             }
-            let _ = writeln!(io::stderr(), "{}: {error}", error.code());
+            let _ = writeln!(io::stderr(), "{}: {error}", error.code().as_str());
         }
     }
     deliver(

@@ -3,6 +3,7 @@ mod program;
 #[path = "common/scratch.rs"]
 mod scratch;
 
+use marrow_codes::Code;
 use marrow_local_wire::{
     ClientMessage, DurableState, EncodedFrame, Id32, Json, ServerMessage, WireError,
 };
@@ -92,7 +93,7 @@ fn a_unique_index_fault_is_typed_and_does_not_retire_a_healthy_ephemeral_owner()
     ));
     match response {
         ServerMessage::Fault { code, span } => {
-            assert_eq!(code, "run.unique_index");
+            assert_eq!(code, Code::RunUniqueIndex);
             assert!(span.line > 0);
         }
         other => panic!("expected typed fault response, got {other:?}"),
@@ -139,7 +140,7 @@ fn assert_known_new_then_read(service: &mut impl Handler, fixture: &program::Pro
             durable,
             span,
         } => {
-            assert_eq!(code, "run.divide_by_zero");
+            assert_eq!(code, Code::RunDivideByZero);
             assert_eq!(durable, DurableState::KnownNew);
             assert!(span.line > 0);
         }

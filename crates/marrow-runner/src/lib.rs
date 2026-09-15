@@ -41,5 +41,6 @@ pub use marrow_local_wire::{DurableState, Id32, Json, LossClass, write_json_stri
 pub use refusal::RefusalService;
 pub use staging::{StagedImage, stage_image};
 pub use terminal::{
-    CallOutcome, ClientError, CompanionCleanupError, CompanionStartupError, OutcomeUnknownCause,
+    CallOutcome, CauseKind, ClientError, CompanionCleanupError, CompanionStartupError,
+    OutcomeUnknownCause,
 };

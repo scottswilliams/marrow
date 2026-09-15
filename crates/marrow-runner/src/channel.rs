@@ -324,9 +324,7 @@ impl Connection {
                 Err(ReadError::Wire(wire)) => {
                     // A framing rejection (e.g. oversized): report it and close, since
                     // the byte stream is no longer reliably aligned.
-                    let reject = ServerMessage::Reject {
-                        code: wire.code_str(),
-                    };
+                    let reject = ServerMessage::Reject { code: wire.code() };
                     if let Ok(frame) = reject.encode_frame(0) {
                         let _ = self.write_frame(&frame, deadlines);
                     }
@@ -338,10 +336,7 @@ impl Connection {
             };
             let response = match ClientMessage::decode_with_turn(&body) {
                 Ok((message, turn)) => handler.handle(message, turn),
-                Err(wire) => ServerMessage::Reject {
-                    code: wire.code_str(),
-                }
-                .encode_frame(0),
+                Err(wire) => ServerMessage::Reject { code: wire.code() }.encode_frame(0),
             };
             let close_after_response = handler.close_after_response();
             let Ok(frame) = response else {

@@ -124,6 +124,8 @@ fn call_over_socket(
 /// message schema, and value decoding.
 #[cfg(test)]
 mod tests {
+    use marrow_codes::Code;
+
     use crate::OutcomeUnknownCause;
     use crate::terminal::{ClientError, post_dispatch_cause, require_reply_turn};
     use marrow_local_wire::{HandoffStage, LossClass, WireError, classify};
@@ -202,15 +204,15 @@ mod tests {
                 received: 0,
             }
             .code(),
-            "wire.malformed",
+            Code::WireMalformed,
         );
         assert_eq!(
             OutcomeUnknownCause::UnsolicitedMessage.code(),
-            "wire.malformed",
+            Code::WireMalformed,
         );
         assert_eq!(
             OutcomeUnknownCause::ReplyDecode.code(),
-            "runner.reply_encode",
+            Code::RunnerReplyEncode,
         );
         // A before-send failure (a pre-dispatch handshake/connect error) classifies NotStarted,
         // the safe-to-consider-undone class, and never reaches the lost-reply path.

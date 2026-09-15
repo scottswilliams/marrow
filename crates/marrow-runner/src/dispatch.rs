@@ -192,7 +192,5 @@ pub(crate) fn incomplete_message(
 
 /// A typed reject naming the runner's reason, carrying no wire or lifecycle vocabulary.
 pub(crate) fn reject(code: Code) -> ServerMessage {
-    ServerMessage::Reject {
-        code: code.as_str(),
-    }
+    ServerMessage::Reject { code }
 }

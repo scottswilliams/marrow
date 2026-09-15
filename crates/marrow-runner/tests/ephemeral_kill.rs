@@ -413,7 +413,7 @@ fn post_handshake_hello_and_provision_are_rejected() {
     let (after_hello, after_provision) = client.join().unwrap();
     channel.teardown();
 
-    let handshake = marrow_codes::Code::RunnerHandshake.as_str();
+    let handshake = marrow_codes::Code::RunnerHandshake;
     assert_eq!(
         after_hello,
         Some(ServerMessage::Reject { code: handshake }),

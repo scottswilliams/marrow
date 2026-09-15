@@ -271,7 +271,7 @@ fn provision_output(image_path: &Path, store: &Path, accept: bool) -> std::io::R
     let report = match marrow_lifecycle::ProvisionReport::new(store, &prepared) {
         Ok(report) => report,
         Err(error) => {
-            let _ = writeln!(std::io::stderr(), "{}: {error}", error.code());
+            let _ = writeln!(std::io::stderr(), "{}: {error}", error.code().as_str());
             return Ok(ExitCode::FAILURE);
         }
     };
@@ -308,7 +308,7 @@ fn provision_output(image_path: &Path, store: &Path, accept: bool) -> std::io::R
             Ok(ExitCode::SUCCESS)
         }
         Err(error) => {
-            let _ = writeln!(stderr, "{}: {error}", error.code());
+            let _ = writeln!(stderr, "{}: {error}", error.code().as_str());
             write_provision_failure(&mut std::io::stdout().lock(), store, &error)?;
             Ok(ExitCode::FAILURE)
         }
@@ -352,7 +352,7 @@ fn write_provision_failure(
                     ("stage".into(), Json::Str(stage.into())),
                 ]),
             ),
-            ("code".into(), Json::Str(error.code().into())),
+            ("code".into(), Json::Str(error.code().as_str().into())),
             ("kind".into(), Json::Str("provision_failed".into())),
         ]
     } else {
@@ -429,12 +429,20 @@ fn attach(image_path: &Path, store: &Path) -> ExitCode {
         // service exposes that known result; exiting before the handshake would leave
         // activation outcome unknown to the client. Channel setup opens no store.
         Err(marrow_lifecycle::LifecycleError::DemandExceedsCeiling(refusal)) => {
-            let _ = writeln!(std::io::stderr().lock(), "{}: {refusal}", refusal.code());
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "{}: {refusal}",
+                refusal.code().as_str()
+            );
             let code = refusal.code();
             return serve_over_channel(identity, move || marrow_runner::RefusalService::new(code));
         }
         Err(error @ marrow_lifecycle::LifecycleError::ActivationUncertain { instance, .. }) => {
-            let _ = writeln!(std::io::stderr().lock(), "{}: {error}", error.code());
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "{}: {error}",
+                error.code().as_str()
+            );
             let _ = with_channel(identity, move |channel, secrets, deadlines| {
                 channel.report_activation_uncertain(
                     secrets,
@@ -447,7 +455,11 @@ fn attach(image_path: &Path, store: &Path) -> ExitCode {
             return ExitCode::FAILURE;
         }
         Err(error) => {
-            let _ = writeln!(std::io::stderr().lock(), "{}: {error}", error.code());
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "{}: {error}",
+                error.code().as_str()
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -756,7 +768,7 @@ fn import_output(
         let error = marrow_lifecycle::ImportError::UnsupportedShape(
             marrow_lifecycle::ShapeFault::NotExecutable,
         );
-        let _ = writeln!(std::io::stderr(), "{}: {error}", error.code());
+        let _ = writeln!(std::io::stderr(), "{}: {error}", error.code().as_str());
         return Ok(ExitCode::FAILURE);
     };
     let Some(root_index) = projection
@@ -778,7 +790,7 @@ fn import_output(
     let classified = match marrow_lifecycle::preflight(store) {
         Ok(classified) => classified,
         Err(error) => {
-            let _ = writeln!(std::io::stderr(), "{}: {error}", error.code());
+            let _ = writeln!(std::io::stderr(), "{}: {error}", error.code().as_str());
             return Ok(ExitCode::FAILURE);
         }
     };
@@ -807,7 +819,7 @@ fn import_output(
                     );
                 }
                 Err(error) => {
-                    let _ = writeln!(std::io::stderr(), "{}: {error}", error.code());
+                    let _ = writeln!(std::io::stderr(), "{}: {error}", error.code().as_str());
                     write_provision_failure(&mut std::io::stdout().lock(), store, &error)?;
                     return Ok(ExitCode::FAILURE);
                 }
@@ -856,7 +868,7 @@ fn import_output(
             Ok(ExitCode::SUCCESS)
         }
         Err(error) => {
-            let _ = writeln!(std::io::stderr(), "{}: {error}", error.code());
+            let _ = writeln!(std::io::stderr(), "{}: {error}", error.code().as_str());
             Ok(ExitCode::FAILURE)
         }
     }
@@ -905,7 +917,7 @@ fn write_recovery_result(
                 Err(error) => {
                     fields.extend([
                         ("outcome".into(), Json::Str("error".into())),
-                        ("code".into(), Json::Str(error.code().into())),
+                        ("code".into(), Json::Str(error.code().as_str().into())),
                     ]);
                     let instance = match &error.fault {
                         marrow_lifecycle::RecoveryFault::Completion { instance, .. } => {
@@ -929,7 +941,7 @@ fn write_recovery_result(
                     receipt.instance.to_hex(),
                     receipt.image_id.to_hex()
                 )?,
-                Err(error) => writeln!(output, "{}: {error}", error.code())?,
+                Err(error) => writeln!(output, "{}: {error}", error.code().as_str())?,
             }
             for name in preserved {
                 writeln!(output, "preserved {name}")?;
@@ -960,12 +972,19 @@ fn audit_command(image_path: &Path, store: &Path, format: ReportFormat) -> ExitC
         Err(error) => {
             match format {
                 ReportFormat::Text => {
-                    let _ = writeln!(std::io::stderr().lock(), "{}: {error}", error.code());
+                    let _ = writeln!(
+                        std::io::stderr().lock(),
+                        "{}: {error}",
+                        error.code().as_str()
+                    );
                 }
                 ReportFormat::Jsonl => println!(
                     "{}",
                     encode(&Json::Object(vec![
-                        ("code".to_string(), Json::Str(error.code().to_string())),
+                        (
+                            "code".to_string(),
+                            Json::Str(error.code().as_str().to_string())
+                        ),
                         ("kind".to_string(), Json::Str("doctor".to_string())),
                         ("outcome".to_string(), Json::Str("error".to_string())),
                         ("store".to_string(), Json::Str(store_text)),
@@ -1371,7 +1390,7 @@ mod output_tests {
                         assert!(!rendered.contains("preserved "));
                     }
                     if let Err(error) = result {
-                        assert!(rendered.starts_with(error.code()));
+                        assert!(rendered.starts_with(error.code().as_str()));
                     }
                 }
                 for failure in [Failure::WriteAt(0), Failure::WriteAt(5), Failure::Flush] {

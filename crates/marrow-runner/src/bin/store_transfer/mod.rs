@@ -87,14 +87,14 @@ pub(super) fn run(command: Command) -> io::Result<ExitCode> {
                     fields.push(("backup_digest".into(), Json::Str(backup.digest.to_hex())));
                 }
                 Err(error) => {
-                    failure(&mut fields, error.code());
+                    failure(&mut fields, error.code().as_str());
                     if let Some(path) = &error.unpublished {
                         retained(&mut fields, path)?;
                     }
                     if error.cleanup.is_some() {
                         fields.push(("cleanup_failed".into(), Json::Bool(true)));
                     }
-                    let _ = writeln!(io::stderr(), "{}: {error}", error.code());
+                    let _ = writeln!(io::stderr(), "{}: {error}", error.code().as_str());
                 }
             }
             deliver(
@@ -132,7 +132,7 @@ pub(super) fn run(command: Command) -> io::Result<ExitCode> {
             match &result {
                 Ok(restored) => success(&mut fields, &restored.audit),
                 Err(error) => {
-                    failure(&mut fields, error.code());
+                    failure(&mut fields, error.code().as_str());
                     if let Some(path) = &error.stage {
                         retained(&mut fields, path)?;
                     }
@@ -153,7 +153,7 @@ pub(super) fn run(command: Command) -> io::Result<ExitCode> {
                             ),
                         ));
                     }
-                    let _ = writeln!(io::stderr(), "{}: {error}", error.code());
+                    let _ = writeln!(io::stderr(), "{}: {error}", error.code().as_str());
                 }
             }
             deliver(

@@ -23,6 +23,7 @@ use std::sync::mpsc::{Receiver, Sender, channel as mpsc_channel};
 use std::thread;
 use std::time::Duration;
 
+use marrow_codes::Code;
 use marrow_local_wire::{
     ClientMessage, DurableState, EncodedFrame, HandoffStage, Id32, Json, LossClass, MAX_FRAME,
     ServerMessage, Span, WireError, classify, frame_body_len,
@@ -215,7 +216,7 @@ impl Handler for UnknownIncompleteHandler {
         turn: Option<u32>,
     ) -> Result<EncodedFrame, WireError> {
         ServerMessage::Incomplete {
-            code: "run.commit",
+            code: Code::RunCommit,
             durable: DurableState::Unknown,
             span: Span { line: 4, column: 2 },
         }
@@ -294,7 +295,7 @@ impl Handler for ClassifiedBeforeReplyHandler {
         self.classified.send(()).expect("signal classification");
         self.release.recv().expect("release response");
         ServerMessage::Incomplete {
-            code: "run.commit",
+            code: Code::RunCommit,
             durable: DurableState::KnownNew,
             span: Span { line: 7, column: 3 },
         }
@@ -384,8 +385,8 @@ fn an_oversized_post_dispatch_response_closes_without_a_reply_or_second_dispatch
         .encode_with_turn(0)
         .expect_err("the canonical framed response crosses the bound");
     assert_eq!(
-        error.code_str(),
-        "wire.frame_too_large",
+        error.code(),
+        Code::WireFrameTooLarge,
         "the authoritative wire encoder must reject the response at the frame bound",
     );
 
@@ -493,7 +494,7 @@ fn an_oversized_pre_dispatch_request_keeps_its_typed_reject() {
         reject,
         Some((
             ServerMessage::Reject {
-                code: "wire.frame_too_large",
+                code: Code::WireFrameTooLarge,
             },
             Some(0),
         )),

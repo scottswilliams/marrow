@@ -110,7 +110,7 @@ impl AttachedEphemeralService {
                 dispatch::reject(Code::RunnerDurableUnsupported).encode_frame(turn),
             ),
             MintOutcome::Failed(cause) => dispatch::RunProjection::Reply(
-                ServerMessage::Reject { code: cause }.encode_frame(turn),
+                ServerMessage::Reject { code: *cause }.encode_frame(turn),
             ),
         };
         match projection {
