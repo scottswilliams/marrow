@@ -7,6 +7,7 @@
 
 use std::rc::Rc;
 
+use marrow_codes::Code;
 use marrow_kernel::durable::{CommitRecovery, DurableCommitState};
 
 /// A runtime fault, mapped to the source position of the faulting instruction.
@@ -15,14 +16,14 @@ use marrow_kernel::durable::{CommitRecovery, DurableCommitState};
 /// the code and span.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeFault {
-    code: &'static str,
+    code: Code,
     line: u32,
     column: u32,
     detail: Option<Rc<str>>,
 }
 
 impl RuntimeFault {
-    pub(crate) fn new(code: &'static str, line: u32, column: u32) -> Self {
+    pub(crate) fn new(code: Code, line: u32, column: u32) -> Self {
         Self {
             code,
             line,
@@ -32,7 +33,7 @@ impl RuntimeFault {
     }
 
     /// A fault carrying static author text (an `unreachable("...")` invariant).
-    pub(crate) fn with_detail(code: &'static str, line: u32, column: u32, detail: Rc<str>) -> Self {
+    pub(crate) fn with_detail(code: Code, line: u32, column: u32, detail: Rc<str>) -> Self {
         Self {
             code,
             line,
@@ -41,7 +42,7 @@ impl RuntimeFault {
         }
     }
 
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> Code {
         self.code
     }
 
@@ -61,7 +62,7 @@ impl RuntimeFault {
 
 impl std::fmt::Display for RuntimeFault {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} at {}:{}", self.code, self.line, self.column)
+        write!(f, "{} at {}:{}", self.code.as_str(), self.line, self.column)
     }
 }
 
@@ -191,7 +192,7 @@ impl DurableExecutionFault {
         Self::Incomplete(InvocationIncomplete::pending(fault, recovery))
     }
 
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> Code {
         self.runtime_fault().code()
     }
 

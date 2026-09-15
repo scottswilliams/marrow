@@ -18,6 +18,7 @@ use crate::run::run_durable;
 use crate::value::Value;
 
 use crate::admitted_plan::admitted_plan;
+use marrow_codes::Code;
 
 const APPLICATION_ID: [u8; 16] = [0x81; 16];
 const ROOT_PLACEMENT_ID: [u8; 16] = [0x82; 16];
@@ -363,7 +364,7 @@ fn attach(bytes: Vec<u8>) -> MemoryAttachment {
     match mint_ephemeral(prepare(verify(&bytes).expect("verify"))).into_mint() {
         MintOutcome::Ready(attachment) => attachment,
         MintOutcome::Storeless | MintOutcome::Parked => panic!("fixture must be executable"),
-        MintOutcome::Failed(cause) => panic!("attachment failed: {cause}"),
+        MintOutcome::Failed(cause) => panic!("attachment failed: {}", cause.as_str()),
     }
 }
 
@@ -403,7 +404,7 @@ fn aborted_commit_is_incomplete_known_old() {
     let DurableExecutionFault::Incomplete(incomplete) = fault else {
         panic!("aborted commit was flattened to an ordinary runtime fault");
     };
-    assert_eq!(incomplete.runtime_fault().code(), "run.commit");
+    assert_eq!(incomplete.runtime_fault().code(), Code::RunCommit);
     assert_eq!(
         incomplete.durable_state(),
         Some(DurableCommitState::KnownOld)
@@ -418,7 +419,7 @@ fn confirmed_commit_followed_by_pure_fault_is_incomplete_known_new() {
     let DurableExecutionFault::Incomplete(incomplete) = fault else {
         panic!("post-commit fault was flattened to an ordinary runtime fault");
     };
-    assert_eq!(incomplete.runtime_fault().code(), "run.divide_by_zero");
+    assert_eq!(incomplete.runtime_fault().code(), Code::RunDivideByZero);
     assert_eq!(incomplete.runtime_fault().line(), 18);
     assert_eq!(
         incomplete.durable_state(),
@@ -434,7 +435,7 @@ fn confirmed_commit_followed_by_helper_fault_is_incomplete_known_new() {
     let DurableExecutionFault::Incomplete(incomplete) = fault else {
         panic!("post-commit helper fault was flattened to an ordinary runtime fault");
     };
-    assert_eq!(incomplete.runtime_fault().code(), "run.divide_by_zero");
+    assert_eq!(incomplete.runtime_fault().code(), Code::RunDivideByZero);
     assert_eq!(
         incomplete.runtime_fault().line(),
         12,
@@ -458,5 +459,5 @@ fn read_only_region_followed_by_pure_fault_is_an_ordinary_runtime_fault() {
     let DurableExecutionFault::Runtime(fault) = fault else {
         panic!("a read-only region was misreported as a confirmed durable write")
     };
-    assert_eq!(fault.code(), "run.divide_by_zero");
+    assert_eq!(fault.code(), Code::RunDivideByZero);
 }

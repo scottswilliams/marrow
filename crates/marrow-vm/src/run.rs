@@ -190,7 +190,7 @@ fn execute_frame<'s>(
 
     loop {
         if *state.budget == 0 {
-            return Err(frame.fault(Code::RunBudget.as_str()));
+            return Err(frame.fault(Code::RunBudget));
         }
         *state.budget -= 1;
 
@@ -400,7 +400,7 @@ struct Frame<'i> {
 }
 
 impl<'i> Frame<'i> {
-    fn fault(&self, code: &'static str) -> DurableExecutionFault {
+    fn fault(&self, code: Code) -> DurableExecutionFault {
         fault(self.function, self.pc, code)
     }
 
@@ -445,7 +445,7 @@ impl<'i> Frame<'i> {
         let (a, b) = pop_ints(&mut self.stack);
         match a.checked_add(b) {
             Some(v) => self.stack.push(Value::Int(v)),
-            None => return Err(self.fault(Code::RunOverflow.as_str())),
+            None => return Err(self.fault(Code::RunOverflow)),
         }
         self.pc += 1;
         Ok(())
@@ -455,7 +455,7 @@ impl<'i> Frame<'i> {
         let (a, b) = pop_ints(&mut self.stack);
         match a.checked_sub(b) {
             Some(v) => self.stack.push(Value::Int(v)),
-            None => return Err(self.fault(Code::RunOverflow.as_str())),
+            None => return Err(self.fault(Code::RunOverflow)),
         }
         self.pc += 1;
         Ok(())
@@ -465,7 +465,7 @@ impl<'i> Frame<'i> {
         let (a, b) = pop_ints(&mut self.stack);
         match a.checked_mul(b) {
             Some(v) => self.stack.push(Value::Int(v)),
-            None => return Err(self.fault(Code::RunOverflow.as_str())),
+            None => return Err(self.fault(Code::RunOverflow)),
         }
         self.pc += 1;
         Ok(())
@@ -474,13 +474,13 @@ impl<'i> Frame<'i> {
     fn int_rem(&mut self) -> Result<(), DurableExecutionFault> {
         let (a, b) = pop_ints(&mut self.stack);
         if b == 0 {
-            return Err(self.fault(Code::RunDivideByZero.as_str()));
+            return Err(self.fault(Code::RunDivideByZero));
         }
         // `i64::MIN % -1` overflows the checked remainder (the quotient is
         // unrepresentable), so it faults as overflow rather than panicking.
         match a.checked_rem(b) {
             Some(v) => self.stack.push(Value::Int(v)),
-            None => return Err(self.fault(Code::RunOverflow.as_str())),
+            None => return Err(self.fault(Code::RunOverflow)),
         }
         self.pc += 1;
         Ok(())
@@ -489,14 +489,14 @@ impl<'i> Frame<'i> {
     fn int_div(&mut self) -> Result<(), DurableExecutionFault> {
         let (a, b) = pop_ints(&mut self.stack);
         if b == 0 {
-            return Err(self.fault(Code::RunDivideByZero.as_str()));
+            return Err(self.fault(Code::RunDivideByZero));
         }
         // Truncating division toward zero, paired with the truncating `%`
         // remainder so `a == (a / b) * b + a % b`. `i64::MIN / -1` has an
         // unrepresentable quotient, so it faults as overflow.
         match a.checked_div(b) {
             Some(v) => self.stack.push(Value::Int(v)),
-            None => return Err(self.fault(Code::RunOverflow.as_str())),
+            None => return Err(self.fault(Code::RunOverflow)),
         }
         self.pc += 1;
         Ok(())
@@ -506,7 +506,7 @@ impl<'i> Frame<'i> {
         let a = pop_int(&mut self.stack);
         match a.checked_neg() {
             Some(v) => self.stack.push(Value::Int(v)),
-            None => return Err(self.fault(Code::RunOverflow.as_str())),
+            None => return Err(self.fault(Code::RunOverflow)),
         }
         self.pc += 1;
         Ok(())
@@ -550,7 +550,7 @@ impl<'i> Frame<'i> {
         let b = as_text(pop(&mut self.stack));
         let a = as_text(pop(&mut self.stack));
         if a.len() + b.len() > MAX_TEXT_BYTES {
-            return Err(self.fault(Code::RunTextLimit.as_str()));
+            return Err(self.fault(Code::RunTextLimit));
         }
         let mut joined = String::with_capacity(a.len() + b.len());
         joined.push_str(&a);
@@ -633,7 +633,7 @@ impl<'i> Frame<'i> {
         let date = pop_date(&mut self.stack);
         match marrow_temporal::add_days(date, days) {
             Some(result) => self.stack.push(Value::Date(result)),
-            None => return Err(self.fault(Code::RunTemporalOverflow.as_str())),
+            None => return Err(self.fault(Code::RunTemporalOverflow)),
         }
         self.pc += 1;
         Ok(())
@@ -652,7 +652,7 @@ impl<'i> Frame<'i> {
         let a = pop_duration(&mut self.stack);
         match marrow_temporal::duration_add(a, b) {
             Some(result) => self.stack.push(Value::Duration(result)),
-            None => return Err(self.fault(Code::RunTemporalOverflow.as_str())),
+            None => return Err(self.fault(Code::RunTemporalOverflow)),
         }
         self.pc += 1;
         Ok(())
@@ -663,7 +663,7 @@ impl<'i> Frame<'i> {
         let a = pop_duration(&mut self.stack);
         match marrow_temporal::duration_sub(a, b) {
             Some(result) => self.stack.push(Value::Duration(result)),
-            None => return Err(self.fault(Code::RunTemporalOverflow.as_str())),
+            None => return Err(self.fault(Code::RunTemporalOverflow)),
         }
         self.pc += 1;
         Ok(())
@@ -674,7 +674,7 @@ impl<'i> Frame<'i> {
         let instant = pop_instant(&mut self.stack);
         match marrow_temporal::instant_add_duration(instant, duration) {
             Some(result) => self.stack.push(Value::Instant(result)),
-            None => return Err(self.fault(Code::RunTemporalOverflow.as_str())),
+            None => return Err(self.fault(Code::RunTemporalOverflow)),
         }
         self.pc += 1;
         Ok(())
@@ -685,7 +685,7 @@ impl<'i> Frame<'i> {
         let instant = pop_instant(&mut self.stack);
         match marrow_temporal::instant_sub_duration(instant, duration) {
             Some(result) => self.stack.push(Value::Instant(result)),
-            None => return Err(self.fault(Code::RunTemporalOverflow.as_str())),
+            None => return Err(self.fault(Code::RunTemporalOverflow)),
         }
         self.pc += 1;
         Ok(())
@@ -696,7 +696,7 @@ impl<'i> Frame<'i> {
         let value = pop(&mut self.stack);
         let text =
             crate::render::value_text(&value, image.record_types(), image.enums(), MAX_TEXT_BYTES)
-                .map_err(|_| self.fault(Code::RunTextLimit.as_str()))?;
+                .map_err(|_| self.fault(Code::RunTextLimit))?;
         self.stack.push(Value::Text(text.into()));
         self.pc += 1;
         Ok(())
@@ -754,7 +754,7 @@ impl<'i> Frame<'i> {
             _ => unreachable!("verifier proved an int under a range guard"),
         };
         if value < lo || value > hi {
-            return Err(self.fault(Code::RunRange.as_str()));
+            return Err(self.fault(Code::RunRange));
         }
         self.pc += 1;
         Ok(())
@@ -795,8 +795,7 @@ impl<'i> Frame<'i> {
                 .map(|piece| Value::Text(Rc::from(piece)))
                 .collect()
         };
-        let list = bounded_list(idx, pieces)
-            .ok_or_else(|| self.fault(Code::RunCollectionLimit.as_str()))?;
+        let list = bounded_list(idx, pieces).ok_or_else(|| self.fault(Code::RunCollectionLimit))?;
         self.stack.push(list);
         self.pc += 1;
         Ok(())
@@ -811,8 +810,7 @@ impl<'i> Frame<'i> {
             .lines()
             .map(|line| Value::Text(Rc::from(line)))
             .collect();
-        let list = bounded_list(idx, pieces)
-            .ok_or_else(|| self.fault(Code::RunCollectionLimit.as_str()))?;
+        let list = bounded_list(idx, pieces).ok_or_else(|| self.fault(Code::RunCollectionLimit))?;
         self.stack.push(list);
         self.pc += 1;
         Ok(())
@@ -832,12 +830,12 @@ impl<'i> Frame<'i> {
             };
             if position > 0 {
                 if joined.len() + sep.len() > MAX_TEXT_BYTES {
-                    return Err(self.fault(Code::RunTextLimit.as_str()));
+                    return Err(self.fault(Code::RunTextLimit));
                 }
                 joined.push_str(&sep);
             }
             if joined.len() + piece.len() > MAX_TEXT_BYTES {
-                return Err(self.fault(Code::RunTextLimit.as_str()));
+                return Err(self.fault(Code::RunTextLimit));
             }
             joined.push_str(piece);
         }
@@ -931,7 +929,7 @@ impl<'i> Frame<'i> {
         // variant's payload faults rather than pushing a wrongly-typed value. Compiler
         // output dispatches on the tag first, so this never fires in practice.
         if actual_variant != variant {
-            return Err(self.fault(Code::RunEnumVariant.as_str()));
+            return Err(self.fault(Code::RunEnumVariant));
         }
         self.stack.push(payload[field as usize].clone());
         self.pc += 1;
@@ -994,7 +992,7 @@ impl<'i> Frame<'i> {
             _ => unreachable!("verifier proved a text const operand"),
         };
         let (line, column) = self.function.span_at(self.pc).unwrap_or((1, 1));
-        RuntimeFault::with_detail(Code::RunUnreachable.as_str(), line, column, text).into()
+        RuntimeFault::with_detail(Code::RunUnreachable, line, column, text).into()
     }
 
     fn todo_fault(&self, idx: u16) -> DurableExecutionFault {
@@ -1003,7 +1001,7 @@ impl<'i> Frame<'i> {
             _ => unreachable!("verifier proved a text const operand"),
         };
         let (line, column) = self.function.span_at(self.pc).unwrap_or((1, 1));
-        RuntimeFault::with_detail(Code::RunTodo.as_str(), line, column, text).into()
+        RuntimeFault::with_detail(Code::RunTodo, line, column, text).into()
     }
 
     /// A test assertion: on a false condition the running test fails with a
@@ -1014,7 +1012,7 @@ impl<'i> Frame<'i> {
             self.pc += 1;
             Ok(())
         } else {
-            Err(self.fault(Code::RunAssert.as_str()))
+            Err(self.fault(Code::RunAssert))
         }
     }
 
@@ -1027,7 +1025,7 @@ impl<'i> Frame<'i> {
         driver: &mut Option<&mut dyn DriverDispatch>,
     ) -> Result<(), DurableExecutionFault> {
         if depth + 1 > MAX_CALL_DEPTH {
-            return Err(self.fault(Code::RunCallDepth.as_str()));
+            return Err(self.fault(Code::RunCallDepth));
         }
         let callee = self
             .image
@@ -1080,18 +1078,18 @@ impl<'i> Frame<'i> {
                 Ok(())
             }
             CommitResult::Aborted => Err(DurableExecutionFault::classified(
-                source_fault(self.function, self.pc, Code::RunCommit.as_str()),
+                source_fault(self.function, self.pc, Code::RunCommit),
                 DurableCommitState::KnownOld,
             )),
             CommitResult::Indeterminate(recovery) => Err(DurableExecutionFault::pending(
-                source_fault(self.function, self.pc, Code::RunCommit.as_str()),
+                source_fault(self.function, self.pc, Code::RunCommit),
                 recovery,
             )),
             // The verifier admits exactly one commit instruction on a session. Preserve
             // uncertainty if that invariant is ever violated rather than inventing a
             // known-old result for an already-consumed transaction.
             CommitResult::SessionFinished => Err(DurableExecutionFault::classified(
-                source_fault(self.function, self.pc, Code::RunCommit.as_str()),
+                source_fault(self.function, self.pc, Code::RunCommit),
                 DurableCommitState::Unknown,
             )),
         }
@@ -1359,15 +1357,15 @@ impl<'i> Frame<'i> {
         let new_len = items
             .len()
             .checked_add(1)
-            .ok_or_else(|| self.fault(Code::RunCollectionLimit.as_str()))?;
+            .ok_or_else(|| self.fault(Code::RunCollectionLimit))?;
         if !collection_within_limits(new_len, 0) {
-            return Err(self.fault(Code::RunCollectionLimit.as_str()));
+            return Err(self.fault(Code::RunCollectionLimit));
         }
         let new_bytes = old_bytes
             .checked_add(value.structural_bytes())
-            .ok_or_else(|| self.fault(Code::RunCollectionLimit.as_str()))?;
+            .ok_or_else(|| self.fault(Code::RunCollectionLimit))?;
         if !collection_within_limits(new_len, new_bytes) {
-            return Err(self.fault(Code::RunCollectionLimit.as_str()));
+            return Err(self.fault(Code::RunCollectionLimit));
         }
         Rc::make_mut(&mut items).push(value);
         self.stack.push(Value::List(idx, new_bytes, items));
@@ -1389,7 +1387,7 @@ impl<'i> Frame<'i> {
         // not the index value, so a forged image can present an out-of-range index; it
         // fails closed with `run.corruption` rather than reading past the collection.
         let Some(value) = usize::try_from(index).ok().and_then(|i| items.get(i)) else {
-            return Err(self.fault(Code::RunCorruption.as_str()));
+            return Err(self.fault(Code::RunCorruption));
         };
         let value = value.clone();
         self.stack.push(value);
@@ -1431,9 +1429,9 @@ impl<'i> Frame<'i> {
                 let new_bytes = old_bytes
                     .checked_sub(entries[position].1.structural_bytes())
                     .and_then(|bytes| bytes.checked_add(value_bytes))
-                    .ok_or_else(|| self.fault(Code::RunCollectionLimit.as_str()))?;
+                    .ok_or_else(|| self.fault(Code::RunCollectionLimit))?;
                 if !collection_within_limits(entries.len(), new_bytes) {
-                    return Err(self.fault(Code::RunCollectionLimit.as_str()));
+                    return Err(self.fault(Code::RunCollectionLimit));
                 }
                 Rc::make_mut(&mut entries)[position].1 = value;
                 self.stack.push(Value::Map(idx, new_bytes, entries));
@@ -1442,16 +1440,16 @@ impl<'i> Frame<'i> {
                 let new_len = entries
                     .len()
                     .checked_add(1)
-                    .ok_or_else(|| self.fault(Code::RunCollectionLimit.as_str()))?;
+                    .ok_or_else(|| self.fault(Code::RunCollectionLimit))?;
                 if !collection_within_limits(new_len, 0) {
-                    return Err(self.fault(Code::RunCollectionLimit.as_str()));
+                    return Err(self.fault(Code::RunCollectionLimit));
                 }
                 let new_bytes = old_bytes
                     .checked_add(key_bytes(&key))
                     .and_then(|bytes| bytes.checked_add(value_bytes))
-                    .ok_or_else(|| self.fault(Code::RunCollectionLimit.as_str()))?;
+                    .ok_or_else(|| self.fault(Code::RunCollectionLimit))?;
                 if !collection_within_limits(new_len, new_bytes) {
-                    return Err(self.fault(Code::RunCollectionLimit.as_str()));
+                    return Err(self.fault(Code::RunCollectionLimit));
                 }
                 Rc::make_mut(&mut entries).insert(position, (key, value));
                 self.stack.push(Value::Map(idx, new_bytes, entries));
@@ -1503,7 +1501,7 @@ impl<'i> Frame<'i> {
         // image with an out-of-range index fails closed with `run.corruption` rather
         // than reading past the map (see `ListGet`).
         let Some((key, _)) = usize::try_from(index).ok().and_then(|i| entries.get(i)) else {
-            return Err(self.fault(Code::RunCorruption.as_str()));
+            return Err(self.fault(Code::RunCorruption));
         };
         let key = key.clone();
         self.stack.push(key_to_value(key));
@@ -1518,7 +1516,7 @@ impl<'i> Frame<'i> {
         // image with an out-of-range index fails closed with `run.corruption` rather
         // than reading past the map (see `ListGet`).
         let Some((_, value)) = usize::try_from(index).ok().and_then(|i| entries.get(i)) else {
-            return Err(self.fault(Code::RunCorruption.as_str()));
+            return Err(self.fault(Code::RunCorruption));
         };
         let value = value.clone();
         self.stack.push(value);
@@ -1549,8 +1547,8 @@ impl<'i> Frame<'i> {
         // single collection aggregate ceiling (a wide-key traversal faults
         // `run.collection_limit` here, not through a second bound).
         let items: Vec<Value> = bounded.keys.into_iter().map(key_to_value).collect();
-        let list = bounded_list(list_ty, items)
-            .ok_or_else(|| self.fault(Code::RunCollectionLimit.as_str()))?;
+        let list =
+            bounded_list(list_ty, items).ok_or_else(|| self.fault(Code::RunCollectionLimit))?;
         self.stack.push(list);
         self.stack.push(Value::Bool(bounded.more));
         self.pc += 1;
@@ -1584,8 +1582,8 @@ impl<'i> Frame<'i> {
         // one bounded `List[K]` (the compiler wraps each into `Id(^root)` at the loop
         // binding), obeying the single collection aggregate ceiling.
         let items: Vec<Value> = bounded.keys.into_iter().map(key_to_value).collect();
-        let list = bounded_list(list_ty, items)
-            .ok_or_else(|| self.fault(Code::RunCollectionLimit.as_str()))?;
+        let list =
+            bounded_list(list_ty, items).ok_or_else(|| self.fault(Code::RunCollectionLimit))?;
         self.stack.push(list);
         self.stack.push(Value::Bool(bounded.more));
         self.pc += 1;
@@ -1792,12 +1790,12 @@ fn const_value(value: &SealedConst) -> Value {
 /// Build a runtime fault at the source position mapped to `pc`. Every instruction
 /// has a span mapping, so a location always exists; a missing one is a verifier
 /// invariant breach and defaults to the function's own start.
-fn source_fault(function: &SealedFunction, pc: usize, code: &'static str) -> RuntimeFault {
+fn source_fault(function: &SealedFunction, pc: usize, code: Code) -> RuntimeFault {
     let (line, column) = function.span_at(pc).unwrap_or((1, 1));
     RuntimeFault::new(code, line, column)
 }
 
-fn fault(function: &SealedFunction, pc: usize, code: &'static str) -> DurableExecutionFault {
+fn fault(function: &SealedFunction, pc: usize, code: Code) -> DurableExecutionFault {
     source_fault(function, pc, code).into()
 }
 

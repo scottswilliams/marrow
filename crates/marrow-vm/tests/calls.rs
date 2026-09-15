@@ -7,6 +7,7 @@ use marrow_vm::{Value, run};
 #[path = "common/admitted.rs"]
 mod admitted_helper;
 use admitted_helper::admitted;
+use marrow_codes::Code;
 
 fn spans(code: &[Instr]) -> Vec<SpanEntry> {
     (0..code.len())
@@ -244,7 +245,7 @@ fn an_acyclic_call_chain_past_the_dynamic_depth_bound_refuses() {
             Vec::new()
         )
         .err()
-        .map(|fault| fault.code().to_string()),
-        Some("run.call_depth".to_string()),
+        .map(|fault| fault.code()),
+        Some(Code::RunCallDepth),
     );
 }

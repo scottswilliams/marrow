@@ -12,6 +12,7 @@ use marrow_vm::{Value, run};
 #[path = "common/admitted.rs"]
 mod admitted_helper;
 use admitted_helper::admitted;
+use marrow_codes::Code;
 
 /// The synthetic export id these draft-level tests bind and look up by.
 fn answer_id() -> ExportId {
@@ -219,7 +220,7 @@ fn a_forged_out_of_range_positional_read_faults_run_corruption() {
             Vec::<Value>::new(),
         )
         .expect_err("an out-of-range positional read must fault, not panic");
-        assert_eq!(fault.code(), "run.corruption");
+        assert_eq!(fault.code(), Code::RunCorruption);
     }
 }
 
@@ -384,7 +385,7 @@ fn a_range_guard_admits_the_interval_and_faults_outside_it() {
     }
     for value in [-1, 151, i64::MIN, i64::MAX] {
         let fault = run(function, vec![Value::Int(value)]).expect_err("out of range must fault");
-        assert_eq!(fault.code(), "run.range");
+        assert_eq!(fault.code(), Code::RunRange);
         assert_eq!((fault.line(), fault.column()), (3, 5));
     }
 }

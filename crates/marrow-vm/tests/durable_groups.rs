@@ -344,9 +344,9 @@ fn seeded(image: &VerifiedImage) -> MemoryAttachment {
 fn describe(run: &DurableRun) -> String {
     match run {
         DurableRun::Ran(Ok(_)) => "ran".to_string(),
-        DurableRun::Ran(Err(fault)) => format!("fault {}", fault.code()),
+        DurableRun::Ran(Err(fault)) => format!("fault {}", fault.code().as_str()),
         DurableRun::Parked => "parked".to_string(),
-        DurableRun::Failed(code) => format!("failed {code}"),
+        DurableRun::Failed(code) => format!("failed {}", code.as_str()),
     }
 }
 

@@ -79,7 +79,7 @@ fn build_and_run(
         image.function(index).expect("verified function"),
         Vec::new(),
     )
-    .map_err(|fault| fault.code().to_string())
+    .map_err(|fault| fault.code().as_str().to_string())
 }
 
 #[test]

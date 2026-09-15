@@ -38,6 +38,7 @@ use admitted_plan::admitted_plan;
 #[path = "common/admitted.rs"]
 mod admitted_helper;
 use admitted_helper::admitted;
+use marrow_codes::Code;
 
 // The tracer graph's fixed ledger ids.
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
@@ -336,9 +337,9 @@ fn seeded_attachment(image: &VerifiedImage) -> MemoryAttachment {
 fn describe(run: &DurableRun) -> String {
     match run {
         DurableRun::Ran(Ok(_)) => "ran".to_string(),
-        DurableRun::Ran(Err(fault)) => format!("fault {}", fault.code()),
+        DurableRun::Ran(Err(fault)) => format!("fault {}", fault.code().as_str()),
         DurableRun::Parked => "parked".to_string(),
-        DurableRun::Failed(code) => format!("failed {code}"),
+        DurableRun::Failed(code) => format!("failed {}", code.as_str()),
     }
 }
 
@@ -669,7 +670,7 @@ fn a_frozen_list_that_exceeds_the_aggregate_ceiling_faults() {
     // collection aggregate ceiling and faults — the same fault a batch `split` result
     // of this size raises, not a traversal-specific bound.
     match run_export(&mut attachment, export_id("all"), Vec::new()).expect("all export") {
-        DurableRun::Ran(Err(fault)) => assert_eq!(fault.code(), "run.collection_limit"),
+        DurableRun::Ran(Err(fault)) => assert_eq!(fault.code(), Code::RunCollectionLimit),
         other => panic!(
             "expected a collection-limit fault, got {}",
             describe(&other)

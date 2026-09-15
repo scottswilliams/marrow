@@ -181,7 +181,7 @@ fn a_wrong_kind_stored_key_faults_at_the_verified_traversal() {
                 else {
                     panic!("a key decoding fault is an ordinary runtime fault");
                 };
-                assert_eq!(fault.code(), marrow_codes::Code::RunCorruption.as_str());
+                assert_eq!(fault.code(), marrow_codes::Code::RunCorruption);
                 assert_eq!((fault.line(), fault.column()), (20, 4));
             }
         }

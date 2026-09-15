@@ -333,7 +333,7 @@ fn check_case(engine: &mut impl ByteEngine, target: Target, damage: Damage) {
                     else {
                         panic!("an operation fault must not become invocation-incomplete")
                     };
-                    assert_eq!(fault.code(), marrow_codes::Code::RunCorruption.as_str());
+                    assert_eq!(fault.code(), marrow_codes::Code::RunCorruption);
                     assert_eq!((fault.line(), fault.column()), (20 + fixture.strict_pc, 4));
                     assert_eq!(
                         session.read_entry(&session.site(fixture.earlier_site), &earlier_keys),

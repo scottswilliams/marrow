@@ -27,6 +27,7 @@
 //! }
 //! ```
 
+use marrow_codes::Code;
 use marrow_kernel::durable::{DemandCoverage, InvocationGrant, SessionHost};
 use marrow_lifecycle::{Attachment, FreshTest, TestHost};
 use marrow_verify::{DemandView, ExportId, VerifiedFunction};
@@ -44,7 +45,7 @@ pub enum DurableRun {
     /// field-only keyed branches nested to any depth are executable.
     Parked,
     /// Minting the store failed operationally; the stable code names why.
-    Failed(&'static str),
+    Failed(Code),
 }
 
 /// Run the attachment's own export `export` with `args`, opening the session its verified
@@ -109,14 +110,14 @@ fn run_on_host<H: SessionHost + ?Sized>(
         match host.txn_session(grant, coverage) {
             Ok(mut session) => run_durable(func, args, &mut session),
             Err(_) => {
-                return DurableRun::Failed(marrow_codes::Code::CliDurableUnsupported.as_str());
+                return DurableRun::Failed(Code::CliDurableUnsupported);
             }
         }
     } else {
         match host.read_session(grant, coverage) {
             Ok(mut session) => run_durable(func, args, &mut session),
             Err(_) => {
-                return DurableRun::Failed(marrow_codes::Code::CliDurableUnsupported.as_str());
+                return DurableRun::Failed(Code::CliDurableUnsupported);
             }
         }
     };
@@ -177,5 +178,5 @@ impl<H: SessionHost + ?Sized> DriverDispatch for TestDriver<'_, H> {
 /// than a panic.
 fn session_open_fault(func: VerifiedFunction<'_>) -> DurableExecutionFault {
     let (line, column) = func.body().span_at(0).unwrap_or((1, 1));
-    RuntimeFault::new(marrow_codes::Code::RunAuthority.as_str(), line, column).into()
+    RuntimeFault::new(Code::RunAuthority, line, column).into()
 }
