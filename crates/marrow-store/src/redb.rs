@@ -92,7 +92,20 @@ impl<'a> traversal::ScanEntry
 /// A redb-backed native ordered-byte engine, durable across processes.
 pub(crate) struct NativeEngine {
     db: Option<DatabaseHandle>,
-    contain_drop_panic: bool,
+    drop_trust: DropTrust,
+}
+
+/// Whether the dependency handle is still trusted to unwind cleanly on drop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DropTrust {
+    /// No audit has failed; dropping the handle runs ordinarily.
+    Ordinary,
+    /// A failed integrity audit can leave redb's live handle traversing corrupt
+    /// allocator metadata again from `Database::drop`, so that second dependency
+    /// unwind is contained at the adapter boundary. The persistent recovery
+    /// caller separately quarantines its owner lock before auditing; this
+    /// containment does not itself authorize or classify later use.
+    ContainedAfterFailedAudit,
 }
 
 enum DatabaseHandle {
@@ -119,10 +132,10 @@ impl DatabaseHandle {
         }
     }
 
-    fn require_write_access(&self, _op: &'static str) -> Result<(), StoreError> {
+    fn require_write_access(&self, op: &'static str) -> Result<(), StoreError> {
         match self {
             Self::ReadWrite(_) => Ok(()),
-            Self::ReadOnly(_) => Err(StoreError::ReadOnly { op: _op }),
+            Self::ReadOnly(_) => Err(StoreError::ReadOnly { op }),
         }
     }
 }
@@ -146,15 +159,11 @@ impl Drop for NativeEngine {
         let Some(db) = self.db.take() else {
             return;
         };
-        if self.contain_drop_panic {
-            // A failed integrity audit can leave redb's live handle traversing corrupt
-            // allocator metadata again from `Database::drop`. Keep the adapter boundary
-            // fail-closed by containing that second dependency unwind. The persistent
-            // recovery caller separately quarantines its owner lock before auditing; this
-            // adapter containment does not itself authorize or classify later use.
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(db)));
-        } else {
-            drop(db);
+        match self.drop_trust {
+            DropTrust::Ordinary => drop(db),
+            DropTrust::ContainedAfterFailedAudit => {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(db)));
+            }
         }
     }
 }
@@ -617,7 +626,7 @@ impl NativeEngine {
             stamp_or_verify_format_version(Some(&created_path), &db)?;
             Ok(Self {
                 db: Some(DatabaseHandle::ReadWrite(db)),
-                contain_drop_panic: false,
+                drop_trust: DropTrust::Ordinary,
             })
         })
     }
@@ -637,7 +646,7 @@ impl NativeEngine {
             })?;
             Ok(Self {
                 db: Some(db),
-                contain_drop_panic: false,
+                drop_trust: DropTrust::Ordinary,
             })
         })
     }
@@ -655,7 +664,7 @@ impl NativeEngine {
             verify_existing_store_shape(&db)?;
             Ok(Self {
                 db: Some(DatabaseHandle::ReadWrite(db)),
-                contain_drop_panic: false,
+                drop_trust: DropTrust::Ordinary,
             })
         })
     }
@@ -675,7 +684,7 @@ impl NativeEngine {
             })?;
             Ok(Self {
                 db: Some(db),
-                contain_drop_panic: false,
+                drop_trust: DropTrust::Ordinary,
             })
         })
     }
@@ -723,7 +732,7 @@ impl ByteEngine for NativeEngine {
             DatabaseHandle::ReadOnly(_) => Err(StoreError::ReadOnly { op: "audit" }),
         };
         if result.is_err() {
-            self.contain_drop_panic = true;
+            self.drop_trust = DropTrust::ContainedAfterFailedAudit;
         }
         result
     }
@@ -1163,45 +1172,35 @@ mod tests {
         let dir = TempDir::new("marrow-store-redb-audit").expect("temp dir");
         let path = dir.path().join("audit.redb");
         let mut store = NativeEngine::create_new(&path).expect("open fresh");
-        {
-            let mut txn = store.begin().expect("begin");
-            for n in 0..64u32 {
-                txn.put(format!("k{n:03}").as_bytes(), vec![n as u8; 32])
-                    .expect("put");
-            }
-            assert_eq!(txn.commit(), CommitOutcome::Confirmed);
-        }
-        store
-            .audit_integrity()
-            .expect("a fresh store passes its audit");
 
         // Flip a spread of live bytes in the store body out from under redb.
-        let mut file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&path)
-            .expect("reopen store file");
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).expect("read body");
-        for offset in (0..bytes.len()).step_by(97) {
-            bytes[offset] ^= 0xFF;
-        }
-        file.seek(SeekFrom::Start(0)).expect("seek");
-        file.write_all(&bytes).expect("write mutated body");
-        file.sync_all().expect("sync mutated body");
-        drop(file);
+        let corrupt = || {
+            let mut file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .expect("reopen store file");
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).expect("read body");
+            for offset in (0..bytes.len()).step_by(97) {
+                bytes[offset] ^= 0xFF;
+            }
+            file.seek(SeekFrom::Start(0)).expect("seek");
+            file.write_all(&bytes).expect("write mutated body");
+            file.sync_all().expect("sync mutated body");
+        };
 
-        // Auditing the externally corrupted live handle must fail closed with a typed
-        // error, and the adapter must also contain redb's second traversal from
-        // `Database::drop` rather than letting it unwind across the storage boundary.
+        // The audit must fail closed with a typed error, and the adapter must also
+        // contain redb's second traversal from `Database::drop` rather than letting
+        // it unwind across the storage boundary.
         let audited = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let result = store.audit_integrity();
+            let law = conformance::a_corrupted_store_fails_its_integrity_audit(&mut store, corrupt);
             drop(store);
-            result
+            law
         }));
         match audited {
-            Ok(Err(_)) => {}
-            Ok(Ok(())) => panic!("a byte-mutated store must not pass the integrity audit"),
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => panic!("the corruption law reported a store failure: {error:?}"),
             Err(_) => panic!("the adapter must contain redb's panic as a typed error"),
         }
     }

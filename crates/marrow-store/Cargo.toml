@@ -13,9 +13,9 @@ marrow-codes = { path = "../marrow-codes" }
 redb = { version = "4", optional = true }
 
 [features]
-# The native persistent backend (redb). Off by default so the in-memory store
-# and encoding stay dependency-light; no retained crate enables it today — CI
-# gates it via --all-features, and the refounded runtime lanes become its caller.
+# The native persistent backend (redb). Off by default so a dependent that needs
+# only the in-memory engine stays dependency-light; marrow-kernel enables it
+# unconditionally, so every build that reaches durable storage carries it.
 native = ["dep:redb"]
 
 [lints]

@@ -1,5 +1,6 @@
-//! The in-memory ordered-byte engine: the differential proving ground for the
-//! path kernel. Not durable across processes.
+//! The in-memory ordered-byte engine, reachable in production through the
+//! ephemeral attachment and used as the differential reference for the native
+//! engine. Not durable across processes.
 
 use std::collections::BTreeMap;
 use std::convert::Infallible;
@@ -42,6 +43,10 @@ impl ByteEngine for MemoryEngine {
     }
 
     fn begin(&mut self) -> Result<MemTxn<'_>, StoreError> {
+        // The working copy is the whole map, so beginning a transaction is
+        // O(store size) in time and space. Acceptable while every ephemeral
+        // store is small; a persistent-size ephemeral workload needs a shared
+        // immutable map here instead.
         let working = self.entries.clone();
         Ok(MemTxn {
             base: &mut self.entries,

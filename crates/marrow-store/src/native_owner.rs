@@ -296,21 +296,21 @@ impl OwnerLock {
         dir: &Path,
         access: NativeOpenAccess,
         instance: [u8; 16],
-    ) -> Result<bool, NativeLockError> {
-        let prior_unclean = self.inspect_marker(dir, access)?;
+    ) -> Result<AuditObligation, NativeLockError> {
+        let obligation = self.inspect_marker(dir, access)?;
         if access != NativeOpenAccess::ReadOnly {
             self.publish_owner(dir, instance)?;
         }
-        Ok(prior_unclean)
+        Ok(obligation)
     }
 
     fn inspect_marker(
         &mut self,
         dir: &Path,
         access: NativeOpenAccess,
-    ) -> Result<bool, NativeLockError> {
+    ) -> Result<AuditObligation, NativeLockError> {
         let Some(mut file) = open_marker(dir, access).map_err(NativeLockError::io)? else {
-            return Ok(false);
+            return Ok(AuditObligation::Discharged);
         };
 
         match file.try_lock() {
@@ -336,7 +336,7 @@ impl OwnerLock {
         // contender an I/O verdict where the exclusion verdict applies.
         let held = file.metadata().map_err(NativeLockError::io)?;
         admit_held_marker(&held).map_err(NativeLockError::io)?;
-        Ok(held.len() != 0)
+        Ok(AuditObligation::of_marker(held.len()))
     }
 
     fn publish_owner(&mut self, dir: &Path, instance: [u8; 16]) -> Result<(), NativeLockError> {
@@ -356,7 +356,11 @@ impl OwnerLock {
     }
 
     /// Hand off only the marker descriptor; directory exclusion never changes hands.
-    fn prepare_service(&mut self, dir: &Path, instance: [u8; 16]) -> Result<bool, NativeLockError> {
+    fn prepare_service(
+        &mut self,
+        dir: &Path,
+        instance: [u8; 16],
+    ) -> Result<AuditObligation, NativeLockError> {
         let previous = self
             .file
             .as_ref()
@@ -448,7 +452,45 @@ pub struct NativeEngineOwner {
 
 struct ReadOnlySnapshot {
     engine_node: Metadata,
-    prior_unclean: bool,
+    obligation: AuditObligation,
+}
+
+/// Whether a physical integrity audit is still owed on this store directory.
+///
+/// A holder that exits without clearing its marker leaves the marker nonempty,
+/// and the next acquisition inherits the obligation until an audit discharges
+/// it. The state travels through admission, service preparation and the
+/// read-only snapshot, so it is a named state rather than a bare flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuditObligation {
+    /// No prior holder left an unaudited marker.
+    Discharged,
+    /// A nonempty prior marker is outstanding until a physical audit runs.
+    Inherited,
+}
+
+impl AuditObligation {
+    /// The obligation a marker of `len` bytes carries.
+    fn of_marker(len: u64) -> Self {
+        if len == 0 {
+            Self::Discharged
+        } else {
+            Self::Inherited
+        }
+    }
+
+    /// The obligation owed when either of two readings is outstanding.
+    fn or(self, other: Self) -> Self {
+        if self == Self::Inherited || other == Self::Inherited {
+            Self::Inherited
+        } else {
+            Self::Discharged
+        }
+    }
+
+    fn is_inherited(self) -> bool {
+        self == Self::Inherited
+    }
 }
 
 /// One store directory's owner lock, held before anything in that directory has
@@ -502,7 +544,7 @@ impl PendingNativeEngineOwner {
         instance: [u8; 16],
         admit: impl FnOnce() -> Result<(), R>,
     ) -> Result<NativeEngineOwner, NativeOwnerOpenError<R>> {
-        let prior_unclean = self
+        let obligation = self
             .lock
             .prepare_existing(&self.directory, access, instance)
             .map_err(NativeOwnerOpenError::Lock)?;
@@ -537,7 +579,7 @@ impl PendingNativeEngineOwner {
         #[cfg(all(test, unix))]
         tests::mutate_after_open_if_armed(&self.directory);
         if access == NativeOpenAccess::Recovery
-            || (prior_unclean && access == NativeOpenAccess::ReadWrite)
+            || (obligation.is_inherited() && access == NativeOpenAccess::ReadWrite)
         {
             engine
                 .audit_integrity()
@@ -556,7 +598,7 @@ impl PendingNativeEngineOwner {
             directory,
             read_only_snapshot: read_only_node.map(|engine_node| ReadOnlySnapshot {
                 engine_node,
-                prior_unclean,
+                obligation,
             }),
         })
     }
@@ -594,7 +636,7 @@ impl NativeEngineOwner {
         };
         check_node()?;
         drop(self.engine.take());
-        let prior_unclean = self
+        let obligation = self
             .lock
             .prepare_service(&self.directory, instance)
             .map_err(NativeOwnerOpenError::Lock)?;
@@ -604,7 +646,7 @@ impl NativeEngineOwner {
         check_node()?;
         #[cfg(all(test, unix))]
         tests::mutate_after_open_if_armed(&self.directory);
-        if prior_unclean || snapshot.prior_unclean {
+        if obligation.or(snapshot.obligation).is_inherited() {
             engine
                 .audit_integrity()
                 .map_err(NativeOwnerOpenError::Store)?;
@@ -982,6 +1024,25 @@ mod tests {
         NativeEngineOwner::acquire_existing(dir)
             .expect("acquire the owner lock")
             .bind_and_open_existing(NativeOpenAccess::ReadWrite, instance, || Ok(()))
+    }
+
+    /// The exported native engine satisfies the same backend conformance suite
+    /// as the in-memory engine, through the production acquire-bind-open path
+    /// rather than a raw engine handle.
+    #[test]
+    fn the_native_owner_passes_the_conformance_suite() -> Result<(), StoreError> {
+        let scratch = Scratch::new("conformance");
+        let mut counter = 0u8;
+        crate::conformance::run_all(|| {
+            counter += 1;
+            let dir = scratch.0.join(format!("store-{counter}"));
+            std::fs::create_dir_all(&dir).expect("store directory");
+            NativeEngineOwner::provision(&dir)?;
+            open_existing(&dir, [counter; 16]).map_err(|error| match error {
+                NativeOwnerOpenError::Store(store) => store,
+                other => panic!("the conformance owner could not open: {other:?}"),
+            })
+        })
     }
 
     fn marker_bytes(dir: &Path) -> Vec<u8> {
