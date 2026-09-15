@@ -78,42 +78,22 @@ therefore hold no raw key, engine handle, or transaction object.
 ## Native owner
 
 `native_owner.rs` derives `lock` and `store.redb` from one canonical store
-directory and keeps the advisory lock inseparable from the engine. Provisioning
-calls a create-only operation that stamps the engine format. An open of an
+directory and keeps the advisory lock inseparable from the engine. Opening an
 existing store has two phases: acquire directory exclusion without marker writes
-or engine calls, then open the engine under the same lock. Mutable access publishes
-the store instance in the marker; inspection locks an existing marker without
-changing it and leaves an absent marker absent. Lifecycle admission pairs its retained directory descriptor with that
-locked directory identity before reading the envelope and head. Ordinary access
-requires an active envelope; pending and legacy envelopes require recovery.
-`NativeOpenAccess` selects service read/write, explicit recovery or read-only
-inspection through that same opening path. Inspection cannot write or invoke
-the repairing integrity operation; releasing its locks does not truncate the
-marker or discharge an inherited unclean-shutdown obligation. A contention
-diagnostic's recorded identity may describe an earlier mutable holder.
+or engine calls, then open the engine under that same lock. `NativeOpenAccess`
+selects service read/write, explicit recovery, or read-only inspection through
+the one opening path, so inspection cannot write or invoke the repairing
+integrity operation and cannot discharge an inherited unclean-shutdown
+obligation.
 
-Lifecycle semantic admission precedes mutable marker preparation. A code-only
-rebind opens read-only and completes the logical audit before consuming that
-owner into writable service. Directory exclusion is retained while the engine
-is closed and reopened and the marker descriptor is handed off. The accepted
-numbered layout is moved, not reconstructed. An exact active binding uses the
-ordinary service-open path without a transition audit.
-
-Read-only success in the pinned redb implementation requires the saved allocator
-state that writable opening uses to avoid full repair. Under uninterrupted
-cooperative access, the reopened owner serves the same logical data. The abort
-callback refuses full repair when invoked; it does not prohibit preceding header
-recovery or allocator recovery that bypasses it. Engine identity checks detect
-replacement during preparation, not external writes to the same inode.
-
-An inherited physical-audit obligation still requires the repairing integrity
-operation after logical admission. A repair is reported as corruption and stops
-publication; physical bytes may change, including selection of another committed
-state, and the unclean marker obligation is retained. The old Head and envelope
-remain unchanged. After successful preparation, exact old metadata/location
-verification precedes the Pending/Head/Active publisher. Final metadata
-verification precedes a receipt and attachment; failure after Active is
-activation uncertainty.
+A code-only rebind is read-only first: the logical audit completes before the
+owner is consumed into writable service, and directory exclusion is retained
+across the engine's close and reopen. Engine identity checks detect replacement
+during that preparation, but not external writes to the same inode — the
+cooperating-access assumption [status](../status.md#trust-boundaries) records.
+A preparation failure can leave engine bookkeeping and the marker changed
+without publishing a binding transition; [operations](../operations/README.md#changing-the-program)
+states what each outcome means for the store.
 
 An indeterminate commit quarantines the lock until process exit; the
 kernel classifies the outcome as known old, known new, or unknown
@@ -138,20 +118,12 @@ do not establish protection against arbitrary concurrent namespace substitution.
 The admitted name and parent constraints are described in
 [operations](../operations/README.md#a-store-on-disk).
 
-The lifecycle's existing logical-head generation selects the entry layout.
-Generation 2 is written by fresh provisioning; generation 1 and every other
-unsupported generation are refused with `store.format_version`. Attach,
-code-only rebind, logical audit, and import read that fence before opening the
-engine. These admission refusals preserve the engine file, Head, envelope and
-marker bytes or absence. Directory exclusion precedes admission. Writable
-preparation can change engine bookkeeping and the marker before a subsequent
-preparation failure, but cannot publish a binding transition. There is no automatic
-rewrite or migration reader. Generation 2 changes branch-entry keys; root, index, and metadata
-encodings retain their generation-1 shapes. The head's sequencing and data-digest
-fields retain their reserved-zero meanings. Envelope version 1 separately records
-active or pending publication state; explicit recovery can upgrade a legacy
-version-0 envelope without changing the head layout or logical data
-([compatibility](../compatibility.md#versioning)).
+The logical-head generation recorded by the lifecycle selects the entry layout,
+and admission reads that fence before the engine opens: attach, code-only
+rebind, logical audit and import all refuse an unsupported generation without
+touching the engine file, Head, envelope or marker. There is no migration
+reader. [Compatibility](../compatibility.md#versioning) owns which generations
+current tools admit and what a version refusal leaves behind.
 
 ## Reading a field
 

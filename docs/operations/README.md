@@ -51,11 +51,10 @@ confirmed batches may remain in the reported unpublished stage; missing Head
 makes both ordinary admission and explicit recovery refuse it.
 
 Failures retain possible unpublished stages or report a published instance when
-known. Preserve those paths: no automatic resume, removal or replacement is
-performed by restore. A failed final barrier may leave the destination present
-and Active visible; failure is not proof that no work occurred. A failed receipt
-write exits unsuccessfully without undoing completed work and attempts to report
-the known result on stderr. See the [command receipts](../tools/cli.md#marrow-backup-and-restore).
+known. Preserve those paths: restore performs no automatic resume, removal or
+replacement. A failed final barrier may leave the destination present and Active
+visible; failure is not proof that no work occurred, and neither is a missing
+receipt ([command receipts](../tools/cli.md#marrow-backup-and-restore)).
 
 ## A store on disk
 
@@ -109,8 +108,8 @@ some contents already. The supervisor exposes a complete cleanup-failure record
 as `ProvisionFailedError`. Its stage name is a sibling of the requested store,
 not a child. No automatic cleanup retry is performed.
 
-Current tools provision stores with logical-head generation 2. The entry layout
-requires fresh provisioning; there is no automatic conversion of older stores
+A store provisioned by an older toolchain cannot be converted; its layout
+requires fresh provisioning
 ([compatibility](../compatibility.md#versioning)).
 
 Both `import` and `run --store` run the program in a separate runner process,
@@ -200,19 +199,12 @@ when the compiled program is exactly the active binding; a code-only change is
 other refusals above apply unchanged. Every refusal is decided before the
 store's engine opens, so a refused import writes nothing.
 
-A generation-1 store requires its matching older toolchain. Current tools
-refuse it with `store.format_version` before engine open, including for
-code-only rebind, audit, and import. Generation-1 tools likewise refuse
-generation-2 stores. These refusals preserve the engine file, head, and envelope; lock and
-owner-marker bookkeeping may still occur. Using the matching toolchain leaves
-the store usable. Rebind and import never migrate its layout.
-
-The active binding must also name image generation 1. Attach, import and audit
-refuse other image generations with `store.format_version` before engine open,
-even when a newly compiled program has the same durable contract. This refusal
-preserves the engine file, head and envelope; owner-marker bookkeeping may occur.
-Keep the old source, identity ledger, image and tools with the old store for data
-extraction. No command converts it in place
+A store whose layout or active image belongs to another generation is
+`store.format_version`, refused before engine open — for rebind, audit and
+import alike, and even when the newly compiled program has the same durable
+contract. The refusal preserves the engine file, head and envelope; lock and
+owner-marker bookkeeping may still occur. No command converts such a store in
+place, so keep its source, identity ledger, image and matching tools together
 ([compatibility](../compatibility.md#versioning)).
 
 ## Interrupted commits
@@ -268,13 +260,12 @@ file or establish its origin. Substitution and rollback remain unqualified;
 an index under an identity absent from the active program is a logical finding,
 but a file from another store need not contain such a mismatch.
 
-The report explicitly states that physical integrity was not checked. A changed
-scalar can remain valid under its declared type and pass, including when the
-stored checksum no longer matches. Exit `0` therefore means no logical
-inconsistency was found; findings, engine errors, and refusals exit `1`.
+Physical integrity is not checked: a changed scalar can remain valid under its
+declared type and pass, including when the stored checksum no longer matches.
 Inspection does not repair the engine or clear the unclean-shutdown status
-inherited from a prior owner. A logical audit report is not a recovery result
-([status](../status.md#trust-boundaries)).
+inherited from a prior owner, so a logical audit report is not a recovery result
+([status](../status.md#trust-boundaries)). The report's fields, records and exit
+codes are in [marrow doctor](../tools/cli.md#marrow-doctor).
 
 ## Recovering a store
 

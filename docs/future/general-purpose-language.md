@@ -10,7 +10,9 @@ The storeless language is current and defined in the
 and types with `supports equality` and `supports order`, structs, enums with
 exhaustive `match`, `Option` and `Result`, lists and maps, `date`, `instant`,
 and `duration`, source tests, formatting, and editor facts. Every value copies
-by value. Source names no memory, store handle, or transaction object.
+by value. Source names no memory, store handle, or transaction object. The
+toolchain supplies no `std::` modules, and a project-declared `std::` path is
+ordinary project code ([builtins](../language/builtins.md#no-standard-library)).
 
 Integer arithmetic faults on overflow with `run.overflow`. The `checked` form
 names an arm for each way the arithmetic can fail
@@ -32,7 +34,15 @@ access across the call graph. Importing source supplies no filesystem, network,
 clock, entropy or process access.
 
 Source reuse is exercised through maintained programs; the package direction
-uses exact dependency edges ([packages](packages.md)). Decimal arithmetic and
+uses exact dependency edges ([packages](packages.md)). Portable library
+behavior belongs in ordinary Marrow source, compiled and verified with its
+caller, using the same generics, value types and runtime as application code;
+a helper is extracted when maintained programs share real behavior, and an
+intrinsic is justified only when source cannot express an operation portably or
+within measured bounds. The beta needs source reuse, not a standard-library
+portfolio, toolchain-pinned package lineage, combinator framework or new
+privileged namespace; broader library organization waits until actual callers
+show what it must contain. Decimal arithmetic and
 enum grouping are deferred until a maintained program demonstrates a need and
 an implementation can be compared with a simpler alternative. Their parsed
 forms are unsupported today; neither is a beta prerequisite. There is no
@@ -50,6 +60,10 @@ returns strings. The beta journey extends its terminal adapter to consume bounde
 write output and reuse one local source dependency. It must pass init, format,
 check, test, run, edit and offline rebuild without a store. Exact Git acquisition
 and a standard-library package are not required for this evidence.
+
+A source helper is proven when two maintained callers reuse it with fewer
+duplicated rules and unchanged behavior, compiling and testing through ordinary
+tooling with no privileged initialization or host authority.
 
 Ordinary enum payloads should follow the supported value types they contain,
 without declaration-order or generic-substitution exceptions.

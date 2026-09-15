@@ -97,7 +97,8 @@ durable_root    = "^", identifier ;
 Keys are declared with the same brackets that read them:
 `store ^books[id: int]: Book` declares the root and `^books[id]` reads one entry.
 A store with no index is written on its header line alone. A root without
-`key_params` declares a singleton ([durable places](durable-places.md)). A group
+`key_params` declares a singleton; it checks, but operating on one is future work
+([durable places](durable-places.md#access-demand)). A group
 holds fields; a branch holds fields, groups, and further branches under its own
 keys ([members](resources.md#members)). Index rules are under
 [index declarations](traversal-and-indexes.md#index-declarations).

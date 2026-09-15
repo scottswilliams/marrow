@@ -221,7 +221,7 @@ identity is reported as `check.durable_identity`.
 ## Where next
 
 The [walkthrough](walkthrough.md) reads a complete durable application line by
-line. The [language reference](language/) defines current `.mw` behavior;
-[durable places](language/durable-places.md) is the chapter to start with. The
+line. The [language reference](language/README.md) defines current `.mw`
+behavior and states the order its chapters are meant to be read in. The
 [CLI reference](tools/cli.md) documents every command, and
 [status](status.md) separates current from future work.

@@ -14,8 +14,8 @@ Marrow tests at six layers. Each proves its own scope.
 A test asserts codes, spans, values, and facts, never message text. A CLI test
 stays thin when the same behavior is reachable below process rendering. A test
 takes the cheapest layer that proves its invariant; [compilation and test
-speed](speed.md) states the rule and the opt-in for slow tests, and [project
-status](../status.md#measurements) records what each clock has measured.
+speed](speed.md) states the rule, the three clocks, and the opt-in for slow
+tests.
 
 Source-test bodies execute ordinary values and calls. The compiler and independent
 verifier refuse direct durable operations and calls to mutating non-owner helpers

@@ -225,18 +225,10 @@ writes `.marrow/ids`; commit that file. `marrow run --store` leaves it as it is.
 
 ## marrow test
 
-`marrow test` runs every `test` declaration in the project and reports each
-outcome. A test that touches a durable place runs against a fresh in-memory
-store of its own ([tests](tests.md)).
+`marrow test [--format text | jsonl] [--filter <substring>]` runs every `test`
+declaration in the project and reports each outcome. [Tests](tests.md) covers
+selection, the text and JSONL reports, and the four outcomes.
 
-```text
-$ marrow test
-ok    put then lookup
-1 passed, 0 failed, 0 errored (1/1 selected)
-```
-
-`--filter <substring>` selects tests by title; a filter that matches nothing is
-a usage error. `--format jsonl` prints one object per test and a summary.
 Write or final-flush failure exits `1`, with `io.write` on standard error when
 that channel remains writable. Output may be partial; tests are not rerun.
 Usage errors retain exit `2` even when their standard-error message cannot be
@@ -282,32 +274,14 @@ an absent marker is not created. Refusal preserves those artifacts too.
 An unsupported store format is `store.format_version`, refused before engine
 open ([compatibility](../compatibility.md#versioning)).
 
-The audit covers every cell, including an empty physical key and data beneath
-absent parents. It checks keys and values against their declared types, entry
-markers, required fields, managed-index correspondence, and the commit witness.
-An index must agree with its source entry, and every present entry with a
-complete index projection must have a corresponding index cell naming that
-entry. An entry whose fields are all sparse may have no populated fields.
+[Auditing a store](../operations/README.md#auditing-a-store) states what the
+walk covers, what a finding means, and what the digest does and does not
+establish. The report lists at most 256 findings, each with a stable `store.*`
+code and a place ([error codes](../error-codes.md)); an index is named by its
+identity from `.marrow/ids`, because the compiled program carries no index name.
+`entries` counts concrete entry markers at every level, `index cells` counts
+managed-index cells, and `cells` counts stored cells once each.
 
-The report lists at most 256 findings, each with a stable `store.*` code and a
-place ([error codes](../error-codes.md)). Findings follow deterministic scan
-and node-closure order: missing required fields are reported when their node
-closes. An index is named by its identity from `.marrow/ids`, because the
-compiled program carries no index name.
-
-`entries` counts concrete entry markers at every level; absent ancestors add
-no entries. `index cells` counts managed-index cells, and `cells` counts stored
-cells once each. The digest covers declared entry-family keys and values in
-key order, including malformed cells in those families and children beneath
-absent parents. Index, metadata, and undeclared-family cells are excluded;
-undeclared cells still produce findings. It is reported, not persisted. An
-unchanged content stream has the same digest; a same-value commit need not change it.
-
-Physical integrity is not checked. A changed scalar that still has a valid
-value can pass this audit even when its physical checksum is wrong. Inspection
-does not repair the engine or clear the unclean-shutdown status inherited from
-a prior owner, and it does not qualify the store for recovery
-([operations](../operations/README.md#auditing-a-store)).
 The text report starts with `Logical store audit:` and states
 `Physical integrity was not checked.` Exit `0` means the walk found no logical
 inconsistency; findings, engine errors, and refusals exit `1`.

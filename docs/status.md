@@ -99,6 +99,9 @@ missing or cyclic bodies and their callers; an unfilled function slot cannot enc
   ([served execution](future/served-execution.md)).
 - Path authority: principals and grants finer than read and write
   ([path effects and authority](future/path-effects-and-authority.md)).
+- Editor completion inside its latency budget for the maximum name-chain
+  fixture; the budget in `crates/marrow-compile/tests/query_local_syntax.rs`
+  records the overrun.
 - Signed releases and a release promise ([compatibility](compatibility.md)).
 
 ## Bounds and platform
@@ -126,45 +129,25 @@ has its own platform and layout requirements
 - The runner bounds image input before verification to the 512 KiB image limit
   plus one excess byte. Oversized images are refused with `image.envelope`
   ([execution limits](language/execution-limits.md#limits)).
-- Verifier type flow carries one working frame, and presence flow one working
-  set, through linear instruction segments and distinct unshared branch
-  fallthroughs. Carried instructions do not retain incoming local, stack or
-  presence membership payload. Presence identities have one per-function tuple
-  owner; producers, strict uses and retained states refer to it by compact IDs.
-  Temporary identity collection/sorting, membership copies at true joins and
-  branch targets, and repeated visits remain separate costs; there is no total
-  verifier memory or work budget
+- Verification bounds what each pass retains per instruction, not what a whole
+  image costs: there is no total verifier memory or work budget
   ([execution pipeline](implementation/README.md#pipeline)).
-- The verifier extracts direct calls once, rejects cycles across all functions
-  and expands effect closures in callee-first order. Transaction and test-entry
-  checks reuse those calls. One canonical atom pool and sparse function selections
-  pass from Effects into the verified image; export/test metadata refers to its
-  function's selection. Ordinal unions use one reusable scratch buffer. Transitive
-  ordinal/site replication, prefix merging and canonicalization remain additional
-  memory and work costs
-  ([execution pipeline](implementation/README.md#pipeline)).
-- The verifier admits image generation 1. Current store attachment, import and
-  audit refuse an active binding to another image generation before engine open,
-  preserving data and binding metadata. Older artifacts and data require their
-  matching tools; there is no automatic conversion
+- The verifier and the store admission fence accept only the supported image and
+  logical-head generations, and refuse anything else before the engine opens.
+  Older artifacts and data require their matching tools
   ([compatibility](compatibility.md#versioning)).
 - The Rust VM entry accepts a checked function selection carrying its verified
   image. Relative function ordinals outside that image are refused at selection.
   Raw Rust arguments still require caller validation against that image's types;
   the storeless entry also requires an empty durable demand
   ([execution pipeline](implementation/README.md#pipeline)).
-- VM string conversion checks each contribution before appending it to a single
-  destination. Canonical text exceeding 65,536 UTF-8 bytes faults with
-  `run.text_limit` at the conversion expression. This bounds the constructed
-  text's length, not allocator capacity or total VM memory
+- VM string conversion checks each contribution before appending it, and faults
+  with `run.text_limit` past its byte limit. This bounds the constructed text's
+  length, not allocator capacity or total VM memory
   ([execution limits](language/execution-limits.md#limits)).
 - Filesystem permissions and the host process protect local store files.
-- Code-only rebinds retain one directory owner through read-only logical audit,
-  writable preparation and metadata activation. Logical-data continuity assumes
-  cooperating access throughout; same-inode external writes are not detected.
-  The full-repair callback is not a universal no-recovery barrier. An inherited
-  physical audit may repair the engine and then refuse publication while
-  preserving old binding metadata and the unclean obligation
+- A code-only rebind assumes cooperating access to the store directory: external
+  writes to the same inode are not detected
   ([native owner](implementation/storage.md#native-owner)).
 - Kernel operations validate supplied keys and decoded traversal/index keys
   against their declared scalar kinds and supported ranges. Mismatched stored
@@ -177,12 +160,10 @@ has its own platform and layout requirements
   not authenticate the engine file, and the digest is reported, not stored.
 - Checksums and structural checks detect selected corruption; they do not
   authenticate hostile storage or prove application validity.
-- `marrow doctor` does not verify physical checksums. A changed scalar that
-  remains valid under its declared type can pass logical inspection. The
-  inspection does not repair the engine or clear inherited unclean-shutdown
-  status. Its scan pages and finding list are bounded; total native cache
-  residency over large stores requires separate qualification
-  ([audit implementation](implementation/storage.md#auditing-a-store)).
+- `marrow doctor` does not verify physical checksums, repair the engine, or
+  clear inherited unclean-shutdown status, and its native cache residency over
+  large stores is unqualified
+  ([auditing a store](operations/README.md#auditing-a-store)).
 - Encryption at rest is delegated to the filesystem or substrate.
 - TLS, authentication, identity providers, operator credentials, and hardware
   durability are deployment responsibilities.
@@ -191,11 +172,11 @@ has its own platform and layout requirements
 
 The supply chain has a floor:
 
-- The workspace carries no `unsafe` code; CI runs `cargo clippy --workspace
-  --all-targets -- -D warnings -F unsafe-code`, which fails on any.
-- An advisory CI job runs `cargo audit` over the committed `Cargo.lock` and
-  emits a CycloneDX bill of materials. An advisory is triaged as a finding and
-  does not block integration.
+- The workspace carries no `unsafe` code; every CI run denies it with
+  `clippy -F unsafe-code` ([checks](../CONTRIBUTING.md#checks)).
+- A weekly advisory workflow runs `cargo audit` over the committed `Cargo.lock`
+  and emits a CycloneDX bill of materials. An advisory is triaged as a finding
+  and does not block integration.
 - A new dependency requires maintainer approval and a license review
   ([contributing](../CONTRIBUTING.md)).
 - Tamper evidence, an audit trail, encryption at rest, and image authenticity
@@ -203,17 +184,8 @@ The supply chain has a floor:
 
 ## Measurements
 
-Each figure names the revision and method it was taken with. A figure taken at
-one revision is not restated as current at another, and no figure transfers to
-another machine.
-
-| Clock | Figure | Revision | Method |
-|---|---|---|---|
-| Compile time of a `.mw` program | 12.5 ms median for `marrow check` over a 2,278-line, 2,000-field program; slowest of 31 runs 13.1 ms | `294a6290` (2026-08-31) | Release binary, one fresh process per run, warm filesystem, Apple M5 Pro. The program is `crates/marrow/tests/fixtures/v01/e07_m_corpus/clinical`; the timing harness is not in the repository. |
-| Editor completion | 212 ms for the maximum name-chain fixture, exceeding the 150 ms budget | `29555429` (2026-09-08) | Ubuntu release CI, maximum of five after one warm request. The ordinary 10 ms selector did not run after this failure. `crates/marrow-compile/tests/query_local_syntax.rs` defines both budgets and the finite fixture corpus. |
-| Workspace test wall time | 96.6 s for the unit and integration battery; 12.3 s for a settled doctest battery | `294a6290` (2026-08-31) | `cargo test --workspace --locked`, unoptimized profile, Apple M5 Pro. Two whole-battery runs measured 490 s and 840 s with a stall entering doctests whose cause was not established. |
-| Clean Rust build | 7.4 s | `294a6290` (2026-08-31) | Workspace build into an empty target, unoptimized profile, Apple M5 Pro. |
-| Incremental Rust build | 0.26 s after touching `marrow`; 0.72 s after touching `marrow-compile` | `294a6290` (2026-08-31) | Median over warm mtime-only touches, unoptimized profile. |
-
-The three clocks and the design rules they impose are described in
-[Compilation and test speed](implementation/speed.md#three-clocks).
+No figure is recorded here. A measurement belongs to the revision, workload,
+platform and method it was taken with, is not restated as current at another
+revision, and does not transfer to another machine. [Compilation and test
+speed](implementation/speed.md#three-clocks) describes the three clocks, the
+design rules they impose, and how a broad gate records them.

@@ -134,12 +134,11 @@ the types of later reads.
 `exists(^books)` is true when `^books` has a present immediate entry, including
 an entry whose fields are all sparse and unset. `exists(^books[id].notes)` asks
 the same of that branch, whether or not the book entry is present. Each family
-test uses one bounded scan and faults on encountered own payload without its
-entry marker ([traversal](traversal-and-indexes.md#bounded-durable-traversal)).
+test uses one bounded scan, and a stored entry whose presence record is missing
+faults ([traversal](traversal-and-indexes.md#bounded-durable-traversal)).
 
-The test calls `add` to commit its setup, then calls readers to observe it.
-The test body owns no transaction or durable session
-([tests](tests.md#durable-tests)).
+The test calls `add` to commit its setup, then calls readers to observe it. A
+test body owns no transaction of its own ([tests](tests.md#durable-tests)).
 
 ## Writing
 

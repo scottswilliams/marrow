@@ -276,76 +276,15 @@ from the allocated key without reading the store, and the returned `Id(^books)`
 is the key of a later read. The program keeps the counter in step with
 `^books`; the language guarantees only that the two writes commit together.
 
-## Named steps
+## Accumulating a result
 
-Name each step. When a computation would nest more than two calls deep, each
-stage is bound to a `const` and read by the next line, so the transform reads
-from top to bottom.
-
-```mw
-module docs::idioms::named_steps
-
-pub fn slug(raw: string): string {
-    const trimmed = trim(raw)
-    const words = split(trimmed, " ")
-    const joined = join(words, "-")
-    return joined
-}
-
-pub fn total(xs: List<int>): int {
-    var sum = 0
-    for x in xs {
-        sum += x
-    }
-    return sum
-}
-
-test "example: slug and total" {
-    assert slug(" small gods ") == "small-gods"
-    assert total(List(10, 20, 12)) == 42
-}
-```
-
-`slug` names each stage instead of writing `join(split(trim(raw), " "), "-")`.
-`total` reduces a list with an accumulator loop: a running binding updated
-once per element. Closures, and with them `fold`, `map`, and `filter`, are
-future work ([general-purpose language](../future/general-purpose-language.md)).
-
-`append` returns the grown list, so a loop that builds one rebinds it:
-`xs = append(xs, extra)`
-([lists and maps](types-and-values.md#lists-and-maps)).
-
-## Building text
-
-A fixed message assembled from parts is one interpolated string. Text built up
-across steps is `+` accumulation into a `var`.
-
-```mw
-module docs::idioms::text
-
-pub fn label(name: string, open: int): string {
-    return $"{name}: {open} open"
-}
-
-pub fn report(items: List<string>): string {
-    var body = ""
-    for item in items {
-        const line = "- " + item + "\n"
-        body += line
-    }
-    return body
-}
-
-test "example: label and report" {
-    assert label("inbox", 3) == "inbox: 3 open"
-    assert report(List("a", "b")) == "- a\n- b\n"
-}
-```
-
-`label` keeps the layout of the result visible in the source. `report` grows
-the body once per iteration. A hole may hold a scalar, an enum member, or an
-entry identity; it renders as `string(...)` does
-([conversion and output](builtins.md#conversion-and-output)).
+Marrow has no closures, so `fold`, `map`, and `filter` have no equivalent
+([general-purpose language](../future/general-purpose-language.md)). A
+reduction is an accumulator loop: a `var` updated once per element. `append`
+yields a new list rather than growing one in place, so a loop that builds a
+list rebinds it, `xs = append(xs, extra)`
+([lists and maps](types-and-values.md#lists-and-maps)), and text built across
+steps accumulates with `+=` into a `var` string.
 
 ## Checked arithmetic as a signature
 

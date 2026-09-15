@@ -133,6 +133,7 @@ runs. VM `append`, Map insertion or value replacement, `split`, `lines`, and
 durable or index traversal report `run.collection_limit` at the operation when
 the resulting collection exceeds a limit.
 
-A post-dispatch reply rejected by the Rust companion client's typed decoder for
-exceeding these limits is an outcome-unknown result with `ReplyDecode` as its
-cause.
+A returned value that exceeds these limits after the export has already run
+cannot be delivered, and the caller is told the outcome is unknown: the
+invocation may have completed and committed
+([interrupted commits](../operations/README.md#interrupted-commits)).

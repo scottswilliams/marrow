@@ -26,8 +26,7 @@ revision that carries them. Marrow is unreleased.
 - [Error codes](error-codes.md) lists every diagnostic, fault, and operational
   code; the page is generated from the toolchain.
 - [Compatibility](compatibility.md) states what an unreleased revision promises.
-- [Project status](status.md) separates current behavior from future direction
-  and records measurements.
+- [Project status](status.md) separates current behavior from future direction.
 - [Implementation guide](implementation/) maps the Rust crates for contributors.
 - [Future direction](future/) records unimplemented direction.
 

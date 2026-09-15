@@ -210,11 +210,11 @@ one scan. Child families lie outside that range, so their populations add no
 navigation steps. Absent ancestors are not visited; a branch beneath one is
 still traversable when the program supplies its ancestor keys.
 
-Own payload encountered without its entry marker raises `run.corruption`,
-including during the extra step that decides `on more`. Once that step finds
-a valid marker key, it records `more` and inspects no later entry. Navigation
-checks marker-key structure and domain; marker values and complete payloads
-are checked by [logical inspection](../operations/README.md#auditing-a-store).
+A stored entry whose presence record is missing raises `run.corruption`,
+including during the extra step that decides `on more`. Once that step finds a
+present entry, it records `more` and inspects no later one. Traversal checks the
+structure and domain of what it walks; complete contents are checked by
+[logical inspection](../operations/README.md#auditing-a-store).
 
 The bound counts scan calls, not copied cells, backend time, or total memory.
 Each call can return a page containing own payload and later entries even
@@ -373,11 +373,12 @@ has type `int`, `string`, `bool`, `bytes`, `date`, or `instant`
 branch is not a component. A non-unique index ends with every key of the root
 in declaration order, with no key before that final suffix. A `unique` index may omit the
 keys. An index name is distinct from the root's key names and the resource's
-field names. A root declares at most 8 indexes. A singleton root declares no index. Each of
-these rules is a `check.type` error at the declaration.
+field names. A root declares at most 8 indexes. A singleton root declares no index, and
+operating on one is future work ([durable places](durable-places.md#access-demand)).
+Each of these rules is a `check.type` error at the declaration.
 
-The runtime maintains indexes through the path kernel in the entry's
-transaction. An entry contributes an index value exactly when the entry and
+The runtime maintains an index inside the same transaction as the entry it
+projects. An entry contributes an index value exactly when the entry and
 all projected components are present. An empty entry or an entry with every
 sparse field absent still contributes to an index that projects only keys.
 Creation, field assignment or clearing, whole-entry replacement, and entry
@@ -419,7 +420,7 @@ uses this form. Empty brackets remain a `parse.syntax` error.
 `^books[bookId]` reads the entry the identity names. The walk freezes its
 identities and runs `on more` exactly as a root walk does. The root's key is
 one component, and the walk takes no `from` and no pin; each of those forms is
-a `check.unsupported` error.
+a `check.unsupported` error ([known gaps](README.md#known-gaps)).
 
 A `unique` index is read with brackets holding the whole value,
 `^books.byIsbn[isbn]`. The result is `Id(^books)?`: the one matching entry's

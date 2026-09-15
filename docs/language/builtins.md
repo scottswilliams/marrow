@@ -249,4 +249,4 @@ The current toolchain supplies no `std::` modules. An absent module reports
 call to a non-public function reports `check.visibility`. A project-declared
 `std::` path is project code, not an ambient library. A source standard
 library is future work
-([source standard library](../future/source-standard-library.md)).
+([general-purpose language](../future/general-purpose-language.md)).

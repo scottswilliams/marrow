@@ -85,12 +85,12 @@ test "add then read back" {
 
 Each call from the test body is an invocation. `add` commits its
 [transaction](errors-and-transactions.md#transactions) to the test's store,
-and `titleOf` reads the committed value. Related reads within one reader share
-its read session. Helpers called by that function share its session; assertions
-remain in the test body.
+and `titleOf` reads the committed value. One reader's related reads, and the helpers it calls, observe the same
+committed state; assertions remain in the test body.
 
-The test body has no durable session of its own. A direct durable read, write,
-presence check or traversal is `check.test_durable_operation`. Calling a
+The test body reads and writes durable data only through the exports it calls.
+A direct durable read, write, presence check or traversal is
+`check.test_durable_operation`. Calling a
 mutating helper without a transaction owner is `check.requires_transaction`.
 A `transaction` block in a test is `check.transaction_misplaced`. Put mutation
 in an owning export and call it from the test. Constructing an entry identity,

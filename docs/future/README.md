@@ -17,7 +17,6 @@ Language and packages:
 
 - [General-purpose language](general-purpose-language.md): what a storeless program still lacks.
 - [Packages](packages.md): local source reuse and deferred remote acquisition.
-- [Source standard library](source-standard-library.md): library code written in Marrow.
 
 Compilation and admission:
 

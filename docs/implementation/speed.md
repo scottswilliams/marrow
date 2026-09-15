@@ -7,9 +7,10 @@ unfinished.
 
 The constraint governs cost only. It never licenses an unsound shortcut, a
 skipped check, or a weakened bound; where speed and soundness conflict,
-soundness wins and the cost is recorded as a finding. No measurement appears
-here. [Project status](../status.md#measurements) records what each
-clock has measured.
+soundness wins and the cost is recorded as a finding. No measurement appears in
+the reference: a figure belongs to the revision, workload, platform and method it
+was taken with ([status](../status.md#measurements)), so baselines live with the
+evidence of the change that took them.
 
 ## Three clocks
 
@@ -61,11 +62,11 @@ A change is reviewed against six rules.
 
 A test whose cost is out of proportion to the rest of the battery is marked
 `#[ignore]` with a reason that states that cost, and is run explicitly with
-`--ignored`. The reason is where the cost is justified, as in
-`crates/marrow/tests/durable_transactions.rs`:
+`--ignored`. The reason is where the cost is justified, and it names the cost
+rather than the history:
 
 ```text
-#[ignore = "burns the whole 1<<26 instruction budget (private VM const, no override) — ~1.3s debug; E07-gating evidence, run with --ignored"]
+#[ignore = "burns the whole instruction budget (private VM const, no override) — ~1.3s debug; run with --ignored"]
 ```
 
 The same treatment covers the measurement harnesses, whose output is a

@@ -114,8 +114,7 @@ A `return err(...)`, [prefix `try`](control-flow.md#prefix-try) failure or
 that write. A `Result` error is a value, not a rollback instruction.
 
 Before the block begins, a normal exit has no staged writes to commit. After
-the block commits, a normal exit does not commit again. Static writer admission
-may still acquire a session before an early return. A helper owns no block:
+the block commits, a normal exit does not commit again. A helper owns no block:
 its return does not commit its caller's transaction. The caller can inspect the
 helper's result and continue, or propagate it through its own committing exit.
 
