@@ -1173,7 +1173,7 @@ impl TypeMetadataSession<'_> {
         self.remember(result)
     }
 
-    pub(crate) fn static_record_by_name(
+    pub(super) fn static_record_by_name(
         &mut self,
         name: &str,
     ) -> Result<Option<RecordInfo>, GenericInvariant> {
@@ -1201,7 +1201,7 @@ impl TypeMetadataSession<'_> {
         self.remember(result)
     }
 
-    pub(crate) fn static_group_by_name(
+    pub(super) fn static_group_by_name(
         &mut self,
         record: &str,
         group: &str,
@@ -1226,7 +1226,7 @@ impl TypeMetadataSession<'_> {
         self.remember(result)
     }
 
-    pub(crate) fn static_struct_by_name(
+    pub(super) fn static_struct_by_name(
         &mut self,
         name: &str,
     ) -> Result<Option<StructInfo>, GenericInvariant> {
@@ -1243,7 +1243,7 @@ impl TypeMetadataSession<'_> {
         self.remember(result)
     }
 
-    pub(crate) fn static_enum_by_name(
+    pub(super) fn static_enum_by_name(
         &mut self,
         name: &str,
     ) -> Result<Option<EnumInfo>, GenericInvariant> {
@@ -1270,7 +1270,7 @@ impl TypeMetadataSession<'_> {
         self.remember(result)
     }
 
-    pub(crate) fn product_field(
+    pub(super) fn product_field(
         &mut self,
         ty: TypeId,
         name: &str,
@@ -1345,7 +1345,7 @@ impl TypeMetadataSession<'_> {
         self.remember(result)
     }
 
-    pub(crate) fn struct_field(
+    pub(super) fn struct_field(
         &mut self,
         ty: TypeId,
         name: &str,

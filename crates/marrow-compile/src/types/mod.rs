@@ -628,7 +628,7 @@ struct PendingRefusal {
 pub(crate) const RESERVED_GENERIC_TYPE_NAMES: [&str; 4] = ["Option", "Result", "List", "Map"];
 
 /// Whether `name` is a reserved generic type name the user cannot redeclare.
-pub(crate) fn is_reserved_type_name(name: &str) -> bool {
+fn is_reserved_type_name(name: &str) -> bool {
     RESERVED_GENERIC_TYPE_NAMES.contains(&name)
 }
 
@@ -678,13 +678,22 @@ pub(crate) enum ProductFieldProjection {
     /// separate variant from the missing ones because reporting a refused member as
     /// absent is a false statement about the source.
     RefusedMember(DeclarationRefusalId),
+    /// This type id owns no record the registry declared, so the question was asked of
+    /// the wrong owner: the caller falls through to the durable branch-entry layout.
+    /// Not a statement that the member is missing — no owner was found to ask.
     Absent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StructFieldProjection {
-    Field { index: u16, ty: GArg },
+    Field {
+        index: u16,
+        ty: GArg,
+    },
+    /// The struct owns no field of this name — a report about the source.
     Missing,
+    /// This type id names no Ready struct body, so there was nothing to ask. A
+    /// compiler coherence failure at the caller, not a missing field.
     Absent,
 }
 
@@ -1181,7 +1190,7 @@ pub(crate) enum DeclarationVerdict {
 }
 
 impl DeclarationVerdict {
-    pub(crate) fn is_accepted(self) -> bool {
+    fn is_accepted(self) -> bool {
         matches!(self, Self::Accepted)
     }
 }
@@ -1906,7 +1915,7 @@ impl TypeRegistry {
     /// any `Option`/`Result`/user generic application into `draft` on first use.
     /// `None` for an optional, the resource record, or a name not yet
     /// declared as a value type.
-    pub(crate) fn resolve_garg(
+    fn resolve_garg(
         &mut self,
         draft: &mut DraftTxn<'_>,
         annotation: &TypeExpr,
@@ -1918,7 +1927,6 @@ impl TypeRegistry {
     /// Resolve a type expression under a substitution environment (`param name ->
     /// concrete argument`), used when a generic template body is monomorphized. The
     /// expression is the template's written syntax.
-    #[inline(always)]
     fn resolve_garg_env(
         &mut self,
         draft: &mut DraftTxn<'_>,
@@ -2171,7 +2179,6 @@ impl TypeRegistry {
     /// dependency graph; the containment-cycle check then rejects a real value cycle.
     /// A shared bound or depth refusal returns `Err(Limit)` and records the one owned
     /// `check.instantiation_limit` diagnostic.
-    #[inline(always)]
     pub(crate) fn mint_type_instance(
         &mut self,
         draft: &mut DraftTxn<'_>,
@@ -2182,7 +2189,6 @@ impl TypeRegistry {
         self.mint_type_instance_with_requirement(draft, template, args, site, ReadyRequirement::Any)
     }
 
-    #[inline(never)]
     fn mint_type_instance_with_requirement(
         &mut self,
         draft: &mut DraftTxn<'_>,
@@ -2914,10 +2920,7 @@ impl TypeRegistry {
     }
 
     /// The resolved member shape of a minted type instantiation, if `id` names one.
-    pub(crate) fn type_inst_body(
-        &self,
-        id: TypeInstId,
-    ) -> Result<Option<InstBody>, GenericInvariant> {
+    fn type_inst_body(&self, id: TypeInstId) -> Result<Option<InstBody>, GenericInvariant> {
         let view = self.metadata_view();
         let mut metadata = MetadataScratch::try_new(&view)?;
         Ok(view
@@ -2959,10 +2962,7 @@ impl TypeRegistry {
     /// The bracket, space-free-comma form is fixed by [`ANCHOR`], so changing a
     /// user-facing diagnostic delimiter cannot move an opaque durable identity byte.
     #[cfg(test)]
-    pub(crate) fn enum_anchor_spelling(
-        &self,
-        id: EnumId,
-    ) -> Result<Option<String>, GenericInvariant> {
+    fn enum_anchor_spelling(&self, id: EnumId) -> Result<Option<String>, GenericInvariant> {
         match self.inst_anchor_spelling(TypeInstId::Enum(id))? {
             Some(spelling) => Ok(Some(spelling)),
             None => Ok(self.enum_by_id(id).map(|info| info.name.clone())),
@@ -3352,7 +3352,7 @@ impl TypeRegistry {
     /// The one place a member-position resolution failure becomes a report, so a
     /// refused sibling declaration can never be described as an unsupported
     /// language form.
-    pub(crate) fn member_refusal_row(
+    fn member_refusal_row(
         &self,
         refusal: ResolveRefusal,
         file: &FileIdentity,
@@ -3387,7 +3387,7 @@ impl TypeRegistry {
     /// `owner` is a resource record's name, or the `Record.group` anchor of one of
     /// its unkeyed groups. This is what a record's field list is built from, so
     /// the record and the ledger cannot disagree about which members survived.
-    pub(crate) fn accepted_members(&self, owner: &str) -> Vec<FieldInfo> {
+    fn accepted_members(&self, owner: &str) -> Vec<FieldInfo> {
         self.members
             .accepted()
             .filter(|(key, _)| key.owns(owner))
@@ -3477,7 +3477,7 @@ impl TypeRegistry {
         ScalarType::from_spelling(name).ok_or_else(|| ResolveRefusal::Unsupported.into())
     }
 
-    pub(crate) fn optional_annotation(&self, ty: &TypeExpr) -> bool {
+    fn optional_annotation(&self, ty: &TypeExpr) -> bool {
         match ty {
             TypeExpr::Optional { .. } => true,
             TypeExpr::Name { text, .. } => self
