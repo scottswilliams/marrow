@@ -6,12 +6,10 @@
 //! measures the largest returned batch; it does not measure retained pages, peak
 //! allocation, or native engine-cache residency.
 
-mod common;
-
 use std::cell::Cell;
 use std::rc::Rc;
 
-use common::{Counters, CountingEngine};
+use crate::common::{Counters, CountingEngine};
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{

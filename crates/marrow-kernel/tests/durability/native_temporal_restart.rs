@@ -1,6 +1,5 @@
-//! Deferred C03/C04 obligation on the native path: durable temporal keys and values are
-//! stable across a real store close and reopen, and the durable key order after a restart is
-//! the language comparison order.
+//! Durable temporal keys and values are stable across a real store close and reopen, and
+//! the durable key order after a restart is the language comparison order.
 //!
 //! The composition this closes: `temporal_order_agreement` (a marrow-vm KAT) proves the
 //! language `<` order of each temporal scalar equals the kernel key-codec byte order; this
@@ -15,27 +14,14 @@
 use marrow_kernel::codec::key::{KeyScalar, encode_key_value};
 use marrow_store::{ByteEngine, NativeEngineOwner, ReadView, WriteTxn};
 
-fn scratch(tag: &str) -> std::path::PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "marrow-native-temporal-{tag}-{}-{nonce}-{counter}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
-}
+use crate::common::Scratch;
 
 /// Write each key scalar (scrambled from language order) as a cell whose value echoes the
 /// encoded key, commit, close the store, reopen it, and return the persisted cells in the
 /// engine's ascending scan order.
 fn round_trip(tag: &str, scrambled: &[KeyScalar]) -> Vec<(Vec<u8>, Vec<u8>)> {
-    let path = scratch(tag);
+    let scratch = Scratch::new(tag);
+    let path = scratch.store();
     NativeEngineOwner::provision(&path).expect("provision native store");
     {
         let mut engine = NativeEngineOwner::acquire_existing(&path)
@@ -69,9 +55,7 @@ fn round_trip(tag: &str, scrambled: &[KeyScalar]) -> Vec<(Vec<u8>, Vec<u8>)> {
         )
         .expect("reopen native store");
     let view = engine.read_view().expect("read view");
-    let cells = view.scan_after(&[], &[]).expect("scan");
-    let _ = std::fs::remove_dir_all(&path);
-    cells
+    view.scan_after(&[], &[]).expect("scan")
 }
 
 /// Assert that after a restart the persisted keys range in the language order of the scalars,

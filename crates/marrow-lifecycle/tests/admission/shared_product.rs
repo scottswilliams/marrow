@@ -14,12 +14,7 @@
 //! typed outcome so the hold cannot be released by accident, and pins the single-root
 //! control beside it so the refusal is proven specific to the sharing.
 
-use std::path::Path;
-
-use marrow_lifecycle::{
-    ProvisionApproval, ProvisionImageError, ProvisionReport, prepare, provision_image,
-};
-use marrow_verify::VerifiedImage;
+use marrow_lifecycle::ProvisionImageError;
 
 const SHARED: &str = r#"resource Counter {
     required value: int
@@ -75,23 +70,10 @@ const DISTINCT_IDS: &str = "marrow ids v0\n\
      high-water 0\n\
      end\n";
 
-#[path = "support/scratch.rs"]
-mod scratch;
-use scratch::Scratch;
+use crate::support::Scratch;
 
-#[path = "support/compile.rs"]
-mod source_compile;
-use source_compile::compile;
-
-/// Provision `image` into a fresh destination with a matching approval, returning the
-/// outcome. The approval is accepted from the report the same call rebuilds, so nothing
-/// but the image itself decides the result.
-fn provision(dest: &Path, image: &VerifiedImage) -> Result<(), ProvisionImageError> {
-    let prepared = prepare(image.clone());
-    let report = ProvisionReport::new(dest, &prepared)?;
-    let approval = ProvisionApproval::accept(&report);
-    provision_image(dest, &prepared, &approval).map(|_| ())
-}
+use crate::support::compile::compile;
+use crate::support::store::try_provision_approved as provision;
 
 #[test]
 fn two_roots_over_one_product_are_refused_by_the_head_identity_map() {

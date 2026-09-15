@@ -280,78 +280,47 @@ pub(crate) mod tests {
         BYTES.get_or_init(|| compile_image(SOURCE))
     }
 
+    /// The ledger for [`SOURCE`]: the application, the `Item` product and its field, the
+    /// `items` root with its key, and the `byValue` index.
+    const IDS: &str = "marrow ids v0\nmachine-written by marrow; do not edit\nid application . 01010101010101010101010101010101\nid product Item 02020202020202020202020202020202\nid field Item.value 03030303030303030303030303030303\nid root items 04040404040404040404040404040404\nid key items.key 05050505050505050505050505050505\nid index items.byValue 06060606060606060606060606060606\nhigh-water 0\nend\n";
+
     pub(crate) fn compile_image(source: &str) -> Vec<u8> {
-        let ids = "marrow ids v0\nmachine-written by marrow; do not edit\nid application . 01010101010101010101010101010101\nid product Item 02020202020202020202020202020202\nid field Item.value 03030303030303030303030303030303\nid root items 04040404040404040404040404040404\nid key items.key 05050505050505050505050505050505\nid index items.byValue 06060606060606060606060606060606\nhigh-water 0\nend\n";
-        let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").unwrap();
-        let project = marrow_project::capture(
-            &manifest,
-            vec![marrow_project::CapturedFile::new(
-                "src/main.mw".into(),
-                source.as_bytes().to_vec(),
-            )],
-            Some(ids.as_bytes()),
-            &marrow_project::CaptureLimits::DEFAULT,
-        )
-        .unwrap();
-        marrow_compile::compile(&project).unwrap().image.bytes
+        crate::test_support::compile::compile_bytes(source, IDS)
     }
 
-    pub(crate) struct Scratch(pub(crate) PathBuf);
-    impl Scratch {
-        pub(crate) fn new() -> Self {
-            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let nonce = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "marrow-logical-backup-{}-{nonce}-{sequence}",
-                std::process::id()
-            ));
-            std::fs::create_dir(&path).unwrap();
-            Self(path)
-        }
-        pub(crate) fn source(&self) -> PathBuf {
-            self.0.join("store")
-        }
-        pub(crate) fn provision(&self) {
-            let image = marrow_verify::verify(image_bytes()).unwrap();
-            crate::provision(
-                &self.source(),
-                ProvisionRequest {
-                    envelope: StoreEnvelope {
-                        instance: StoreInstanceId::draw().unwrap(),
-                        writer_toolchain: env!("CARGO_PKG_VERSION").into(),
-                        engine_kind: EngineKind::Redb,
-                        engine_format_version: marrow_kernel::durable::NATIVE_ENGINE_FORMAT_VERSION,
-                    },
-                    head: LogicalHead::provision(
-                        crate::active_binding(&image),
-                        crate::accepted_ceiling(&image),
-                        crate::head_map(&image).unwrap(),
-                    ),
+    pub(crate) use crate::test_support::Scratch;
+
+    /// Provision a store at `scratch.store()` under the [`SOURCE`] corpus, so the backup and
+    /// restore cases start from a real published store rather than a hand-built directory.
+    pub(crate) fn provision_fixture(scratch: &Scratch) {
+        let image = marrow_verify::verify(image_bytes()).unwrap();
+        crate::provision(
+            &scratch.store(),
+            ProvisionRequest {
+                envelope: StoreEnvelope {
+                    instance: StoreInstanceId::draw().unwrap(),
+                    writer_toolchain: env!("CARGO_PKG_VERSION").into(),
+                    engine_kind: EngineKind::Redb,
+                    engine_format_version: marrow_kernel::durable::NATIVE_ENGINE_FORMAT_VERSION,
                 },
-            )
-            .unwrap();
-        }
-    }
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            if !std::thread::panicking() {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
+                head: LogicalHead::provision(
+                    crate::active_binding(&image),
+                    crate::accepted_ceiling(&image),
+                    crate::head_map(&image).unwrap(),
+                ),
+            },
+        )
+        .unwrap();
     }
 
     #[test]
     fn published_empty_backup_contains_exact_image_and_accepted_head() {
-        let scratch = Scratch::new();
-        scratch.provision();
-        let before_head = std::fs::read(scratch.source().join(crate::HEAD_FILE)).unwrap();
-        let before_envelope = std::fs::read(scratch.source().join(crate::ENVELOPE_FILE)).unwrap();
-        let destination = scratch.0.join("backup");
-        let result = backup(&scratch.source(), image_bytes(), &destination).unwrap();
+        let scratch = Scratch::new("backup");
+        provision_fixture(&scratch);
+        let before_head = std::fs::read(scratch.store().join(crate::HEAD_FILE)).unwrap();
+        let before_envelope = std::fs::read(scratch.store().join(crate::ENVELOPE_FILE)).unwrap();
+        let destination = scratch.base().join("backup");
+        let result = backup(&scratch.store(), image_bytes(), &destination).unwrap();
         assert!(result.audit.is_clean());
         assert_eq!(result.audit.summary.cells, 0);
         let bytes = std::fs::read(&destination).unwrap();
@@ -362,50 +331,50 @@ pub(crate) mod tests {
         assert!(decoder.next_cell().unwrap().is_none());
         assert_eq!(&bytes[bytes.len() - 32..], result.digest.bytes());
         assert_eq!(
-            std::fs::read(scratch.source().join(crate::HEAD_FILE)).unwrap(),
+            std::fs::read(scratch.store().join(crate::HEAD_FILE)).unwrap(),
             before_head
         );
         assert_eq!(
-            std::fs::read(scratch.source().join(crate::ENVELOPE_FILE)).unwrap(),
+            std::fs::read(scratch.store().join(crate::ENVELOPE_FILE)).unwrap(),
             before_envelope
         );
-        assert_eq!(std::fs::read_dir(&scratch.0).unwrap().count(), 2);
+        assert_eq!(std::fs::read_dir(scratch.base()).unwrap().count(), 2);
     }
 
     #[test]
     fn occupied_output_is_unchanged_and_its_private_candidate_is_removed() {
-        let scratch = Scratch::new();
-        scratch.provision();
-        let destination = scratch.0.join("backup");
+        let scratch = Scratch::new("backup");
+        provision_fixture(&scratch);
+        let destination = scratch.base().join("backup");
         std::fs::write(&destination, b"existing backup").unwrap();
-        let error = backup(&scratch.source(), image_bytes(), &destination).unwrap_err();
+        let error = backup(&scratch.store(), image_bytes(), &destination).unwrap_err();
         assert!(
             matches!(error.fault, BackupFault::Io(source) if source.kind() == io::ErrorKind::AlreadyExists)
         );
         assert!(error.unpublished.is_none());
         assert!(error.cleanup.is_none());
         assert_eq!(std::fs::read(&destination).unwrap(), b"existing backup");
-        assert_eq!(std::fs::read_dir(&scratch.0).unwrap().count(), 2);
+        assert_eq!(std::fs::read_dir(scratch.base()).unwrap().count(), 2);
     }
 
     #[test]
     fn held_source_and_invalid_image_refuse_before_output_creation() {
-        let scratch = Scratch::new();
-        scratch.provision();
-        let destination = scratch.0.join("backup");
+        let scratch = Scratch::new("backup");
+        provision_fixture(&scratch);
+        let destination = scratch.base().join("backup");
         let image = marrow_verify::verify(image_bytes()).unwrap();
-        let held = crate::attach(&scratch.source(), prepare(image)).unwrap();
-        let error = backup(&scratch.source(), image_bytes(), &destination).unwrap_err();
+        let held = crate::attach(&scratch.store(), prepare(image)).unwrap();
+        let error = backup(&scratch.store(), image_bytes(), &destination).unwrap_err();
         assert!(matches!(error.fault, BackupFault::Audit(_)));
         assert!(error.unpublished.is_none());
         drop(held);
         assert!(matches!(
-            backup(&scratch.source(), b"invalid", &destination)
+            backup(&scratch.store(), b"invalid", &destination)
                 .unwrap_err()
                 .fault,
             BackupFault::Image(_)
         ));
-        assert_eq!(std::fs::read_dir(&scratch.0).unwrap().count(), 1);
+        assert_eq!(std::fs::read_dir(scratch.base()).unwrap().count(), 1);
     }
 
     #[test]
@@ -421,13 +390,16 @@ pub(crate) mod tests {
             Failure::ReplacedStage,
             Failure::ParentSync,
         ] {
-            let scratch = std::mem::ManuallyDrop::new(Scratch::new());
-            eprintln!("preserved backup failure fixture: {}", scratch.0.display());
-            scratch.provision();
-            let destination = scratch.0.join("backup");
+            let scratch = std::mem::ManuallyDrop::new(Scratch::new("backup"));
+            eprintln!(
+                "preserved backup failure fixture: {}",
+                scratch.base().display()
+            );
+            provision_fixture(&scratch);
+            let destination = scratch.base().join("backup");
             let _clear = Clear;
             FAILURE.set(Some(failure));
-            let error = backup(&scratch.source(), image_bytes(), &destination).unwrap_err();
+            let error = backup(&scratch.store(), image_bytes(), &destination).unwrap_err();
             match failure {
                 Failure::FileSync => {
                     assert!(
@@ -436,7 +408,7 @@ pub(crate) mod tests {
                     assert!(error.unpublished.is_none());
                     assert!(error.cleanup.is_none());
                     assert!(!destination.exists());
-                    assert_eq!(std::fs::read_dir(&scratch.0).unwrap().count(), 1);
+                    assert_eq!(std::fs::read_dir(scratch.base()).unwrap().count(), 1);
                 }
                 Failure::ReplacedStage => {
                     assert!(
@@ -458,7 +430,7 @@ pub(crate) mod tests {
                     let mut input = io::Cursor::new(bytes);
                     let (mut decoder, _) = crate::backup_stream::Decoder::new(&mut input).unwrap();
                     assert!(decoder.next_cell().unwrap().is_none());
-                    assert_eq!(std::fs::read_dir(&scratch.0).unwrap().count(), 2);
+                    assert_eq!(std::fs::read_dir(scratch.base()).unwrap().count(), 2);
                 }
             }
         }

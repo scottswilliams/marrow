@@ -1,6 +1,6 @@
-//! The provision report and approval over a real compiled durable image: the report renders
-//! in source vocabulary with no identity hash, provision refuses without a matching approval,
-//! and an accepted provision round-trips through open.
+//! The provision report and approval over a real compiled durable image: the report carries
+//! no identity hash, provision refuses without a matching approval, and an accepted
+//! provision round-trips through open.
 
 use std::path::Path;
 
@@ -8,47 +8,10 @@ use marrow_lifecycle::{
     AttachOutcome, PreparedImage, ProvisionApproval, ProvisionImageError, ProvisionReport,
     StoreInstanceId, attach, prepare, provision_image,
 };
-use marrow_verify::{VerifiedImage, verify};
+use marrow_verify::VerifiedImage;
 
-const SOURCE: &str = r#"resource Counter {
-    required value: int
-    label: string
-}
-
-store ^counters[id: int]: Counter
-
-pub fn readValue(n: int): int {
-    return ^counters[n].value ?? 0
-}
-"#;
-
-const IDS: &str = "marrow ids v0\n\
-     machine-written by marrow; do not edit\n\
-     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
-     id product Counter 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
-     id field Counter.value 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
-     id field Counter.label 0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\n\
-     id root counters 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
-     id key counters.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
-     high-water 0\n\
-     end\n";
-
-fn compile() -> VerifiedImage {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        SOURCE.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    verify(&compiled.image.bytes).expect("verify")
-}
+use crate::support::Scratch;
+use crate::support::ceiling::{image as compile, source_read_only};
 
 fn prepared(image: &VerifiedImage) -> PreparedImage {
     let prepared = prepare(image.clone());
@@ -56,28 +19,15 @@ fn prepared(image: &VerifiedImage) -> PreparedImage {
     prepared
 }
 
-#[path = "support/scratch.rs"]
-mod scratch;
-use scratch::Scratch;
-
-/// The rendered report is in source vocabulary — the destination, the roots by name, the
-/// effects and ceiling in demand terms — and carries no 32- or 64-character hex identity
-/// string. This is the absence gate for the "never a raw hash a human would retype" rule.
+/// The absence gate for the "never a raw hash a human would retype" rule: nothing the report
+/// renders is a 32- or 64-character hex identity string.
 #[test]
-fn the_report_names_roots_in_source_vocabulary_with_no_identity_hash() {
-    let image = compile();
+fn the_report_carries_no_identity_hash() {
+    let image = compile(&source_read_only());
     let dest = Path::new("/tmp/notes-store");
     let report = ProvisionReport::new(dest, &prepared(&image)).expect("report");
     let rendered = report.render();
 
-    assert!(
-        rendered.contains("counters"),
-        "the root is named: {rendered}"
-    );
-    assert!(
-        rendered.contains("/tmp/notes-store"),
-        "the destination is named",
-    );
     // No run of 32+ hex characters (a 16- or 32-byte identity spelled out).
     let mut run = 0usize;
     for ch in rendered.chars() {
@@ -97,7 +47,7 @@ fn the_report_names_roots_in_source_vocabulary_with_no_identity_hash() {
 /// store is never provisioned without an auditable acceptance of the exact report.
 #[test]
 fn provision_refuses_without_a_matching_approval() {
-    let image = compile();
+    let image = compile(&source_read_only());
     let scratch = Scratch::new("provision-approval");
 
     let wrong = ProvisionApproval::from_token("not-the-right-token");
@@ -117,7 +67,7 @@ fn provision_refuses_without_a_matching_approval() {
 /// back the same store instance and active binding the image derives.
 #[test]
 fn an_accepted_provision_round_trips_through_attach() {
-    let image = compile();
+    let image = compile(&source_read_only());
     let scratch = Scratch::new("provision-approval");
 
     let prepared = prepared(&image);

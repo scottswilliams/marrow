@@ -17,6 +17,8 @@ use marrow_kernel::durable::{
 use marrow_kernel::equality::ValueDomain;
 use marrow_store::{ByteEngine, MemoryEngine, NativeEngineOwner};
 
+use crate::common::Scratch;
+
 /// The single-root projection a case opens under: the root, plus its sites resolved against
 /// it. Every site here names root 0 — the store's only root.
 fn project(schema: &StoreSchema, sites: Vec<SiteTarget>) -> StoreProjection {
@@ -32,7 +34,6 @@ fn project(schema: &StoreSchema, sites: Vec<SiteTarget>) -> StoreProjection {
 
 /// Enumerate every immediate key of a root layer through one bounded acquisition whose
 /// limit exceeds the fixture size, so the whole logical state dumps in ascending order.
-/// Replaces the deleted unbounded next-key walk the differential dump once used.
 fn dump_keys(reader: &mut impl Durable, site: &AuthorizedSite) -> Vec<KeyScalar> {
     let dump = reader
         .iterate_bounded(
@@ -51,26 +52,37 @@ fn dump_keys(reader: &mut impl Durable, site: &AuthorizedSite) -> Vec<KeyScalar>
 
 // --- test scaffolding ---
 
-struct TempDir {
-    root: std::path::PathBuf,
+/// One replayed operation: what was attempted, and the typed outcome the kernel returned.
+/// The differential compares these values across the two engines, so the transcript is the
+/// algebra itself rather than a rendering of it.
+#[derive(Debug, PartialEq, Eq)]
+enum Step {
+    Create(&'static str, CreateOutcome),
+    Replace(&'static str, Result<(), KernelFault>),
+    Erase(&'static str, EraseOutcome),
+    Presence(&'static str, Presence),
+    Commit(CommitVerdict),
 }
 
-impl TempDir {
-    fn new(name: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "marrow-kernel-{name}-{}-{nanos}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).expect("create temp dir");
-        std::fs::create_dir(root.join("store")).expect("create store dir");
-        TempDir { root }
-    }
-    fn store(&self) -> std::path::PathBuf {
-        self.root.join("store")
+/// The commit verdict alone. `CommitResult::Indeterminate` owns a non-cloneable recovery
+/// fact that no equality comparison may consume, so the transcript records which verdict
+/// arrived and leaves the fact where the poison suite exercises it.
+#[derive(Debug, PartialEq, Eq)]
+enum CommitVerdict {
+    Committed,
+    Aborted,
+    Indeterminate,
+    SessionFinished,
+}
+
+impl CommitVerdict {
+    fn of(result: CommitResult) -> Self {
+        match result {
+            CommitResult::Committed => Self::Committed,
+            CommitResult::Aborted => Self::Aborted,
+            CommitResult::Indeterminate(_) => Self::Indeterminate,
+            CommitResult::SessionFinished => Self::SessionFinished,
+        }
     }
 }
 
@@ -84,12 +96,6 @@ fn native_owner(path: &std::path::Path) -> NativeEngineOwner {
             || Ok::<_, std::convert::Infallible>(()),
         )
         .expect("open native")
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.root).ok();
-    }
 }
 
 fn schema() -> StoreSchema {
@@ -145,7 +151,7 @@ type Dump = Vec<(String, Option<i64>, Option<String>)>;
 /// Replay the shared trace on `store`, returning the per-op transcript and the final
 /// logical dump. The trace exercises create/replace/erase outcomes, sparse set and
 /// clear, and cursor-edge iteration keys.
-fn replay<E: ByteEngine>(mut store: DurableStore<E>) -> (Vec<String>, Dump) {
+fn replay<E: ByteEngine>(mut store: DurableStore<E>) -> (Vec<Step>, Dump) {
     let mut transcript = Vec::new();
     {
         let mut txn = store
@@ -156,13 +162,13 @@ fn replay<E: ByteEngine>(mut store: DurableStore<E>) -> (Vec<String>, Dump) {
         let label = txn.site(LABEL);
 
         // create outcomes: fresh vs already-present.
-        transcript.push(format!(
-            "create a = {:?}",
-            txn.create_entry(&e, &[key("a")], entry(1, None)).unwrap()
+        transcript.push(Step::Create(
+            "a",
+            txn.create_entry(&e, &[key("a")], entry(1, None)).unwrap(),
         ));
-        transcript.push(format!(
-            "create a again = {:?}",
-            txn.create_entry(&e, &[key("a")], entry(9, None)).unwrap()
+        transcript.push(Step::Create(
+            "a again",
+            txn.create_entry(&e, &[key("a")], entry(9, None)).unwrap(),
         ));
         // prefix-related and edge keys.
         for name in ["", "ab", "a\u{0}"] {
@@ -171,13 +177,13 @@ fn replay<E: ByteEngine>(mut store: DurableStore<E>) -> (Vec<String>, Dump) {
         }
         // replace outcomes: present vs missing (a replace runs only on the present
         // edge, so a markerless slot is a marker/payload mismatch).
-        transcript.push(format!(
-            "replace a = {:?}",
-            txn.replace_entry(&e, &[key("a")], entry(5, Some("first")))
+        transcript.push(Step::Replace(
+            "a",
+            txn.replace_entry(&e, &[key("a")], entry(5, Some("first"))),
         ));
-        transcript.push(format!(
-            "replace ghost = {:?}",
-            txn.replace_entry(&e, &[key("ghost")], entry(0, None))
+        transcript.push(Step::Replace(
+            "ghost",
+            txn.replace_entry(&e, &[key("ghost")], entry(0, None)),
         ));
         // sparse set then clear.
         txn.set_field(
@@ -195,15 +201,15 @@ fn replay<E: ByteEngine>(mut store: DurableStore<E>) -> (Vec<String>, Dump) {
         )
         .unwrap();
         // erase outcomes.
-        transcript.push(format!(
-            "erase entry empty-key = {:?}",
-            txn.erase_entry(&e, &[key("")]).unwrap()
+        transcript.push(Step::Erase(
+            "entry empty-key",
+            txn.erase_entry(&e, &[key("")]).unwrap(),
         ));
-        transcript.push(format!(
-            "erase entry ghost = {:?}",
-            txn.erase_entry(&e, &[key("ghost")]).unwrap()
+        transcript.push(Step::Erase(
+            "entry ghost",
+            txn.erase_entry(&e, &[key("ghost")]).unwrap(),
         ));
-        transcript.push(format!("commit = {:?}", txn.commit()));
+        transcript.push(Step::Commit(CommitVerdict::of(txn.commit())));
     }
 
     // Read phase: presence and reads observed on a pinned snapshot.
@@ -214,13 +220,13 @@ fn replay<E: ByteEngine>(mut store: DurableStore<E>) -> (Vec<String>, Dump) {
         let e = reader.site(ENTRY);
         let value = reader.site(VALUE);
         let label = reader.site(LABEL);
-        transcript.push(format!(
-            "presence a = {:?}",
-            reader.presence(&e, &[key("a")]).unwrap()
+        transcript.push(Step::Presence(
+            "a",
+            reader.presence(&e, &[key("a")]).unwrap(),
         ));
-        transcript.push(format!(
-            "presence empty = {:?}",
-            reader.presence(&e, &[key("")]).unwrap()
+        transcript.push(Step::Presence(
+            "empty",
+            reader.presence(&e, &[key("")]).unwrap(),
         ));
 
         let mut dump: Dump = Vec::new();
@@ -257,7 +263,7 @@ fn memory_and_redb_agree_on_the_operation_trace() {
         project(&schema(), sites()),
     ));
 
-    let temp = TempDir::new("optrace");
+    let temp = Scratch::new("optrace");
     let native = native_owner(&temp.store());
     let (redb_transcript, redb_dump) = replay(DurableStore::from_engine(
         native,
@@ -277,15 +283,15 @@ fn memory_and_redb_agree_on_the_operation_trace() {
     assert_eq!(
         mem_transcript,
         vec![
-            "create a = Created".to_string(),
-            "create a again = AlreadyPresent".to_string(),
-            "replace a = Ok(())".to_string(),
-            "replace ghost = Err(Corruption)".to_string(),
-            "erase entry empty-key = Erased".to_string(),
-            "erase entry ghost = Missing".to_string(),
-            "commit = Committed".to_string(),
-            "presence a = Present".to_string(),
-            "presence empty = Absent".to_string(),
+            Step::Create("a", CreateOutcome::Created),
+            Step::Create("a again", CreateOutcome::AlreadyPresent),
+            Step::Replace("a", Ok(())),
+            Step::Replace("ghost", Err(KernelFault::Corruption)),
+            Step::Erase("entry empty-key", EraseOutcome::Erased),
+            Step::Erase("entry ghost", EraseOutcome::Missing),
+            Step::Commit(CommitVerdict::Committed),
+            Step::Presence("a", Presence::Present),
+            Step::Presence("empty", Presence::Absent),
         ]
     );
     // Final state: "a" replaced (value 5, label first); "ab" value updated to 20,
@@ -365,7 +371,7 @@ fn set_field_agrees_across_engines() {
         MemoryEngine::new(),
         project(&schema(), sites()),
     ));
-    let temp = TempDir::new("strict");
+    let temp = Scratch::new("strict");
     let native = native_owner(&temp.store());
     let (redb_presence, redb_dump) = probe(DurableStore::from_engine(
         native,
@@ -427,7 +433,7 @@ fn rollback_discards_staged_writes_on_both_backends() {
         )),
         Presence::Absent
     );
-    let temp = TempDir::new("rollback");
+    let temp = Scratch::new("rollback");
     let native = native_owner(&temp.store());
     assert_eq!(
         probe(DurableStore::from_engine(
@@ -471,7 +477,7 @@ fn a_replaced_entry_drops_unlisted_sparse_leaves() {
         )),
         None
     );
-    let temp = TempDir::new("replace-drops");
+    let temp = Scratch::new("replace-drops");
     let native = native_owner(&temp.store());
     assert_eq!(
         probe(DurableStore::from_engine(
@@ -532,7 +538,7 @@ fn details(pages: Option<i64>, language: Option<&str>) -> EntryValue {
 /// replace it with only `pages` (dropping `language`), read again, erase the group, read a
 /// third time. Returns the per-op transcript and the three group reads, which must agree
 /// across the two engines byte for byte through their identical logical projection.
-fn replay_groups<E: ByteEngine>(mut store: DurableStore<E>) -> (Vec<String>, Vec<GroupDump>) {
+fn replay_groups<E: ByteEngine>(mut store: DurableStore<E>) -> (Vec<Step>, Vec<GroupDump>) {
     fn dump(value: Option<EntryValue>) -> GroupDump {
         value.map(|group| {
             let pages = match &group.fields[0] {
@@ -557,29 +563,29 @@ fn replay_groups<E: ByteEngine>(mut store: DurableStore<E>) -> (Vec<String>, Vec
             .expect("txn");
         let root = txn.site(0);
         let details_site = txn.site(1);
-        transcript.push(format!(
-            "create = {:?}",
+        transcript.push(Step::Create(
+            "b",
             txn.create_entry(&root, &[key("b")], book_entry("T", Some(384), Some("en")))
-                .unwrap()
+                .unwrap(),
         ));
         reads.push(dump(txn.read_group(&details_site, &[key("b")]).unwrap()));
-        transcript.push(format!(
-            "replace group = {:?}",
-            txn.replace_group(&details_site, &[key("b")], details(Some(512), None))
+        transcript.push(Step::Replace(
+            "details of b",
+            txn.replace_group(&details_site, &[key("b")], details(Some(512), None)),
         ));
         reads.push(dump(txn.read_group(&details_site, &[key("b")]).unwrap()));
         // A group replace over an absent entry is a marker/payload mismatch and touches
         // nothing.
-        transcript.push(format!(
-            "replace ghost group = {:?}",
-            txn.replace_group(&details_site, &[key("ghost")], details(Some(1), None))
+        transcript.push(Step::Replace(
+            "details of ghost",
+            txn.replace_group(&details_site, &[key("ghost")], details(Some(1), None)),
         ));
-        transcript.push(format!(
-            "erase group = {:?}",
-            txn.erase_group(&details_site, &[key("b")]).unwrap()
+        transcript.push(Step::Erase(
+            "details of b",
+            txn.erase_group(&details_site, &[key("b")]).unwrap(),
         ));
         reads.push(dump(txn.read_group(&details_site, &[key("b")]).unwrap()));
-        transcript.push(format!("commit = {:?}", txn.commit()));
+        transcript.push(Step::Commit(CommitVerdict::of(txn.commit())));
     }
     (transcript, reads)
 }
@@ -595,7 +601,7 @@ fn memory_and_redb_agree_on_the_group_operation_trace() {
         project(&group_schema(), group_sites()),
     ));
 
-    let temp = TempDir::new("optrace-groups");
+    let temp = Scratch::new("optrace-groups");
     let native = native_owner(&temp.store());
     let (redb_transcript, redb_reads) = replay_groups(DurableStore::from_engine(
         native,
@@ -617,14 +623,11 @@ fn memory_and_redb_agree_on_the_group_operation_trace() {
     assert_eq!(
         mem_transcript,
         vec![
-            format!("create = {:?}", CreateOutcome::Created),
-            "replace group = Ok(())".to_string(),
-            format!(
-                "replace ghost group = {:?}",
-                Err::<(), _>(KernelFault::Corruption)
-            ),
-            format!("erase group = {:?}", EraseOutcome::Erased),
-            format!("commit = {:?}", CommitResult::Committed),
+            Step::Create("b", CreateOutcome::Created),
+            Step::Replace("details of b", Ok(())),
+            Step::Replace("details of ghost", Err(KernelFault::Corruption)),
+            Step::Erase("details of b", EraseOutcome::Erased),
+            Step::Commit(CommitVerdict::Committed),
         ]
     );
     assert_eq!(
@@ -857,7 +860,7 @@ fn empty_payload_marker_lifetime_agrees_across_engines() {
         MemoryEngine::new(),
         project(&schema, sites.clone()),
     ));
-    let temp = TempDir::new("empty-payload-markers");
+    let temp = Scratch::new("empty-payload-markers");
     replay(DurableStore::from_engine(
         native_owner(&temp.store()),
         project(&schema, sites),

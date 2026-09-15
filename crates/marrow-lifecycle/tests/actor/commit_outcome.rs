@@ -25,26 +25,10 @@ pub fn readValue(id: int): int? {
 }
 "#;
 
-#[path = "support/scratch.rs"]
-mod scratch;
-use scratch::Scratch;
+use crate::support::Scratch;
 
 fn compile() -> PreparedImage {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        SOURCE.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    let image = marrow_verify::verify(&compiled.image.bytes).expect("verify");
-    let prepared = prepare(image);
+    let prepared = prepare(crate::support::compile::compile(SOURCE, IDS));
     assert!(prepared.projection().is_some(), "durable schema");
     prepared
 }

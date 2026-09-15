@@ -4,18 +4,13 @@
 
 use std::path::Path;
 
+use crate::support::actor_fixtures::*;
+use crate::support::compile::compile_files;
 use marrow_lifecycle::{
-    AttachOutcome, ChangedFact, EngineKind, HEAD_FILE, LifecycleError, LogicalHead,
-    PinDisagreement, ProvisionRequest, StoreEnvelope, StoreInstanceId, active_binding, attach,
-    head_map, prepare, provision,
+    AttachOutcome, ChangedFact, HEAD_FILE, LifecycleError, LogicalHead, PinDisagreement,
+    active_binding, attach, head_map, prepare,
 };
 use marrow_verify::{VerifiedImage, verify};
-#[path = "support/actor_fixtures.rs"]
-mod actor_fixtures;
-#[path = "support/compile.rs"]
-mod source_compile;
-use actor_fixtures::*;
-use source_compile::compile_files;
 
 /// The base durable program: a `counters` root of `Counter` resources (a required `value`
 /// and a sparse `label`), keyed by `id: int`, with one read-only export.
@@ -56,10 +51,10 @@ fn projection_of(image: &VerifiedImage) -> marrow_kernel::durable::StoreProjecti
         .expect("the base image is flat-executable")
 }
 
-#[path = "support/scratch.rs"]
-mod scratch;
 use marrow_codes::Code;
-use scratch::Scratch;
+
+use crate::support::Scratch;
+use crate::support::store::provision_from;
 
 #[test]
 fn refused_attach_preserves_absent_owner_marker() {
@@ -446,23 +441,6 @@ fn rebind_preserves_an_occupied_replacement_slot() {
 }
 
 /// Provision a fresh store at `dir` bound to `image`.
-fn provision_from(dir: &Path, image: &VerifiedImage) -> StoreInstanceId {
-    let instance = StoreInstanceId::draw().expect("entropy");
-    let envelope = StoreEnvelope {
-        instance,
-        writer_toolchain: "0.1.0".to_string(),
-        engine_kind: EngineKind::Redb,
-        engine_format_version: 1,
-    };
-    let head = LogicalHead::provision(
-        active_binding(image),
-        marrow_lifecycle::accepted_ceiling(image),
-        head_map(image).expect("head map"),
-    );
-    provision(dir, ProvisionRequest { envelope, head }).expect("provision");
-    instance
-}
-
 #[test]
 fn old_image_binding_refuses_active_and_rebind_before_engine_open() {
     let image = compile(BASE_SOURCE, BASE_IDS);

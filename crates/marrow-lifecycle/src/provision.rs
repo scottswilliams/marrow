@@ -955,13 +955,14 @@ mod tests {
     use super::*;
     use crate::head::ActiveBinding;
     use crate::headmap::HeadMap;
+    use crate::test_support::Scratch;
     use marrow_image::LedgerIdBytes;
     use marrow_kernel::durable::StoreProjection;
 
     #[test]
     fn provision_never_replaces_an_existing_empty_directory() {
-        let scratch = ScratchDir::new("occupied-empty");
-        let destination = scratch.0.join("destination");
+        let scratch = Scratch::new("occupied-empty");
+        let destination = scratch.base().join("destination");
         std::fs::create_dir(&destination).unwrap();
         let (_, request) = compiled_request();
         let result = provision(&destination, request);
@@ -978,9 +979,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn occupied_files_and_dangling_links_refuse_without_replacement() {
-        let scratch = ScratchDir::new("occupied-entries");
+        let scratch = Scratch::new("occupied-entries");
         for dangling in [false, true] {
-            let destination = scratch.0.join(if dangling { "link" } else { "file" });
+            let destination = scratch.base().join(if dangling { "link" } else { "file" });
             if dangling {
                 std::os::unix::fs::symlink("missing-target", &destination).unwrap();
             } else {
@@ -1068,9 +1069,9 @@ mod tests {
             }
         }
         for point in [Some(Point::NewBody(Artifact::Envelope)), None] {
-            let scratch = std::mem::ManuallyDrop::new(ScratchDir::new("cleanup-failure"));
-            eprintln!("cleanup-failure fixture: {}", scratch.0.display());
-            let destination = scratch.0.join("destination");
+            let scratch = std::mem::ManuallyDrop::new(Scratch::new("cleanup-failure"));
+            eprintln!("cleanup-failure fixture: {}", scratch.base().display());
+            let destination = scratch.base().join("destination");
             if point.is_none() {
                 std::fs::create_dir(&destination).expect("occupied destination");
                 std::fs::write(destination.join("sentinel"), b"existing destination")
@@ -1146,10 +1147,10 @@ mod tests {
             Point::NewBody(Artifact::Head),
             Point::ConstructionStage,
         ] {
-            let scratch = std::mem::ManuallyDrop::new(ScratchDir::new("construction-prefix"));
-            eprintln!("construction-prefix fixture: {}", scratch.0.display());
-            let destination = scratch.0.join("destination");
-            let unrelated = scratch.0.join("unrelated.provisioning");
+            let scratch = std::mem::ManuallyDrop::new(Scratch::new("construction-prefix"));
+            eprintln!("construction-prefix fixture: {}", scratch.base().display());
+            let destination = scratch.base().join("destination");
+            let unrelated = scratch.base().join("unrelated.provisioning");
             std::fs::create_dir(&unrelated).expect("unrelated sibling");
             std::fs::write(unrelated.join("sentinel"), b"keep me").expect("sentinel");
             let (_, request) = compiled_request();
@@ -1200,7 +1201,10 @@ mod tests {
                 std::fs::read(unrelated.join("sentinel")).expect("unrelated retained"),
                 b"keep me"
             );
-            assert_eq!(std::fs::read_dir(&scratch.0).expect("parent").count(), 1);
+            assert_eq!(
+                std::fs::read_dir(scratch.base()).expect("parent").count(),
+                1
+            );
             drop(std::mem::ManuallyDrop::into_inner(scratch));
         }
     }
@@ -1208,19 +1212,7 @@ mod tests {
     fn compiled_request() -> (marrow_verify::VerifiedImage, ProvisionRequest) {
         let source = "resource Item { required value: int }\nstore ^items[key: int]: Item\npub fn read(key: int): int { return ^items[key].value ?? 0 }\n";
         let ids = "marrow ids v0\nmachine-written by marrow; do not edit\nid application . 01010101010101010101010101010101\nid product Item 02020202020202020202020202020202\nid field Item.value 03030303030303030303030303030303\nid root items 04040404040404040404040404040404\nid key items.key 05050505050505050505050505050505\nhigh-water 0\nend\n";
-        let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-        let project = marrow_project::capture(
-            &manifest,
-            vec![marrow_project::CapturedFile::new(
-                "src/main.mw".into(),
-                source.as_bytes().to_vec(),
-            )],
-            Some(ids.as_bytes()),
-            &marrow_project::CaptureLimits::DEFAULT,
-        )
-        .expect("capture");
-        let compiled = marrow_compile::compile(&project).expect("compile");
-        let image = marrow_verify::verify(&compiled.image.bytes).expect("verify");
+        let image = crate::test_support::compile::compile(source, ids);
         let request = ProvisionRequest {
             envelope: StoreEnvelope {
                 instance: StoreInstanceId::draw().expect("instance"),
@@ -1239,8 +1231,8 @@ mod tests {
 
     #[test]
     fn a_complete_unpublished_stage_is_adopted_at_its_current_location() {
-        let scratch = ScratchDir::new("complete-stage");
-        let destination = scratch.0.join("destination");
+        let scratch = Scratch::new("complete-stage");
+        let destination = scratch.base().join("destination");
         let stage = temp_sibling(&destination);
         create_private_dir(&stage).expect("private stage");
         let (image, request) = compiled_request();
@@ -1372,8 +1364,8 @@ mod tests {
                 });
             }
         }
-        let scratch = ScratchDir::new("rename-owner");
-        let destination = scratch.0.join("store");
+        let scratch = Scratch::new("rename-owner");
+        let destination = scratch.base().join("store");
         let (image, request) = compiled_request();
         let _clear = Clear;
         PUBLICATION_OBSERVATION.with(|slot| {
@@ -1411,13 +1403,13 @@ mod tests {
             }
         }
         for case in 0..3 {
-            let scratch = std::mem::ManuallyDrop::new(ScratchDir::new("publication-custody"));
+            let scratch = std::mem::ManuallyDrop::new(Scratch::new("publication-custody"));
             eprintln!(
                 "preserved publication custody fixture {case}: {}",
-                scratch.0.display()
+                scratch.base().display()
             );
-            let destination = scratch.0.join("store");
-            let saved = scratch.0.join("retained-original");
+            let destination = scratch.base().join("store");
+            let saved = scratch.base().join("retained-original");
             let (at, action) = match case {
                 0 => (PublicationPoint::Staged, PublicationMutation::Occupy),
                 1 => (
@@ -1475,7 +1467,7 @@ mod tests {
     #[test]
     fn inadmissible_destination_names_refuse_before_stage_creation() {
         use std::os::unix::ffi::OsStringExt;
-        let scratch = ScratchDir::new("publication-name-admission");
+        let scratch = Scratch::new("publication-name-admission");
         for name in [
             std::ffi::OsString::from("a\\b"),
             std::ffi::OsString::from("a:store"),
@@ -1483,12 +1475,12 @@ mod tests {
             std::ffi::OsString::from_vec(vec![0xff]),
         ] {
             let (_, request) = compiled_request();
-            let error = provision(&scratch.0.join(name), request).unwrap_err();
+            let error = provision(&scratch.base().join(name), request).unwrap_err();
             assert!(
                 matches!(error.fault, ProvisionFault::Io(source) if source.kind() == std::io::ErrorKind::InvalidInput)
             );
             assert!(error.cleanup.is_none());
-            assert_eq!(std::fs::read_dir(&scratch.0).unwrap().count(), 0);
+            assert_eq!(std::fs::read_dir(scratch.base()).unwrap().count(), 0);
         }
     }
 
@@ -1496,10 +1488,10 @@ mod tests {
     #[test]
     fn symlink_parent_and_missing_owner_permissions_refuse_before_staging() {
         use std::os::unix::fs::PermissionsExt;
-        let scratch = ScratchDir::new("publication-parent-admission");
-        let parent = scratch.0.join("parent");
+        let scratch = Scratch::new("publication-parent-admission");
+        let parent = scratch.base().join("parent");
         std::fs::create_dir(&parent).unwrap();
-        let link = scratch.0.join("link");
+        let link = scratch.base().join("link");
         std::os::unix::fs::symlink(&parent, &link).unwrap();
         let (_, request) = compiled_request();
         assert!(provision(&link.join("store"), request).is_err());
@@ -1545,26 +1537,6 @@ mod tests {
         }
     }
 
-    struct ScratchDir(std::path::PathBuf);
-
-    impl ScratchDir {
-        fn new(tag: &str) -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "marrow-lifecycle-{tag}-{}-{}",
-                std::process::id(),
-                now_nonce(),
-            ));
-            std::fs::create_dir_all(&path).expect("create scratch directory");
-            Self(path)
-        }
-    }
-
-    impl Drop for ScratchDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
     /// The classification of a directory this test can examine. A preflight that cannot look
     /// is a distinct outcome with its own coverage; nothing here should reach it.
     fn classify(dir: &Path) -> Preflight {
@@ -1573,11 +1545,10 @@ mod tests {
 
     #[test]
     fn preflight_classifies_absent_incomplete_complete_without_creating() {
-        let base = std::env::temp_dir().join(format!(
-            "marrow-lifecycle-preflight-{}-{}",
-            std::process::id(),
-            now_nonce(),
-        ));
+        let scratch = Scratch::new("preflight");
+        // A path under the scratch base that does not itself exist: preflight must leave
+        // both it and the store directory under it alone.
+        let base = scratch.named_store("base");
         let dir = base.join("store");
 
         // Absent: no directory. Preflight creates nothing.
@@ -1601,8 +1572,6 @@ mod tests {
             before,
             "preflight must not add a file"
         );
-
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     fn open_owner(dir: &Path, instance: [u8; 16]) -> NativeStore {
@@ -1616,15 +1585,15 @@ mod tests {
 
     #[test]
     fn opaque_native_owner_holds_exclusion_and_clean_drop_releases_it() {
-        let scratch = ScratchDir::new("opaque-owner");
-        NativeStore::provision(&scratch.0).expect("provision native engine");
-        let owner = open_owner(&scratch.0, [0x51; 16]);
+        let scratch = Scratch::new("opaque-owner");
+        NativeStore::provision(scratch.base()).expect("provision native engine");
+        let owner = open_owner(scratch.base(), [0x51; 16]);
         assert!(matches!(
-            NativeStore::acquire_existing(&scratch.0),
+            NativeStore::acquire_existing(scratch.base()),
             Err(NativeOwnerAcquireError::Lock(_)),
         ));
         drop(owner);
-        drop(open_owner(&scratch.0, [0x52; 16]));
+        drop(open_owner(scratch.base(), [0x52; 16]));
     }
 
     /// Every admission read and callback happens under one owner, and the pair of artifacts
@@ -1634,8 +1603,8 @@ mod tests {
     /// because the envelope is read once under this owner and never re-read behind the head.
     #[test]
     fn admission_reads_are_one_snapshot_under_one_owner() {
-        let scratch = ScratchDir::new("one-snapshot");
-        let store = scratch.0.join("store");
+        let scratch = Scratch::new("one-snapshot");
+        let store = scratch.base().join("store");
         let original = StoreInstanceId::draw().expect("entropy");
         provision(&store, test_request(original)).expect("provision");
 
@@ -1685,12 +1654,5 @@ mod tests {
             .unwrap_or_default();
         names.sort();
         names
-    }
-
-    fn now_nonce() -> u128 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
     }
 }

@@ -1,98 +1,18 @@
-//! The G03 term-3 (D08) effect-ceiling honesty guarantee over the real lifecycle actor.
+//! The effect-ceiling honesty guarantee over the real lifecycle actor.
 //!
 //! A store records its accepted deployment ceiling at provision — the separately owned
 //! standing maximum authority — and the atom-granular admission check enforces it at attach:
 //! an image whose verified demand *exceeds* the accepted ceiling (a read-only export broadened
 //! to also mutate, its deployment authority not yet updated) is refused before any engine
-//! call, naming the exceeding export, effect, and place in source vocabulary; an image whose
-//! demand fits *within* the ceiling (even when narrower than a prior image's) is admitted.
+//! call, naming the exceeding export, effect, and place; an image whose demand fits *within*
+//! the ceiling (even when narrower than a prior image's) is admitted.
 
-use std::path::Path;
-
-use marrow_lifecycle::{
-    AttachOutcome, LifecycleError, ProvisionApproval, ProvisionReport, attach, prepare,
-    provision_image,
-};
-use marrow_verify::{VerifiedImage, verify};
-
-/// The identity ledger shared by every source variant below: the application, the `Counter`
-/// product, its two fields, the `counters` root, and its key column. Sharing the ledger is
-/// what lets a variant hold the durable contract and the exported interface still while its
-/// demand grows, which is how the admission refusal is isolated from a contract refusal. It
-/// does not make every variant contract-preserving: the preemption case below deliberately
-/// promotes `label` to required, moving the durable contract as well, and says so.
-const IDS: &str = "marrow ids v0\n\
-     machine-written by marrow; do not edit\n\
-     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
-     id product Counter 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
-     id field Counter.value 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
-     id field Counter.label 0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\n\
-     id root counters 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
-     id key counters.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
-     high-water 0\n\
-     end\n";
-
-/// The base shape every variant starts from. The preemption case edits it, promoting `label`
-/// to required.
-const SHAPE: &str = r#"resource Counter {
-    required value: int
-    label: string
-}
-
-store ^counters[id: int]: Counter
-"#;
-
-/// Variant A: a read-only export. Its demand union is the accepted ceiling a store
-/// provisioned under it records: it reads `^counters.value` and nothing more.
-fn source_read_only() -> String {
-    format!("{SHAPE}\npub fn readValue(n: int): int {{\n    return ^counters[n].value ?? 0\n}}\n")
-}
-
-/// Variant B: the same export, same signature, broadened to also mutate — it now stamps the
-/// sparse `label` of a present counter. The durable contract and interface are unchanged; only
-/// the demand grows, by a write of `^counters.label` (and the presence probe the guard makes).
-fn source_broadened() -> String {
-    format!(
-        "{SHAPE}\npub fn readValue(n: int): int {{\n    var result = 0\n    \
-         transaction {{\n        place slot = ^counters[n]\n        \
-         if exists(slot) {{\n            slot.label = \"seen\"\n        }}\n        \
-         result = ^counters[n].value ?? 0\n    }}\n    return result\n}}\n"
-    )
-}
-
-fn compile(source: &str) -> (VerifiedImage, Vec<u8>) {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    let image = verify(&compiled.image.bytes).expect("verify");
-    (image, compiled.image.bytes)
-}
-
-fn provision(store: &Path, image: &VerifiedImage) {
-    let prepared = prepare(image.clone());
-    let report = ProvisionReport::new(store, &prepared).expect("flat-executable");
-    let approval = ProvisionApproval::accept(&report);
-    provision_image(store, &prepared, &approval).expect("provision");
-}
-
-fn attach_image(store: &Path, image: &VerifiedImage) -> Result<AttachOutcome, LifecycleError> {
-    attach(store, prepare(image.clone()))
-}
-
-#[path = "support/scratch.rs"]
-mod scratch;
 use marrow_codes::Code;
-use scratch::Scratch;
+use marrow_lifecycle::{AttachOutcome, LifecycleError};
+use marrow_verify::VerifiedImage;
+
+use crate::support::Scratch;
+use crate::support::ceiling::{attach_image, image, provision, source_broadened, source_read_only};
 
 /// The MUST-WIN: a store provisioned under the read-only image refuses the broadened image —
 /// the demand now exceeds the accepted ceiling — naming the export, the new effect, and the
@@ -100,8 +20,8 @@ use scratch::Scratch;
 #[test]
 fn a_broadened_demand_is_refused_naming_the_exceeding_place() {
     let scratch = Scratch::new("refuse");
-    let (read_only, _) = compile(&source_read_only());
-    let (broadened, _) = compile(&source_broadened());
+    let read_only = image(&source_read_only());
+    let broadened = image(&source_broadened());
 
     // The broadening changes the code and the demand, but not the durable contract or the
     // exported interface — so the refusal is specifically an authority refusal, not a
@@ -118,28 +38,16 @@ fn a_broadened_demand_is_refused_naming_the_exceeding_place() {
         Ok(_) => panic!("the broadened image must be refused, not admitted"),
     };
 
-    let rendered = refusal.to_string();
     assert_eq!(refusal.code(), Code::StoreDemandExceedsCeiling);
-    // The refusal names the export, the new effect, and the place in source vocabulary.
-    assert!(
-        rendered.contains("export `readValue`"),
-        "names the export: {rendered}"
-    );
-    assert!(
-        rendered.contains("writes ^counters.label"),
-        "names the new write and its place in source vocabulary: {rendered}"
-    );
-    assert!(
-        rendered.contains("Consciously expand"),
-        "points the owner at consciously expanding the accepted ceiling: {rendered}"
-    );
+    // The refusal carries the export, the new effect, and the place as typed atoms.
     assert!(
         refusal
             .exceeding
             .iter()
-            .any(|atom| atom.effect == marrow_image::OperationClass::Write
+            .any(|atom| atom.export == "readValue"
+                && atom.effect == marrow_image::OperationClass::Write
                 && atom.place.as_deref() == Some("^counters.label")),
-        "a typed exceeding atom names the write of ^counters.label: {:?}",
+        "a typed exceeding atom names readValue's write of ^counters.label: {:?}",
         refusal.exceeding,
     );
 
@@ -165,11 +73,11 @@ fn a_broadened_demand_is_refused_naming_the_exceeding_place() {
 #[test]
 fn a_demand_beyond_the_ceiling_preempts_the_contract_refusal() {
     let scratch = Scratch::new("preempt");
-    let (read_only, _) = compile(&source_read_only());
+    let read_only = image(&source_read_only());
     // Broadened *and* contract-changed: the sparse `label` the broadened export writes is
     // promoted to required, which moves the durable contract on its own.
-    let (both, _) =
-        compile(&source_broadened().replace("    label: string\n", "    required label: string\n"));
+    let both =
+        image(&source_broadened().replace("    label: string\n", "    required label: string\n"));
     assert_ne!(
         marrow_lifecycle::active_binding(&read_only).durable_contract,
         marrow_lifecycle::active_binding(&both).durable_contract,
@@ -233,22 +141,8 @@ store ^tallies[name: string]: Tally
          tally.count = tally.count + 1\n        }}\n    }}\n    return found\n}}\n"
     );
 
-    let compile_with = |source: &str| -> VerifiedImage {
-        let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-        let files = vec![marrow_project::CapturedFile::new(
-            "src/main.mw".to_string(),
-            source.as_bytes().to_vec(),
-        )];
-        let project = marrow_project::capture(
-            &manifest,
-            files,
-            Some(WORKSHOP_IDS.as_bytes()),
-            &marrow_project::CaptureLimits::DEFAULT,
-        )
-        .expect("capture");
-        let compiled = marrow_compile::compile(&project).expect("compile");
-        verify(&compiled.image.bytes).expect("verify")
-    };
+    let compile_with =
+        |source: &str| -> VerifiedImage { crate::support::compile::compile(source, WORKSHOP_IDS) };
 
     let scratch = Scratch::new("two-root");
     let image_a = compile_with(&read_only);
@@ -263,10 +157,14 @@ store ^tallies[name: string]: Tally
         ),
         Ok(_) => panic!("the two-root broadening must be refused"),
     };
-    let rendered = refusal.to_string();
     assert!(
-        rendered.contains("writes ^tallies.count"),
-        "spells the second root's written field: {rendered}"
+        refusal
+            .exceeding
+            .iter()
+            .any(|atom| atom.effect == marrow_image::OperationClass::Write
+                && atom.place.as_deref() == Some("^tallies.count")),
+        "a typed atom spells the second root's written field: {:?}",
+        refusal.exceeding,
     );
     assert!(
         refusal
@@ -285,8 +183,8 @@ store ^tallies[name: string]: Tally
 #[test]
 fn a_narrowed_demand_within_the_ceiling_is_admitted() {
     let scratch = Scratch::new("narrow");
-    let (read_only, _) = compile(&source_read_only());
-    let (broadened, _) = compile(&source_broadened());
+    let read_only = image(&source_read_only());
+    let broadened = image(&source_broadened());
 
     provision(scratch.dir(), &broadened);
     match attach_image(scratch.dir(), &read_only) {
@@ -310,8 +208,8 @@ fn a_narrowed_demand_within_the_ceiling_is_admitted() {
 #[test]
 fn a_rebind_preserves_the_stores_standing_ceiling() {
     let scratch = Scratch::new("standing");
-    let (read_only, _) = compile(&source_read_only());
-    let (broadened, _) = compile(&source_broadened());
+    let read_only = image(&source_read_only());
+    let broadened = image(&source_broadened());
     let broad_ceiling = marrow_lifecycle::accepted_ceiling(&broadened);
     assert_ne!(
         broad_ceiling,

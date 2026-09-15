@@ -16,10 +16,9 @@ use marrow_kernel::durable::{
 };
 use marrow_kernel::equality::ValueDomain;
 use marrow_lifecycle::{
-    ActiveBinding, AttachOutcome, ChangedFact, EngineKind, HeadMap, ImportError, ImportLimits,
-    ImportTarget, LogicalHead, NativeAttachment, ProvisionRequest, RowFault, ShapeFault,
-    StoreEnvelope, StoreInstanceId, active_binding, attach, head_map, import_jsonl, prepare,
-    provision,
+    ActiveBinding, AttachOutcome, ChangedFact, HeadMap, ImportError, ImportLimits, ImportTarget,
+    LogicalHead, NativeAttachment, RowFault, ShapeFault, active_binding, attach, head_map,
+    import_jsonl, prepare,
 };
 use marrow_verify::{SealedSite, SealedSiteTarget, VerifiedImage};
 
@@ -279,39 +278,14 @@ fn whole_entry_site(image: &VerifiedImage) -> u16 {
         .expect("the fixture reads a whole entry")
 }
 
-#[path = "support/scratch.rs"]
-mod scratch;
-use scratch::Scratch;
+use crate::support::Scratch;
+use crate::support::store::{provision_from, provision_with_head};
 
-#[path = "support/compile.rs"]
-mod source_compile;
 use marrow_codes::Code;
-use source_compile::compile;
+
+use crate::support::compile::compile;
 
 /// Provision a fresh store at `dir` bound to `image`.
-fn provision_from(dir: &Path, image: &VerifiedImage) {
-    provision_with_head(
-        dir,
-        LogicalHead::provision(
-            active_binding(image),
-            marrow_lifecycle::accepted_ceiling(image),
-            head_map(image).expect("head map"),
-        ),
-    );
-}
-
-/// Provision a fresh store at `dir` under a caller-built head: the admission matrix below
-/// forges each binding, ceiling, and pin fact one at a time.
-fn provision_with_head(dir: &Path, head: LogicalHead) {
-    let envelope = StoreEnvelope {
-        instance: StoreInstanceId::draw().expect("entropy"),
-        writer_toolchain: "0.1.0".to_string(),
-        engine_kind: EngineKind::Redb,
-        engine_format_version: 1,
-    };
-    provision(dir, ProvisionRequest { envelope, head }).expect("provision");
-}
-
 fn counter_target() -> ImportTarget {
     ImportTarget {
         root: 0,
@@ -634,7 +608,7 @@ fn a_large_corpus_commits_in_bounded_batches() {
         "the large corpus committed in bounded batches",
     );
     println!(
-        "IMP01 large-corpus: {rows} rows in {} batches, {:?} ({:.0} rows/s)",
+        "large-corpus import: {rows} rows in {} batches, {:?} ({:.0} rows/s)",
         report.batches_committed,
         elapsed,
         rows as f64 / elapsed.as_secs_f64(),

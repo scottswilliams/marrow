@@ -9,8 +9,7 @@ use marrow_kernel::codec::value::RuntimeScalar;
 use marrow_kernel::durable::{DemandCoverage, Durable, EntryValue, InvocationGrant};
 use marrow_kernel::equality::ValueDomain;
 use marrow_lifecycle::{
-    AttachOutcome, AuditError, ChangedFact, ENGINE_FILE, EngineKind, LogicalHead, ProvisionRequest,
-    StoreEnvelope, StoreInstanceId, active_binding, attach, audit, head_map, prepare, provision,
+    AttachOutcome, AuditError, ChangedFact, ENGINE_FILE, active_binding, attach, audit, prepare,
 };
 use marrow_verify::{VerifiedImage, verify};
 
@@ -172,14 +171,12 @@ fn populated_backup_restores_fresh_identity_head_index_and_executable_values() {
     drop(std::mem::ManuallyDrop::into_inner(scratch));
 }
 
-#[path = "support/scratch.rs"]
-mod scratch;
-use scratch::Scratch;
+use crate::support::Scratch;
+use crate::support::store::provision_from;
 
-#[path = "support/compile.rs"]
-mod source_compile;
 use marrow_codes::Code;
-use source_compile::{compile, compile_bytes};
+
+use crate::support::compile::{compile, compile_bytes};
 
 fn store_files(dir: &Path) -> std::collections::BTreeMap<std::ffi::OsString, Vec<u8>> {
     std::fs::read_dir(dir)
@@ -192,21 +189,6 @@ fn store_files(dir: &Path) -> std::collections::BTreeMap<std::ffi::OsString, Vec
             )
         })
         .collect()
-}
-
-fn provision_from(dir: &Path, image: &VerifiedImage) {
-    let envelope = StoreEnvelope {
-        instance: StoreInstanceId::draw().expect("entropy"),
-        writer_toolchain: "0.1.0".to_string(),
-        engine_kind: EngineKind::Redb,
-        engine_format_version: 1,
-    };
-    let head = LogicalHead::provision(
-        active_binding(image),
-        marrow_lifecycle::accepted_ceiling(image),
-        head_map(image).expect("head map"),
-    );
-    provision(dir, ProvisionRequest { envelope, head }).expect("provision");
 }
 
 /// Create `people[id]` with `name` and, when given, `email`, through the kernel on the
@@ -259,13 +241,12 @@ fn add_person(dir: &Path, image: &VerifiedImage, id: i64, name: &str, email: Opt
     ));
 }
 
-fn walked(dir: &Path, image: &VerifiedImage) -> (marrow_lifecycle::StoreAudit, Vec<String>) {
+fn walked(
+    dir: &Path,
+    image: &VerifiedImage,
+) -> (marrow_lifecycle::StoreAudit, Vec<marrow_lifecycle::Finding>) {
     let audit = audit(dir, prepare(image.clone())).expect("the audit runs");
-    let findings = audit
-        .findings
-        .iter()
-        .map(|finding| format!("{} at {}", finding.code.as_str(), finding.place))
-        .collect();
+    let findings = audit.findings.clone();
     (audit, findings)
 }
 
@@ -358,12 +339,14 @@ fn an_engine_swapped_under_another_provisions_head_is_reported() {
     assert!(!swapped.is_clean());
     assert_eq!(findings.len(), 2, "{findings:?}");
     assert_eq!(
-        findings[0],
-        "store.audit_index_missing at ^people.index(2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c)[\"ada@example.org\"]"
-    );
-    assert_eq!(
-        findings[1],
-        "store.audit_outside_schema at ^people.index(1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c)"
+        findings
+            .iter()
+            .map(|finding| finding.code)
+            .collect::<Vec<_>>(),
+        vec![
+            marrow_codes::Code::StoreAuditIndexMissing,
+            marrow_codes::Code::StoreAuditOutsideSchema,
+        ],
     );
     // The digest is over the logical entries, which the swap carried across unchanged.
     let (source, _) = walked(&populated, &image);

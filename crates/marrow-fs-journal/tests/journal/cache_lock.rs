@@ -2,9 +2,7 @@
 //! release on drop, and lock-entry persistence. Affinity (no clone, no copy)
 //! is enforced by the `compile_fail` doctest on [`marrow_fs_journal::CacheLock`].
 
-mod common;
-
-use common::{Scratch, mode_of, require_mode_bits_bind, set_mode};
+use crate::common::{Scratch, mode_of, require_mode_bits_bind, set_mode};
 use marrow_fs_journal::{
     AdmittedDir, CacheLock, CustodyError, CustodyOp, EntryName, LockError, NodeKind,
 };

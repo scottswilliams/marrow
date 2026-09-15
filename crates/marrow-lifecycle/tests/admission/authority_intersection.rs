@@ -1,4 +1,4 @@
-//! The four-way authority-intersection audit (G03).
+//! The four-way authority intersection.
 //!
 //! Effective durable authority is `demand ∩ ceiling ∩ grant ∩ principal`, resolved before the
 //! first engine call. This audit proves the order holds where all four terms meet, each
@@ -21,96 +21,19 @@
 //! grant at session open — so a broadened image never reaches the grant check, and an
 //! over-attenuated grant never reaches the engine.
 
-use std::path::{Path, PathBuf};
-
 use marrow_codes::Code;
 use marrow_kernel::durable::{DemandCoverage, InvocationGrant, PrincipalPredicate, SessionError};
-use marrow_lifecycle::{
-    AttachOutcome, LifecycleError, ProvisionApproval, ProvisionReport, attach, prepare,
-    provision_image,
-};
-use marrow_verify::{VerifiedImage, verify};
+use marrow_lifecycle::{AttachOutcome, LifecycleError};
 
-const IDS: &str = "marrow ids v0\n\
-     machine-written by marrow; do not edit\n\
-     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
-     id product Counter 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
-     id field Counter.value 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
-     id field Counter.label 0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\n\
-     id root counters 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
-     id key counters.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
-     high-water 0\n\
-     end\n";
-
-const SHAPE: &str = r#"resource Counter {
-    required value: int
-    label: string
-}
-
-store ^counters[id: int]: Counter
-"#;
-
-/// A read-only export: its demand union is the accepted ceiling of a store provisioned under it.
-fn source_read_only() -> String {
-    format!("{SHAPE}\npub fn readValue(n: int): int {{\n    return ^counters[n].value ?? 0\n}}\n")
-}
-
-/// The same export, same signature, broadened to also mutate `^counters.label`.
-fn source_broadened() -> String {
-    format!(
-        "{SHAPE}\npub fn readValue(n: int): int {{\n    var result = 0\n    \
-         transaction {{\n        place slot = ^counters[n]\n        \
-         if exists(slot) {{\n            slot.label = \"seen\"\n        }}\n        \
-         result = ^counters[n].value ?? 0\n    }}\n    return result\n}}\n"
-    )
-}
-
-fn compile(source: &str) -> VerifiedImage {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    verify(&compiled.image.bytes).expect("verify")
-}
-
-fn provision(store: &Path, image: &VerifiedImage) {
-    let prepared = prepare(image.clone());
-    let report = ProvisionReport::new(store, &prepared).expect("flat-executable");
-    let approval = ProvisionApproval::accept(&report);
-    provision_image(store, &prepared, &approval).expect("provision");
-}
-
-fn attach_image(store: &Path, image: &VerifiedImage) -> Result<AttachOutcome, LifecycleError> {
-    attach(store, prepare(image.clone()))
-}
-
-fn scratch() -> PathBuf {
-    let base = std::env::temp_dir().join(format!(
-        "marrow-g03-audit-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0),
-    ));
-    std::fs::create_dir_all(&base).expect("scratch base");
-    base.join("store")
-}
+use crate::support::Scratch;
+use crate::support::ceiling::{attach_image, image, provision, source_broadened, source_read_only};
 
 #[test]
 fn effective_authority_is_demand_ceiling_grant_and_the_reserved_principal_slot() {
-    let read_only = compile(&source_read_only());
-    let broadened = compile(&source_broadened());
-    let store = scratch();
+    let read_only = image(&source_read_only());
+    let broadened = image(&source_broadened());
+    let scratch = Scratch::new("authority-intersection");
+    let store = scratch.store();
 
     // The store's accepted ceiling is the read-only image's demand union.
     provision(&store, &read_only);
@@ -189,6 +112,4 @@ fn effective_authority_is_demand_ceiling_grant_and_the_reserved_principal_slot()
         PrincipalPredicate::Any.narrow(read) == read && opened.read_session(full, read).is_ok(),
         "term 4: when all four terms admit, the session opens and observes the store",
     );
-
-    let _ = std::fs::remove_dir_all(store.parent().expect("parent"));
 }

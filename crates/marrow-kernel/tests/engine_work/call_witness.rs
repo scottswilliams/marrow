@@ -26,9 +26,7 @@
 //! rejection classes ordered before that first access — authority denial and the poison
 //! latch, both decided in memory. Once the session is open, ordinary engine access begins.
 
-mod common;
-
-use common::{Counters, CountingEngine};
+use crate::common::{Counters, CountingEngine};
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{

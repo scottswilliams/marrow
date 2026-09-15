@@ -6,8 +6,8 @@
 //! including a spawned child that holds a store while the parent is refused by pid.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::test_support::Scratch;
 use crate::{
     ActiveBinding, EngineKind, HeadMap, LogicalHead, OpenError, Preflight, ProvisionError,
     ProvisionRequest, StoreEnvelope, StoreInstanceId, preflight, provision,
@@ -31,38 +31,6 @@ pub(crate) fn open(dir: &Path, projection: StoreProjection) -> Result<crate::Ope
         AdmitError::Open(error) => error,
         AdmitError::Refused(never) => match never {},
     })
-}
-
-/// A unique temporary directory removed on drop.
-struct TempDir {
-    path: PathBuf,
-}
-
-impl TempDir {
-    fn new(tag: &str) -> Self {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "marrow-lifecycle-{tag}-{}-{nonce}-{counter}",
-            std::process::id(),
-        ));
-        std::fs::create_dir_all(&path).expect("create temp base");
-        Self { path }
-    }
-
-    fn store(&self) -> PathBuf {
-        self.path.join("store")
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
 }
 
 fn projection() -> StoreProjection {
@@ -104,12 +72,12 @@ fn instance() -> StoreInstanceId {
 
 #[test]
 fn unsupported_envelope_stamp_refuses_provision_before_creating_files() {
-    let scratch = TempDir::new("unsupported-stamp");
+    let scratch = Scratch::new("unsupported-stamp");
     let mut req = request(instance());
     req.envelope.engine_format_version = u32::MAX;
     let result = provision(&scratch.store(), req);
     if result.is_ok() {
-        let original = scratch.path.clone();
+        let original = scratch.base().to_path_buf();
         std::mem::forget(scratch);
         panic!(
             "unsupported envelope stamp was published; preserve {}",
@@ -129,7 +97,7 @@ fn unsupported_envelope_stamp_refuses_provision_before_creating_files() {
         })
     ));
     assert_eq!(
-        std::fs::read_dir(&scratch.path)
+        std::fs::read_dir(scratch.base())
             .expect("scratch entries")
             .count(),
         0
@@ -138,8 +106,8 @@ fn unsupported_envelope_stamp_refuses_provision_before_creating_files() {
 
 #[test]
 fn provision_accepts_a_long_valid_destination_name() {
-    let scratch = std::mem::ManuallyDrop::new(TempDir::new("long-destination"));
-    let store = scratch.path.join("s".repeat(240));
+    let scratch = std::mem::ManuallyDrop::new(Scratch::new("long-destination"));
+    let store = scratch.base().join("s".repeat(240));
     // Establish that the filesystem accepts the destination component itself.
     std::fs::create_dir(&store).expect("valid destination component");
     std::fs::remove_dir(&store).expect("return destination to absent");
@@ -147,7 +115,7 @@ fn provision_accepts_a_long_valid_destination_name() {
     let provisioned = provision(&store, request(id)).unwrap_or_else(|error| {
         panic!(
             "provision valid destination: {error}; preserve {}",
-            scratch.path.display()
+            scratch.base().display()
         )
     });
     assert_eq!(provisioned.instance, id);
@@ -165,7 +133,7 @@ fn classify(dir: &Path) -> Preflight {
 /// complete store; preflight sees Complete; open succeeds and carries the published instance.
 #[test]
 fn provision_publishes_complete_and_open_reopens() {
-    let dir = TempDir::new("publish");
+    let dir = Scratch::new("publish");
     let store = dir.store();
     let id = instance();
 
@@ -189,7 +157,7 @@ fn provision_publishes_complete_and_open_reopens() {
 
 #[test]
 fn uncertain_publication_refuses_ordinary_reopen() {
-    let dir = TempDir::new("publication-reopen");
+    let dir = Scratch::new("publication-reopen");
     let store = dir.store();
     let id = instance();
     let error = crate::provision::publication_sync_fault::with_failure(
@@ -207,7 +175,7 @@ fn uncertain_publication_refuses_ordinary_reopen() {
         Err(error) => panic!("unexpected refusal: {error}"),
         Ok(opened) => {
             drop(opened);
-            let retained = dir.path.clone();
+            let retained = dir.base().to_path_buf();
             std::mem::forget(dir);
             panic!(
                 "ordinary open admitted an uncertain publication; retained fault store: {}",
@@ -219,7 +187,7 @@ fn uncertain_publication_refuses_ordinary_reopen() {
 
 #[test]
 fn failed_publication_sync_reports_uncertainty_and_retains_destination() {
-    let dir = TempDir::new("publication-sync");
+    let dir = Scratch::new("publication-sync");
     let store = dir.store();
     let id = instance();
     let error = crate::provision::publication_sync_fault::with_failure(
@@ -230,7 +198,7 @@ fn failed_publication_sync_reports_uncertainty_and_retains_destination() {
     .expect_err("the final parent sync failed");
 
     assert_eq!(classify(&store), Preflight::Complete);
-    let children = std::fs::read_dir(&dir.path)
+    let children = std::fs::read_dir(dir.base())
         .expect("read parent")
         .map(|entry| entry.expect("child").file_name())
         .collect::<Vec<_>>();
@@ -264,7 +232,7 @@ fn failed_publication_sync_reports_uncertainty_and_retains_destination() {
 
 #[test]
 fn failed_active_sync_reports_distinct_uncertainty_after_publication_barrier() {
-    let dir = TempDir::new("active-sync");
+    let dir = Scratch::new("active-sync");
     let store = dir.store();
     let id = instance();
     let error = crate::provision::publication_sync_fault::with_failure(
@@ -291,12 +259,12 @@ fn failed_active_sync_reports_distinct_uncertainty_after_publication_barrier() {
 /// beside an absent destination leaves preflight Absent, and a fresh provision still wins.
 #[test]
 fn a_pre_rename_crash_state_keeps_the_destination_absent() {
-    let dir = TempDir::new("pre-rename");
+    let dir = Scratch::new("pre-rename");
     let store = dir.store();
 
     // Model the pre-rename crash state: a leftover temp-shaped sibling, destination absent.
     let leftover = dir
-        .path
+        .base()
         .join(format!(".marrow-provisioning.{}.999", std::process::id()));
     std::fs::create_dir_all(leftover.join("junk")).expect("leftover temp");
 
@@ -323,13 +291,13 @@ fn a_pre_rename_crash_state_keeps_the_destination_absent() {
 /// mutates the filesystem, and neither does an open refused at the same directory.
 #[test]
 fn a_failed_preflight_creates_no_file() {
-    let dir = TempDir::new("no-file");
+    let dir = Scratch::new("no-file");
     let store = dir.store();
 
-    let before = list(&dir.path);
+    let before = list(dir.base());
     assert_eq!(classify(&store), Preflight::Absent);
     assert_eq!(
-        list(&dir.path),
+        list(dir.base()),
         before,
         "preflight on absent created nothing"
     );
@@ -356,7 +324,7 @@ fn a_failed_preflight_creates_no_file() {
 /// process, in-process advisory-lock contention).
 #[test]
 fn a_second_open_is_store_in_use_naming_the_owner() {
-    let dir = TempDir::new("in-use");
+    let dir = Scratch::new("in-use");
     let store = dir.store();
     let id = instance();
     provision(&store, request(id)).expect("provision");
@@ -390,7 +358,7 @@ fn a_second_open_is_store_in_use_naming_the_owner() {
 /// carries exactly the winner's instance.
 #[test]
 fn concurrent_provision_has_one_winner_and_one_lineage() {
-    let dir = TempDir::new("race");
+    let dir = Scratch::new("race");
     let store = dir.store();
 
     let winners: Vec<_> = std::thread::scope(|scope| {
@@ -421,7 +389,7 @@ fn concurrent_provision_has_one_winner_and_one_lineage() {
 
     assert_eq!(winners.len(), 1, "exactly one provisioner wins the race");
     assert_eq!(
-        list(&dir.path),
+        list(dir.base()),
         vec!["store"],
         "losers remove their own stages"
     );
@@ -438,7 +406,7 @@ fn concurrent_provision_has_one_winner_and_one_lineage() {
 /// truncates the lock so the following open is not unclean.
 #[test]
 fn an_unclean_prior_shutdown_runs_the_audit_and_a_healthy_store_opens() {
-    let dir = TempDir::new("unclean");
+    let dir = Scratch::new("unclean");
     let store = dir.store();
     let id = instance();
     provision(&store, request(id)).expect("provision");
@@ -474,13 +442,13 @@ fn an_unclean_prior_shutdown_runs_the_audit_and_a_healthy_store_opens() {
 /// advisory contention.
 #[test]
 fn a_child_process_holding_the_store_blocks_the_parent_by_pid() {
-    let dir = TempDir::new("child-lock");
+    let dir = Scratch::new("child-lock");
     let store = dir.store();
     let id = instance();
     provision(&store, request(id)).expect("provision");
 
-    let ready = dir.path.join("child-ready");
-    let release = dir.path.join("child-release");
+    let ready = dir.base().join("child-ready");
+    let release = dir.base().join("child-release");
 
     // Re-invoke this test binary in the ignored child-holder helper, passing the store dir and
     // the coordination files by env. The child opens the store (taking the lock), touches
@@ -689,7 +657,7 @@ fn failed_temp_creation_preserves_existing_directory() {
     }
 
     run_exact_child(
-        TempDir::new("create-collision"),
+        Scratch::new("create-collision"),
         "provision_lifecycle_tests::failed_temp_creation_preserves_existing_directory",
         CHILD_BASE,
     );
@@ -738,7 +706,7 @@ fn generated_stage_name_cannot_be_the_destination() {
         return;
     }
     run_exact_child(
-        TempDir::new("stage-alias"),
+        Scratch::new("stage-alias"),
         "provision_lifecycle_tests::generated_stage_name_cannot_be_the_destination",
         CHILD_BASE,
     );
@@ -804,21 +772,21 @@ fn relative_provision_reports_success_after_publication() {
     }
 
     run_exact_child(
-        TempDir::new("relative-provision"),
+        Scratch::new("relative-provision"),
         "provision_lifecycle_tests::relative_provision_reports_success_after_publication",
         CHILD_BASE,
     );
 }
 
 /// Each parent owns its child's cwd until reaping; an unconfirmed reap preserves it.
-fn run_exact_child(dir: TempDir, test: &str, marker: &str) {
+fn run_exact_child(dir: Scratch, test: &str, marker: &str) {
     let mut child = std::process::Command::new(std::env::current_exe().expect("current exe"))
         .args(["--exact", test, "--nocapture"])
-        .current_dir(&dir.path)
+        .current_dir(dir.base())
         .env_remove("MARROW_LC_CREATE_COLLISION_CHILD_BASE")
         .env_remove("MARROW_LC_RELATIVE_PROVISION_CHILD_BASE")
         .env_remove("MARROW_LC_STAGE_ALIAS_CHILD_BASE")
-        .env(marker, &dir.path)
+        .env(marker, dir.base())
         .spawn()
         .expect("spawn exact child test");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -826,7 +794,7 @@ fn run_exact_child(dir: TempDir, test: &str, marker: &str) {
         match child.try_wait() {
             Ok(Some(status)) => {
                 if !status.success() {
-                    let original = dir.path.clone();
+                    let original = dir.base().to_path_buf();
                     std::mem::forget(dir);
                     panic!(
                         "child test {test} failed: {status}; preserve {}",

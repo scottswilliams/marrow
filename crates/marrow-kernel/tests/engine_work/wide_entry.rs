@@ -9,9 +9,7 @@
 //! engine: reading a whole entry with the same present fields stages the same number
 //! of engine reads on a resource declaring 100 fields and on one declaring 2000.
 
-mod common;
-
-use common::{Counters, CountingEngine};
+use crate::common::{Counters, CountingEngine};
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{

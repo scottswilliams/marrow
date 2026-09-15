@@ -4,11 +4,9 @@
 //! qualified platform; the Linux leg additionally pins the backend in the
 //! dependency-condition suite.
 
-mod common;
-
 use std::os::unix::fs::MetadataExt;
 
-use common::Scratch;
+use crate::common::Scratch;
 use marrow_fs_journal::{AdmittedDir, CustodyError, EntryName, NodeKind};
 
 fn name(spelling: &str) -> EntryName {

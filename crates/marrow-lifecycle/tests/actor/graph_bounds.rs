@@ -34,7 +34,7 @@ use marrow_image::{
 };
 use marrow_verify::verify;
 
-#[path = "../../marrow-image/tests/common/admitted_plan.rs"]
+#[path = "../../../marrow-image/tests/common/admitted_plan.rs"]
 mod admitted_plan;
 use admitted_plan::admitted_plan;
 
@@ -207,7 +207,7 @@ fn journey() {
     let draft = maximum_draft();
 
     // 3. Traversal, equality, and Debug over the published graph. The node walk is the
-    //    deepest traversal the representation has, and it is the one that used to recurse.
+    //    deepest traversal the representation has, so it is the one a frame budget binds.
     let view = draft.contract_view();
     let nodes = view.semantic_nodes();
     assert_eq!(
@@ -371,7 +371,12 @@ fn falsifier_child() {
 fn the_bounded_graph_journey_completes_on_a_64_kib_stack() {
     let exe = std::env::current_exe().expect("the test binary's own path");
     let output = std::process::Command::new(exe)
-        .args(["--exact", "falsifier_child", "--ignored", "--nocapture"])
+        .args([
+            "--exact",
+            "graph_bounds::falsifier_child",
+            "--ignored",
+            "--nocapture",
+        ])
         .output()
         .expect("run the falsifier child");
 
@@ -427,7 +432,7 @@ fn the_parent_check_detects_a_child_that_cannot_finish() {
     let output = std::process::Command::new(exe)
         .args([
             "--exact",
-            "falsifier_starved_child",
+            "graph_bounds::falsifier_starved_child",
             "--ignored",
             "--nocapture",
         ])

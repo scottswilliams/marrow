@@ -8,9 +8,7 @@
 //! create with one present field each stage the same number of engine writes on a
 //! resource declaring one field and on one declaring twenty.
 
-mod common;
-
-use common::{Counters, CountingEngine};
+use crate::common::{Counters, CountingEngine};
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{

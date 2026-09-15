@@ -8,9 +8,7 @@
 //! same seeks whether each label carries two rows or fifty, a bounded `at most N` scan
 //! costs `N + 1` seeks, and a unique lookup is one probe.
 
-mod common;
-
-use common::{Counters, CountingEngine};
+use crate::common::{Counters, CountingEngine};
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{

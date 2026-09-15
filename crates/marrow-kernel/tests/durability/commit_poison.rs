@@ -19,7 +19,9 @@ use marrow_kernel::durable::{
 };
 use marrow_kernel::equality::ValueDomain;
 
-#[path = "common/fault_engine.rs"]
+use crate::common::Scratch;
+
+#[path = "../common/fault_engine.rs"]
 mod fault_engine;
 use fault_engine::{
     FaultEngine, Mode, ModeHandle, WriteFaultHandle, project, schema, sites, unscoped_store, write,
@@ -34,15 +36,8 @@ fn entry(v: i64) -> EntryValue {
 
 #[test]
 fn scoped_native_reopen_leaves_a_missing_engine_path_absent() {
-    let dir = std::env::temp_dir().join(format!(
-        "marrow-kernel-existing-reopen-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_nanos())
-            .unwrap_or(0),
-    ));
-    std::fs::create_dir_all(&dir).expect("scratch directory");
+    let scratch = Scratch::new("existing-reopen");
+    let dir = scratch.store();
     let path = dir.join("store.redb");
     assert!(
         NativeStore::acquire_existing(&dir)
@@ -62,7 +57,6 @@ fn scoped_native_reopen_leaves_a_missing_engine_path_absent() {
         !path.exists(),
         "a scoped lifecycle reopen must never create the missing engine path",
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 fn commit_one(store: &mut DurableStore<FaultEngine>, key: &str, v: i64) -> CommitResult {

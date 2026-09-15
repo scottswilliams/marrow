@@ -833,19 +833,13 @@ pub(crate) fn artifacts_present(dir: &Path) -> Result<bool, StoreAccessError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::Scratch;
 
     #[test]
     fn preservation_refuses_collision_and_entropy_failure_without_changing_files() {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "marrow-preservation-refusals-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&root).expect("scratch");
-        let directory = AdmittedStoreDir::admit(&root).expect("admit");
+        let scratch = Scratch::new("preservation-refusals");
+        let root = scratch.base();
+        let directory = AdmittedStoreDir::admit(root).expect("admit");
         let source = root.join("envelope.replacing");
         let destination =
             root.join("envelope.replacing.preserved.00000000000000000000000000000000");
@@ -883,7 +877,6 @@ mod tests {
             b"previous preserved bytes"
         );
         drop(directory);
-        std::fs::remove_dir_all(&root).expect("remove owned scratch");
     }
 
     #[test]

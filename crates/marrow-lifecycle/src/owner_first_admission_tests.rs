@@ -15,9 +15,10 @@
 //!   corruption, which is what proves the ceiling ran ahead of the decoder.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 
 use crate::provision_lifecycle_tests::open;
+use crate::test_support::Scratch;
 use crate::{
     ActiveBinding, EngineKind, HeadMap, LogicalHead, OpenError, ProvisionRequest, StoreEnvelope,
     StoreInstanceId, provision,
@@ -26,38 +27,6 @@ use marrow_codes::Code;
 use marrow_image::LedgerIdBytes;
 use marrow_kernel::codec::value::ScalarKind;
 use marrow_kernel::durable::{SiteTarget, StoreProjection, StoreSchemaBuilder};
-
-/// A unique temporary directory removed on drop.
-struct TempDir {
-    path: PathBuf,
-}
-
-impl TempDir {
-    fn new(tag: &str) -> Self {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_nanos())
-            .unwrap_or(0);
-        let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "marrow-owner-first-{tag}-{}-{nonce}-{counter}",
-            std::process::id(),
-        ));
-        std::fs::create_dir_all(&path).expect("create temp base");
-        Self { path }
-    }
-
-    fn store(&self) -> PathBuf {
-        self.path.join("store")
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
 
 fn projection() -> StoreProjection {
     let mut builder = StoreSchemaBuilder::root("app", vec![ScalarKind::Int]);
@@ -116,8 +85,8 @@ fn instance() -> StoreInstanceId {
 }
 
 /// A provisioned store at a fresh temporary destination.
-fn provisioned(tag: &str) -> (TempDir, PathBuf) {
-    let dir = TempDir::new(tag);
+fn provisioned(tag: &str) -> (Scratch, PathBuf) {
+    let dir = Scratch::new(tag);
     let store = dir.store();
     provision(&store, request(instance())).expect("provision");
     (dir, store)
@@ -127,8 +96,8 @@ fn provisioned(tag: &str) -> (TempDir, PathBuf) {
 fn admission_refuses_a_directory_other_than_the_locked_node() {
     for corrupt_engine in [false, true] {
         let (dir, store) = provisioned("directory-substitution");
-        let replacement = dir.path.join("replacement");
-        let displaced = dir.path.join("displaced");
+        let replacement = dir.base().join("replacement");
+        let displaced = dir.base().join("displaced");
         provision(&replacement, request(instance())).expect("provision replacement");
         if corrupt_engine {
             std::fs::write(replacement.join(crate::ENGINE_FILE), b"invalid engine")
@@ -155,7 +124,7 @@ fn admission_refuses_a_directory_other_than_the_locked_node() {
         );
         if !identity_refusal {
             drop(opened);
-            let retained = dir.path.clone();
+            let retained = dir.base().to_path_buf();
             std::mem::forget(dir);
             panic!(
                 "missing locked-directory identity refusal; retained fault store: {}",
@@ -192,7 +161,7 @@ fn pending_records_refuse_before_engine_open() {
             new: digest,
         },
     ] {
-        let dir = TempDir::new("pending-refusal");
+        let dir = Scratch::new("pending-refusal");
         let store = dir.store();
         let id = metadata.instance;
         provision(
@@ -364,7 +333,7 @@ fn a_contender_is_locked_out_whatever_state_the_holder_marker_is_in() {
         }
     }
 
-    std::fs::hard_link(&marker, dir.path.join("marker-alias")).expect("add a second marker link");
+    std::fs::hard_link(&marker, dir.base().join("marker-alias")).expect("add a second marker link");
     match open(&store, projection()) {
         Err(OpenError::Lock(error)) => assert_eq!(
             error.code(),
@@ -623,7 +592,7 @@ fn no_door_into_a_held_store_admits_a_second_owner() {
 /// as pending; one byte more is a representation limit before the state can be interpreted.
 #[test]
 fn the_envelope_ceiling_admits_its_maximum_and_refuses_one_byte_more() {
-    let dir = TempDir::new("envelope-ceiling");
+    let dir = Scratch::new("envelope-ceiling");
     let store = dir.store();
     let id = instance();
     let maximal = envelope(id, &"t".repeat(64));
@@ -677,7 +646,7 @@ fn the_envelope_ceiling_admits_its_maximum_and_refuses_one_byte_more() {
 /// opens; one byte more is a limit refusal, taken before the bytes are decoded.
 #[test]
 fn the_head_ceiling_admits_its_maximum_and_refuses_one_byte_more() {
-    let dir = TempDir::new("head-ceiling");
+    let dir = Scratch::new("head-ceiling");
     let store = dir.store();
     let maximal = head(65_536, vec![0x5A; 4 * 1024 * 1024]);
     let bytes = maximal.encode();
@@ -727,7 +696,7 @@ fn the_head_ceiling_admits_its_maximum_and_refuses_one_byte_more() {
 fn a_symbolic_link_standing_in_for_an_artifact_is_refused() {
     for artifact in [crate::ENVELOPE_FILE, crate::HEAD_FILE, crate::ENGINE_FILE] {
         let (dir, store) = provisioned(&format!("symlink-{artifact}"));
-        let target = dir.path.join(format!("{artifact}-elsewhere"));
+        let target = dir.base().join(format!("{artifact}-elsewhere"));
         let path = store.join(artifact);
         std::fs::rename(&path, &target).expect("move the artifact outside the store directory");
         std::os::unix::fs::symlink(&target, &path).expect("link the artifact name to it");
@@ -753,7 +722,7 @@ fn a_second_hard_link_to_an_artifact_is_refused() {
     for artifact in ["envelope", "head"] {
         let (dir, store) = provisioned(&format!("hardlink-{artifact}"));
         let path = store.join(artifact);
-        std::fs::hard_link(&path, dir.path.join(format!("{artifact}-alias")))
+        std::fs::hard_link(&path, dir.base().join(format!("{artifact}-alias")))
             .expect("add a second link to the artifact");
 
         match open(&store, projection()) {
@@ -929,7 +898,7 @@ fn an_artifact_rewritten_under_a_read_is_never_admitted_spliced() {
 /// its artifacts are in.
 #[test]
 fn an_open_of_a_directory_that_is_not_a_store_writes_nothing_into_it() {
-    let dir = TempDir::new("refused-publishes-nothing");
+    let dir = Scratch::new("refused-publishes-nothing");
     let store = dir.store();
     std::fs::create_dir_all(&store).expect("an existing but empty store directory");
     std::fs::write(store.join("notes.txt"), b"unrelated").expect("an unrelated file");

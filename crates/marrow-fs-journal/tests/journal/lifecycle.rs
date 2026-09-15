@@ -3,11 +3,9 @@
 //! kill-point fixtures: each on-disk prefix of the protocol is constructed
 //! directly, then reopened and classified through the public API.
 
-mod common;
-
 use std::os::unix::fs::MetadataExt;
 
-use common::{Scratch, require_mode_bits_bind, set_mode};
+use crate::common::{Scratch, require_mode_bits_bind, set_mode};
 use marrow_fs_journal::MarkerStats;
 use marrow_fs_journal::{
     AdmittedDir, CacheLock, CorruptionReason, CustodyError, CustodyOp, EntryName, EntryNameError,
@@ -402,7 +400,7 @@ fn creation_modes_are_umask_independent() {
     let output = std::process::Command::new("/bin/sh")
         .arg("-c")
         .arg(format!(
-            "umask 0277 && exec '{}' --exact hostile_umask_helper --ignored",
+            "umask 0277 && exec '{}' --exact lifecycle::hostile_umask_helper --ignored",
             exe.display()
         ))
         .output()

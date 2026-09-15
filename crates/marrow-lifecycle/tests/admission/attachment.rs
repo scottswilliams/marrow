@@ -7,8 +7,7 @@ use std::path::Path;
 
 use marrow_lifecycle::{
     AttachOutcome, LifecycleError, MemoryAttachment, MintOutcome, NativeAttachment, PreparedImage,
-    ProvisionApproval, ProvisionReport, attach, fresh_test, mint_ephemeral, prepare,
-    provision_image,
+    attach, fresh_test, mint_ephemeral, prepare,
 };
 use marrow_verify::{ExportId, VerifiedImage};
 use marrow_vm::{DurableRun, Value, run_export, run_test};
@@ -91,20 +90,10 @@ test "two is two" {
 }
 "#;
 
-#[path = "support/scratch.rs"]
-mod scratch;
-use scratch::Scratch;
+use crate::support::Scratch;
+use crate::support::store::provision_approved as provision;
 
-#[path = "support/compile.rs"]
-mod source_compile;
-use source_compile::{compile, compile_with_tests};
-
-fn provision(store: &Path, image: &VerifiedImage) {
-    let prepared = prepare(image.clone());
-    let report = ProvisionReport::new(store, &prepared).expect("flat-executable");
-    let approval = ProvisionApproval::accept(&report);
-    provision_image(store, &prepared, &approval).expect("provision");
-}
+use crate::support::compile::{compile, compile_with_tests};
 
 fn export(image: &VerifiedImage, name: &str) -> ExportId {
     image

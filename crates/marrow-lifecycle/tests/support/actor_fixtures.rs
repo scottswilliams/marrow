@@ -1,4 +1,5 @@
 //! Compiled source fixtures shared by lifecycle admission tests.
+#![allow(dead_code)]
 
 /// A durable program exercising every split-order decision point across more than one shape:
 /// **two roots** (`books`, `tags` — the outer declaration-order loop), a resource with **two
