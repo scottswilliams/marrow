@@ -1024,6 +1024,89 @@ export function dSum(variants) {
 // ---------------------------------------------------------------------------
 // Supervision: launch, session, serial worker, bounded queue, loss classes.
 
+export class MarrowCleanupError extends Error {
+  constructor(cleanup) {
+    super("runner exit was not observed before the cleanup deadline");
+    this.name = "MarrowCleanupError";
+    this.cleanup = cleanup;
+  }
+}
+
+// One child observation serves startup and the session alike: a native runner may still be
+// closing the store, where a signal would leave the engine unclean, so its deadline lapses
+// unsignalled and reports uncertainty instead.
+function childRetirement(child, native) {
+  let spawned = false;
+  let terminal = null;
+  let socket = null;
+  let channelDirectory = null;
+  let retirement = null;
+  let finish = null;
+  let timer;
+  const removeDirectory = () => {
+    if (channelDirectory === null) return;
+    try { rmSync(channelDirectory, { recursive: true, force: true }); } catch {
+      // Process completion does not certify directory removal.
+    }
+  };
+  const abort = () => {
+    if (terminal === null) child.kill("SIGKILL");
+    socket?.destroy();
+  };
+  process.on("exit", abort);
+  const observe = observation => {
+    terminal = Object.freeze(observation);
+    process.removeListener("exit", abort);
+    if (terminal.kind === "exited") removeDirectory();
+    finish?.(terminal);
+  };
+  child.on("spawn", () => { spawned = true; });
+  child.on("error", () => {
+    if (!spawned && terminal === null) observe({ kind: "not_spawned" });
+  });
+  child.on("exit", (code, signal) => observe({ kind: "exited", code, signal }));
+  return {
+    get spawned() { return spawned; },
+    get terminal() { return terminal; },
+    socket(value) { socket = value; },
+    channel(path) {
+      channelDirectory = dirname(path);
+      if (terminal?.kind === "exited") removeDirectory();
+    },
+    abort,
+    retire(graceful = false) {
+      if (retirement !== null) return retirement;
+      retirement = new Promise(resolve => {
+        let finished = false;
+        finish = observation => {
+          if (finished) return;
+          finished = true;
+          clearTimeout(timer);
+          resolve(observation);
+        };
+      });
+      if (terminal !== null) finish(terminal);
+      else {
+        timer = setTimeout(() => {
+          if (!native) child.kill("SIGKILL");
+          // An unsignalled runner may outlive this process, so release the handles that
+          // would otherwise keep the caller's event loop alive waiting for it.
+          process.removeListener("exit", abort);
+          child.unref();
+          child.stdout?.unref?.();
+          child.stderr?.unref?.();
+          finish(terminal ?? Object.freeze({ kind: "unconfirmed", pid: child.pid ?? null,
+            channelDirectory, reason: "exit_deadline" }));
+        }, 2000);
+      }
+      // Memoize before shutdown: transport callbacks can reenter retirement.
+      if (graceful) socket?.end();
+      else socket?.destroy();
+      return retirement;
+    },
+  };
+}
+
 /**
  * Launch the stock runner and open one authenticated session.
  *
@@ -1075,29 +1158,15 @@ export function launch(options) {
     let stdoutBuffer = Buffer.alloc(0);
     let descriptor = null;
     let socket = null;
-    let spawned = false;
-
-    // The supervisor also attempts to remove the private socket directory because
-    // a killed runner cannot perform its own cleanup. Removal is best-effort.
-    const removeChannelDir = () => {
-      if (descriptor !== null && typeof descriptor.socket === "string") {
-        try {
-          rmSync(dirname(descriptor.socket), { recursive: true, force: true });
-        } catch {
-          // Best effort: the runner may already have removed it.
-        }
-      }
-    };
+    const retirement = childRetirement(child, options.store !== undefined);
 
     const failLaunch = (detail) => {
       if (settled) return;
       settled = true;
-      child.kill("SIGKILL");
-      removeChannelDir();
       clearTimeout(deadline);
-      socket?.destroy();
-      reject(options.store !== undefined && spawned
-        ? new ActivationOutcomeUnknownError(detail) : new LaunchError(detail));
+      const error = options.store !== undefined && retirement.spawned
+        ? new ActivationOutcomeUnknownError(detail) : new LaunchError(detail);
+      retirement.retire().then(cleanup => { error.cleanup = cleanup; reject(error); });
     };
 
     const deadline = setTimeout(
@@ -1106,7 +1175,6 @@ export function launch(options) {
     );
     deadline.unref?.();
 
-    child.on("spawn", () => { spawned = true; });
     child.on("error", (error) => failLaunch(`spawn failed: ${error.message}`));
     child.on("close", () => {
       // Socket data can follow process exit; drain its framed response before classifying loss.
@@ -1115,7 +1183,7 @@ export function launch(options) {
     child.stderr.on("data", log);
 
     child.stdout.on("data", (chunk) => {
-      if (descriptor !== null) {
+      if (settled || descriptor !== null) {
         log(chunk); // post-descriptor stdout is drained log bytes
         return;
       }
@@ -1131,6 +1199,7 @@ export function launch(options) {
           return;
         }
         descriptor = parsed;
+        retirement.channel(descriptor.socket);
         if (expectedIdentity !== undefined && descriptor.interface !== expectedIdentity) {
           failLaunch(`identity mismatch: runner serves ${descriptor.interface}`);
           return;
@@ -1144,14 +1213,17 @@ export function launch(options) {
     });
 
     const connect = () => {
+      if (settled) return;
       if (!isLaunchDescriptor(descriptor)) {
         failLaunch("incomplete launch descriptor");
         return;
       }
       socket = createConnection(descriptor.socket);
+      retirement.socket(socket);
       const frames = new FrameReader();
       socket.on("error", (error) => failLaunch(`connect failed: ${error.message}`));
       socket.on("connect", () => {
+        if (settled) { socket.destroy(); return; }
         socket.write(encodeFrame({ kind: "hello", nonce }));
       });
       socket.on("data", (chunk) => {
@@ -1179,10 +1251,8 @@ export function launch(options) {
           }
           settled = true;
           clearTimeout(deadline);
-          socket.destroy();
-          child.kill("SIGKILL");
-          removeChannelDir();
-          reject(new ActivationUncertainError(ready.instance, options.store));
+          const error = new ActivationUncertainError(ready.instance, options.store);
+          retirement.retire().then(cleanup => { error.cleanup = cleanup; reject(error); });
           return;
         }
         settled = true;
@@ -1190,7 +1260,7 @@ export function launch(options) {
         socket.removeAllListeners("data");
         socket.removeAllListeners("error");
         resolve(
-          new Session(child, socket, frames, ready.interface, descriptor.socket, log),
+          new Session(child, socket, frames, ready.interface, descriptor.socket, log, retirement),
         );
       });
       socket.on("close", () => {
@@ -1325,7 +1395,7 @@ export function provision(options) {
 
 /** One authenticated attached session over the private socket. */
 export class Session {
-  constructor(child, socket, frames, interfaceId, socketPath, log) {
+  constructor(child, socket, frames, interfaceId, socketPath, log, retirement) {
     this.child = child;
     this.socket = socket;
     this.frames = frames;
@@ -1333,17 +1403,14 @@ export class Session {
     this.socketPath = socketPath;
     this.log = log;
     this.dead = false;
+    this.retirement = retirement;
+    this.closePromise = null;
     /** The dispatched call awaiting its reply, or null. */
     this.inFlight = null;
     /** Admitted calls not yet handed to the serial worker. */
     this.queue = [];
     /** The next request/reply correlation turn; never reused within this session. */
     this.nextTurn = 0n;
-
-    // Explicit fail-closed teardown on process exit — no
-    // reliance on implicit cleanup). SIGKILL is safe: the runner holds no state.
-    this.exitHook = () => this.terminate();
-    process.on("exit", this.exitHook);
 
     const die = (cause) => this.fail(cause instanceof Error ? cause : undefined);
     this.socket.on("data", (chunk) => this.onData(chunk));
@@ -1352,6 +1419,7 @@ export class Session {
     this.child.on("exit", die);
 
     this.replyDeadline = null;
+    if (retirement.terminal !== null) this.fail();
   }
 
   /**
@@ -1383,7 +1451,7 @@ export class Session {
       for (const call of exhausted) {
         call.reject(new RangeError("marrow session call-turn space is exhausted"));
       }
-      this.terminate();
+      this.fail();
       return;
     }
     const next = this.queue.shift();
@@ -1405,7 +1473,7 @@ export class Session {
     // The call is dispatched the moment its bytes are handed to the socket.
     this.nextTurn += 1n;
     this.inFlight = { ...next, turn };
-    this.replyDeadline = setTimeout(() => this.terminate(), REPLY_DEADLINE_MS);
+    this.replyDeadline = setTimeout(() => this.fail(), REPLY_DEADLINE_MS);
     this.replyDeadline.unref?.();
     this.socket.write(frame);
   }
@@ -1414,7 +1482,7 @@ export class Session {
     if (this.inFlight === null) {
       // No reply is legal before a request is dispatched. Reject even a partial frame now;
       // retaining its prefix could make a later request consume an unsolicited reply.
-      if (chunk.length !== 0) this.terminate();
+      if (chunk.length !== 0) this.fail();
       return;
     }
     let message;
@@ -1431,7 +1499,7 @@ export class Session {
       if (pending !== null) {
         pending.reject(new MarrowLossError(LOSS.OUTCOME_UNKNOWN, cause));
       }
-      this.terminate();
+      this.fail();
       return;
     }
     if (message === undefined) return;
@@ -1440,7 +1508,7 @@ export class Session {
     if (pending === null) {
       this.inFlight = null;
       clearTimeout(this.replyDeadline);
-      this.terminate();
+      this.fail();
       return;
     }
 
@@ -1454,7 +1522,7 @@ export class Session {
         LOSS.OUTCOME_UNKNOWN,
         protocol("reply turn does not match the in-flight request"),
       ));
-      this.terminate();
+      this.fail();
       return;
     }
 
@@ -1510,7 +1578,7 @@ export class Session {
       // The Node supervisor conservatively retires its session after any incomplete
       // response. Queued calls are interrupted and later calls are not-started;
       // never dispatch another request.
-      this.terminate();
+      this.fail();
       return;
     } else if (
       hasExactKeys(message, ["code", "kind", "turn"]) &&
@@ -1527,14 +1595,14 @@ export class Session {
         LOSS.OUTCOME_UNKNOWN,
         protocol("invalid reply schema"),
       ));
-      this.terminate();
+      this.fail();
       return;
     }
     this.pump();
   }
 
   /** Classify and fail every outstanding call after runner/socket death. */
-  fail(cause = undefined) {
+  fail(cause = undefined, graceful = false) {
     if (this.dead) return;
     this.dead = true;
     clearTimeout(this.replyDeadline);
@@ -1548,61 +1616,30 @@ export class Session {
     for (const call of queued) {
       call.reject(new MarrowLossError(LOSS.INTERRUPTED));
     }
-    this.teardown();
+    this.retirement.retire(graceful);
   }
 
-  /** Graceful close: hang up, then wait for the runner to exit (it exits on a
-   * clean client hangup), escalating to SIGKILL on a deadline. */
+  /** Observe bounded process settlement; repeated calls share its exact promise. */
   close() {
-    return new Promise((resolve) => {
-      if (this.dead) {
-        resolve(undefined);
-        return;
-      }
-      this.dead = true;
-      clearTimeout(this.replyDeadline);
-      const failEverything = () => {
-        if (this.inFlight !== null) {
-          this.inFlight.reject(new MarrowLossError(LOSS.OUTCOME_UNKNOWN));
-          this.inFlight = null;
-        }
-        for (const call of this.queue) {
-          call.reject(new MarrowLossError(LOSS.INTERRUPTED));
-        }
-        this.queue = [];
-      };
-      failEverything();
-      const forceKill = setTimeout(() => this.child.kill("SIGKILL"), 2000);
-      forceKill.unref?.();
-      this.child.on("exit", () => {
-        clearTimeout(forceKill);
-        this.teardown();
-        resolve(undefined);
+    if (this.closePromise === null) {
+      let resolveClose;
+      let rejectClose;
+      this.closePromise = new Promise((resolve, reject) => {
+        resolveClose = resolve;
+        rejectClose = reject;
       });
-      this.socket.end();
-    });
+      this.fail(undefined, true);
+      this.retirement.retire(true).then(cleanup => {
+        if (cleanup.kind === "unconfirmed") rejectClose(new MarrowCleanupError(cleanup));
+        else resolveClose();
+      });
+    }
+    return this.closePromise;
   }
 
-  /** Immediate fail-closed shutdown: SIGKILL the runner, destroy the socket,
-   * and classify every outstanding call by its handoff stage. */
+  /** Explicit abrupt abort; this is not ordinary native retirement. */
   terminate() {
-    if (!this.dead) {
-      this.fail();
-      return;
-    }
-    this.teardown();
-  }
-
-  teardown() {
-    this.dead = true;
-    process.removeListener("exit", this.exitHook);
-    this.child.kill("SIGKILL");
-    this.socket.destroy();
-    // Attempt directory cleanup for a killed runner; removal is best-effort.
-    try {
-      rmSync(dirname(this.socketPath), { recursive: true, force: true });
-    } catch {
-      // Best effort: the runner may already have removed it on an orderly exit.
-    }
+    this.fail();
+    this.retirement.abort();
   }
 }

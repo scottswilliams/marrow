@@ -278,6 +278,40 @@ fn assert_driver_passed(output: &Output) {
     );
 }
 
+/// Controlled peers hold retirement past the supervisor's exit deadline: native close never
+/// signals, startup failure carries its own cleanup observation, and explicit abort still
+/// kills. The peers open no image or store, so this tests close policy alone.
+#[test]
+#[ignore = "requires Node and controlled child sockets; about seven seconds"]
+fn native_close_preserves_child_until_controlled_release() {
+    use std::os::unix::fs::PermissionsExt;
+    for mode in ["ordinary", "protocol", "startup", "abort"] {
+        let temp = TempDir::new("close");
+        fs::set_permissions(&temp.root, fs::Permissions::from_mode(0o700))
+            .expect("private fixture");
+        eprintln!("supervisor close fixture: {}", temp.display());
+        write(
+            &temp.join("marrow-supervisor.mjs"),
+            include_str!("../src/supervisor/marrow-supervisor.mjs"),
+        );
+        write(
+            &temp.join("driver.mjs"),
+            include_str!("fixtures/native_close/driver.mjs"),
+        );
+        let child = temp.join("child.mjs");
+        write(&child, include_str!("fixtures/native_close/child.mjs"));
+        fs::set_permissions(&child, fs::Permissions::from_mode(0o700)).expect("executable child");
+        let output = Command::new("node")
+            .arg("driver.mjs")
+            .env("MARROW_CLOSE_ROOT", &temp.root)
+            .env("MARROW_CLOSE_CASE", mode)
+            .current_dir(&temp.root)
+            .output()
+            .expect("run controlled Node driver");
+        assert_driver_passed(&output);
+    }
+}
+
 #[test]
 #[ignore = "requires Node and executable child fixtures"]
 fn native_startup_outcomes_preserve_activation_evidence() {
@@ -297,6 +331,8 @@ import { IMAGE_ID } from './gen/client.mts';
 const mode = process.env.MARROW_CASE;
 appendFileSync(process.env.MARROW_MARKER, 'spawn\n');
 if (mode === 'exit') process.exit(1);
+// A refused native launch is never signalled, so expire rather than outlive the test.
+setTimeout(() => process.exit(9), 10_000).unref();
 const session = '56'.repeat(32);
 const identity = mode === 'wrong-image' || mode === 'wrong-image-ready' ? '78'.repeat(32) : IMAGE_ID;
 const socket = join(mkdtempSync(join(tmpdir(), 'marrow-startup-wire-')), 's');

@@ -30,9 +30,9 @@ export class Client {
     return new Client(session);
   }
 
-  /** Hang up and wait for the runner to exit. */
-  async close(): Promise<void> {
-    await this.session.close();
+  /** Hang up and observe the runner's exit; rejects if it is unconfirmed. */
+  close(): Promise<void> {
+    return this.session.close();
   }
 
   /** Immediate fail-closed shutdown; outstanding calls classify as lost. */

@@ -70,8 +70,8 @@ pub(crate) fn generate_client(
         "    const session = await M.launch({ ...options, expectedIdentity: expected });\n",
     );
     out.push_str("    return new Client(session);\n  }\n\n");
-    out.push_str("  /** Hang up and wait for the runner to exit. */\n");
-    out.push_str("  async close(): Promise<void> {\n    await this.session.close();\n  }\n\n");
+    out.push_str("  /** Hang up and observe the runner's exit; rejects if it is unconfirmed. */\n");
+    out.push_str("  close(): Promise<void> {\n    return this.session.close();\n  }\n\n");
     out.push_str("  /** Immediate fail-closed shutdown; outstanding calls classify as lost. */\n");
     out.push_str("  terminate(): void {\n    this.session.terminate();\n  }\n");
     for method in &methods {

@@ -355,6 +355,7 @@ try {
   );
 }
 
+await client.close();
 const readback = await Client.launch({ runner: RUNNER, image: IMAGE, store: STORE });
 ok("confirmed-commit-readback", (await readback.value()) === 7n);
 await readback.close();

@@ -62,6 +62,19 @@ export class WireFormatError extends Error {
 
 export class LaunchError extends Error {
   readonly loss: "not_started";
+  readonly cleanup?: CleanupObservation;
+}
+
+/** Process observation only; directory removal after exit is best effort. */
+export type CleanupObservation =
+  | { readonly kind: "not_spawned" }
+  | { readonly kind: "exited"; readonly code: number | null; readonly signal: string | null }
+  | { readonly kind: "unconfirmed"; readonly pid: number | null; readonly channelDirectory: string | null;
+      readonly reason: "exit_deadline" };
+
+export class MarrowCleanupError extends Error {
+  constructor(cleanup: Extract<CleanupObservation, { kind: "unconfirmed" }>);
+  readonly cleanup: Extract<CleanupObservation, { kind: "unconfirmed" }>;
 }
 
 export function encodeCanonical(value: WireValue): Uint8Array;
@@ -170,6 +183,7 @@ export class ProvisionFailedError extends Error {
 
 /** No invocation was sent; authenticated attach reported unconfirmed activation. */
 export class ActivationUncertainError extends Error {
+  readonly cleanup?: CleanupObservation;
   constructor(instance: string, store: string);
   readonly code: "store.activation_uncertain";
   readonly instance: string;
@@ -178,6 +192,7 @@ export class ActivationUncertainError extends Error {
 
 /** Native attach may have changed the binding; no trusted startup result was received. */
 export class ActivationOutcomeUnknownError extends Error {
+  readonly cleanup?: CleanupObservation;
   constructor(detail: string);
   readonly loss: "outcome_unknown";
 }
@@ -185,6 +200,7 @@ export class ActivationOutcomeUnknownError extends Error {
 export class Session {
   readonly interfaceId: string;
   call<T>(exportId: string, args: WireValue[], decode: (data: WireValue) => T): Promise<T>;
+  /** Observe bounded runner exit; rejects with MarrowCleanupError when unconfirmed. */
   close(): Promise<void>;
   terminate(): void;
 }

@@ -336,14 +336,10 @@ function driveReply(messages, options = {}) {
     },
   }];
   session.replyDeadline = null;
-  session.exitHook = () => {};
   session.pump = () => {
     observed.pump += 1;
   };
-  session.teardown = () => {
-    session.dead = true;
-    observed.tornDown = true;
-  };
+  session.retirement = { retire() { observed.tornDown = true; } };
   M.Session.prototype.onData.call(
     session,
     options.chunk ?? Buffer.from([0x01]),
@@ -382,16 +378,12 @@ function driveReply(messages, options = {}) {
     },
   }];
   session.replyDeadline = null;
-  session.exitHook = () => {};
   session.pump = () => {
     observed.pump += 1;
     const next = session.queue.shift();
     if (next !== undefined) session.inFlight = { ...next, turn: 1n };
   };
-  session.teardown = () => {
-    session.dead = true;
-    observed.tornDown = true;
-  };
+  session.retirement = { retire() { observed.tornDown = true; } };
 
   delivered = { data: 7n, kind: "value", turn: 0n };
   M.Session.prototype.onData.call(session, Buffer.from([0x01]));
@@ -455,10 +447,7 @@ function driveReply(messages, options = {}) {
     },
   };
   session.replyDeadline = null;
-  session.exitHook = () => {};
-  session.teardown = () => {
-    session.dead = true;
-  };
+  session.retirement = { retire() {} };
 
   M.Session.prototype.pump.call(session);
   const requestReader = new M.__katFrameReader();
