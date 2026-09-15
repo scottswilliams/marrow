@@ -186,7 +186,7 @@ pub(super) fn register_type_templates(
             diagnostics,
             &mut refusal,
         );
-        let fields = template_struct_fields(file, decl, diagnostics, declared, &mut refusal);
+        let fields = declared_template_fields(file, decl, diagnostics, declared, &mut refusal);
         if let Some(fields) = fields.as_ref() {
             for (_, ty) in fields {
                 if let Some(row) = unknown_template_member(
@@ -397,7 +397,58 @@ fn unknown_template_member(
 /// The named field-type expressions of a generic struct template, or `None` if any
 /// member is not the bare `name: Type` form (matching the concrete-struct rule; the
 /// field types themselves are resolved per instantiation).
-fn template_struct_fields(
+/// Admit one struct member as the bare `name: Type` form, or report why it is not.
+///
+/// The single owner of which members a struct declaration may carry. The template
+/// pass and the concrete fill pass differ only in what they do with an admitted
+/// field's type, so a refusal spelled here is the one a reader sees from both.
+fn admit_struct_member<'a>(
+    member: &'a ResourceMember,
+    file: &FileIdentity,
+    names: &mut MemberNamespace<'a>,
+    declared: DeclarationSite<'_>,
+    diagnostics: &mut DiagnosticCollector,
+    refusal: &mut Option<DeclarationRefusalSummary>,
+) -> Option<&'a marrow_syntax::FieldDecl> {
+    let ResourceMember::Field(field) = member else {
+        refuse_first(
+            refusal,
+            diagnostics,
+            declared,
+            unsupported(file, member.span(), "a struct group"),
+        );
+        return None;
+    };
+    if let Some(row) = names.claim(file, &field.name, field.name_span) {
+        refuse_first(refusal, diagnostics, declared, row);
+        return None;
+    }
+    if !field.keys.is_empty() {
+        refuse_first(
+            refusal,
+            diagnostics,
+            declared,
+            unsupported(file, field.span, "a keyed struct field"),
+        );
+        return None;
+    }
+    if field.required {
+        refuse_first(
+            refusal,
+            diagnostics,
+            declared,
+            unsupported(
+                file,
+                field.span,
+                "the `required` keyword on a struct field (struct fields are always required)",
+            ),
+        );
+        return None;
+    }
+    Some(field)
+}
+
+fn declared_template_fields(
     file: &FileIdentity,
     decl: &StructDecl,
     diagnostics: &mut DiagnosticCollector,
@@ -408,45 +459,12 @@ fn template_struct_fields(
     let mut names = MemberNamespace::new(&decl.name);
     let mut ok = true;
     for member in &decl.members {
-        let ResourceMember::Field(field) = member else {
-            refuse_first(
-                refusal,
-                diagnostics,
-                declared,
-                unsupported(file, member.span(), "a struct group"),
-            );
+        let Some(field) =
+            admit_struct_member(member, file, &mut names, declared, diagnostics, refusal)
+        else {
             ok = false;
             continue;
         };
-        if let Some(row) = names.claim(file, &field.name, field.name_span) {
-            refuse_first(refusal, diagnostics, declared, row);
-            ok = false;
-            continue;
-        }
-        if !field.keys.is_empty() {
-            refuse_first(
-                refusal,
-                diagnostics,
-                declared,
-                unsupported(file, field.span, "a keyed struct field"),
-            );
-            ok = false;
-            continue;
-        }
-        if field.required {
-            refuse_first(
-                refusal,
-                diagnostics,
-                declared,
-                unsupported(
-                    file,
-                    field.span,
-                    "the `required` keyword on a struct field (struct fields are always required)",
-                ),
-            );
-            ok = false;
-            continue;
-        }
         if matches!(field.ty, TypeExpr::Optional { .. }) {
             refuse_first(
                 refusal,
@@ -1032,41 +1050,16 @@ fn struct_fields(
     let mut refusal = None;
     let mut limited = false;
     for member in &decl.members {
-        let ResourceMember::Field(field) = member else {
-            refuse_first(
-                &mut refusal,
-                diagnostics,
-                declared,
-                unsupported(file, member.span(), "a struct group"),
-            );
+        let Some(field) = admit_struct_member(
+            member,
+            file,
+            &mut names,
+            declared,
+            diagnostics,
+            &mut refusal,
+        ) else {
             continue;
         };
-        if let Some(row) = names.claim(file, &field.name, field.name_span) {
-            refuse_first(&mut refusal, diagnostics, declared, row);
-            continue;
-        }
-        if !field.keys.is_empty() {
-            refuse_first(
-                &mut refusal,
-                diagnostics,
-                declared,
-                unsupported(file, field.span, "a keyed struct field"),
-            );
-            continue;
-        }
-        if field.required {
-            refuse_first(
-                &mut refusal,
-                diagnostics,
-                declared,
-                unsupported(
-                    file,
-                    field.span,
-                    "the `required` keyword on a struct field (struct fields are always required)",
-                ),
-            );
-            continue;
-        }
         let field_ty = match registry.resolve_garg(
             draft,
             &field.ty,
