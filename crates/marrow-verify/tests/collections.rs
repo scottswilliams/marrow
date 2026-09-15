@@ -1,4 +1,4 @@
-//! C03 collection verification evidence: a well-formed `List`/`Map` image verifies
+//! Collection verification evidence: a well-formed `List`/`Map` image verifies
 //! and seals, and each single-invariant hostile image rejects at the phase that owns
 //! the violated collection invariant. Built through `ImageDraft` (encoder-computed
 //! digest), so every rejection is a structural/type invariant, not a digest flip.
@@ -141,10 +141,9 @@ fn a_well_formed_map_program_verifies() {
     verify(&bytes).expect("a well-formed map image verifies");
 }
 
-/// Flipped by the coherence hoist (the pinned flip lives in `legacy_ok_pins.rs`): an
-/// out-of-range `ListNew` is refused by the producer, so no image carrying one can be
-/// emitted for the verifier to see. The wrong-KIND case below stays the verifier's
-/// own function-phase rejection — its ordinal is in range, so it still encodes.
+/// An out-of-range `ListNew` is refused by the producer, so no image carrying one can be
+/// emitted for the verifier to see. The wrong-KIND case below stays the verifier's own
+/// function-phase rejection — its ordinal is in range, so it still encodes.
 #[test]
 fn a_list_new_index_out_of_range_is_refused_by_the_producer() {
     // Only one collection type exists, so `ListNew(9)` names no collection.

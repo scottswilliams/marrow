@@ -4,17 +4,19 @@
 //! required or a sparse field alike.
 
 use marrow_image::{
-    DraftTxn, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn,
-    LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget,
+    DraftTxn, ExportId, FieldDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
+    RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget,
 };
+use marrow_verify::VerifyPhase;
 
 use super::admitted_helper::admitted;
+use super::tracer_schema::Verdict::{Refused, Verified};
 use super::tracer_schema::*;
 use super::{admitted_plan, site_seam};
 
 /// The verdict of `if exists(slot 0) { <between>; strict sparse set on slot 0 }`, where
 /// `between` may add functions to the draft and returns the instructions inside the guard.
-fn strict_set_after(between: impl FnOnce(&mut DraftTxn<'_>, &Sites) -> Vec<Instr>) -> String {
+fn strict_set_after(between: impl FnOnce(&mut DraftTxn<'_>, &Sites) -> Vec<Instr>) -> Verdict {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     let sites = durable_schema(&mut draft);
@@ -37,34 +39,29 @@ fn strict_set_after(between: impl FnOnce(&mut DraftTxn<'_>, &Sites) -> Vec<Instr
         Instr::TxnCommit,
         Instr::Return,
     ]);
-    code_of(&finish_two_key(draft, code))
+    verdict_of(&finish_two_key(draft, code))
 }
 
 /// A call to a helper that can erase an entry in the guarded family ends the fact.
 #[test]
 fn a_strict_sparse_set_after_a_call_that_erases_the_family_rejects() {
     let verdict = strict_set_after(|draft, sites| {
-        let src = ok(draft.intern_string("src/main.mw"));
-        let name = ok(draft.intern_string("eraser"));
         let code = vec![
             Instr::LocalGet(0),
             Instr::DurEraseEntry(sites.entry.clone()),
             Instr::Return,
         ];
-        let eraser = draft
-            .add_function(FunctionDef {
-                name,
-                source: src,
-                params: vec![ImageType::scalar(Scalar::Text)],
-                ret: ImageType::Unit,
-                local_count: 1,
-                spans: spans(&code),
-                code,
-            })
-            .expect("every site operand is live");
+        let eraser = add_fn(
+            draft,
+            "eraser",
+            vec![ImageType::scalar(Scalar::Text)],
+            ImageType::Unit,
+            1,
+            code,
+        );
         vec![Instr::LocalGet(0), Instr::Call(eraser.index())]
     });
-    assert_eq!(verdict, "image.flow");
+    assert_eq!(verdict, Refused(VerifyPhase::Flow));
 }
 
 /// An entry erase keyed by a constant ends the fact for the family without a
@@ -78,7 +75,7 @@ fn a_strict_sparse_set_after_an_inline_keyed_erase_of_the_family_rejects() {
             Instr::DurEraseEntry(sites.entry.clone()),
         ]
     });
-    assert_eq!(verdict, "image.flow");
+    assert_eq!(verdict, Refused(VerifyPhase::Flow));
 }
 
 /// An entry erase through a different key slot ends the fact for the family;
@@ -91,7 +88,7 @@ fn a_strict_sparse_set_after_an_erase_through_another_slot_of_the_family_rejects
             Instr::DurEraseEntry(sites.entry.clone()),
         ]
     });
-    assert_eq!(verdict, "image.flow");
+    assert_eq!(verdict, Refused(VerifyPhase::Flow));
 }
 
 /// A field set takes a definite value for a required field as for a sparse one: the
@@ -118,7 +115,7 @@ fn a_required_field_set_through_a_proven_entry_verifies() {
             Instr::Return,
         ],
     );
-    assert_eq!(code_of(&bytes), "VERIFIED");
+    assert_eq!(verdict_of(&bytes), Verified);
 }
 
 #[test]
@@ -146,8 +143,12 @@ fn a_read_only_required_field_read_needs_its_own_presence_check() {
         ]);
         let bytes = finish_two_key(draft, code);
         assert_eq!(
-            code_of(&bytes),
-            if guarded { "VERIFIED" } else { "image.flow" }
+            verdict_of(&bytes),
+            if guarded {
+                Verified
+            } else {
+                Refused(VerifyPhase::Flow)
+            }
         );
         if guarded {
             let image = marrow_verify::verify(&bytes).expect("the guarded read verified");
@@ -186,7 +187,7 @@ fn a_field_set_with_an_optional_operand_rejects_at_function() {
             Instr::Return,
         ],
     );
-    assert_eq!(code_of(&bytes), "image.function");
+    assert_eq!(verdict_of(&bytes), Refused(VerifyPhase::Function));
 }
 
 #[test]
@@ -266,7 +267,7 @@ fn a_create_record_constructor_cannot_lend_its_field_slot_as_an_entry_key() {
             Instr::Return,
         ],
     );
-    assert_eq!(code_of(&bytes), "image.flow");
+    assert_eq!(verdict_of(&bytes), Refused(VerifyPhase::Flow));
 }
 
 #[test]
@@ -312,20 +313,15 @@ fn a_composite_create_cannot_prove_a_key_load_bypassed_by_another_edge() {
         Instr::TxnCommit,
         Instr::Return,
     ];
-    let source = ok(draft.intern_string("src/main.mw"));
-    let name = ok(draft.intern_string("put"));
-    let function = draft
-        .add_function(FunctionDef {
-            name,
-            source,
-            params: vec![ImageType::scalar(Scalar::Text); 2],
-            ret: ImageType::Unit,
-            local_count: 3,
-            spans: spans(&code),
-            code,
-        })
-        .expect("the sites are live");
+    let function = add_fn(
+        &mut draft,
+        "put",
+        vec![ImageType::scalar(Scalar::Text); 2],
+        ImageType::Unit,
+        3,
+        code,
+    );
     draft.add_export(ExportId::of_local("", "put"), function);
     let bytes = draft.encode().expect("encode").bytes;
-    assert_eq!(code_of(&bytes), "image.flow");
+    assert_eq!(verdict_of(&bytes), Refused(VerifyPhase::Flow));
 }

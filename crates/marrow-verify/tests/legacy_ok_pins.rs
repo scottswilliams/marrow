@@ -1,12 +1,8 @@
-//! Producer-refusal pins for the hoisted structural references and relations: drafts
-//! that ENCODED before the coherence hoist — leaving the independent verifier as the
-//! only owner that refused them — and are now refused by the producer's coherence
-//! walk with the exact typed payload each pin states. Every flip cites its
-//! pre-restructure Ok-pin, whose baseline git history carries.
-//!
-//! The clean twins still encode and verify, proving each refusal comes from the one
-//! defect and not from the fixture's shape; the verifier remains the independent
-//! decoder of whatever the producer emits.
+//! Producer-refusal pins for structural references and relations: every draft here is
+//! refused by the producer's own coherence walk, with the exact typed payload each test
+//! states, before a byte is measured or emitted. The clean twins still encode and verify,
+//! so each refusal comes from the one defect rather than from the fixture's shape, and
+//! the verifier remains the independent decoder of whatever the producer does emit.
 
 use marrow_image::{
     AdmittedRoot, CollTypeId, CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape,
@@ -145,9 +141,6 @@ fn the_clean_twin_verifies() {
     assert!(outcome.is_ok(), "{outcome:?}");
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("call target")` before any byte is measured or emitted.
 #[test]
 fn an_out_of_range_call_target_draws_the_call_target_refusal() {
     assert_eq!(
@@ -158,9 +151,6 @@ fn an_out_of_range_call_target_draws_the_call_target_refusal() {
     );
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("export target")` before any byte is measured or emitted.
 #[test]
 fn an_out_of_range_export_target_draws_the_export_target_refusal() {
     let mut draft_owner = main_draft(Vec::new(), short_code());
@@ -172,9 +162,6 @@ fn an_out_of_range_export_target_draws_the_export_target_refusal() {
     );
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("test target")` before any byte is measured or emitted.
 #[test]
 fn an_out_of_range_test_entry_target_draws_the_test_target_refusal() {
     let mut draft_owner = main_draft(Vec::new(), short_code());
@@ -187,9 +174,6 @@ fn an_out_of_range_test_entry_target_draws_the_test_target_refusal() {
     );
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("type table")` before any byte is measured or emitted.
 #[test]
 fn an_out_of_range_param_type_draws_the_type_table_refusal() {
     assert_eq!(
@@ -200,16 +184,11 @@ fn an_out_of_range_param_type_draws_the_type_table_refusal() {
     );
 }
 
-// ---- The remaining §B.3 reference families: each raw table ordinal the encoder
-// once wrote unchecked, pinned standalone as the producer refusal the coherence
-// hoist installed. The `DurIterateBounded`/`DurIndexScan` `list_ty` operand belongs
-// here too — a live site operand carries the instruction while its `list_ty` is a
-// public raw ordinal that dangles — and both opcode paths are pinned below the
-// durable fixture.
+// ---- Raw table ordinals, each pinned standalone. The `DurIterateBounded`/`DurIndexScan`
+// `list_ty` operand belongs here too — a live site operand carries the instruction while
+// its `list_ty` is a public raw ordinal that can dangle — and both opcode paths are
+// pinned below the durable fixture.
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("type table")` before any byte is measured or emitted.
 #[test]
 fn an_out_of_range_record_new_ordinal_draws_the_type_table_refusal() {
     assert_eq!(
@@ -226,9 +205,6 @@ fn an_out_of_range_record_new_ordinal_draws_the_type_table_refusal() {
     );
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("collection type")` before any byte is measured or emitted.
 #[test]
 fn an_out_of_range_list_new_ordinal_draws_the_collection_type_refusal() {
     assert_eq!(
@@ -245,9 +221,6 @@ fn an_out_of_range_list_new_ordinal_draws_the_collection_type_refusal() {
     );
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("enum type")` before any byte is measured or emitted.
 #[test]
 fn an_out_of_range_enum_construct_ordinal_draws_the_enum_type_refusal() {
     assert_eq!(
@@ -267,9 +240,6 @@ fn an_out_of_range_enum_construct_ordinal_draws_the_enum_type_refusal() {
     );
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("type table")` before any byte is measured or emitted.
 /// The corrected twin — the same fixture with a TYPES row answering index 0 — still
 /// encodes and verifies, so the refusal is the forged ordinal's alone. (The operand
 /// stays optional: the coherence check is the domain range check; optionality remains
@@ -300,9 +270,6 @@ fn an_out_of_range_vacant_load_type_draws_the_type_table_refusal() {
     );
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("root table")` before any byte is measured or emitted.
 #[test]
 fn an_out_of_range_make_identity_root_draws_the_root_table_refusal() {
     assert_eq!(
@@ -322,9 +289,6 @@ fn an_out_of_range_make_identity_root_draws_the_root_table_refusal() {
     );
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("type table")` before any byte is measured or emitted.
 #[test]
 fn an_out_of_range_field_type_draws_the_type_table_refusal() {
     let mut draft_owner = main_draft(Vec::new(), short_code());
@@ -347,9 +311,6 @@ fn an_out_of_range_field_type_draws_the_type_table_refusal() {
     );
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("type table")` before any byte is measured or emitted.
 #[test]
 fn an_out_of_range_enum_payload_type_draws_the_type_table_refusal() {
     let mut draft_owner = main_draft(Vec::new(), short_code());
@@ -372,9 +333,6 @@ fn an_out_of_range_enum_payload_type_draws_the_type_table_refusal() {
     );
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("type table")` before any byte is measured or emitted.
 #[test]
 fn an_out_of_range_collection_elem_type_draws_the_type_table_refusal() {
     let mut draft_owner = main_draft(Vec::new(), short_code());
@@ -388,10 +346,9 @@ fn an_out_of_range_collection_elem_type_draws_the_type_table_refusal() {
     );
 }
 
-// ---- The two omitted DURABLE type-table ordinals and the `MakeIdentity` cols
-// relation (design draft 7 §B.3). `TypeId` is a raw newtype with a public
-// `from_index`, so both record ordinals are forged directly; both now draw the
-// producer's type-table refusal at their exact body positions.
+// ---- The DURABLE type-table ordinals and the `MakeIdentity` cols relation. `TypeId` is a
+// raw newtype with a public `from_index`, so both record ordinals are forged directly;
+// both draw the producer's type-table refusal at their exact body positions.
 
 /// How the durable fixture's two forgeable record references are shaped.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -562,9 +519,6 @@ fn the_durable_clean_twin_verifies() {
     assert!(outcome.is_ok(), "{outcome:?}");
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("type table")` before any byte is measured or emitted.
 #[test]
 fn an_out_of_range_root_entry_record_draws_the_type_table_refusal() {
     assert_eq!(
@@ -575,9 +529,6 @@ fn an_out_of_range_root_entry_record_draws_the_type_table_refusal() {
     );
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("type table")` before any byte is measured or emitted.
 #[test]
 fn an_out_of_range_branch_record_draws_the_type_table_refusal() {
     assert_eq!(
@@ -588,9 +539,6 @@ fn an_out_of_range_branch_record_draws_the_type_table_refusal() {
     );
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("root table")` before any byte is measured or emitted.
 #[test]
 fn a_make_identity_cols_arity_mismatch_draws_the_root_table_refusal() {
     assert_eq!(
@@ -617,9 +565,6 @@ fn a_make_identity_cols_arity_mismatch_draws_the_root_table_refusal() {
 // operand carries the instruction, while its `list_ty` — a public raw COLLTYPES
 // ordinal — dangles past the (empty) collection table.
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("collection type")` before any byte is measured or emitted.
 #[test]
 fn a_dangling_iterate_list_type_draws_the_collection_type_refusal() {
     let (mut draft_owner, root) = durable_parts(TableRef::Valid, None, false);
@@ -658,9 +603,6 @@ fn a_dangling_iterate_list_type_draws_the_collection_type_refusal() {
     );
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("collection type")` before any byte is measured or emitted.
 /// The corrected twin — the same fixture naming the real `List[int]` row — still
 /// encodes and verifies, so the refusal is the dangling ordinal's alone; the deeper
 /// list-of-the-identity-key law remains the verifier's.
@@ -756,8 +698,7 @@ fn with_decoy_enum(mut owner: ImageDraft) -> ImageDraft {
     owner
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure decoy pin this test
-/// carried: with TYPES empty and ENUMS populated at index 0, a producer check
+/// A decoy: with TYPES empty and ENUMS populated at index 0, a producer check
 /// consulting the wrong table would accept this draft; the exact
 /// `InvalidReference("type table")` refusal pins the correct domain.
 #[test]
@@ -775,8 +716,7 @@ fn a_record_type_decoy_draws_the_types_domain_refusal() {
     );
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure decoy pin this test
-/// carried: with ENUMS empty and TYPES populated at index 0, a producer check
+/// A decoy: with ENUMS empty and TYPES populated at index 0, a producer check
 /// consulting the wrong table would accept this draft; the exact
 /// `InvalidReference("enum type")` refusal pins the correct domain.
 #[test]
@@ -794,8 +734,7 @@ fn an_enum_type_decoy_draws_the_enums_domain_refusal() {
     );
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure decoy pin this test
-/// carried: with COLLTYPES empty and TYPES populated at index 0, a producer check
+/// A decoy: with COLLTYPES empty and TYPES populated at index 0, a producer check
 /// consulting the wrong table would accept this draft; the exact
 /// `InvalidReference("collection type")` refusal pins the correct domain.
 #[test]
@@ -813,8 +752,7 @@ fn a_collection_type_decoy_draws_the_colltypes_domain_refusal() {
     );
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure decoy pin this test
-/// carried: with ROOTS empty and TYPES populated at index 0, a producer check
+/// A decoy: with ROOTS empty and TYPES populated at index 0, a producer check
 /// consulting the wrong table would accept this draft; the exact
 /// `InvalidReference("root table")` refusal pins the correct domain.
 #[test]
@@ -832,9 +770,6 @@ fn an_identity_type_decoy_draws_the_roots_domain_refusal() {
     );
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("enum type")` before any byte is measured or emitted.
 /// The subordinate `EnumConstruct.variant` ordinal is checked against the resolved
 /// enum, not a table of its own. The corrected twin — variant 0, the decoy enum's one
 /// payloadless member — still encodes and verifies.
@@ -865,14 +800,10 @@ fn an_out_of_range_enum_construct_variant_draws_the_enum_type_refusal() {
     );
 }
 
-// ---- The remaining collection-ordinal opcode (design draft 8 §B.3): `MapNew` shares
-// `ListNew`'s operand kind, tape position, and hoisted check arm;
-// `TextSplit`/`TextLines` derive from these two by the derivation law in
-// `measure_verdicts.rs`.
+// ---- The remaining collection-ordinal opcode: `MapNew` shares `ListNew`'s operand kind,
+// tape position, and check arm; `TextSplit`/`TextLines` derive from these two by the
+// derivation law in `measure_verdicts.rs`.
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("collection type")` before any byte is measured or emitted.
 /// The corrected twin — the same fixture naming the real Map row — still encodes and
 /// verifies, so the refusal is the dangling ordinal's alone.
 #[test]
@@ -908,18 +839,12 @@ fn an_out_of_range_map_new_ordinal_draws_the_collection_type_refusal() {
     );
 }
 
-// ---- The non-range export/test relations (design drafts 8 §B.3 and review 9): rows
-// the public draft APIs accept unchecked, now refused by the coherence walk at the
-// EXPORTS and TEST-ENTRY positions — the target relations, the id relation, both
-// test-signature decision sites, and calls into test entries (the draft-8
-// call-closure exclusion was false; the verifier scans direct tape call targets in
-// its seal phase, and the producer mirrors exactly that direct scan). Their policy
-// crossings sit in `measure_verdicts.rs`; every crossing now resolves to the coherence
-// side, per the derivation law recorded there.
+// ---- The non-range export/test relations: rows the public draft APIs accept unchecked,
+// refused by the coherence walk at the EXPORTS and TEST-ENTRY positions — the target
+// relations, the id relation, both test-signature decision sites, and calls into test
+// entries. A call into a test entry is caught by a direct scan of tape call targets, which
+// is exactly what the verifier's seal phase does; neither side walks the call closure.
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("export table")` before any byte is measured or emitted.
 #[test]
 fn a_duplicate_export_target_draws_the_export_table_refusal() {
     let (mut draft_owner, main) = main_draft_with_id(Vec::new(), short_code());
@@ -931,9 +856,6 @@ fn a_duplicate_export_target_draws_the_export_table_refusal() {
     );
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("test table")` before any byte is measured or emitted.
 #[test]
 fn a_duplicate_test_target_draws_the_test_table_refusal() {
     let mut draft_owner = main_draft(Vec::new(), short_code());
@@ -949,9 +871,6 @@ fn a_duplicate_test_target_draws_the_test_table_refusal() {
     );
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("test table")` before any byte is measured or emitted.
 #[test]
 fn a_duplicate_test_name_draws_the_test_table_refusal() {
     let mut draft_owner = main_draft(Vec::new(), short_code());
@@ -967,9 +886,6 @@ fn a_duplicate_test_name_draws_the_test_table_refusal() {
     );
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("test table")` before any byte is measured or emitted.
 /// The corrected twin — the same entry without the export — still encodes and
 /// verifies, so the refusal is the overlap relation's alone.
 #[test]
@@ -995,9 +911,6 @@ fn an_export_test_overlap_draws_the_test_table_refusal() {
     );
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("export table")` before any byte is measured or emitted.
 #[test]
 fn a_duplicate_export_id_draws_the_export_table_refusal() {
     let mut draft_owner = main_draft(Vec::new(), short_code());
@@ -1019,9 +932,6 @@ fn a_duplicate_export_id_draws_the_export_table_refusal() {
     );
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("test table")` before any byte is measured or emitted.
 /// The parameter site is the FIRST decision site of the test signature law, decided
 /// before the return-shape site. The corrected twin — the same entry over a
 /// zero-parameter unit function — still encodes and verifies.
@@ -1068,9 +978,6 @@ fn a_test_entry_with_params_draws_the_test_table_refusal() {
     );
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("test table")` before any byte is measured or emitted.
 /// The corrected twin — the SAME asserting body inside a registered test entry —
 /// still encodes and verifies, so the refusal is the membership relation's alone.
 #[test]
@@ -1184,9 +1091,6 @@ fn a_direct_test_operation_draws_the_test_table_refusal() {
     }
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("test table")` before any byte is measured or emitted.
 /// The corrected twin — the same call with the callee not registered as a test —
 /// still encodes and verifies, so the refusal is the entry-point relation's alone.
 #[test]
@@ -1220,9 +1124,6 @@ fn a_call_into_a_test_entry_draws_the_test_table_refusal() {
     );
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("test table")` before any byte is measured or emitted.
 /// The return-shape site: the SECOND decision site of the test signature law.
 #[test]
 fn a_bad_test_signature_draws_the_test_table_refusal() {

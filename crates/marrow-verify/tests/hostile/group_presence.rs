@@ -1,14 +1,15 @@
 //! Strict group replacement consumes a proof of its containing entry and exact keys.
 
+use super::tracer_schema::Verdict::{Refused, Verified};
 use super::{
-    APPLICATION_ID, PLACEMENT_ID, PRODUCT_ID, ROOT_KEY_ID, VALUE_FIELD_ID, admitted, admitted_plan,
-    code_of, durable_schema, field_member, finish_two_key, ok, product_members, rehash,
-    scalar_shapes, sections, site, spans,
+    APPLICATION_ID, PLACEMENT_ID, PRODUCT_ID, ROOT_KEY_ID, VALUE_FIELD_ID, add_fn, admitted,
+    admitted_plan, durable_schema, field_member, finish_two_key, ok, product_members, rehash,
+    scalar_shapes, sections, site, verdict_of,
 };
 use marrow_image::{
-    DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId, FieldDef, FuncId,
-    FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, PlannedSiteRef,
-    RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, TypeId,
+    DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId, FieldDef, FuncId, ImageDraft,
+    ImageType, Instr, KeyColumn, LedgerIdBytes, PlannedSiteRef, RecordTypeDef, RootOccurrenceDef,
+    Scalar, SemanticTarget, TypeId,
 };
 use marrow_verify::{VerifyPhase, verify};
 
@@ -154,24 +155,19 @@ fn image(build: impl FnOnce(&mut DraftTxn<'_>, &GroupSites) -> Vec<Instr>) -> Ve
     let (mut owner, sites) = group_draft();
     let mut draft = admitted(&mut owner);
     let code = build(&mut draft, &sites);
-    let source = ok(draft.intern_string("src/main.mw"));
-    let name = ok(draft.intern_string("put"));
-    let function = draft
-        .add_function(FunctionDef {
-            name,
-            source,
-            params: vec![
-                ImageType::scalar(Scalar::Int),
-                ImageType::scalar(Scalar::Int),
-                ImageType::scalar(Scalar::Int),
-                ImageType::scalar(Scalar::Bool),
-            ],
-            ret: ImageType::Unit,
-            local_count: 5,
-            spans: spans(&code),
-            code,
-        })
-        .expect("all sites are live");
+    let function = add_fn(
+        &mut draft,
+        "put",
+        vec![
+            ImageType::scalar(Scalar::Int),
+            ImageType::scalar(Scalar::Int),
+            ImageType::scalar(Scalar::Int),
+            ImageType::scalar(Scalar::Bool),
+        ],
+        ImageType::Unit,
+        5,
+        code,
+    );
     draft.add_export(ExportId::of_local("", "put"), function);
     draft.encode().expect("encode").bytes
 }
@@ -217,19 +213,14 @@ fn optional_guard(sites: &GroupSites) -> Vec<Instr> {
 }
 
 fn helper(draft: &mut DraftTxn<'_>, name: &str, code: Vec<Instr>) -> FuncId {
-    let name = ok(draft.intern_string(name));
-    let source = ok(draft.intern_string("src/main.mw"));
-    draft
-        .add_function(FunctionDef {
-            name,
-            source,
-            params: vec![ImageType::scalar(Scalar::Int); 2],
-            ret: ImageType::Unit,
-            local_count: 2,
-            spans: spans(&code),
-            code,
-        })
-        .expect("the helper's sites are live")
+    add_fn(
+        draft,
+        name,
+        vec![ImageType::scalar(Scalar::Int); 2],
+        ImageType::Unit,
+        2,
+        code,
+    )
 }
 
 #[test]
@@ -240,7 +231,7 @@ fn a_group_replacement_without_a_presence_fact_rejects() {
         code.push(replacement(&sites.group, &[0, 1]));
         finish(code, &[])
     });
-    assert_eq!(code_of(&bytes), "image.flow");
+    assert_eq!(verdict_of(&bytes), Refused(VerifyPhase::Flow));
 }
 
 #[test]
@@ -257,7 +248,7 @@ fn an_entry_guard_allows_a_group_replacement() {
         code.push(replacement(&sites.group, &[0, 1]));
         finish(code, &[4])
     });
-    assert_eq!(code_of(&bytes), "VERIFIED");
+    assert_eq!(verdict_of(&bytes), Verified);
 }
 
 #[test]
@@ -273,7 +264,7 @@ fn an_optional_group_guard_proves_its_entry_for_either_group() {
             code.push(replacement(target, &[0, 1]));
             finish(code, &[4])
         });
-        assert_eq!(code_of(&bytes), "VERIFIED");
+        assert_eq!(verdict_of(&bytes), Verified);
     }
 }
 
@@ -289,7 +280,7 @@ fn an_optional_group_guard_does_not_prove_another_key_or_root() {
             });
             finish(code, &[4])
         });
-        assert_eq!(code_of(&bytes), "image.flow");
+        assert_eq!(verdict_of(&bytes), Refused(VerifyPhase::Flow));
     }
 }
 
@@ -301,7 +292,7 @@ fn a_group_replacement_requires_complete_initialized_typed_key_slots() {
             code.push(replacement(&sites.group, &keys));
             finish(code, &[4])
         });
-        assert_eq!(code_of(&bytes), "image.function");
+        assert_eq!(verdict_of(&bytes), Refused(VerifyPhase::Function));
     }
 }
 
@@ -313,7 +304,7 @@ fn a_group_replacement_requires_a_bare_record() {
         code.push(replacement(&sites.group, &[0, 1]));
         finish(code, &[4])
     });
-    assert_eq!(code_of(&bytes), "image.function");
+    assert_eq!(verdict_of(&bytes), Refused(VerifyPhase::Function));
 }
 
 #[test]
@@ -324,7 +315,7 @@ fn an_optional_group_guard_is_killed_by_key_rebinding() {
         code.push(replacement(&sites.group, &[0, 1]));
         finish(code, &[4])
     });
-    assert_eq!(code_of(&bytes), "image.flow");
+    assert_eq!(verdict_of(&bytes), Refused(VerifyPhase::Flow));
 }
 
 #[test]
@@ -339,7 +330,7 @@ fn an_optional_group_guard_is_killed_by_same_family_erase_at_another_key() {
         code.push(replacement(&sites.group, &[0, 1]));
         finish(code, &[4])
     });
-    assert_eq!(code_of(&bytes), "image.flow");
+    assert_eq!(verdict_of(&bytes), Refused(VerifyPhase::Flow));
 }
 
 #[test]
@@ -377,7 +368,7 @@ fn an_optional_group_guard_is_killed_by_direct_and_transitive_erase_calls() {
             code.push(replacement(&sites.group, &[0, 1]));
             finish(code, &[4])
         });
-        assert_eq!(code_of(&bytes), "image.flow");
+        assert_eq!(verdict_of(&bytes), Refused(VerifyPhase::Flow));
     }
 }
 
@@ -423,7 +414,7 @@ fn an_optional_group_guard_survives_replacement_and_sparse_group_erasure() {
         code.push(replacement(&sites.group, &[0, 1]));
         finish(code, &[4])
     });
-    assert_eq!(code_of(&bytes), "VERIFIED");
+    assert_eq!(verdict_of(&bytes), Verified);
 }
 
 #[test]
@@ -437,7 +428,7 @@ fn the_absent_group_read_edge_does_not_prove_presence() {
         code.push(replacement(&sites.group, &[0, 1]));
         finish(code, &[6])
     });
-    assert_eq!(code_of(&bytes), "image.flow");
+    assert_eq!(verdict_of(&bytes), Refused(VerifyPhase::Flow));
 }
 
 #[test]
@@ -451,7 +442,7 @@ fn an_arbitrary_optional_group_record_does_not_prove_presence() {
         code.push(replacement(&sites.group, &[0, 1]));
         finish(code, &[branch])
     });
-    assert_eq!(code_of(&bytes), "image.flow");
+    assert_eq!(verdict_of(&bytes), Refused(VerifyPhase::Flow));
 }
 
 #[test]
@@ -484,8 +475,12 @@ fn a_composite_group_guard_requires_its_complete_producer_window() {
             finish(code, &[first_key + 3])
         });
         assert_eq!(
-            code_of(&bytes),
-            if entry == 0 { "VERIFIED" } else { "image.flow" },
+            verdict_of(&bytes),
+            if entry == 0 {
+                Verified
+            } else {
+                Refused(VerifyPhase::Flow)
+            },
         );
     }
 }
@@ -504,30 +499,18 @@ fn the_active_family_exists_opcode_still_verifies() {
             Instr::Return,
         ],
     );
-    assert_eq!(code_of(&bytes), "VERIFIED");
+    assert_eq!(verdict_of(&bytes), Verified);
 }
 
 #[test]
 fn retired_entry_mutation_bytes_are_unknown_opcodes() {
     let mut owner = ImageDraft::new();
     let mut draft = admitted(&mut owner);
-    let source = ok(draft.intern_string("src/main.mw"));
-    let name = ok(draft.intern_string("empty"));
     let code = vec![Instr::Return];
-    let function = draft
-        .add_function(FunctionDef {
-            name,
-            source,
-            params: Vec::new(),
-            ret: ImageType::Unit,
-            local_count: 0,
-            spans: spans(&code),
-            code,
-        })
-        .expect("a storeless function is admitted");
+    let function = add_fn(&mut draft, "empty", Vec::new(), ImageType::Unit, 0, code);
     draft.add_export(ExportId::of_local("", "empty"), function);
     let original = draft.encode().expect("encode").bytes;
-    assert_eq!(code_of(&original), "VERIFIED");
+    assert_eq!(verdict_of(&original), Verified);
     let (_, offset, len) = sections(&original)
         .into_iter()
         .find(|(id, _, _)| *id == 5)
@@ -546,7 +529,7 @@ fn retired_entry_mutation_bytes_are_unknown_opcodes() {
         let rejection =
             verify(&bytes).expect_err("the retired byte is refused before operand decoding");
         assert_eq!(rejection.phase(), VerifyPhase::Function);
-        assert_eq!(rejection.code(), "image.function");
+        assert_eq!(rejection.phase(), VerifyPhase::Function);
         assert_eq!(rejection.detail(), "unknown or not-yet-supported opcode");
     }
 }

@@ -1,9 +1,8 @@
 //! Enum-image verification: a well-formed enum-bearing image seals, and each
 //! single enum-table or enum-opcode defect rejects at the phase that owns it.
-//! Images are minted with `ImageDraft`; since the coherence hoist the producer
-//! refuses out-of-range enum references itself (the pinned flips live in
-//! `legacy_ok_pins.rs`), so those cases assert the producer refusal here while
-//! every defect the producer still emits stays the verifier's own rejection.
+//! Images are minted with `ImageDraft`. An out-of-range enum reference is refused by the
+//! producer's own coherence walk, so those cases assert the producer's refusal; every
+//! defect the producer does emit stays the verifier's own rejection.
 
 use marrow_image::{
     CollectionTypeDef, DraftTxn, EnumId, EnumTypeDef, ExportId, FunctionDef, ImageBuildError,
@@ -91,8 +90,8 @@ fn verify_fn(
         .unwrap_or_else(|| "VERIFIED".to_string())
 }
 
-/// Add the same storeless export shape as [`verify_fn`] and return the producer's
-/// own verdict, for the defects the coherence hoist refuses before any byte exists.
+/// Add the same storeless export shape as [`verify_fn`] and return the producer's own
+/// verdict, for the defects it refuses before any byte exists.
 fn encode_fn(
     mut owner: ImageDraft,
     params: Vec<ImageType>,
@@ -153,8 +152,7 @@ fn a_well_formed_enum_image_verifies() {
     );
 }
 
-/// Flipped by the coherence hoist (the pinned flip lives in `legacy_ok_pins.rs`):
-/// an out-of-range enum parameter reference is refused by the producer.
+/// An out-of-range enum parameter reference is refused by the producer.
 #[test]
 fn an_enum_param_index_out_of_range_is_refused_by_the_producer() {
     let mut draft_owner = ImageDraft::new();
@@ -179,8 +177,7 @@ fn an_enum_param_index_out_of_range_is_refused_by_the_producer() {
     );
 }
 
-/// Flipped by the coherence hoist (the pinned flip lives in `legacy_ok_pins.rs`):
-/// an out-of-range enum return reference is refused by the producer.
+/// An out-of-range enum return reference is refused by the producer.
 #[test]
 fn an_enum_return_index_out_of_range_is_refused_by_the_producer() {
     let draft = ImageDraft::new(); // no enums at all
@@ -237,8 +234,7 @@ fn a_duplicate_variant_name_rejects_at_table() {
     );
 }
 
-/// Flipped by the coherence hoist (the pinned flip lives in `legacy_ok_pins.rs`):
-/// a construct variant outside the resolved enum is refused by the producer.
+/// A construct variant outside the resolved enum is refused by the producer.
 #[test]
 fn an_out_of_range_construct_variant_is_refused_by_the_producer() {
     let mut draft_owner = ImageDraft::new();

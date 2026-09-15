@@ -335,10 +335,6 @@ fn a_scan_list_of_the_wrong_element_type_is_refused() {
 
 // --- Entry-identity instruction forgeries. ---
 
-// An out-of-range `MakeIdentity` root and a `cols` count disagreeing with the root's
-// key arity are refused by the producer since the coherence hoist; their pins live in
-// `legacy_ok_pins.rs`, so no duplicate probes are kept here.
-
 #[test]
 fn an_identity_key_path_with_the_wrong_column_count_is_refused() {
     // Build a bare identity, then spread it claiming two columns for a one-key root.

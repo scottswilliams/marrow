@@ -1,8 +1,10 @@
 //! Required reads independently consume typed key tuples and live entry proofs.
 
-use marrow_image::{ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar};
+use marrow_image::{ExportId, ImageDraft, ImageType, Instr, Scalar};
+use marrow_verify::VerifyPhase;
 
 use super::admitted_helper::admitted;
+use super::tracer_schema::Verdict::{Refused, Verified};
 use super::tracer_schema::*;
 
 #[test]
@@ -31,11 +33,11 @@ fn required_reads_reject_sparse_and_non_field_targets() {
             ],
         );
         assert_eq!(
-            code_of(&bytes),
+            verdict_of(&bytes),
             if target == "required" {
-                "VERIFIED"
+                Verified
             } else {
-                "image.function"
+                Refused(VerifyPhase::Function)
             },
             "{target}"
         );
@@ -45,12 +47,12 @@ fn required_reads_reject_sparse_and_non_field_targets() {
 #[test]
 fn required_reads_need_the_exact_initialized_typed_key_slots() {
     for (slots, verdict) in [
-        (vec![0], "VERIFIED"),
-        (vec![1], "image.flow"),
-        (vec![2], "image.function"),
-        (vec![3], "image.function"),
-        (vec![4], "image.function"),
-        (vec![0, 1], "image.function"),
+        (vec![0], Verified),
+        (vec![1], Refused(VerifyPhase::Flow)),
+        (vec![2], Refused(VerifyPhase::Function)),
+        (vec![3], Refused(VerifyPhase::Function)),
+        (vec![4], Refused(VerifyPhase::Function)),
+        (vec![0, 1], Refused(VerifyPhase::Function)),
     ] {
         let mut owner = ImageDraft::new();
         let mut draft = admitted(&mut owner);
@@ -66,26 +68,21 @@ fn required_reads_need_the_exact_initialized_typed_key_slots() {
             Instr::Pop,
             Instr::Return,
         ];
-        let name = ok(draft.intern_string("read"));
-        let source = ok(draft.intern_string("src/main.mw"));
-        let function = draft
-            .add_function(FunctionDef {
-                name,
-                source,
-                params: vec![
-                    ImageType::scalar(Scalar::Text),
-                    ImageType::scalar(Scalar::Text),
-                    ImageType::scalar(Scalar::Bool),
-                ],
-                ret: ImageType::Unit,
-                local_count: 4,
-                spans: spans(&code),
-                code,
-            })
-            .expect("live sites");
+        let function = add_fn(
+            &mut draft,
+            "read",
+            vec![
+                ImageType::scalar(Scalar::Text),
+                ImageType::scalar(Scalar::Text),
+                ImageType::scalar(Scalar::Bool),
+            ],
+            ImageType::Unit,
+            4,
+            code,
+        );
         draft.add_export(ExportId::of_local("", "read"), function);
         assert_eq!(
-            code_of(&draft.encode().expect("encode").bytes),
+            verdict_of(&draft.encode().expect("encode").bytes),
             verdict,
             "{slots:?}"
         );
@@ -113,18 +110,18 @@ fn rebinding_a_proved_key_invalidates_a_required_read() {
             Instr::Return,
         ],
     );
-    assert_eq!(code_of(&bytes), "image.flow");
+    assert_eq!(verdict_of(&bytes), Refused(VerifyPhase::Flow));
 }
 
 #[test]
 fn required_branch_reads_need_the_same_family_and_whole_ordered_tuple() {
     for (guard_branch, read_branch, slots, verdict) in [
-        (true, true, vec![0, 1], "VERIFIED"),
-        (true, true, vec![0], "image.function"),
-        (true, true, vec![1, 0], "image.flow"),
-        (false, true, vec![0, 1], "image.flow"),
-        (true, false, vec![0], "image.flow"),
-        (false, false, vec![0], "VERIFIED"),
+        (true, true, vec![0, 1], Verified),
+        (true, true, vec![0], Refused(VerifyPhase::Function)),
+        (true, true, vec![1, 0], Refused(VerifyPhase::Flow)),
+        (false, true, vec![0, 1], Refused(VerifyPhase::Flow)),
+        (true, false, vec![0], Refused(VerifyPhase::Flow)),
+        (false, false, vec![0], Verified),
     ] {
         let mut schema = super::branch_presence_schema();
         let draft = admitted(&mut schema.owner);
@@ -152,7 +149,7 @@ fn required_branch_reads_need_the_same_family_and_whole_ordered_tuple() {
             Instr::Return,
         ]);
         assert_eq!(
-            code_of(&finish_two_key(draft, code)),
+            verdict_of(&finish_two_key(draft, code)),
             verdict,
             "guard branch={guard_branch}, read branch={read_branch}, slots={slots:?}"
         );
@@ -186,8 +183,12 @@ fn required_read_only_guards_reject_bypassed_key_producers() {
             Instr::Return,
         ];
         assert_eq!(
-            code_of(&finish_two_key(draft, code)),
-            if bypass { "image.flow" } else { "VERIFIED" }
+            verdict_of(&finish_two_key(draft, code)),
+            if bypass {
+                Refused(VerifyPhase::Flow)
+            } else {
+                Verified
+            }
         );
     }
 }
@@ -217,11 +218,11 @@ fn a_required_read_cannot_follow_commit_even_with_a_live_proof() {
         }
         code.extend([Instr::Return, Instr::TxnCommit, Instr::Return]);
         assert_eq!(
-            code_of(&finish_two_key(draft, code)),
+            verdict_of(&finish_two_key(draft, code)),
             if after_commit {
-                "image.flow"
+                Refused(VerifyPhase::Flow)
             } else {
-                "VERIFIED"
+                Verified
             }
         );
     }
@@ -233,7 +234,6 @@ fn a_transitive_family_erase_invalidates_a_required_read() {
         let mut owner = ImageDraft::new();
         let mut draft = admitted(&mut owner);
         let sites = durable_schema(&mut draft);
-        let source = ok(draft.intern_string("src/main.mw"));
         let mut callee = None;
         for name in ["erase", "relay"] {
             let mut code = if let Some(callee) = callee {
@@ -247,18 +247,14 @@ fn a_transitive_family_erase_invalidates_a_required_read() {
                 Vec::new()
             };
             code.push(Instr::Return);
-            let name = ok(draft.intern_string(name));
-            let function = draft
-                .add_function(FunctionDef {
-                    name,
-                    source,
-                    params: vec![ImageType::scalar(Scalar::Text)],
-                    ret: ImageType::Unit,
-                    local_count: 1,
-                    spans: spans(&code),
-                    code,
-                })
-                .expect("live sites");
+            let function = add_fn(
+                &mut draft,
+                name,
+                vec![ImageType::scalar(Scalar::Text)],
+                ImageType::Unit,
+                1,
+                code,
+            );
             callee = Some(function.index());
         }
         // A sparse erase makes both controls mutating without ending the proof.
@@ -280,8 +276,12 @@ fn a_transitive_family_erase_invalidates_a_required_read() {
             Instr::Return,
         ];
         assert_eq!(
-            code_of(&finish_two_key(draft, code)),
-            if erasing { "image.flow" } else { "VERIFIED" }
+            verdict_of(&finish_two_key(draft, code)),
+            if erasing {
+                Refused(VerifyPhase::Flow)
+            } else {
+                Verified
+            }
         );
     }
 }
