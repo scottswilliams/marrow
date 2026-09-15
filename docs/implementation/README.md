@@ -7,248 +7,47 @@ states where that meaning is computed.
 
 ## Pipeline
 
-`marrow-image::IMAGE_FORMAT_VERSION` names the admitted image generation; its
-digest domain separates payload identities between generations. The independent
-container verifier checks that generation before decoding sections.
-`marrow-lifecycle::LogicalHead::decode` checks the stored active binding against
-the same generation. The shared owner-held head reader supplies attachment,
-import and audit before engine open
-([compatibility](../compatibility.md#versioning)).
+A program travels one way, each stage handing the next a narrower artifact.
+Mechanism lives in the module that owns it; this names the owners.
 
-A program travels one way. `marrow-syntax` parses `.mw` source into an AST.
-`marrow-compile` checks the AST and lowers it to a program-image draft, which
-`marrow-image` encodes to canonical bytes. `marrow-verify` is the only decoder:
-it rebuilds every executable claim from the bytes and seals a `VerifiedImage`.
-`VerifiedImage::function` checks an image-relative `FunctionIndex` and returns
-a borrowed `VerifiedFunction` carrying the owner of its body and durable demand.
-`marrow-vm::run` accepts that selection without a separate image. Internal calls
-select from the current frame's image; lifecycle attachments retain image/store
-pairing for durable execution. The raw storeless Rust entry requires correctly
-typed arguments from that image and an empty demand; it does not validate those
-preconditions. `marrow-vm` executes the selected instruction tape. Durable reads and
-writes leave the VM through `marrow-kernel`, which encodes keys and values and
-drives a transaction against an engine in `marrow-store`.
+**Syntax.** `marrow-syntax` parses `.mw` source into a spanned AST and owns the
+formatter, the diagnostic types every other crate renders, and the position-bound
+[query syntax](syntax.md) editor completion reads.
 
-Completion and active-call requests use syntax-owned, position-bound
-[query syntax](syntax.md). The compiler reads declaration headers and the
-containing body through this transient partial product. Snapshot facts and
-diagnostics still come from full analysis; the language server consumes the
-existing compiler query APIs.
+**Compile.** `marrow-compile` resolves names, checks types and effects, and lowers
+the AST into an image draft. One drive serves three projections: `compile` encodes
+a program image, `analyze` publishes an `AnalysisSnapshot` for the language server
+and never encodes, and `check` does both over a test-inclusive image. The compiler
+opens no store and cannot mint a verified image.
 
-`marrow-vm::render` owns canonical value text for VM string conversion and CLI
-output. One recursive append traversal shares a private destination with an
-explicit caller byte limit. Nested aggregate values append into that destination;
-temporal scalar formatting retains bounded scratch text.
-Each variable-size contribution is checked before append, including the complete
-hex expansion before its digit loop. VM conversion passes 65,536 bytes and maps
-the typed refusal to `run.text_limit` at the current instruction. The CLI retains
-its bare-string limit and has no aggregate-text byte ceiling. Its JSON hex, key
-and identity contributions pass the existing data limit. `outcome::JsonData`
-checks remaining encoded bytes before each append; nested values share that
-destination, record sorting borrows field slots, and one escaping loop also serves
-the other outcome records. Bare text and bytes retain their distinct raw-byte and
-unquoted-hex policies. These checks bound constructed text length, not allocator
-capacity, recursion or total runtime memory.
+**Image.** `marrow-image` owns the container: the draft that validates as it is
+built, the instruction set, the canonical encoder, and the `ImageId` digest — but
+no decoder. `IMAGE_FORMAT_VERSION` names the admitted generation and separates
+digest domains across them ([compatibility](../compatibility.md#versioning)).
 
-Verifier jump resolution records destinations with a predecessor other than the
-immediately preceding instruction. Type flow carries one working frame through
-adjacent destinations without another predecessor. A fork propagates its target
-first, then reuses the working frame for a distinct eligible fallthrough.
-Coincident edges still both propagate and meet. Entry zero and queued boundaries
-retain frames for exact stack comparison and in-place definite-initialization
-meets. Carried interiors retain only reachability and execute again when an
-upstream meet weakens local facts. Straight-line padding and eligible fork
-fallthroughs add no retained local or stack payload; instruction slots still
-scale with code length. True joins and repeated visits remain separate costs,
-without a total memory or work budget.
+**Verify.** `marrow-verify` is the only decoder. It rebuilds every executable claim
+— types, control flow, transaction structure, durable demand, presence proofs — from
+the image bytes alone, without consulting compiler state, and seals a
+`VerifiedImage`. A retired encoding rejects here and requires recompilation.
 
-After every function passes type flow, `verify/context.rs` extracts direct-call
-occurrences into one flat target vector with per-function offsets. The iterative
-cycle check covers every function and records callee-first completion order.
-Effects collect direct atoms, sites and transaction markers in one instruction
-pass. A global atom lookup is consumed through the image demand canonicalizer;
-its discovery remap builds sparse u32 selections in function order. The selection
-owner normalizes direct ordinals once. Each recorded call then unions its
-callee's completed selection into its caller with reusable merge scratch.
-Transaction and test-entry checks reuse the graph, and duplicate calls retain
-their tape order. Site closures remain separate sets. The graph stays live
-through presence and test-entry checks; these passes have no total memory bound.
+**VM.** `marrow-vm` executes the instruction tape of a function selected from a
+sealed image, and owns runtime faults mapped back to source spans, the
+[execution limits](../language/execution-limits.md), and the canonical value text
+that string conversion and CLI output share.
 
-After validation, `verify/seal.rs` moves the canonical pool and selections into
-the verified image. `sealed/demand.rs` owns their association with functions;
-exports/tests retain function ordinals rather than owned demand copies.
-`marrow-image`'s `demand/selection.rs` owns normalized selections and borrowed
-views over its canonical atom owner. Views check the largest ordinal in constant
-time and iterate only selected atoms; count and emptiness are constant-time.
-Canonical payloads and identities share the existing encoder. The VM derives
-session coverage from the invoked verified function's view. Owned ceiling and
-union outputs remain independent values.
+**Kernel.** Every durable read and write leaves the VM through `marrow-kernel`: key
+and value codecs, the operation algebra, the commit witness and its recovery, and the
+shared audit/export walk. Application code never receives a physical key or an engine
+handle.
 
-Sparse row length payload is four bytes per transitive membership, plus row
-metadata and capacity. A merge retains its destination alongside replacement
-scratch; repeated prefix work, site replication, lookup/remap/direct records,
-canonical keys and sort scratch remain costs. Pooling removes deep atom copies
-across overlapping demands, not total verifier residency or work limits.
+**Store.** `marrow-store` owns the ordered-byte engine contract, its in-memory and
+redb implementations, and the conformance suite both must pass. Engine names and
+formats stay out of `.mw` source and public APIs.
 
-The presence pass uses the same transient destination flags to require an uninterrupted
-key-load, producer and consumer sequence before establishing a guard fact.
-The flags are discarded before the verified image is returned; they add no
-encoded or public image field. `verify/presence.rs` reconstructs entry-erasing
-calls from the existing effect closure and checks each strict field/group
-operation, including required field reads, against its containing entry and
-complete key-slot tuple. Optional
-entry and group reads establish facts only on their present branch.
-The verifier's `EntryFamilies` borrows a sorted projection of validated entry
-paths and branch coordinates, built once for the presence phase. Calls use
-binary search without reconstructing key columns; direct erases use the same
-entry-family classifier. This transient lookup is dropped before publication.
-
-`PresenceFacts` collects producer and strict-use identities once per function,
-using the existing guard-window and containing-entry helpers. It sorts complete
-root/branch/ordered-slot tuples once, moves each distinct tuple into a private
-vector and maps each matching instruction to its `FactId`. Temporary occurrences
-are dropped before propagation. A known identity does not establish presence:
-guards and creates add IDs dynamically, and strict uses still require live
-membership. Unresolved strict uses retain their refusal at the visited operation.
-Functions without strict presence operations skip both preparation and flow.
-
-Presence verification carries one owned ID set through linear segments.
-A fork propagates its target first, then carries its distinct fallthrough when
-that destination has no other predecessor. Coincident edges both intersect
-before their destination executes. Shared and non-fallthrough destinations
-retain incoming sets for intersection; a shrinking merge requeues the boundary
-and re-executes its carried interior. It retains one optional state slot and one
-optional identity slot per instruction. Carried instructions add no retained
-incoming sets; working sets and branch-target copies remain. The guarded-read
-retention test checks
-two retained sets and zero retained facts across six key-count/padding cases;
-both retained sets are empty. An interleaved-guard regression checks shared
-nonempty tuple storage across unequal retained states, plus refusal of a valid
-but unguarded key tuple. Tuple storage follows distinct identities; membership
-volume, B-tree nodes, forks and intersections still follow flow states. Collection
-temporarily retains duplicate occurrence tuples and overlaps the growing unique
-vector and instruction map. Sorting, prefix copying and repeated visits remain
-costs; these ownership checks establish no total verifier memory or work bound.
-
-`marrow-compile/src/lower/presence.rs` owns scoped presence facts with stable
-identities and typed live or invalidated state. Invalidated identities remain
-until lexical exit so a checked required read cannot become optional after
-losing its proof. `lower/durable.rs` emits `DurReadFieldPresent` for required
-fields through a live fact; optional field reads keep `DurReadField`. Required
-group leaves use `DurReadGroupPresent` followed by `FieldGet`.
-The lowerer logs each emitted call once and retains call-log
-intervals for protected uses. `compile/presence_calls.rs` settles entry-erasure
-closures with the existing acyclic call order, reusing one word per function
-for each stripe of 64 queried families. Its pending interval chains avoid
-copying calls into facts or rescanning a call slice for every use.
-
-The VM's strict field arm uses the existing kernel field read and faults
-`run.corruption` if the required value is missing. The read checks the selected
-value, not the integrity of the whole entry.
-
-`lower/durable.rs::resolve_index_read` resolves bracketed and bare index reads
-to one declared index and a borrowed operand slice. Value expressions in
-`lower/exprs.rs`, `exists` in `lower/durable.rs`, and `for` in `lower/stmts.rs`
-use that result through their existing lookup, presence and scan lowerers.
-
-`marrow-image/src/instr.rs` owns instruction tags and operand widths. Strict
-field set, strict group read and group replacement carry explicit key slots;
-replacement consumes only the group record from the operand stack. Retired
-encodings reject in the verifier and require recompilation.
-
-The compiler opens no store, and the VM accepts only an image the verifier
-sealed. `marrow-lifecycle` prepares a verified image once, deriving the store
-projection every engine opens under, and pairs the image with the store it
-admits it for: a persistent store provisioned, attached, or imported through
-the lifecycle (its file operations go through `marrow-fs-journal`), or a fresh
-in-memory store for a durable `test`, discarded when the test ends. The VM
-executes a durable export or test only through that pairing, so a store runs
-exactly the image the lifecycle admitted for it.
-
-The runner binary's shared `load_image` reads at most `MAX_IMAGE_BYTES + 1`
-bytes through `Read::take` before calling the verifier. Every runner command uses
-that loader. The verifier owns oversize and image-format refusal; open/read errors
-retain the `io.read` path. The read bound does not establish allocation capacity
-or a time bound for a stream that stops supplying bytes.
-
-The local-wire JSON parser builds each object in one ordered map. Its entry
-lookup rejects a duplicate key before parsing the colon or value. After the
-closing brace, it moves the entries into the existing `Json::Object` vector;
-the final re-encoding comparison still rejects noncanonical input order.
-
-The compiler retains parser syntax. Its private `types/aliases.rs` owner stores
-each supported alias as a shared global terminal name and optionality. It
-normalizes chains iteratively and refuses unsupported target shapes before
-dependent fills. Type consumers resolve written parameters before aliases and
-carry existing declaration refusals through scalar and value-type checks;
-they do not allocate expanded alias trees. Generic duplicate checks use the
-named-type ledger, including refused entries; the template vector stores
-admitted payloads for instantiation. Enum duplicate checks consult both that
-ledger and reserved enum rows, which enter the ledger during fill.
-
-Generic struct fills retain one pending vector of interned field names and
-resolved arguments while resolving later fields. Once all fields resolve, the
-fill uses the shared template names to form the image fields and semantic body
-together in declaration order. These final projections are not suspended across
-recursive field resolution; their conversion still overlaps allocations.
-
-Resource construction resolves each branch-field annotation once per admitted
-Product. The canonical member graph retains the scalar value shape. Root
-occurrence capture carries that scalar with the existing field path, and
-executable branch descriptors consume it without resolving the source annotation
-again. Scalar conversion preserves all seven language scalars; durable-key
-eligibility separately excludes `duration`.
-
-The image draft reserves each function identity once. Accepted ordinary signatures,
-included test declarations and generic instances retain their actual `FuncId`;
-lowering moves each completed instruction allocation into that reserved slot.
-Failed bodies leave explicit vacancies. Template proofs use the same reserve/fill
-operations and restore their slots and fills on exit. The draft's existing coherence
-check refuses any vacancy before measurement or encoding. This does not change the
-image format or successful function order.
-
-The compiler retains full source coordinates and optional body facts at those same
-indices. After settlement, transaction validation borrows the draft's instructions
-and checks that the coordinates cover exactly that sequence. Iterative SCC analysis
-reports cycles over available bodies. One further callee-first sweep excludes missing
-or cyclic bodies and every transitive caller. Transaction and presence summaries and
-reports use that shared membership while retaining the full reserved index domain.
-Independent complete components remain diagnosable after an unrelated body refusal;
-that restricted order does not establish whole-program readiness. Ordinary generic
-body refusals leave queued work intact; resource and invariant failures still stop it.
-An ambient-transaction diagnostic still suppresses subsequent transaction-ownership
-checks for that drive to avoid cascading reports.
-
-`lower/stmts.rs::emit_region_return` emits explicit, `try` and `require` exits
-after their values have been lowered. Lexical transaction depth selects whether
-to emit a commit; helper bodies have no owned region. The compiler's owner scan
-rejects a return with an open region. The verifier independently reconstructs
-transaction states and rejects inconsistent joins and uncommitted returns.
-
-The draft keeps a saturating charge of the bytes its retained bodies alone commit
-the image to (one byte per instruction plus one span row per span), snapshotted and
-restored with its transactions. After each settled body the compiler polls it; once
-the charge exceeds the image byte ceiling, compilation, `check`, and editor analysis
-stop lowering and report the `ImageBytes` resource limit without a snapshot. An invariant
-discovered in executed work is reported ahead of that stop and of parse or
-structural findings. A stop retains at most 105,865 instructions: the largest prefix
-under the charge (40,329 one-byte instructions) and the body that crossed it (at most
-65,536); the lowerer's in-flight buffer for a later body is unretained. This is a
-retention bound, not a capacity claim.
-
-One drive of the compiler serves three projections. `compile` and
-`compile_with_tests` report the first non-empty stage's diagnostics and encode
-the production or test-inclusive image. `analyze` reports the complete union of
-every stage's diagnostics and publishes the retained editor facts as an
-`AnalysisSnapshot`, never encoding. `check`, which `marrow check` calls, drives
-once with tests included, reports that same complete union, and encodes the
-test-inclusive image once for the verifier; it reads no editor fact, so the
-snapshot's fact retention bound does not refuse it.
-
-A tool sees a project through two layers. `marrow-project` is pure: manifest,
-module discovery, and the `.marrow/ids` ledger, all over bytes a caller supplies.
-`marrow-project-fs` reads those bytes from disk under fixed bounds and publishes
-the ledger. Both the CLI and the language server enter through `marrow-project-fs`.
+**Lifecycle, runner, and tools.** `marrow-lifecycle` prepares a verified image once
+and pairs it with the store it admits it for, so a store runs exactly the image the
+lifecycle admitted. `marrow-runner` dispatches an export over that pairing in its own
+process; `marrow-lsp` projects compiler snapshot facts and adds no semantics.
 
 ## Crates
 
@@ -264,12 +63,12 @@ the ledger. Both the CLI and the language server enter through `marrow-project-f
 | `marrow-vm` | The stack VM over a sealed image: source-mapped runtime faults, execution bounds (`value.rs::collection_within_limits`, `Value::structural_bytes`, `run.rs::bounded_list`), and durable execution of an export or a source test through the attachment the lifecycle prepared | [Execution limits](../language/execution-limits.md) |
 | `marrow-kernel` | The path over which every durable read and write passes: key and value codecs, the operation algebra, the transaction commit witness, commit recovery, the shared audit/export walk, and consuming private restore construction | [Storage](storage.md) |
 | `marrow-store` | The ordered-byte engine contract, the in-memory and redb engines, and the conformance suite both must pass | [Storage](storage.md) |
-| `marrow-lifecycle` | The verified image's store projection and its pairing with a native or in-memory store; provision, attach, import, audit, explicit recovery, and logical backup/restore. The envelope gates ordinary service on Active. Code-only rebinds retain ownership through read-only logical admission, writable preparation and verified metadata publication. `ProvisionError` retains a primary fault and optional failed cleanup independently. Recovery validates the exact current head, physical integrity and logical contents before fresh activation. | [Operations](../operations/README.md) |
+| `marrow-lifecycle` | The verified image's store projection and its pairing with a native or in-memory store; provision, attach, import, audit, explicit recovery, and logical backup/restore. The envelope gates ordinary service on Active | [Operations](../operations/README.md) |
 | `marrow-fs-journal` | Descriptor-rooted file publication: entry-name admission, the cooperative lock, and the pending-journal frame with replay and crash-debris classification | [Storage](storage.md) |
 | `marrow-project` | Manifest schema, module discovery, file identities, and the `.marrow/ids` ledger, all over caller-supplied bytes | [Projects](../tools/projects.md) |
 | `marrow-project-fs` | Bounded reads of the project root, manifest, source tree, and ledger, and the sole publisher of `.marrow/ids` | [Projects](../tools/projects.md) |
 | `marrow-local-wire` | The framed protocol between a runner and its client: framing, limits, one canonical JSON writer, completed bounded frames, and the closed request, response, fault, and incomplete grammar | [TypeScript client](../tools/typescript-client.md) |
-| `marrow-runner` | The runner binary and library: the supervised Unix-domain channel, export dispatch over a verified image, borrowed returned-value encoding through wire-owned value slots, collection admission, and canonical Map construction in `transfer.rs::decode_collection`. One-shot provision, import, audit, recovery, backup and restore share lifecycle owners; fallible output preserves uncertainty and cleanup evidence. Attachment settlement reports the invocation result independently of companion cleanup. | [Operations](../operations/README.md) |
+| `marrow-runner` | The runner binary and library: the supervised Unix-domain channel, export dispatch over a verified image, and the one-shot provision, import, audit, recovery, backup and restore commands over the lifecycle owners | [Operations](../operations/README.md) |
 | `marrow-lsp` | The standalone `marrow-lsp` executable: JSON-RPC over stdio, document sync, and diagnostics, formatting, hover, definition, completion, signature help, and document symbols projected from the compiler's `AnalysisSnapshot` | [Language server](../tools/lsp.md) |
 
 The language server is its own executable. The `marrow` CLI has no `lsp`
@@ -316,17 +115,10 @@ acquires the native owner lock and admits the prepared image against the stored
 binding before engine open. `marrow-runner` dispatches the export through the
 returned attachment over the persistent redb engine.
 
-The CLI's `cmd_run` materializes positional or stdin arguments against the
-verified export signature at the storeless and persistent call boundaries.
-Stdin supplies exactly one bare string parameter; the argument reader materializes
-at most 65,537 input bytes and admits at most 65,536 UTF-8 bytes. Standard input
-buffering may read ahead. The persistent path discovers the companion before
-consuming input. `outcome` checks returned bare-string size before rendering,
-bounds JSON data growth while writing, and returns rendering refusals to
-`cmd_run`, whose emitter writes and flushes records and fails on rendering or
-sink errors. Delivery failure can follow a completed
-invocation; it does not undo or retry it. Aggregate text materialization remains
-outside this string boundary ([CLI](../tools/cli.md)).
+In both, the CLI's `cmd_run` materializes positional or stdin arguments against
+the verified export signature and renders the outcome under its own byte limits
+([CLI](../tools/cli.md)). Delivery failure can follow a completed invocation; it
+does not undo or retry it.
 
 `marrow doctor --store <dir>` stops before any export runs. The CLI compiles
 and hands the image to `marrow-runner audit`; `marrow-lifecycle` admits it as
@@ -349,11 +141,9 @@ fallible and retains known results in a best-effort diagnostic on failure.
 `marrow recover --store <dir>` shares project capture, compilation and companion
 dispatch with doctor through `cmd_store`. The runner calls lifecycle recovery
 once and writes a fallible result retaining preservation moves even on failure.
-The lifecycle performs physical and logical validation under one owner, establishes
-fresh barriers and verifies exact envelope and already-admitted Head equality
-before returning. Native construction and consuming recovery retain the same
-validated projection/physical-number pair. It neither
-returns an application attachment nor rewrites the selected head
+The lifecycle performs physical and logical validation under one owner and
+establishes fresh barriers before returning. It neither returns an application
+attachment nor rewrites the selected head
 ([storage](storage.md#explicit-recovery)).
 
 ## Guides
@@ -382,40 +172,3 @@ types and demand from image bytes without consulting compiler state. Diagnostic
 code spellings live in `marrow-codes`. The language server projects compiler
 snapshot facts and owns their protocol representation and document state; a
 missing semantic editor fact belongs in `marrow-compile`.
-
-The server's current analysis is pending, a ready snapshot, or a typed resource
-stop for the current input revision. Requests use the same reauthorization and
-outbound-credit path for both completed outcomes. The exclusive publication
-plan owns stop notices and diagnostic retractions; a pending publication retains
-only its revision and is discarded if that revision is no longer current.
-
-## Artifact fence
-
-The [resource fill pass](../../crates/marrow-compile/src/types/build.rs) publishes
-group identities after resolving field types. Generic fields may have already
-built the metadata directory, so a successful fill phase invalidates that cache
-once if it published groups. The next metadata query rebuilds from the completed
-owners; later queries reuse the directory. A phase without groups retains the
-existing classification.
-
-The compiler captures public aggregate parameter and bound durable value roots
-during signature and binding resolution. After signature construction commits,
-`TypeMetadataSession` walks their shared resolved value graph, preserving
-metadata invariant failures and reporting a source refusal for nominal-bearing
-boundaries. It follows actual fields, payloads and collection components;
-phantom generic arguments are validated as metadata but are not value edges.
-The language reference owns the supported
-[nominal boundaries](../language/types-and-values.md#aliases-and-nominal-ints).
-
-Compilation records typed completion artifacts for its prerequisites.
-`SignaturesComplete` is a zero-size token available only when every declared
-function signature was accepted; it is separate from the registry used to
-resolve calls.
-
-An ordinary refused signature remains in the declaration ledger and does not
-itself stop lowering other declarations. Shared instantiation limits, resource
-limits and invariant failures can stop remaining work, including later bodies
-and deferred reporting passes. Before constructing a `CheckedProgram`, the
-semantic driver requires an empty diagnostic terminal and all required
-artifacts; artifact availability is not inferred from diagnostic emptiness.
-`encode` consumes that checked program.

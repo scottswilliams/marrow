@@ -1,3 +1,8 @@
+//! Type aliases: each supported alias is stored as a shared global terminal name
+//! and an optionality. Chains normalize iteratively and unsupported target shapes
+//! refuse before dependent fills, so type consumers resolve written parameters
+//! before aliases and never allocate an expanded alias tree.
+
 use super::*;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
