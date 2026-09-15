@@ -8,12 +8,14 @@
 //! and rejects a malformed or hostile image at the earliest phase whose invariant
 //! it violates, with a typed [`VerifyRejection`].
 
+mod interface;
 mod reader;
 mod reject;
 mod sealed;
 mod verify;
 mod vtype;
 
+pub use interface::interface_of;
 pub use marrow_image::{
     CeilingDescriptor, CeilingId, DemandAtom, DemandSetId, DemandView, DurableContractId,
     DurableIndexComponent, ExportDemand, ExportId, ImageId, ImageType, LedgerIdBytes,

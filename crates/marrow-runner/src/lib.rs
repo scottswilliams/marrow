@@ -34,7 +34,7 @@ pub use attach::AttachedService;
 pub use attach_ephemeral::AttachedEphemeralService;
 pub use channel::{AcceptError, Channel, Connection, Deadlines, Handler, LaunchSecrets, mint_id};
 pub use client::{AttachCompletion, attach_and_call};
-pub use descriptor::{Service, interface_of};
+pub use descriptor::Service;
 pub use ephemeral_client::{EphemeralCall, EphemeralSession};
 pub use marrow_local_wire::{DurableState, Id32, Json, LossClass};
 pub use refusal::RefusalService;

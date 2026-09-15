@@ -6,22 +6,12 @@
 //! TypeScript client (`client.mts`) beside the pinned Node supervision module
 //! (`marrow-supervisor.mjs` + its `.d.mts` declarations) into the output
 //! directory (default `client`). Stable inputs yield byte-identical output.
-//!
-//! The interface reconstruction here is the same thin projection the runner
-//! performs at launch: both feed the image's export/record/enum facts to the one
-//! semantic owner, `marrow_image::Interface::build`. The projection is repeated
-//! rather than shared because the CLI must not link the runner (the CLI→runner
-//! Rust edge is a lane absence target); the transfer law and identity live only
-//! in `marrow-image`.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use marrow_image::{
-    CollectionShape, EnumShape, ExportSignature, FieldShape, ImageType, Interface, InterfaceError,
-    RecordShape, RootShape, VariantShape,
-};
-use marrow_verify::{RetShape, VerifiedImage};
+use marrow_image::InterfaceError;
+use marrow_verify::interface_of;
 
 use crate::tsgen::{self, ExportName};
 
@@ -134,101 +124,6 @@ pub(crate) fn client(rest: &[String]) -> ExitCode {
         println!("{}", path.display());
     }
     ExitCode::SUCCESS
-}
-
-/// Reconstruct the wire interface from a verified image through its public
-/// accessors, feeding the single transfer/identity owner in `marrow-image`.
-fn interface_of(image: &VerifiedImage) -> Result<Interface, InterfaceError> {
-    let records: Vec<RecordShape> = image
-        .record_types()
-        .iter()
-        .map(|record| RecordShape {
-            fields: record
-                .fields()
-                .iter()
-                .map(|field| FieldShape {
-                    name: field.name.to_string(),
-                    ty: field.ty,
-                    required: field.required,
-                })
-                .collect(),
-        })
-        .collect();
-    let enums: Vec<EnumShape> = image
-        .enums()
-        .iter()
-        .map(|enum_type| EnumShape {
-            variants: enum_type
-                .variants()
-                .iter()
-                .map(|variant| VariantShape {
-                    name: variant.name.to_string(),
-                    category: variant.category,
-                    payload: variant.payload.clone(),
-                })
-                .collect(),
-        })
-        .collect();
-    let collections: Vec<CollectionShape> =
-        image.collections().iter().map(collection_shape).collect();
-    let roots: Vec<RootShape> = image
-        .roots()
-        .iter()
-        .map(|root| RootShape {
-            name: root.name().to_string(),
-            keys: root.keys().to_vec(),
-        })
-        .collect();
-    let exports: Vec<ExportSignature> = image
-        .exports()
-        .iter()
-        .map(|export| {
-            let function = image
-                .function(export.function())
-                .expect("verified export function")
-                .body();
-            ExportSignature {
-                id: export.id(),
-                params: function.params().to_vec(),
-                ret: ret_to_image(function.ret()),
-                demand_id: export.demand_id(),
-            }
-        })
-        .collect();
-    Interface::build(exports, &records, &enums, &collections, &roots)
-}
-
-/// Project a sealed collection type into the interface builder's [`CollectionShape`].
-fn collection_shape(collection: &marrow_verify::SealedCollectionType) -> CollectionShape {
-    match *collection {
-        marrow_verify::SealedCollectionType::List { elem } => CollectionShape::List { elem },
-        marrow_verify::SealedCollectionType::Map { key, value } => {
-            CollectionShape::Map { key, value }
-        }
-    }
-}
-
-fn ret_to_image(ret: RetShape) -> ImageType {
-    match ret {
-        RetShape::Unit => ImageType::Unit,
-        RetShape::Scalar { scalar, optional } => ImageType::Scalar { scalar, optional },
-        RetShape::Record { idx, optional } => ImageType::Record {
-            idx: marrow_image::TypeId::from_index(idx),
-            optional,
-        },
-        RetShape::Enum { idx, optional } => ImageType::Enum {
-            idx: marrow_image::EnumId::from_index(idx),
-            optional,
-        },
-        RetShape::Collection { idx, optional } => ImageType::Collection {
-            idx: marrow_image::CollTypeId::from_index(idx),
-            optional,
-        },
-        RetShape::Identity { root, optional } => ImageType::Identity {
-            root: marrow_image::RootId::from_index(root),
-            optional,
-        },
-    }
 }
 
 /// Render a typed interface error with the offending export named through the

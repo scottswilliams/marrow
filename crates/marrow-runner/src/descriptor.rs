@@ -1,115 +1,15 @@
 //! The served program: its verified image, its wire interface identity, and the
 //! export dispatch table.
 //!
-//! [`interface_of`] is the one production projection from a [`VerifiedImage`] to its
-//! [`Interface`] — the same reconstruction both real callers build the descriptor
-//! set through (the terminal and, at the next slice, the generated client). A
-//! [`Service`] pairs that image with its [`InterfaceId`] and a lookup from an
+//! A [`Service`] pairs a verified image with its [`InterfaceId`] and a lookup from an
 //! export's 32-byte identity to its function index and durable status, so a request
-//! dispatches on a verified id alone.
+//! dispatches on a verified id alone. The image-to-interface projection is
+//! `marrow_verify::interface_of`.
 
-use marrow_image::{
-    CollectionShape, EnumShape, ExportSignature, FieldShape, ImageType, Interface, InterfaceError,
-    RecordShape, RootShape, VariantShape,
-};
+use marrow_image::InterfaceError;
 use marrow_lifecycle::{PreparedImage, prepare};
 use marrow_local_wire::Id32;
-use marrow_verify::{FunctionIndex, RetShape, SealedCollectionType, VerifiedImage};
-
-/// Reconstruct the wire interface from a verified image using only its public
-/// accessors. The identity, transfer-graph law, and canonical encoding live in
-/// `marrow-image`; this is the thin projection that feeds it the image's export,
-/// record, enum, collection, and root facts.
-pub fn interface_of(image: &VerifiedImage) -> Result<Interface, InterfaceError> {
-    let records: Vec<RecordShape> = image
-        .record_types()
-        .iter()
-        .map(|record| RecordShape {
-            fields: record
-                .fields()
-                .iter()
-                .map(|field| FieldShape {
-                    name: field.name.to_string(),
-                    ty: field.ty,
-                    required: field.required,
-                })
-                .collect(),
-        })
-        .collect();
-    let enums: Vec<EnumShape> = image
-        .enums()
-        .iter()
-        .map(|enum_type| EnumShape {
-            variants: enum_type
-                .variants()
-                .iter()
-                .map(|variant| VariantShape {
-                    name: variant.name.to_string(),
-                    category: variant.category,
-                    payload: variant.payload.clone(),
-                })
-                .collect(),
-        })
-        .collect();
-    let collections: Vec<CollectionShape> = image
-        .collections()
-        .iter()
-        .map(|collection| match *collection {
-            SealedCollectionType::List { elem } => CollectionShape::List { elem },
-            SealedCollectionType::Map { key, value } => CollectionShape::Map { key, value },
-        })
-        .collect();
-    let roots: Vec<RootShape> = image
-        .roots()
-        .iter()
-        .map(|root| RootShape {
-            name: root.name().to_string(),
-            keys: root.keys().to_vec(),
-        })
-        .collect();
-    let exports: Vec<ExportSignature> = image
-        .exports()
-        .iter()
-        .map(|export| {
-            let function = image
-                .function(export.function())
-                .expect("verified export function")
-                .body();
-            ExportSignature {
-                id: export.id(),
-                params: function.params().to_vec(),
-                ret: ret_to_image(function.ret()),
-                demand_id: export.demand_id(),
-            }
-        })
-        .collect();
-    Interface::build(exports, &records, &enums, &collections, &roots)
-}
-
-/// Map a function's return shape to the bare-or-optional [`ImageType`] the interface
-/// builder consumes.
-pub(crate) fn ret_to_image(ret: RetShape) -> ImageType {
-    match ret {
-        RetShape::Unit => ImageType::Unit,
-        RetShape::Scalar { scalar, optional } => ImageType::Scalar { scalar, optional },
-        RetShape::Record { idx, optional } => ImageType::Record {
-            idx: marrow_image::TypeId::from_index(idx),
-            optional,
-        },
-        RetShape::Enum { idx, optional } => ImageType::Enum {
-            idx: marrow_image::EnumId::from_index(idx),
-            optional,
-        },
-        RetShape::Collection { idx, optional } => ImageType::Collection {
-            idx: marrow_image::CollTypeId::from_index(idx),
-            optional,
-        },
-        RetShape::Identity { root, optional } => ImageType::Identity {
-            root: marrow_image::RootId::from_index(root),
-            optional,
-        },
-    }
-}
+use marrow_verify::{FunctionIndex, VerifiedImage, interface_of};
 
 /// One dispatchable export: its stable identity, its function index, and whether its
 /// verified demand is durable (which the stock runner will not execute).

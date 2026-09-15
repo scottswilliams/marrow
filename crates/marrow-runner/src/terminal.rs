@@ -28,7 +28,6 @@ use marrow_verify::VerifiedImage;
 use marrow_vm::Value;
 
 use crate::channel::mint_id;
-use crate::descriptor::ret_to_image;
 use crate::transfer;
 
 #[cfg(test)]
@@ -854,7 +853,7 @@ fn decode_reply(
         .expect("verified export function")
         .body()
         .ret();
-    match ret_to_image(ret) {
+    match ret.image_type() {
         marrow_image::ImageType::Unit => match data {
             Json::Null => Ok(CallOutcome::Value(None)),
             _ => Err(ClientError::ReplyDecode),
