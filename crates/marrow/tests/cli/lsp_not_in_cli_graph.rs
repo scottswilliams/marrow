@@ -10,6 +10,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
+use crate::common::Project;
+
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
@@ -152,24 +154,22 @@ fn marrow_cannot_reach_the_language_server_or_lsp_types() {
 
 #[test]
 fn the_language_server_is_not_a_marrow_subcommand() {
-    let old_spelling = Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .args(["lsp", "--help"])
-        .output()
-        .expect("run the marrow CLI with the removed spelling");
+    let workspace = Project::new().materialize("lsp-subcommand");
+
+    let old_spelling = workspace.marrow(&["lsp", "--help"]);
     assert_eq!(
-        old_spelling.status.code(),
+        old_spelling.code(),
         Some(2),
         "the removed command must be an unknown-command usage failure"
     );
 
-    let help = Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .arg("--help")
-        .output()
-        .expect("run marrow --help");
-    assert!(help.status.success());
-    let stdout = String::from_utf8(help.stdout).expect("help is UTF-8");
+    let help = workspace.marrow(&["--help"]);
+    assert!(help.success());
     assert!(
-        !stdout.lines().any(|line| line.trim() == "marrow lsp"),
+        !help
+            .stdout_text()
+            .lines()
+            .any(|line| line.trim() == "marrow lsp"),
         "marrow --help must not advertise the removed subcommand"
     );
 }

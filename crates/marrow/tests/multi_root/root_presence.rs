@@ -1,4 +1,4 @@
-//! MR01: the presence lattice is keyed by `(root, key-slot)`, not by key-slot alone. Two
+//! The presence lattice is keyed by `(root, key-slot)`, not by key-slot alone. Two
 //! int-keyed roots (`^aaa` + `^bbb`) share a resource shape — a required `tag` and a sparse
 //! `note` — and a function reads a single key parameter `k` used against both roots, so the
 //! same key-slot addresses both. A presence guard proving `^aaa[k]` present must not be
@@ -9,10 +9,10 @@
 //! proof of its own and is refused at check time — the guard over one root never proves
 //! the sibling root's entry present.
 
-use marrow_verify::{SealedExport, VerifiedImage};
-use marrow_vm::{
-    DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
-};
+use marrow_verify::VerifiedImage;
+use marrow_vm::Value;
+
+use crate::common::{Project, Session};
 
 const IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
@@ -77,72 +77,9 @@ pub fn setAaaNoteIfPresent(k: int, n: string) {
 }
 "#;
 
-fn compile_verify() -> VerifiedImage {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        SOURCE.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    marrow_verify::verify(&compiled.image.bytes).expect("verify")
-}
-
-fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
-    image
-        .exports()
-        .iter()
-        .find(|export| {
-            image
-                .function(export.function())
-                .expect("verified function")
-                .body()
-                .name()
-                == name
-        })
-        .expect("export present")
-}
-
-struct DebugRun<'a>(&'a DurableRun);
-impl std::fmt::Debug for DebugRun<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
-            DurableRun::Ran(Ok(_)) => write!(f, "Ran(Ok(value))"),
-            DurableRun::Ran(Err(fault)) => write!(f, "Ran(Err({}))", fault.code().as_str()),
-            DurableRun::Parked => write!(f, "Parked"),
-            DurableRun::Failed(code) => write!(f, "Failed({})", code.as_str()),
-        }
-    }
-}
-
-fn run(
-    image: &VerifiedImage,
-    attachment: &mut MemoryAttachment,
-    name: &str,
-    args: Vec<Value>,
-) -> Option<Value> {
-    match run_export(attachment, export(image, name).id(), args)
-        .expect("the export is in the image")
-    {
-        DurableRun::Ran(Ok(value)) => value,
-        other => panic!("{name} did not run cleanly: {:?}", DebugRun(&other)),
-    }
-}
-
-fn attach(image: &VerifiedImage) -> MemoryAttachment {
-    match mint_ephemeral(prepare(image.clone())).into_mint() {
-        MintOutcome::Ready(attachment) => attachment,
-        MintOutcome::Storeless | MintOutcome::Parked => {
-            panic!("a two-root image must be executable, not parked")
-        }
-        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {}", cause.as_str()),
-    }
+/// An ephemeral session over the two-root fixture.
+fn open() -> Session {
+    Project::single(SOURCE).ids(IDS).session()
 }
 
 fn text(v: &str) -> Value {
@@ -162,32 +99,23 @@ fn absent() -> Option<Value> {
 /// touched.
 #[test]
 fn a_present_guarded_write_addresses_its_own_root_only() {
-    let image = compile_verify();
-    let mut store = attach(&image);
+    let mut session = open();
 
-    run(&image, &mut store, "putAaa", vec![Value::Int(1), text("a")]);
-    run(
-        &image,
-        &mut store,
-        "setAaaNoteIfPresent",
-        vec![Value::Int(1), text("hello")],
-    );
+    session.call("putAaa", vec![Value::Int(1), text("a")]);
+    session.call("setAaaNoteIfPresent", vec![Value::Int(1), text("hello")]);
 
     assert_eq!(
-        run(&image, &mut store, "aaaNote", vec![Value::Int(1)]),
+        session.call("aaaNote", vec![Value::Int(1)]),
         some_text("hello"),
         "the present-guarded sparse write committed on ^aaa",
     );
     // ^bbb[1] shares the key-slot but was never written.
     assert_eq!(
-        run(&image, &mut store, "bbbTag", vec![Value::Int(1)]),
+        session.call("bbbTag", vec![Value::Int(1)]),
         absent(),
         "the sibling root ^bbb was not phantom-written",
     );
-    assert_eq!(
-        run(&image, &mut store, "bbbNote", vec![Value::Int(1)]),
-        absent(),
-    );
+    assert_eq!(session.call("bbbNote", vec![Value::Int(1)]), absent(),);
 }
 
 /// A presence guard proving `^aaa[k]` present does not phantom-mark `^bbb[k]` present: a
@@ -217,29 +145,13 @@ pub fn setBbbNoteUnderAaaGuard(k: int, n: string) {{
 
 // --- Complete entries, design v2: a call ends facts by family, not by any write. ---
 
-/// Compile `source` against the two-root ledger: the verified image, or the
-/// diagnostic codes when it does not compile.
+/// Compile and verify `source` against the two-root ledger: the verified image, or
+/// the diagnostic codes when it does not compile.
 fn compile_source(source: &str) -> Result<VerifiedImage, Vec<String>> {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    match marrow_compile::compile(&project) {
-        Ok(compiled) => Ok(marrow_verify::verify(&compiled.image.bytes).expect("verify")),
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => Err(diagnostics
-            .iter()
-            .map(|d| d.code().as_str().to_string())
-            .collect()),
-        Err(other) => panic!("source-triggered compiler failures must remain diagnostics: {other}"),
-    }
+    Project::single(source)
+        .ids(IDS)
+        .try_image()
+        .map_err(|diagnostics| diagnostics.codes().iter().map(|c| c.to_string()).collect())
 }
 
 const TWO_ROOT_SCHEMA: &str = r#"resource Aaa {

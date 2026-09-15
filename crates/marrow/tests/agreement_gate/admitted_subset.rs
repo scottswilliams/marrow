@@ -9,9 +9,9 @@
 
 use marrow_codes::Code;
 use marrow_verify::VerifiedImage;
-use marrow_vm::{
-    DurableRun, MintOutcome, Value, fresh_test, mint_ephemeral, prepare, run_export, run_test,
-};
+use marrow_vm::{DurableRun, Value, fresh_test, prepare, run_test};
+
+use crate::common::{CallOutcome, Project};
 
 /// The shared durable graph every composition is written against: a flat keyed
 /// root with a required and a sparse field, a root-level group, a keyed branch,
@@ -123,6 +123,10 @@ enum Stage {
 /// part of the image), and verify. The verifier reconstructs demand and the
 /// transaction/flow laws from the image alone, so this reads the true
 /// checker⇒verifier relationship, not a compiler self-report.
+///
+/// The gate needs `compile_with_tests` and a *typed verifier rejection*, neither of
+/// which the shared `Project` harness exposes, so this driver captures and compiles
+/// directly.
 fn pipeline(ops: &str) -> Stage {
     let source = format!("{SCHEMA}\n{ops}");
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
@@ -199,8 +203,8 @@ struct Row {
 /// field read/write, group read/write, branch read/write, index lookup,
 /// identity write, bounded traversal) × contexts (outside a transaction, inside
 /// a mutating region, through test seed and observer calls, via an export call from a
-/// test body). Positive controls pin the executable subset; the three review-of-
-/// record defects pin the current divergence set.
+/// test body). Positive controls pin the executable subset; the recorded rows pin the
+/// current divergence set.
 fn matrix() -> Vec<Row> {
     vec![
         // ---- Positive controls: the admitted executable subset. ----
@@ -702,24 +706,14 @@ fn checker_acceptance_implies_verification_over_the_composition_matrix() {
 
 #[test]
 fn nominal_field_index_binding_is_refused_before_image_publication() {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let project = marrow_project::capture(
-        &manifest,
-        vec![marrow_project::CapturedFile::new(
-            "src/main.mw".to_string(),
-            NOMINAL_INDEX_SCHEMA.as_bytes().to_vec(),
-        )],
-        Some(NOMINAL_INDEX_IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) =
-        marrow_compile::compile(&project)
+    let Err(diagnostics) = Project::single(NOMINAL_INDEX_SCHEMA)
+        .ids(NOMINAL_INDEX_IDS)
+        .try_image()
     else {
         panic!("a nominal-bearing indexed binding must report a source diagnostic");
     };
-    assert_eq!(diagnostics.as_ref().len(), 1);
-    let diagnostic = &diagnostics.as_ref()[0];
+    assert_eq!(diagnostics.len(), 1, "{:?}", diagnostics.all());
+    let diagnostic = diagnostics.only("check.unsupported");
     assert_eq!(diagnostic.code(), marrow_codes::Code::CheckUnsupported);
     assert_eq!(diagnostic.file().as_str(), "src/main.mw");
     assert_eq!((diagnostic.line(), diagnostic.column()), (8, 1));
@@ -733,102 +727,42 @@ fn nominal_field_index_binding_is_refused_before_image_publication() {
 /// relies on — each call is its own boundary — proven at the invocation level.
 #[test]
 fn a_faulting_export_invocation_rolls_back_without_disturbing_a_prior_commit() {
-    let Stage::Verified(image) = pipeline(
-        "pub fn shelve(id: int, title: string, isbn: string) {\n    \
+    let ops = "pub fn shelve(id: int, title: string, isbn: string) {\n    \
              transaction {\n        ^books[id] = Book(title: title, isbn: isbn)\n    }\n}\n\n\
          pub fn badUpdate(id: int, divisor: int) {\n    transaction {\n        \
              place m = ^books[id]\n        if exists(m) {\n            \
              m.title = \"changed\"\n            \
              m.details.pages = 100 / divisor\n        }\n    }\n}\n\n\
-         pub fn titleOf(id: int): string? {\n    return ^books[id].title\n}",
-    ) else {
-        panic!("the rollback-journey program must verify");
-    };
-
-    let MintOutcome::Ready(mut attachment) = mint_ephemeral(prepare((*image).clone())).into_mint()
-    else {
-        panic!("the books root must mint an executable attachment");
-    };
+         pub fn titleOf(id: int): string? {\n    return ^books[id].title\n}";
+    let mut session = Project::single(&format!("{SCHEMA}\n{ops}"))
+        .ids(IDS)
+        .session();
 
     // Commit an entry.
     assert!(matches!(
-        run_export(
-            &mut attachment,
-            export_by_name(&image, "shelve").id(),
+        session.try_call(
+            "shelve",
             vec![
                 Value::Int(1),
                 Value::Text("first".into()),
                 Value::Text("i1".into())
             ],
         ),
-        Some(DurableRun::Ran(Ok(_))),
+        CallOutcome::Value(_),
     ));
 
     // A mutating invocation that faults before its commit (a divide-by-zero) rolls its
     // staged title write back.
-    match run_export(
-        &mut attachment,
-        export_by_name(&image, "badUpdate").id(),
-        vec![Value::Int(1), Value::Int(0)],
-    )
-    .expect("the export is in the image")
-    {
-        DurableRun::Ran(Err(fault)) => assert_eq!(
-            fault.code(),
-            Code::RunDivideByZero,
-            "the fault reached the caller"
-        ),
-        other => panic!("badUpdate must fault, not {:?}", DurableRunDebug(&other)),
-    }
+    assert_eq!(
+        session.try_call("badUpdate", vec![Value::Int(1), Value::Int(0)]),
+        CallOutcome::Fault(Code::RunDivideByZero),
+        "the fault reached the caller"
+    );
 
     // The prior commit survives, unchanged by the rolled-back invocation.
-    match run_export(
-        &mut attachment,
-        export_by_name(&image, "titleOf").id(),
-        vec![Value::Int(1)],
-    )
-    .expect("the export is in the image")
-    {
-        DurableRun::Ran(Ok(Some(Value::Optional(Some(title))))) => {
-            assert_eq!(
-                *title,
-                Value::Text("first".into()),
-                "the rolled-back write left no trace"
-            )
-        }
-        other => panic!(
-            "titleOf must read the committed-only value, got {:?}",
-            DurableRunDebug(&other)
-        ),
-    }
+    assert_eq!(
+        session.call("titleOf", vec![Value::Int(1)]),
+        Some(Value::Optional(Some(Box::new(Value::Text("first".into()))))),
+        "the rolled-back write left no trace"
+    );
 }
-
-/// The verified export whose function is named `name`. The image carries no export
-/// name, so the function directory resolves the name to its function index.
-fn export_by_name<'a>(image: &'a VerifiedImage, name: &str) -> &'a marrow_verify::SealedExport {
-    image
-        .exports()
-        .iter()
-        .find(|export| {
-            image
-                .function(export.function())
-                .expect("verified function")
-                .body()
-                .name()
-                == name
-        })
-        .unwrap_or_else(|| panic!("export `{name}` is present"))
-}
-
-impl std::fmt::Debug for DurableRunDebug<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
-            DurableRun::Ran(Ok(value)) => write!(f, "Ran(Ok({value:?}))"),
-            DurableRun::Ran(Err(fault)) => write!(f, "Ran(Err({}))", fault.code().as_str()),
-            DurableRun::Parked => write!(f, "Parked"),
-            DurableRun::Failed(code) => write!(f, "Failed({})", code.as_str()),
-        }
-    }
-}
-
-struct DurableRunDebug<'a>(&'a DurableRun);

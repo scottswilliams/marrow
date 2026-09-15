@@ -16,11 +16,8 @@
 #[path = "groups/presence_lifetime.rs"]
 mod presence_lifetime;
 
-use marrow_compile::SourceDiagnostic;
-use marrow_verify::VerifiedImage;
-use marrow_vm::{
-    DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
-};
+use crate::common::{CallOutcome, Diagnostics, Project};
+use marrow_vm::Value;
 
 // application, product, the top-level `title` field, the composite root placement and its
 // two key columns, the `details` group and its two sparse leaves, then the `notes` branch
@@ -134,81 +131,17 @@ pub fn noteText(shelf: int, id: int, nid: string): string? {
 }
 "#;
 
-fn compile_verify(source: &str, ids: &str) -> VerifiedImage {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(ids.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    marrow_verify::verify(&compiled.image.bytes).expect("verify")
-}
-
-struct DebugRun<'a>(&'a DurableRun);
-impl std::fmt::Debug for DebugRun<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
-            DurableRun::Ran(Ok(_)) => write!(f, "Ran(Ok(value))"),
-            DurableRun::Ran(Err(fault)) => write!(f, "Ran(Err({}))", fault.code().as_str()),
-            DurableRun::Parked => write!(f, "Parked"),
-            DurableRun::Failed(code) => write!(f, "Failed({})", code.as_str()),
-        }
-    }
-}
-
-fn attach(image: &VerifiedImage) -> MemoryAttachment {
-    match mint_ephemeral(prepare(image.clone())).into_mint() {
-        MintOutcome::Ready(attachment) => attachment,
-        MintOutcome::Storeless | MintOutcome::Parked => {
-            panic!("a flat root with a root-level group must be executable")
-        }
-        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {}", cause.as_str()),
-    }
-}
-
-fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a marrow_verify::SealedExport {
+/// The sealed instruction stream of the export whose entry function is named `name`.
+fn instrs_of<'a>(
+    image: &'a marrow_verify::VerifiedImage,
+    name: &str,
+) -> &'a [marrow_verify::SealedInstr] {
     image
-        .exports()
+        .functions()
         .iter()
-        .find(|export| {
-            image
-                .function(export.function())
-                .expect("verified function")
-                .body()
-                .name()
-                == name
-        })
-        .expect("export present")
-}
-
-fn run(
-    image: &VerifiedImage,
-    attachment: &mut MemoryAttachment,
-    name: &str,
-    args: Vec<Value>,
-) -> Option<Value> {
-    match run_export(attachment, export(image, name).id(), args)
+        .find(|function| function.name() == name)
         .expect("the export is in the image")
-    {
-        DurableRun::Ran(Ok(value)) => value,
-        other => panic!("{name} did not run cleanly: {:?}", DebugRun(&other)),
-    }
-}
-
-fn run_result(
-    image: &VerifiedImage,
-    attachment: &mut MemoryAttachment,
-    name: &str,
-    args: Vec<Value>,
-) -> DurableRun {
-    run_export(attachment, export(image, name).id(), args).expect("the export is in the image")
+        .instrs()
 }
 
 fn i(n: i64) -> Value {
@@ -246,64 +179,50 @@ fn as_str(value: Option<Value>) -> Option<String> {
 /// top-level field reads independently.
 #[test]
 fn a_group_bearing_entry_stores_and_reads_whole_and_by_leaf() {
-    let image = compile_verify(SOURCE, IDS);
-    let mut store = attach(&image);
-    run(
-        &image,
-        &mut store,
+    let mut session = Project::single(SOURCE).ids(IDS).session();
+    session.call(
         "setBook",
         vec![i(1), i(7), s("Small Gods"), i(384), s("en")],
     );
 
     assert_eq!(
-        as_str(run(&image, &mut store, "readTitle", vec![i(1), i(7)])),
+        as_str(session.call("readTitle", vec![i(1), i(7)])),
         Some("Small Gods".to_string())
     );
     assert_eq!(
-        as_int(run(&image, &mut store, "readPages", vec![i(1), i(7)])),
+        as_int(session.call("readPages", vec![i(1), i(7)])),
         Some(384)
     );
     assert_eq!(
-        as_str(run(&image, &mut store, "readLanguage", vec![i(1), i(7)])),
+        as_str(session.call("readLanguage", vec![i(1), i(7)])),
         Some("en".to_string())
     );
     // The whole group materializes and its leaf projects.
     assert_eq!(
-        as_int(run(
-            &image,
-            &mut store,
-            "detailPagesWhole",
-            vec![i(1), i(7)]
-        )),
+        as_int(session.call("detailPagesWhole", vec![i(1), i(7)])),
         Some(384)
     );
     // A distinct composite key names a distinct entry: it reads absent.
-    assert_eq!(
-        as_int(run(&image, &mut store, "readPages", vec![i(2), i(7)])),
-        None
-    );
+    assert_eq!(as_int(session.call("readPages", vec![i(2), i(7)])), None);
 }
 
 /// A group-leaf assignment through a place proved present updates the addressed leaf and
 /// preserves the sibling leaf.
 #[test]
 fn a_group_leaf_assignment_preserves_the_sibling_leaf() {
-    let image = compile_verify(SOURCE, IDS);
-    let mut store = attach(&image);
-    run(
-        &image,
-        &mut store,
+    let mut session = Project::single(SOURCE).ids(IDS).session();
+    session.call(
         "setBook",
         vec![i(1), i(7), s("Small Gods"), i(384), s("en")],
     );
-    run(&image, &mut store, "setPages", vec![i(1), i(7), i(400)]);
+    session.call("setPages", vec![i(1), i(7), i(400)]);
 
     assert_eq!(
-        as_int(run(&image, &mut store, "readPages", vec![i(1), i(7)])),
+        as_int(session.call("readPages", vec![i(1), i(7)])),
         Some(400)
     );
     assert_eq!(
-        as_str(run(&image, &mut store, "readLanguage", vec![i(1), i(7)])),
+        as_str(session.call("readLanguage", vec![i(1), i(7)])),
         Some("en".to_string()),
         "the sibling leaf survives the leaf read-modify-write"
     );
@@ -312,22 +231,16 @@ fn a_group_leaf_assignment_preserves_the_sibling_leaf() {
 /// Clearing a sparse group leaf clears only that leaf; the sibling leaf survives.
 #[test]
 fn clearing_a_group_leaf_clears_only_that_leaf() {
-    let image = compile_verify(SOURCE, IDS);
-    let mut store = attach(&image);
-    run(
-        &image,
-        &mut store,
+    let mut session = Project::single(SOURCE).ids(IDS).session();
+    session.call(
         "setBook",
         vec![i(1), i(7), s("Small Gods"), i(384), s("en")],
     );
-    run(&image, &mut store, "clearPages", vec![i(1), i(7)]);
+    session.call("clearPages", vec![i(1), i(7)]);
 
+    assert_eq!(as_int(session.call("readPages", vec![i(1), i(7)])), None);
     assert_eq!(
-        as_int(run(&image, &mut store, "readPages", vec![i(1), i(7)])),
-        None
-    );
-    assert_eq!(
-        as_str(run(&image, &mut store, "readLanguage", vec![i(1), i(7)])),
+        as_str(session.call("readLanguage", vec![i(1), i(7)])),
         Some("en".to_string())
     );
 }
@@ -336,49 +249,31 @@ fn clearing_a_group_leaf_clears_only_that_leaf() {
 /// leaves the assigned value omits, without disturbing the top-level field or the branch.
 #[test]
 fn a_whole_group_replace_is_exact_and_leaves_siblings_intact() {
-    let image = compile_verify(SOURCE, IDS);
-    let mut store = attach(&image);
-    run(
-        &image,
-        &mut store,
+    let mut session = Project::single(SOURCE).ids(IDS).session();
+    session.call(
         "setBook",
         vec![i(1), i(7), s("Small Gods"), i(384), s("en")],
     );
-    run(
-        &image,
-        &mut store,
-        "addNote",
-        vec![i(1), i(7), s("n1"), s("hello")],
-    );
+    session.call("addNote", vec![i(1), i(7), s("n1"), s("hello")]);
     // Replace details with only `pages` supplied: `language` is dropped.
-    run(
-        &image,
-        &mut store,
-        "replaceDetails",
-        vec![i(1), i(7), i(512)],
-    );
+    session.call("replaceDetails", vec![i(1), i(7), i(512)]);
 
     assert_eq!(
-        as_int(run(&image, &mut store, "readPages", vec![i(1), i(7)])),
+        as_int(session.call("readPages", vec![i(1), i(7)])),
         Some(512)
     );
     assert_eq!(
-        as_str(run(&image, &mut store, "readLanguage", vec![i(1), i(7)])),
+        as_str(session.call("readLanguage", vec![i(1), i(7)])),
         None,
         "the omitted leaf is dropped by exact replacement"
     );
     assert_eq!(
-        as_str(run(&image, &mut store, "readTitle", vec![i(1), i(7)])),
+        as_str(session.call("readTitle", vec![i(1), i(7)])),
         Some("Small Gods".to_string()),
         "the top-level field is untouched by a whole-group replace"
     );
     assert_eq!(
-        as_str(run(
-            &image,
-            &mut store,
-            "noteText",
-            vec![i(1), i(7), s("n1")]
-        )),
+        as_str(session.call("noteText", vec![i(1), i(7), s("n1")])),
         Some("hello".to_string()),
         "the keyed branch descendant is untouched by a whole-group replace"
     );
@@ -387,41 +282,22 @@ fn a_whole_group_replace_is_exact_and_leaves_siblings_intact() {
 /// Erasing a group clears only its leaves; the top-level field and the branch survive.
 #[test]
 fn erasing_a_group_clears_only_its_leaves() {
-    let image = compile_verify(SOURCE, IDS);
-    let mut store = attach(&image);
-    run(
-        &image,
-        &mut store,
+    let mut session = Project::single(SOURCE).ids(IDS).session();
+    session.call(
         "setBook",
         vec![i(1), i(7), s("Small Gods"), i(384), s("en")],
     );
-    run(
-        &image,
-        &mut store,
-        "addNote",
-        vec![i(1), i(7), s("n1"), s("hello")],
-    );
-    run(&image, &mut store, "eraseDetails", vec![i(1), i(7)]);
+    session.call("addNote", vec![i(1), i(7), s("n1"), s("hello")]);
+    session.call("eraseDetails", vec![i(1), i(7)]);
 
+    assert_eq!(as_int(session.call("readPages", vec![i(1), i(7)])), None);
+    assert_eq!(as_str(session.call("readLanguage", vec![i(1), i(7)])), None);
     assert_eq!(
-        as_int(run(&image, &mut store, "readPages", vec![i(1), i(7)])),
-        None
-    );
-    assert_eq!(
-        as_str(run(&image, &mut store, "readLanguage", vec![i(1), i(7)])),
-        None
-    );
-    assert_eq!(
-        as_str(run(&image, &mut store, "readTitle", vec![i(1), i(7)])),
+        as_str(session.call("readTitle", vec![i(1), i(7)])),
         Some("Small Gods".to_string())
     );
     assert_eq!(
-        as_str(run(
-            &image,
-            &mut store,
-            "noteText",
-            vec![i(1), i(7), s("n1")]
-        )),
+        as_str(session.call("noteText", vec![i(1), i(7), s("n1")])),
         Some("hello".to_string())
     );
 }
@@ -431,48 +307,27 @@ fn erasing_a_group_clears_only_its_leaves() {
 /// descendant survives (whole assignment replaces only the entry's own payload).
 #[test]
 fn a_whole_entry_assignment_erases_omitted_group_leaves() {
-    let image = compile_verify(SOURCE, IDS);
-    let mut store = attach(&image);
-    run(
-        &image,
-        &mut store,
+    let mut session = Project::single(SOURCE).ids(IDS).session();
+    session.call(
         "setBook",
         vec![i(1), i(7), s("Small Gods"), i(384), s("en")],
     );
-    run(
-        &image,
-        &mut store,
-        "addNote",
-        vec![i(1), i(7), s("n1"), s("hello")],
-    );
+    session.call("addNote", vec![i(1), i(7), s("n1"), s("hello")]);
     // Whole-assign a value with details omitted: the group defaults to vacant leaves.
-    run(
-        &image,
-        &mut store,
-        "setBookNoDetails",
-        vec![i(1), i(7), s("Reaper Man")],
-    );
+    session.call("setBookNoDetails", vec![i(1), i(7), s("Reaper Man")]);
 
     assert_eq!(
-        as_str(run(&image, &mut store, "readTitle", vec![i(1), i(7)])),
+        as_str(session.call("readTitle", vec![i(1), i(7)])),
         Some("Reaper Man".to_string())
     );
     assert_eq!(
-        as_int(run(&image, &mut store, "readPages", vec![i(1), i(7)])),
+        as_int(session.call("readPages", vec![i(1), i(7)])),
         None,
         "the whole assignment drops the omitted group's leaves"
     );
+    assert_eq!(as_str(session.call("readLanguage", vec![i(1), i(7)])), None);
     assert_eq!(
-        as_str(run(&image, &mut store, "readLanguage", vec![i(1), i(7)])),
-        None
-    );
-    assert_eq!(
-        as_str(run(
-            &image,
-            &mut store,
-            "noteText",
-            vec![i(1), i(7), s("n1")]
-        )),
+        as_str(session.call("noteText", vec![i(1), i(7), s("n1")])),
         Some("hello".to_string()),
         "whole assignment leaves the keyed branch descendant in place"
     );
@@ -483,28 +338,21 @@ fn a_whole_entry_assignment_erases_omitted_group_leaves() {
 /// fails, nothing is written, and no entry is conjured from a leaf write.
 #[test]
 fn a_group_leaf_over_an_absent_entry_reads_absent_and_writes_are_no_ops() {
-    let image = compile_verify(SOURCE, IDS);
-    let mut store = attach(&image);
-    assert_eq!(
-        as_int(run(&image, &mut store, "readPages", vec![i(9), i(9)])),
-        None
-    );
+    let mut session = Project::single(SOURCE).ids(IDS).session();
+    assert_eq!(as_int(session.call("readPages", vec![i(9), i(9)])), None);
 
     // The guarded leaf write over the absent entry runs cleanly but stores nothing.
-    match run_result(&image, &mut store, "setPages", vec![i(9), i(9), i(1)]) {
-        DurableRun::Ran(Ok(_)) => {}
-        other => panic!(
-            "a group-leaf write over an absent entry must run cleanly: {:?}",
-            DebugRun(&other)
-        ),
+    match session.try_call("setPages", vec![i(9), i(9), i(1)]) {
+        CallOutcome::Value(_) => {}
+        other => panic!("a group-leaf write over an absent entry must run cleanly: {other:?}"),
     }
     assert_eq!(
-        as_int(run(&image, &mut store, "readPages", vec![i(9), i(9)])),
+        as_int(session.call("readPages", vec![i(9), i(9)])),
         None,
         "a group-leaf write conjures no entry"
     );
     assert_eq!(
-        as_str(run(&image, &mut store, "readTitle", vec![i(9), i(9)])),
+        as_str(session.call("readTitle", vec![i(9), i(9)])),
         None,
         "the entry remains absent after a group-leaf write"
     );
@@ -528,37 +376,34 @@ const SCHEMA: &str = r#"resource Book {
 store ^books[shelf: int, id: int]: Book
 "#;
 
-/// Compile `SCHEMA` plus `body` and return the diagnostics; the caller asserts the
-/// expected rejection. `body` is expected to fail to compile.
-fn compile_diagnostics(body: &str) -> Vec<SourceDiagnostic> {
+/// Compile `SCHEMA` plus `body` and return the rejection diagnostics; the caller asserts
+/// the expected rejection. `body` is expected to fail to compile.
+fn compile_diagnostics(body: &str) -> Diagnostics {
     compile_diagnostics_with_schema(SCHEMA, body)
 }
 
-fn compile_diagnostics_with_schema(schema: &str, body: &str) -> Vec<SourceDiagnostic> {
-    let source = format!("{schema}\n{body}");
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.into_bytes(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    match marrow_compile::compile(&project) {
-        Ok(_) => {
-            panic!("the source must be rejected with a diagnostic")
-        }
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
-        Err(
-            marrow_compile::CompileFailure::Invariant(_)
-            | marrow_compile::CompileFailure::ResourceLimit(_),
-        ) => {
-            panic!("source-triggered compiler failures must remain diagnostics")
-        }
+fn compile_diagnostics_with_schema(schema: &str, body: &str) -> Diagnostics {
+    match Project::single(&format!("{schema}\n{body}"))
+        .ids(IDS)
+        .try_image()
+    {
+        Ok(_) => panic!("the source must be rejected with a diagnostic"),
+        Err(diagnostics) => diagnostics,
+    }
+}
+
+/// The diagnostic codes `SCHEMA` plus `body` compiles to; empty when it compiles.
+fn compile_codes(body: &str) -> Vec<String> {
+    match Project::single(&format!("{SCHEMA}\n{body}"))
+        .ids(IDS)
+        .try_image()
+    {
+        Ok(_) => Vec::new(),
+        Err(diagnostics) => diagnostics
+            .codes()
+            .iter()
+            .map(|code| code.to_string())
+            .collect(),
     }
 }
 
@@ -575,7 +420,12 @@ fn a_read_projecting_off_a_stored_durable_field_is_a_located_type_error() {
     let hit = diagnostics
         .iter()
         .find(|d| d.code().as_str() == marrow_codes::Code::CheckType.as_str())
-        .unwrap_or_else(|| panic!("a check.type diagnostic for the projection: {diagnostics:?}"));
+        .unwrap_or_else(|| {
+            panic!(
+                "a check.type diagnostic for the projection: {:?}",
+                diagnostics.all()
+            )
+        });
     assert!(
         hit.line() >= 1 && hit.column() >= 1,
         "the rejection carries a located span",
@@ -592,7 +442,8 @@ fn a_write_through_a_stored_durable_field_projection_is_located() {
     );
     assert!(
         diagnostics.iter().any(|d| d.line() >= 1 && d.column() >= 1),
-        "the write is refused with a located diagnostic: {diagnostics:?}",
+        "the write is refused with a located diagnostic: {:?}",
+        diagnostics.all(),
     );
 }
 
@@ -606,7 +457,8 @@ fn a_delete_through_a_stored_durable_field_projection_is_located() {
     );
     assert!(
         diagnostics.iter().any(|d| d.line() >= 1 && d.column() >= 1),
-        "the delete is refused with a located diagnostic: {diagnostics:?}",
+        "the delete is refused with a located diagnostic: {:?}",
+        diagnostics.all(),
     );
 }
 
@@ -622,7 +474,12 @@ fn a_missing_group_leaf_still_reports_its_group_diagnostic() {
     let hit = diagnostics
         .iter()
         .find(|d| d.code().as_str() == marrow_codes::Code::CheckType.as_str())
-        .unwrap_or_else(|| panic!("a check.type diagnostic for the group leaf: {diagnostics:?}"));
+        .unwrap_or_else(|| {
+            panic!(
+                "a check.type diagnostic for the group leaf: {:?}",
+                diagnostics.all()
+            )
+        });
     assert!(
         hit.line() >= 1 && hit.column() >= 1,
         "the rejection carries a located span",
@@ -630,36 +487,6 @@ fn a_missing_group_leaf_still_reports_its_group_diagnostic() {
 }
 
 // --- Complete entries: a group leaf is written through a place proved present. ---
-
-/// The diagnostic codes `SCHEMA` plus `body` compiles to; empty when it compiles.
-fn compile_codes(body: &str) -> Vec<String> {
-    let source = format!("{SCHEMA}\n{body}");
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.into_bytes(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    match marrow_compile::compile(&project) {
-        Ok(_) => Vec::new(),
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics
-            .iter()
-            .map(|d| d.code().as_str().to_string())
-            .collect(),
-        Err(
-            marrow_compile::CompileFailure::Invariant(_)
-            | marrow_compile::CompileFailure::ResourceLimit(_),
-        ) => {
-            panic!("source-triggered compiler failures must remain diagnostics")
-        }
-    }
-}
 
 /// A group is present exactly when its entry is present, so a group-leaf write needs the
 /// same presence fact a field write does: the inline `^books[shelf, id].details.pages = p`
@@ -691,55 +518,47 @@ fn a_group_leaf_write_through_a_place_proven_present_updates_the_leaf() {
 }
 "#
     );
-    let image = compile_verify(&source, IDS);
-    let proven = image
-        .functions()
-        .iter()
-        .find(|function| function.name() == "setPagesProven")
-        .expect("the proven export is in the image");
-    assert!(
-        !proven
-            .instrs()
+    let mut session = Project::single(&source).ids(IDS).session();
+    {
+        let proven = session
+            .image()
+            .functions()
             .iter()
-            .any(|instr| matches!(instr, marrow_verify::SealedInstr::BranchPresent(_))),
-        "a group-leaf write on a proven entry carries no absent-entry branch",
-    );
+            .find(|function| function.name() == "setPagesProven")
+            .expect("the proven export is in the image");
+        assert!(
+            !proven
+                .instrs()
+                .iter()
+                .any(|instr| matches!(instr, marrow_verify::SealedInstr::BranchPresent(_))),
+            "a group-leaf write on a proven entry carries no absent-entry branch",
+        );
+    }
 
-    let mut store = attach(&image);
-    run(
-        &image,
-        &mut store,
+    session.call(
         "setBook",
         vec![i(1), i(7), s("Small Gods"), i(381), s("en")],
     );
     assert_eq!(
-        run(
-            &image,
-            &mut store,
-            "setPagesProven",
-            vec![i(1), i(7), i(400)]
-        ),
+        session.call("setPagesProven", vec![i(1), i(7), i(400)]),
         Some(Value::Bool(true))
     );
     assert_eq!(
-        as_int(run(&image, &mut store, "readPages", vec![i(1), i(7)])),
+        as_int(session.call("readPages", vec![i(1), i(7)])),
         Some(400),
         "the leaf is updated"
     );
     assert_eq!(
-        as_str(run(&image, &mut store, "readLanguage", vec![i(1), i(7)])),
+        as_str(session.call("readLanguage", vec![i(1), i(7)])),
         Some("en".to_string()),
         "the sibling leaf survives"
     );
     assert_eq!(
-        run(&image, &mut store, "setPagesProven", vec![i(9), i(9), i(1)]),
+        session.call("setPagesProven", vec![i(9), i(9), i(1)]),
         Some(Value::Bool(false)),
         "an absent entry fails the guard and nothing is written"
     );
-    assert_eq!(
-        as_int(run(&image, &mut store, "readPages", vec![i(9), i(9)])),
-        None
-    );
+    assert_eq!(as_int(session.call("readPages", vec![i(9), i(9)])), None);
 }
 
 // The same ledger over a `details` group whose `pages` leaf is required.
@@ -793,67 +612,43 @@ pub fn note(shelf: int, id: int): string {
 }
 "#,
     );
-    let image = compile_verify(&source, IDS);
-    for (name, keys) in [("put", 2), ("note", 3)] {
-        let code = image
-            .function(export(&image, name).function())
-            .expect("verified function")
-            .body()
-            .instrs();
-        let slots: Vec<_> = code
-            .iter()
-            .filter_map(|op| match op {
-                marrow_verify::SealedInstr::DurReadFieldPresent { key_slots, .. } => {
-                    Some(key_slots)
-                }
-                _ => None,
-            })
-            .collect();
-        assert_eq!(slots.len(), 1);
-        assert_eq!(slots[0].len(), keys);
+    let mut session = Project::single(&source).ids(IDS).session();
+    {
+        let image = session.image();
+        for (name, keys) in [("put", 2), ("note", 3)] {
+            let code = instrs_of(image, name);
+            let slots: Vec<_> = code
+                .iter()
+                .filter_map(|op| match op {
+                    marrow_verify::SealedInstr::DurReadFieldPresent { key_slots, .. } => {
+                        Some(key_slots)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(slots.len(), 1);
+            assert_eq!(slots[0].len(), keys);
+        }
+        let code = instrs_of(image, "pages");
+        assert_eq!(
+            code.iter()
+                .filter(|op| matches!(op, marrow_verify::SealedInstr::DurReadGroupPresent { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            code.iter()
+                .filter(|op| matches!(op, marrow_verify::SealedInstr::DurReadGroup(_)))
+                .count(),
+            1
+        );
     }
-    let code = image
-        .function(export(&image, "pages").function())
-        .expect("verified function")
-        .body()
-        .instrs();
-    assert_eq!(
-        code.iter()
-            .filter(|op| matches!(op, marrow_verify::SealedInstr::DurReadGroupPresent { .. }))
-            .count(),
-        1
-    );
-    assert_eq!(
-        code.iter()
-            .filter(|op| matches!(op, marrow_verify::SealedInstr::DurReadGroup(_)))
-            .count(),
-        1
-    );
-    let mut store = attach(&image);
-    assert_eq!(
-        run(&image, &mut store, "pages", vec![i(1), i(7)]),
-        Some(i(-1))
-    );
-    assert_eq!(
-        run(&image, &mut store, "note", vec![i(1), i(7)]),
-        Some(s("missing"))
-    );
-    assert_eq!(
-        run(&image, &mut store, "put", vec![i(1), i(7)]),
-        Some(s("Small Gods"))
-    );
-    assert_eq!(
-        run(&image, &mut store, "pages", vec![i(1), i(7)]),
-        Some(i(381))
-    );
-    assert_eq!(
-        run(&image, &mut store, "note", vec![i(1), i(7)]),
-        Some(s("read"))
-    );
-    assert_eq!(
-        run(&image, &mut store, "pages", vec![i(7), i(1)]),
-        Some(i(-1))
-    );
+    assert_eq!(session.call("pages", vec![i(1), i(7)]), Some(i(-1)));
+    assert_eq!(session.call("note", vec![i(1), i(7)]), Some(s("missing")));
+    assert_eq!(session.call("put", vec![i(1), i(7)]), Some(s("Small Gods")));
+    assert_eq!(session.call("pages", vec![i(1), i(7)]), Some(i(381)));
+    assert_eq!(session.call("note", vec![i(1), i(7)]), Some(s("read")));
+    assert_eq!(session.call("pages", vec![i(7), i(1)]), Some(i(-1)));
 }
 
 /// A group with a required leaf is part of every present entry, so it is erased only
@@ -873,25 +668,13 @@ pub fn dropDetails(shelf: int, id: int) {{
 }}
 "
     );
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.into_bytes(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let codes: Vec<String> = match marrow_compile::compile(&project) {
+    let codes: Vec<String> = match Project::single(&source).ids(IDS).try_image() {
         Ok(_) => Vec::new(),
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics
+        Err(diagnostics) => diagnostics
+            .codes()
             .iter()
-            .map(|d| d.code().as_str().to_string())
+            .map(|code| code.to_string())
             .collect(),
-        Err(other) => panic!("source-triggered compiler failures must remain diagnostics: {other}"),
     };
     assert_eq!(
         codes,

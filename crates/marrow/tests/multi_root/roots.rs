@@ -1,4 +1,4 @@
-//! MR01: a project may declare more than one `store` root, and the kernel executes
+//! A project may declare more than one `store` root, and the kernel executes
 //! over all of them. Each root is a distinct durable graph node with its own complete
 //! ledger identity, its own slot in the image DURABLE table, its own kernel
 //! `StoreSchema`, and its own name-keyed physical cell family. Two roots over two
@@ -12,12 +12,11 @@
 //! precise `check.type` rejection, never a silent confusion of two distinct durable
 //! addresses.
 
-use marrow_compile::SourceDiagnostic;
-use marrow_verify::{SealedExport, SealedSite, SealedSiteTarget, VerifiedImage};
-use marrow_vm::{
-    DurableRun, MemoryAttachment, MintOutcome, Value, fresh_test, mint_ephemeral, prepare,
-    run_export, run_test,
-};
+use marrow_codes::Code;
+use marrow_verify::{SealedSite, SealedSiteTarget, VerifiedImage};
+use marrow_vm::{DurableRun, Value, fresh_test, prepare, run_test};
+
+use crate::common::{CallOutcome, Diagnostics, Project, Session};
 
 const IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
@@ -91,105 +90,29 @@ pub fn putBothOrFail(id: int, key: string, n: string, c: int, boom: bool) {
 }
 "#;
 
-fn compile(source: &str, ids: &str) -> Result<marrow_compile::Compiled, Vec<SourceDiagnostic>> {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(ids.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    match marrow_compile::compile(&project) {
-        Ok(compiled) => Ok(compiled),
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => {
-            Err(diagnostics.into_vec())
-        }
-        Err(
-            marrow_compile::CompileFailure::Invariant(_)
-            | marrow_compile::CompileFailure::ResourceLimit(_),
-        ) => {
-            panic!("source-triggered compiler failures must remain diagnostics")
-        }
-    }
-}
-
+/// Capture, compile, and verify one durable `src/main.mw` through the production path.
 fn verify(source: &str, ids: &str) -> VerifiedImage {
-    let compiled = compile(source, ids).unwrap_or_else(|diagnostics| {
-        panic!("expected a two-root project to compile, got {diagnostics:#?}");
-    });
-    marrow_verify::verify(&compiled.image.bytes).expect("verify")
+    Project::single(source).ids(ids).image()
 }
 
-fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
-    image
-        .exports()
-        .iter()
-        .find(|export| {
-            image
-                .function(export.function())
-                .expect("verified function")
-                .body()
-                .name()
-                == name
-        })
-        .expect("export present")
+/// An ephemeral session over `source` against the ledger `ids`.
+fn open(source: &str, ids: &str) -> Session {
+    Project::single(source).ids(ids).session()
 }
 
-/// A minted two-root attachment; the kernel must execute over it, not park it.
-fn attach(image: &VerifiedImage) -> MemoryAttachment {
-    match mint_ephemeral(prepare(image.clone())).into_mint() {
-        MintOutcome::Ready(attachment) => attachment,
-        MintOutcome::Storeless | MintOutcome::Parked => {
-            panic!("a two-root image must be executable, not parked")
-        }
-        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {}", cause.as_str()),
-    }
+/// The diagnostics a source the checker must reject reports.
+fn errors(source: &str, ids: &str) -> Diagnostics {
+    let Err(diagnostics) = Project::single(source).ids(ids).try_image() else {
+        panic!("the checker must reject this program");
+    };
+    diagnostics
 }
 
-/// Run `name(args)` against `attachment`, returning its VM value (a fault panics).
-fn run(
-    image: &VerifiedImage,
-    attachment: &mut MemoryAttachment,
-    name: &str,
-    args: Vec<Value>,
-) -> Option<Value> {
-    match run_export(attachment, export(image, name).id(), args)
-        .expect("the export is in the image")
-    {
-        DurableRun::Ran(Ok(value)) => value,
-        other => panic!("{name} did not run cleanly: {:?}", DebugRun(&other)),
-    }
-}
-
-/// Run `name(args)` expecting a source-mapped runtime fault, returning its code.
-fn run_faulting(
-    image: &VerifiedImage,
-    attachment: &mut MemoryAttachment,
-    name: &str,
-    args: Vec<Value>,
-) -> String {
-    match run_export(attachment, export(image, name).id(), args)
-        .expect("the export is in the image")
-    {
-        DurableRun::Ran(Err(fault)) => fault.code().as_str().to_string(),
-        other => panic!("{name} did not fault: {:?}", DebugRun(&other)),
-    }
-}
-
-struct DebugRun<'a>(&'a DurableRun);
-impl std::fmt::Debug for DebugRun<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
-            DurableRun::Ran(Ok(_)) => write!(f, "Ran(Ok(value))"),
-            DurableRun::Ran(Err(fault)) => write!(f, "Ran(Err({}))", fault.code().as_str()),
-            DurableRun::Parked => write!(f, "Parked"),
-            DurableRun::Failed(code) => write!(f, "Failed({})", code.as_str()),
-        }
+/// Call `name`, requiring a source-mapped runtime fault, and return its registered code.
+fn fault_code(session: &mut Session, name: &str, args: Vec<Value>) -> Code {
+    match session.try_call(name, args) {
+        CallOutcome::Fault(code) => code,
+        other => panic!("{name} did not fault: {other:?}"),
     }
 }
 
@@ -221,48 +144,30 @@ fn two_roots_compile_seal_and_verify() {
 /// `^assets` is not observable through `^tallies` and vice versa.
 #[test]
 fn each_root_reads_and_writes_independently() {
-    let image = verify(SOURCE, IDS);
-    let mut attachment = attach(&image);
+    let mut session = open(SOURCE, IDS);
 
     // Both roots start empty.
     assert_eq!(
-        run(&image, &mut attachment, "assetName", vec![Value::Int(1)]),
+        session.call("assetName", vec![Value::Int(1)]),
         Some(Value::Optional(None))
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "tallyCount",
-            vec![Value::Text("x".into())]
-        ),
+        session.call("tallyCount", vec![Value::Text("x".into())]),
         Some(Value::Optional(None))
     );
 
     // Write each root under its own key type; read each back from its own schema.
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "putAsset",
         vec![Value::Int(1), Value::Text("widget".into())],
     );
-    run(
-        &image,
-        &mut attachment,
-        "putTally",
-        vec![Value::Text("x".into()), Value::Int(5)],
-    );
+    session.call("putTally", vec![Value::Text("x".into()), Value::Int(5)]);
     assert_eq!(
-        run(&image, &mut attachment, "assetName", vec![Value::Int(1)]),
+        session.call("assetName", vec![Value::Int(1)]),
         some_text("widget"),
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "tallyCount",
-            vec![Value::Text("x".into())]
-        ),
+        session.call("tallyCount", vec![Value::Text("x".into())]),
         some_int(5),
     );
 }
@@ -272,16 +177,10 @@ fn each_root_reads_and_writes_independently() {
 /// `RootId` at runtime rather than only at check time.
 #[test]
 fn a_root_local_identity_reads_its_own_root() {
-    let image = verify(SOURCE, IDS);
-    let mut attachment = attach(&image);
-    run(
-        &image,
-        &mut attachment,
-        "putAsset",
-        vec![Value::Int(7), Value::Text("gear".into())],
-    );
+    let mut session = open(SOURCE, IDS);
+    session.call("putAsset", vec![Value::Int(7), Value::Text("gear".into())]);
     assert_eq!(
-        run(&image, &mut attachment, "viaId", vec![Value::Int(7)]),
+        session.call("viaId", vec![Value::Int(7)]),
         some_text("gear"),
         "an identity minted over ^assets reads ^assets",
     );
@@ -292,12 +191,9 @@ fn a_root_local_identity_reads_its_own_root() {
 /// the disjoint name-keyed cell families of both roots.
 #[test]
 fn a_cross_root_transaction_commits_both_roots() {
-    let image = verify(SOURCE, IDS);
-    let mut attachment = attach(&image);
+    let mut session = open(SOURCE, IDS);
 
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "putBoth",
         vec![
             Value::Int(2),
@@ -307,17 +203,12 @@ fn a_cross_root_transaction_commits_both_roots() {
         ],
     );
     assert_eq!(
-        run(&image, &mut attachment, "assetName", vec![Value::Int(2)]),
+        session.call("assetName", vec![Value::Int(2)]),
         some_text("bolt"),
         "the cross-root transaction committed the ^assets write",
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "tallyCount",
-            vec![Value::Text("k".into())]
-        ),
+        session.call("tallyCount", vec![Value::Text("k".into())]),
         some_int(9),
         "the cross-root transaction committed the ^tallies write",
     );
@@ -328,13 +219,10 @@ fn a_cross_root_transaction_commits_both_roots() {
 /// `^tallies` write survives. Atomicity is cross-root, not per-root.
 #[test]
 fn a_cross_root_transaction_rolls_both_roots_back() {
-    let image = verify(SOURCE, IDS);
-    let mut attachment = attach(&image);
+    let mut session = open(SOURCE, IDS);
 
     // Seed distinct committed values on both roots.
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "putBoth",
         vec![
             Value::Int(3),
@@ -345,9 +233,8 @@ fn a_cross_root_transaction_rolls_both_roots_back() {
     );
 
     // Stage a replacement of both roots, then fault before the commit.
-    let code = run_faulting(
-        &image,
-        &mut attachment,
+    let code = fault_code(
+        &mut session,
         "putBothOrFail",
         vec![
             Value::Int(3),
@@ -357,22 +244,17 @@ fn a_cross_root_transaction_rolls_both_roots_back() {
             Value::Bool(true),
         ],
     );
-    assert_eq!(code, "run.unreachable");
+    assert_eq!(code, Code::RunUnreachable);
 
     // Both roots retain their pre-transaction committed values: the rollback was atomic
     // across both roots, not partial.
     assert_eq!(
-        run(&image, &mut attachment, "assetName", vec![Value::Int(3)]),
+        session.call("assetName", vec![Value::Int(3)]),
         some_text("old"),
         "the faulted transaction rolled the ^assets write back",
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "tallyCount",
-            vec![Value::Text("r".into())]
-        ),
+        session.call("tallyCount", vec![Value::Text("r".into())]),
         some_int(1),
         "the faulted transaction rolled the ^tallies write back",
     );
@@ -391,13 +273,14 @@ fn two_stores_sharing_a_root_name_are_rejected_at_check() {
 store ^assets[id: int]: Asset
 store ^assets[key: int]: Asset
 "#;
-    let diagnostics = compile(source, IDS).expect_err("a duplicate root name is rejected");
+    let diagnostics = errors(source, IDS);
     assert!(
         diagnostics
             .iter()
             .any(|d| d.code() == marrow_codes::Code::CheckType
                 && d.message().contains("more than once")),
-        "expected a duplicate-root-name check.type rejection, got {diagnostics:#?}"
+        "expected a duplicate-root-name check.type rejection, got {:?}",
+        diagnostics.all()
     );
 }
 
@@ -413,6 +296,8 @@ fn a_two_root_driver_test_drives_both_roots_through_exports() {
              assert (assetName(5) ?? \"none\") == \"beam\"\n    \
              assert (tallyCount(\"d\") ?? 0) == 4\n}}\n"
     );
+    // A driving `test` body lives in the image only under `compile_with_tests`, which
+    // the shared harness does not expose, so this row captures and compiles directly.
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
     let files = vec![marrow_project::CapturedFile::new(
         "src/main.mw".to_string(),
@@ -443,10 +328,14 @@ fn a_two_root_driver_test_drives_both_roots_through_exports() {
     let test = fresh_test(&prepare(image.clone()), index).expect("the entry index is sealed");
     match run_test(test) {
         DurableRun::Ran(Ok(_)) => {}
-        other => panic!(
-            "the two-root driver test must run cleanly: {:?}",
-            DebugRun(&other)
-        ),
+        DurableRun::Ran(Err(fault)) => {
+            panic!(
+                "the two-root driver test faulted: {}",
+                fault.code().as_str()
+            )
+        }
+        DurableRun::Parked => panic!("the two-root driver test parked"),
+        DurableRun::Failed(code) => panic!("the two-root driver test failed: {}", code.as_str()),
     }
 }
 
@@ -471,12 +360,11 @@ pub fn confuse(id: int): int? {
     return ^tallies[a].count
 }
 "#;
-    let diagnostics = compile(source, IDS).expect_err("a cross-root identity is rejected");
+    let diagnostics = errors(source, IDS);
     assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.code() == marrow_codes::Code::CheckType),
-        "expected a check.type rejection, got {diagnostics:#?}"
+        diagnostics.has_code("check.type"),
+        "expected a check.type rejection, got {:?}",
+        diagnostics.all()
     );
 }
 
@@ -755,35 +643,18 @@ pub fn readB(id: int): int? {
     return ^b[id].v
 }
 "#;
-    let image = verify(source, SHARED_FLAT_IDS);
-    let mut attachment = attach(&image);
-    run(
-        &image,
-        &mut attachment,
-        "setA",
-        vec![Value::Int(1), Value::Int(7)],
-    );
+    let mut session = open(source, SHARED_FLAT_IDS);
+    session.call("setA", vec![Value::Int(1), Value::Int(7)]);
+    assert_eq!(session.call("readA", vec![Value::Int(1)]), some_int(7));
     assert_eq!(
-        run(&image, &mut attachment, "readA", vec![Value::Int(1)]),
-        some_int(7)
-    );
-    assert_eq!(
-        run(&image, &mut attachment, "readB", vec![Value::Int(1)]),
+        session.call("readB", vec![Value::Int(1)]),
         Some(Value::Optional(None)),
         "a write through one occurrence is not observable through the other"
     );
-    run(
-        &image,
-        &mut attachment,
-        "setB",
-        vec![Value::Int(1), Value::Int(9)],
-    );
+    session.call("setB", vec![Value::Int(1), Value::Int(9)]);
+    assert_eq!(session.call("readB", vec![Value::Int(1)]), some_int(9));
     assert_eq!(
-        run(&image, &mut attachment, "readB", vec![Value::Int(1)]),
-        some_int(9)
-    );
-    assert_eq!(
-        run(&image, &mut attachment, "readA", vec![Value::Int(1)]),
+        session.call("readA", vec![Value::Int(1)]),
         some_int(7),
         "the other occurrence keeps its own value"
     );
@@ -823,37 +694,17 @@ pub fn readB(id: int): string? {
     return ^b[id].notes[1].text
 }
 "#;
-    let image = verify(source, SHARED_IDS);
-    let mut attachment = attach(&image);
-    run(
-        &image,
-        &mut attachment,
-        "addA",
-        vec![Value::Int(1), Value::Text("a".into())],
-    );
+    let mut session = open(source, SHARED_IDS);
+    session.call("addA", vec![Value::Int(1), Value::Text("a".into())]);
+    assert_eq!(session.call("readA", vec![Value::Int(1)]), some_text("a"));
     assert_eq!(
-        run(&image, &mut attachment, "readA", vec![Value::Int(1)]),
-        some_text("a")
-    );
-    assert_eq!(
-        run(&image, &mut attachment, "readB", vec![Value::Int(1)]),
+        session.call("readB", vec![Value::Int(1)]),
         Some(Value::Optional(None)),
         "a branch entry written through one occurrence is not observable through the other"
     );
-    run(
-        &image,
-        &mut attachment,
-        "addB",
-        vec![Value::Int(1), Value::Text("b".into())],
-    );
-    assert_eq!(
-        run(&image, &mut attachment, "readB", vec![Value::Int(1)]),
-        some_text("b")
-    );
-    assert_eq!(
-        run(&image, &mut attachment, "readA", vec![Value::Int(1)]),
-        some_text("a")
-    );
+    session.call("addB", vec![Value::Int(1), Value::Text("b".into())]);
+    assert_eq!(session.call("readB", vec![Value::Int(1)]), some_text("b"));
+    assert_eq!(session.call("readA", vec![Value::Int(1)]), some_text("a"));
 }
 
 /// A whole branch-entry write through the second occurrence of a shared Product lands in
@@ -890,40 +741,20 @@ pub fn readB(id: int): string? {
     return ^b[id].notes[1].text
 }
 "#;
-    let image = verify(source, SHARED_IDS);
-    let mut attachment = attach(&image);
+    let mut session = open(source, SHARED_IDS);
     // The branch entry record is a declaration fact shared by both occurrences, so a
     // whole-entry write must be routed by the occurrence its place names, never by the
     // record type it constructs.
-    run(
-        &image,
-        &mut attachment,
-        "putB",
-        vec![Value::Int(1), Value::Text("b".into())],
-    );
+    session.call("putB", vec![Value::Int(1), Value::Text("b".into())]);
+    assert_eq!(session.call("readB", vec![Value::Int(1)]), some_text("b"));
     assert_eq!(
-        run(&image, &mut attachment, "readB", vec![Value::Int(1)]),
-        some_text("b")
-    );
-    assert_eq!(
-        run(&image, &mut attachment, "readA", vec![Value::Int(1)]),
+        session.call("readA", vec![Value::Int(1)]),
         Some(Value::Optional(None)),
         "the write landed in the occurrence its place named, not the declaration's first"
     );
-    run(
-        &image,
-        &mut attachment,
-        "putA",
-        vec![Value::Int(1), Value::Text("a".into())],
-    );
-    assert_eq!(
-        run(&image, &mut attachment, "readA", vec![Value::Int(1)]),
-        some_text("a")
-    );
-    assert_eq!(
-        run(&image, &mut attachment, "readB", vec![Value::Int(1)]),
-        some_text("b")
-    );
+    session.call("putA", vec![Value::Int(1), Value::Text("a".into())]);
+    assert_eq!(session.call("readA", vec![Value::Int(1)]), some_text("a"));
+    assert_eq!(session.call("readB", vec![Value::Int(1)]), some_text("b"));
 }
 
 /// The ledger for the nested-branch shared-Product project: one Product row set for
@@ -1019,64 +850,37 @@ pub fn tagWeightB(id: int, n: int, g: int): int? {
 /// first. A field write through the place must land in the root the place named.
 #[test]
 fn a_place_bound_branch_addresses_its_own_occurrence() {
-    let image = verify(SHARED_NESTED_SOURCE, SHARED_NESTED_IDS);
-    let mut attachment = attach(&image);
+    let mut session = open(SHARED_NESTED_SOURCE, SHARED_NESTED_IDS);
     // The first call creates `^b`'s note whole; the second is the field write through
     // the proven place, and its value is the one read back.
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "placeSetTextB",
         vec![Value::Int(1), Value::Int(2), Value::Text("seed".into())],
     );
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "placeSetTextB",
         vec![Value::Int(1), Value::Int(2), Value::Text("b".into())],
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "textB",
-            vec![Value::Int(1), Value::Int(2)]
-        ),
+        session.call("textB", vec![Value::Int(1), Value::Int(2)]),
         some_text("b"),
         "the write landed in the occurrence the place named"
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "textA",
-            vec![Value::Int(1), Value::Int(2)]
-        ),
+        session.call("textA", vec![Value::Int(1), Value::Int(2)]),
         Some(Value::Optional(None)),
         "and not in the declaration's first occurrence"
     );
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "placeSetTextA",
         vec![Value::Int(1), Value::Int(2), Value::Text("a".into())],
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "textA",
-            vec![Value::Int(1), Value::Int(2)]
-        ),
+        session.call("textA", vec![Value::Int(1), Value::Int(2)]),
         some_text("a")
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "textB",
-            vec![Value::Int(1), Value::Int(2)]
-        ),
+        session.call("textB", vec![Value::Int(1), Value::Int(2)]),
         some_text("b"),
         "neither occurrence's branch entry aliases the other's"
     );
@@ -1086,18 +890,13 @@ fn a_place_bound_branch_addresses_its_own_occurrence() {
 /// second occurrence's branch entry addresses that occurrence's nested branch.
 #[test]
 fn a_nested_branch_through_a_place_addresses_its_own_occurrence() {
-    let image = verify(SHARED_NESTED_SOURCE, SHARED_NESTED_IDS);
-    let mut attachment = attach(&image);
-    run(
-        &image,
-        &mut attachment,
+    let mut session = open(SHARED_NESTED_SOURCE, SHARED_NESTED_IDS);
+    session.call(
         "placeAddTagB",
         vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(11)],
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
+        session.call(
             "tagWeightB",
             vec![Value::Int(1), Value::Int(2), Value::Int(3)]
         ),
@@ -1105,9 +904,7 @@ fn a_nested_branch_through_a_place_addresses_its_own_occurrence() {
         "the nested-branch write landed in the occurrence the place named"
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
+        session.call(
             "tagWeightA",
             vec![Value::Int(1), Value::Int(2), Value::Int(3)]
         ),
@@ -1432,12 +1229,10 @@ pub fn setA(id: int, t: string) {
 /// from the ones a single-occurrence `Book` would have been given.
 #[test]
 fn a_product_whose_second_store_is_refused_produces_no_image() {
-    let refused = compile(MULTIPLICITY_SOURCE, MULTIPLICITY_UNIQUE_IDS)
-        .expect_err("`^b` has no identity rows");
+    let refused = errors(MULTIPLICITY_SOURCE, MULTIPLICITY_UNIQUE_IDS);
     assert!(
-        refused
-            .iter()
-            .any(|row| row.code() == marrow_codes::Code::CheckDurableIdentity),
-        "the second store reports its identity gap: {refused:?}"
+        refused.has_code("check.durable_identity"),
+        "the second store reports its identity gap: {:?}",
+        refused.all()
     );
 }

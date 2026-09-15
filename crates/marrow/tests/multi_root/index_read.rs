@@ -9,12 +9,12 @@
 use marrow_codes::Code;
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_syntax::SourceSpan;
-use marrow_verify::{
-    LedgerIdBytes, SealedExport, SealedInstr, SealedSite, SealedSiteTarget, VerifiedImage,
-};
+use marrow_verify::{LedgerIdBytes, SealedInstr, SealedSite, SealedSiteTarget, VerifiedImage};
 use marrow_vm::{
     DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
 };
+
+use crate::common::{Diagnostics, Project, Session};
 
 // `^books[id: int]: Book` with a nonunique `byShelf[shelf, id]` and a unique
 // `byIsbn[isbn]`. The index anchors live at `books.<index name>`.
@@ -92,60 +92,42 @@ pub fn hasIsbn(isbn: string): bool {
 }
 "#;
 
-fn compile_verify(source: &str, ids: &str) -> VerifiedImage {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(ids.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    marrow_verify::verify(&compiled.image.bytes).expect("verify")
+/// An ephemeral session over `source` against the ledger `ids`.
+fn open(source: &str, ids: &str) -> Session {
+    Project::single(source).ids(ids).session()
 }
 
-fn compile_errors(body: &str) -> Vec<marrow_compile::SourceDiagnostic> {
-    let source = format!("{SOURCE}\n{body}");
-    source_errors(&source, IDS)
+/// The diagnostics reported for the shared fixture extended by `body`.
+fn compile_errors(body: &str) -> Diagnostics {
+    source_errors(&format!("{SOURCE}\n{body}"), IDS)
 }
 
-fn source_errors(source: &str, ids: &str) -> Vec<marrow_compile::SourceDiagnostic> {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(ids.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    match marrow_compile::compile(&project) {
-        Ok(_) => panic!("expected the checker to reject this program"),
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
-        Err(
-            marrow_compile::CompileFailure::Invariant(_)
-            | marrow_compile::CompileFailure::ResourceLimit(_),
-        ) => {
-            panic!("source-triggered compiler failures must remain diagnostics")
-        }
+/// The diagnostics a source the checker must reject reports.
+fn source_errors(source: &str, ids: &str) -> Diagnostics {
+    let Err(diagnostics) = Project::single(source).ids(ids).try_image() else {
+        panic!("the checker must reject this program");
+    };
+    diagnostics
+}
+
+fn has_type_error(diagnostics: &Diagnostics) -> bool {
+    diagnostics.has_code("check.type") || diagnostics.has_code("check.unsupported")
+}
+
+// --- Span-pinning support -------------------------------------------------------
+//
+// `CallOutcome::Fault` names a runtime fault by its stable code alone, so the one case
+// that also pins the fault's source span drives its own attachment.
+
+fn attach(image: &VerifiedImage) -> MemoryAttachment {
+    match mint_ephemeral(prepare(image.clone())).into_mint() {
+        MintOutcome::Ready(attachment) => attachment,
+        MintOutcome::Storeless | MintOutcome::Parked => panic!("the items root must be executable"),
+        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {}", cause.as_str()),
     }
 }
 
-fn has_type_error(diagnostics: &[marrow_compile::SourceDiagnostic]) -> bool {
-    diagnostics
-        .iter()
-        .any(|d| d.code().as_str() == "check.type" || d.code().as_str() == "check.unsupported")
-}
-
-fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
+fn export_id(image: &VerifiedImage, name: &str) -> marrow_verify::ExportId {
     image
         .exports()
         .iter()
@@ -157,40 +139,22 @@ fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
                 .name()
                 == name
         })
-        .expect("export present")
+        .unwrap_or_else(|| panic!("export `{name}` present"))
+        .id()
 }
 
-struct DebugRun<'a>(&'a DurableRun);
-impl std::fmt::Debug for DebugRun<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
-            DurableRun::Ran(Ok(_)) => write!(f, "Ran(Ok(value))"),
-            DurableRun::Ran(Err(fault)) => write!(f, "Ran(Err({}))", fault.code().as_str()),
-            DurableRun::Parked => write!(f, "Parked"),
-            DurableRun::Failed(code) => write!(f, "Failed({})", code.as_str()),
-        }
-    }
-}
-
-fn run(
+fn run_ok(
     image: &VerifiedImage,
     attachment: &mut MemoryAttachment,
     name: &str,
     args: Vec<Value>,
 ) -> Option<Value> {
-    match run_export(attachment, export(image, name).id(), args)
-        .expect("the export is in the image")
+    match run_export(attachment, export_id(image, name), args).expect("the export is in the image")
     {
         DurableRun::Ran(Ok(value)) => value,
-        other => panic!("{name} did not run cleanly: {:?}", DebugRun(&other)),
-    }
-}
-
-fn attach(image: &VerifiedImage) -> MemoryAttachment {
-    match mint_ephemeral(prepare(image.clone())).into_mint() {
-        MintOutcome::Ready(attachment) => attachment,
-        MintOutcome::Storeless | MintOutcome::Parked => panic!("the books root must be executable"),
-        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {}", cause.as_str()),
+        DurableRun::Ran(Err(fault)) => panic!("{name} faulted: {}", fault.code().as_str()),
+        DurableRun::Parked => panic!("{name} parked"),
+        DurableRun::Failed(code) => panic!("{name} failed: {}", code.as_str()),
     }
 }
 
@@ -198,23 +162,14 @@ fn s(v: &str) -> Value {
     Value::Text(v.into())
 }
 
-fn seed(image: &VerifiedImage, store: &mut MemoryAttachment) {
+fn seed(session: &mut Session) {
     // Two books on shelf "A", one on "B"; distinct isbns.
-    run(
-        image,
-        store,
-        "shelve",
-        vec![Value::Int(1), s("dune"), s("A"), s("i1")],
-    );
-    run(
-        image,
-        store,
+    session.call("shelve", vec![Value::Int(1), s("dune"), s("A"), s("i1")]);
+    session.call(
         "shelve",
         vec![Value::Int(2), s("hyperion"), s("A"), s("i2")],
     );
-    run(
-        image,
-        store,
+    session.call(
         "shelve",
         vec![Value::Int(3), s("neuromancer"), s("B"), s("i3")],
     );
@@ -222,20 +177,19 @@ fn seed(image: &VerifiedImage, store: &mut MemoryAttachment) {
 
 #[test]
 fn a_nonunique_scan_binds_the_identity_and_dereferences_it() {
-    let image = compile_verify(SOURCE, IDS);
-    let mut store = attach(&image);
-    seed(&image, &mut store);
+    let mut session = open(SOURCE, IDS);
+    seed(&mut session);
 
     assert_eq!(
-        run(&image, &mut store, "countOnShelf", vec![s("A")]),
+        session.call("countOnShelf", vec![s("A")]),
         Some(Value::Int(2))
     );
     assert_eq!(
-        run(&image, &mut store, "countOnShelf", vec![s("B")]),
+        session.call("countOnShelf", vec![s("B")]),
         Some(Value::Int(1))
     );
     assert_eq!(
-        run(&image, &mut store, "countOnShelf", vec![s("Z")]),
+        session.call("countOnShelf", vec![s("Z")]),
         Some(Value::Int(0))
     );
 }
@@ -246,83 +200,60 @@ fn a_bounded_scan_is_exact_and_fan_out_independent() {
     // these assert the source-observable consequences the compiler's lowering delivers: a
     // bounded scan freezes exactly `at most N` identities and reports `on more`, and one
     // shelf's scan is isolated from another shelf's fan-out.
-    let image = compile_verify(SOURCE, IDS);
-    let mut store = attach(&image);
+    let mut session = open(SOURCE, IDS);
     // Shelf "A" holds three books, shelf "B" one — `at most 2` on "A" hits the bound and
     // runs `on more`; on "B" it does not.
-    run(
-        &image,
-        &mut store,
-        "shelve",
-        vec![Value::Int(1), s("a"), s("A"), s("i1")],
-    );
-    run(
-        &image,
-        &mut store,
-        "shelve",
-        vec![Value::Int(2), s("b"), s("A"), s("i2")],
-    );
-    run(
-        &image,
-        &mut store,
-        "shelve",
-        vec![Value::Int(3), s("c"), s("A"), s("i3")],
-    );
-    run(
-        &image,
-        &mut store,
-        "shelve",
-        vec![Value::Int(4), s("d"), s("B"), s("i4")],
-    );
+    session.call("shelve", vec![Value::Int(1), s("a"), s("A"), s("i1")]);
+    session.call("shelve", vec![Value::Int(2), s("b"), s("A"), s("i2")]);
+    session.call("shelve", vec![Value::Int(3), s("c"), s("A"), s("i3")]);
+    session.call("shelve", vec![Value::Int(4), s("d"), s("B"), s("i4")]);
 
     assert_eq!(
-        run(&image, &mut store, "countOnShelfBounded", vec![s("A")]),
+        session.call("countOnShelfBounded", vec![s("A")]),
         Some(Value::Int(-1))
     );
     assert_eq!(
-        run(&image, &mut store, "countOnShelfBounded", vec![s("B")]),
+        session.call("countOnShelfBounded", vec![s("B")]),
         Some(Value::Int(1))
     );
     // Isolation: the full (unbounded) scan of each shelf sees only that shelf's rows,
     // independent of the other shelf's fan-out.
     assert_eq!(
-        run(&image, &mut store, "countOnShelf", vec![s("A")]),
+        session.call("countOnShelf", vec![s("A")]),
         Some(Value::Int(3))
     );
     assert_eq!(
-        run(&image, &mut store, "countOnShelf", vec![s("B")]),
+        session.call("countOnShelf", vec![s("B")]),
         Some(Value::Int(1))
     );
 }
 
 #[test]
 fn a_unique_lookup_is_present_or_absent() {
-    let image = compile_verify(SOURCE, IDS);
-    let mut store = attach(&image);
-    seed(&image, &mut store);
+    let mut session = open(SOURCE, IDS);
+    seed(&mut session);
 
     assert_eq!(
-        run(&image, &mut store, "isbnPresent", vec![s("i2")]),
+        session.call("isbnPresent", vec![s("i2")]),
         Some(Value::Bool(true))
     );
     assert_eq!(
-        run(&image, &mut store, "isbnPresent", vec![s("missing")]),
+        session.call("isbnPresent", vec![s("missing")]),
         Some(Value::Bool(false))
     );
 }
 
 #[test]
 fn a_unique_lookup_dereferences_the_found_identity() {
-    let image = compile_verify(SOURCE, IDS);
-    let mut store = attach(&image);
-    seed(&image, &mut store);
+    let mut session = open(SOURCE, IDS);
+    seed(&mut session);
 
     assert_eq!(
-        run(&image, &mut store, "titleByIsbn", vec![s("i2")]),
+        session.call("titleByIsbn", vec![s("i2")]),
         Some(Value::Optional(Some(Box::new(s("hyperion"))))),
     );
     assert_eq!(
-        run(&image, &mut store, "titleByIsbn", vec![s("missing")]),
+        session.call("titleByIsbn", vec![s("missing")]),
         Some(Value::Optional(None)),
     );
 }
@@ -332,16 +263,15 @@ fn an_exists_over_a_unique_index_is_present_or_absent() {
     // `exists(^root.uidx[keys])` completes the presence family over a unique index: the
     // same complete-key probe as the `if const` lookup, yielding a bare bool without
     // materializing the found identity.
-    let image = compile_verify(SOURCE, IDS);
-    let mut store = attach(&image);
-    seed(&image, &mut store);
+    let mut session = open(SOURCE, IDS);
+    seed(&mut session);
 
     assert_eq!(
-        run(&image, &mut store, "hasIsbn", vec![s("i2")]),
+        session.call("hasIsbn", vec![s("i2")]),
         Some(Value::Bool(true))
     );
     assert_eq!(
-        run(&image, &mut store, "hasIsbn", vec![s("missing")]),
+        session.call("hasIsbn", vec![s("missing")]),
         Some(Value::Bool(false))
     );
 }
@@ -447,8 +377,7 @@ high-water 0\n\
 end\n";
 
 fn key_only_lifetime(source: &str, ids: &str) {
-    let image = compile_verify(source, ids);
-    let mut store = attach(&image);
+    let mut session = open(source, ids);
     let identity = Value::Optional(Some(Box::new(Value::Id(0, [KeyScalar::Int(7)].into()))));
     let absent = (
         Some(Value::Bool(false)),
@@ -460,22 +389,22 @@ fn key_only_lifetime(source: &str, ids: &str) {
         Some(identity),
         Some(Value::Bool(true)),
     );
-    let observe = |store: &mut MemoryAttachment| {
+    let observe = |session: &mut Session| {
         (
-            run(&image, store, "present", vec![Value::Int(7)]),
-            run(&image, store, "find", vec![Value::Int(7)]),
-            run(&image, store, "indexed", vec![Value::Int(7)]),
+            session.call("present", vec![Value::Int(7)]),
+            session.call("find", vec![Value::Int(7)]),
+            session.call("indexed", vec![Value::Int(7)]),
         )
     };
-    assert_eq!(observe(&mut store), absent);
-    run(&image, &mut store, "put", vec![Value::Int(7)]);
-    assert_eq!(observe(&mut store), present);
-    run(&image, &mut store, "put", vec![Value::Int(7)]);
-    assert_eq!(observe(&mut store), present);
-    run(&image, &mut store, "erase", vec![Value::Int(7)]);
-    assert_eq!(observe(&mut store), absent);
-    run(&image, &mut store, "put", vec![Value::Int(7)]);
-    assert_eq!(observe(&mut store), present);
+    assert_eq!(observe(&mut session), absent);
+    session.call("put", vec![Value::Int(7)]);
+    assert_eq!(observe(&mut session), present);
+    session.call("put", vec![Value::Int(7)]);
+    assert_eq!(observe(&mut session), present);
+    session.call("erase", vec![Value::Int(7)]);
+    assert_eq!(observe(&mut session), absent);
+    session.call("put", vec![Value::Int(7)]);
+    assert_eq!(observe(&mut session), present);
 }
 
 #[test]
@@ -514,10 +443,18 @@ const KEY_ONLY_SCAN: &str = r#"pub fn scanOrder(): int {
 "#;
 
 fn key_only_scan(source: &str, ids: &str) {
-    let image = compile_verify(&format!("{source}{KEY_ONLY_SCAN}"), ids);
+    let mut session = open(&format!("{source}{KEY_ONLY_SCAN}"), ids);
+    let image = session.image();
     let instrs = image
-        .function(export(&image, "scanOrder").function())
-        .expect("verified function")
+        .exports()
+        .iter()
+        .find_map(|export| {
+            let function = image
+                .function(export.function())
+                .expect("verified function");
+            (function.body().name() == "scanOrder").then_some(function)
+        })
+        .expect("the scanOrder export")
         .body()
         .instrs();
     let mut scans = instrs.iter().filter_map(|instr| match instr {
@@ -547,35 +484,19 @@ fn key_only_scan(source: &str, ids: &str) {
     assert_eq!(index.root(), *root);
     assert!(!index.unique());
 
-    let mut store = attach(&image);
-    assert_eq!(
-        run(&image, &mut store, "scanOrder", vec![]),
-        Some(Value::Int(0))
-    );
+    assert_eq!(session.call("scanOrder", vec![]), Some(Value::Int(0)));
     for id in [2, 1] {
-        run(&image, &mut store, "put", vec![Value::Int(id)]);
+        session.call("put", vec![Value::Int(id)]);
     }
-    assert_eq!(
-        run(&image, &mut store, "scanOrder", vec![]),
-        Some(Value::Int(12))
-    );
-    run(&image, &mut store, "put", vec![Value::Int(3)]);
-    assert_eq!(
-        run(&image, &mut store, "scanOrder", vec![]),
-        Some(Value::Int(1012))
-    );
-    run(&image, &mut store, "erase", vec![Value::Int(1)]);
-    assert_eq!(
-        run(&image, &mut store, "scanOrder", vec![]),
-        Some(Value::Int(23))
-    );
+    assert_eq!(session.call("scanOrder", vec![]), Some(Value::Int(12)));
+    session.call("put", vec![Value::Int(3)]);
+    assert_eq!(session.call("scanOrder", vec![]), Some(Value::Int(1012)));
+    session.call("erase", vec![Value::Int(1)]);
+    assert_eq!(session.call("scanOrder", vec![]), Some(Value::Int(23)));
     for id in [2, 3] {
-        run(&image, &mut store, "erase", vec![Value::Int(id)]);
+        session.call("erase", vec![Value::Int(id)]);
     }
-    assert_eq!(
-        run(&image, &mut store, "scanOrder", vec![]),
-        Some(Value::Int(0))
-    );
+    assert_eq!(session.call("scanOrder", vec![]), Some(Value::Int(0)));
 }
 
 #[test]
@@ -619,19 +540,15 @@ pub fn localField(): string {{
 }}
 "#
     );
-    let image = compile_verify(&controls, IDS);
-    let mut store = attach(&image);
+    let mut session = open(&controls, IDS);
     assert_eq!(
-        run(&image, &mut store, "ordinaryField", vec![]),
+        session.call("ordinaryField", vec![]),
         Some(Value::Optional(None))
     );
+    assert_eq!(session.call("localField", vec![]), Some(s("local")));
+    seed(&mut session);
     assert_eq!(
-        run(&image, &mut store, "localField", vec![]),
-        Some(s("local"))
-    );
-    seed(&image, &mut store);
-    assert_eq!(
-        run(&image, &mut store, "ordinaryField", vec![]),
+        session.call("ordinaryField", vec![]),
         Some(Value::Optional(Some(Box::new(s("dune")))))
     );
 
@@ -704,7 +621,7 @@ pub fn localField(): string {{
         .iter()
         .map(|(name, body, ..)| {
             let diagnostics = compile_errors(body)
-                .into_iter()
+                .iter()
                 .map(|diagnostic| (diagnostic.code().as_str().to_string(), diagnostic.span()))
                 .collect::<Vec<_>>();
             (*name, diagnostics)
@@ -730,8 +647,9 @@ pub fn localField(): string {{
     insertion.column -= 1;
     let diagnostics = compile_errors(empty);
     assert_eq!(diagnostics.len(), 1);
-    assert_eq!(diagnostics[0].code(), Code::ParseSyntax);
-    assert_eq!(diagnostics[0].span(), insertion);
+    let diagnostic = diagnostics.only("parse.syntax");
+    assert_eq!(diagnostic.code(), Code::ParseSyntax);
+    assert_eq!(diagnostic.span(), insertion);
 
     let source = SUBSET_SOURCE.replace(
         "index byTenant[tenant] unique",
@@ -745,9 +663,10 @@ pub fn localField(): string {{
     let body = format!("pub fn bad() {{ {scan} }}\n");
     let diagnostics = source_errors(&format!("{source}\n{body}"), &ids);
     assert_eq!(diagnostics.len(), 1);
-    assert_eq!(diagnostics[0].code(), Code::CheckUnsupported);
+    let diagnostic = diagnostics.only("check.unsupported");
+    assert_eq!(diagnostic.code(), Code::CheckUnsupported);
     assert_eq!(
-        diagnostics[0].span(),
+        diagnostic.span(),
         diagnostic_span(&source, &body, scan, scan.len())
     );
 }
@@ -819,40 +738,39 @@ end\n";
 
 #[test]
 fn key_only_unique_subset_collision_rolls_back_the_complete_transaction() {
-    let image = compile_verify(SUBSET_SOURCE, SUBSET_IDS);
+    let image = Project::single(SUBSET_SOURCE).ids(SUBSET_IDS).image();
     let mut store = attach(&image);
-    let result = run_export(&mut store, export(&image, "collide").id(), vec![]).expect("export");
-    match result {
+    match run_export(&mut store, export_id(&image, "collide"), vec![]).expect("export") {
         DurableRun::Ran(Err(marrow_vm::DurableExecutionFault::Runtime(fault))) => {
             assert_eq!(fault.code(), Code::RunUniqueIndex);
             assert_eq!((fault.line(), fault.column()), (35, 9));
         }
-        other => panic!(
-            "unique collision must roll back ordinarily: {:?}",
-            DebugRun(&other)
-        ),
+        DurableRun::Ran(Ok(_)) => panic!("the unique collision must fault"),
+        DurableRun::Ran(Err(other)) => panic!("unexpected durable fault: {other:?}"),
+        DurableRun::Parked => panic!("collide parked"),
+        DurableRun::Failed(code) => panic!("collide failed before execution: {}", code.as_str()),
     }
     assert_eq!(
-        run(&image, &mut store, "itemPresent", vec![Value::Int(99)]),
+        run_ok(&image, &mut store, "itemPresent", vec![Value::Int(99)]),
         Some(Value::Bool(false))
     );
     assert_eq!(
-        run(&image, &mut store, "findItem", vec![Value::Int(99)]),
+        run_ok(&image, &mut store, "findItem", vec![Value::Int(99)]),
         Some(Value::Optional(None))
     );
     for slot in [1, 2] {
         assert_eq!(
-            run(&image, &mut store, "slotPresent", vec![Value::Int(slot)]),
+            run_ok(&image, &mut store, "slotPresent", vec![Value::Int(slot)]),
             Some(Value::Bool(false))
         );
     }
     assert_eq!(
-        run(&image, &mut store, "findTenant", vec![]),
+        run_ok(&image, &mut store, "findTenant", vec![]),
         Some(Value::Optional(None))
     );
-    run(&image, &mut store, "putItem", vec![Value::Int(7)]);
+    run_ok(&image, &mut store, "putItem", vec![Value::Int(7)]);
     assert_eq!(
-        run(&image, &mut store, "findItem", vec![Value::Int(7)]),
+        run_ok(&image, &mut store, "findItem", vec![Value::Int(7)]),
         Some(Value::Optional(Some(Box::new(Value::Id(
             0,
             [KeyScalar::Int(7)].into()

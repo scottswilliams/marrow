@@ -11,6 +11,8 @@
 
 use marrow_verify::{SemanticNodeKind, SemanticStepKind};
 
+use crate::common::Project;
+
 /// A resource with a top-level field, a static `group` holding a field, and a keyed
 /// `branch` holding two fields — every durable node kind in one graph.
 const LIBRARY_SOURCE: &str = r#"resource Book {
@@ -53,20 +55,7 @@ const LIBRARY_IDS: &str = "marrow ids v0\n\
 /// sorted, observed through the full production path. The terminal id is the last
 /// step's ledger id — the node's own placement/group/field id.
 fn node_fingerprints(source: &str, ids: &str) -> Vec<(SemanticNodeKind, [u8; 16])> {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(ids.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    let image = marrow_verify::verify(&compiled.image.bytes).expect("verify");
+    let image = Project::single(source).ids(ids).image();
     let mut nodes: Vec<(SemanticNodeKind, [u8; 16])> = image
         .semantic_nodes()
         .iter()
@@ -100,20 +89,7 @@ fn every_durable_node_has_a_semantic_path_ending_in_its_ledger_id() {
 
 #[test]
 fn a_field_path_runs_from_the_application_through_its_container() {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        LIBRARY_SOURCE.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(LIBRARY_IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    let image = marrow_verify::verify(&compiled.image.bytes).expect("verify");
+    let image = Project::single(LIBRARY_SOURCE).ids(LIBRARY_IDS).image();
     let nodes = image.semantic_nodes();
 
     // The group-nested field `pages`: application -> root placement -> group -> field.

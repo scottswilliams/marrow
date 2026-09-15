@@ -8,14 +8,9 @@
 //! - `if exists(e) { e.f = v }` is a guarded (strict) sparse set through the place;
 //! - `if const e = ^t[a, b] { … }` binds the whole entry through the composite root;
 //! - `exists(^t[a, b])` probes a composite-root entry inline.
-//!
-//! This pins that all three compose over a composite key, closing the gap the
-//! explicit-place work already made executable.
 
-use marrow_verify::{SealedExport, VerifiedImage};
-use marrow_vm::{
-    DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
-};
+use crate::common::Project;
+use marrow_vm::Value;
 
 // application, product, the required `grade` and sparse `note` fields, the composite root
 // placement, and its two key columns (student, course).
@@ -65,126 +60,48 @@ pub fn present(s: string, c: string): bool {
 }
 "#;
 
-fn compile_verify(source: &str, ids: &str) -> VerifiedImage {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(ids.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    marrow_verify::verify(&compiled.image.bytes).expect("verify")
-}
-
-fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
-    image
-        .exports()
-        .iter()
-        .find(|export| {
-            image
-                .function(export.function())
-                .expect("verified function")
-                .body()
-                .name()
-                == name
-        })
-        .expect("export present")
-}
-
-fn attach(image: &VerifiedImage) -> MemoryAttachment {
-    match mint_ephemeral(prepare(image.clone())).into_mint() {
-        MintOutcome::Ready(attachment) => attachment,
-        MintOutcome::Storeless | MintOutcome::Parked => {
-            panic!("the enrollments root must be executable")
-        }
-        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {}", cause.as_str()),
-    }
-}
-
-fn run(
-    image: &VerifiedImage,
-    attachment: &mut MemoryAttachment,
-    name: &str,
-    args: Vec<Value>,
-) -> Option<Value> {
-    match run_export(attachment, export(image, name).id(), args)
-        .expect("the export is in the image")
-    {
-        DurableRun::Ran(Ok(value)) => value,
-        DurableRun::Ran(Err(fault)) => panic!("{name} faulted at run: {}", fault.code().as_str()),
-        DurableRun::Parked => {
-            panic!("{name} parked — the composite-root shortcut is not executable")
-        }
-        DurableRun::Failed(code) => {
-            panic!("{name} failed to mint its attachment: {}", code.as_str())
-        }
-    }
-}
-
 fn s(v: &str) -> Value {
     Value::Text(v.into())
 }
 
 #[test]
 fn composite_root_place_presence_shortcuts_run_end_to_end() {
-    let image = compile_verify(SOURCE, IDS);
-    let mut store = attach(&image);
+    let mut session = Project::single(SOURCE).ids(IDS).session();
 
     // Seed one composite-key entry.
-    run(
-        &image,
-        &mut store,
-        "enroll",
-        vec![s("ada"), s("cs"), Value::Int(95)],
-    );
+    session.call("enroll", vec![s("ada"), s("cs"), Value::Int(95)]);
 
     // `exists(^t[a, b])` inline over a composite root: present for the seeded key, absent
     // for an unseeded one.
     assert_eq!(
-        run(&image, &mut store, "present", vec![s("ada"), s("cs")]),
+        session.call("present", vec![s("ada"), s("cs")]),
         Some(Value::Bool(true))
     );
     assert_eq!(
-        run(&image, &mut store, "present", vec![s("bob"), s("cs")]),
+        session.call("present", vec![s("bob"), s("cs")]),
         Some(Value::Bool(false))
     );
 
     // The guarded (strict) sparse set through the composite-root place writes only where the
     // entry is present.
-    run(
-        &image,
-        &mut store,
-        "setNoteIfPresent",
-        vec![s("ada"), s("cs"), s("top")],
-    );
+    session.call("setNoteIfPresent", vec![s("ada"), s("cs"), s("top")]);
     // A guarded set against an absent composite entry is a no-op: it neither writes the note
     // nor creates the entry.
-    run(
-        &image,
-        &mut store,
-        "setNoteIfPresent",
-        vec![s("bob"), s("cs"), s("ignored")],
-    );
+    session.call("setNoteIfPresent", vec![s("bob"), s("cs"), s("ignored")]);
 
     // `if const e = ^t[a, b]` binds the whole entry through the composite root and reads the
     // sparse field back.
     assert_eq!(
-        run(&image, &mut store, "noteOf", vec![s("ada"), s("cs")]),
+        session.call("noteOf", vec![s("ada"), s("cs")]),
         Some(Value::Optional(Some(Box::new(s("top")))))
     );
     // The no-op guarded set left `bob` absent.
     assert_eq!(
-        run(&image, &mut store, "present", vec![s("bob"), s("cs")]),
+        session.call("present", vec![s("bob"), s("cs")]),
         Some(Value::Bool(false))
     );
     assert_eq!(
-        run(&image, &mut store, "noteOf", vec![s("bob"), s("cs")]),
+        session.call("noteOf", vec![s("bob"), s("cs")]),
         Some(Value::Optional(None))
     );
 }

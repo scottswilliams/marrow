@@ -7,11 +7,17 @@
 //! tests drive the whole production path — capture -> compile -> verify -> attach -> VM —
 //! over one persistent ephemeral attachment.
 
-use marrow_compile::SourceDiagnostic;
-use marrow_verify::{SealedExport, VerifiedImage};
-use marrow_vm::{
-    DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
-};
+use crate::common::{Diagnostics, Project};
+use marrow_vm::Value;
+
+/// Capture, compile and verify `source` against `ids` through the production path,
+/// returning the rejection diagnostics. Panics if compilation unexpectedly succeeds.
+fn compile_errors(source: &str, ids: &str) -> Diagnostics {
+    match Project::single(source).ids(ids).try_image() {
+        Ok(_) => panic!("compilation must be rejected"),
+        Err(diagnostics) => diagnostics,
+    }
+}
 
 // A composite-key root `^enrollments(student: string, course: string)` with a required
 // `grade`, plus a composite-key branch `sessions(term: int, slot: int)` holding `room`.
@@ -163,101 +169,6 @@ pub fn sumCells(a: int, b: int): int {
 }
 "#;
 
-fn compile_verify(source: &str, ids: &str) -> VerifiedImage {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(ids.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    marrow_verify::verify(&compiled.image.bytes).expect("verify")
-}
-
-/// Capture and compile `source` against `ids` through the production path, returning the
-/// rejection diagnostics. Panics if compilation unexpectedly succeeds.
-fn compile_errors(source: &str, ids: &str) -> Vec<SourceDiagnostic> {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(ids.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    match marrow_compile::compile(&project) {
-        Ok(_) => panic!("compilation must be rejected"),
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
-        Err(
-            marrow_compile::CompileFailure::Invariant(_)
-            | marrow_compile::CompileFailure::ResourceLimit(_),
-        ) => {
-            panic!("source-triggered compiler failures must remain diagnostics")
-        }
-    }
-}
-
-fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
-    image
-        .exports()
-        .iter()
-        .find(|export| {
-            image
-                .function(export.function())
-                .expect("verified function")
-                .body()
-                .name()
-                == name
-        })
-        .expect("export present")
-}
-
-struct DebugRun<'a>(&'a DurableRun);
-impl std::fmt::Debug for DebugRun<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
-            DurableRun::Ran(Ok(_)) => write!(f, "Ran(Ok(value))"),
-            DurableRun::Ran(Err(fault)) => write!(f, "Ran(Err({}))", fault.code().as_str()),
-            DurableRun::Parked => write!(f, "Parked"),
-            DurableRun::Failed(code) => write!(f, "Failed({})", code.as_str()),
-        }
-    }
-}
-
-fn run(
-    image: &VerifiedImage,
-    attachment: &mut MemoryAttachment,
-    name: &str,
-    args: Vec<Value>,
-) -> Option<Value> {
-    match run_export(attachment, export(image, name).id(), args)
-        .expect("the export is in the image")
-    {
-        DurableRun::Ran(Ok(value)) => value,
-        other => panic!("{name} did not run cleanly: {:?}", DebugRun(&other)),
-    }
-}
-
-fn attach(image: &VerifiedImage) -> MemoryAttachment {
-    match mint_ephemeral(prepare(image.clone())).into_mint() {
-        MintOutcome::Ready(attachment) => attachment,
-        MintOutcome::Storeless | MintOutcome::Parked => {
-            panic!("a composite-key root must be executable")
-        }
-        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {}", cause.as_str()),
-    }
-}
-
 fn some_int(v: i64) -> Option<Value> {
     Some(Value::Optional(Some(Box::new(Value::Int(v)))))
 }
@@ -283,49 +194,38 @@ fn s(v: &str) -> Value {
 /// strings. Whole-entry create/read/presence/delete and a field read all key by the pair.
 #[test]
 fn a_composite_key_root_keys_by_the_ordered_tuple() {
-    let image = compile_verify(SOURCE_A, IDS_A);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(SOURCE_A).ids(IDS_A).session();
 
-    run(
-        &image,
-        &mut attachment,
-        "enroll",
-        vec![s("amy"), s("cs"), Value::Int(90)],
-    );
+    session.call("enroll", vec![s("amy"), s("cs"), Value::Int(90)]);
     assert_eq!(
-        run(&image, &mut attachment, "gradeOf", vec![s("amy"), s("cs")]),
+        session.call("gradeOf", vec![s("amy"), s("cs")]),
         some_int(90)
     );
     assert_eq!(
-        run(&image, &mut attachment, "enrolled", vec![s("amy"), s("cs")]),
+        session.call("enrolled", vec![s("amy"), s("cs")]),
         present(true)
     );
     // The transposed tuple is a different entry — column order is load-bearing.
     assert_eq!(
-        run(&image, &mut attachment, "gradeOf", vec![s("cs"), s("amy")]),
+        session.call("gradeOf", vec![s("cs"), s("amy")]),
         absent(),
         "the transposed (course, student) tuple addresses a distinct, absent entry",
     );
     assert_eq!(
-        run(&image, &mut attachment, "enrolled", vec![s("cs"), s("amy")]),
+        session.call("enrolled", vec![s("cs"), s("amy")]),
         present(false)
     );
 
     // A whole-entry delete keys by the same tuple and leaves the transposed entry alone.
-    run(
-        &image,
-        &mut attachment,
-        "enroll",
-        vec![s("cs"), s("amy"), Value::Int(10)],
-    );
-    run(&image, &mut attachment, "unenroll", vec![s("amy"), s("cs")]);
+    session.call("enroll", vec![s("cs"), s("amy"), Value::Int(10)]);
+    session.call("unenroll", vec![s("amy"), s("cs")]);
     assert_eq!(
-        run(&image, &mut attachment, "enrolled", vec![s("amy"), s("cs")]),
+        session.call("enrolled", vec![s("amy"), s("cs")]),
         present(false),
         "the addressed entry was deleted"
     );
     assert_eq!(
-        run(&image, &mut attachment, "gradeOf", vec![s("cs"), s("amy")]),
+        session.call("gradeOf", vec![s("cs"), s("amy")]),
         some_int(10),
         "the transposed sibling entry is untouched"
     );
@@ -344,22 +244,13 @@ fn complete_create_proves_a_composite_root_for_a_following_field_set() {
 }
 "#
     );
-    let image = compile_verify(&source, IDS_A);
-    let mut attachment = attach(&image);
-    run(
-        &image,
-        &mut attachment,
-        "createThenSet",
-        vec![s("amy"), s("cs")],
-    );
+    let mut session = Project::single(&source).ids(IDS_A).session();
+    session.call("createThenSet", vec![s("amy"), s("cs")]);
     assert_eq!(
-        run(&image, &mut attachment, "gradeOf", vec![s("amy"), s("cs")]),
+        session.call("gradeOf", vec![s("amy"), s("cs")]),
         some_int(2)
     );
-    assert_eq!(
-        run(&image, &mut attachment, "gradeOf", vec![s("cs"), s("amy")]),
-        absent()
-    );
+    assert_eq!(session.call("gradeOf", vec![s("cs"), s("amy")]), absent());
 }
 
 #[test]
@@ -375,22 +266,16 @@ fn complete_create_proves_a_composite_branch_for_a_following_field_set() {
 }
 "#
     );
-    let image = compile_verify(&source, IDS_A);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(&source).ids(IDS_A).session();
     let keys = || vec![s("amy"), s("cs"), Value::Int(3), Value::Int(7)];
-    run(&image, &mut attachment, "createThenSet", keys());
+    session.call("createThenSet", keys());
+    assert_eq!(session.call("sessionRoom", keys()), some_text("second"));
     assert_eq!(
-        run(&image, &mut attachment, "sessionRoom", keys()),
-        some_text("second")
-    );
-    assert_eq!(
-        run(&image, &mut attachment, "enrolled", vec![s("amy"), s("cs")]),
+        session.call("enrolled", vec![s("amy"), s("cs")]),
         present(false)
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
+        session.call(
             "sessionRoom",
             vec![s("amy"), s("cs"), Value::Int(7), Value::Int(3)],
         ),
@@ -403,19 +288,14 @@ fn complete_create_proves_a_composite_branch_for_a_following_field_set() {
 /// `(slot, term)` is a distinct, absent branch entry.
 #[test]
 fn a_composite_key_branch_keys_by_its_tuple_under_a_composite_root() {
-    let image = compile_verify(SOURCE_A, IDS_A);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(SOURCE_A).ids(IDS_A).session();
 
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "setSession",
         vec![s("amy"), s("cs"), Value::Int(1), Value::Int(2), s("A100")],
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
+        session.call(
             "sessionRoom",
             vec![s("amy"), s("cs"), Value::Int(1), Value::Int(2)]
         ),
@@ -423,9 +303,7 @@ fn a_composite_key_branch_keys_by_its_tuple_under_a_composite_root() {
     );
     // Transpose the branch tuple: a different branch entry.
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
+        session.call(
             "sessionRoom",
             vec![s("amy"), s("cs"), Value::Int(2), Value::Int(1)]
         ),
@@ -434,9 +312,7 @@ fn a_composite_key_branch_keys_by_its_tuple_under_a_composite_root() {
     );
     // Transpose a root column: the branch layer under the transposed root is empty.
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
+        session.call(
             "sessionRoom",
             vec![s("cs"), s("amy"), Value::Int(1), Value::Int(2)]
         ),
@@ -455,22 +331,11 @@ fn a_composite_key_branch_keys_by_its_tuple_under_a_composite_root() {
 #[test]
 fn a_composite_root_place_reads_and_writes_its_fields_by_the_root_node() {
     let source = format!("{SOURCE_A}\n{PLACE_EXPORTS}");
-    let image = compile_verify(&source, IDS_A);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(&source).ids(IDS_A).session();
 
-    run(
-        &image,
-        &mut attachment,
-        "enroll",
-        vec![s("amy"), s("cs"), Value::Int(90)],
-    );
+    session.call("enroll", vec![s("amy"), s("cs"), Value::Int(90)]);
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "gradeViaPlace",
-            vec![s("amy"), s("cs")]
-        ),
+        session.call("gradeViaPlace", vec![s("amy"), s("cs")]),
         some_int(90),
         "a composite-root place reads `grade` off the root node",
     );
@@ -478,33 +343,19 @@ fn a_composite_root_place_reads_and_writes_its_fields_by_the_root_node() {
     // A field write through the composite-root place, proven present by `exists(e)`,
     // resolves the same root `grade`; the read-back through the place observes the newly
     // written value.
-    run(
-        &image,
-        &mut attachment,
-        "setGradeViaPlace",
-        vec![s("amy"), s("cs"), Value::Int(75)],
-    );
+    session.call("setGradeViaPlace", vec![s("amy"), s("cs"), Value::Int(75)]);
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "gradeViaPlace",
-            vec![s("amy"), s("cs")]
-        ),
+        session.call("gradeViaPlace", vec![s("amy"), s("cs")]),
         some_int(75),
         "a composite-root place writes `grade` on the root node, not a misrouted branch field",
     );
 
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "setSession",
         vec![s("amy"), s("cs"), Value::Int(1), Value::Int(2), s("A100")],
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
+        session.call(
             "roomViaPlace",
             vec![s("amy"), s("cs"), Value::Int(1), Value::Int(2)]
         ),
@@ -521,8 +372,7 @@ fn a_composite_root_place_reads_and_writes_its_fields_by_the_root_node() {
 /// order end to end.
 #[test]
 fn a_deep_same_typed_key_path_pins_column_order_end_to_end() {
-    let image = compile_verify(SOURCE_B, IDS_B);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(SOURCE_B).ids(IDS_B).session();
 
     let write = vec![
         Value::Int(1),
@@ -531,18 +381,12 @@ fn a_deep_same_typed_key_path_pins_column_order_end_to_end() {
         Value::Int(4),
         Value::Int(99),
     ];
-    run(&image, &mut attachment, "setMark", write);
+    session.call("setMark", write);
 
     let at = |a, b, c, d| vec![Value::Int(a), Value::Int(b), Value::Int(c), Value::Int(d)];
     // The exact tuple reads back; the mark entry is present.
-    assert_eq!(
-        run(&image, &mut attachment, "markV", at(1, 2, 3, 4)),
-        some_int(99)
-    );
-    assert_eq!(
-        run(&image, &mut attachment, "markPresent", at(1, 2, 3, 4)),
-        present(true)
-    );
+    assert_eq!(session.call("markV", at(1, 2, 3, 4)), some_int(99));
+    assert_eq!(session.call("markPresent", at(1, 2, 3, 4)), present(true));
     // Every transposition addresses a different, absent node — proving the pop order.
     for (a, b, c, d) in [
         (2, 1, 3, 4), // swap the two root columns
@@ -552,14 +396,11 @@ fn a_deep_same_typed_key_path_pins_column_order_end_to_end() {
         (4, 2, 3, 1), // swap the first root column with the mark key
     ] {
         assert_eq!(
-            run(&image, &mut attachment, "markV", at(a, b, c, d)),
+            session.call("markV", at(a, b, c, d)),
             absent(),
             "transposition ({a},{b},{c},{d}) must address a distinct, absent node",
         );
-        assert_eq!(
-            run(&image, &mut attachment, "markPresent", at(a, b, c, d)),
-            present(false),
-        );
+        assert_eq!(session.call("markPresent", at(a, b, c, d)), present(false),);
     }
 }
 
@@ -569,42 +410,27 @@ fn a_deep_same_typed_key_path_pins_column_order_end_to_end() {
 /// through the traversal while the traversed layer stays single-column.
 #[test]
 fn a_single_column_branch_layer_traverses_under_a_composite_ancestor() {
-    let image = compile_verify(SOURCE_B, IDS_B);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(SOURCE_B).ids(IDS_B).session();
 
     for c in [3, 1, 5] {
-        run(
-            &image,
-            &mut attachment,
+        session.call(
             "setCell",
             vec![Value::Int(1), Value::Int(2), Value::Int(c), Value::Int(0)],
         );
     }
     // A cell under a different composite root entry, which must not be visited.
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "setCell",
         vec![Value::Int(9), Value::Int(9), Value::Int(100), Value::Int(0)],
     );
 
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "sumCells",
-            vec![Value::Int(1), Value::Int(2)]
-        ),
+        session.call("sumCells", vec![Value::Int(1), Value::Int(2)]),
         Some(Value::Int(9)),
         "the cell layer under (1, 2) iterates 1 + 3 + 5 = 9",
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "sumCells",
-            vec![Value::Int(3), Value::Int(4)]
-        ),
+        session.call("sumCells", vec![Value::Int(3), Value::Int(4)]),
         Some(Value::Int(0)),
         "an empty cell layer under a different composite ancestor sums to zero",
     );

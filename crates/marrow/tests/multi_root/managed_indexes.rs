@@ -13,8 +13,10 @@
 
 use marrow_verify::{
     DurableIndexComponent, LedgerIdBytes, SealedIndexComponent, SealedSite, SealedSiteTarget,
-    SemanticNodeKind, SemanticStepKind, SemanticTarget,
+    SemanticNodeKind, SemanticStepKind, SemanticTarget, VerifiedImage,
 };
+
+use crate::common::{Diagnostics, Project};
 
 fn rep(byte: u8) -> LedgerIdBytes {
     LedgerIdBytes::from_bytes([byte; 16])
@@ -85,74 +87,26 @@ const NOMINAL_INDEX_IDS: &str = "marrow ids v0\n\
      high-water 0\n\
      end\n";
 
-fn verify_source(source: &str, ids: &str) -> Result<marrow_verify::VerifiedImage, String> {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(ids.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = match marrow_compile::compile(&project) {
-        Ok(compiled) => compiled,
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => {
-            return Err(diagnostics
-                .iter()
-                .map(|diagnostic| diagnostic.code().as_str())
-                .collect::<Vec<_>>()
-                .join(","));
-        }
-        Err(
-            marrow_compile::CompileFailure::Invariant(_)
-            | marrow_compile::CompileFailure::ResourceLimit(_),
-        ) => {
-            return Err("compiler invariant failure".to_string());
-        }
-    };
-    marrow_verify::verify(&compiled.image.bytes).map_err(|r| format!("verify: {r:?}"))
+/// Capture, compile, and verify one durable `src/main.mw` through the production path.
+fn verified(source: &str, ids: &str) -> VerifiedImage {
+    Project::single(source).ids(ids).image()
 }
 
-fn compile_diagnostics(source: &str, ids: &str) -> Vec<marrow_compile::SourceDiagnostic> {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(ids.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    match marrow_compile::compile(&project) {
-        Ok(_) => Vec::new(),
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
-        Err(
-            marrow_compile::CompileFailure::Invariant(_)
-            | marrow_compile::CompileFailure::ResourceLimit(_),
-        ) => {
-            panic!("source-triggered compiler failures must remain diagnostics")
-        }
-    }
+/// The diagnostics a compile reports, empty when it succeeds.
+fn diagnostics(source: &str, ids: &str) -> Option<Diagnostics> {
+    Project::single(source).ids(ids).try_image().err()
 }
 
-/// The `check.*` codes a compile reports, in order. Used for admission rejections.
-fn compile_codes(source: &str, ids: &str) -> Vec<&'static str> {
-    compile_diagnostics(source, ids)
-        .iter()
-        .map(|diagnostic| diagnostic.code().as_str())
-        .collect()
+/// The `check.*` codes a rejected compile reports, in order.
+fn compile_codes(source: &str, ids: &str) -> Vec<String> {
+    diagnostics(source, ids)
+        .map(|found| found.codes().iter().map(|code| code.to_string()).collect())
+        .unwrap_or_default()
 }
 
 #[test]
 fn a_keyed_root_with_a_nonunique_and_a_unique_index_verifies_with_complete_identity() {
-    let image = verify_source(INDEXED_SOURCE, INDEXED_IDS).expect("indexed graph verifies");
+    let image = verified(INDEXED_SOURCE, INDEXED_IDS);
     let indexes = image.indexes();
     assert_eq!(indexes.len(), 2, "two managed indexes seal");
 
@@ -183,7 +137,7 @@ fn the_verifier_resolves_each_index_projection_to_record_and_key_positions() {
     // resolves each ledger-id projection component to a record-field or key-column
     // position against the same decoded root, in projection order. Record `Book` is
     // {title:0, shelf:1, isbn:2}; the key tuple is [id] at column 0.
-    let image = verify_source(INDEXED_SOURCE, INDEXED_IDS).expect("verify");
+    let image = verified(INDEXED_SOURCE, INDEXED_IDS);
     let indexes = image.indexes();
 
     // byShelf projects the `shelf` field then the identity key `id`.
@@ -197,10 +151,10 @@ fn the_verifier_resolves_each_index_projection_to_record_and_key_positions() {
 
 #[test]
 fn a_nominal_field_managed_index_binding_is_refused() {
-    let diagnostics = compile_diagnostics(NOMINAL_INDEX_SOURCE, NOMINAL_INDEX_IDS);
-    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
-    let diagnostic = &diagnostics[0];
-    assert_eq!(diagnostic.code().as_str(), "check.unsupported");
+    let found = diagnostics(NOMINAL_INDEX_SOURCE, NOMINAL_INDEX_IDS)
+        .expect("a nominal-bearing indexed binding is refused");
+    assert_eq!(found.len(), 1, "{:?}", found.all());
+    let diagnostic = found.only("check.unsupported");
     assert_eq!(diagnostic.file().as_str(), "src/main.mw");
     assert_eq!((diagnostic.line(), diagnostic.column()), (8, 1));
 }
@@ -213,26 +167,16 @@ fn a_nominal_field_binding_refusal_preserves_the_root_operation_diagnostic() {
          \x20   return exists(^books[id])\n\
          }}\n"
     );
-    let diagnostics = compile_diagnostics(&source, NOMINAL_INDEX_IDS);
+    let found = diagnostics(&source, NOMINAL_INDEX_IDS).expect("both refusals are reported");
     assert!(
-        diagnostics
+        found
             .iter()
             .all(|diagnostic| diagnostic.file().as_str() == "src/main.mw")
     );
-    let sites: Vec<_> = diagnostics
-        .iter()
-        .map(|diagnostic| {
-            (
-                diagnostic.code().as_str(),
-                diagnostic.line(),
-                diagnostic.column(),
-            )
-        })
-        .collect();
     assert_eq!(
-        sites,
+        found.all(),
         [("check.unsupported", 8, 1), ("check.unsupported", 17, 19)],
-        "binding and operation refusals are both retained: {diagnostics:?}",
+        "binding and operation refusals are both retained",
     );
 }
 
@@ -242,7 +186,7 @@ fn a_nominal_field_binding_refusal_preserves_the_root_operation_diagnostic() {
 /// typed occurrence handle, never through a bare field id.
 #[test]
 fn the_verifier_derives_index_maintenance_per_root_occurrence() {
-    let image = verify_source(INDEXED_SOURCE, INDEXED_IDS).expect("verify");
+    let image = verified(INDEXED_SOURCE, INDEXED_IDS);
     let books = image
         .root_occurrence(0)
         .expect("the image declares one root");
@@ -266,7 +210,7 @@ fn the_verifier_derives_index_maintenance_per_root_occurrence() {
 
 #[test]
 fn each_managed_index_is_a_graph_node_with_a_three_step_semantic_path() {
-    let image = verify_source(INDEXED_SOURCE, INDEXED_IDS).expect("verify");
+    let image = verified(INDEXED_SOURCE, INDEXED_IDS);
     let index_nodes: Vec<_> = image
         .semantic_nodes()
         .iter()
@@ -291,7 +235,7 @@ fn each_managed_index_is_a_graph_node_with_a_three_step_semantic_path() {
 
 #[test]
 fn index_read_sites_seal_flat_executable_reads() {
-    let image = verify_source(INDEXED_SOURCE, INDEXED_IDS).expect("verify");
+    let image = verified(INDEXED_SOURCE, INDEXED_IDS);
     let index_sites: Vec<&'static str> = image
         .sites()
         .iter()
@@ -315,7 +259,7 @@ fn index_read_sites_seal_flat_executable_reads() {
 
 #[test]
 fn a_create_or_replace_collides_only_on_the_roots_unique_indexes() {
-    let image = verify_source(INDEXED_SOURCE, INDEXED_IDS).expect("verify");
+    let image = verified(INDEXED_SOURCE, INDEXED_IDS);
     // The closed unique_index_collision outcome layout for a create/replace on root 0
     // is exactly its unique index (byIsbn, 0x71); the nonunique byShelf never
     // collides.
@@ -368,7 +312,7 @@ fn a_missing_index_identity_is_a_precise_mintable_gap() {
     assert_eq!(codes, vec!["check.durable_identity"]);
 }
 
-// --- admission rejections (extracted from the tag's compile_resource_index family) ---
+// --- admission rejections ---
 
 /// A ledger with the base graph fully identified but no index anchors — used for
 /// admission rejections, where the invalid index never resolves its own identity.
@@ -594,7 +538,8 @@ pub fn find(s: string): Id(^books)? {
          id index books.byIsbn 80808080808080808080808080808080\n\
          high-water 0\n\
          end\n";
-    assert!(compile_codes(source, ids).is_empty());
+    // `compiled()` panics on any diagnostic: the source forms are admitted at check.
+    Project::single(source).ids(ids).compiled();
 }
 
 #[test]
@@ -618,7 +563,7 @@ pub fn hasIsbn(isbn: string): bool {
     return exists(^books.byIsbn[isbn])
 }
 "#;
-    assert!(compile_codes(source, INDEXED_IDS).is_empty());
+    Project::single(source).ids(INDEXED_IDS).compiled();
 
     let nonunique = source.replace(
         "return exists(^books.byIsbn[isbn])",

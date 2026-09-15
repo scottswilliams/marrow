@@ -8,6 +8,7 @@
 //! surface: the verifier reconstructs each export's atoms from the sealed sites its
 //! closure references, and nothing about demand is serialized into the image.
 
+use crate::common::Project;
 use marrow_kernel::durable::DemandCoverage;
 use marrow_verify::{
     DemandSetId, DemandView, ImageId, OperationClass, SealedExport, VerifiedImage,
@@ -39,19 +40,7 @@ const ROOT_NODE: [u8; 16] = [0x0b; 16];
 /// Compile one `src/main.mw` through the production path, returning its canonical
 /// image bytes and `ImageId`.
 fn compile_bytes(source: &str) -> (Vec<u8>, ImageId) {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
+    let compiled = Project::single(source).ids(IDS).compiled();
     (compiled.image.bytes, compiled.image.image_id)
 }
 

@@ -1,5 +1,7 @@
 //! Durable state through the store: places, groups, branches, and transactions.
 
+mod common;
+
 #[path = "durable_state/branches.rs"]
 mod branches;
 #[path = "durable_state/groups.rs"]

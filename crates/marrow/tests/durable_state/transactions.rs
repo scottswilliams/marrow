@@ -12,10 +12,26 @@
 //! These tests exercise the same VM transaction semantics directly over an ephemeral
 //! attachment, without process setup.
 
+use crate::common::{CallOutcome, Project};
+use marrow_codes::Code;
 use marrow_verify::{RetShape, SealedExport, VerifiedImage};
 use marrow_vm::{
     DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
 };
+
+/// The typed check-time diagnostic codes a source produces, or an empty vector when
+/// it compiles. A mutating helper called without an ambient transaction is refused
+/// here — at check time, with a call-site span — not only at verify.
+fn compile_error_codes(source: &str) -> Vec<String> {
+    match Project::single(source).ids(IDS).try_image() {
+        Ok(_) => Vec::new(),
+        Err(diagnostics) => diagnostics
+            .codes()
+            .iter()
+            .map(|code| code.to_string())
+            .collect(),
+    }
+}
 
 const IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
@@ -221,23 +237,6 @@ pub fn getValue(id: int): int? {
     return ^counters[id].value
 }
 "#;
-
-fn compile_verify(source: &str) -> VerifiedImage {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    marrow_verify::verify(&compiled.image.bytes).expect("verify")
-}
 
 #[test]
 fn tests_do_not_supply_an_ambient_helper_transaction() {
@@ -484,14 +483,14 @@ test "drive a transaction owner" {
             .collect();
         assert_eq!(markers, [Some((11, 17)); 2]);
         let mut attachment = attach(&image);
-        run(
+        run_on(
             &image,
             &mut attachment,
             "set",
             vec![Value::Int(2), Value::Int(11)],
         );
         assert_eq!(
-            run(&image, &mut attachment, "getValue", vec![Value::Int(2)]),
+            run_on(&image, &mut attachment, "getValue", vec![Value::Int(2)]),
             Some(Value::Optional(Some(Box::new(Value::Int(11)))))
         );
         if !image.test_entries().is_empty() {
@@ -517,9 +516,10 @@ fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
         .expect("export present")
 }
 
-/// Run `name(args)` against `attachment`, returning its VM value (a `run` fault
-/// panics — a fault case uses [`run_faulting`] instead).
-fn run(
+/// Run `name(args)` against `attachment`, returning its VM value. The shared harness
+/// builds a session from a `Project`; the images this drives are compiled with test
+/// entries, which the harness does not build, so they are attached directly.
+fn run_on(
     image: &VerifiedImage,
     attachment: &mut MemoryAttachment,
     name: &str,
@@ -529,35 +529,9 @@ fn run(
         .expect("the export is in the image")
     {
         DurableRun::Ran(Ok(value)) => value,
-        other => panic!("{name} did not run cleanly: {:?}", DebugRun(&other)),
-    }
-}
-
-/// Run `name(args)` expecting a source-mapped runtime fault, returning its code.
-fn run_faulting(
-    image: &VerifiedImage,
-    attachment: &mut MemoryAttachment,
-    name: &str,
-    args: Vec<Value>,
-) -> String {
-    match run_export(attachment, export(image, name).id(), args)
-        .expect("the export is in the image")
-    {
-        DurableRun::Ran(Err(fault)) => fault.code().as_str().to_string(),
-        other => panic!("{name} did not fault: {:?}", DebugRun(&other)),
-    }
-}
-
-/// A `DurableRun` is not `Debug`; this renders just enough for a panic message.
-struct DebugRun<'a>(&'a DurableRun);
-impl std::fmt::Debug for DebugRun<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
-            DurableRun::Ran(Ok(_)) => write!(f, "Ran(Ok(value))"),
-            DurableRun::Ran(Err(fault)) => write!(f, "Ran(Err({}))", fault.code().as_str()),
-            DurableRun::Parked => write!(f, "Parked"),
-            DurableRun::Failed(code) => write!(f, "Failed({})", code.as_str()),
-        }
+        DurableRun::Ran(Err(fault)) => panic!("{name} faulted: {}", fault.code().as_str()),
+        DurableRun::Parked => panic!("{name} parked"),
+        DurableRun::Failed(code) => panic!("{name} failed: {}", code.as_str()),
     }
 }
 
@@ -599,24 +573,18 @@ fn result_value(image: &VerifiedImage, name: &str, variant: &str, payload: Value
 /// committed value back.
 #[test]
 fn a_committed_transaction_is_observable_by_a_later_read() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(SOURCE).ids(IDS).session();
 
     // Before any write the store is empty.
     assert_eq!(
-        run(&image, &mut attachment, "getValue", vec![Value::Int(1)]),
+        session.call("getValue", vec![Value::Int(1)]),
         Some(Value::Optional(None))
     );
 
     // A mutating export commits its transaction; the effect persists past the session.
-    run(
-        &image,
-        &mut attachment,
-        "set",
-        vec![Value::Int(1), Value::Int(5)],
-    );
+    session.call("set", vec![Value::Int(1), Value::Int(5)]);
     assert_eq!(
-        run(&image, &mut attachment, "getValue", vec![Value::Int(1)]),
+        session.call("getValue", vec![Value::Int(1)]),
         Some(Value::Optional(Some(Box::new(Value::Int(5)))))
     );
 }
@@ -626,40 +594,24 @@ fn a_committed_transaction_is_observable_by_a_later_read() {
 /// leaf (exact replacement).
 #[test]
 fn a_committed_field_write_reads_back_and_replacement_is_exact() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(SOURCE).ids(IDS).session();
 
-    run(
-        &image,
-        &mut attachment,
-        "set",
-        vec![Value::Int(2), Value::Int(1)],
-    );
-    run(
-        &image,
-        &mut attachment,
-        "setLabel",
-        vec![Value::Int(2), Value::Text("tag".into())],
-    );
+    session.call("set", vec![Value::Int(2), Value::Int(1)]);
+    session.call("setLabel", vec![Value::Int(2), Value::Text("tag".into())]);
     assert_eq!(
-        run(&image, &mut attachment, "getLabel", vec![Value::Int(2)]),
+        session.call("getLabel", vec![Value::Int(2)]),
         Some(Value::Optional(Some(Box::new(Value::Text("tag".into())))))
     );
 
     // Replacing the whole entry rewrites it exactly, so the earlier sparse label does
     // not survive the replacement.
-    run(
-        &image,
-        &mut attachment,
-        "set",
-        vec![Value::Int(2), Value::Int(9)],
-    );
+    session.call("set", vec![Value::Int(2), Value::Int(9)]);
     assert_eq!(
-        run(&image, &mut attachment, "getValue", vec![Value::Int(2)]),
+        session.call("getValue", vec![Value::Int(2)]),
         Some(Value::Optional(Some(Box::new(Value::Int(9)))))
     );
     assert_eq!(
-        run(&image, &mut attachment, "getLabel", vec![Value::Int(2)]),
+        session.call("getLabel", vec![Value::Int(2)]),
         Some(Value::Optional(None)),
         "the whole-entry replacement dropped the earlier sparse label"
     );
@@ -669,18 +621,12 @@ fn a_committed_field_write_reads_back_and_replacement_is_exact() {
 /// it absent.
 #[test]
 fn a_committed_erase_removes_the_entry() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(SOURCE).ids(IDS).session();
 
-    run(
-        &image,
-        &mut attachment,
-        "set",
-        vec![Value::Int(3), Value::Int(7)],
-    );
-    run(&image, &mut attachment, "eraseEntry", vec![Value::Int(3)]);
+    session.call("set", vec![Value::Int(3), Value::Int(7)]);
+    session.call("eraseEntry", vec![Value::Int(3)]);
     assert_eq!(
-        run(&image, &mut attachment, "getValue", vec![Value::Int(3)]),
+        session.call("getValue", vec![Value::Int(3)]),
         Some(Value::Optional(None)),
         "the committed erase removed the entry"
     );
@@ -691,28 +637,20 @@ fn a_committed_erase_removes_the_entry() {
 /// late-rollback-restores-state law, observed across sessions on one attachment.
 #[test]
 fn a_fault_before_commit_rolls_the_transaction_back() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(SOURCE).ids(IDS).session();
 
     // Seed a committed value, then run a transaction that stages a replacement and
     // faults before committing.
-    run(
-        &image,
-        &mut attachment,
-        "set",
-        vec![Value::Int(4), Value::Int(1)],
-    );
-    let code = run_faulting(
-        &image,
-        &mut attachment,
+    session.call("set", vec![Value::Int(4), Value::Int(1)]);
+    let code = session.try_call(
         "setThenOverflow",
         vec![Value::Int(4), Value::Int(5_000_000_000_000_000_000)],
     );
-    assert_eq!(code, "run.overflow");
+    assert_eq!(code, CallOutcome::Fault(Code::RunOverflow));
 
     // The staged replacement was rolled back; the earlier committed value stands.
     assert_eq!(
-        run(&image, &mut attachment, "getValue", vec![Value::Int(4)]),
+        session.call("getValue", vec![Value::Int(4)]),
         Some(Value::Optional(Some(Box::new(Value::Int(1))))),
         "a fault before commit must restore the pre-transaction state"
     );
@@ -763,15 +701,9 @@ pub fn setAndGet(id: int, v: int): int? {
     return result
 }
 "#;
-    let image = compile_verify(read_inside);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(read_inside).ids(IDS).session();
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "setAndGet",
-            vec![Value::Int(1), Value::Int(5)]
-        ),
+        session.call("setAndGet", vec![Value::Int(1), Value::Int(5)]),
         Some(Value::Optional(Some(Box::new(Value::Int(5)))))
     );
 }
@@ -782,21 +714,15 @@ pub fn setAndGet(id: int, v: int): int? {
 /// commit, so a re-add is rejected without disturbing the first entry.
 #[test]
 fn an_in_region_guard_return_commits_and_returns() {
-    let image = compile_verify(GUARD_SOURCE);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(GUARD_SOURCE).ids(IDS).session();
 
     // Absent path: stage and commit, returning `true`.
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "addOnce",
-            vec![Value::Int(1), Value::Int(5)]
-        ),
+        session.call("addOnce", vec![Value::Int(1), Value::Int(5)]),
         Some(Value::Bool(true)),
     );
     assert_eq!(
-        run(&image, &mut attachment, "getValue", vec![Value::Int(1)]),
+        session.call("getValue", vec![Value::Int(1)]),
         Some(Value::Optional(Some(Box::new(Value::Int(5))))),
         "the absent-path in-region return committed the staged write",
     );
@@ -804,16 +730,11 @@ fn an_in_region_guard_return_commits_and_returns() {
     // Present path: the guard returns `false` and commits nothing new, leaving the
     // first entry intact.
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "addOnce",
-            vec![Value::Int(1), Value::Int(9)]
-        ),
+        session.call("addOnce", vec![Value::Int(1), Value::Int(9)]),
         Some(Value::Bool(false)),
     );
     assert_eq!(
-        run(&image, &mut attachment, "getValue", vec![Value::Int(1)]),
+        session.call("getValue", vec![Value::Int(1)]),
         Some(Value::Optional(Some(Box::new(Value::Int(5))))),
         "the guard-return path staged nothing, so the first value stands",
     );
@@ -823,21 +744,15 @@ fn an_in_region_guard_return_commits_and_returns() {
 /// pre-commit), commits, then returns. The captured value is the committed one.
 #[test]
 fn an_in_region_value_return_commits_the_read_value() {
-    let image = compile_verify(GUARD_SOURCE);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(GUARD_SOURCE).ids(IDS).session();
 
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "setAndReport",
-            vec![Value::Int(2), Value::Int(7)]
-        ),
+        session.call("setAndReport", vec![Value::Int(2), Value::Int(7)]),
         Some(Value::Optional(Some(Box::new(Value::Int(7))))),
         "the in-region return read the staged value pre-commit and committed it",
     );
     assert_eq!(
-        run(&image, &mut attachment, "getValue", vec![Value::Int(2)]),
+        session.call("getValue", vec![Value::Int(2)]),
         Some(Value::Optional(Some(Box::new(Value::Int(7))))),
     );
 }
@@ -845,36 +760,31 @@ fn an_in_region_value_return_commits_the_read_value() {
 /// A `return` from inside two nested guards commits the region's staged write.
 #[test]
 fn a_return_in_a_nested_guard_commits() {
-    let image = compile_verify(GUARD_SOURCE);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(GUARD_SOURCE).ids(IDS).session();
 
     // The nested guards reach the in-region return and commit.
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
+        session.call(
             "setNested",
             vec![Value::Int(3), Value::Int(4), Value::Bool(true)]
         ),
         Some(Value::Bool(true)),
     );
     assert_eq!(
-        run(&image, &mut attachment, "getValue", vec![Value::Int(3)]),
+        session.call("getValue", vec![Value::Int(3)]),
         Some(Value::Optional(Some(Box::new(Value::Int(4))))),
     );
 
     // The path that falls through the guards to the closing brace stages nothing.
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
+        session.call(
             "setNested",
             vec![Value::Int(4), Value::Int(4), Value::Bool(false)]
         ),
         Some(Value::Bool(false)),
     );
     assert_eq!(
-        run(&image, &mut attachment, "getValue", vec![Value::Int(4)]),
+        session.call("getValue", vec![Value::Int(4)]),
         Some(Value::Optional(None)),
     );
 }
@@ -884,30 +794,19 @@ fn a_return_in_a_nested_guard_commits() {
 /// which commits at its closing brace.
 #[test]
 fn a_helper_return_is_not_a_region_exit() {
-    let image = compile_verify(GUARD_SOURCE);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(GUARD_SOURCE).ids(IDS).session();
 
     // The helper's `x + x` return path.
-    run(
-        &image,
-        &mut attachment,
-        "setDoubled",
-        vec![Value::Int(5), Value::Int(6)],
-    );
+    session.call("setDoubled", vec![Value::Int(5), Value::Int(6)]);
     assert_eq!(
-        run(&image, &mut attachment, "getValue", vec![Value::Int(5)]),
+        session.call("getValue", vec![Value::Int(5)]),
         Some(Value::Optional(Some(Box::new(Value::Int(12))))),
     );
 
     // The helper's early `return 1000` path.
-    run(
-        &image,
-        &mut attachment,
-        "setDoubled",
-        vec![Value::Int(6), Value::Int(2000)],
-    );
+    session.call("setDoubled", vec![Value::Int(6), Value::Int(2000)]);
     assert_eq!(
-        run(&image, &mut attachment, "getValue", vec![Value::Int(6)]),
+        session.call("getValue", vec![Value::Int(6)]),
         Some(Value::Optional(Some(Box::new(Value::Int(1000))))),
     );
 }
@@ -919,20 +818,14 @@ fn a_helper_return_is_not_a_region_exit() {
 /// the staged write and returns the read value.
 #[test]
 fn an_unconditional_in_region_return_commits() {
-    let image = compile_verify(GUARD_SOURCE);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(GUARD_SOURCE).ids(IDS).session();
 
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "unconditionalReturn",
-            vec![Value::Int(1), Value::Int(8)]
-        ),
+        session.call("unconditionalReturn", vec![Value::Int(1), Value::Int(8)]),
         Some(Value::Optional(Some(Box::new(Value::Int(8))))),
     );
     assert_eq!(
-        run(&image, &mut attachment, "getValue", vec![Value::Int(1)]),
+        session.call("getValue", vec![Value::Int(1)]),
         Some(Value::Optional(Some(Box::new(Value::Int(8))))),
         "the unconditional in-region return committed the staged write",
     );
@@ -943,35 +836,30 @@ fn an_unconditional_in_region_return_commits() {
 /// before returning, and no closing-brace commit is emitted.
 #[test]
 fn both_arms_returning_in_region_commit() {
-    let image = compile_verify(GUARD_SOURCE);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(GUARD_SOURCE).ids(IDS).session();
 
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
+        session.call(
             "bothArms",
             vec![Value::Int(2), Value::Int(9), Value::Bool(true)]
         ),
         Some(Value::Bool(true)),
     );
     assert_eq!(
-        run(&image, &mut attachment, "getValue", vec![Value::Int(2)]),
+        session.call("getValue", vec![Value::Int(2)]),
         Some(Value::Optional(Some(Box::new(Value::Int(9))))),
         "the true arm committed its staged write",
     );
 
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
+        session.call(
             "bothArms",
             vec![Value::Int(3), Value::Int(9), Value::Bool(false)]
         ),
         Some(Value::Bool(false)),
     );
     assert_eq!(
-        run(&image, &mut attachment, "getValue", vec![Value::Int(3)]),
+        session.call("getValue", vec![Value::Int(3)]),
         Some(Value::Optional(Some(Box::new(Value::Int(0))))),
         "the false arm committed its staged write",
     );
@@ -983,21 +871,15 @@ fn both_arms_returning_in_region_commit() {
 /// exit), so no closing commit is emitted.
 #[test]
 fn a_return_checked_in_region_commits() {
-    let image = compile_verify(GUARD_SOURCE);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(GUARD_SOURCE).ids(IDS).session();
 
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "setAndDouble",
-            vec![Value::Int(4), Value::Int(5)]
-        ),
+        session.call("setAndDouble", vec![Value::Int(4), Value::Int(5)]),
         Some(Value::Int(10)),
         "the checked success path returned 2v after committing",
     );
     assert_eq!(
-        run(&image, &mut attachment, "getValue", vec![Value::Int(4)]),
+        session.call("getValue", vec![Value::Int(4)]),
         Some(Value::Optional(Some(Box::new(Value::Int(5))))),
         "the return-checked in-region path committed the staged write",
     );
@@ -1009,31 +891,20 @@ fn a_return_checked_in_region_commits() {
 /// `err` value, yet the staged write is durably committed and reads back.
 #[test]
 fn a_return_err_after_staged_writes_commits_them() {
-    let image = compile_verify(RESULT_SOURCE);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(RESULT_SOURCE).ids(IDS).session();
 
     // Over-limit path: the export returns `err(...)`, but the staged write commits.
-    run(
-        &image,
-        &mut attachment,
-        "setUnlessBig",
-        vec![Value::Int(1), Value::Int(200)],
-    );
+    session.call("setUnlessBig", vec![Value::Int(1), Value::Int(200)]);
     assert_eq!(
-        run(&image, &mut attachment, "getValue", vec![Value::Int(1)]),
+        session.call("getValue", vec![Value::Int(1)]),
         Some(Value::Optional(Some(Box::new(Value::Int(200))))),
         "the in-region `return err(...)` committed the staged write",
     );
 
     // Under-limit path commits and returns `ok(...)`; the value reads back too.
-    run(
-        &image,
-        &mut attachment,
-        "setUnlessBig",
-        vec![Value::Int(2), Value::Int(50)],
-    );
+    session.call("setUnlessBig", vec![Value::Int(2), Value::Int(50)]);
     assert_eq!(
-        run(&image, &mut attachment, "getValue", vec![Value::Int(2)]),
+        session.call("getValue", vec![Value::Int(2)]),
         Some(Value::Optional(Some(Box::new(Value::Int(50))))),
     );
 }
@@ -1060,23 +931,17 @@ pub fn getValue(id: int): int? {
 }
 "#;
     for source in [RESULT_SOURCE, require_source] {
-        let image = compile_verify(source);
-        let mut attachment = attach(&image);
+        let mut session = Project::single(source).ids(IDS).session();
         for (id, value, variant, payload) in [
             (1, 200, "err", Value::Text("value is large".into())),
             (2, 50, "ok", Value::Int(50)),
         ] {
             assert_eq!(
-                run(
-                    &image,
-                    &mut attachment,
-                    "setUnlessBig",
-                    vec![Value::Int(id), Value::Int(value)],
-                ),
-                result_value(&image, "setUnlessBig", variant, payload),
+                session.call("setUnlessBig", vec![Value::Int(id), Value::Int(value)],),
+                result_value(session.image(), "setUnlessBig", variant, payload),
             );
             assert_eq!(
-                run(&image, &mut attachment, "getValue", vec![Value::Int(id)]),
+                session.call("getValue", vec![Value::Int(id)]),
                 Some(Value::Optional(Some(Box::new(Value::Int(value))))),
             );
         }
@@ -1109,23 +974,17 @@ pub fn setChecked(id: int, v: int): Result<int, string> {
 
 pub fn getValue(id: int): int? { return ^counters[id].value }
 "#;
-    let image = compile_verify(try_crossing);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(try_crossing).ids(IDS).session();
     for (value, variant, payload, stored) in [
         (0, "err", Value::Text("value must be positive".into()), None),
         (7, "ok", Value::Int(7), Some(Box::new(Value::Int(7)))),
     ] {
         assert_eq!(
-            run(
-                &image,
-                &mut attachment,
-                "setChecked",
-                vec![Value::Int(1), Value::Int(value)]
-            ),
-            result_value(&image, "setChecked", variant, payload),
+            session.call("setChecked", vec![Value::Int(1), Value::Int(value)]),
+            result_value(session.image(), "setChecked", variant, payload),
         );
         assert_eq!(
-            run(&image, &mut attachment, "getValue", vec![Value::Int(1)]),
+            session.call("getValue", vec![Value::Int(1)]),
             Some(Value::Optional(stored)),
         );
     }
@@ -1158,14 +1017,8 @@ pub fn exitAt(id: int, v: int): Result<int, string> {{
 }}
 "#
         );
-        let image = compile_verify(&source);
-        let mut attachment = attach(&image);
-        run(
-            &image,
-            &mut attachment,
-            "setUnlessBig",
-            vec![Value::Int(1), Value::Int(10)],
-        );
+        let mut session = Project::single(&source).ids(IDS).session();
+        session.call("setUnlessBig", vec![Value::Int(1), Value::Int(10)]);
         for (value, stored, variant, payload) in [
             (-1, 10, "err", Value::Text("rejected".into())),
             (-2, -2, "err", Value::Text("rejected".into())),
@@ -1173,16 +1026,11 @@ pub fn exitAt(id: int, v: int): Result<int, string> {{
             (50, 50, "ok", Value::Int(50)),
         ] {
             assert_eq!(
-                run(
-                    &image,
-                    &mut attachment,
-                    "exitAt",
-                    vec![Value::Int(1), Value::Int(value)]
-                ),
-                result_value(&image, "exitAt", variant, payload),
+                session.call("exitAt", vec![Value::Int(1), Value::Int(value)]),
+                result_value(session.image(), "exitAt", variant, payload),
             );
             assert_eq!(
-                run(&image, &mut attachment, "getValue", vec![Value::Int(1)]),
+                session.call("getValue", vec![Value::Int(1)]),
                 Some(Value::Optional(Some(Box::new(Value::Int(stored))))),
             );
         }
@@ -1248,8 +1096,7 @@ pub fn loopExit(id: int, v: int): Result<int, string> {{
 }}
 "#
     );
-    let image = compile_verify(&source);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(&source).ids(IDS).session();
     for (name, value, stored, variant, payload) in [
         ("catchThenContinue", 10, 11, "ok", Value::Int(11)),
         ("propagate", 20, 20, "err", Value::Text("rejected".into())),
@@ -1257,64 +1104,23 @@ pub fn loopExit(id: int, v: int): Result<int, string> {{
         ("loopExit", 2, 2, "ok", Value::Int(2)),
     ] {
         assert_eq!(
-            run(
-                &image,
-                &mut attachment,
-                name,
-                vec![Value::Int(1), Value::Int(value)]
-            ),
-            result_value(&image, name, variant, payload),
+            session.call(name, vec![Value::Int(1), Value::Int(value)]),
+            result_value(session.image(), name, variant, payload),
         );
         assert_eq!(
-            run(&image, &mut attachment, "getValue", vec![Value::Int(1)]),
+            session.call("getValue", vec![Value::Int(1)]),
             Some(Value::Optional(Some(Box::new(Value::Int(stored))))),
         );
     }
     for name in ["catchThenFault", "requireFault", "tryFault"] {
         assert_eq!(
-            run_faulting(
-                &image,
-                &mut attachment,
-                name,
-                vec![Value::Int(1), Value::Int(99)]
-            ),
-            "run.divide_by_zero",
+            session.try_call(name, vec![Value::Int(1), Value::Int(99)]),
+            CallOutcome::Fault(Code::RunDivideByZero),
         );
         assert_eq!(
-            run(&image, &mut attachment, "getValue", vec![Value::Int(1)]),
+            session.call("getValue", vec![Value::Int(1)]),
             Some(Value::Optional(Some(Box::new(Value::Int(2))))),
         );
-    }
-}
-
-/// The typed check-time diagnostic codes a source produces, or an empty vector when
-/// it compiles. A mutating helper called without an ambient transaction is refused
-/// here — at check time, with a call-site span — not only at verify.
-fn compile_error_codes(source: &str) -> Vec<String> {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    match marrow_compile::compile(&project) {
-        Ok(_) => Vec::new(),
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics
-            .iter()
-            .map(|d| d.code().as_str().to_string())
-            .collect(),
-        Err(
-            marrow_compile::CompileFailure::Invariant(_)
-            | marrow_compile::CompileFailure::ResourceLimit(_),
-        ) => {
-            panic!("source-triggered compiler failures must remain diagnostics")
-        }
     }
 }
 
@@ -1361,16 +1167,10 @@ fn a_mutating_helper_inside_a_transaction_checks_and_runs() {
         "the wrapped call checks"
     );
 
-    let image = compile_verify(&source);
-    let mut attachment = attach(&image);
-    run(
-        &image,
-        &mut attachment,
-        "wrappedCaller",
-        vec![Value::Int(1), Value::Int(9)],
-    );
+    let mut session = Project::single(&source).ids(IDS).session();
+    session.call("wrappedCaller", vec![Value::Int(1), Value::Int(9)]);
     assert_eq!(
-        run(&image, &mut attachment, "getValue", vec![Value::Int(1)]),
+        session.call("getValue", vec![Value::Int(1)]),
         Some(Value::Optional(Some(Box::new(Value::Int(9))))),
     );
 }
@@ -1413,37 +1213,32 @@ fn a_direct_mutation_outside_a_transaction_is_a_check_error() {
 /// the transaction effects compose. The non-diverging path commits normally.
 #[test]
 fn an_unreachable_fault_inside_a_transaction_rolls_back() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(SOURCE).ids(IDS).session();
 
     // The diverging path faults and discards the staged write.
-    let code = run_faulting(
-        &image,
-        &mut attachment,
+    let code = session.try_call(
         "setThenMaybeDiverge",
         vec![Value::Int(6), Value::Int(3), Value::Bool(true)],
     );
-    assert_eq!(code, "run.unreachable");
+    assert_eq!(code, CallOutcome::Fault(Code::RunUnreachable));
     assert_eq!(
-        run(&image, &mut attachment, "getValue", vec![Value::Int(6)]),
+        session.call("getValue", vec![Value::Int(6)]),
         Some(Value::Optional(None)),
         "the unreachable fault rolled the transaction back"
     );
 
     // The same export on its non-diverging path commits the write.
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "setThenMaybeDiverge",
         vec![Value::Int(6), Value::Int(3), Value::Bool(false)],
     );
     assert_eq!(
-        run(&image, &mut attachment, "getValue", vec![Value::Int(6)]),
+        session.call("getValue", vec![Value::Int(6)]),
         Some(Value::Optional(Some(Box::new(Value::Int(3)))))
     );
 }
 
-/// BF01 exit-gate evidence: an instruction-budget exhaustion raised inside a
+/// An instruction-budget exhaustion raised inside a
 /// transaction is a source-uncatchable `run.budget` fault that rolls the whole
 /// region back and leaves the attachment usable — an abort, never a poison. A value
 /// committed by an earlier invocation survives the faulting one, and a *subsequent*
@@ -1460,50 +1255,34 @@ fn an_unreachable_fault_inside_a_transaction_rolls_back() {
 #[test]
 #[ignore = "burns the whole 1<<26 instruction budget (private VM const, no override) — ~1.3s debug; run with --ignored"]
 fn a_budget_exhaustion_inside_a_transaction_rolls_back_without_poisoning() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(SOURCE).ids(IDS).session();
 
     // Seed a committed value in its own transaction.
-    run(
-        &image,
-        &mut attachment,
-        "set",
-        vec![Value::Int(7), Value::Int(1)],
-    );
+    session.call("set", vec![Value::Int(7), Value::Int(1)]);
 
     // A transaction stages a replacement, then exhausts the instruction budget before
     // reaching its commit; the terminal observes the typed `run.budget` fault.
-    let code = run_faulting(
-        &image,
-        &mut attachment,
-        "setThenSpin",
-        vec![Value::Int(7), Value::Int(9)],
-    );
-    assert_eq!(code, "run.budget");
+    let code = session.try_call("setThenSpin", vec![Value::Int(7), Value::Int(9)]);
+    assert_eq!(code, CallOutcome::Fault(Code::RunBudget));
 
     // The staged replacement rolled back: the earlier committed value stands.
     assert_eq!(
-        run(&image, &mut attachment, "getValue", vec![Value::Int(7)]),
+        session.call("getValue", vec![Value::Int(7)]),
         Some(Value::Optional(Some(Box::new(Value::Int(1))))),
         "the budget fault rolled the region back to the pre-transaction state"
     );
 
     // A subsequent mutating invocation on the same attachment commits normally: the
     // budget abort left the store usable rather than poisoning it.
-    run(
-        &image,
-        &mut attachment,
-        "set",
-        vec![Value::Int(7), Value::Int(42)],
-    );
+    session.call("set", vec![Value::Int(7), Value::Int(42)]);
     assert_eq!(
-        run(&image, &mut attachment, "getValue", vec![Value::Int(7)]),
+        session.call("getValue", vec![Value::Int(7)]),
         Some(Value::Optional(Some(Box::new(Value::Int(42))))),
         "a later transaction commits, so the budget abort did not poison the attachment"
     );
 }
 
-/// BF01 out-of-region pin: the identical budget exhaustion outside any transaction is
+/// The identical budget exhaustion outside any transaction is
 /// the plain source-uncatchable fault death. A read-only export carries no
 /// transaction region, so there is nothing to roll back and the behavior is
 /// unchanged — the terminal observes `run.budget` and no durable state is involved.
@@ -1512,8 +1291,7 @@ fn a_budget_exhaustion_inside_a_transaction_rolls_back_without_poisoning() {
 #[test]
 #[ignore = "burns the whole 1<<26 instruction budget (private VM const, no override) — ~1.3s debug; run with --ignored"]
 fn a_budget_exhaustion_outside_a_region_is_the_plain_fault_death() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
-    let code = run_faulting(&image, &mut attachment, "spinReadOnly", vec![Value::Int(8)]);
-    assert_eq!(code, "run.budget");
+    let mut session = Project::single(SOURCE).ids(IDS).session();
+    let code = session.try_call("spinReadOnly", vec![Value::Int(8)]);
+    assert_eq!(code, CallOutcome::Fault(Code::RunBudget));
 }

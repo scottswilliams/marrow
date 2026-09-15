@@ -1,11 +1,11 @@
-//! Black-box harness and access-demand facts for the Workshop catalog fixture.
+//! Access-demand facts and the executable journey of the Workshop catalog fixture.
 //!
-//! The fixture source and its committed `.marrow/ids` ledger are read from disk and
-//! driven through the whole production path — capture -> compile -> verify -> attach
-//! -> VM — the same path `marrow test` and a terminal invocation take. One test
-//! drives add/read/move/absent-move/final-read over a single persistent ephemeral
-//! attachment: committed writes are observable by later reads, and a move of an absent
-//! asset stops at its guard without changing either root.
+//! The fixture source and its committed `.marrow/ids` ledger are read from the
+//! conformance corpus and driven through the whole production path — capture ->
+//! compile -> verify -> attach -> VM — the same path `marrow test` and a terminal
+//! invocation take. One test drives add/read/move/absent-move/final-read over a single
+//! persistent ephemeral attachment: committed writes are observable by later reads, and
+//! a move of an absent asset stops at its guard without changing either root.
 //!
 //! The demand tests read the catalog's verifier-reconstructed access demand off the
 //! sealed image: a mutating export demands writes, a read-only export does not, and
@@ -20,40 +20,22 @@
 
 use marrow_image::CeilingDescriptor;
 use marrow_verify::{SealedExport, VerifiedImage};
-use marrow_vm::{
-    DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
-};
+use marrow_vm::Value;
 
-use std::path::PathBuf;
+use crate::common::{Project, conformance_dir};
 
-fn fixture_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("workspace root")
-        .join("fixtures/v01/conformance/workshop")
+/// The Workshop conformance fixture as an in-memory project: its committed ledger and
+/// its one source file, read from the repository corpus.
+fn workshop() -> Project {
+    let dir = conformance_dir("workshop");
+    let source = std::fs::read_to_string(dir.join("src/main.mw")).expect("read fixture source");
+    let ids = std::fs::read_to_string(dir.join(".marrow/ids")).expect("read fixture ledger");
+    Project::single(&source).ids(&ids)
 }
 
-fn compile_verify() -> VerifiedImage {
-    let source = std::fs::read(fixture_dir().join("src/main.mw")).expect("read fixture source");
-    let ids = std::fs::read(fixture_dir().join(".marrow/ids")).expect("read fixture ledger");
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source,
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(&ids),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    marrow_verify::verify(&compiled.image.bytes).expect("verify")
-}
-
-fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
+/// The sealed export whose entry function is named `name`. The image carries no export
+/// name, so the function directory resolves the name to its function index.
+fn export_named<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
     image
         .exports()
         .iter()
@@ -68,32 +50,6 @@ fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
         .unwrap_or_else(|| panic!("export `{name}` present"))
 }
 
-fn attach(image: &VerifiedImage) -> MemoryAttachment {
-    match mint_ephemeral(prepare(image.clone())).into_mint() {
-        MintOutcome::Ready(attachment) => attachment,
-        MintOutcome::Storeless | MintOutcome::Parked => {
-            panic!("the catalog image must be executable, not parked")
-        }
-        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {}", cause.as_str()),
-    }
-}
-
-fn run(
-    image: &VerifiedImage,
-    attachment: &mut MemoryAttachment,
-    name: &str,
-    args: Vec<Value>,
-) -> Option<Value> {
-    match run_export(attachment, export(image, name).id(), args)
-        .expect("the export is in the image")
-    {
-        DurableRun::Ran(Ok(value)) => value,
-        DurableRun::Ran(Err(fault)) => panic!("{name} faulted: {}", fault.code().as_str()),
-        DurableRun::Parked => panic!("{name} parked"),
-        DurableRun::Failed(code) => panic!("{name} failed: {}", code.as_str()),
-    }
-}
-
 fn present_name(name: &str) -> Option<Value> {
     Some(Value::Optional(Some(Box::new(Value::Text(name.into())))))
 }
@@ -105,13 +61,10 @@ fn present_name(name: &str) -> Option<Value> {
 /// prior committed values with no asset created.
 #[test]
 fn add_read_move_and_absent_move_preserve_committed_state() {
-    let image = compile_verify();
-    let mut att = attach(&image);
+    let mut session = workshop().session();
 
     assert_eq!(
-        run(
-            &image,
-            &mut att,
+        session.call(
             "add",
             vec![
                 Value::Int(1),
@@ -125,38 +78,28 @@ fn add_read_move_and_absent_move_preserve_committed_state() {
     );
 
     assert_eq!(
-        run(&image, &mut att, "assetName", vec![Value::Int(1)]),
+        session.call("assetName", vec![Value::Int(1)]),
         present_name("Cordless Drill"),
     );
     // add advanced the ^tallies "catalogued" counter in the same cross-root region.
-    assert_eq!(
-        run(&image, &mut att, "catalogued", vec![]),
-        Some(Value::Int(1)),
-    );
+    assert_eq!(session.call("catalogued", vec![]), Some(Value::Int(1)));
 
     // A committed cross-root move: recordMove writes the ^assets `location` field and
     // advances the ^tallies "moves" tally together.
-    run(
-        &image,
-        &mut att,
+    session.call(
         "recordMove",
         vec![Value::Int(1), Value::Text("Bay 3".into())],
     );
     assert_eq!(
-        run(&image, &mut att, "location", vec![Value::Int(1)]),
+        session.call("location", vec![Value::Int(1)]),
         present_name("Bay 3"),
     );
-    assert_eq!(
-        run(&image, &mut att, "moveCount", vec![]),
-        Some(Value::Int(1))
-    );
+    assert_eq!(session.call("moveCount", vec![]), Some(Value::Int(1)));
 
     // A move on an absent asset fails its presence guard before either root is written:
     // no `location` lands on ^assets and the "moves" tally does not advance.
     assert_eq!(
-        run(
-            &image,
-            &mut att,
+        session.call(
             "recordMove",
             vec![Value::Int(2), Value::Text("Bay 9".into())],
         ),
@@ -166,25 +109,19 @@ fn add_read_move_and_absent_move_preserve_committed_state() {
     // Neither root moved: the prior asset and its location stand, no asset 2 exists,
     // and the catalogued and moves tallies retain their prior committed values.
     assert_eq!(
-        run(&image, &mut att, "assetName", vec![Value::Int(1)]),
+        session.call("assetName", vec![Value::Int(1)]),
         present_name("Cordless Drill"),
     );
     assert_eq!(
-        run(&image, &mut att, "location", vec![Value::Int(1)]),
+        session.call("location", vec![Value::Int(1)]),
         present_name("Bay 3"),
     );
     assert_eq!(
-        run(&image, &mut att, "present", vec![Value::Int(2)]),
+        session.call("present", vec![Value::Int(2)]),
         Some(Value::Bool(false)),
     );
-    assert_eq!(
-        run(&image, &mut att, "catalogued", vec![]),
-        Some(Value::Int(1)),
-    );
-    assert_eq!(
-        run(&image, &mut att, "moveCount", vec![]),
-        Some(Value::Int(1))
-    );
+    assert_eq!(session.call("catalogued", vec![]), Some(Value::Int(1)));
+    assert_eq!(session.call("moveCount", vec![]), Some(Value::Int(1)));
 }
 
 /// A committed add is durable across the attachment, and a subsequent read invocation
@@ -192,12 +129,9 @@ fn add_read_move_and_absent_move_preserve_committed_state() {
 /// name and its first `log` entry both read back.
 #[test]
 fn a_committed_add_is_observable_with_its_log_descendant() {
-    let image = compile_verify();
-    let mut att = attach(&image);
+    let mut session = workshop().session();
 
-    run(
-        &image,
-        &mut att,
+    session.call(
         "add",
         vec![
             Value::Int(7),
@@ -209,16 +143,11 @@ fn a_committed_add_is_observable_with_its_log_descendant() {
     );
 
     assert_eq!(
-        run(&image, &mut att, "assetName", vec![Value::Int(7)]),
+        session.call("assetName", vec![Value::Int(7)]),
         present_name("Sander"),
     );
     assert_eq!(
-        run(
-            &image,
-            &mut att,
-            "noteText",
-            vec![Value::Int(7), Value::Int(1)],
-        ),
+        session.call("noteText", vec![Value::Int(7), Value::Int(1)]),
         present_name("catalogued"),
     );
 }
@@ -228,9 +157,9 @@ fn a_committed_add_is_observable_with_its_log_descendant() {
 /// mutating, and the program-wide union both reads and writes.
 #[test]
 fn verified_demand_distinguishes_readers_from_mutators() {
-    let image = compile_verify();
+    let image = workshop().image();
 
-    let add = export(&image, "add");
+    let add = export_named(&image, "add");
     let add_demand = image
         .function(add.function())
         .expect("verified function")
@@ -238,7 +167,7 @@ fn verified_demand_distinguishes_readers_from_mutators() {
     assert!(add.is_mutating(), "add mutates durable state");
     assert!(add_demand.writes(), "add demands writes");
 
-    let name = export(&image, "assetName");
+    let name = export_named(&image, "assetName");
     let name_demand = image
         .function(name.function())
         .expect("verified function")
@@ -247,7 +176,7 @@ fn verified_demand_distinguishes_readers_from_mutators() {
     assert!(name_demand.reads(), "assetName demands a read");
     assert!(!name_demand.writes(), "assetName demands no write");
 
-    let count = export(&image, "catalogued");
+    let count = export_named(&image, "catalogued");
     let count_demand = image
         .function(count.function())
         .expect("verified function")
@@ -269,7 +198,7 @@ fn verified_demand_distinguishes_readers_from_mutators() {
 /// id can never be re-presented as a wider ceiling over the same atoms.
 #[test]
 fn the_deployment_ceiling_is_a_separate_authority_from_demand() {
-    let image = compile_verify();
+    let image = workshop().image();
     let union = image.demand_union();
 
     let descriptor = CeilingDescriptor::from_demand_union(union.clone());

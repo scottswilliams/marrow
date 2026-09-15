@@ -7,11 +7,9 @@
 //! dereference (`^books[id]`) composing with an ordinary entry read. An entry identity
 //! is not durably stored here: it is a runtime/lookup value only.
 
-use marrow_compile::SourceDiagnostic;
-use marrow_verify::{SealedExport, VerifiedImage};
-use marrow_vm::{
-    DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
-};
+use marrow_vm::Value;
+
+use crate::common::{Diagnostics, Project, Session};
 
 // A single-`int` keyed root `^books[id: int]: Book` with a required `title`.
 const IDS: &str = "marrow ids v0\n\
@@ -53,100 +51,17 @@ pub fn different(a: Id(^books), b: Id(^books)): bool {
 }
 "#;
 
-fn compile_verify(source: &str, ids: &str) -> VerifiedImage {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(ids.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    marrow_verify::verify(&compiled.image.bytes).expect("verify")
+/// An ephemeral session over `source` against the entry-identity ledger.
+fn open(source: &str) -> Session {
+    Project::single(source).ids(IDS).session()
 }
 
-/// Compile a source that the checker must reject, returning its diagnostics.
-fn compile_errors(source: &str) -> Vec<SourceDiagnostic> {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    match marrow_compile::compile(&project) {
-        Ok(_) => panic!("expected the checker to reject this program"),
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
-        Err(
-            marrow_compile::CompileFailure::Invariant(_)
-            | marrow_compile::CompileFailure::ResourceLimit(_),
-        ) => {
-            panic!("source-triggered compiler failures must remain diagnostics")
-        }
-    }
-}
-
-fn has_code(diagnostics: &[SourceDiagnostic], code: &str) -> bool {
-    diagnostics.iter().any(|d| d.code().as_str() == code)
-}
-
-fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
-    image
-        .exports()
-        .iter()
-        .find(|export| {
-            image
-                .function(export.function())
-                .expect("verified function")
-                .body()
-                .name()
-                == name
-        })
-        .expect("export present")
-}
-
-struct DebugRun<'a>(&'a DurableRun);
-impl std::fmt::Debug for DebugRun<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
-            DurableRun::Ran(Ok(_)) => write!(f, "Ran(Ok(value))"),
-            DurableRun::Ran(Err(fault)) => write!(f, "Ran(Err({}))", fault.code().as_str()),
-            DurableRun::Parked => write!(f, "Parked"),
-            DurableRun::Failed(code) => write!(f, "Failed({})", code.as_str()),
-        }
-    }
-}
-
-fn run(
-    image: &VerifiedImage,
-    attachment: &mut MemoryAttachment,
-    name: &str,
-    args: Vec<Value>,
-) -> Option<Value> {
-    match run_export(attachment, export(image, name).id(), args)
-        .expect("the export is in the image")
-    {
-        DurableRun::Ran(Ok(value)) => value,
-        other => panic!("{name} did not run cleanly: {:?}", DebugRun(&other)),
-    }
-}
-
-fn attach(image: &VerifiedImage) -> MemoryAttachment {
-    match mint_ephemeral(prepare(image.clone())).into_mint() {
-        MintOutcome::Ready(attachment) => attachment,
-        MintOutcome::Storeless | MintOutcome::Parked => panic!("the books root must be executable"),
-        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {}", cause.as_str()),
-    }
+/// The diagnostics a source the checker must reject reports.
+fn errors(source: &str) -> Diagnostics {
+    let Err(diagnostics) = Project::single(source).ids(IDS).try_image() else {
+        panic!("the checker must reject this program");
+    };
+    diagnostics
 }
 
 fn some_text(s: &str) -> Option<Value> {
@@ -155,29 +70,19 @@ fn some_text(s: &str) -> Option<Value> {
 
 #[test]
 fn construct_dereference_reads_the_named_entry() {
-    let image = compile_verify(SOURCE, IDS);
-    let mut store = attach(&image);
+    let mut session = open(SOURCE);
 
-    run(
-        &image,
-        &mut store,
-        "shelve",
-        vec![Value::Int(1), Value::Text("dune".into())],
-    );
-    run(
-        &image,
-        &mut store,
+    session.call("shelve", vec![Value::Int(1), Value::Text("dune".into())]);
+    session.call(
         "shelve",
         vec![Value::Int(2), Value::Text("hyperion".into())],
     );
 
     // `make` returns an `Id(^books)` value; `titleVia` dereferences it.
-    let id = run(&image, &mut store, "make", vec![Value::Int(2)])
+    let id = session
+        .call("make", vec![Value::Int(2)])
         .expect("make returns an identity value");
-    assert_eq!(
-        run(&image, &mut store, "titleVia", vec![id]),
-        some_text("hyperion")
-    );
+    assert_eq!(session.call("titleVia", vec![id]), some_text("hyperion"));
 }
 
 // A `place` bound to an identity operand `^books[id]`: the identity spreads into the
@@ -209,52 +114,51 @@ pub fn titleViaPlace(bid: Id(^books)): string? {
 
 #[test]
 fn a_place_bound_to_an_identity_operand_writes_and_reads_the_entry() {
-    let image = compile_verify(PLACE_SOURCE, IDS);
-    let mut store = attach(&image);
+    let mut session = open(PLACE_SOURCE);
 
-    let id = run(&image, &mut store, "make", vec![Value::Int(3)]).expect("identity value");
-    run(
-        &image,
-        &mut store,
+    let id = session
+        .call("make", vec![Value::Int(3)])
+        .expect("identity value");
+    session.call(
         "shelveViaPlace",
         vec![id.clone(), Value::Text("neuromancer".into())],
     );
     assert_eq!(
-        run(&image, &mut store, "titleViaPlace", vec![id]),
+        session.call("titleViaPlace", vec![id]),
         some_text("neuromancer"),
     );
 }
 
 #[test]
 fn dereference_of_absent_entry_is_absent() {
-    let image = compile_verify(SOURCE, IDS);
-    let mut store = attach(&image);
-    let id = run(&image, &mut store, "make", vec![Value::Int(99)]).expect("identity value");
+    let mut session = open(SOURCE);
+    let id = session
+        .call("make", vec![Value::Int(99)])
+        .expect("identity value");
     assert_eq!(
-        run(&image, &mut store, "titleVia", vec![id]),
+        session.call("titleVia", vec![id]),
         Some(Value::Optional(None))
     );
 }
 
 #[test]
 fn identity_equality_is_key_tuple_equality() {
-    let image = compile_verify(SOURCE, IDS);
-    let mut store = attach(&image);
+    let mut session = open(SOURCE);
 
-    let id1 = run(&image, &mut store, "make", vec![Value::Int(7)]).expect("id1");
-    let id1b = run(&image, &mut store, "make", vec![Value::Int(7)]).expect("id1b");
-    let id2 = run(&image, &mut store, "make", vec![Value::Int(8)]).expect("id2");
+    let id1 = session.call("make", vec![Value::Int(7)]).expect("id1");
+    let id1b = session.call("make", vec![Value::Int(7)]).expect("id1b");
+    let id2 = session.call("make", vec![Value::Int(8)]).expect("id2");
 
     assert_eq!(
-        run(&image, &mut store, "same", vec![id1.clone(), id1b]),
+        session.call("same", vec![id1.clone(), id1b]),
         Some(Value::Bool(true)),
     );
     assert_eq!(
-        run(&image, &mut store, "same", vec![id1.clone(), id2.clone()]),
+        session.call("same", vec![id1.clone(), id2.clone()]),
         Some(Value::Bool(false)),
     );
     assert_eq!(
-        run(&image, &mut store, "different", vec![id1, id2]),
+        session.call("different", vec![id1, id2]),
         Some(Value::Bool(true)),
     );
 }
@@ -270,56 +174,56 @@ fn program(body: &str) -> String {
 
 #[test]
 fn an_identity_type_over_an_undeclared_root_is_unsupported() {
-    let diagnostics = compile_errors(&program("pub fn f(x: Id(^nope)): int {\n    return 0\n}\n"));
-    assert!(has_code(&diagnostics, "check.unsupported"));
+    let diagnostics = errors(&program("pub fn f(x: Id(^nope)): int {\n    return 0\n}\n"));
+    assert!(diagnostics.has_code("check.unsupported"));
 }
 
 #[test]
 fn an_identity_constructor_over_an_undeclared_root_is_rejected() {
-    let diagnostics = compile_errors(&program(
+    let diagnostics = errors(&program(
         "pub fn f(): Id(^books) {\n    return Id(^nope, 1)\n}\n",
     ));
-    assert!(has_code(&diagnostics, "check.type"));
+    assert!(diagnostics.has_code("check.type"));
 }
 
 #[test]
 fn an_identity_constructor_with_the_wrong_key_arity_is_rejected() {
     // The root has one key column; supplying none is a key-arity error.
-    let diagnostics = compile_errors(&program(
+    let diagnostics = errors(&program(
         "pub fn f(): Id(^books) {\n    return Id(^books)\n}\n",
     ));
-    assert!(has_code(&diagnostics, "check.type"));
+    assert!(diagnostics.has_code("check.type"));
 }
 
 #[test]
 fn an_identity_constructor_with_the_wrong_key_type_is_rejected() {
     // The single key column is `int`; a string operand does not coerce.
-    let diagnostics = compile_errors(&program(
+    let diagnostics = errors(&program(
         "pub fn f(): Id(^books) {\n    return Id(^books, \"x\")\n}\n",
     ));
-    assert!(has_code(&diagnostics, "check.type"));
+    assert!(diagnostics.has_code("check.type"));
 }
 
 #[test]
 fn comparing_an_identity_with_a_scalar_is_rejected() {
-    let diagnostics = compile_errors(&program(
+    let diagnostics = errors(&program(
         "pub fn f(a: Id(^books)): bool {\n    return a == 5\n}\n",
     ));
-    assert!(has_code(&diagnostics, "check.type"));
+    assert!(diagnostics.has_code("check.type"));
 }
 
 #[test]
 fn an_identity_is_not_an_orderable_collection_key() {
     // Entry identities are not admitted in a key position, so a map keyed by one is
     // an unsupported type.
-    let diagnostics = compile_errors(&program(
+    let diagnostics = errors(&program(
         "pub fn f(): int {\n    const m: Map<Id(^books), int> = Map()\n    return length(m)\n}\n",
     ));
-    assert!(has_code(&diagnostics, "check.unsupported"));
+    assert!(diagnostics.has_code("check.unsupported"));
 }
 
 #[test]
 fn a_declaration_named_id_is_reserved() {
-    let diagnostics = compile_errors(&program("pub fn Id(): int {\n    return 0\n}\n"));
+    let diagnostics = errors(&program("pub fn Id(): int {\n    return 0\n}\n"));
     assert!(!diagnostics.is_empty());
 }

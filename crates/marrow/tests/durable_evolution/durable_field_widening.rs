@@ -12,45 +12,27 @@
 //! in `durable_widened_values.rs`). Nominal-bearing store bindings and collection
 //! fields report `check.unsupported`.
 
-use marrow_compile::{Compiled, SourceDiagnostic};
 use marrow_image::{ImageType, Scalar};
 use marrow_verify::DurableContractId;
 
-fn compile(source: &str, ids: &str) -> Result<Compiled, Vec<SourceDiagnostic>> {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(ids.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    match marrow_compile::compile(&project) {
-        Ok(compiled) => Ok(compiled),
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => {
-            Err(diagnostics.into_vec())
-        }
-        Err(
-            marrow_compile::CompileFailure::Invariant(_)
-            | marrow_compile::CompileFailure::ResourceLimit(_),
-        ) => {
-            panic!("source-triggered compiler failures must remain diagnostics")
-        }
-    }
+use crate::common::{Diagnostics, Project};
+
+/// The project for `source` against the identity ledger `ids`.
+fn project(source: &str, ids: &str) -> Project {
+    Project::single(source).ids(ids)
 }
 
+/// The diagnostics a source the checker must reject reports.
+fn errors(source: &str, ids: &str) -> Diagnostics {
+    let Err(diagnostics) = project(source, ids).try_image() else {
+        panic!("the checker must reject this program");
+    };
+    diagnostics
+}
+
+/// The durable contract identity of a graph that compiles and verifies.
 fn contract_of(source: &str, ids: &str) -> DurableContractId {
-    let compiled = compile(source, ids).expect("compile");
-    let image = marrow_verify::verify(&compiled.image.bytes).expect("verify");
-    image.durable_contract()
-}
-
-fn codes(diagnostics: &[SourceDiagnostic]) -> Vec<&str> {
-    diagnostics.iter().map(|d| d.code().as_str()).collect()
+    project(source, ids).image().durable_contract()
 }
 
 // A resource storing supported widened values: plain scalars (`id`/`balance`), a
@@ -137,8 +119,7 @@ const NOMINAL_BRANCH_IDS: &str = "marrow ids v0\n\
 
 #[test]
 fn a_widened_field_resource_completes_its_identity_and_verifies() {
-    let compiled = compile(ACCOUNT_SOURCE, ACCOUNT_IDS).expect("supported widened fields");
-    let image = marrow_verify::verify(&compiled.image.bytes).expect("independent verification");
+    let image = project(ACCOUNT_SOURCE, ACCOUNT_IDS).image();
     let root = image
         .roots()
         .iter()
@@ -165,7 +146,7 @@ fn a_nominal_field_binding_is_refused_without_a_durable_operation() {
         "type Money: int in 0..=1000000\n\n{}",
         ACCOUNT_SOURCE.replace("balance: int", "balance: Money")
     );
-    let diagnostics = compile(&source, ACCOUNT_IDS).expect_err("nominal binding must fail");
+    let diagnostics = errors(&source, ACCOUNT_IDS);
     let sites: Vec<_> = diagnostics
         .iter()
         .map(|diagnostic| {
@@ -173,7 +154,12 @@ fn a_nominal_field_binding_is_refused_without_a_durable_operation() {
             (diagnostic.code().as_str(), span.start_byte, span.end_byte)
         })
         .collect();
-    assert_eq!(sites, [("check.unsupported", 262, 295)], "{diagnostics:?}");
+    assert_eq!(
+        sites,
+        [("check.unsupported", 262, 295)],
+        "{:?}",
+        diagnostics.all()
+    );
     assert_eq!(&source[262..295], "store ^accounts[id: int]: Account");
 }
 
@@ -185,21 +171,18 @@ fn nominal_durable_positions_and_reference_agree() {
         "store ^accounts[id: int]: Account",
         "store ^accounts[id: Money]: Account",
     );
-    let diagnostics =
-        compile(&nominal_root_key, ACCOUNT_IDS).expect_err("nominal root key must fail");
-    assert_eq!(codes(&diagnostics), vec!["check.unsupported"]);
+    let diagnostics = errors(&nominal_root_key, ACCOUNT_IDS);
+    assert_eq!(diagnostics.codes(), vec!["check.unsupported"]);
 
-    let diagnostics = compile(NOMINAL_BRANCH_SOURCE, NOMINAL_BRANCH_IDS)
-        .expect_err("nominal branch key must fail");
-    assert_eq!(codes(&diagnostics), vec!["check.unsupported"]);
+    let diagnostics = errors(NOMINAL_BRANCH_SOURCE, NOMINAL_BRANCH_IDS);
+    assert_eq!(diagnostics.codes(), vec!["check.unsupported"]);
 
     let nominal_constant = source.replace(
         "store ^accounts[id: int]: Account",
         "const LIMIT: Money = 1\n\nstore ^accounts[id: int]: Account",
     );
-    let diagnostics =
-        compile(&nominal_constant, ACCOUNT_IDS).expect_err("nominal constant must fail");
-    assert_eq!(codes(&diagnostics), vec!["check.unsupported"]);
+    let diagnostics = errors(&nominal_constant, ACCOUNT_IDS);
+    assert_eq!(diagnostics.codes(), vec!["check.unsupported"]);
 
     let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
     let types = normalize(include_str!(
@@ -284,16 +267,19 @@ fn unrelated_source_edits_do_not_drift_the_widened_contract_id() {
 #[test]
 fn a_missing_enum_sum_identity_fails_precisely() {
     let without_sum = ACCOUNT_IDS.replace("id sum Access 50505050505050505050505050505050\n", "");
-    let diagnostics = compile(ACCOUNT_SOURCE, &without_sum).expect_err("incomplete identity");
+    let diagnostics = errors(ACCOUNT_SOURCE, &without_sum);
     assert!(
-        codes(&diagnostics).contains(&"check.durable_identity"),
-        "{diagnostics:?}"
+        diagnostics.codes().contains(&"check.durable_identity"),
+        "{:?}",
+        diagnostics.all()
     );
     assert!(
         diagnostics
+            .messages()
             .iter()
-            .any(|d| d.message().contains("sum `Access`")),
-        "the gap names the enum sum anchor: {diagnostics:?}"
+            .any(|message| message.contains("sum `Access`")),
+        "the gap names the enum sum anchor: {:?}",
+        diagnostics.all()
     );
 }
 
@@ -303,16 +289,19 @@ fn a_missing_enum_member_identity_fails_precisely() {
         "id member Access.writer 52525252525252525252525252525252\n",
         "",
     );
-    let diagnostics = compile(ACCOUNT_SOURCE, &without_member).expect_err("incomplete identity");
+    let diagnostics = errors(ACCOUNT_SOURCE, &without_member);
     assert!(
-        codes(&diagnostics).contains(&"check.durable_identity"),
-        "{diagnostics:?}"
+        diagnostics.codes().contains(&"check.durable_identity"),
+        "{:?}",
+        diagnostics.all()
     );
     assert!(
         diagnostics
+            .messages()
             .iter()
-            .any(|d| d.message().contains("member `Access.writer`")),
-        "the gap names the enum member anchor: {diagnostics:?}"
+            .any(|message| message.contains("member `Access.writer`")),
+        "the gap names the enum member anchor: {:?}",
+        diagnostics.all()
     );
 }
 
@@ -324,13 +313,14 @@ fn an_option_field_mints_its_generic_enum_sum_and_members() {
         "id sum Option[string] 60606060606060606060606060606060\n",
         "",
     );
-    let diagnostics =
-        compile(ACCOUNT_SOURCE, &without_option_sum).expect_err("incomplete identity");
+    let diagnostics = errors(ACCOUNT_SOURCE, &without_option_sum);
     assert!(
         diagnostics
+            .messages()
             .iter()
-            .any(|d| d.message().contains("sum `Option[string]`")),
-        "{diagnostics:?}"
+            .any(|message| message.contains("sum `Option[string]`")),
+        "{:?}",
+        diagnostics.all()
     );
 }
 
@@ -369,12 +359,14 @@ fn appending_an_enum_member_changes_the_identity_and_mints_a_fresh_id() {
 
     // Without the fresh member id the append fails precisely (append cannot reuse a
     // sibling's identity — every anchor needs its own ledger entry).
-    let diagnostics = compile(appended_source.as_str(), ACCOUNT_IDS).expect_err("needs a fresh id");
+    let diagnostics = errors(appended_source.as_str(), ACCOUNT_IDS);
     assert!(
         diagnostics
+            .messages()
             .iter()
-            .any(|d| d.message().contains("member `Access.auditor`")),
-        "{diagnostics:?}"
+            .any(|message| message.contains("member `Access.auditor`")),
+        "{:?}",
+        diagnostics.all()
     );
 
     // With a fresh id the appended enum verifies and its identity changed, while the
@@ -426,8 +418,9 @@ pub fn kind(id: int): Access? {
          id member Access.writer 52525252525252525252525252525252\n\
          high-water 0\n\
          end\n";
-    let compiled = compile(source, ids).expect("a widened-field read compiles");
-    marrow_verify::verify(&compiled.image.bytes).expect("the image verifies with the read opcode");
+    // `.image()` compiles and independently verifies, so the durable read opcode over
+    // the field-leaf site survives the verifier.
+    project(source, ids).image();
 }
 
 #[test]
@@ -455,10 +448,11 @@ pub fn label(): string {
          machine-written by marrow; do not edit\n\
          high-water 0\n\
          end\n";
-    let diagnostics = compile(source, ids).expect_err("cyclic value graph");
+    let diagnostics = errors(source, ids);
     assert!(
-        codes(&diagnostics).contains(&"check.recursion"),
-        "{diagnostics:?}"
+        diagnostics.codes().contains(&"check.recursion"),
+        "{:?}",
+        diagnostics.all()
     );
 }
 
@@ -496,10 +490,11 @@ pub fn label(): string {
          id index accounts.byOwner 70707070707070707070707070707070\n\
          high-water 0\n\
          end\n";
-    let diagnostics = compile(source, ids).expect_err("an index over a widened field is refused");
+    let diagnostics = errors(source, ids);
     assert!(
-        codes(&diagnostics).contains(&"check.type"),
-        "{diagnostics:?}"
+        diagnostics.codes().contains(&"check.type"),
+        "{:?}",
+        diagnostics.all()
     );
 }
 
@@ -523,10 +518,11 @@ pub fn label(): string {
          machine-written by marrow; do not edit\n\
          high-water 0\n\
          end\n";
-    let diagnostics = compile(source, ids).expect_err("unsupported collection field");
+    let diagnostics = errors(source, ids);
     assert!(
-        codes(&diagnostics).contains(&"check.unsupported"),
-        "{diagnostics:?}"
+        diagnostics.codes().contains(&"check.unsupported"),
+        "{:?}",
+        diagnostics.all()
     );
 }
 
@@ -604,16 +600,19 @@ fn a_missing_nested_result_sum_reports_the_space_free_bracket_anchor() {
         "id sum Result[Option[int],string] 80808080808080808080808080808080\n",
         "",
     );
-    let diagnostics = compile(OUTCOME_SOURCE, &without_sum).expect_err("incomplete identity");
+    let diagnostics = errors(OUTCOME_SOURCE, &without_sum);
     assert!(
-        codes(&diagnostics).contains(&"check.durable_identity"),
-        "{diagnostics:?}"
+        diagnostics.codes().contains(&"check.durable_identity"),
+        "{:?}",
+        diagnostics.all()
     );
     assert!(
         diagnostics
+            .messages()
             .iter()
-            .any(|d| d.message().contains("sum `Result[Option[int],string]`")),
-        "the gap names the multi-argument enum sum anchor with a space-free comma: {diagnostics:?}"
+            .any(|message| message.contains("sum `Result[Option[int],string]`")),
+        "the gap names the multi-argument enum sum anchor with a space-free comma: {:?}",
+        diagnostics.all()
     );
 }
 
@@ -623,12 +622,14 @@ fn a_missing_nested_result_member_reports_the_space_free_bracket_anchor() {
         "id member Result[Option[int],string].ok 81818181818181818181818181818181\n",
         "",
     );
-    let diagnostics = compile(OUTCOME_SOURCE, &without_member).expect_err("incomplete identity");
+    let diagnostics = errors(OUTCOME_SOURCE, &without_member);
     assert!(
-        diagnostics.iter().any(|d| d
-            .message()
-            .contains("member `Result[Option[int],string].ok`")),
-        "the gap names the multi-argument enum member anchor: {diagnostics:?}"
+        diagnostics
+            .messages()
+            .iter()
+            .any(|message| message.contains("member `Result[Option[int],string].ok`")),
+        "the gap names the multi-argument enum member anchor: {:?}",
+        diagnostics.all()
     );
 }
 
@@ -638,12 +639,13 @@ fn the_nested_option_reached_through_the_result_mints_its_own_anchor() {
     // anchored at its own space-free bracket spelling `Option[int]`.
     let without_option_sum =
         OUTCOME_IDS.replace("id sum Option[int] 90909090909090909090909090909090\n", "");
-    let diagnostics =
-        compile(OUTCOME_SOURCE, &without_option_sum).expect_err("incomplete identity");
+    let diagnostics = errors(OUTCOME_SOURCE, &without_option_sum);
     assert!(
         diagnostics
+            .messages()
             .iter()
-            .any(|d| d.message().contains("sum `Option[int]`")),
-        "{diagnostics:?}"
+            .any(|message| message.contains("sum `Option[int]`")),
+        "{:?}",
+        diagnostics.all()
     );
 }

@@ -9,10 +9,8 @@
 //! path — capture -> compile -> verify -> attach -> VM — over one persistent ephemeral
 //! attachment, so a committed write is observable by a later read invocation.
 
-use marrow_verify::{SealedExport, VerifiedImage};
-use marrow_vm::{
-    DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
-};
+use crate::common::{Diagnostics, Project};
+use marrow_vm::Value;
 
 // application, product, the top-level `title` field, the root and its key, then the
 // `notes` branch (a `root` placement) with its key and required `text`, then the nested
@@ -163,74 +161,6 @@ pub fn sumTagsBounded(id: int, nid: string): int {
 }
 "#;
 
-fn compile_verify(source: &str) -> VerifiedImage {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    marrow_verify::verify(&compiled.image.bytes).expect("verify")
-}
-
-fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
-    image
-        .exports()
-        .iter()
-        .find(|export| {
-            image
-                .function(export.function())
-                .expect("verified function")
-                .body()
-                .name()
-                == name
-        })
-        .expect("export present")
-}
-
-struct DebugRun<'a>(&'a DurableRun);
-impl std::fmt::Debug for DebugRun<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
-            DurableRun::Ran(Ok(_)) => write!(f, "Ran(Ok(value))"),
-            DurableRun::Ran(Err(fault)) => write!(f, "Ran(Err({}))", fault.code().as_str()),
-            DurableRun::Parked => write!(f, "Parked"),
-            DurableRun::Failed(code) => write!(f, "Failed({})", code.as_str()),
-        }
-    }
-}
-
-fn run(
-    image: &VerifiedImage,
-    attachment: &mut MemoryAttachment,
-    name: &str,
-    args: Vec<Value>,
-) -> Option<Value> {
-    match run_export(attachment, export(image, name).id(), args)
-        .expect("the export is in the image")
-    {
-        DurableRun::Ran(Ok(value)) => value,
-        other => panic!("{name} did not run cleanly: {:?}", DebugRun(&other)),
-    }
-}
-
-fn attach(image: &VerifiedImage) -> MemoryAttachment {
-    match mint_ephemeral(prepare(image.clone())).into_mint() {
-        MintOutcome::Ready(attachment) => attachment,
-        MintOutcome::Storeless | MintOutcome::Parked => {
-            panic!("a nested single-column scalar-field branch must be executable")
-        }
-        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {}", cause.as_str()),
-    }
-}
-
 fn some_int(v: i64) -> Option<Value> {
     Some(Value::Optional(Some(Box::new(Value::Int(v)))))
 }
@@ -255,13 +185,10 @@ fn s(v: &str) -> Value {
 /// whole-entry materialized read observe its fields two levels below the root.
 #[test]
 fn a_nested_branch_constructor_and_field_reads_round_trip() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(SOURCE).ids(IDS).session();
     let key = || vec![Value::Int(1), s("n"), Value::Int(7)];
 
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "addFullTag",
         vec![
             Value::Int(1),
@@ -271,23 +198,14 @@ fn a_nested_branch_constructor_and_field_reads_round_trip() {
             Value::Bool(true),
         ],
     );
+    assert_eq!(session.call("tagWeight", key()), some_int(42));
+    assert_eq!(session.call("tagHot", key()), some_bool(true));
     assert_eq!(
-        run(&image, &mut attachment, "tagWeight", key()),
-        some_int(42)
-    );
-    assert_eq!(
-        run(&image, &mut attachment, "tagHot", key()),
-        some_bool(true)
-    );
-    assert_eq!(
-        run(&image, &mut attachment, "tagWeightMaterialized", key()),
+        session.call("tagWeightMaterialized", key()),
         some_int(42),
         "a whole nested-branch entry materializes its record two levels down",
     );
-    assert_eq!(
-        run(&image, &mut attachment, "tagPresent", key()),
-        present(true)
-    );
+    assert_eq!(session.call("tagPresent", key()), present(true));
 }
 
 /// Adjudication 2: a deep whole-entry write on the sub-branch under absent ancestors is
@@ -295,37 +213,23 @@ fn a_nested_branch_constructor_and_field_reads_round_trip() {
 /// descendant-only — no ancestor markers, presence facts only from explicit probes.
 #[test]
 fn a_deep_write_under_absent_ancestors_leaves_them_descendant_only() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(SOURCE).ids(IDS).session();
 
     // Whole-entry create of the tag with nothing else written.
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "addTag",
         vec![Value::Int(2), s("n"), Value::Int(5), Value::Int(9)],
     );
     let tag = || vec![Value::Int(2), s("n"), Value::Int(5)];
+    assert_eq!(session.call("tagPresent", tag()), present(true));
+    assert_eq!(session.call("tagWeight", tag()), some_int(9));
     assert_eq!(
-        run(&image, &mut attachment, "tagPresent", tag()),
-        present(true)
-    );
-    assert_eq!(
-        run(&image, &mut attachment, "tagWeight", tag()),
-        some_int(9)
-    );
-    assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "notePresent",
-            vec![Value::Int(2), s("n")]
-        ),
+        session.call("notePresent", vec![Value::Int(2), s("n")]),
         present(false),
         "the note ancestor has no marker: descendant-only",
     );
     assert_eq!(
-        run(&image, &mut attachment, "rootPresent", vec![Value::Int(2)]),
+        session.call("rootPresent", vec![Value::Int(2)]),
         present(false),
         "the root ancestor has no marker: descendant-only",
     );
@@ -337,36 +241,25 @@ fn a_deep_write_under_absent_ancestors_leaves_them_descendant_only() {
 /// drops it — the payload-only replace law (adjudication 1) at depth.
 #[test]
 fn a_nested_branch_entry_upholds_the_four_state_laws() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(SOURCE).ids(IDS).session();
     let key = || vec![Value::Int(5), s("n"), Value::Int(3)];
 
-    assert_eq!(
-        run(&image, &mut attachment, "tagPresent", key()),
-        present(false)
-    );
-    assert_eq!(run(&image, &mut attachment, "tagWeight", key()), absent());
-    assert_eq!(run(&image, &mut attachment, "tagHot", key()), absent());
+    assert_eq!(session.call("tagPresent", key()), present(false));
+    assert_eq!(session.call("tagWeight", key()), absent());
+    assert_eq!(session.call("tagHot", key()), absent());
 
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "addTag",
         vec![Value::Int(5), s("n"), Value::Int(3), Value::Int(8)],
     );
+    assert_eq!(session.call("tagWeight", key()), some_int(8));
     assert_eq!(
-        run(&image, &mut attachment, "tagWeight", key()),
-        some_int(8)
-    );
-    assert_eq!(
-        run(&image, &mut attachment, "tagHot", key()),
+        session.call("tagHot", key()),
         absent(),
         "an omitted sparse field reads absent while the required field is present",
     );
 
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "addFullTag",
         vec![
             Value::Int(5),
@@ -376,20 +269,15 @@ fn a_nested_branch_entry_upholds_the_four_state_laws() {
             Value::Bool(true),
         ],
     );
-    assert_eq!(
-        run(&image, &mut attachment, "tagHot", key()),
-        some_bool(true)
-    );
+    assert_eq!(session.call("tagHot", key()), some_bool(true));
 
     // A whole replace that omits the sparse field drops it (exact replacement).
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "addTag",
         vec![Value::Int(5), s("n"), Value::Int(3), Value::Int(8)],
     );
     assert_eq!(
-        run(&image, &mut attachment, "tagHot", key()),
+        session.call("tagHot", key()),
         absent(),
         "a whole replace omitting the sparse field drops it at depth",
     );
@@ -400,73 +288,35 @@ fn a_nested_branch_entry_upholds_the_four_state_laws() {
 /// descendants, and a whole-entry erase of the tag removes only that tag.
 #[test]
 fn a_middle_branch_erase_preserves_nested_descendants() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(SOURCE).ids(IDS).session();
 
-    run(
-        &image,
-        &mut attachment,
-        "addNote",
-        vec![Value::Int(6), s("n"), s("body")],
-    );
-    run(
-        &image,
-        &mut attachment,
+    session.call("addNote", vec![Value::Int(6), s("n"), s("body")]);
+    session.call(
         "addTag",
         vec![Value::Int(6), s("n"), Value::Int(1), Value::Int(11)],
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "notePresent",
-            vec![Value::Int(6), s("n")]
-        ),
+        session.call("notePresent", vec![Value::Int(6), s("n")]),
         present(true)
     );
 
     // Erase the note payload: payload-only, so the nested tag survives.
-    run(
-        &image,
-        &mut attachment,
-        "eraseNote",
-        vec![Value::Int(6), s("n")],
-    );
+    session.call("eraseNote", vec![Value::Int(6), s("n")]);
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "notePresent",
-            vec![Value::Int(6), s("n")]
-        ),
+        session.call("notePresent", vec![Value::Int(6), s("n")]),
         present(false),
         "the note payload is gone",
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "tagWeight",
-            vec![Value::Int(6), s("n"), Value::Int(1)]
-        ),
+        session.call("tagWeight", vec![Value::Int(6), s("n"), Value::Int(1)]),
         some_int(11),
         "a payload-only note erase preserves its nested tag descendant",
     );
 
     // Erase the tag: removes only the tag entry.
-    run(
-        &image,
-        &mut attachment,
-        "eraseTag",
-        vec![Value::Int(6), s("n"), Value::Int(1)],
-    );
+    session.call("eraseTag", vec![Value::Int(6), s("n"), Value::Int(1)]);
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "tagPresent",
-            vec![Value::Int(6), s("n"), Value::Int(1)]
-        ),
+        session.call("tagPresent", vec![Value::Int(6), s("n"), Value::Int(1)]),
         present(false),
     );
 }
@@ -475,13 +325,10 @@ fn a_middle_branch_erase_preserves_nested_descendants() {
 /// intact — the field-exact clear is scoped to its own leaf two levels down.
 #[test]
 fn a_deep_field_exact_clear_preserves_the_required_field() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(SOURCE).ids(IDS).session();
     let key = || vec![Value::Int(7), s("n"), Value::Int(2)];
 
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "addFullTag",
         vec![
             Value::Int(7),
@@ -491,15 +338,10 @@ fn a_deep_field_exact_clear_preserves_the_required_field() {
             Value::Bool(true),
         ],
     );
-    run(
-        &image,
-        &mut attachment,
-        "clearTagHot",
-        vec![Value::Int(7), s("n"), Value::Int(2)],
-    );
-    assert_eq!(run(&image, &mut attachment, "tagHot", key()), absent());
+    session.call("clearTagHot", vec![Value::Int(7), s("n"), Value::Int(2)]);
+    assert_eq!(session.call("tagHot", key()), absent());
     assert_eq!(
-        run(&image, &mut attachment, "tagWeight", key()),
+        session.call("tagWeight", key()),
         some_int(3),
         "the field-exact clear left the required field intact",
     );
@@ -511,55 +353,35 @@ fn a_deep_field_exact_clear_preserves_the_required_field() {
 /// is not visited.
 #[test]
 fn bounded_traversal_iterates_an_inner_branch_layer_under_a_fixed_ancestor_path() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(SOURCE).ids(IDS).session();
 
     // Three tags under (book 8, note "n"), and one under a sibling note "m".
     for tid in [3, 1, 2] {
-        run(
-            &image,
-            &mut attachment,
+        session.call(
             "addTag",
             vec![Value::Int(8), s("n"), Value::Int(tid), Value::Int(0)],
         );
     }
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "addTag",
         vec![Value::Int(8), s("m"), Value::Int(99), Value::Int(0)],
     );
 
     // Sum all tag keys under note "n": 1 + 2 + 3 = 6, no `on more`.
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "sumTags",
-            vec![Value::Int(8), s("n")]
-        ),
+        session.call("sumTags", vec![Value::Int(8), s("n")]),
         Some(Value::Int(6)),
         "the inner layer iterates its own note's tags in ascending order",
     );
     // Bounded at 2: freezes tags 1 and 2 (sum 3), a third existed → +1000.
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "sumTagsBounded",
-            vec![Value::Int(8), s("n")]
-        ),
+        session.call("sumTagsBounded", vec![Value::Int(8), s("n")]),
         Some(Value::Int(1003)),
         "the bound freezes the first two keys and the on-more bit fires",
     );
     // The sibling note "m" has exactly one tag (key 99); its layer is independent.
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "sumTags",
-            vec![Value::Int(8), s("m")]
-        ),
+        session.call("sumTags", vec![Value::Int(8), s("m")]),
         Some(Value::Int(99)),
         "the inner traversal is scoped to its ancestor path",
     );
@@ -567,27 +389,14 @@ fn bounded_traversal_iterates_an_inner_branch_layer_under_a_fixed_ancestor_path(
 
 // --- A sub-branch is not a field of a materialized branch value. ---
 
-fn compile_diags(body: &str) -> Vec<marrow_compile::SourceDiagnostic> {
-    let source = format!("{SOURCE}\n{body}");
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.into_bytes(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    match marrow_compile::compile(&project) {
+/// Compile `SOURCE` plus `body`, returning the rejection diagnostics.
+fn compile_diags(body: &str) -> Diagnostics {
+    match Project::single(&format!("{SOURCE}\n{body}"))
+        .ids(IDS)
+        .try_image()
+    {
         Ok(_) => panic!("expected the checker to reject chaining a sub-branch off a record value"),
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
-        Err(
-            marrow_compile::CompileFailure::Invariant(_)
-            | marrow_compile::CompileFailure::ResourceLimit(_),
-        ) => panic!("source-triggered compiler failures must remain diagnostics"),
+        Err(diagnostics) => diagnostics,
     }
 }
 
@@ -599,15 +408,11 @@ fn chaining_a_subbranch_off_a_materialized_branch_steers_to_the_durable_path() {
     let diagnostics = compile_diags(
         "pub fn tagWeight(id: int, nid: string, tid: int): int? {\n    if const n = ^books[id].notes[nid] {\n        return n.tags[tid].weight\n    }\n    return absent\n}\n",
     );
-    let diagnostic = diagnostics
-        .iter()
-        .find(|d| d.code().as_str() == "check.type")
-        .unwrap_or_else(|| panic!("no check.type diagnostic in {diagnostics:#?}"));
+    let message = diagnostics.only("check.type").message();
     assert!(
-        diagnostic.message().contains("`tags` is a keyed branch")
-            && diagnostic.message().contains("distinct durable node")
-            && diagnostic.message().contains("nested `if const`"),
-        "{}",
-        diagnostic.message()
+        message.contains("`tags` is a keyed branch")
+            && message.contains("distinct durable node")
+            && message.contains("nested `if const`"),
+        "{message}"
     );
 }

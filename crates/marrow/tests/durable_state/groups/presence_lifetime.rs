@@ -1,9 +1,10 @@
 //! Group writes consume presence after all RHS effects and evaluate the RHS once.
 
 use super::{
-    IDS, REQUIRED_LEAF_SCHEMA, SCHEMA, SOURCE, as_int, as_str, attach,
-    compile_diagnostics_with_schema, compile_verify, i, run, s,
+    IDS, REQUIRED_LEAF_SCHEMA, SCHEMA, SOURCE, as_int, as_str, compile_diagnostics_with_schema, i,
+    s,
 };
+use crate::common::Project;
 
 fn assert_requires_presence(body: &str, place: &str) {
     assert_requires_presence_with_schema(SCHEMA, body, place);
@@ -21,8 +22,8 @@ fn assert_requires_presence_with_schema(schema: &str, body: &str, place: &str) {
         .rfind('\n')
         .map_or(start + 1, |newline| start - newline);
     let diagnostics = compile_diagnostics_with_schema(schema, body);
-    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
-    let diagnostic = &diagnostics[0];
+    assert_eq!(diagnostics.len(), 1, "{:?}", diagnostics.all());
+    let diagnostic = diagnostics.iter().next().expect("one diagnostic");
     assert_eq!(
         diagnostic.code().as_str(),
         marrow_codes::Code::CheckRequiresPresence.as_str(),
@@ -125,47 +126,39 @@ pub fn replaceLeaf(shelf: int, id: int) {
 }
 "#
     );
-    let image = compile_verify(&source, IDS);
     for (name, language) in [
         ("replaceWhole", "assigned"),
         ("replaceLeaf", "fresh sibling"),
     ] {
-        let mut store = attach(&image);
-        run(
-            &image,
-            &mut store,
+        let mut session = Project::single(&source).ids(IDS).session();
+        session.call(
             "setBook",
             vec![i(1), i(7), s("original"), i(41), s("old sibling")],
         );
-        run(
-            &image,
-            &mut store,
-            "setBook",
-            vec![i(9), i(9), s("calls"), i(0), s("unused")],
-        );
-        run(&image, &mut store, name, vec![i(1), i(7)]);
+        session.call("setBook", vec![i(9), i(9), s("calls"), i(0), s("unused")]);
+        session.call(name, vec![i(1), i(7)]);
         assert_eq!(
-            as_int(run(&image, &mut store, "readPages", vec![i(9), i(9)])),
+            as_int(session.call("readPages", vec![i(9), i(9)])),
             Some(1),
             "{name}: the RHS runs once",
         );
         assert_eq!(
-            as_int(run(&image, &mut store, "readPages", vec![i(1), i(7)])),
+            as_int(session.call("readPages", vec![i(1), i(7)])),
             Some(77),
             "{name}: the assignment uses the RHS result",
         );
         assert_eq!(
-            as_str(run(&image, &mut store, "readTitle", vec![i(1), i(7)])),
+            as_str(session.call("readTitle", vec![i(1), i(7)])),
             Some("replacement".to_string()),
             "{name}: group assignment preserves the entry replacement",
         );
         assert_eq!(
-            as_str(run(&image, &mut store, "readLanguage", vec![i(1), i(7)])),
+            as_str(session.call("readLanguage", vec![i(1), i(7)])),
             Some(language.to_string()),
             "{name}: leaf assignment preserves the sibling after RHS effects",
         );
         assert_eq!(
-            as_int(run(&image, &mut store, "readPages", vec![i(7), i(1)])),
+            as_int(session.call("readPages", vec![i(7), i(1)])),
             None,
             "{name}: the ordered composite key is preserved",
         );

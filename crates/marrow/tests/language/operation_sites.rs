@@ -1,5 +1,5 @@
 //! The generalized operation-site algebra across the durable graph, with lazy
-//! field-leaf emission (BND02 C1).
+//! field-leaf emission.
 //!
 //! The compiler emits the bounded, per-node sites eagerly — one whole-payload site per
 //! keyed placement (the store root and every nested `branch`) and one whole-group site per
@@ -14,21 +14,11 @@
 
 use marrow_verify::{SealedSite, SealedSiteTarget, VerifiedImage};
 
+use crate::common::Project;
+
+/// Capture, compile, and verify one durable `src/main.mw` through the production path.
 fn image(source: &str, ids: &str) -> VerifiedImage {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(ids.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    marrow_verify::verify(&compiled.image.bytes).expect("verify")
+    Project::single(source).ids(ids).image()
 }
 
 /// The `(is_flat, target-kind, path-depth)` fingerprint of every sealed site, sorted.

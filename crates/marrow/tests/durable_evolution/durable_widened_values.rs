@@ -1,4 +1,4 @@
-//! E03w slice E: widened durable field values, stored and read end to end.
+//! Widened durable field values, stored and read end to end.
 //!
 //! A durable field's stored value is drawn from the closed storable set — a scalar, a
 //! dense `struct` (product), or a closed `enum`/`Option`/`Result` (sum). The durable
@@ -10,10 +10,9 @@
 //! (absent cell vs present-`none` vs present-`some`) and a widened value used in an
 //! expression after read.
 
-use marrow_verify::{SealedExport, VerifiedImage};
-use marrow_vm::{
-    DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
-};
+use marrow_vm::Value;
+
+use crate::common::{Project, Session};
 
 const IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
@@ -114,62 +113,9 @@ pub fn readNote(id: int): Option<string>? {
 }
 "#;
 
-fn compile_verify(source: &str) -> VerifiedImage {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    marrow_verify::verify(&compiled.image.bytes).expect("verify")
-}
-
-fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
-    image
-        .exports()
-        .iter()
-        .find(|export| {
-            image
-                .function(export.function())
-                .expect("verified function")
-                .body()
-                .name()
-                == name
-        })
-        .expect("export present")
-}
-
-fn attach(image: &VerifiedImage) -> MemoryAttachment {
-    match mint_ephemeral(prepare(image.clone())).into_mint() {
-        MintOutcome::Ready(attachment) => attachment,
-        MintOutcome::Storeless | MintOutcome::Parked => {
-            panic!("a widened-field store is executable, not parked")
-        }
-        MintOutcome::Failed(cause) => panic!("attach failed: {}", cause.as_str()),
-    }
-}
-
-fn run(
-    image: &VerifiedImage,
-    attachment: &mut MemoryAttachment,
-    name: &str,
-    args: Vec<Value>,
-) -> Option<Value> {
-    match run_export(attachment, export(image, name).id(), args)
-        .expect("the export is in the image")
-    {
-        DurableRun::Ran(Ok(value)) => value,
-        DurableRun::Ran(Err(fault)) => panic!("{name} faulted: {}", fault.code().as_str()),
-        DurableRun::Parked => panic!("{name} parked"),
-        DurableRun::Failed(code) => panic!("{name} failed: {}", code.as_str()),
-    }
+/// An ephemeral session over `source` against the widened-field ledger.
+fn account(source: &str) -> Session {
+    Project::single(source).ids(IDS).session()
 }
 
 /// Unwrap the present value of a field read (`Optional(Some(v))`), panicking on an
@@ -211,64 +157,50 @@ pub fn describe(id: int): string {
 }
 "#
     );
-    let image = compile_verify(&source);
-    let code = image
-        .function(export(&image, "describe").function())
-        .expect("verified function")
-        .body()
-        .instrs();
-    assert_eq!(
-        code.iter()
-            .filter(|op| matches!(op, marrow_verify::SealedInstr::DurReadFieldPresent { .. }))
-            .count(),
-        2
-    );
-    assert_eq!(
-        code.iter()
-            .filter(|op| matches!(op, marrow_verify::SealedInstr::DurReadField(_)))
-            .count(),
-        1
-    );
-    let mut store = attach(&image);
-    assert_eq!(
-        run(&image, &mut store, "describe", id(1)),
-        Some(text("missing"))
-    );
-    run(&image, &mut store, "createReader", id(1));
-    assert_eq!(
-        run(&image, &mut store, "describe", id(1)),
-        Some(text("Ada"))
-    );
-    run(&image, &mut store, "createAdmin", id(1));
-    assert_eq!(
-        run(&image, &mut store, "describe", id(1)),
-        Some(text("Lovelace"))
-    );
-    run(&image, &mut store, "createNoteNone", id(1));
-    assert_eq!(
-        run(&image, &mut store, "describe", id(1)),
-        Some(text("none"))
-    );
-    run(
-        &image,
-        &mut store,
-        "createNoteSome",
-        vec![Value::Int(1), text("hello")],
-    );
-    assert_eq!(
-        run(&image, &mut store, "describe", id(1)),
-        Some(text("hello"))
-    );
+    let mut session = account(&source);
+    let (present_reads, plain_reads) = {
+        let image = session.image();
+        let code = image
+            .exports()
+            .iter()
+            .find_map(|export| {
+                let function = image
+                    .function(export.function())
+                    .expect("verified function");
+                (function.body().name() == "describe").then_some(function)
+            })
+            .expect("the describe export")
+            .body()
+            .instrs();
+        (
+            code.iter()
+                .filter(|op| matches!(op, marrow_verify::SealedInstr::DurReadFieldPresent { .. }))
+                .count(),
+            code.iter()
+                .filter(|op| matches!(op, marrow_verify::SealedInstr::DurReadField(_)))
+                .count(),
+        )
+    };
+    assert_eq!(present_reads, 2);
+    assert_eq!(plain_reads, 1);
+    assert_eq!(session.call("describe", id(1)), Some(text("missing")));
+    session.call("createReader", id(1));
+    assert_eq!(session.call("describe", id(1)), Some(text("Ada")));
+    session.call("createAdmin", id(1));
+    assert_eq!(session.call("describe", id(1)), Some(text("Lovelace")));
+    session.call("createNoteNone", id(1));
+    assert_eq!(session.call("describe", id(1)), Some(text("none")));
+    session.call("createNoteSome", vec![Value::Int(1), text("hello")]);
+    assert_eq!(session.call("describe", id(1)), Some(text("hello")));
 }
 
 #[test]
 fn a_required_enum_field_round_trips_and_drives_an_expression() {
-    let image = compile_verify(SOURCE);
-    let mut store = attach(&image);
-    run(&image, &mut store, "createReader", id(1));
+    let mut session = account(SOURCE);
+    session.call("createReader", id(1));
 
     // The entry's required enum reads back as `Access::reader` (variant 0, empty payload).
-    match present(run(&image, &mut store, "readKind", id(1))) {
+    match present(session.call("readKind", id(1))) {
         Value::Enum(_, variant, payload) => {
             assert_eq!(variant, 0, "reader is variant 0");
             assert!(payload.is_empty(), "reader carries no payload");
@@ -277,32 +209,25 @@ fn a_required_enum_field_round_trips_and_drives_an_expression() {
     }
     // A widened value used in an expression after read: `if const` binds the read enum
     // and `==` compares it — `reader` is not `admin`.
-    assert_eq!(
-        run(&image, &mut store, "isAdmin", id(1)),
-        Some(Value::Bool(false))
-    );
+    assert_eq!(session.call("isAdmin", id(1)), Some(Value::Bool(false)));
 
     // A whole-entry replace with `admin` (variant 2) round-trips a different variant, and
     // the same read-and-compare now observes it.
-    run(&image, &mut store, "createAdmin", id(1));
-    match present(run(&image, &mut store, "readKind", id(1))) {
+    session.call("createAdmin", id(1));
+    match present(session.call("readKind", id(1))) {
         Value::Enum(_, variant, _) => assert_eq!(variant, 2, "admin is variant 2"),
         other => panic!("not an enum: {other:?}"),
     }
-    assert_eq!(
-        run(&image, &mut store, "isAdmin", id(1)),
-        Some(Value::Bool(true))
-    );
+    assert_eq!(session.call("isAdmin", id(1)), Some(Value::Bool(true)));
 }
 
 #[test]
 fn a_record_field_round_trips_with_its_dense_leaves() {
-    let image = compile_verify(SOURCE);
-    let mut store = attach(&image);
-    run(&image, &mut store, "createReader", id(2));
+    let mut session = account(SOURCE);
+    session.call("createReader", id(2));
 
     // The dense struct reads back with both leaves present, in declaration order.
-    match present(run(&image, &mut store, "readOwner", id(2))) {
+    match present(session.call("readOwner", id(2))) {
         Value::Record(_, slots) => {
             assert_eq!(slots.len(), 2);
             assert_eq!(slots[0], Some(text("Ada")));
@@ -314,20 +239,16 @@ fn a_record_field_round_trips_with_its_dense_leaves() {
 
 #[test]
 fn a_sparse_option_field_reads_three_distinct_states() {
-    let image = compile_verify(SOURCE);
-    let mut store = attach(&image);
-    run(&image, &mut store, "createReader", id(3));
+    let mut session = account(SOURCE);
+    session.call("createReader", id(3));
 
     // State 1 — the cell is absent (the sparse field was never set): read yields `none`
     // at the presence axis (`Optional(None)`), not an in-band value.
-    assert_eq!(
-        run(&image, &mut store, "readNote", id(3)),
-        Some(Value::Optional(None))
-    );
+    assert_eq!(session.call("readNote", id(3)), Some(Value::Optional(None)));
 
     // State 2 — present `none`: the cell holds the `Option` value `none` (variant 0).
-    run(&image, &mut store, "createNoteNone", id(3));
-    match present(run(&image, &mut store, "readNote", id(3))) {
+    session.call("createNoteNone", id(3));
+    match present(session.call("readNote", id(3))) {
         Value::Enum(_, variant, payload) => {
             assert_eq!(variant, 0, "none is variant 0");
             assert!(payload.is_empty());
@@ -336,13 +257,8 @@ fn a_sparse_option_field_reads_three_distinct_states() {
     }
 
     // State 3 — present `some("hi")`: the cell holds `some` (variant 1) with the payload.
-    run(
-        &image,
-        &mut store,
-        "createNoteSome",
-        vec![Value::Int(3), text("hi")],
-    );
-    match present(run(&image, &mut store, "readNote", id(3))) {
+    session.call("createNoteSome", vec![Value::Int(3), text("hi")]);
+    match present(session.call("readNote", id(3))) {
         Value::Enum(_, variant, payload) => {
             assert_eq!(variant, 1, "some is variant 1");
             assert_eq!(payload.as_ref(), [text("hi")]);

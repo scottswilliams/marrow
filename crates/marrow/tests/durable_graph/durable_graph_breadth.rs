@@ -10,46 +10,21 @@
 //! over a shape the single-root kernel cannot serve is a precise typed
 //! `check.unsupported` rejection rather than a silent drop.
 
-use marrow_compile::{Compiled, SourceDiagnostic};
+use crate::common::{Diagnostics, Project};
 use marrow_verify::DurableContractId;
-
-/// Capture and compile a one-module project through the pure owners.
-fn compile(source: &str, ids: &str) -> Result<Compiled, Vec<SourceDiagnostic>> {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(ids.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    match marrow_compile::compile(&project) {
-        Ok(compiled) => Ok(compiled),
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => {
-            Err(diagnostics.into_vec())
-        }
-        Err(
-            marrow_compile::CompileFailure::Invariant(_)
-            | marrow_compile::CompileFailure::ResourceLimit(_),
-        ) => {
-            panic!("source-triggered compiler failures must remain diagnostics")
-        }
-    }
-}
 
 /// Compile and independently verify, returning the durable-contract identity.
 fn contract_of(source: &str, ids: &str) -> DurableContractId {
-    let compiled = compile(source, ids).expect("compile");
-    let image = marrow_verify::verify(&compiled.image.bytes).expect("verify");
-    image.durable_contract()
+    Project::single(source).ids(ids).image().durable_contract()
 }
 
-fn codes(diagnostics: &[SourceDiagnostic]) -> Vec<&str> {
-    diagnostics.iter().map(|d| d.code().as_str()).collect()
+/// The typed rejection diagnostics for a project that must not compile; `why` names the
+/// defect the fixture carries.
+fn rejection(source: &str, ids: &str, why: &str) -> Diagnostics {
+    match Project::single(source).ids(ids).try_image() {
+        Ok(_) => panic!("expected a rejection: {why}"),
+        Err(diagnostics) => diagnostics,
+    }
 }
 
 // --- Singleton roots: `store ^name: Resource` with no key column. ---
@@ -90,10 +65,11 @@ fn a_singleton_root_compiles_and_completes_its_identity() {
 fn a_singleton_root_missing_its_placement_identity_fails_precisely() {
     let without_root =
         SETTINGS_IDS.replace("id root settings 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n", "");
-    let diagnostics = compile(SETTINGS_SOURCE, &without_root).expect_err("incomplete identity");
+    let diagnostics = rejection(SETTINGS_SOURCE, &without_root, "incomplete identity");
     assert!(
-        codes(&diagnostics).contains(&"check.durable_identity"),
-        "{diagnostics:?}"
+        diagnostics.has_code("check.durable_identity"),
+        "{:?}",
+        diagnostics.all()
     );
 }
 
@@ -133,11 +109,11 @@ fn a_composite_key_root_missing_one_key_identity_fails_precisely() {
         "id key enrollments.course 02020202020202020202020202020202\n",
         "",
     );
-    let diagnostics =
-        compile(ENROLLMENTS_SOURCE, &without_course).expect_err("incomplete identity");
+    let diagnostics = rejection(ENROLLMENTS_SOURCE, &without_course, "incomplete identity");
     assert!(
-        codes(&diagnostics).contains(&"check.durable_identity"),
-        "{diagnostics:?}"
+        diagnostics.has_code("check.durable_identity"),
+        "{:?}",
+        diagnostics.all()
     );
 }
 
@@ -185,8 +161,8 @@ fn renaming_a_key_column_with_a_moved_anchor_preserves_the_identity() {
 
 // --- The executable-vs-identity boundary: operations over shapes the single-root
 // kernel cannot yet serve are a precise typed rejection, not a silent drop. A
-// composite-key root is now executable (see `durable_composite_keys`); a singleton root
-// still parks. ---
+// composite-key root is executable (see `durable_composite_keys`); a singleton root
+// parks. ---
 
 #[test]
 fn operating_on_a_singleton_root_is_not_yet_executable() {
@@ -200,14 +176,15 @@ pub fn locale(): string? {
     return ^settings.locale
 }
 "#;
-    let diagnostics = compile(source, SETTINGS_IDS).expect_err("not yet executable");
+    let diagnostics = rejection(source, SETTINGS_IDS, "not yet executable");
     assert!(
-        codes(&diagnostics).contains(&"check.unsupported"),
-        "{diagnostics:?}"
+        diagnostics.has_code("check.unsupported"),
+        "{:?}",
+        diagnostics.all()
     );
 }
 
-// --- The single-column keyed root remains executable end to end (unchanged). ---
+// --- The single-column keyed root remains executable end to end. ---
 
 const COUNTER_SOURCE: &str = r#"resource Counter {
     required value: int
@@ -249,14 +226,19 @@ pub fn get(name: string): int? {
         "id field Counter.value 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n",
         "",
     );
-    let diagnostics = compile(source, &without_field).expect_err("incomplete identity");
-    let codes = codes(&diagnostics);
-    assert!(codes.contains(&"check.durable_identity"), "{diagnostics:?}");
+    let diagnostics = rejection(source, &without_field, "incomplete identity");
+    assert!(
+        diagnostics.has_code("check.durable_identity"),
+        "{:?}",
+        diagnostics.all()
+    );
     assert!(
         !diagnostics
+            .messages()
             .iter()
-            .any(|d| d.message().contains("not yet executable")),
-        "a single-key root must not be mislabelled not-yet-executable: {diagnostics:?}"
+            .any(|message| message.contains("not yet executable")),
+        "a single-key root must not be mislabelled not-yet-executable: {:?}",
+        diagnostics.messages()
     );
 }
 
@@ -265,5 +247,5 @@ fn a_single_column_keyed_root_still_compiles_and_verifies() {
     // The one kernel-serviceable shape: it both completes its identity and lowers
     // an executable read.
     let _ = contract_of(COUNTER_SOURCE, COUNTER_IDS);
-    compile(COUNTER_SOURCE, COUNTER_IDS).expect("the single-key path stays executable");
+    let _ = Project::single(COUNTER_SOURCE).ids(COUNTER_IDS).image();
 }

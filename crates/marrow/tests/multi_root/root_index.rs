@@ -1,4 +1,4 @@
-//! MR01: managed indexes are per-root. Two roots (`^assets` + `^tallies`) each declare a
+//! Managed indexes are per-root. Two roots (`^assets` + `^tallies`) each declare a
 //! unique index (`*BySku`) and a nonunique index (`*ByShelf`), and every index cell family
 //! is keyed by its owning root's name. These tests drive the whole production path —
 //! capture -> compile -> verify -> attach -> VM — and prove, with deliberately shared field
@@ -12,10 +12,10 @@
 //!   second-declared root (`^tallies`, RootId 1), and a rejected write leaves the prior
 //!   committed state intact.
 
-use marrow_verify::{SealedExport, VerifiedImage};
-use marrow_vm::{
-    DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
-};
+use marrow_codes::Code;
+use marrow_vm::Value;
+
+use crate::common::{CallOutcome, Project, Session};
 
 // Each root carries one unique index (`*BySku`) and one nonunique index (`*ByShelf`); the
 // index anchors live at `<root>.<index name>`. Every durable declaration has a distinct
@@ -133,89 +133,21 @@ pub fn eqTallies(sku: string, id: int): bool? {
 }
 "#;
 
-fn compile_verify() -> VerifiedImage {
-    verify_with(SOURCE, IDS)
+/// An ephemeral session over the two-root indexed fixture.
+fn open() -> Session {
+    open_with(SOURCE, IDS)
 }
 
-fn verify_with(source: &str, ids: &str) -> VerifiedImage {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(ids.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    marrow_verify::verify(&compiled.image.bytes).expect("verify")
+/// An ephemeral session over `source` against the ledger `ids`.
+fn open_with(source: &str, ids: &str) -> Session {
+    Project::single(source).ids(ids).session()
 }
 
-fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
-    image
-        .exports()
-        .iter()
-        .find(|export| {
-            image
-                .function(export.function())
-                .expect("verified function")
-                .body()
-                .name()
-                == name
-        })
-        .expect("export present")
-}
-
-struct DebugRun<'a>(&'a DurableRun);
-impl std::fmt::Debug for DebugRun<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
-            DurableRun::Ran(Ok(_)) => write!(f, "Ran(Ok(value))"),
-            DurableRun::Ran(Err(fault)) => write!(f, "Ran(Err({}))", fault.code().as_str()),
-            DurableRun::Parked => write!(f, "Parked"),
-            DurableRun::Failed(code) => write!(f, "Failed({})", code.as_str()),
-        }
-    }
-}
-
-fn run(
-    image: &VerifiedImage,
-    attachment: &mut MemoryAttachment,
-    name: &str,
-    args: Vec<Value>,
-) -> Option<Value> {
-    match run_export(attachment, export(image, name).id(), args)
-        .expect("the export is in the image")
-    {
-        DurableRun::Ran(Ok(value)) => value,
-        other => panic!("{name} did not run cleanly: {:?}", DebugRun(&other)),
-    }
-}
-
-fn run_faulting(
-    image: &VerifiedImage,
-    attachment: &mut MemoryAttachment,
-    name: &str,
-    args: Vec<Value>,
-) -> String {
-    match run_export(attachment, export(image, name).id(), args)
-        .expect("the export is in the image")
-    {
-        DurableRun::Ran(Err(fault)) => fault.code().as_str().to_string(),
-        other => panic!("{name} did not fault: {:?}", DebugRun(&other)),
-    }
-}
-
-fn attach(image: &VerifiedImage) -> MemoryAttachment {
-    match mint_ephemeral(prepare(image.clone())).into_mint() {
-        MintOutcome::Ready(attachment) => attachment,
-        MintOutcome::Storeless | MintOutcome::Parked => {
-            panic!("a two-root indexed image must be executable, not parked")
-        }
-        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {}", cause.as_str()),
+/// Call `name`, requiring a source-mapped runtime fault, and return its registered code.
+fn fault_code(session: &mut Session, name: &str, args: Vec<Value>) -> Code {
+    match session.try_call(name, args) {
+        CallOutcome::Fault(code) => code,
+        other => panic!("{name} did not fault: {other:?}"),
     }
 }
 
@@ -234,28 +166,20 @@ fn int(v: i64) -> Option<Value> {
 /// Seed both roots with entries that deliberately SHARE `sku` and `shelf` values across the
 /// two roots, so any index-cell aliasing between roots would surface as a wrong lookup or
 /// count. `assets` and `tallies` each get two entries on shelf "A" with skus "s1"/"s2".
-fn seed(image: &VerifiedImage, store: &mut MemoryAttachment) {
-    run(
-        image,
-        store,
+fn seed(session: &mut Session) {
+    session.call(
         "putAsset",
         vec![Value::Int(1), text("asset-one"), text("s1"), text("A")],
     );
-    run(
-        image,
-        store,
+    session.call(
         "putAsset",
         vec![Value::Int(2), text("asset-two"), text("s2"), text("A")],
     );
-    run(
-        image,
-        store,
+    session.call(
         "putTally",
         vec![Value::Int(1), text("tally-one"), text("s1"), text("A")],
     );
-    run(
-        image,
-        store,
+    session.call(
         "putTally",
         vec![Value::Int(2), text("tally-two"), text("s2"), text("A")],
     );
@@ -266,27 +190,26 @@ fn seed(image: &VerifiedImage, store: &mut MemoryAttachment) {
 /// owning root's name, so they never alias across roots.
 #[test]
 fn a_unique_index_lookup_resolves_within_its_own_root() {
-    let image = compile_verify();
-    let mut store = attach(&image);
-    seed(&image, &mut store);
+    let mut session = open();
+    seed(&mut session);
 
     // Both roots hold sku "s1", but each root's unique index resolves to its own entry.
     assert_eq!(
-        run(&image, &mut store, "assetNameBySku", vec![text("s1")]),
+        session.call("assetNameBySku", vec![text("s1")]),
         some_text("asset-one"),
         "the asset unique index resolves within ^assets",
     );
     assert_eq!(
-        run(&image, &mut store, "tallyLabelBySku", vec![text("s1")]),
+        session.call("tallyLabelBySku", vec![text("s1")]),
         some_text("tally-one"),
         "the tally unique index resolves within ^tallies, not through ^assets",
     );
     assert_eq!(
-        run(&image, &mut store, "assetNameBySku", vec![text("s2")]),
+        session.call("assetNameBySku", vec![text("s2")]),
         some_text("asset-two"),
     );
     assert_eq!(
-        run(&image, &mut store, "tallyLabelBySku", vec![text("s2")]),
+        session.call("tallyLabelBySku", vec![text("s2")]),
         some_text("tally-two"),
     );
 }
@@ -296,33 +219,27 @@ fn a_unique_index_lookup_resolves_within_its_own_root() {
 /// that saw the other root's cells would over-count.
 #[test]
 fn a_nonunique_index_scan_counts_only_its_own_root() {
-    let image = compile_verify();
-    let mut store = attach(&image);
-    seed(&image, &mut store);
+    let mut session = open();
+    seed(&mut session);
 
     assert_eq!(
-        run(&image, &mut store, "assetsOnShelf", vec![text("A")]),
+        session.call("assetsOnShelf", vec![text("A")]),
         int(2),
         "shelf A holds exactly the two assets, not the tallies sharing that shelf",
     );
     assert_eq!(
-        run(&image, &mut store, "talliesOnShelf", vec![text("A")]),
+        session.call("talliesOnShelf", vec![text("A")]),
         int(2),
         "shelf A holds exactly the two tallies, not the assets sharing that shelf",
     );
     // A shelf only the tallies use is empty for assets and vice versa (no cross-root bleed).
-    run(
-        &image,
-        &mut store,
+    session.call(
         "putTally",
         vec![Value::Int(3), text("tally-three"), text("s3"), text("B")],
     );
+    assert_eq!(session.call("talliesOnShelf", vec![text("B")]), int(1),);
     assert_eq!(
-        run(&image, &mut store, "talliesOnShelf", vec![text("B")]),
-        int(1),
-    );
-    assert_eq!(
-        run(&image, &mut store, "assetsOnShelf", vec![text("B")]),
+        session.call("assetsOnShelf", vec![text("B")]),
         int(0),
         "shelf B holds a tally but no asset — the asset scan does not see the tally cell",
     );
@@ -335,45 +252,37 @@ fn a_nonunique_index_scan_counts_only_its_own_root() {
 /// root's unique cells are disjoint.
 #[test]
 fn per_root_unique_enforcement_on_the_second_root_leaves_committed_state_intact() {
-    let image = compile_verify();
-    let mut store = attach(&image);
-    seed(&image, &mut store);
+    let mut session = open();
+    seed(&mut session);
 
     // A tally reusing tally 1's sku "s1" collides within ^tallies (RootId 1) and faults.
-    let code = run_faulting(
-        &image,
-        &mut store,
+    let code = fault_code(
+        &mut session,
         "putTally",
         vec![Value::Int(9), text("dup"), text("s1"), text("A")],
     );
-    assert_eq!(code, "run.unique_index");
+    assert_eq!(code, Code::RunUniqueIndex);
 
     // The collided write rolled back: tally 9 was never committed, tally 1 stands, and the
     // unique lookup still resolves to the original.
     assert_eq!(
-        run(&image, &mut store, "tallyLabel", vec![Value::Int(9)]),
+        session.call("tallyLabel", vec![Value::Int(9)]),
         Some(Value::Optional(None)),
         "the faulted unique-collision write left no entry behind",
     );
     assert_eq!(
-        run(&image, &mut store, "tallyLabelBySku", vec![text("s1")]),
+        session.call("tallyLabelBySku", vec![text("s1")]),
         some_text("tally-one"),
         "the pre-collision unique cell is intact after the rollback",
     );
     // The other root is untouched: an asset sharing sku "s1" was never part of the tallies
     // collision, and both roots' scans still count correctly.
     assert_eq!(
-        run(&image, &mut store, "assetNameBySku", vec![text("s1")]),
+        session.call("assetNameBySku", vec![text("s1")]),
         some_text("asset-one"),
     );
-    assert_eq!(
-        run(&image, &mut store, "talliesOnShelf", vec![text("A")]),
-        int(2),
-    );
-    assert_eq!(
-        run(&image, &mut store, "assetsOnShelf", vec![text("A")]),
-        int(2),
-    );
+    assert_eq!(session.call("talliesOnShelf", vec![text("A")]), int(2),);
+    assert_eq!(session.call("assetsOnShelf", vec![text("A")]), int(2),);
 }
 
 /// A write to one root's unique index never collides with the *other* root's identical
@@ -381,17 +290,16 @@ fn per_root_unique_enforcement_on_the_second_root_leaves_committed_state_intact(
 /// only possible if the two roots' unique-index cell families are disjoint.
 #[test]
 fn a_shared_sku_across_roots_is_not_a_unique_collision() {
-    let image = compile_verify();
-    let mut store = attach(&image);
+    let mut session = open();
     // seed writes asset(s1) then tally(s1); if the two roots shared a unique cell family the
     // second write would fault. It commits, proving per-root isolation of the unique cells.
-    seed(&image, &mut store);
+    seed(&mut session);
     assert_eq!(
-        run(&image, &mut store, "assetNameBySku", vec![text("s1")]),
+        session.call("assetNameBySku", vec![text("s1")]),
         some_text("asset-one"),
     );
     assert_eq!(
-        run(&image, &mut store, "tallyLabelBySku", vec![text("s1")]),
+        session.call("tallyLabelBySku", vec![text("s1")]),
         some_text("tally-one"),
     );
 }
@@ -403,27 +311,16 @@ fn a_shared_sku_across_roots_is_not_a_unique_collision() {
 /// root would answer a visibly wrong boolean here.
 #[test]
 fn an_index_lookup_identity_carries_the_root_it_was_read_from() {
-    let image = compile_verify();
-    let mut store = attach(&image);
-    seed(&image, &mut store);
+    let mut session = open();
+    seed(&mut session);
 
     assert_eq!(
-        run(
-            &image,
-            &mut store,
-            "eqAssets",
-            vec![text("s1"), Value::Int(1)]
-        ),
+        session.call("eqAssets", vec![text("s1"), Value::Int(1)]),
         Some(Value::Optional(Some(Box::new(Value::Bool(true))))),
         "the ^assets lookup identity equals the identity constructed for the same entry",
     );
     assert_eq!(
-        run(
-            &image,
-            &mut store,
-            "eqTallies",
-            vec![text("s1"), Value::Int(1)]
-        ),
+        session.call("eqTallies", vec![text("s1"), Value::Int(1)]),
         Some(Value::Optional(Some(Box::new(Value::Bool(true))))),
         "the ^tallies lookup identity carries root 1, not root 0",
     );
@@ -499,7 +396,9 @@ fn rep(byte: u8) -> marrow_image::LedgerIdBytes {
 /// coherent.
 #[test]
 fn index_maintenance_is_scoped_to_the_occurrence_that_was_written() {
-    let image = verify_with(SHARED_INDEX_SOURCE, SHARED_INDEX_IDS);
+    let image = Project::single(SHARED_INDEX_SOURCE)
+        .ids(SHARED_INDEX_IDS)
+        .image();
     let a = image.root_occurrence(0).expect("^a");
     let b = image.root_occurrence(1).expect("^b");
     assert_eq!(a.root().name(), "a");
@@ -533,46 +432,40 @@ fn index_maintenance_is_scoped_to_the_occurrence_that_was_written() {
 /// one occurrence leaves the other's committed state intact.
 #[test]
 fn a_unique_index_collides_only_within_its_own_occurrence() {
-    let image = verify_with(SHARED_INDEX_SOURCE, SHARED_INDEX_IDS);
-    let mut store = attach(&image);
-    run(
-        &image,
-        &mut store,
+    let mut session = open_with(SHARED_INDEX_SOURCE, SHARED_INDEX_IDS);
+    session.call(
         "putA",
         vec![Value::Int(1), text("in-a"), text("s1"), text("left")],
     );
     // The same `sku` through the other occurrence is not a collision: the index cell
     // families are per-root.
-    run(
-        &image,
-        &mut store,
+    session.call(
         "putB",
         vec![Value::Int(1), text("in-b"), text("s1"), text("left")],
     );
     assert_eq!(
-        run(&image, &mut store, "nameA", vec![Value::Int(1)]),
+        session.call("nameA", vec![Value::Int(1)]),
         some_text("in-a")
     );
     assert_eq!(
-        run(&image, &mut store, "nameB", vec![Value::Int(1)]),
+        session.call("nameB", vec![Value::Int(1)]),
         some_text("in-b")
     );
 
     // A second entry of ^b claiming ^b's own indexed `sku` does collide, and leaves ^a
     // untouched.
-    let code = run_faulting(
-        &image,
-        &mut store,
+    let code = fault_code(
+        &mut session,
         "putB",
         vec![Value::Int(2), text("clash"), text("s1"), text("right")],
     );
-    assert_eq!(code, "run.unique_index");
+    assert_eq!(code, Code::RunUniqueIndex);
     assert_eq!(
-        run(&image, &mut store, "nameA", vec![Value::Int(1)]),
+        session.call("nameA", vec![Value::Int(1)]),
         some_text("in-a")
     );
     assert_eq!(
-        run(&image, &mut store, "nameB", vec![Value::Int(1)]),
+        session.call("nameB", vec![Value::Int(1)]),
         some_text("in-b")
     );
 }

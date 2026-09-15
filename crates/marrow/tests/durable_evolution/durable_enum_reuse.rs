@@ -7,7 +7,7 @@
 //! identity twice. The compiler emits the shared identity faithfully; the verifier must
 //! read the two references as one claim, not reject the reuse as a duplicate ledger id.
 
-use marrow_verify::VerifiedImage;
+use crate::common::Project;
 
 const IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
@@ -41,30 +41,9 @@ pub fn recordGlucose(id: int, v: int) {
 }
 "#;
 
-fn compile_verify(source: &str, ids: &str) -> Result<VerifiedImage, String> {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(ids.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    marrow_verify::verify(&compiled.image.bytes).map_err(|r| r.code().to_string())
-}
-
 #[test]
 fn two_fields_of_one_enum_type_verify() {
-    match compile_verify(SOURCE, IDS) {
-        Ok(_) => {}
-        Err(code) => panic!(
-            "two same-enum durable fields rejected as `{}`",
-            code.as_str()
-        ),
-    }
+    // `.image()` compiles and independently verifies: the verifier reads the two
+    // references to one enum identity as a single per-declaration claim.
+    Project::single(SOURCE).ids(IDS).image();
 }

@@ -4,11 +4,13 @@
 //! encoded value before applying a write, so a rejected value leaves no entry behind.
 
 use marrow_codes::Code;
-use marrow_verify::{SealedExport, VerifiedImage};
+use marrow_verify::VerifiedImage;
 use marrow_vm::{
     DurableRun, MemoryAttachment, MintOutcome, RuntimeFault, Value, mint_ephemeral, prepare,
     run_export,
 };
+
+use crate::common::Project;
 
 const IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
@@ -62,24 +64,8 @@ pub fn present(id: int): bool {
 }
 "#;
 
-fn compile_verify() -> VerifiedImage {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        SOURCE.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    marrow_verify::verify(&compiled.image.bytes).expect("verify")
-}
-
-fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
+/// Resolve `name` to its sealed export id.
+fn export_id(image: &VerifiedImage, name: &str) -> marrow_verify::ExportId {
     image
         .exports()
         .iter()
@@ -92,6 +78,7 @@ fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
                 == name
         })
         .expect("export present")
+        .id()
 }
 
 fn attach(image: &VerifiedImage) -> MemoryAttachment {
@@ -110,8 +97,7 @@ fn run(
     name: &str,
     args: Vec<Value>,
 ) -> Result<Option<Value>, RuntimeFault> {
-    match run_export(attachment, export(image, name).id(), args)
-        .expect("the export is in the image")
+    match run_export(attachment, export_id(image, name), args).expect("the export is in the image")
     {
         DurableRun::Ran(Ok(value)) => Ok(value),
         DurableRun::Ran(Err(marrow_vm::DurableExecutionFault::Runtime(fault))) => Err(fault),
@@ -144,7 +130,7 @@ fn write_line() -> u32 {
 
 #[test]
 fn aggregate_durable_value_bound_is_source_reachable_and_write_atomic() {
-    let image = compile_verify();
+    let image = Project::single(SOURCE).ids(IDS).image();
     let mut attachment = attach(&image);
 
     // Seventeen 61,680-byte scalar leaves are individually below 64 KiB, but their

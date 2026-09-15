@@ -11,10 +11,8 @@
 //! production path (capture -> compile -> verify -> attach -> VM) over one persistent
 //! ephemeral attachment.
 
-use marrow_verify::{SealedExport, VerifiedImage};
-use marrow_vm::{
-    DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
-};
+use crate::common::{Project, Session};
+use marrow_vm::Value;
 
 // application, product, the top-level `title` field, the root and its key, the `notes`
 // branch (a `root` placement) with its key and required `text`, then the nested `tags`
@@ -111,66 +109,8 @@ pub fn countNotes(id: int): int {
 }
 "#;
 
-fn compile_verify(source: &str) -> VerifiedImage {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    marrow_verify::verify(&compiled.image.bytes).expect("verify")
-}
-
-fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
-    image
-        .exports()
-        .iter()
-        .find(|export| {
-            image
-                .function(export.function())
-                .expect("verified function")
-                .body()
-                .name()
-                == name
-        })
-        .expect("export present")
-}
-
-fn attach(image: &VerifiedImage) -> MemoryAttachment {
-    match mint_ephemeral(prepare(image.clone())).into_mint() {
-        MintOutcome::Ready(attachment) => attachment,
-        MintOutcome::Storeless | MintOutcome::Parked => {
-            panic!("a flat root with nested scalar branches must be executable")
-        }
-        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {}", cause.as_str()),
-    }
-}
-
-fn run(
-    image: &VerifiedImage,
-    attachment: &mut MemoryAttachment,
-    name: &str,
-    args: Vec<Value>,
-) -> Option<Value> {
-    match run_export(attachment, export(image, name).id(), args)
-        .expect("the export is in the image")
-    {
-        DurableRun::Ran(Ok(value)) => value,
-        DurableRun::Ran(Err(fault)) => panic!("{name} faulted: {}", fault.code().as_str()),
-        DurableRun::Parked => panic!("{name} parked"),
-        DurableRun::Failed(code) => panic!("{name} failed: {}", code.as_str()),
-    }
-}
-
-fn seed(image: &VerifiedImage, attachment: &mut MemoryAttachment, id: i64) {
-    run(image, attachment, "seed", vec![Value::Int(id)]);
+fn seed(session: &mut Session, id: i64) {
+    session.call("seed", vec![Value::Int(id)]);
 }
 
 fn some_text(s: &str) -> Option<Value> {
@@ -187,78 +127,63 @@ fn absent() -> Option<Value> {
 
 /// The seeded three-level entry is fully present before any removal: the root, the note,
 /// and the tag each read their payload and each family is populated.
-fn assert_fully_seeded(image: &VerifiedImage, attachment: &mut MemoryAttachment, id: i64) {
+fn assert_fully_seeded(session: &mut Session, id: i64) {
     assert_eq!(
-        run(image, attachment, "rootExists", vec![Value::Int(id)]),
+        session.call("rootExists", vec![Value::Int(id)]),
         Some(Value::Bool(true))
     );
     assert_eq!(
-        run(image, attachment, "rootTitle", vec![Value::Int(id)]),
+        session.call("rootTitle", vec![Value::Int(id)]),
         some_text("root")
     );
     assert_eq!(
-        run(
-            image,
-            attachment,
-            "noteText",
-            vec![Value::Int(id), Value::Text("n1".into())]
-        ),
+        session.call("noteText", vec![Value::Int(id), Value::Text("n1".into())]),
         some_text("hello"),
     );
     assert_eq!(
-        run(
-            image,
-            attachment,
+        session.call(
             "tagWeight",
             vec![Value::Int(id), Value::Text("n1".into()), Value::Int(7)],
         ),
         some_int(3),
     );
     assert_eq!(
-        run(image, attachment, "notesPopulated", vec![Value::Int(id)]),
+        session.call("notesPopulated", vec![Value::Int(id)]),
         Some(Value::Bool(true))
     );
     assert_eq!(
-        run(image, attachment, "countNotes", vec![Value::Int(id)]),
+        session.call("countNotes", vec![Value::Int(id)]),
         Some(Value::Int(1))
     );
 }
 
 #[test]
 fn the_composition_purge_removes_the_root_and_every_descendant() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
-    seed(&image, &mut attachment, 1);
-    assert_fully_seeded(&image, &mut attachment, 1);
+    let mut session = Project::single(SOURCE).ids(IDS).session();
+    seed(&mut session, 1);
+    assert_fully_seeded(&mut session, 1);
 
-    run(&image, &mut attachment, "purge", vec![Value::Int(1)]);
+    session.call("purge", vec![Value::Int(1)]);
 
     // The root payload is gone.
     assert_eq!(
-        run(&image, &mut attachment, "rootExists", vec![Value::Int(1)]),
+        session.call("rootExists", vec![Value::Int(1)]),
         Some(Value::Bool(false)),
         "the root no longer exists",
     );
     assert_eq!(
-        run(&image, &mut attachment, "rootTitle", vec![Value::Int(1)]),
+        session.call("rootTitle", vec![Value::Int(1)]),
         absent(),
         "the root payload reads absent",
     );
     // Every descendant is gone: the note, the tag, the note family, and the traversal.
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "noteText",
-            vec![Value::Int(1), Value::Text("n1".into())]
-        ),
+        session.call("noteText", vec![Value::Int(1), Value::Text("n1".into())]),
         absent(),
         "the descendant note was removed by the composition",
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
+        session.call(
             "tagWeight",
             vec![Value::Int(1), Value::Text("n1".into()), Value::Int(7)],
         ),
@@ -266,17 +191,12 @@ fn the_composition_purge_removes_the_root_and_every_descendant() {
         "the deepest descendant tag was removed by the composition",
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "notesPopulated",
-            vec![Value::Int(1)]
-        ),
+        session.call("notesPopulated", vec![Value::Int(1)]),
         Some(Value::Bool(false)),
         "the note family is empty after the purge",
     );
     assert_eq!(
-        run(&image, &mut attachment, "countNotes", vec![Value::Int(1)]),
+        session.call("countNotes", vec![Value::Int(1)]),
         Some(Value::Int(0)),
         "a traversal of the note family visits nothing",
     );
@@ -284,39 +204,31 @@ fn the_composition_purge_removes_the_root_and_every_descendant() {
 
 #[test]
 fn a_bare_whole_entry_delete_leaves_the_descendant_ghost() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
-    seed(&image, &mut attachment, 2);
-    assert_fully_seeded(&image, &mut attachment, 2);
+    let mut session = Project::single(SOURCE).ids(IDS).session();
+    seed(&mut session, 2);
+    assert_fully_seeded(&mut session, 2);
 
-    run(&image, &mut attachment, "deleteEntry", vec![Value::Int(2)]);
+    session.call("deleteEntry", vec![Value::Int(2)]);
 
     // The root payload is gone, exactly as for the purge.
     assert_eq!(
-        run(&image, &mut attachment, "rootExists", vec![Value::Int(2)]),
+        session.call("rootExists", vec![Value::Int(2)]),
         Some(Value::Bool(false)),
         "the root payload is removed by a bare whole-entry delete",
     );
     assert_eq!(
-        run(&image, &mut attachment, "rootTitle", vec![Value::Int(2)]),
+        session.call("rootTitle", vec![Value::Int(2)]),
         absent(),
         "the root payload reads absent",
     );
     // But the descendants persist at their own addresses — the documented ghost.
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "noteText",
-            vec![Value::Int(2), Value::Text("n1".into())]
-        ),
+        session.call("noteText", vec![Value::Int(2), Value::Text("n1".into())]),
         some_text("hello"),
         "the descendant note survives the payload-only delete",
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
+        session.call(
             "tagWeight",
             vec![Value::Int(2), Value::Text("n1".into()), Value::Int(7)],
         ),
@@ -324,17 +236,12 @@ fn a_bare_whole_entry_delete_leaves_the_descendant_ghost() {
         "the deepest descendant tag survives the payload-only delete",
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "notesPopulated",
-            vec![Value::Int(2)]
-        ),
+        session.call("notesPopulated", vec![Value::Int(2)]),
         Some(Value::Bool(true)),
         "the note family remains populated — the ghost is reachable",
     );
     assert_eq!(
-        run(&image, &mut attachment, "countNotes", vec![Value::Int(2)]),
+        session.call("countNotes", vec![Value::Int(2)]),
         Some(Value::Int(1)),
         "a traversal still visits the surviving note",
     );

@@ -7,7 +7,7 @@
 //! repository's diagnostic-evidence standard. The rendered message prose is a renderer
 //! concern and is not asserted.
 
-use marrow_compile::SourceDiagnostic;
+use crate::common::{Diagnostics, Project};
 
 /// The identity ledger for the `^books` store and its `notes` branch, so every fixture
 /// below is identity-complete and its only defect is the traversal head under test.
@@ -38,29 +38,13 @@ store ^books[id: int]: Book
 "#;
 
 /// Capture and compile `HEADER + body`, returning the rejection diagnostics.
-fn diagnostics_of(body: &str) -> Vec<SourceDiagnostic> {
-    let source = format!("{HEADER}{body}");
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.into_bytes(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    match marrow_compile::compile(&project) {
+fn diagnostics_of(body: &str) -> Diagnostics {
+    match Project::single(&format!("{HEADER}{body}"))
+        .ids(IDS)
+        .try_image()
+    {
         Ok(_) => panic!("the traversal head should be rejected"),
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
-        Err(
-            marrow_compile::CompileFailure::Invariant(_)
-            | marrow_compile::CompileFailure::ResourceLimit(_),
-        ) => {
-            panic!("source-triggered compiler failures must remain diagnostics")
-        }
+        Err(diagnostics) => diagnostics,
     }
 }
 
@@ -68,20 +52,18 @@ fn diagnostics_of(body: &str) -> Vec<SourceDiagnostic> {
 /// (1-based line and column point into the source).
 fn assert_rejected(body: &str, code: &str) {
     let diagnostics = diagnostics_of(body);
-    let hit = diagnostics
+    let located = diagnostics.all();
+    let hit = located
         .iter()
-        .find(|d| d.code().as_str() == code)
+        .find(|(found, _, _)| *found == code)
         .unwrap_or_else(|| {
             panic!(
                 "expected a `{code}` diagnostic, got {:?}",
-                diagnostics
-                    .iter()
-                    .map(|d| d.code().as_str())
-                    .collect::<Vec<_>>()
+                diagnostics.codes()
             )
         });
     assert!(
-        hit.line() >= 1 && hit.column() >= 1,
+        hit.1 >= 1 && hit.2 >= 1,
         "the rejection carries a located span: {hit:?}"
     );
 }

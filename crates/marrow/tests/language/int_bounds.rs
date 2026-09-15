@@ -2,10 +2,12 @@
 //! exact domain edges: `maxInt` runs to `i64::MAX` and `minInt` to `i64::MIN` through
 //! the whole production path (capture -> compile -> verify -> VM), including when a
 //! bound is folded into a module constant. The image legitimately carries the constant;
-//! the owner ruling is only that no *source* spells the literal.
+//! no *source* spells the literal.
 
-use marrow_verify::{VerifiedImage, verify};
+use marrow_verify::VerifiedImage;
 use marrow_vm::{Value, run};
+
+use crate::common::Project;
 
 const SOURCE: &str = r#"module main
 
@@ -28,23 +30,6 @@ pub fn floorMinusOneOverflows(): int {
 }
 "#;
 
-fn compile_verify() -> VerifiedImage {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        SOURCE.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        None,
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    verify(&compiled.image.bytes).expect("verify")
-}
-
 fn run_named(image: &VerifiedImage, name: &str) -> Result<Option<Value>, String> {
     let function = image
         .exports()
@@ -61,14 +46,14 @@ fn run_named(image: &VerifiedImage, name: &str) -> Result<Option<Value>, String>
 
 #[test]
 fn the_bounds_run_to_the_int_domain_edges() {
-    let image = compile_verify();
+    let image = Project::single(SOURCE).image();
     assert_eq!(run_named(&image, "hi"), Ok(Some(Value::Int(i64::MAX))));
     assert_eq!(run_named(&image, "lo"), Ok(Some(Value::Int(i64::MIN))));
 }
 
 #[test]
 fn a_bound_folded_into_a_constant_runs_to_its_value() {
-    let image = compile_verify();
+    let image = Project::single(SOURCE).image();
     assert_eq!(run_named(&image, "cap"), Ok(Some(Value::Int(i64::MAX))));
 }
 
@@ -76,7 +61,7 @@ fn a_bound_folded_into_a_constant_runs_to_its_value() {
 fn a_bound_is_an_ordinary_int_at_runtime() {
     // `minInt - 1` is exactly the checked-arithmetic underflow, so the bound behaves as
     // the ordinary i64 it is, not a sentinel with special arithmetic.
-    let image = compile_verify();
+    let image = Project::single(SOURCE).image();
     assert_eq!(
         run_named(&image, "floorMinusOneOverflows"),
         Err("run.overflow".to_string())

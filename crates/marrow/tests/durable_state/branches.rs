@@ -12,10 +12,9 @@
 //! attach -> VM — against one persistent ephemeral attachment, so a committed branch
 //! or root write is observable by a later read invocation.
 
-use marrow_verify::{SealedExport, SealedInstr, VerifiedImage};
-use marrow_vm::{
-    DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
-};
+use crate::common::{Diagnostics, Project};
+use marrow_verify::{SealedInstr, VerifiedImage};
+use marrow_vm::Value;
 
 // application, product, the top-level `title` field, the root placement and its key,
 // then the `notes` branch (a `root` placement), its key, and its two fields.
@@ -178,42 +177,6 @@ pub fn tagHot(id: int, tid: int): bool? {
 }
 "#;
 
-fn compile_verify(source: &str) -> VerifiedImage {
-    compile_verify_ids(source, IDS)
-}
-
-fn compile_verify_ids(source: &str, ids: &str) -> VerifiedImage {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(ids.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    marrow_verify::verify(&compiled.image.bytes).expect("verify")
-}
-
-fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
-    image
-        .exports()
-        .iter()
-        .find(|export| {
-            image
-                .function(export.function())
-                .expect("verified function")
-                .body()
-                .name()
-                == name
-        })
-        .expect("export present")
-}
-
 fn function_instrs<'a>(image: &'a VerifiedImage, name: &str) -> &'a [SealedInstr] {
     image
         .functions()
@@ -229,7 +192,7 @@ fn function_instrs<'a>(image: &'a VerifiedImage, name: &str) -> &'a [SealedInstr
 /// than silently widened.
 #[test]
 fn a_guarded_branch_place_sparse_set_lowers_strict_over_the_whole_key_path() {
-    let image = compile_verify_ids(FIELD_SOURCE, IDS);
+    let image = Project::single(FIELD_SOURCE).ids(IDS).image();
     let instrs = function_instrs(&image, "setPinnedViaPlace");
     let strict: Vec<&[u16]> = instrs
         .iter()
@@ -248,42 +211,6 @@ fn a_guarded_branch_place_sparse_set_lowers_strict_over_the_whole_key_path() {
         2,
         "the branch set carries the whole `[root, branch]` key-path",
     );
-}
-
-fn run(
-    image: &VerifiedImage,
-    attachment: &mut MemoryAttachment,
-    name: &str,
-    args: Vec<Value>,
-) -> Option<Value> {
-    match run_export(attachment, export(image, name).id(), args)
-        .expect("the export is in the image")
-    {
-        DurableRun::Ran(Ok(value)) => value,
-        other => panic!("{name} did not run cleanly: {:?}", DebugRun(&other)),
-    }
-}
-
-struct DebugRun<'a>(&'a DurableRun);
-impl std::fmt::Debug for DebugRun<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
-            DurableRun::Ran(Ok(_)) => write!(f, "Ran(Ok(value))"),
-            DurableRun::Ran(Err(fault)) => write!(f, "Ran(Err({}))", fault.code().as_str()),
-            DurableRun::Parked => write!(f, "Parked"),
-            DurableRun::Failed(code) => write!(f, "Failed({})", code.as_str()),
-        }
-    }
-}
-
-fn attach(image: &VerifiedImage) -> MemoryAttachment {
-    match mint_ephemeral(prepare(image.clone())).into_mint() {
-        MintOutcome::Ready(attachment) => attachment,
-        MintOutcome::Storeless | MintOutcome::Parked => {
-            panic!("a flat root with a simple branch must be executable")
-        }
-        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {}", cause.as_str()),
-    }
 }
 
 fn some_text(s: &str) -> Option<Value> {
@@ -307,28 +234,20 @@ fn present(b: bool) -> Option<Value> {
 /// Giving the root a payload with `create` does not disturb the branch.
 #[test]
 fn a_branch_create_leaves_the_root_descendant_only_and_root_create_preserves_the_branch() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(SOURCE).ids(IDS).session();
 
     // Before any write both the root and the branch are absent.
     assert_eq!(
-        run(&image, &mut attachment, "rootPresent", vec![Value::Int(1)]),
+        session.call("rootPresent", vec![Value::Int(1)]),
         present(false)
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "notePresent",
-            vec![Value::Int(1), Value::Text("a".into())]
-        ),
+        session.call("notePresent", vec![Value::Int(1), Value::Text("a".into())]),
         present(false)
     );
 
     // Create a branch entry under the (absent) root.
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "addNote",
         vec![
             Value::Int(1),
@@ -339,67 +258,39 @@ fn a_branch_create_leaves_the_root_descendant_only_and_root_create_preserves_the
 
     // The root is now descendant-only: payload-absent, `exists` false, no title.
     assert_eq!(
-        run(&image, &mut attachment, "rootPresent", vec![Value::Int(1)]),
+        session.call("rootPresent", vec![Value::Int(1)]),
         present(false),
         "a descendant-only root reads payload-absent"
     );
-    assert_eq!(
-        run(&image, &mut attachment, "rootTitle", vec![Value::Int(1)]),
-        absent()
-    );
+    assert_eq!(session.call("rootTitle", vec![Value::Int(1)]), absent());
     // The branch entry itself is fully present and materializes its record.
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "notePresent",
-            vec![Value::Int(1), Value::Text("a".into())]
-        ),
+        session.call("notePresent", vec![Value::Int(1), Value::Text("a".into())]),
         present(true)
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "noteText",
-            vec![Value::Int(1), Value::Text("a".into())]
-        ),
+        session.call("noteText", vec![Value::Int(1), Value::Text("a".into())]),
         some_text("hello")
     );
 
     // Give the root a payload; the branch is not disturbed.
-    run(
-        &image,
-        &mut attachment,
-        "setRoot",
-        vec![Value::Int(1), Value::Text("T".into())],
-    );
+    session.call("setRoot", vec![Value::Int(1), Value::Text("T".into())]);
     assert_eq!(
-        run(&image, &mut attachment, "rootPresent", vec![Value::Int(1)]),
+        session.call("rootPresent", vec![Value::Int(1)]),
         present(true),
         "root create gave the descendant-only node a payload"
     );
     assert_eq!(
-        run(&image, &mut attachment, "rootTitle", vec![Value::Int(1)]),
+        session.call("rootTitle", vec![Value::Int(1)]),
         some_text("T")
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "notePresent",
-            vec![Value::Int(1), Value::Text("a".into())]
-        ),
+        session.call("notePresent", vec![Value::Int(1), Value::Text("a".into())]),
         present(true),
         "root create did not disturb the branch"
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "noteText",
-            vec![Value::Int(1), Value::Text("a".into())]
-        ),
+        session.call("noteText", vec![Value::Int(1), Value::Text("a".into())]),
         some_text("hello")
     );
 }
@@ -408,18 +299,10 @@ fn a_branch_create_leaves_the_root_descendant_only_and_root_create_preserves_the
 /// but preserves its keyed branch descendants, so the root returns to descendant-only.
 #[test]
 fn a_root_erase_preserves_keyed_branches() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(SOURCE).ids(IDS).session();
 
-    run(
-        &image,
-        &mut attachment,
-        "setRoot",
-        vec![Value::Int(2), Value::Text("T".into())],
-    );
-    run(
-        &image,
-        &mut attachment,
+    session.call("setRoot", vec![Value::Int(2), Value::Text("T".into())]);
+    session.call(
         "addNote",
         vec![
             Value::Int(2),
@@ -428,24 +311,19 @@ fn a_root_erase_preserves_keyed_branches() {
         ],
     );
     assert_eq!(
-        run(&image, &mut attachment, "rootPresent", vec![Value::Int(2)]),
+        session.call("rootPresent", vec![Value::Int(2)]),
         present(true)
     );
 
     // Erase the whole root entry: payload-only, so the branch survives.
-    run(&image, &mut attachment, "eraseRoot", vec![Value::Int(2)]);
+    session.call("eraseRoot", vec![Value::Int(2)]);
     assert_eq!(
-        run(&image, &mut attachment, "rootPresent", vec![Value::Int(2)]),
+        session.call("rootPresent", vec![Value::Int(2)]),
         present(false),
         "the root payload is gone"
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "notePresent",
-            vec![Value::Int(2), Value::Text("a".into())]
-        ),
+        session.call("notePresent", vec![Value::Int(2), Value::Text("a".into())]),
         present(true),
         "a payload-only root erase preserves keyed branches"
     );
@@ -455,18 +333,10 @@ fn a_root_erase_preserves_keyed_branches() {
 /// branch entries are untouched.
 #[test]
 fn a_branch_erase_removes_only_the_addressed_branch_entry() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(SOURCE).ids(IDS).session();
 
-    run(
-        &image,
-        &mut attachment,
-        "setRoot",
-        vec![Value::Int(3), Value::Text("T".into())],
-    );
-    run(
-        &image,
-        &mut attachment,
+    session.call("setRoot", vec![Value::Int(3), Value::Text("T".into())]);
+    session.call(
         "addNote",
         vec![
             Value::Int(3),
@@ -474,9 +344,7 @@ fn a_branch_erase_removes_only_the_addressed_branch_entry() {
             Value::Text("one".into()),
         ],
     );
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "addNote",
         vec![
             Value::Int(3),
@@ -485,34 +353,19 @@ fn a_branch_erase_removes_only_the_addressed_branch_entry() {
         ],
     );
 
-    run(
-        &image,
-        &mut attachment,
-        "eraseNote",
-        vec![Value::Int(3), Value::Text("a".into())],
-    );
+    session.call("eraseNote", vec![Value::Int(3), Value::Text("a".into())]);
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "notePresent",
-            vec![Value::Int(3), Value::Text("a".into())]
-        ),
+        session.call("notePresent", vec![Value::Int(3), Value::Text("a".into())]),
         present(false),
         "the addressed branch entry is gone"
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "noteText",
-            vec![Value::Int(3), Value::Text("b".into())]
-        ),
+        session.call("noteText", vec![Value::Int(3), Value::Text("b".into())]),
         some_text("two"),
         "a sibling branch entry is untouched"
     );
     assert_eq!(
-        run(&image, &mut attachment, "rootPresent", vec![Value::Int(3)]),
+        session.call("rootPresent", vec![Value::Int(3)]),
         present(true),
         "the root payload is untouched"
     );
@@ -521,12 +374,9 @@ fn a_branch_erase_removes_only_the_addressed_branch_entry() {
 /// A whole-entry branch replace rewrites the branch entry exactly.
 #[test]
 fn a_branch_replace_is_exact() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(SOURCE).ids(IDS).session();
 
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "addNote",
         vec![
             Value::Int(4),
@@ -535,9 +385,7 @@ fn a_branch_replace_is_exact() {
         ],
     );
     // Replace the same branch entry (create-or-replace through the upsert shape).
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "addNote",
         vec![
             Value::Int(4),
@@ -546,12 +394,7 @@ fn a_branch_replace_is_exact() {
         ],
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "noteText",
-            vec![Value::Int(4), Value::Text("a".into())]
-        ),
+        session.call("noteText", vec![Value::Int(4), Value::Text("a".into())]),
         some_text("second"),
         "the branch replace overwrote the earlier text"
     );
@@ -574,22 +417,16 @@ fn some_bool(b: bool) -> Option<Value> {
 /// partial-marker state to read.
 #[test]
 fn a_branch_entry_upholds_the_four_state_required_and_optional_laws() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(SOURCE).ids(IDS).session();
     let key = || vec![Value::Int(5), Value::Text("a".into())];
 
     // Marker absent: exists false, both field reads absent.
-    assert_eq!(
-        run(&image, &mut attachment, "notePresent", key()),
-        present(false)
-    );
-    assert_eq!(run(&image, &mut attachment, "noteText", key()), absent());
-    assert_eq!(run(&image, &mut attachment, "notePinned", key()), absent());
+    assert_eq!(session.call("notePresent", key()), present(false));
+    assert_eq!(session.call("noteText", key()), absent());
+    assert_eq!(session.call("notePinned", key()), absent());
 
     // Marker present, sparse absent: required present, sparse absent.
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "addNote",
         vec![
             Value::Int(5),
@@ -597,24 +434,16 @@ fn a_branch_entry_upholds_the_four_state_required_and_optional_laws() {
             Value::Text("hi".into()),
         ],
     );
+    assert_eq!(session.call("notePresent", key()), present(true));
+    assert_eq!(session.call("noteText", key()), some_text("hi"));
     assert_eq!(
-        run(&image, &mut attachment, "notePresent", key()),
-        present(true)
-    );
-    assert_eq!(
-        run(&image, &mut attachment, "noteText", key()),
-        some_text("hi")
-    );
-    assert_eq!(
-        run(&image, &mut attachment, "notePinned", key()),
+        session.call("notePinned", key()),
         absent(),
         "an omitted sparse field reads absent while the required field is present"
     );
 
     // Marker present, sparse present: both read present.
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "addFullNote",
         vec![
             Value::Int(5),
@@ -623,19 +452,11 @@ fn a_branch_entry_upholds_the_four_state_required_and_optional_laws() {
             Value::Bool(true),
         ],
     );
-    assert_eq!(
-        run(&image, &mut attachment, "noteText", key()),
-        some_text("ho")
-    );
-    assert_eq!(
-        run(&image, &mut attachment, "notePinned", key()),
-        some_bool(true)
-    );
+    assert_eq!(session.call("noteText", key()), some_text("ho"));
+    assert_eq!(session.call("notePinned", key()), some_bool(true));
 
     // A whole replace that omits the sparse field drops it (exact replacement).
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "addNote",
         vec![
             Value::Int(5),
@@ -643,12 +464,9 @@ fn a_branch_entry_upholds_the_four_state_required_and_optional_laws() {
             Value::Text("hi again".into()),
         ],
     );
+    assert_eq!(session.call("noteText", key()), some_text("hi again"));
     assert_eq!(
-        run(&image, &mut attachment, "noteText", key()),
-        some_text("hi again")
-    );
-    assert_eq!(
-        run(&image, &mut attachment, "notePinned", key()),
+        session.call("notePinned", key()),
         absent(),
         "a whole replace omitting the sparse field drops it"
     );
@@ -664,14 +482,11 @@ fn a_branch_entry_upholds_the_four_state_required_and_optional_laws() {
 /// that branch, and a swap could not reproduce them.
 #[test]
 fn two_branches_of_different_shape_keep_their_own_fields() {
-    let image = compile_verify_ids(SOURCE_TWO, IDS_TWO);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(SOURCE_TWO).ids(IDS_TWO).session();
 
     // A note (one string field) and a tag (an int field and a bool field) under the
     // same book: two branches, one root, one persistent attachment.
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "addNote",
         vec![
             Value::Int(1),
@@ -679,9 +494,7 @@ fn two_branches_of_different_shape_keep_their_own_fields() {
             Value::Text("hello".into()),
         ],
     );
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "addTag",
         vec![
             Value::Int(1),
@@ -694,30 +507,15 @@ fn two_branches_of_different_shape_keep_their_own_fields() {
     // Each branch materializes its own fields: the string note text, and the int/bool
     // tag fields. A crossed record/site alignment could not read these back.
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "noteText",
-            vec![Value::Int(1), Value::Text("n".into())]
-        ),
+        session.call("noteText", vec![Value::Int(1), Value::Text("n".into())]),
         some_text("hello")
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "tagWeight",
-            vec![Value::Int(1), Value::Int(9)]
-        ),
+        session.call("tagWeight", vec![Value::Int(1), Value::Int(9)]),
         some_int(42)
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "tagHot",
-            vec![Value::Int(1), Value::Int(9)]
-        ),
+        session.call("tagHot", vec![Value::Int(1), Value::Int(9)]),
         some_bool(true)
     );
 
@@ -725,19 +523,12 @@ fn two_branches_of_different_shape_keep_their_own_fields() {
     // written only to the other is absent, so a create did not spill across the
     // positional alignment onto the sibling branch.
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "tagWeight",
-            vec![Value::Int(1), Value::Int(100)]
-        ),
+        session.call("tagWeight", vec![Value::Int(1), Value::Int(100)]),
         absent(),
         "the note write did not appear in the tags branch"
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
+        session.call(
             "noteText",
             vec![Value::Int(1), Value::Text("missing".into())]
         ),
@@ -838,13 +629,10 @@ pub fn rootPresent(id: int): bool {
 /// fields are undisturbed.
 #[test]
 fn a_field_exact_sparse_set_and_clear_leave_sibling_branch_fields_intact() {
-    let image = compile_verify_ids(FIELD_SOURCE, IDS);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(FIELD_SOURCE).ids(IDS).session();
     let key = || vec![Value::Int(6), Value::Text("a".into())];
 
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "addNote",
         vec![
             Value::Int(6),
@@ -852,43 +640,27 @@ fn a_field_exact_sparse_set_and_clear_leave_sibling_branch_fields_intact() {
             Value::Text("hi".into()),
         ],
     );
-    assert_eq!(run(&image, &mut attachment, "notePinned", key()), absent());
-    assert_eq!(
-        run(&image, &mut attachment, "pinnedPresent", key()),
-        present(false)
-    );
+    assert_eq!(session.call("notePinned", key()), absent());
+    assert_eq!(session.call("pinnedPresent", key()), present(false));
 
     // Field-exact set of the sparse `pinned`: the required `text` is preserved.
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "setPinned",
         vec![Value::Int(6), Value::Text("a".into()), Value::Bool(true)],
     );
+    assert_eq!(session.call("notePinned", key()), some_bool(true));
+    assert_eq!(session.call("pinnedPresent", key()), present(true));
     assert_eq!(
-        run(&image, &mut attachment, "notePinned", key()),
-        some_bool(true)
-    );
-    assert_eq!(
-        run(&image, &mut attachment, "pinnedPresent", key()),
-        present(true)
-    );
-    assert_eq!(
-        run(&image, &mut attachment, "noteText", key()),
+        session.call("noteText", key()),
         some_text("hi"),
         "a field-exact sparse set preserves the branch's required field"
     );
 
     // Field-exact clear of the sparse `pinned`: text still preserved.
-    run(
-        &image,
-        &mut attachment,
-        "clearPinned",
-        vec![Value::Int(6), Value::Text("a".into())],
-    );
-    assert_eq!(run(&image, &mut attachment, "notePinned", key()), absent());
+    session.call("clearPinned", vec![Value::Int(6), Value::Text("a".into())]);
+    assert_eq!(session.call("notePinned", key()), absent());
     assert_eq!(
-        run(&image, &mut attachment, "noteText", key()),
+        session.call("noteText", key()),
         some_text("hi"),
         "a field-exact clear preserves the branch's required field"
     );
@@ -897,12 +669,9 @@ fn a_field_exact_sparse_set_and_clear_leave_sibling_branch_fields_intact() {
 /// A field-exact set on one branch entry does not leak to a sibling branch entry.
 #[test]
 fn a_field_exact_set_is_scoped_to_its_branch_entry() {
-    let image = compile_verify_ids(FIELD_SOURCE, IDS);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(FIELD_SOURCE).ids(IDS).session();
 
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "addNote",
         vec![
             Value::Int(9),
@@ -910,9 +679,7 @@ fn a_field_exact_set_is_scoped_to_its_branch_entry() {
             Value::Text("one".into()),
         ],
     );
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "addNote",
         vec![
             Value::Int(9),
@@ -920,39 +687,22 @@ fn a_field_exact_set_is_scoped_to_its_branch_entry() {
             Value::Text("two".into()),
         ],
     );
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "setPinned",
         vec![Value::Int(9), Value::Text("a".into()), Value::Bool(true)],
     );
 
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "notePinned",
-            vec![Value::Int(9), Value::Text("a".into())]
-        ),
+        session.call("notePinned", vec![Value::Int(9), Value::Text("a".into())]),
         some_bool(true)
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "notePinned",
-            vec![Value::Int(9), Value::Text("b".into())]
-        ),
+        session.call("notePinned", vec![Value::Int(9), Value::Text("b".into())]),
         absent(),
         "a field-exact set on entry a did not leak to sibling b"
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "noteText",
-            vec![Value::Int(9), Value::Text("b".into())]
-        ),
+        session.call("noteText", vec![Value::Int(9), Value::Text("b".into())]),
         some_text("two")
     );
 }
@@ -963,13 +713,10 @@ fn a_field_exact_set_is_scoped_to_its_branch_entry() {
 /// required field.
 #[test]
 fn branch_place_field_operations_read_and_guarded_set_through_the_two_key_place() {
-    let image = compile_verify_ids(FIELD_SOURCE, IDS);
-    let mut attachment = attach(&image);
+    let mut session = Project::single(FIELD_SOURCE).ids(IDS).session();
     let key = || vec![Value::Int(10), Value::Text("a".into())];
 
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "addNote",
         vec![
             Value::Int(10),
@@ -977,24 +724,19 @@ fn branch_place_field_operations_read_and_guarded_set_through_the_two_key_place(
             Value::Text("hi".into()),
         ],
     );
-    assert_eq!(
-        run(&image, &mut attachment, "notePinnedViaPlace", key()),
-        absent()
-    );
+    assert_eq!(session.call("notePinnedViaPlace", key()), absent());
 
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "setPinnedViaPlace",
         vec![Value::Int(10), Value::Text("a".into()), Value::Bool(true)],
     );
     assert_eq!(
-        run(&image, &mut attachment, "notePinnedViaPlace", key()),
+        session.call("notePinnedViaPlace", key()),
         some_bool(true),
         "a branch-place field read and guarded set thread through the two-key place",
     );
     assert_eq!(
-        run(&image, &mut attachment, "noteText", key()),
+        session.call("noteText", key()),
         some_text("hi"),
         "the guarded branch-place set preserved the required field",
     );
@@ -1002,27 +744,14 @@ fn branch_place_field_operations_read_and_guarded_set_through_the_two_key_place(
 
 // --- A branch is not a field of a materialized entry record. ---
 
-fn compile_diags(body: &str) -> Vec<marrow_compile::SourceDiagnostic> {
-    let source = format!("{SOURCE}\n{body}");
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.into_bytes(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    match marrow_compile::compile(&project) {
+/// Compile `SOURCE` plus `body`, returning the rejection diagnostics.
+fn compile_diags(body: &str) -> Diagnostics {
+    match Project::single(&format!("{SOURCE}\n{body}"))
+        .ids(IDS)
+        .try_image()
+    {
         Ok(_) => panic!("expected the checker to reject chaining a branch off a record value"),
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
-        Err(
-            marrow_compile::CompileFailure::Invariant(_)
-            | marrow_compile::CompileFailure::ResourceLimit(_),
-        ) => panic!("source-triggered compiler failures must remain diagnostics"),
+        Err(diagnostics) => diagnostics,
     }
 }
 
@@ -1038,7 +767,7 @@ fn chaining_a_branch_off_a_materialized_record_steers_to_the_durable_path() {
     let diagnostic = diagnostics
         .iter()
         .find(|d| d.code().as_str() == "check.type")
-        .unwrap_or_else(|| panic!("no check.type diagnostic in {diagnostics:#?}"));
+        .unwrap_or_else(|| panic!("no check.type diagnostic in {:?}", diagnostics.all()));
     // The span points at the branch name `notes` in `b.notes`.
     assert_eq!(diagnostic.line(), 70, "{}", diagnostic.message());
     // Voice: fact (the branch in source spelling), rule, then the canonical durable-path fix.
@@ -1070,26 +799,10 @@ fn chaining_a_branch_off_a_materialized_record_steers_to_the_durable_path() {
 
 /// Compile `source` against `ids`: the verified image, or the diagnostic codes.
 fn compile_source_ids(source: &str, ids: &str) -> Result<VerifiedImage, Vec<String>> {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(ids.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    match marrow_compile::compile(&project) {
-        Ok(compiled) => Ok(marrow_verify::verify(&compiled.image.bytes).expect("verify")),
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => Err(diagnostics
-            .iter()
-            .map(|d| d.code().as_str().to_string())
-            .collect()),
-        Err(other) => panic!("source-triggered compiler failures must remain diagnostics: {other}"),
-    }
+    Project::single(source)
+        .ids(ids)
+        .try_image()
+        .map_err(|diagnostics| diagnostics.codes().iter().map(|c| c.to_string()).collect())
 }
 
 fn strict_key_paths(image: &VerifiedImage, name: &str) -> Vec<Vec<u16>> {

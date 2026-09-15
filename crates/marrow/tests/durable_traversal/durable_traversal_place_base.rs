@@ -13,10 +13,8 @@
 //! branch traversal base too: the identity spreads into the root's key columns and the
 //! traversal ancestor pop re-proves that typed identity column, so those round trips run.
 
-use marrow_verify::{SealedExport, VerifiedImage};
-use marrow_vm::{
-    DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
-};
+use crate::common::{Project, Session};
+use marrow_vm::Value;
 
 const IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
@@ -184,77 +182,12 @@ pub fn clearNotesViaInlineId(id: int): int {
 }
 "#;
 
-fn compile_verify(source: &str) -> VerifiedImage {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    marrow_verify::verify(&compiled.image.bytes).expect("verify")
-}
-
-fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
-    image
-        .exports()
-        .iter()
-        .find(|export| {
-            image
-                .function(export.function())
-                .expect("verified function")
-                .body()
-                .name()
-                == name
-        })
-        .expect("export present")
-}
-
-fn run(
-    image: &VerifiedImage,
-    attachment: &mut MemoryAttachment,
-    name: &str,
-    args: Vec<Value>,
-) -> Option<Value> {
-    match run_export(attachment, export(image, name).id(), args)
-        .expect("the export is in the image")
-    {
-        DurableRun::Ran(Ok(value)) => value,
-        DurableRun::Ran(Err(fault)) => panic!("{name} faulted: {}", fault.code().as_str()),
-        DurableRun::Parked => panic!("{name} parked"),
-        DurableRun::Failed(code) => panic!("{name} failed: {}", code.as_str()),
-    }
-}
-
-fn attach(image: &VerifiedImage) -> MemoryAttachment {
-    match mint_ephemeral(prepare(image.clone())).into_mint() {
-        MintOutcome::Ready(attachment) => attachment,
-        MintOutcome::Storeless | MintOutcome::Parked => {
-            panic!("a flat root with a simple branch must be executable")
-        }
-        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {}", cause.as_str()),
-    }
-}
-
-fn seed_notes(image: &VerifiedImage, attachment: &mut MemoryAttachment) {
+fn seed_notes(session: &mut Session) {
     for id in [1i64, 2, 3] {
-        run(
-            image,
-            attachment,
-            "putBook",
-            vec![Value::Int(id), Value::Text("t".into())],
-        );
+        session.call("putBook", vec![Value::Int(id), Value::Text("t".into())]);
     }
     for pos in [10i64, 20] {
-        run(
-            image,
-            attachment,
+        session.call(
             "putNote",
             vec![Value::Int(1), Value::Int(pos), Value::Text("n".into())],
         );
@@ -263,47 +196,28 @@ fn seed_notes(image: &VerifiedImage, attachment: &mut MemoryAttachment) {
 
 #[test]
 fn a_root_place_is_a_branch_traversal_base() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
-    seed_notes(&image, &mut attachment);
+    let mut session = Project::single(SOURCE).ids(IDS).session();
+    seed_notes(&mut session);
 
     // `place b = ^books[1]; for pos in b.notes` folds book 1's notes {10,20} = 30; the
     // layer is exhausted, so `on more` does not run.
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "sumNotesViaPlace",
-            vec![Value::Int(1)]
-        ),
+        session.call("sumNotesViaPlace", vec![Value::Int(1)]),
         Some(Value::Int(30))
     );
     // Book 2 has no notes: the branch under the place is empty.
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "sumNotesViaPlace",
-            vec![Value::Int(2)]
-        ),
+        session.call("sumNotesViaPlace", vec![Value::Int(2)]),
         Some(Value::Int(0))
     );
 }
 
 #[test]
 fn a_place_base_carries_the_on_more_overflow_arm() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
-    run(
-        &image,
-        &mut attachment,
-        "putBook",
-        vec![Value::Int(1), Value::Text("t".into())],
-    );
+    let mut session = Project::single(SOURCE).ids(IDS).session();
+    session.call("putBook", vec![Value::Int(1), Value::Text("t".into())]);
     for pos in [10i64, 20, 30] {
-        run(
-            &image,
-            &mut attachment,
+        session.call(
             "putNote",
             vec![Value::Int(1), Value::Int(pos), Value::Text("n".into())],
         );
@@ -312,12 +226,7 @@ fn a_place_base_carries_the_on_more_overflow_arm() {
     // `at most 2` over three notes freezes {10,20} = 30, and a third key existed so the
     // `on more` arm through the place base adds 1000.
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "sumNotesViaPlaceFirst2",
-            vec![Value::Int(1)]
-        ),
+        session.call("sumNotesViaPlaceFirst2", vec![Value::Int(1)]),
         Some(Value::Int(1030))
     );
 }
@@ -328,28 +237,17 @@ fn an_identity_keyed_place_base_is_a_branch_traversal_base() {
     // into the root's key columns at the binding; `for pos in b.notes` then traverses the
     // branch beneath it. The captured slot carries its root as a typed identity column that
     // the traversal ancestor pop re-proves, so the round trip runs end to end.
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
-    seed_notes(&image, &mut attachment);
+    let mut session = Project::single(SOURCE).ids(IDS).session();
+    seed_notes(&mut session);
 
     // Book 1's notes {10, 20} = 30; the layer is exhausted, so `on more` does not run.
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "sumNotesViaIdPlace",
-            vec![Value::Int(1)]
-        ),
+        session.call("sumNotesViaIdPlace", vec![Value::Int(1)]),
         Some(Value::Int(30))
     );
     // Book 2 has no notes: the branch under the identity-keyed place is empty.
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "sumNotesViaIdPlace",
-            vec![Value::Int(2)]
-        ),
+        session.call("sumNotesViaIdPlace", vec![Value::Int(2)]),
         Some(Value::Int(0))
     );
 }
@@ -359,17 +257,11 @@ fn an_inline_identity_parent_is_a_branch_traversal_base() {
     // The inline sibling `for pos in ^books[Id(^books, id)].notes`: the one identity operand
     // is the branch traversal's ancestor key-path, spread into the root's key columns at emit
     // and left as a typed identity column the ancestor pop re-proves.
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
-    seed_notes(&image, &mut attachment);
+    let mut session = Project::single(SOURCE).ids(IDS).session();
+    seed_notes(&mut session);
 
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "sumNotesViaInlineId",
-            vec![Value::Int(1)]
-        ),
+        session.call("sumNotesViaInlineId", vec![Value::Int(1)]),
         Some(Value::Int(30))
     );
 }
@@ -379,40 +271,26 @@ fn an_inline_identity_parent_two_binding_deletes_through_the_pin() {
     // The two-binding inline form: `for pos, note in ^books[Id(^books, id)].notes` captures
     // the identity ancestor into the root's key slots, then the per-iteration pin `note`
     // reuses those identity-carrying slots plus the frozen key to delete each note.
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
-    seed_notes(&image, &mut attachment);
+    let mut session = Project::single(SOURCE).ids(IDS).session();
+    seed_notes(&mut session);
 
     // Deleting book 1's notes {10, 20} folds 30; a re-count then reads an empty branch.
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "clearNotesViaInlineId",
-            vec![Value::Int(1)]
-        ),
+        session.call("clearNotesViaInlineId", vec![Value::Int(1)]),
         Some(Value::Int(30))
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "sumNotesViaInlineId",
-            vec![Value::Int(1)]
-        ),
+        session.call("sumNotesViaInlineId", vec![Value::Int(1)]),
         Some(Value::Int(0))
     );
 }
 
 #[test]
 fn a_per_iteration_pin_is_an_inner_traversal_base() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
-    seed_notes(&image, &mut attachment);
+    let mut session = Project::single(SOURCE).ids(IDS).session();
+    seed_notes(&mut session);
     for pos in [40i64, 50] {
-        run(
-            &image,
-            &mut attachment,
+        session.call(
             "putNote",
             vec![Value::Int(2), Value::Int(pos), Value::Text("n".into())],
         );
@@ -422,58 +300,39 @@ fn a_per_iteration_pin_is_an_inner_traversal_base() {
     // inner traversal base. Book 1 notes {10,20}=30, book 2 notes {40,50}=90, book 3 none;
     // total 120, no inner or outer `on more`.
     assert_eq!(
-        run(&image, &mut attachment, "sumAllNotesViaPin", vec![]),
+        session.call("sumAllNotesViaPin", vec![]),
         Some(Value::Int(120))
     );
 }
 
 #[test]
 fn a_two_binding_place_base_deletes_through_the_pin() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
-    seed_notes(&image, &mut attachment);
+    let mut session = Project::single(SOURCE).ids(IDS).session();
+    seed_notes(&mut session);
 
     // `place b = ^books[1]; for pos, note in b.notes { delete note }`: the pin's key-path
     // is the place's captured root slot followed by each frozen note key. It visits both
     // notes (sum 30) and erases them; `at most 100`, so no `on more`.
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "clearNotesViaPlace",
-            vec![Value::Int(1)]
-        ),
+        session.call("clearNotesViaPlace", vec![Value::Int(1)]),
         Some(Value::Int(30))
     );
     // The deletes committed: a re-run visits nothing.
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "clearNotesViaPlace",
-            vec![Value::Int(1)]
-        ),
+        session.call("clearNotesViaPlace", vec![Value::Int(1)]),
         Some(Value::Int(0))
     );
     // The reading place traversal agrees the notes are gone.
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "sumNotesViaPlace",
-            vec![Value::Int(1)]
-        ),
+        session.call("sumNotesViaPlace", vec![Value::Int(1)]),
         Some(Value::Int(0))
     );
 }
 
 #[test]
 fn a_composite_root_place_locates_a_branch_by_its_whole_key_path() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
-    run(
-        &image,
-        &mut attachment,
+    let mut session = Project::single(SOURCE).ids(IDS).session();
+    session.call(
         "putGrade",
         vec![
             Value::Text("amy".into()),
@@ -482,9 +341,7 @@ fn a_composite_root_place_locates_a_branch_by_its_whole_key_path() {
         ],
     );
     for slot in [3i64, 4] {
-        run(
-            &image,
-            &mut attachment,
+        session.call(
             "putMark",
             vec![
                 Value::Text("amy".into()),
@@ -495,9 +352,7 @@ fn a_composite_root_place_locates_a_branch_by_its_whole_key_path() {
         );
     }
     // A different (student, course) carries its own mark that must not leak into amy/cs.
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "putGrade",
         vec![
             Value::Text("bob".into()),
@@ -505,9 +360,7 @@ fn a_composite_root_place_locates_a_branch_by_its_whole_key_path() {
             Value::Text("fall".into()),
         ],
     );
-    run(
-        &image,
-        &mut attachment,
+    session.call(
         "putMark",
         vec![
             Value::Text("bob".into()),
@@ -521,18 +374,14 @@ fn a_composite_root_place_locates_a_branch_by_its_whole_key_path() {
     // captured at the binding and locate the branch under amy/cs — marks {3,4}=7, scoped to
     // that parent, never bob's slot 9.
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
+        session.call(
             "sumMarksViaPlace",
             vec![Value::Text("amy".into()), Value::Text("cs".into())]
         ),
         Some(Value::Int(7))
     );
     assert_eq!(
-        run(
-            &image,
-            &mut attachment,
+        session.call(
             "sumMarksViaPlace",
             vec![Value::Text("bob".into()), Value::Text("cs".into())]
         ),

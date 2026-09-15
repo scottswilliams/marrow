@@ -9,6 +9,7 @@
 //! observed at the image level, through the full production path: capture ->
 //! compile -> verify.
 
+use crate::common::Project;
 use marrow_verify::{SealedInstr, VerifiedImage};
 
 #[path = "places/presence_lifetime.rs"]
@@ -37,29 +38,12 @@ fn keyOf(n: int): int {
 }
 "#;
 
-fn capture_source(source: &str, ids: &str) -> marrow_project::ProjectInput {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    marrow_project::capture(
-        &manifest,
-        files,
-        Some(ids.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture")
-}
-
 fn compile_verify(source: &str) -> VerifiedImage {
     compile_verify_with_ids(source, IDS)
 }
 
 fn compile_verify_with_ids(source: &str, ids: &str) -> VerifiedImage {
-    let project = capture_source(source, ids);
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    marrow_verify::verify(&compiled.image.bytes).expect("verify")
+    Project::single(source).ids(ids).image()
 }
 
 /// The typed diagnostic codes a source that fails to compile carries.
@@ -571,19 +555,13 @@ fn compile_diagnostics(source: &str) -> Vec<(String, u32, u32)> {
 }
 
 fn compile_diagnostics_with_ids(source: &str, ids: &str) -> Vec<(String, u32, u32)> {
-    let project = capture_source(source, ids);
-    match marrow_compile::compile(&project) {
+    match Project::single(source).ids(ids).try_image() {
         Ok(_) => Vec::new(),
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics
-            .iter()
-            .map(|d| (d.code().as_str().to_string(), d.line(), d.column()))
+        Err(diagnostics) => diagnostics
+            .all()
+            .into_iter()
+            .map(|(code, line, column)| (code.to_string(), line, column))
             .collect(),
-        Err(
-            marrow_compile::CompileFailure::Invariant(_)
-            | marrow_compile::CompileFailure::ResourceLimit(_),
-        ) => {
-            panic!("source-triggered compiler failures must remain diagnostics")
-        }
     }
 }
 

@@ -12,47 +12,24 @@
 //! (see `durable_branches`/`durable_nested_branches`), and a resource declaring a
 //! root-level `group` of scalar/widened leaves is executable too — its whole read/replace/
 //! erase and group-leaf operations run end to end in `durable_groups`. A group nested in a
-//! branch or in another group still parks. This module covers the identity side; its
-//! executability assertions confirm a root-level group no longer parks the root.
+//! branch or in another group parks. This module covers the identity side; its
+//! executability assertions confirm a root-level group does not park the root.
 
-use marrow_compile::{Compiled, SourceDiagnostic};
+use crate::common::{Diagnostics, Project};
 use marrow_verify::DurableContractId;
 
-fn compile(source: &str, ids: &str) -> Result<Compiled, Vec<SourceDiagnostic>> {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(ids.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    match marrow_compile::compile(&project) {
-        Ok(compiled) => Ok(compiled),
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => {
-            Err(diagnostics.into_vec())
-        }
-        Err(
-            marrow_compile::CompileFailure::Invariant(_)
-            | marrow_compile::CompileFailure::ResourceLimit(_),
-        ) => {
-            panic!("source-triggered compiler failures must remain diagnostics")
-        }
-    }
-}
-
+/// Compile and independently verify, returning the durable-contract identity.
 fn contract_of(source: &str, ids: &str) -> DurableContractId {
-    let compiled = compile(source, ids).expect("compile");
-    let image = marrow_verify::verify(&compiled.image.bytes).expect("verify");
-    image.durable_contract()
+    Project::single(source).ids(ids).image().durable_contract()
 }
 
-fn codes(diagnostics: &[SourceDiagnostic]) -> Vec<&str> {
-    diagnostics.iter().map(|d| d.code().as_str()).collect()
+/// The typed rejection diagnostics for a project that must not compile; `why` names the
+/// defect the fixture carries.
+fn rejection(source: &str, ids: &str, why: &str) -> Diagnostics {
+    match Project::single(source).ids(ids).try_image() {
+        Ok(_) => panic!("expected a rejection: {why}"),
+        Err(diagnostics) => diagnostics,
+    }
 }
 
 // A resource with a top-level field, a static `group` holding a field, and a keyed
@@ -143,11 +120,13 @@ fn an_operation_over_a_root_level_group_bearing_root_is_executable() {
     let source = format!(
         "{LIBRARY_SOURCE}\npub fn firstTitle(id: int): string? {{\n    return ^books[id].title\n}}\n"
     );
-    let compiled = compile(&source, LIBRARY_IDS);
+    let outcome = Project::single(&source).ids(LIBRARY_IDS).try_image();
     assert!(
-        compiled.is_ok(),
+        outcome.is_ok(),
         "a root-level group-bearing root is executable: {:?}",
-        compiled.err()
+        outcome
+            .err()
+            .map(|diagnostics| format!("{:?}", diagnostics.all()))
     );
 }
 
@@ -157,16 +136,19 @@ fn a_missing_group_identity_fails_precisely() {
         "id group Book.details 20202020202020202020202020202020\n",
         "",
     );
-    let diagnostics = compile(LIBRARY_SOURCE, &without_group).expect_err("incomplete identity");
+    let diagnostics = rejection(LIBRARY_SOURCE, &without_group, "incomplete identity");
     assert!(
-        codes(&diagnostics).contains(&"check.durable_identity"),
-        "{diagnostics:?}"
+        diagnostics.has_code("check.durable_identity"),
+        "{:?}",
+        diagnostics.all()
     );
     assert!(
         diagnostics
+            .messages()
             .iter()
-            .any(|d| d.message().contains("group `Book.details`")),
-        "the gap names the group anchor: {diagnostics:?}"
+            .any(|message| message.contains("group `Book.details`")),
+        "the gap names the group anchor: {:?}",
+        diagnostics.messages()
     );
 }
 
@@ -176,16 +158,19 @@ fn a_missing_group_field_identity_fails_precisely() {
         "id field Book.details.pages 21212121212121212121212121212121\n",
         "",
     );
-    let diagnostics = compile(LIBRARY_SOURCE, &without_field).expect_err("incomplete identity");
+    let diagnostics = rejection(LIBRARY_SOURCE, &without_field, "incomplete identity");
     assert!(
-        codes(&diagnostics).contains(&"check.durable_identity"),
-        "{diagnostics:?}"
+        diagnostics.has_code("check.durable_identity"),
+        "{:?}",
+        diagnostics.all()
     );
     assert!(
         diagnostics
+            .messages()
             .iter()
-            .any(|d| d.message().contains("field `Book.details.pages`")),
-        "the gap names the group-qualified field path: {diagnostics:?}"
+            .any(|message| message.contains("field `Book.details.pages`")),
+        "the gap names the group-qualified field path: {:?}",
+        diagnostics.messages()
     );
 }
 
@@ -193,10 +178,11 @@ fn a_missing_group_field_identity_fails_precisely() {
 fn a_missing_branch_placement_identity_fails_precisely() {
     let without_branch =
         LIBRARY_IDS.replace("id root Book.notes 30303030303030303030303030303030\n", "");
-    let diagnostics = compile(LIBRARY_SOURCE, &without_branch).expect_err("incomplete identity");
+    let diagnostics = rejection(LIBRARY_SOURCE, &without_branch, "incomplete identity");
     assert!(
-        codes(&diagnostics).contains(&"check.durable_identity"),
-        "{diagnostics:?}"
+        diagnostics.has_code("check.durable_identity"),
+        "{:?}",
+        diagnostics.all()
     );
 }
 
@@ -206,10 +192,11 @@ fn a_missing_branch_key_identity_fails_precisely() {
         "id key Book.notes.noteId 31313131313131313131313131313131\n",
         "",
     );
-    let diagnostics = compile(LIBRARY_SOURCE, &without_key).expect_err("incomplete identity");
+    let diagnostics = rejection(LIBRARY_SOURCE, &without_key, "incomplete identity");
     assert!(
-        codes(&diagnostics).contains(&"check.durable_identity"),
-        "{diagnostics:?}"
+        diagnostics.has_code("check.durable_identity"),
+        "{:?}",
+        diagnostics.all()
     );
 }
 
@@ -246,11 +233,13 @@ pub fn pages(id: int): int? {
          end\n";
     // A complete-identity root-level group resource is executable: a top-level field read
     // and a group-leaf read both compile.
-    let compiled = compile(source, ids);
+    let outcome = Project::single(source).ids(ids).try_image();
     assert!(
-        compiled.is_ok(),
+        outcome.is_ok(),
         "a complete-identity root-level group resource is executable: {:?}",
-        compiled.err()
+        outcome
+            .err()
+            .map(|diagnostics| format!("{:?}", diagnostics.all()))
     );
 }
 
@@ -357,13 +346,18 @@ fn a_retired_group_anchor_cannot_be_reused() {
          retired group Book.details 20202020202020202020202020202020 1\n\
          high-water 1\n\
          end\n";
-    let diagnostics = compile(LIBRARY_SOURCE, retired_ids).expect_err("retired anchor");
+    let diagnostics = rejection(LIBRARY_SOURCE, retired_ids, "retired anchor");
     assert!(
-        codes(&diagnostics).contains(&"check.durable_identity"),
-        "{diagnostics:?}"
+        diagnostics.has_code("check.durable_identity"),
+        "{:?}",
+        diagnostics.all()
     );
     assert!(
-        diagnostics.iter().any(|d| d.message().contains("retired")),
-        "the diagnostic names the retirement: {diagnostics:?}"
+        diagnostics
+            .messages()
+            .iter()
+            .any(|message| message.contains("retired")),
+        "the diagnostic names the retirement: {:?}",
+        diagnostics.messages()
     );
 }
