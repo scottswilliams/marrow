@@ -39,7 +39,10 @@ await client.close();
 
 `add` is the project's `pub fn add(a: int, b: int): int`. Its arguments and
 result are `bigint`, because a Marrow `int` is a 64-bit integer. `close()` hangs
-up and waits for the runner to exit.
+up and observes runner exit within a two-second cleanup allowance. If exit is
+unconfirmed, it rejects with `MarrowCleanupError`; a prior call result remains
+unchanged. Repeated calls to `close()` return the same promise and observation,
+including after the runner subsequently exits.
 
 ## Launching
 
@@ -51,12 +54,26 @@ the runner's drained stderr and extra stdout bytes.
 
 The generated client carries two identities. `INTERFACE_ID` names the wire
 interface; a storeless launch proves it. `IMAGE_ID` names the exact image; a
-launch with `store` proves it. A runner serving any other identity is terminated
-and `launch` rejects.
+launch with `store` proves it. A runner serving any other identity is refused
+and `launch` rejects after bounded cleanup observation.
 
-`terminate()` is the immediate shutdown: it kills the runner, destroys the
-socket, and rejects every outstanding call with its loss class. It also runs on
-process exit. `close()` is the orderly form.
+Cleanup closes the transport and observes runner exit for two seconds. A runner
+launched with `store` is never signalled, because a signal during store close
+leaves the engine unclean; a storeless runner is killed at the deadline. The
+channel directory is removed only after an observed exit. An unconfirmed runner
+keeps running: the supervisor releases its handles so it cannot hold the caller's
+event loop open, and stops signalling it, including on the caller's own exit.
+
+`MarrowCleanupError.cleanup` has `kind: "unconfirmed"`, the observed `pid` and
+`channelDirectory` (each nullable), and `reason: "exit_deadline"`. A startup
+error's `cleanup` can instead report `kind: "not_spawned"`, or `kind: "exited"`
+with the observed `code` and `signal`.
+
+`terminate()` is explicit abrupt shutdown: it signals the runner, destroys the
+socket, and rejects outstanding calls with their loss classes. The parent-process
+exit hook also signals a child that has not yet been retired. Either can
+interrupt a durable operation or a store close and leave the store requiring
+recovery. An earlier cleanup timeout does not authorize replay.
 
 `provision(options)` is a module function of `./client/marrow-supervisor.mjs`,
 not a method of `Client`. It creates a store for an image. It takes `runner`,
@@ -157,9 +174,9 @@ described under [interrupted invocations](../language/errors-and-transactions.md
 wire-grammar violation (`wire.*` codes). `MarrowLossError` means the session
 failed while the call was outstanding.
 
-The supervisor terminates the session after any incomplete reply. Calls already
-queued reject as `interrupted`, later calls reject as `not_started`, and none is
-retried.
+The supervisor stops dispatch and starts cleanup after any incomplete reply.
+Calls already queued reject as `interrupted`, later calls reject as `not_started`,
+and none is retried.
 
 ## Supervision and the local channel
 
@@ -175,7 +192,9 @@ Missing or untrusted startup delivery after native spawn rejects with
 `ActivationOutcomeUnknownError` (`loss: "outcome_unknown"`) and no instance.
 A confirmed spawn failure remains `LaunchError` (`not_started`). No function
 request has been sent in either case; this does not establish that native attach
-left the store unchanged. The supervisor does not retry attach.
+left the store unchanged. When a child was created, the startup error also carries
+its own `cleanup` observation, which never replaces the error class or the
+activation instance. The supervisor does not retry attach.
 
 Raw `launch` callers may supply `expectedIdentity`. Without it, the existing
 authenticated Ready/session behavior remains available, but a reported native
@@ -190,7 +209,8 @@ socket inside it. The supervisor connects, proves the nonce, and verifies the
 session token and identity the runner sends back. One serial worker serves
 requests over a bounded queue of 64 pending calls; a call beyond the quota
 rejects immediately. A reply is awaited for 30 seconds, after which the session
-terminates. There is no streaming, replay, cancellation, or pagination.
+stops dispatch and starts bounded cleanup. There is no streaming, replay,
+cancellation, or pagination.
 
 When the session fails with calls outstanding, each call rejects with a
 `MarrowLossError` carrying one of three classes. The class is decided by how far

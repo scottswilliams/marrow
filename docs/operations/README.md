@@ -135,6 +135,20 @@ Each invocation is its own commit boundary. `add` commits its `transaction`
 block, and the next `textOf` reads what it wrote. A read-only export runs the
 same way, since the values it reads live in the store.
 
+A returned value does not mean the companion has finished closing the store. The
+terminal waits for the companion to exit on its own within a separate cleanup
+bound and never kills a native companion, since a signal during close leaves the
+engine unclean and the next attach refuses it. Unconfirmed cleanup leaves the
+invocation result intact and reports the observed PID and retained staging path;
+resolve that ownership before another operation on the store, and do not retry
+the invocation because cleanup failed. Reaping a companion does not establish
+physical or logical integrity.
+
+Generated Node clients report native cleanup the same way:
+[`close()`](../tools/typescript-client.md#launching) observes exit without
+signalling and rejects when it is unconfirmed. `terminate()` and parent-process
+exit remain abrupt and can interrupt a native close.
+
 A durable export run without `--store` has nothing to act on:
 
 ```sh

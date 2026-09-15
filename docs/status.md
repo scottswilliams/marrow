@@ -32,6 +32,17 @@ prerequisites.
 The command names `data`, `evolve`, and `serve` are
 recognized; each reports `cli.command_unsupported`.
 
+Native terminal calls keep invocation outcomes separate from companion cleanup.
+Bounded cleanup waits for the companion to exit on its own and never terminates a
+live native owner. Unconfirmed cleanup retains the child handle and the staging
+path for the library caller; the CLI reports the observation and fails without
+retrying the invocation. Neither result establishes store integrity, and a
+discarded cleanup result promises no eventual reaping
+([operations](operations/README.md#running-an-export-against-a-store)). The
+generated Node supervisor applies the same policy; explicit termination and
+parent exit remain abrupt
+([TypeScript client](tools/typescript-client.md#launching)).
+
 ### Applications
 
 Two complete applications, Club Locker (equipment lending, with a desktop
