@@ -5,12 +5,13 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use marrow_codes::Code;
 use redb::{ReadableDatabase, TableDefinition};
 
 use super::{FORMAT_VERSION, META, NativeEngine, TABLE, create_raw, map_open_error, reopen_raw};
 use crate::conformance;
 use crate::engine::{ByteEngine, CommitOutcome, ReadView, WriteTxn};
-use crate::error::StoreError;
+use crate::error::{StoreError, StoreOp};
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -220,7 +221,7 @@ fn map_open_error_classifies_each_redb_failure() {
 
     assert_eq!(
         map_open_error(path, redb::DatabaseError::RepairAborted).code(),
-        "store.recovery_required"
+        Code::StoreRecoveryRequired
     );
     assert_eq!(
         map_open_error(
@@ -228,7 +229,7 @@ fn map_open_error_classifies_each_redb_failure() {
             redb::DatabaseError::Storage(redb::StorageError::Corrupted("torn page".into()))
         )
         .code(),
-        "store.corruption"
+        Code::StoreCorruption
     );
     assert_eq!(
         map_open_error(
@@ -238,7 +239,7 @@ fn map_open_error_classifies_each_redb_failure() {
             )))
         )
         .code(),
-        "store.corruption"
+        Code::StoreCorruption
     );
     match map_open_error(path, redb::DatabaseError::DatabaseAlreadyOpen) {
         StoreError::Locked { data_dir } => assert_eq!(data_dir, path),
@@ -260,7 +261,7 @@ fn map_open_error_classifies_each_redb_failure() {
 #[test]
 fn redb_store_passes_the_conformance_suite() -> Result<(), StoreError> {
     let dir = TempDir::new("marrow-store-redb-test").map_err(|error| StoreError::Io {
-        op: "create temp dir",
+        op: StoreOp::Provision,
         message: error.to_string(),
     })?;
     let mut counter = 0;
@@ -651,7 +652,7 @@ fn open_rejects_unsupported_format_version_with_typed_error() {
             Err(error) => error,
             Ok(_) => panic!("future format version must be rejected"),
         };
-        assert_eq!(error.code(), "store.format_version");
+        assert_eq!(error.code(), Code::StoreFormatVersion);
         match error {
             StoreError::FormatVersion { found, supported } => {
                 assert_eq!(found, unsupported);

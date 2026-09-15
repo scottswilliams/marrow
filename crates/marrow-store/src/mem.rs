@@ -7,7 +7,7 @@ use std::convert::Infallible;
 use std::ops::Bound;
 
 use crate::engine::{ByteEngine, Cell, CommitOutcome, ReadView, WriteTxn, check_cell_limits};
-use crate::error::StoreError;
+use crate::error::{StoreError, StoreOp};
 use crate::traversal;
 
 type Map = BTreeMap<Vec<u8>, Vec<u8>>;
@@ -54,7 +54,7 @@ impl ByteEngine for MemoryEngine {
         })
     }
 
-    fn require_write_access(&self, _op: &'static str) -> Result<(), StoreError> {
+    fn require_write_access(&self, _op: StoreOp) -> Result<(), StoreError> {
         Ok(())
     }
 

@@ -4,7 +4,7 @@
 use super::engine_call_support::{Counters, CountingEngine};
 use super::*;
 use crate::durable::{ContentDigest, CreateOutcome};
-use marrow_store::StoreError;
+use marrow_store::{StoreError, StoreLimit};
 
 #[derive(Debug)]
 struct Work {
@@ -416,7 +416,7 @@ fn wide_path<E: ByteEngine>(engine: E, columns: usize, depth: usize) {
         assert_eq!(
             txn.create_entry(&site, &too_long, entry(width, 1)),
             Err(KernelFault::Engine(StoreError::LimitExceeded {
-                limit: "key length"
+                limit: StoreLimit::KeyLength
             })),
         );
         // The runtime abandons a faulted invocation. Drop also proves any staged

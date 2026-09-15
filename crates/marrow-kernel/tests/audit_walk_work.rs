@@ -19,7 +19,7 @@ use marrow_kernel::durable::{
     IndexComponent, InvocationGrant, SiteTarget, StoreProjection, StoreSchema, StoreSchemaBuilder,
 };
 use marrow_kernel::equality::ValueDomain;
-use marrow_store::{ByteEngine, Cell as StoreCell, MemoryEngine, ReadView, StoreError};
+use marrow_store::{ByteEngine, Cell as StoreCell, MemoryEngine, ReadView, StoreError, StoreOp};
 
 /// `^wide[id: int]` with a required `value`, `declared - 1` sparse `Int` fields, and a
 /// unique index on `value`.
@@ -163,7 +163,7 @@ impl ByteEngine for WitnessEngine {
         self.inner.begin()
     }
 
-    fn require_write_access(&self, op: &'static str) -> Result<(), StoreError> {
+    fn require_write_access(&self, op: StoreOp) -> Result<(), StoreError> {
         self.inner.require_write_access(op)
     }
 

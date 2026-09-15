@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use marrow_store::{
     ByteEngine, NativeEngineOwner, NativeOpenAccess, NativeOwnerAcquireError, NativeOwnerOpenError,
-    NativePromotionRefusal, PendingNativeEngineOwner, StoreError,
+    NativePromotionRefusal, PendingNativeEngineOwner, StoreError, StoreOp,
 };
 
 use super::audit::{AuditReport, ContentDigest, ExportError, ExportSink};
@@ -51,7 +51,7 @@ fn bind_store(
 ) -> DurableStore<NativeEngineOwner> {
     let ceiling = DemandCoverage {
         read: true,
-        write: engine.require_write_access("open").is_ok(),
+        write: engine.require_write_access(StoreOp::Open).is_ok(),
     };
     let scope = CommitRecoveryScope::persistent(instance, directory);
     DurableStore::from_numbered_with_ceiling_and_recovery_scope(engine, layout, ceiling, scope)

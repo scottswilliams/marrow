@@ -1,7 +1,7 @@
 //! The durable store handle: session opening over a coherent read view or a write
 //! transaction after resolving effective authority, plus checked witness-generation minting.
 
-use marrow_store::{ByteEngine, ReadView, StoreError};
+use marrow_store::{ByteEngine, ReadView, StoreError, StoreLimit, StoreOp};
 
 use super::super::audit::{self, AuditReport, ContentDigest, ExportError, ExportSink};
 use super::super::physical;
@@ -68,7 +68,7 @@ impl<E: ByteEngine> DurableStore<E> {
     pub fn from_engine(engine: E, projection: StoreProjection) -> Self {
         let ceiling = DemandCoverage {
             read: true,
-            write: engine.require_write_access("open").is_ok(),
+            write: engine.require_write_access(StoreOp::Open).is_ok(),
         };
         Self::from_projection_with_ceiling(engine, projection, ceiling)
     }
@@ -374,7 +374,7 @@ fn next_witness(before: &Option<Vec<u8>>) -> Result<Vec<u8>, StoreError> {
                     .expect("the exact v1 witness length was checked"),
             );
             current.checked_add(1).ok_or(StoreError::LimitExceeded {
-                limit: "commit witness generation",
+                limit: StoreLimit::CommitWitnessGeneration,
             })?
         }
         Some(_) => {
@@ -551,7 +551,7 @@ mod tests {
         assert!(matches!(
             error,
             SessionError::Engine(StoreError::LimitExceeded {
-                limit: "commit witness generation"
+                limit: StoreLimit::CommitWitnessGeneration
             })
         ));
         assert_eq!(current_witness(&store), Some(witness(u128::MAX)));
@@ -675,7 +675,7 @@ mod tests {
         fn read_view(&self) -> Result<Self::View<'_>, StoreError> {
             if self.fail_reads.get() {
                 return Err(StoreError::Io {
-                    op: "recovery_read",
+                    op: StoreOp::RecoveryRead,
                     message: "injected recovery-state read failure".into(),
                 });
             }
@@ -686,7 +686,7 @@ mod tests {
             self.inner.begin()
         }
 
-        fn require_write_access(&self, op: &'static str) -> Result<(), StoreError> {
+        fn require_write_access(&self, op: StoreOp) -> Result<(), StoreError> {
             self.inner.require_write_access(op)
         }
 

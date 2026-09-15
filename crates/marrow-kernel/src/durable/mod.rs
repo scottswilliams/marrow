@@ -49,7 +49,8 @@ pub use transfer::RestoreError;
 pub use marrow_store::{
     Cell, MAX_KEY_LEN, MAX_VALUE_LEN, NATIVE_ENGINE_FILE, NATIVE_LOCK_FILE, NativeLockError,
     NativeLockOwner, NativeOpenAccess, NativeOwnerAcquireError, NativeOwnerOpenError,
-    NativePromotionRefusal, SCAN_MAX_AGGREGATE_BYTES, SCAN_MAX_RECORDS, StoreError,
+    NativePromotionRefusal, SCAN_MAX_AGGREGATE_BYTES, SCAN_MAX_RECORDS, StoreError, StoreLimit,
+    StoreOp,
 };
 
 /// The opaque native, redb-backed durable-store owner. Named as an alias so a
@@ -60,6 +61,8 @@ pub type NativeStore = NativeStoreOwner;
 /// records the engine tuple from the engine's single owner rather than a mirrored
 /// literal — without a direct dependency on the byte-engine crate.
 pub const NATIVE_ENGINE_FORMAT_VERSION: u32 = marrow_store::NATIVE_ENGINE_FORMAT_VERSION;
+
+use marrow_codes::Code;
 
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -682,14 +685,12 @@ pub enum KernelFault {
 
 impl KernelFault {
     /// The stable dotted code a tool reports for this fault.
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> Code {
         match self {
-            KernelFault::Corruption | KernelFault::Incomplete => {
-                marrow_codes::Code::RunCorruption.as_str()
-            }
-            KernelFault::Poisoned => marrow_codes::Code::RunCommit.as_str(),
-            KernelFault::ValueRange => marrow_codes::Code::ValueRange.as_str(),
-            KernelFault::UniqueIndexViolation => marrow_codes::Code::RunUniqueIndex.as_str(),
+            KernelFault::Corruption | KernelFault::Incomplete => marrow_codes::Code::RunCorruption,
+            KernelFault::Poisoned => marrow_codes::Code::RunCommit,
+            KernelFault::ValueRange => marrow_codes::Code::ValueRange,
+            KernelFault::UniqueIndexViolation => marrow_codes::Code::RunUniqueIndex,
             KernelFault::Engine(error) => error.code(),
         }
     }

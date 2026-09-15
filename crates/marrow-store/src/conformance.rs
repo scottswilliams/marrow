@@ -5,7 +5,7 @@
 //! transactions, batch limits, and the integrity audit.
 
 use crate::engine::{ByteEngine, CommitOutcome, ReadView, WriteTxn, limits};
-use crate::error::StoreError;
+use crate::error::{StoreError, StoreOp};
 
 pub(crate) fn run_all<E: ByteEngine>(
     mut make: impl FnMut() -> Result<E, StoreError>,
@@ -32,9 +32,9 @@ pub(crate) fn run_all<E: ByteEngine>(
 /// `begin` then does: a suite that only ever wrote would never observe the
 /// read-only gate at all.
 fn a_writable_handle_admits_writes<E: ByteEngine>(engine: &mut E) -> Result<(), StoreError> {
-    engine.require_write_access("conformance")?;
+    engine.require_write_access(StoreOp::Conformance)?;
     seed(engine, &[(b"\x70", b"v")])?;
-    engine.require_write_access("conformance")?;
+    engine.require_write_access(StoreOp::Conformance)?;
     Ok(())
 }
 

@@ -52,7 +52,7 @@ refuse before operation reads or writes, after the session's separate setup.
 | Layer | Owner |
 |---|---|
 | Byte-engine contract (`ByteEngine`, `ReadView`, `WriteTxn`, `CommitOutcome`, `Cell`) | `engine.rs` |
-| Errors (`StoreError`) | `error.rs` |
+| Errors (`StoreError`, `StoreOp`, `StoreLimit`) | `error.rs` |
 | In-memory engine (`MemoryEngine`) | `mem.rs` |
 | Native redb engine (panic-contained adapter, read-only access, service integrity audit) | `redb.rs` |
 | Native engine owner: store directory, advisory lock, two-phase open, quarantine | `native_owner.rs` |
@@ -60,13 +60,14 @@ refuse before operation reads or writes, after the session's separate setup.
 | Shared engine conformance laws | `conformance.rs` (test-only) |
 | Public surface and its compile-time audit | `lib.rs` |
 
-`lib.rs` exports the engine contract, `StoreError`, `MemoryEngine`, and the
-native owner's types; the redb adapter itself is private. A compile-time audit
-in `lib.rs` fails if an exported name is removed or renamed. The conformance
-suite runs the same byte-level traces over both engines: point reads, writes and
-exact removal, the bounded forward scan at its boundary, consuming transactions,
-batch limits, and the integrity audit. The filesystem durability envelope is
-redb's own and is documented in `redb.rs`.
+`lib.rs` exports the engine contract, `StoreError` with its `StoreOp` and
+`StoreLimit` vocabularies, `MemoryEngine`, and the native owner's types; the
+redb adapter itself is private. A compile-time audit in `lib.rs` fails if an
+exported name is removed or renamed. The conformance suite runs the same
+byte-level traces over both engines: point reads, writes and exact removal, the
+bounded forward scan at its boundary, consuming transactions, batch limits, and
+the integrity audit. The filesystem durability envelope is redb's own and is
+documented in `redb.rs`.
 
 ## One consumer
 

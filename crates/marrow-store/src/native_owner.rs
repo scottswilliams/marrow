@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 use marrow_codes::Code;
 
 use crate::engine::{ByteEngine, Cell, CommitOutcome, ReadView, WriteTxn};
-use crate::error::StoreError;
+use crate::error::{StoreError, StoreOp};
 use crate::redb::{NativeEngine, RedbTxn, RedbView};
 
 /// The native engine file inside a Marrow store directory.
@@ -137,11 +137,11 @@ impl NativeLockError {
     }
 
     /// The stable diagnostic code for this lock failure.
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> Code {
         match self {
-            Self::StoreInUse { .. } => Code::StoreLocked.as_str(),
-            Self::AccessDenied(_) => Code::StorePermissionDenied.as_str(),
-            Self::Io(_) => Code::StoreIo.as_str(),
+            Self::StoreInUse { .. } => Code::StoreLocked,
+            Self::AccessDenied(_) => Code::StorePermissionDenied,
+            Self::Io(_) => Code::StoreIo,
         }
     }
 }
@@ -197,9 +197,9 @@ pub enum NativeOwnerAcquireError {
 
 impl NativeOwnerAcquireError {
     /// The stable diagnostic code for this acquisition failure.
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> Code {
         match self {
-            Self::Io(_) => Code::StoreIo.as_str(),
+            Self::Io(_) => Code::StoreIo,
             Self::Lock(error) => error.code(),
         }
     }
@@ -554,7 +554,7 @@ impl PendingNativeEngineOwner {
         let read_only_node = if access == NativeOpenAccess::ReadOnly {
             Some(std::fs::symlink_metadata(&path).map_err(|error| {
                 NativeOwnerOpenError::Store(StoreError::Io {
-                    op: "open",
+                    op: StoreOp::Open,
                     message: error.to_string(),
                 })
             })?)
@@ -571,7 +571,7 @@ impl PendingNativeEngineOwner {
         if let Some(node) = &read_only_node {
             verify_named_node(&path, node).map_err(|error| {
                 NativeOwnerOpenError::Store(StoreError::Io {
-                    op: "open",
+                    op: StoreOp::Open,
                     message: error.to_string(),
                 })
             })?;
@@ -629,7 +629,7 @@ impl NativeEngineOwner {
         let check_node = || {
             verify_named_node(&path, &snapshot.engine_node).map_err(|error| {
                 NativeOwnerOpenError::Store(StoreError::Io {
-                    op: "service preparation",
+                    op: StoreOp::ServicePreparation,
                     message: error.to_string(),
                 })
             })
@@ -660,7 +660,7 @@ impl NativeEngineOwner {
     /// modifying it.
     pub fn provision(store_dir: &Path) -> Result<(), StoreError> {
         let directory = std::fs::canonicalize(store_dir).map_err(|error| StoreError::Io {
-            op: "provision",
+            op: StoreOp::Provision,
             message: error.to_string(),
         })?;
         let engine = NativeEngine::create_new(&directory.join(NATIVE_ENGINE_FILE))?;
@@ -683,7 +683,7 @@ impl NativeEngineOwner {
     /// the existing file under the same lock, and run a full integrity audit.
     /// No successful result can restore clean-on-drop behavior.
     pub fn reopen_existing_and_audit(mut self) -> Result<Self, StoreError> {
-        self.engine().require_write_access("recovery")?;
+        self.engine().require_write_access(StoreOp::Recovery)?;
         self.lock.quarantine();
         drop(self.engine.take());
         let mut engine = NativeEngine::open_existing(&self.directory.join(NATIVE_ENGINE_FILE))?;
@@ -778,7 +778,7 @@ impl ByteEngine for NativeEngineOwner {
         Ok(NativeOwnerTxn { inner, lock })
     }
 
-    fn require_write_access(&self, op: &'static str) -> Result<(), StoreError> {
+    fn require_write_access(&self, op: StoreOp) -> Result<(), StoreError> {
         self.engine().require_write_access(op)
     }
 

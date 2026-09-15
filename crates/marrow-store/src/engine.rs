@@ -23,7 +23,7 @@
 //! logical key and value codecs that give bytes meaning are owned by the path
 //! kernel (`marrow-kernel`).
 
-use crate::error::StoreError;
+use crate::error::{StoreError, StoreLimit, StoreOp};
 
 /// Bounds every batch the engine returns or admits, so no operation allocates
 /// unbounded work. The values are engine policy; the kernel keys and values it
@@ -130,7 +130,7 @@ pub trait ByteEngine {
     /// Fail closed with [`StoreError::ReadOnly`] when the handle cannot accept
     /// writes, so a caller can mint a read-only ceiling before opening a
     /// transaction.
-    fn require_write_access(&self, op: &'static str) -> Result<(), StoreError>;
+    fn require_write_access(&self, op: StoreOp) -> Result<(), StoreError>;
     /// Run one full integrity audit: a complete structural walk that verifies
     /// every stored checksum. The fast open path does not re-verify page
     /// checksums, so an external bit-flip on live bytes reads back silently
@@ -168,12 +168,12 @@ pub fn batch_is_full(records: usize, bytes: usize, next: usize) -> bool {
 pub(crate) fn check_cell_limits(key: &[u8], value: &[u8]) -> Result<(), StoreError> {
     if key.len() > limits::MAX_KEY_LEN {
         return Err(StoreError::LimitExceeded {
-            limit: "key length",
+            limit: StoreLimit::KeyLength,
         });
     }
     if value.len() > limits::MAX_VALUE_LEN {
         return Err(StoreError::LimitExceeded {
-            limit: "value length",
+            limit: StoreLimit::ValueLength,
         });
     }
     Ok(())

@@ -1,6 +1,6 @@
 //! Logical-walk controls: every classification, fault site and finding the audit reports.
 
-use marrow_store::{ByteEngine, CommitOutcome, MemoryEngine, WriteTxn};
+use marrow_store::{ByteEngine, CommitOutcome, MemoryEngine, StoreOp, WriteTxn};
 
 use super::*;
 use crate::codec::key::encode_key_tuple;
@@ -220,7 +220,7 @@ fn export_preserves_a_store_read_failure_without_calling_the_sink() {
         fn begin(&mut self) -> Result<Self::Txn<'_>, StoreError> {
             Err(StoreError::RecoveryRequired)
         }
-        fn require_write_access(&self, _: &'static str) -> Result<(), StoreError> {
+        fn require_write_access(&self, _: StoreOp) -> Result<(), StoreError> {
             Ok(())
         }
         fn audit_integrity(&mut self) -> Result<(), StoreError> {

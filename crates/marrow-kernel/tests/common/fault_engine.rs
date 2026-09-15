@@ -17,7 +17,9 @@ use marrow_kernel::codec::value::ScalarKind;
 use marrow_kernel::durable::{
     DemandCoverage, DurableStore, SiteTarget, StoreProjection, StoreSchema, StoreSchemaBuilder,
 };
-use marrow_store::{ByteEngine, Cell as StoreCell, CommitOutcome, ReadView, StoreError, WriteTxn};
+use marrow_store::{
+    ByteEngine, Cell as StoreCell, CommitOutcome, ReadView, StoreError, StoreOp, WriteTxn,
+};
 
 /// The single-root projection a case opens under: the root, plus its sites resolved against
 /// it. Every site here names root 0 — the store's only root.
@@ -171,7 +173,7 @@ pub(super) struct FaultTxn {
 impl FaultTxn {
     /// Count this write and, if it is the one the test chose, report the injected fault
     /// instead of performing it.
-    fn maybe_fault(&mut self, op: &'static str) -> Result<(), StoreError> {
+    fn maybe_fault(&mut self, op: StoreOp) -> Result<(), StoreError> {
         self.writes += 1;
         if self.fail_on_write == Some(self.writes) {
             return Err(StoreError::Io {
@@ -194,12 +196,12 @@ impl ReadView for FaultTxn {
 
 impl WriteTxn for FaultTxn {
     fn put(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
-        self.maybe_fault("put")?;
+        self.maybe_fault(StoreOp::Put)?;
         self.working.insert(key.to_vec(), value);
         Ok(())
     }
     fn remove(&mut self, key: &[u8]) -> Result<(), StoreError> {
-        self.maybe_fault("remove")?;
+        self.maybe_fault(StoreOp::Remove)?;
         self.working.remove(key);
         Ok(())
     }
@@ -246,7 +248,7 @@ impl ByteEngine for FaultEngine {
             writes: 0,
         })
     }
-    fn require_write_access(&self, op: &'static str) -> Result<(), StoreError> {
+    fn require_write_access(&self, op: StoreOp) -> Result<(), StoreError> {
         let _ = op;
         Ok(())
     }

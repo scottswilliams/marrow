@@ -58,7 +58,7 @@ use redb::{
 };
 
 use crate::engine::{ByteEngine, Cell, CommitOutcome, ReadView, WriteTxn, check_cell_limits};
-use crate::error::StoreError;
+use crate::error::{StoreError, StoreOp};
 use crate::traversal;
 
 const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("marrow");
@@ -114,14 +114,14 @@ enum DatabaseHandle {
 }
 
 impl DatabaseHandle {
-    fn begin_read(&self, op: &'static str) -> Result<ReadTransaction, StoreError> {
+    fn begin_read(&self, op: StoreOp) -> Result<ReadTransaction, StoreError> {
         match self {
             Self::ReadWrite(db) => db.begin_read().map_err(io(op)),
             Self::ReadOnly(db) => db.begin_read().map_err(io(op)),
         }
     }
 
-    fn begin_write(&self, op: &'static str) -> Result<WriteTransaction, StoreError> {
+    fn begin_write(&self, op: StoreOp) -> Result<WriteTransaction, StoreError> {
         match self {
             Self::ReadWrite(db) => {
                 let mut write = db.begin_write().map_err(io(op))?;
@@ -132,7 +132,7 @@ impl DatabaseHandle {
         }
     }
 
-    fn require_write_access(&self, op: &'static str) -> Result<(), StoreError> {
+    fn require_write_access(&self, op: StoreOp) -> Result<(), StoreError> {
         match self {
             Self::ReadWrite(_) => Ok(()),
             Self::ReadOnly(_) => Err(StoreError::ReadOnly { op }),
@@ -168,11 +168,11 @@ impl Drop for NativeEngine {
     }
 }
 
-fn pin_write_durability(write: &mut WriteTransaction, op: &'static str) -> Result<(), StoreError> {
+fn pin_write_durability(write: &mut WriteTransaction, op: StoreOp) -> Result<(), StoreError> {
     write.set_durability(MARROW_REDB_DURABILITY).map_err(io(op))
 }
 
-fn io<E: std::fmt::Display>(op: &'static str) -> impl Fn(E) -> StoreError {
+fn io<E: std::fmt::Display>(op: StoreOp) -> impl Fn(E) -> StoreError {
     move |error| StoreError::Io {
         op,
         message: error.to_string(),
@@ -188,7 +188,7 @@ fn io<E: std::fmt::Display>(op: &'static str) -> impl Fn(E) -> StoreError {
 /// engine itself contains no `unsafe`; redb ships reviewed internal `unsafe`, so
 /// a corrupt body is contained here rather than trusted to fail gracefully.
 fn contain_panic<T>(
-    op: &'static str,
+    op: StoreOp,
     body: impl FnOnce() -> Result<T, StoreError>,
 ) -> Result<T, StoreError> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
@@ -283,7 +283,7 @@ fn map_open_error(path: &Path, error: DatabaseError) -> StoreError {
 /// detail for a client to parse.
 fn transient_open_io() -> StoreError {
     StoreError::Io {
-        op: "open",
+        op: StoreOp::Open,
         message: "the store file could not be opened; the path may be unreachable or temporarily \
                   unavailable"
             .into(),
@@ -382,8 +382,8 @@ fn sync_parent_directory(path: &Path) -> Result<(), StoreError> {
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let directory = fs::File::open(parent).map_err(io("sync_parent_dir"))?;
-    directory.sync_all().map_err(io("sync_parent_dir"))
+    let directory = fs::File::open(parent).map_err(io(StoreOp::SyncParentDir))?;
+    directory.sync_all().map_err(io(StoreOp::SyncParentDir))
 }
 
 #[cfg(windows)]
@@ -400,8 +400,8 @@ fn sync_parent_directory(path: &Path) -> Result<(), StoreError> {
         .read(true)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
         .open(parent)
-        .map_err(io("sync_parent_dir"))?;
-    directory.sync_all().map_err(io("sync_parent_dir"))
+        .map_err(io(StoreOp::SyncParentDir))?;
+    directory.sync_all().map_err(io(StoreOp::SyncParentDir))
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -512,7 +512,7 @@ fn stamp_or_verify_format_version(
     db: &Database,
 ) -> Result<(), StoreError> {
     let mut write = db.begin_write().map_err(open_transaction_error)?;
-    pin_write_durability(&mut write, "open")?;
+    pin_write_durability(&mut write, StoreOp::Open)?;
     let is_new = write
         .list_tables()
         .map_err(open_storage_error)?
@@ -571,7 +571,7 @@ fn open_transaction_error(error: redb::TransactionError) -> StoreError {
     match error {
         redb::TransactionError::Storage(storage) => map_storage_error(storage),
         other => StoreError::Io {
-            op: "open",
+            op: StoreOp::Open,
             message: other.to_string(),
         },
     }
@@ -581,7 +581,7 @@ fn open_table_error(error: redb::TableError) -> StoreError {
     match error {
         redb::TableError::Storage(storage) => map_storage_error(storage),
         other => StoreError::Io {
-            op: "open",
+            op: StoreOp::Open,
             message: other.to_string(),
         },
     }
@@ -595,7 +595,7 @@ fn open_commit_error(error: redb::CommitError) -> StoreError {
     match error {
         redb::CommitError::Storage(storage) => map_storage_error(storage),
         other => StoreError::Io {
-            op: "open",
+            op: StoreOp::Open,
             message: other.to_string(),
         },
     }
@@ -612,11 +612,11 @@ impl NativeEngine {
     /// create-or-open primitive, this refuses an existing path before opening
     /// it, so provisioning can never adopt or restamp an existing body.
     pub(crate) fn create_new(path: &Path) -> Result<Self, StoreError> {
-        contain_panic("provision", || {
+        contain_panic(StoreOp::Provision, || {
             guard_regular_store_file(path)?;
             let Some(created_path) = prepare_new_store_file(path)? else {
                 return Err(StoreError::Io {
-                    op: "provision",
+                    op: StoreOp::Provision,
                     message: "the native store file already exists".into(),
                 });
             };
@@ -635,7 +635,7 @@ impl NativeEngine {
     /// Marrow metadata and data tables must already be present. A missing,
     /// malformed, foreign, or unstamped file is refused without modification.
     pub(crate) fn open_existing(path: &Path) -> Result<Self, StoreError> {
-        contain_panic("open", || {
+        contain_panic(StoreOp::Open, || {
             let db = open_tolerating_creation_race(path, || {
                 guard_regular_store_file(path)?;
                 let db = open_past_lock_release(path, || Database::open(path))?;
@@ -654,7 +654,7 @@ impl NativeEngine {
     /// full repair, but header recovery may precede it; this is not a defense
     /// against external mutation. Neither corruption nor replacement is retried.
     pub(crate) fn open_for_service(path: &Path) -> Result<Self, StoreError> {
-        contain_panic("open", || {
+        contain_panic(StoreOp::Open, || {
             guard_regular_store_file(path)?;
             let mut builder = Database::builder();
             builder.set_repair_callback(|session| session.abort());
@@ -673,7 +673,7 @@ impl NativeEngine {
     /// transaction begins. A malformed body surfaces redb's own open error as a
     /// typed [`StoreError`] through [`map_open_error`].
     pub(crate) fn open_read_only(path: &Path) -> Result<Self, StoreError> {
-        contain_panic("open", || {
+        contain_panic(StoreOp::Open, || {
             let db = open_tolerating_creation_race(path, || {
                 guard_regular_store_file(path)?;
                 let db = open_past_lock_release(path, || ReadOnlyDatabase::open(path))?;
@@ -694,25 +694,25 @@ impl ByteEngine for NativeEngine {
 
     fn read_view(&self) -> Result<RedbView<'_>, StoreError> {
         Ok(RedbView {
-            read: self.db().begin_read("read_view")?,
+            read: self.db().begin_read(StoreOp::BeginRead)?,
             _engine: PhantomData,
         })
     }
 
     fn begin(&mut self) -> Result<RedbTxn<'_>, StoreError> {
         Ok(RedbTxn {
-            write: Some(self.db().begin_write("begin")?),
+            write: Some(self.db().begin_write(StoreOp::BeginWrite)?),
             _engine: PhantomData,
         })
     }
 
-    fn require_write_access(&self, op: &'static str) -> Result<(), StoreError> {
+    fn require_write_access(&self, op: StoreOp) -> Result<(), StoreError> {
         self.db().require_write_access(op)
     }
 
     fn audit_integrity(&mut self) -> Result<(), StoreError> {
         let result = match self.db_mut() {
-            DatabaseHandle::ReadWrite(db) => contain_panic("audit", || {
+            DatabaseHandle::ReadWrite(db) => contain_panic(StoreOp::Audit, || {
                 match db
                     .check_integrity()
                     .map_err(|error| map_open_error(Path::new(""), error))
@@ -727,7 +727,7 @@ impl ByteEngine for NativeEngine {
                     Err(error) => Err(error),
                 }
             }),
-            DatabaseHandle::ReadOnly(_) => Err(StoreError::ReadOnly { op: "audit" }),
+            DatabaseHandle::ReadOnly(_) => Err(StoreError::ReadOnly { op: StoreOp::Audit }),
         };
         if result.is_err() {
             self.drop_trust = DropTrust::ContainedAfterFailedAudit;
@@ -746,18 +746,21 @@ pub(crate) struct RedbView<'a> {
 
 impl ReadView for RedbView<'_> {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
-        contain_panic("read", || {
-            let table = self.read.open_table(TABLE).map_err(io("read"))?;
+        contain_panic(StoreOp::Read, || {
+            let table = self.read.open_table(TABLE).map_err(io(StoreOp::Read))?;
             Ok(table
                 .get(key)
-                .map_err(io("read"))?
+                .map_err(io(StoreOp::Read))?
                 .map(|guard| guard.value().to_vec()))
         })
     }
 
     fn scan_after(&self, prefix: &[u8], cursor: &[u8]) -> Result<Vec<Cell>, StoreError> {
-        contain_panic("scan_after", || {
-            let table = self.read.open_table(TABLE).map_err(io("scan_after"))?;
+        contain_panic(StoreOp::ScanAfter, || {
+            let table = self
+                .read
+                .open_table(TABLE)
+                .map_err(io(StoreOp::ScanAfter))?;
             scan_after_table(&table, prefix, cursor)
         })
     }
@@ -781,18 +784,21 @@ impl RedbTxn<'_> {
 
 impl ReadView for RedbTxn<'_> {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
-        contain_panic("read", || {
-            let table = self.write().open_table(TABLE).map_err(io("read"))?;
+        contain_panic(StoreOp::Read, || {
+            let table = self.write().open_table(TABLE).map_err(io(StoreOp::Read))?;
             Ok(table
                 .get(key)
-                .map_err(io("read"))?
+                .map_err(io(StoreOp::Read))?
                 .map(|guard| guard.value().to_vec()))
         })
     }
 
     fn scan_after(&self, prefix: &[u8], cursor: &[u8]) -> Result<Vec<Cell>, StoreError> {
-        contain_panic("scan_after", || {
-            let table = self.write().open_table(TABLE).map_err(io("scan_after"))?;
+        contain_panic(StoreOp::ScanAfter, || {
+            let table = self
+                .write()
+                .open_table(TABLE)
+                .map_err(io(StoreOp::ScanAfter))?;
             scan_after_table(&table, prefix, cursor)
         })
     }
@@ -801,14 +807,19 @@ impl ReadView for RedbTxn<'_> {
 impl WriteTxn for RedbTxn<'_> {
     fn put(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
         check_cell_limits(key, &value)?;
-        let mut table = self.write().open_table(TABLE).map_err(io("put"))?;
-        table.insert(key, value.as_slice()).map_err(io("put"))?;
+        let mut table = self.write().open_table(TABLE).map_err(io(StoreOp::Put))?;
+        table
+            .insert(key, value.as_slice())
+            .map_err(io(StoreOp::Put))?;
         Ok(())
     }
 
     fn remove(&mut self, key: &[u8]) -> Result<(), StoreError> {
-        let mut table = self.write().open_table(TABLE).map_err(io("remove"))?;
-        table.remove(key).map_err(io("remove"))?;
+        let mut table = self
+            .write()
+            .open_table(TABLE)
+            .map_err(io(StoreOp::Remove))?;
+        table.remove(key).map_err(io(StoreOp::Remove))?;
         Ok(())
     }
 
@@ -820,7 +831,9 @@ impl WriteTxn for RedbTxn<'_> {
         // body — leaves durability unknown: the write may or may not have reached
         // disk, so the caller must close and reclassify on reopen rather than
         // retry.
-        match contain_panic("commit", || write.commit().map_err(io("commit"))) {
+        match contain_panic(StoreOp::Commit, || {
+            write.commit().map_err(io(StoreOp::Commit))
+        }) {
             Ok(()) => CommitOutcome::Confirmed,
             Err(_) => CommitOutcome::Indeterminate,
         }
@@ -843,8 +856,8 @@ where
 {
     let range = table
         .range::<&[u8]>((Bound::Excluded(cursor), Bound::Unbounded))
-        .map_err(io("scan_after"))?;
-    traversal::collect_after(range, prefix, io("scan_after"))
+        .map_err(io(StoreOp::ScanAfter))?;
+    traversal::collect_after(range, prefix, io(StoreOp::ScanAfter))
 }
 
 /// Create, as a raw redb handle, a database for a test to seed or inspect.

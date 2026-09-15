@@ -94,13 +94,13 @@ pub enum ValueError {
 
 impl ValueError {
     /// The stable dotted code a tool reports for this error.
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> Code {
         match self {
             Self::DateOutOfRange { .. }
             | Self::InstantOutOfRange { .. }
             | Self::ValueTooLarge
             | Self::Unstorable
-            | Self::ValueTooDeep => Code::ValueRange.as_str(),
+            | Self::ValueTooDeep => Code::ValueRange,
         }
     }
 }

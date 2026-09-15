@@ -16,7 +16,7 @@ use marrow_image::{
 use marrow_kernel::durable::{
     DemandCoverage, DurableCommitState, DurableStore, InvocationGrant, SessionError,
 };
-use marrow_store::{ByteEngine, StoreError};
+use marrow_store::{ByteEngine, StoreError, StoreOp};
 use marrow_verify::{VerifiedImage, verify};
 
 use crate::fault::{DurableExecutionFault, IncompleteDisposition};
@@ -28,6 +28,7 @@ use crate::admitted_plan::admitted_plan;
 #[path = "../../marrow-kernel/tests/common/fault_engine.rs"]
 mod fault_engine;
 use fault_engine::{FaultEngine, Mode, ModeHandle, WriteFaultHandle, unscoped_store, write};
+use marrow_codes::Code;
 
 const APPLICATION_ID: [u8; 16] = [0x91; 16];
 const ROOT_PLACEMENT_ID: [u8; 16] = [0x92; 16];
@@ -55,7 +56,7 @@ impl<E: ByteEngine> ByteEngine for BorrowedEngine<'_, E> {
     fn begin(&mut self) -> Result<Self::Txn<'_>, StoreError> {
         self.0.begin()
     }
-    fn require_write_access(&self, op: &'static str) -> Result<(), StoreError> {
+    fn require_write_access(&self, op: StoreOp) -> Result<(), StoreError> {
         self.0.require_write_access(op)
     }
     fn audit_integrity(&mut self) -> Result<(), StoreError> {
@@ -236,7 +237,7 @@ fn vm_preserves_confirmed_aborted_and_pending_commit_outcomes() {
     };
     match aborted_incomplete.into_disposition() {
         IncompleteDisposition::Classified { fault, durable } => {
-            assert_eq!(fault.code(), "run.commit");
+            assert_eq!(fault.code(), Code::RunCommit);
             assert_eq!(durable, DurableCommitState::KnownOld);
         }
         IncompleteDisposition::Pending { .. } => {
@@ -260,7 +261,7 @@ fn vm_preserves_confirmed_aborted_and_pending_commit_outcomes() {
         };
         match pending_incomplete.into_disposition() {
             IncompleteDisposition::Pending { fault, recovery } => {
-                assert_eq!(fault.code(), "run.commit");
+                assert_eq!(fault.code(), Code::RunCommit);
                 assert!(matches!(
                     pending.read_session(InvocationGrant::full_store(), demand),
                     Err(SessionError::Poisoned),
@@ -292,7 +293,7 @@ fn vm_preserves_staging_and_witness_failures_without_poisoning() {
         let DurableExecutionFault::Runtime(fault) = fault else {
             panic!("a pre-commit stage failure became invocation-incomplete");
         };
-        assert_eq!(fault.code(), "store.io");
+        assert_eq!(fault.code(), Code::StoreIo);
         store
             .read_session(InvocationGrant::full_store(), write())
             .expect("a staging fault does not poison the handle");
@@ -315,7 +316,7 @@ fn vm_preserves_staging_and_witness_failures_without_poisoning() {
         };
         match incomplete.into_disposition() {
             IncompleteDisposition::Classified { fault, durable } => {
-                assert_eq!(fault.code(), "run.commit");
+                assert_eq!(fault.code(), Code::RunCommit);
                 assert_eq!(durable, DurableCommitState::KnownOld);
             }
             IncompleteDisposition::Pending { .. } => {

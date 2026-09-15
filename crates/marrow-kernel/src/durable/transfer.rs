@@ -327,7 +327,7 @@ mod tests {
                 failure: (self.begins == 2).then_some(self.failure),
             })
         }
-        fn require_write_access(&self, op: &'static str) -> Result<(), StoreError> {
+        fn require_write_access(&self, op: marrow_store::StoreOp) -> Result<(), StoreError> {
             self.memory.require_write_access(op)
         }
         fn audit_integrity(&mut self) -> Result<(), StoreError> {

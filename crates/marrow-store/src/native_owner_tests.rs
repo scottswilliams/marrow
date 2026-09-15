@@ -9,6 +9,7 @@ use super::*;
 use ::redb::{ReadableDatabase, TableDefinition};
 
 use crate::redb::{create_raw, reopen_raw};
+use marrow_codes::Code;
 
 struct Scratch(PathBuf);
 
@@ -402,7 +403,9 @@ fn read_only_ownership_cannot_write_upgrade_or_clear_an_inherited_obligation() {
         ));
         assert!(matches!(
             owner.reopen_existing_and_audit(),
-            Err(StoreError::ReadOnly { op: "recovery" })
+            Err(StoreError::ReadOnly {
+                op: StoreOp::Recovery
+            })
         ));
         assert!(before == std::fs::read(&path).expect("engine after"));
         assert_marker();
@@ -481,7 +484,7 @@ fn a_contender_is_locked_out_before_and_after_the_holder_binds_its_instance() {
 
     match contend(&scratch.0) {
         NativeOwnerAcquireError::Lock(error @ NativeLockError::StoreInUse { .. }) => {
-            assert_eq!(error.code(), Code::StoreLocked.as_str());
+            assert_eq!(error.code(), Code::StoreLocked);
             assert!(matches!(error, NativeLockError::StoreInUse { owner: None }));
             assert!(!scratch.0.join(NATIVE_LOCK_FILE).exists());
         }
@@ -528,7 +531,7 @@ fn an_unreadable_marker_still_yields_exactly_the_exclusion_verdict() {
 
         match contend(&scratch.0) {
             NativeOwnerAcquireError::Lock(error @ NativeLockError::StoreInUse { .. }) => {
-                assert_eq!(error.code(), Code::StoreLocked.as_str(), "marker {tag}");
+                assert_eq!(error.code(), Code::StoreLocked, "marker {tag}");
             }
             other => panic!("an unreadable {tag} marker changed the verdict: {other}"),
         }
@@ -607,7 +610,7 @@ fn every_marker_a_contender_can_meet_still_yields_the_exclusion_verdict() {
             NativeOwnerAcquireError::Lock(error @ NativeLockError::StoreInUse { .. }) => {
                 assert_eq!(
                     error.code(),
-                    Code::StoreLocked.as_str(),
+                    Code::StoreLocked,
                     "a {}-byte marker changed the verdict",
                     body.len(),
                 );
@@ -1212,7 +1215,7 @@ fn assert_competing_open_is_exactly_lock_refused(
 ) {
     match NativeEngineOwner::acquire_existing(directory) {
         Err(NativeOwnerAcquireError::Lock(error @ NativeLockError::StoreInUse { .. })) => {
-            assert_eq!(error.code(), Code::StoreLocked.as_str(), "phase {phase}");
+            assert_eq!(error.code(), Code::StoreLocked, "phase {phase}");
             match error {
                 NativeLockError::StoreInUse { owner: Some(owner) } => {
                     assert_eq!(owner.pid, child_pid, "phase {phase} owner pid");
@@ -1470,9 +1473,15 @@ fn coordinated_quarantine_child_helper() {
                 Ok(_) => panic!("a missing recovery engine unexpectedly reopened"),
                 Err(error) => error,
             };
-            assert_eq!(error.code(), Code::StoreIo.as_str());
+            assert_eq!(error.code(), Code::StoreIo);
             assert!(
-                matches!(error, StoreError::Io { op: "open", .. }),
+                matches!(
+                    error,
+                    StoreError::Io {
+                        op: StoreOp::Open,
+                        ..
+                    }
+                ),
                 "missing recovery must fail in the existing-open phase: {error}",
             );
             child_barrier(directory, mode, CoordinatedPhase::ReopenRefused);
@@ -1488,7 +1497,7 @@ fn coordinated_quarantine_child_helper() {
             child_barrier(directory, mode, CoordinatedPhase::ReopenedBeforeAudit);
             let error = without_panic_report(|| owner.engine_mut().audit_integrity())
                 .expect_err("hostile live mutation must fail the full audit");
-            assert_eq!(error.code(), Code::StoreCorruption.as_str());
+            assert_eq!(error.code(), Code::StoreCorruption);
             without_panic_report(|| drop(owner));
             child_barrier(directory, mode, CoordinatedPhase::AuditRefused);
         }

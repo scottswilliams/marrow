@@ -40,7 +40,7 @@ pub use engine::limits::{MAX_KEY_LEN, MAX_VALUE_LEN, SCAN_MAX_AGGREGATE_BYTES, S
 pub use engine::{
     ByteEngine, Cell, CommitOutcome, ReadView, WriteTxn, batch_is_full, cell_within_limits,
 };
-pub use error::StoreError;
+pub use error::{StoreError, StoreLimit, StoreOp};
 pub use mem::MemoryEngine;
 #[cfg(feature = "native")]
 pub use native_owner::{
@@ -82,7 +82,9 @@ mod public_surface_audit {
             CommitOutcome::Aborted,
             CommitOutcome::Indeterminate,
         ];
-        let _code: fn(&StoreError) -> &'static str = StoreError::code;
+        let _code: fn(&StoreError) -> marrow_codes::Code = StoreError::code;
+        let _op = StoreOp::Open;
+        let _limit = StoreLimit::KeyLength;
         let _new: fn() -> MemoryEngine = MemoryEngine::new;
 
         #[cfg(feature = "native")]

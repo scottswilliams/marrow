@@ -10,7 +10,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use marrow_store::{
-    ByteEngine, Cell as StoreCell, CommitOutcome, MemoryEngine, ReadView, StoreError, WriteTxn,
+    ByteEngine, Cell as StoreCell, CommitOutcome, MemoryEngine, ReadView, StoreError, StoreOp,
+    WriteTxn,
 };
 
 #[derive(Clone, Default)]
@@ -170,7 +171,7 @@ impl<E: ByteEngine> ByteEngine for CountingEngine<E> {
         })
     }
 
-    fn require_write_access(&self, op: &'static str) -> Result<(), StoreError> {
+    fn require_write_access(&self, op: StoreOp) -> Result<(), StoreError> {
         self.inner.require_write_access(op)
     }
 
