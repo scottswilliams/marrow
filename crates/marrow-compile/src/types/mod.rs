@@ -807,73 +807,50 @@ pub(crate) struct EnumVariantInstance {
     pub(crate) variant: u16,
 }
 
-trait ReadyInstanceRequirement: Copy {
-    fn allows_provisional(self) -> bool {
-        false
-    }
-
-    fn validate(self, inst: &TypeInst, body: &InstBody) -> Result<(), GenericInvariant>;
-}
-
-#[derive(Clone, Copy)]
-struct AnyReadyInstance;
-
-impl ReadyInstanceRequirement for AnyReadyInstance {
-    fn allows_provisional(self) -> bool {
-        true
-    }
-
-    fn validate(self, _inst: &TypeInst, _body: &InstBody) -> Result<(), GenericInvariant> {
-        Ok(())
-    }
-}
-
-#[derive(Clone, Copy)]
-struct StructReadyInstance;
-
-impl ReadyInstanceRequirement for StructReadyInstance {
-    fn validate(self, inst: &TypeInst, body: &InstBody) -> Result<(), GenericInvariant> {
-        match body {
-            InstBody::Struct(_) => Ok(()),
-            InstBody::Enum(_) => Err(GenericInvariant::TypeBodyKindMismatch {
-                id: inst.id,
-                body: TypeInstKind::Enum,
-            }),
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 pub(crate) struct EnumVariantSelection<'a> {
     pub(crate) index: usize,
     pub(crate) name: &'a str,
 }
 
-impl ReadyInstanceRequirement for EnumVariantSelection<'_> {
+/// What a caller minting or reusing a generic type instantiation needs the settled
+/// row to be.
+#[derive(Clone, Copy)]
+enum ReadyRequirement<'a> {
+    /// Any settled body. Only this caller may reuse a row still filling: it asks
+    /// for identity, not for a readable body.
+    Any,
+    Struct,
+    Variant(EnumVariantSelection<'a>),
+}
+
+impl ReadyRequirement<'_> {
+    fn allows_provisional(self) -> bool {
+        matches!(self, Self::Any)
+    }
+
     fn validate(self, inst: &TypeInst, body: &InstBody) -> Result<(), GenericInvariant> {
-        let InstBody::Enum(variants) = body else {
-            return Err(GenericInvariant::TypeBodyKindMismatch {
-                id: inst.id,
-                body: TypeInstKind::Struct,
-            });
-        };
-        if variants
-            .get(self.index)
-            .is_some_and(|member| member.name == self.name)
-        {
-            Ok(())
-        } else {
-            let TypeInstId::Enum(id) = inst.id else {
-                return Err(GenericInvariant::TypeBodyKindMismatch {
-                    id: inst.id,
-                    body: TypeInstKind::Enum,
-                });
-            };
-            Err(GenericInvariant::ReadyEnumVariantMissing {
-                id,
-                template: inst.template,
-                variant: self.index,
-            })
+        let kind_mismatch = |body| GenericInvariant::TypeBodyKindMismatch { id: inst.id, body };
+        match (self, body) {
+            (Self::Any, _) | (Self::Struct, InstBody::Struct(_)) => Ok(()),
+            (Self::Struct, InstBody::Enum(_)) => Err(kind_mismatch(TypeInstKind::Enum)),
+            (Self::Variant(_), InstBody::Struct(_)) => Err(kind_mismatch(TypeInstKind::Struct)),
+            (Self::Variant(selection), InstBody::Enum(variants)) => {
+                if variants
+                    .get(selection.index)
+                    .is_some_and(|member| member.name == selection.name)
+                {
+                    return Ok(());
+                }
+                let TypeInstId::Enum(id) = inst.id else {
+                    return Err(kind_mismatch(TypeInstKind::Enum));
+                };
+                Err(GenericInvariant::ReadyEnumVariantMissing {
+                    id,
+                    template: inst.template,
+                    variant: selection.index,
+                })
+            }
         }
     }
 }
@@ -1773,15 +1750,6 @@ impl TypeRegistry {
         Ok(())
     }
 
-    fn validate_ready_requirement<R: ReadyInstanceRequirement>(
-        &self,
-        inst: &TypeInst,
-        body: &InstBody,
-        requirement: R,
-    ) -> Result<(), GenericInvariant> {
-        requirement.validate(inst, body)
-    }
-
     pub(crate) fn validate_type_arguments(&self, args: &[GArg]) -> Result<(), GenericInvariant> {
         self.metadata_view().validate_args(args, None)
     }
@@ -2102,11 +2070,11 @@ impl TypeRegistry {
     /// Validate one instantiation key and resolve any existing row without keeping
     /// validation scratch in the recursive mint frame. A missing key returns `None`
     /// only after its complete metadata preflight succeeds.
-    fn existing_type_instance<R: ReadyInstanceRequirement>(
+    fn existing_type_instance(
         &self,
         template: usize,
         args: &[GArg],
-        requirement: R,
+        requirement: ReadyRequirement<'_>,
     ) -> Result<Option<TypeInstId>, ResolveError> {
         let filling = {
             let view = self.metadata_view();
@@ -2142,7 +2110,7 @@ impl TypeRegistry {
                             let body = view
                                 .ready_inst_header_with(inst, metadata.scratch())?
                                 .ok_or(GenericInvariant::ReadyBodyMissing(inst.id))?;
-                            self.validate_ready_requirement(inst, body, requirement)?;
+                            requirement.validate(inst, body)?;
                             view.validate_ready_body_with(inst, body, metadata.scratch())?;
                             return Ok(Some(inst.id));
                         }
@@ -2213,17 +2181,17 @@ impl TypeRegistry {
         args: &[GArg],
         site: MintSite<'_>,
     ) -> Result<TypeInstId, ResolveError> {
-        self.mint_type_instance_with_requirement(draft, template, args, site, AnyReadyInstance)
+        self.mint_type_instance_with_requirement(draft, template, args, site, ReadyRequirement::Any)
     }
 
     #[inline(never)]
-    fn mint_type_instance_with_requirement<R: ReadyInstanceRequirement>(
+    fn mint_type_instance_with_requirement(
         &mut self,
         draft: &mut DraftTxn<'_>,
         template: usize,
         args: &[GArg],
         site: MintSite<'_>,
-        requirement: R,
+        requirement: ReadyRequirement<'_>,
     ) -> Result<TypeInstId, ResolveError> {
         if let Some(id) = self.existing_type_instance(template, args, requirement)? {
             return Ok(id);
@@ -2351,7 +2319,7 @@ impl TypeRegistry {
             template,
             args,
             site,
-            StructReadyInstance,
+            ReadyRequirement::Struct,
         )?;
         let TypeInstId::Record(record) = id else {
             return Err(GenericInvariant::TemplateKindMismatch {
@@ -2384,8 +2352,13 @@ impl TypeRegistry {
             }
             .into());
         }
-        let id =
-            self.mint_type_instance_with_requirement(draft, template, args, site, selection)?;
+        let id = self.mint_type_instance_with_requirement(
+            draft,
+            template,
+            args,
+            site,
+            ReadyRequirement::Variant(selection),
+        )?;
         let TypeInstId::Enum(enum_id) = id else {
             return Err(GenericInvariant::TemplateKindMismatch {
                 template,
@@ -2831,11 +2804,11 @@ impl TypeRegistry {
         Ok(())
     }
 
-    fn settled_type_result<R: ReadyInstanceRequirement>(
+    fn settled_type_result(
         &self,
         index: usize,
         id: TypeInstId,
-        requirement: R,
+        requirement: ReadyRequirement<'_>,
     ) -> Result<TypeInstId, ResolveError> {
         let generics = self.generics.borrow();
         let Some(inst) = generics.type_insts.get(index) else {
@@ -2865,7 +2838,7 @@ impl TypeRegistry {
         let body = view
             .ready_inst_header_with(inst, metadata.scratch())?
             .ok_or(GenericInvariant::ReadyBodyMissing(id))?;
-        self.validate_ready_requirement(inst, body, requirement)?;
+        requirement.validate(inst, body)?;
         view.validate_ready_body_with(inst, body, metadata.scratch())?;
         Ok(id)
     }

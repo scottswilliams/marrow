@@ -555,7 +555,7 @@ fn nonsettlement_cache_faults_are_exact_and_read_only() {
 
     let missing_before = stable_snapshot(&registry);
     assert_eq!(
-        registry.settled_type_result(1, id, AnyReadyInstance),
+        registry.settled_type_result(1, id, ReadyRequirement::Any),
         Err(ResolveError::Invariant(GenericInvariant::CacheState(
             GenericCacheInvariant::SettledRowMissing,
         )))
@@ -564,7 +564,7 @@ fn nonsettlement_cache_faults_are_exact_and_read_only() {
 
     let filling_before = stable_snapshot(&registry);
     assert_eq!(
-        registry.settled_type_result(0, id, AnyReadyInstance),
+        registry.settled_type_result(0, id, ReadyRequirement::Any),
         Err(ResolveError::Invariant(GenericInvariant::CacheState(
             GenericCacheInvariant::SettledRowStillFilling,
         )))
@@ -720,7 +720,7 @@ fn mixed_fill_refusals_join_to_limit_without_poisoning_an_independent_row() {
             .settle_fill_batch()
             .expect("well-formed provisional batch settles");
         assert_eq!(
-            registry.settled_type_result(0, outer_id, AnyReadyInstance),
+            registry.settled_type_result(0, outer_id, ReadyRequirement::Any),
             Err(ResolveError::Refusal(ResolveRefusal::Limit)),
             "the settled row, not its local Unsupported, owns the return"
         );
@@ -2828,7 +2828,7 @@ fn record_id_with_enum_body_fails_every_ready_boundary_exactly() {
         "a cache hit validates Ready before reusing its ID"
     );
     assert_eq!(
-        registry.settled_type_result(0, id, AnyReadyInstance),
+        registry.settled_type_result(0, id, ReadyRequirement::Any),
         Err(ResolveError::Invariant(expected))
     );
     assert_eq!(registry.instantiation_of(id), Err(expected));
@@ -2867,7 +2867,7 @@ fn enum_id_with_struct_body_fails_every_ready_boundary_exactly() {
         Err(ResolveError::Invariant(expected))
     );
     assert_eq!(
-        registry.settled_type_result(0, id, AnyReadyInstance),
+        registry.settled_type_result(0, id, ReadyRequirement::Any),
         Err(ResolveError::Invariant(expected))
     );
     assert_eq!(registry.instantiation_of(id), Err(expected));
