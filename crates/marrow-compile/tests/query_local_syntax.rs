@@ -1556,12 +1556,12 @@ fn no_node_family_exceeds_the_declared_source_byte_cap() {
 /// at all while both tables were only lookups. Naming the fields is what makes that
 /// omission a build failure rather than a silent under-charge.
 ///
-/// The patterns are typechecked and never run; a closure body is the smallest place to
-/// write one without constructing a value of every family. `NameSegment` is absent
-/// because its fields are private: a visibility boundary already stops a field from being
-/// added and read without the crate noticing.
-#[test]
-fn every_charged_family_names_all_of_its_fields() {
+/// The patterns are typechecked and never run, so this is a compile-time check rather
+/// than a test; a closure body is the smallest place to write one without constructing a
+/// value of every family. `NameSegment` is absent because its fields are private: a
+/// visibility boundary already stops a field from being added and read without the crate
+/// noticing.
+const _: fn() = || {
     let _ = |value: &Argument| {
         let Argument { name, value } = value;
         let _ = (name, value);
@@ -1922,7 +1922,7 @@ fn every_charged_family_names_all_of_its_fields() {
         } = value;
         let _ = (statements, comments, span);
     };
-}
+};
 
 /// The lexer emits at most one token per source byte, which is the half of
 /// [`TOKEN_CHARGE`] that a type cannot carry: `Box<[Token]>` makes growth slack

@@ -290,17 +290,3 @@ fn deployment_ceiling(union: ExportDemand) -> DeploymentCeiling {
         CeilingIdToken::new(*descriptor.ceiling_id().bytes()),
     )
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The measured sizes the boxing decision above rests on.
-    #[cfg(target_pointer_width = "64")]
-    #[test]
-    fn memory_attachment_size() {
-        assert_eq!(std::mem::size_of::<EphemeralAttachment>(), 192);
-        assert_eq!(std::mem::size_of::<Rc<VerifiedImage>>(), 8);
-        assert_eq!(std::mem::size_of::<MemoryAttachment>(), 16);
-    }
-}

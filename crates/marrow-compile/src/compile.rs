@@ -1841,9 +1841,11 @@ fn run_semantic(
     // verifier reconstructs the same lattice from the image alone and rejects a tampered
     // image (image.flow) as defense in depth. Run over complete acyclic components when
     // no requires-ambient-transaction report already stands, so a single mutation cannot
-    // cascade into an ownership report.
-    if let (Some(bodies), Some(acyclic), Some(closure)) = (&bodies, &call_graph, &transactions) {
-        reject_transaction_ownership(bodies, acyclic, closure, &mut diagnostics);
+    // cascade into an ownership report. A computed transaction closure is that
+    // prerequisite: without one an unsatisfied requires-ambient-transaction report already
+    // stands, and a single unwrapped mutation would cascade into a second report here.
+    if let (Some(bodies), Some(acyclic), Some(_)) = (&bodies, &call_graph, &transactions) {
+        reject_transaction_ownership(bodies, acyclic, &mut diagnostics);
     }
 
     // Tests reach durable data through ordinary invocations. Report direct operations
@@ -2727,14 +2729,11 @@ fn instr_successors(code: &[Instr], index: usize) -> Vec<usize> {
 /// verifier reconstructs from the image. The verifier separately checks agreement
 /// at control-flow joins. The requires-ambient-transaction pass runs first and already
 /// covers a durable mutation outside any region, so this pass need not restate it.
-/// `closure` is the prerequisite, not an unused argument: an unsatisfied
-/// requires-ambient-transaction report already stands otherwise, and a single
-/// unwrapped mutation would cascade into a second ownership report. `acyclic`
-/// carries the shared callee-before-caller order for the two ownership relations.
+/// `acyclic` carries the shared callee-before-caller order for the two ownership
+/// relations.
 fn reject_transaction_ownership(
     lowered: &[Option<LoweredBody<'_>>],
     acyclic: &AcyclicCallGraph,
-    _closure: &AmbientTransactionClosure,
     diagnostics: &mut DiagnosticCollector,
 ) {
     let count = lowered.len();

@@ -1914,11 +1914,11 @@ fn ready_reserved_option_and_result_readers_preserve_arguments() {
     };
 
     assert_eq!(
-        registry.as_option(option),
+        as_option(&registry, option),
         Ok(Some(GArg::Scalar(ScalarType::Int)))
     );
     assert_eq!(
-        registry.as_result(result),
+        as_result(&registry, result),
         Ok(Some((
             GArg::Scalar(ScalarType::Text),
             GArg::Scalar(ScalarType::Bool)
@@ -1989,7 +1989,7 @@ fn reserved_readers_require_the_fixed_member_contract_not_only_template_agreemen
     let owner_before = stable_snapshot(&registry);
     let draft_before = draft_snapshot(&draft);
 
-    assert_eq!(registry.as_option(option), Err(expected));
+    assert_eq!(as_option(&registry, option), Err(expected));
     assert_eq!(stable_snapshot(&registry), owner_before);
     assert_eq!(draft_snapshot(&draft), draft_before);
 }
@@ -2296,8 +2296,8 @@ fn filling_and_rejected_reserved_option_and_result_rows_are_hidden() {
 }
 
 fn assert_reserved_rows_hidden(registry: &TypeRegistry, option: EnumId, result: EnumId) {
-    assert!(registry.as_option(option).unwrap().is_none());
-    assert!(registry.as_result(result).unwrap().is_none());
+    assert!(as_option(registry, option).unwrap().is_none());
+    assert!(as_result(registry, result).unwrap().is_none());
     for id in [option, result] {
         let id = TypeInstId::Enum(id);
         assert!(registry.instantiation_of(id).unwrap().is_none());
@@ -2872,8 +2872,8 @@ fn enum_id_with_struct_body_fails_every_ready_boundary_exactly() {
     );
     assert_eq!(registry.instantiation_of(id), Err(expected));
     assert!(matches!(registry.type_inst_body(id), Err(found) if found == expected));
-    assert_eq!(registry.as_option(enum_id), Err(expected));
-    assert_eq!(registry.as_result(enum_id), Err(expected));
+    assert_eq!(as_option(&registry, enum_id), Err(expected));
+    assert_eq!(as_result(&registry, enum_id), Err(expected));
     assert_eq!(registry.enum_variants(enum_id), Err(expected));
     assert_eq!(registry.enum_anchor_spelling(enum_id), Err(expected));
     assert_eq!(registry.inst_anchor_spelling(id), Err(expected));
@@ -3417,4 +3417,28 @@ fn scalar_consumer_refusal_conversion_preserves_ledger_drift() {
         registry.scalar_refusal_row(ResolveRefusal::Limit, &file, span, "this scalar annotation"),
         Err(GenericInvariant::ScalarResolutionLimit)
     );
+}
+
+/// The `Option<T>` argument an enum instantiation carries, if it is the reserved
+/// `Option` template's.
+pub(super) fn as_option(
+    registry: &TypeRegistry,
+    id: EnumId,
+) -> Result<Option<GArg>, GenericInvariant> {
+    registry.reserved_enum_args(id).map(|args| match args {
+        Some(ReservedEnumArgs::Option(inner)) => Some(inner),
+        Some(ReservedEnumArgs::Result(_, _) | ReservedEnumArgs::Other) | None => None,
+    })
+}
+
+/// The `Result<T, E>` arguments an enum instantiation carries, if it is the reserved
+/// `Result` template's.
+pub(super) fn as_result(
+    registry: &TypeRegistry,
+    id: EnumId,
+) -> Result<Option<(GArg, GArg)>, GenericInvariant> {
+    registry.reserved_enum_args(id).map(|args| match args {
+        Some(ReservedEnumArgs::Result(ok, err)) => Some((ok, err)),
+        Some(ReservedEnumArgs::Option(_) | ReservedEnumArgs::Other) | None => None,
+    })
 }

@@ -1,6 +1,7 @@
 //! The ready-body proof and matcher family, sharing the instantiation-state
 //! fixtures through `super::*`.
 
+use super::instantiation_state_tests::as_option;
 use super::*;
 
 #[test]
@@ -397,7 +398,7 @@ fn ready_template_id_mismatch_is_typed_after_body_id_validation() {
     };
     let before = stable_snapshot(&registry);
 
-    assert_eq!(registry.as_option(enum_id), Err(expected));
+    assert_eq!(as_option(&registry, enum_id), Err(expected));
     assert!(matches!(
         validate_ready_metadata(&registry),
         Err(found) if found == expected

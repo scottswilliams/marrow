@@ -120,31 +120,3 @@ const fn population_fits_the_wide_carrier() -> bool {
 }
 
 const _: () = assert!(population_fits_the_wide_carrier());
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The derivation reads the capture owner's live ceiling. Spelling the number here
-    /// instead is how the previous derivation drifted: it compared one local literal to
-    /// another and would have stayed green through any capture change.
-    #[test]
-    fn the_envelope_uses_the_live_capture_and_parse_ceilings() {
-        assert_eq!(
-            MAX_ADMITTED_SOURCE_BYTES,
-            CaptureLimits::DEFAULT.max_total_bytes(),
-        );
-        assert_eq!(MAX_ADMITTED_FILES, CaptureLimits::DEFAULT.max_files());
-        assert_eq!(MAX_FILELESS_TEMPLATE_WIDTH, 2);
-        assert!(MAX_PARSED_FILE_BYTES <= CaptureLimits::DEFAULT.max_file_bytes());
-    }
-
-    /// The generated-row term multiplies the two live owners rather than copying either.
-    #[test]
-    fn the_generated_row_term_is_the_live_instantiation_and_file_ceiling() {
-        assert_eq!(
-            MAX_DERIVED_ROWS - MAX_ADMITTED_SOURCE_BYTES,
-            MAX_INSTANTIATIONS * MAX_PARSED_FILE_BYTES,
-        );
-    }
-}

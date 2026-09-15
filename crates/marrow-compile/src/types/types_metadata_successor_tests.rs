@@ -1,3 +1,4 @@
+use super::instantiation_state_tests::{as_option, as_result};
 use super::*;
 
 use marrow_image::ImageDraft;
@@ -533,7 +534,7 @@ fn malformed_reserved_option_ready_metadata_is_hidden_from_all_readers() {
 
     let instantiation_hidden = registry.instantiation_of(id).hidden();
     let body_hidden = registry.type_inst_body(id).hidden();
-    let option_hidden = registry.as_option(option).hidden();
+    let option_hidden = as_option(&registry, option).hidden();
     let variants_hidden = registry.enum_variants(option).hidden();
     let anchor_hidden = registry.enum_anchor_spelling(option).hidden();
     let graph_hidden = ValueGraph::build(&registry).into_graph().is_none();
@@ -731,7 +732,7 @@ fn parsed_resource_groups_publish_once_and_reuse_typed_projections() {
                         let GArg::Enum(option) = record.fields[0].ty else {
                             panic!("reading retains its Option enum identity");
                         };
-                        let inner = registry.as_option(option).expect("Option is Ready");
+                        let inner = as_option(&registry, option).expect("Option is Ready");
                         (field, group, leaf, inner)
                     })
                     .collect::<Vec<_>>()
@@ -912,7 +913,7 @@ fn reserved_option_and_result_require_exact_argument_slices() {
             .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site())
             .expect("control Option is Ready");
         registry.generics.borrow_mut().type_insts[0].args = args;
-        observations.push(registry.as_option(option).hidden());
+        observations.push(as_option(&registry, option).hidden());
     }
 
     for args in [
@@ -945,7 +946,7 @@ fn reserved_option_and_result_require_exact_argument_slices() {
             })
             .expect("control Result is Ready");
         registry.generics.borrow_mut().type_insts[0].args = args;
-        observations.push(registry.as_result(result_id).hidden());
+        observations.push(as_result(&registry, result_id).hidden());
     }
 
     assert_eq!(observations, vec![true, true, true, true]);
@@ -1003,7 +1004,7 @@ fn reserved_result_valid_length_checks_both_argument_targets() {
         let draft_before = draft_fingerprint(&draft);
 
         observations.push(
-            registry.as_result(result).hidden()
+            as_result(&registry, result).hidden()
                 && owner_snapshot(&registry) == owner_before
                 && draft_fingerprint(&draft) == draft_before,
         );
@@ -1943,7 +1944,10 @@ fn ready_readers_preserve_the_exact_argument_invariant() {
         take_reader_invariant(registry.type_inst_body(TypeInstId::Enum(option))),
         expected
     );
-    assert_eq!(take_reader_invariant(registry.as_option(option)), expected);
+    assert_eq!(
+        take_reader_invariant(as_option(&registry, option)),
+        expected
+    );
     assert_eq!(
         take_reader_invariant(registry.enum_variants(option)),
         expected
@@ -2006,7 +2010,7 @@ fn ready_readers_preserve_the_exact_argument_invariant() {
         let draft_before = draft_fingerprint(&draft);
 
         assert_eq!(
-            take_reader_invariant(registry.as_result(result)),
+            take_reader_invariant(as_result(&registry, result)),
             GenericInvariant::TypeArgumentTargetMissing(GArg::Struct(orphan))
         );
         assert_eq!(owner_snapshot(&registry), owner_before);
@@ -2049,7 +2053,7 @@ fn reserved_readers_report_exact_argument_counts() {
             .len();
 
         assert_eq!(
-            take_reader_invariant(registry.as_option(option)),
+            take_reader_invariant(as_option(&registry, option)),
             GenericInvariant::TypeArgumentCountMismatch {
                 template,
                 expected: 1,
@@ -2097,7 +2101,7 @@ fn reserved_readers_report_exact_argument_counts() {
             .args = args;
 
         assert_eq!(
-            take_reader_invariant(registry.as_result(result)),
+            take_reader_invariant(as_result(&registry, result)),
             GenericInvariant::TypeArgumentCountMismatch {
                 template,
                 expected: 2,

@@ -2911,26 +2911,6 @@ impl TypeRegistry {
             .map(|(_, body)| body.clone()))
     }
 
-    /// The `Option<T>` argument an enum instantiation carries, if it is the reserved
-    /// `Option` template's.
-    #[cfg(test)]
-    pub(crate) fn as_option(&self, id: EnumId) -> Result<Option<GArg>, GenericInvariant> {
-        self.reserved_enum_args(id).map(|args| match args {
-            Some(ReservedEnumArgs::Option(inner)) => Some(inner),
-            Some(ReservedEnumArgs::Result(_, _) | ReservedEnumArgs::Other) | None => None,
-        })
-    }
-
-    /// The `Result<T, E>` arguments an enum instantiation carries, if it is the
-    /// reserved `Result` template's.
-    #[cfg(test)]
-    pub(crate) fn as_result(&self, id: EnumId) -> Result<Option<(GArg, GArg)>, GenericInvariant> {
-        self.reserved_enum_args(id).map(|args| match args {
-            Some(ReservedEnumArgs::Result(ok, err)) => Some((ok, err)),
-            Some(ReservedEnumArgs::Option(_) | ReservedEnumArgs::Other) | None => None,
-        })
-    }
-
     /// Classify one Ready reserved enum through one immutable metadata snapshot.
     pub(crate) fn reserved_enum_args(
         &self,

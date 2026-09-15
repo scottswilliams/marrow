@@ -41,38 +41,34 @@ pub const IDS_ENTRY: &str = "ids";
 /// the project-metadata directory.
 pub const IDS_FILE: &str = ".marrow/ids";
 
-// The joined path and its two parts are one spelling, checked at compile time so
-// a rename of either half cannot leave a second live ledger location behind.
-const _: () = assert!(
-    joins_to(IDS_FILE, META_DIR, IDS_ENTRY),
-    "the ledger's root-relative path must be its directory and entry spellings joined"
-);
-
-/// Whether `joined` is exactly `dir`, a separator, and `entry`.
-const fn joins_to(joined: &str, dir: &str, entry: &str) -> bool {
-    let (joined, dir, entry) = (joined.as_bytes(), dir.as_bytes(), entry.as_bytes());
-    if joined.len() != dir.len() + 1 + entry.len() {
-        return false;
+// The joined path and its two parts are one spelling, checked at compile time so a
+// rename of either half cannot leave a second live ledger location behind.
+const _: () = {
+    let (joined, dir, entry) = (
+        IDS_FILE.as_bytes(),
+        META_DIR.as_bytes(),
+        IDS_ENTRY.as_bytes(),
+    );
+    assert!(
+        joined.len() == dir.len() + 1 + entry.len(),
+        "the ledger path must be its directory and entry spellings joined"
+    );
+    let mut at = 0;
+    while at < joined.len() {
+        let expected = if at < dir.len() {
+            dir[at]
+        } else if at == dir.len() {
+            b'/'
+        } else {
+            entry[at - dir.len() - 1]
+        };
+        assert!(
+            joined[at] == expected,
+            "the ledger path must be its directory and entry spellings joined"
+        );
+        at += 1;
     }
-    let mut head = 0;
-    while head < dir.len() {
-        if joined[head] != dir[head] {
-            return false;
-        }
-        head += 1;
-    }
-    if joined[dir.len()] != b'/' {
-        return false;
-    }
-    let mut tail = 0;
-    while tail < entry.len() {
-        if joined[dir.len() + 1 + tail] != entry[tail] {
-            return false;
-        }
-        tail += 1;
-    }
-    true
-}
+};
 
 /// The ledger's retired pre-relocation path at the project root. Nothing reads
 /// it: capture refuses a file here with a one-line steer to the ledger's home,

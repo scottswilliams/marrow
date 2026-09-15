@@ -421,7 +421,6 @@ mod tests {
         assert_eq!(duration("PT1S"), NANOS_PER_SEC);
         assert_eq!(duration("-PT1S"), -NANOS_PER_SEC);
         // The full i128 nanosecond range round-trips.
-        assert_eq!(format_duration(i128::MAX), format_duration(i128::MAX));
         assert_eq!(
             parse_duration(format_duration(i128::MAX).as_bytes()),
             Some(i128::MAX)
