@@ -37,7 +37,7 @@ pub use channel::{AcceptError, Channel, Connection, Deadlines, Handler, LaunchSe
 pub use client::{AttachCompletion, attach_and_call};
 pub use descriptor::Service;
 pub use ephemeral_client::{EphemeralCall, EphemeralSession};
-pub use marrow_local_wire::{DurableState, Id32, Json, LossClass};
+pub use marrow_local_wire::{DurableState, Id32, Json, LossClass, write_json_string};
 pub use refusal::RefusalService;
 pub use staging::{StagedImage, stage_image};
 pub use terminal::{

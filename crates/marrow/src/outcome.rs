@@ -493,7 +493,7 @@ impl JsonData {
     }
 
     fn string(&mut self, text: &str) -> Result<(), ()> {
-        write_json_string(self, text).map_err(|_| ())
+        marrow_runner::write_json_string(text, |piece| self.append(piece))
     }
 
     fn record(
@@ -617,31 +617,15 @@ impl fmt::Write for JsonData {
     }
 }
 
-/// Encode a string as canonical JSON: `\"`,
-/// `\\`, `\b`, `\t`, `\n`, `\f`, `\r`, other C0 as lowercase `\u00XX`, everything
-/// else (including `/` and all non-ASCII) passed through as UTF-8.
-fn write_json_string(out: &mut dyn fmt::Write, text: &str) -> fmt::Result {
-    out.write_char('"')?;
-    for ch in text.chars() {
-        match ch {
-            '"' => out.write_str("\\\""),
-            '\\' => out.write_str("\\\\"),
-            '\u{08}' => out.write_str("\\b"),
-            '\t' => out.write_str("\\t"),
-            '\n' => out.write_str("\\n"),
-            '\u{0C}' => out.write_str("\\f"),
-            '\r' => out.write_str("\\r"),
-            c if (c as u32) < 0x20 => write!(out, "\\u{:04x}", c as u32),
-            c => out.write_char(c),
-        }?;
-    }
-    out.write_char('"')
-}
-
-#[expect(clippy::expect_used, reason = "writing to a String is infallible")]
+#[expect(clippy::expect_used, reason = "appending to a String is infallible")]
+/// One record field's value as a canonical JSON string, through the wire's one escaper.
 fn json_string(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
-    write_json_string(&mut out, text).expect("writing to a String is infallible");
+    marrow_runner::write_json_string(text, |piece| {
+        out.push_str(piece);
+        Ok::<(), std::convert::Infallible>(())
+    })
+    .expect("appending to a String cannot fail");
     out
 }
 

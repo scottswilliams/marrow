@@ -482,24 +482,12 @@ fn value_to_wire(value: &Value) -> Option<marrow_runner::Json> {
         Value::Int(n) => Json::Int(*n),
         Value::Bool(b) => Json::Bool(*b),
         Value::Text(text) => Json::Str(text.to_string()),
-        Value::Bytes(bytes) => Json::Str(render_hex_bytes(bytes)),
+        Value::Bytes(bytes) => Json::Str(marrow_vm::render::hex_bytes(bytes, MAX_TEXT_BYTES).ok()?),
         Value::Date(days) => Json::Str(marrow_temporal::format_date(*days)?),
         Value::Instant(nanos) => Json::Str(marrow_temporal::format_instant(*nanos)?),
         Value::Duration(nanos) => Json::Str(marrow_temporal::format_duration(*nanos)),
         _ => return None,
     })
-}
-
-/// Render bytes as the `0x`-prefixed lowercase-hex string the wire and the CLI both spell a
-/// `bytes` value with.
-fn render_hex_bytes(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(2 + bytes.len() * 2);
-    out.push_str("0x");
-    for byte in bytes {
-        out.push(char::from_digit(u32::from(byte >> 4), 16).expect("hex nibble"));
-        out.push(char::from_digit(u32::from(byte & 0xf), 16).expect("hex nibble"));
-    }
-    out
 }
 
 fn decode_call_args(params: &[ImageType], args: &CallArgs) -> Result<Vec<Value>, Outcome> {
@@ -590,7 +578,7 @@ fn decode_arg(scalar: Scalar, text: &str) -> Result<Value, String> {
         Scalar::Text => Ok(Value::Text(Rc::from(text))),
         // A `bytes` argument is a `0x`-prefixed even-length lowercase-hex string,
         // matching how a `bytes` value renders back out.
-        Scalar::Bytes => decode_hex_bytes(text)
+        Scalar::Bytes => marrow_vm::render::decode_hex_bytes(text)
             .map(|bytes| Value::Bytes(Rc::from(bytes.as_slice())))
             .ok_or_else(|| format!("`{text}` is not `0x`-prefixed lowercase hex")),
         // A temporal argument is its canonical text, matching how it renders back out.
@@ -604,22 +592,6 @@ fn decode_arg(scalar: Scalar, text: &str) -> Result<Value, String> {
             .map(Value::Duration)
             .ok_or_else(|| format!("`{text}` is not a canonical duration `PT<seconds>S`")),
     }
-}
-
-/// Decode a `0x`-prefixed even-length lowercase-hex string to bytes.
-fn decode_hex_bytes(text: &str) -> Option<Vec<u8>> {
-    let hex = text.strip_prefix("0x")?;
-    if !hex.len().is_multiple_of(2)
-        || hex
-            .bytes()
-            .any(|b| !b.is_ascii_digit() && !(b'a'..=b'f').contains(&b))
-    {
-        return None;
-    }
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
-        .collect()
 }
 
 fn parse_args(rest: &[String]) -> Result<RunArgs, ExitCode> {

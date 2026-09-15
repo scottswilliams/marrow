@@ -181,6 +181,24 @@ pub fn hex_bytes(bytes: &[u8], max_bytes: usize) -> Result<String, TextLimit> {
     Ok(text.output)
 }
 
+/// Decode the `0x`-prefixed even-length lowercase-hex spelling [`hex_bytes`] produces.
+/// Any other spelling — a missing prefix, an odd length, an uppercase or non-hex digit —
+/// is refused rather than repaired.
+pub fn decode_hex_bytes(text: &str) -> Option<Vec<u8>> {
+    let hex = text.strip_prefix("0x")?;
+    if !hex.len().is_multiple_of(2)
+        || hex
+            .bytes()
+            .any(|b| !b.is_ascii_digit() && !(b'a'..=b'f').contains(&b))
+    {
+        return None;
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
+        .collect()
+}
+
 /// The canonical `YYYY-MM-DD` text of a date. A validated date always formats; a raw
 /// day outside the supported range (only reachable from a hand-built value) falls back
 /// to its integer so rendering never fails.

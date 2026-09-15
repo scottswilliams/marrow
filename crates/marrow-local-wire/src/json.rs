@@ -18,12 +18,10 @@
 //! non-integer number, or trailing bytes are [`WireError::Malformed`]; a duplicate
 //! object key is rejected during parsing.
 //!
-//! The string escaping is the same discipline the CLI's JSONL surface uses
-//! (`marrow`'s `outcome` owner): `\"`, `\\`, `\b`, `\t`, `\n`, `\f`, `\r`, other C0
-//! as lowercase `\u00xx`, and every other character — including `/` and all
-//! non-ASCII — passed through literally. The two encoders are independent because
-//! this crate must not depend on the VM value model the CLI encoder renders, but
-//! they implement one documented rule, each pinned by its own known-answer test.
+//! [`write_json_string`] is the one string escaper: `\"`, `\\`, `\b`, `\t`, `\n`, `\f`,
+//! `\r`, other C0 as lowercase `\u00xx`, and every other character — including `/` and
+//! all non-ASCII — passed through literally. The CLI's JSONL surface spells its strings
+//! through it too.
 
 use crate::error::WireError;
 use crate::{MAX_DEPTH, MAX_STRING_BYTES};
@@ -108,33 +106,44 @@ impl Encoder {
     }
 
     fn string(&mut self, text: &str) -> Result<(), WireError> {
-        self.append("\"")?;
-        for ch in text.chars() {
-            match ch {
-                '"' => self.append("\\\"")?,
-                '\\' => self.append("\\\\")?,
-                '\u{08}' => self.append("\\b")?,
-                '\t' => self.append("\\t")?,
-                '\n' => self.append("\\n")?,
-                '\u{0C}' => self.append("\\f")?,
-                '\r' => self.append("\\r")?,
-                c if (c as u32) < 0x20 => {
-                    let byte = c as u8;
-                    let escape = [
-                        b'\\',
-                        b'u',
-                        b'0',
-                        b'0',
-                        HEX[usize::from(byte >> 4)],
-                        HEX[usize::from(byte & 15)],
-                    ];
-                    self.append(std::str::from_utf8(&escape).expect("ASCII escape"))?;
-                }
-                c => self.append(c.encode_utf8(&mut [0; 4]))?,
-            }
-        }
-        self.append("\"")
+        write_json_string(text, |piece| self.append(piece))
     }
+}
+
+/// Hand `text` to `append` as the pieces of one canonical JSON string, quotes included:
+/// `\"`, `\\`, `\b`, `\t`, `\n`, `\f`, `\r`, other C0 as lowercase `\u00xx`, and every
+/// other character — `/` and all non-ASCII — literally. The pieces arrive in order, so a
+/// bounded destination refuses mid-string rather than after materializing the whole.
+pub fn write_json_string<E>(
+    text: &str,
+    mut append: impl FnMut(&str) -> Result<(), E>,
+) -> Result<(), E> {
+    append("\"")?;
+    for ch in text.chars() {
+        match ch {
+            '"' => append("\\\"")?,
+            '\\' => append("\\\\")?,
+            '\u{08}' => append("\\b")?,
+            '\t' => append("\\t")?,
+            '\n' => append("\\n")?,
+            '\u{0C}' => append("\\f")?,
+            '\r' => append("\\r")?,
+            c if (c as u32) < 0x20 => {
+                let byte = c as u8;
+                let escape = [
+                    b'\\',
+                    b'u',
+                    b'0',
+                    b'0',
+                    HEX[usize::from(byte >> 4)],
+                    HEX[usize::from(byte & 15)],
+                ];
+                append(std::str::from_utf8(&escape).expect("ASCII escape"))?;
+            }
+            c => append(c.encode_utf8(&mut [0; 4]))?,
+        }
+    }
+    append("\"")
 }
 
 const HEX: &[u8; 16] = b"0123456789abcdef";

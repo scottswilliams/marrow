@@ -62,9 +62,8 @@ fn decode_scalar(scalar: Scalar, json: &Json) -> Option<Value> {
         (Scalar::Int, Json::Int(n)) => Some(Value::Int(*n)),
         (Scalar::Bool, Json::Bool(b)) => Some(Value::Bool(*b)),
         (Scalar::Text, Json::Str(s)) => Some(Value::Text(Rc::from(s.as_str()))),
-        (Scalar::Bytes, Json::Str(s)) => {
-            decode_hex_bytes(s).map(|bytes| Value::Bytes(Rc::from(bytes.as_slice())))
-        }
+        (Scalar::Bytes, Json::Str(s)) => marrow_vm::render::decode_hex_bytes(s)
+            .map(|bytes| Value::Bytes(Rc::from(bytes.as_slice()))),
         (Scalar::Date, Json::Str(s)) => marrow_temporal::parse_date(s.as_bytes()).map(Value::Date),
         (Scalar::Instant, Json::Str(s)) => {
             marrow_temporal::parse_instant(s.as_bytes()).map(Value::Instant)
@@ -235,7 +234,7 @@ fn decode_key(scalar: Scalar, json: &Json) -> Option<KeyScalar> {
         (Scalar::Int, Json::Int(n)) => KeyScalar::Int(*n),
         (Scalar::Bool, Json::Bool(b)) => KeyScalar::Bool(*b),
         (Scalar::Text, Json::Str(s)) => KeyScalar::Str(s.clone()),
-        (Scalar::Bytes, Json::Str(s)) => KeyScalar::Bytes(decode_hex_bytes(s)?),
+        (Scalar::Bytes, Json::Str(s)) => KeyScalar::Bytes(marrow_vm::render::decode_hex_bytes(s)?),
         (Scalar::Date, Json::Str(s)) => KeyScalar::Date(marrow_temporal::parse_date(s.as_bytes())?),
         (Scalar::Instant, Json::Str(s)) => {
             KeyScalar::Instant(marrow_temporal::parse_instant(s.as_bytes())?)
@@ -258,8 +257,8 @@ pub(crate) fn encode_value(
         Value::Bool(b) => slot.boolean(*b),
         Value::Text(text) => slot.string(text),
         Value::Bytes(bytes) => slot.hex_bytes(bytes),
-        Value::Date(days) => slot.string(&date_text(*days)),
-        Value::Instant(nanos) => slot.string(&instant_text(*nanos)),
+        Value::Date(days) => slot.string(&marrow_vm::render::date_text(*days)),
+        Value::Instant(nanos) => slot.string(&marrow_vm::render::instant_text(*nanos)),
         Value::Duration(nanos) => slot.string(&marrow_temporal::format_duration(*nanos)),
         Value::Optional(None) => slot.null(),
         Value::Optional(Some(inner)) => encode_value(image, inner, slot),
@@ -329,33 +328,8 @@ fn encode_key(key: &KeyScalar, slot: ValueWriter<'_>) -> Result<(), WireError> {
         KeyScalar::Bool(b) => slot.boolean(*b),
         KeyScalar::Str(s) => slot.string(s),
         KeyScalar::Bytes(bytes) => slot.hex_bytes(bytes),
-        KeyScalar::Date(days) => slot.string(&date_text(*days)),
-        KeyScalar::Instant(nanos) => slot.string(&instant_text(*nanos)),
+        KeyScalar::Date(days) => slot.string(&marrow_vm::render::date_text(*days)),
+        KeyScalar::Instant(nanos) => slot.string(&marrow_vm::render::instant_text(*nanos)),
         KeyScalar::Duration(nanos) => slot.string(&marrow_temporal::format_duration(*nanos)),
     }
-}
-
-/// Decode a `0x`-prefixed even-length lowercase-hex string to bytes, matching the
-/// canonical `bytes` rendering.
-fn decode_hex_bytes(text: &str) -> Option<Vec<u8>> {
-    let hex = text.strip_prefix("0x")?;
-    if !hex.len().is_multiple_of(2)
-        || hex
-            .bytes()
-            .any(|b| !b.is_ascii_digit() && !(b'a'..=b'f').contains(&b))
-    {
-        return None;
-    }
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
-        .collect()
-}
-
-fn date_text(days: i32) -> String {
-    marrow_temporal::format_date(days).unwrap_or_else(|| days.to_string())
-}
-
-fn instant_text(nanos: i128) -> String {
-    marrow_temporal::format_instant(nanos).unwrap_or_else(|| nanos.to_string())
 }
