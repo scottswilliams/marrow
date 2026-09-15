@@ -10,6 +10,9 @@ use crate::error::StoreError;
 pub(crate) fn run_all<E: ByteEngine>(
     mut make: impl FnMut() -> Result<E, StoreError>,
 ) -> Result<(), StoreError> {
+    a_writable_handle_admits_writes(&mut make()?)?;
+    scan_after_makes_progress_past_the_aggregate_limit(&mut make()?)?;
+    a_confirmed_commit_is_the_only_outcome_that_persists(&mut make()?)?;
     values_round_trip(&mut make()?)?;
     a_transaction_reads_its_own_writes(&mut make()?)?;
     a_committed_transaction_persists(&mut make()?)?;
@@ -22,6 +25,90 @@ pub(crate) fn run_all<E: ByteEngine>(
     oversized_cells_are_refused(&mut make()?)?;
     a_populated_store_passes_its_integrity_audit(&mut make()?)?;
     a_model_sequence_matches_a_reference_map(&mut make()?)?;
+    Ok(())
+}
+
+/// A handle opened for writing admits writes, and the verdict agrees with what
+/// `begin` then does: a suite that only ever wrote would never observe the
+/// read-only gate at all.
+fn a_writable_handle_admits_writes<E: ByteEngine>(engine: &mut E) -> Result<(), StoreError> {
+    engine.require_write_access("conformance")?;
+    seed(engine, &[(b"\x70", b"v")])?;
+    engine.require_write_access("conformance")?;
+    Ok(())
+}
+
+/// A scan page always returns at least one cell when one is available, even
+/// when that single cell alone exceeds the aggregate byte limit. Without the
+/// guarantee a caller paging from the last key would never advance past an
+/// oversized cell.
+fn scan_after_makes_progress_past_the_aggregate_limit<E: ByteEngine>(
+    engine: &mut E,
+) -> Result<(), StoreError> {
+    // Two cells whose values together exceed the aggregate limit, so the page
+    // must stop after the first rather than returning nothing.
+    let big = vec![0xA5u8; limits::MAX_VALUE_LEN];
+    seed(engine, &[(b"\x80\x01", &big), (b"\x80\x02", &big)])?;
+    let pages = limits::SCAN_MAX_AGGREGATE_BYTES / limits::MAX_VALUE_LEN;
+    assert!(pages < 2, "the fixture needs one cell to fill a page");
+    let page = engine.read_view()?.scan_after(b"\x80", b"\x80")?;
+    assert_eq!(
+        keys(&page),
+        vec![b"\x80\x01".to_vec()],
+        "a page over the aggregate limit still yields one cell"
+    );
+    let next = engine.read_view()?.scan_after(b"\x80", b"\x80\x01")?;
+    assert_eq!(
+        keys(&next),
+        vec![b"\x80\x02".to_vec()],
+        "resuming from the last key reaches the next cell"
+    );
+    Ok(())
+}
+
+/// The commit verdict is the durability fact: only `Confirmed` means the writes
+/// are readable afterwards, and every other outcome leaves the store as it was.
+fn a_confirmed_commit_is_the_only_outcome_that_persists<E: ByteEngine>(
+    engine: &mut E,
+) -> Result<(), StoreError> {
+    seed(engine, &[(b"\x90", b"before")])?;
+    let mut txn = engine.begin()?;
+    txn.put(b"\x90", b"after".to_vec())?;
+    let expected = match txn.commit() {
+        CommitOutcome::Confirmed => Some(b"after".to_vec()),
+        // Neither engine produces these from an ordinary commit today; the law
+        // states what each verdict means so a backend that can produce one is
+        // held to it rather than to `== Confirmed`.
+        CommitOutcome::Aborted => Some(b"before".to_vec()),
+        CommitOutcome::Indeterminate => return Ok(()),
+    };
+    assert_eq!(engine.read_view()?.get(b"\x90")?, expected);
+    Ok(())
+}
+
+/// A store whose durable bytes have been altered underneath the engine fails
+/// its integrity audit rather than reading back silently changed.
+///
+/// This law is not in [`run_all`]: it needs a way to alter the substrate, which
+/// a backend with nothing durable beneath it (the in-memory engine) does not
+/// have. A durable backend runs it with a `corrupt` that writes its own bytes.
+pub(crate) fn a_corrupted_store_fails_its_integrity_audit<E: ByteEngine>(
+    engine: &mut E,
+    corrupt: impl FnOnce(),
+) -> Result<(), StoreError> {
+    {
+        let mut txn = engine.begin()?;
+        for n in 0..64u32 {
+            txn.put(format!("a{n:03}").as_bytes(), vec![n as u8; 32])?;
+        }
+        assert_eq!(txn.commit(), CommitOutcome::Confirmed);
+    }
+    engine.audit_integrity()?;
+    corrupt();
+    assert!(
+        engine.audit_integrity().is_err(),
+        "an externally altered store must fail its integrity audit"
+    );
     Ok(())
 }
 
