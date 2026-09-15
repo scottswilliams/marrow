@@ -436,12 +436,6 @@ struct Coordinator {
 
 impl Coordinator {
     fn new() -> Self {
-        Self::with_capacities(MAX_LIVE_REQUEST_ENTRIES, MAX_ANONYMOUS_ERROR_SLOTS)
-    }
-
-    /// Construct with explicit ledger capacities. Production uses the frozen bounds;
-    /// tests drive the N/N+1 overflow reds with small capacities.
-    fn with_capacities(request_capacity: usize, anonymous_capacity: usize) -> Self {
         let (revisions, current_revision) = RevisionCounter::initial();
         Self {
             lifecycle: Lifecycle::new(),
@@ -451,9 +445,9 @@ impl Coordinator {
             current_revision,
             analysis: CurrentAnalysis::Pending,
             published: Vec::new(),
-            requests: RequestLedger::new(request_capacity),
+            requests: RequestLedger::new(MAX_LIVE_REQUEST_ENTRIES),
             anonymous_slots: 0,
-            anonymous_capacity,
+            anonymous_capacity: MAX_ANONYMOUS_ERROR_SLOTS,
             held_queries: Vec::new(),
             outbound_credits: CreditPool::outbound(),
             in_flight: VecDeque::new(),
@@ -1690,6 +1684,13 @@ mod tests {
         coordinator
     }
 
+    /// The ledger key for the `src/main.mw` that `open_body` opens.
+    fn main_key(dir: &Path) -> DocumentKey {
+        let root = SelectedRoot::from_uri(&root_uri(dir)).expect("temp project root uri");
+        DocumentKey::from_uri(&format!("{}/src/main.mw", root_uri(dir)), &root)
+            .expect("main.mw is inside the selected root")
+    }
+
     fn open_body(dir: &Path, version: i64, text: &str) -> String {
         let escaped = text
             .replace('\\', "\\\\")
@@ -1795,14 +1796,16 @@ mod tests {
             !receive_ingress(&mut coordinator, &ingress_rx),
             "follow-up ingress waits for initialize delivery"
         );
-        assert!(coordinator.ledger.is_empty(), "didOpen remains queued");
+        assert!(
+            coordinator.ledger.get(&main_key(&dir)).is_none(),
+            "didOpen remains queued"
+        );
 
         coordinator.on_receipt();
         assert_eq!(coordinator.lifecycle.phase(), Phase::Running);
         assert!(receive_ingress(&mut coordinator, &ingress_rx));
-        assert_eq!(
-            coordinator.ledger.len(),
-            1,
+        assert!(
+            coordinator.ledger.get(&main_key(&dir)).is_some(),
             "didOpen is admitted after delivery"
         );
         cleanup(&dir);
@@ -1812,16 +1815,22 @@ mod tests {
 
     #[test]
     fn live_entry_budget_admits_n_and_overloads_n_plus_1() {
-        // Capacity two: two distinct requests reserve; a third fails closed with a fixed
-        // terminal and no response.
-        let mut coordinator = Coordinator::with_capacities(2, 8);
-        coordinator.on_frame(br#"{"jsonrpc":"2.0","id":1,"method":"noSuchMethod"}"#);
-        coordinator.on_frame(br#"{"jsonrpc":"2.0","id":2,"method":"noSuchMethod"}"#);
-        assert_eq!(coordinator.requests.entries.len(), 2);
+        // At the shipped bound: N distinct requests reserve; N+1 fails closed with a
+        // fixed terminal and no response.
+        let mut coordinator = Coordinator::new();
+        for id in 1..=MAX_LIVE_REQUEST_ENTRIES {
+            coordinator.on_frame(
+                format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"noSuchMethod"}}"#).as_bytes(),
+            );
+        }
+        assert_eq!(coordinator.requests.entries.len(), MAX_LIVE_REQUEST_ENTRIES);
         assert!(coordinator.running, "still viable at N");
         let frames_before = coordinator.outbox.len();
 
-        coordinator.on_frame(br#"{"jsonrpc":"2.0","id":3,"method":"noSuchMethod"}"#);
+        let over = MAX_LIVE_REQUEST_ENTRIES + 1;
+        coordinator.on_frame(
+            format!(r#"{{"jsonrpc":"2.0","id":{over},"method":"noSuchMethod"}}"#).as_bytes(),
+        );
         assert!(!coordinator.running, "IngressOverload fail-stops at N+1");
         assert_eq!(
             coordinator.outbox.len(),
@@ -1832,7 +1841,7 @@ mod tests {
 
     #[test]
     fn duplicate_live_id_consumes_no_entry_and_gets_null_error() {
-        let mut coordinator = Coordinator::with_capacities(4, 8);
+        let mut coordinator = Coordinator::new();
         coordinator.on_frame(br#"{"jsonrpc":"2.0","id":7,"method":"noSuchMethod"}"#);
         assert_eq!(coordinator.requests.entries.len(), 1);
         // A second request with the same live id consumes no new entry and is a null-id
@@ -1852,8 +1861,13 @@ mod tests {
 
     #[test]
     fn anonymous_slot_exhaustion_is_terminal() {
-        // Capacity zero anonymous slots: the first null-id protocol error fail-stops.
-        let mut coordinator = Coordinator::with_capacities(4, 0);
+        // Undelivered null-id protocol errors hold their slots; the one past the shipped
+        // bound is a fixed terminal.
+        let mut coordinator = Coordinator::new();
+        for _ in 0..MAX_ANONYMOUS_ERROR_SLOTS {
+            coordinator.on_frame(b"{ not json");
+        }
+        assert!(coordinator.running, "still viable at the anonymous bound");
         coordinator.on_frame(b"{ not json");
         assert!(
             !coordinator.running,

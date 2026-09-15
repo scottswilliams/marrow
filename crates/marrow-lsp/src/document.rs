@@ -113,18 +113,6 @@ impl DocumentLedger {
         }
     }
 
-    /// The number of open documents.
-    #[cfg(test)]
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    /// Whether the ledger is empty.
-    #[cfg(test)]
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
     /// The state of an open document.
     pub fn get(&self, key: &DocumentKey) -> Option<&DocumentState> {
         self.entries.get(key)
@@ -170,15 +158,6 @@ impl DocumentLedger {
             Some(state) if version > state.version() => Ok(()),
             // Unknown key, or an equal/decreasing version: discard.
             _ => Err(LedgerRefusal::Discard),
-        }
-    }
-
-    /// Replace an open entry's state directly. The coordinator admits a change through
-    /// `insert` (which is insert-or-replace), so this is a test convenience.
-    #[cfg(test)]
-    pub fn replace(&mut self, key: &DocumentKey, state: DocumentState) {
-        if let Some(slot) = self.entries.get_mut(key) {
-            *slot = state;
         }
     }
 
@@ -243,15 +222,16 @@ mod tests {
         let k = key("src/a.mw");
         ledger.validate_open(&k).unwrap();
         ledger.insert(k.clone(), text(1, "a"));
-        assert_eq!(ledger.len(), 1);
+        assert_eq!(ledger.get(&k), Some(&text(1, "a")));
 
         assert_eq!(ledger.validate_change(&k, 1), Err(LedgerRefusal::Discard));
         ledger.validate_change(&k, 2).unwrap();
-        ledger.replace(&k, text(2, "aa"));
+        ledger.insert(k.clone(), text(2, "aa"));
+        assert_eq!(ledger.get(&k), Some(&text(2, "aa")));
 
         ledger.validate_close(&k).unwrap();
         ledger.remove(&k);
-        assert!(ledger.is_empty());
+        assert_eq!(ledger.get(&k), None);
     }
 
     #[test]

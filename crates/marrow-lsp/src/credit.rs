@@ -72,12 +72,6 @@ impl<T> CreditPool<T> {
     pub fn available(&self) -> usize {
         self.available.len()
     }
-
-    /// The fixed capacity.
-    #[cfg(test)]
-    pub fn capacity(&self) -> usize {
-        self.capacity
-    }
 }
 
 impl CreditPool<OutboundCredit> {
@@ -101,7 +95,6 @@ mod tests {
     #[test]
     fn outbound_pool_mints_exactly_w_credits() {
         let mut pool = CreditPool::outbound();
-        assert_eq!(pool.capacity(), OUTBOUND_CREDITS);
         let mut held = Vec::new();
         for _ in 0..OUTBOUND_CREDITS {
             held.push(pool.acquire().expect("credit within capacity"));
