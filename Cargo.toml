@@ -35,3 +35,11 @@ unsafe_code = "forbid"
 # Denying these turns that class into an ordinary build failure, not a clippy-only one.
 unreachable_patterns = "deny"
 unused_variables = "deny"
+
+[workspace.lints.clippy]
+# Structural budgets over function size, replacing hand-rolled length policing.
+# Both still fire on existing code, so CI forces them to warn instead of letting
+# `-D warnings` promote them; a crate-shape lane retires the hits and removes the
+# `--force-warn` flags with them.
+too_many_lines = "warn"
+cognitive_complexity = "warn"
