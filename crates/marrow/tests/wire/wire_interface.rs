@@ -1,5 +1,5 @@
-//! G00a: the host-neutral wire interface descriptor and `InterfaceId`, observed
-//! through the full production path (capture -> compile -> verify -> reconstruct).
+//! The host-neutral wire interface descriptor and `InterfaceId`, observed through
+//! the full production path (capture -> compile -> verify -> reconstruct).
 //!
 //! The interface is reconstructed from the verified image alone — export ids,
 //! function parameter/return types, the record/enum tables, and each export's
@@ -8,11 +8,8 @@
 //! verify). A body-only edit that changes no signature and no demand leaves the
 //! `InterfaceId` unchanged; any signature change moves it.
 
-use marrow_image::{
-    CollectionShape, EnumShape, ExportSignature, FieldShape, ImageType, Interface, InterfaceError,
-    InterfaceId, RecordShape, RootShape, TransferType, VariantShape,
-};
-use marrow_verify::{RetShape, SealedCollectionType, VerifiedImage};
+use marrow_image::{InterfaceId, TransferType};
+use marrow_verify::{VerifiedImage, interface_of};
 
 /// Compile and verify one `src/main.mw` through the production path.
 fn compile_verify(source: &str) -> VerifiedImage {
@@ -30,101 +27,6 @@ fn compile_verify(source: &str) -> VerifiedImage {
     .expect("capture");
     let compiled = marrow_compile::compile(&project).expect("compile");
     marrow_verify::verify(&compiled.image.bytes).expect("verify")
-}
-
-/// Map a function's decoded return shape to the bare-or-optional `ImageType` the
-/// interface builder consumes. A one-to-one projection.
-fn ret_to_image(ret: RetShape) -> ImageType {
-    match ret {
-        RetShape::Unit => ImageType::Unit,
-        RetShape::Scalar { scalar, optional } => ImageType::Scalar { scalar, optional },
-        RetShape::Record { idx, optional } => ImageType::Record {
-            idx: marrow_image::TypeId::from_index(idx),
-            optional,
-        },
-        RetShape::Enum { idx, optional } => ImageType::Enum {
-            idx: marrow_image::EnumId::from_index(idx),
-            optional,
-        },
-        RetShape::Collection { idx, optional } => ImageType::Collection {
-            idx: marrow_image::CollTypeId::from_index(idx),
-            optional,
-        },
-        RetShape::Identity { root, optional } => ImageType::Identity {
-            root: marrow_image::RootId::from_index(root),
-            optional,
-        },
-    }
-}
-
-/// Reconstruct the wire interface from a verified image, using only its public
-/// accessors. This is the thin projection both real callers (the terminal and the
-/// generated TypeScript client) build the descriptor set through; the identity,
-/// transfer-graph law, and canonical encoding live in `marrow-image`.
-fn interface_of(image: &VerifiedImage) -> Result<Interface, InterfaceError> {
-    let records: Vec<RecordShape> = image
-        .record_types()
-        .iter()
-        .map(|record| RecordShape {
-            fields: record
-                .fields()
-                .iter()
-                .map(|field| FieldShape {
-                    name: field.name.to_string(),
-                    ty: field.ty,
-                    required: field.required,
-                })
-                .collect(),
-        })
-        .collect();
-    let enums: Vec<EnumShape> = image
-        .enums()
-        .iter()
-        .map(|enum_type| EnumShape {
-            variants: enum_type
-                .variants()
-                .iter()
-                .map(|variant| VariantShape {
-                    name: variant.name.to_string(),
-                    category: variant.category,
-                    payload: variant.payload.clone(),
-                })
-                .collect(),
-        })
-        .collect();
-    let exports: Vec<ExportSignature> = image
-        .exports()
-        .iter()
-        .map(|export| {
-            let function = image
-                .function(export.function())
-                .expect("verified function")
-                .body();
-            ExportSignature {
-                id: export.id(),
-                params: function.params().to_vec(),
-                ret: ret_to_image(function.ret()),
-                demand_id: export.demand_id(),
-            }
-        })
-        .collect();
-    let collections: Vec<CollectionShape> = image
-        .collections()
-        .iter()
-        .map(|collection| match *collection {
-            SealedCollectionType::List { elem } => CollectionShape::List { elem },
-            SealedCollectionType::Map { key, value } => CollectionShape::Map { key, value },
-        })
-        .collect();
-    let roots: Vec<RootShape> = image
-        .roots()
-        .iter()
-        .map(|root| RootShape {
-            name: root.name().to_string(),
-            keys: root.keys().to_vec(),
-        })
-        .collect();
-    Interface::build(exports, &records, &enums, &collections, &roots)
 }
 
 fn interface_id(source: &str) -> InterfaceId {

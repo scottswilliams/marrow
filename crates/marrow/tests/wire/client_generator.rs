@@ -4,8 +4,8 @@
 //! The generated client is a presentation surface paired with typed semantic
 //! assertions (per the test-tier law): the golden snapshot freezes the exact
 //! bytes for a stable fixture, and the semantic tests assert the method
-//! signatures, the interface-id pin (against an independent in-process
-//! reconstruction through `marrow-image`), and the emitted supervisor files'
+//! signatures, the interface-id pin (against an in-process reconstruction from
+//! the verified image), and the emitted supervisor files'
 //! byte-identity with the pinned tracked assets. Regenerate the golden with
 //! `MARROW_UPDATE_TS_GOLDEN=1` and review the diff.
 //!
@@ -19,12 +19,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::common::{TempDir, marrow_in, write};
-
-use marrow_image::{
-    CollectionShape, EnumShape, ExportSignature, FieldShape, ImageType, Interface, RecordShape,
-    RootShape, VariantShape,
-};
-use marrow_verify::{RetShape, SealedCollectionType};
 
 #[test]
 fn nominal_aggregate_inputs_publish_neither_client_nor_image() {
@@ -219,8 +213,8 @@ fn generated_signatures_and_interface_pin_are_exact() {
         );
     }
 
-    // The INTERFACE_ID pin equals the independent reconstruction through the
-    // production compile -> verify -> Interface::build path.
+    // The INTERFACE_ID pin equals the reconstruction through the production
+    // compile -> verify -> interface_of path.
     let expected = reconstruct_interface_id();
     assert!(
         generated.contains(&format!("export const INTERFACE_ID = \"{expected}\";")),
@@ -228,8 +222,8 @@ fn generated_signatures_and_interface_pin_are_exact() {
     );
 }
 
-/// Reconstruct the fixture's `InterfaceId` in process, sharing no code with the
-/// generator's projection beyond the one `marrow-image` owner.
+/// Reconstruct the fixture's `InterfaceId` in process through the same verified-image
+/// projection the generator uses, so the pin is checked against the one owner.
 fn reconstruct_interface_id() -> String {
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
     let files = vec![marrow_project::CapturedFile::new(
@@ -246,88 +240,7 @@ fn reconstruct_interface_id() -> String {
     let compiled = marrow_compile::compile(&project).expect("compile");
     let image = marrow_verify::verify(&compiled.image.bytes).expect("verify");
 
-    let records: Vec<RecordShape> = image
-        .record_types()
-        .iter()
-        .map(|record| RecordShape {
-            fields: record
-                .fields()
-                .iter()
-                .map(|field| FieldShape {
-                    name: field.name.to_string(),
-                    ty: field.ty,
-                    required: field.required,
-                })
-                .collect(),
-        })
-        .collect();
-    let enums: Vec<EnumShape> = image
-        .enums()
-        .iter()
-        .map(|enum_type| EnumShape {
-            variants: enum_type
-                .variants()
-                .iter()
-                .map(|variant| VariantShape {
-                    name: variant.name.to_string(),
-                    category: variant.category,
-                    payload: variant.payload.clone(),
-                })
-                .collect(),
-        })
-        .collect();
-    let exports: Vec<ExportSignature> = image
-        .exports()
-        .iter()
-        .map(|export| {
-            let function = image
-                .function(export.function())
-                .expect("verified function")
-                .body();
-            ExportSignature {
-                id: export.id(),
-                params: function.params().to_vec(),
-                ret: match function.ret() {
-                    RetShape::Unit => ImageType::Unit,
-                    RetShape::Scalar { scalar, optional } => ImageType::Scalar { scalar, optional },
-                    RetShape::Record { idx, optional } => ImageType::Record {
-                        idx: marrow_image::TypeId::from_index(idx),
-                        optional,
-                    },
-                    RetShape::Enum { idx, optional } => ImageType::Enum {
-                        idx: marrow_image::EnumId::from_index(idx),
-                        optional,
-                    },
-                    RetShape::Collection { idx, optional } => ImageType::Collection {
-                        idx: marrow_image::CollTypeId::from_index(idx),
-                        optional,
-                    },
-                    RetShape::Identity { root, optional } => ImageType::Identity {
-                        root: marrow_image::RootId::from_index(root),
-                        optional,
-                    },
-                },
-                demand_id: export.demand_id(),
-            }
-        })
-        .collect();
-    let collections: Vec<CollectionShape> = image
-        .collections()
-        .iter()
-        .map(|collection| match *collection {
-            SealedCollectionType::List { elem } => CollectionShape::List { elem },
-            SealedCollectionType::Map { key, value } => CollectionShape::Map { key, value },
-        })
-        .collect();
-    let roots: Vec<RootShape> = image
-        .roots()
-        .iter()
-        .map(|root| RootShape {
-            name: root.name().to_string(),
-            keys: root.keys().to_vec(),
-        })
-        .collect();
-    Interface::build(exports, &records, &enums, &collections, &roots)
+    marrow_verify::interface_of(&image)
         .expect("interface")
         .interface_id()
         .to_hex()
