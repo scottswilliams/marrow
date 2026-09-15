@@ -241,8 +241,8 @@ pub struct RootShape {
 }
 
 /// One export's wire signature as a caller supplies it: the export's id, its
-/// parameter and return [`ImageType`]s (the return mapped from the function's
-/// `RetShape`), and its verifier-reconstructed [`DemandSetId`].
+/// parameter and return [`ImageType`]s, and its verifier-reconstructed
+/// [`DemandSetId`].
 #[derive(Debug, Clone)]
 pub struct ExportSignature {
     pub id: ExportId,

@@ -2,12 +2,13 @@
 
 use super::model::{DecodedEnum, DecodedField, DecodedRecordType, DecodedVariant};
 use super::reject;
+use super::type_ref::{Optionality, TagSet, TypePosition, decode_type_ref, type_position};
 use crate::reader::Reader;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::SealedCollectionType;
 use marrow_image::{
-    CollTypeId, EnumId, ImageType, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES, TAG_COLLECTION,
-    TAG_DATE, TAG_DURATION, TAG_ENUM, TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT, TypeId,
+    EnumId, ImageType, Scalar, TAG_BOOL, TAG_BYTES, TAG_DATE, TAG_DURATION, TAG_INSTANT, TAG_INT,
+    TAG_TEXT,
 };
 use std::rc::Rc;
 
@@ -185,6 +186,43 @@ pub(super) fn decode_bare_scalar(tag: u8) -> Option<Scalar> {
     }
 }
 
+/// A record field: a scalar leaf, or a closed enum, record or collection value.
+/// Never optional — sparseness is the `required` flag, not the type — and its
+/// referenced indices are checked by `validate_record_field_refs` once the tables
+/// they name have decoded.
+const FIELD: TypePosition = type_position!(
+    "record field",
+    TagSet::SCALAR
+        .with(TagSet::RECORD)
+        .with(TagSet::ENUM)
+        .with(TagSet::COLLECTION),
+    Optionality::Bare
+);
+
+/// An enum payload leaf: a bare scalar, record or enum reference.
+const PAYLOAD_LEAF: TypePosition = type_position!(
+    "enum payload leaf",
+    TagSet::SCALAR.with(TagSet::RECORD).with(TagSet::ENUM),
+    Optionality::Bare
+);
+
+/// A COLLTYPES element, key or value: a bare scalar, record, enum, or a collection
+/// strictly earlier than `row`, so the collection reference graph is acyclic by
+/// construction.
+fn collection_leaf(type_count: usize, enum_count: usize, row: usize) -> TypePosition {
+    type_position!(
+        "collection leaf",
+        TagSet::SCALAR
+            .with(TagSet::RECORD)
+            .with(TagSet::ENUM)
+            .with(TagSet::COLLECTION),
+        Optionality::Bare
+    )
+    .types(type_count)
+    .enums(enum_count)
+    .collections(row)
+}
+
 pub(super) fn decode_types(
     body: &[u8],
     string_count: usize,
@@ -232,10 +270,11 @@ fn decode_types_with_work(
             if names.insert(fname) {
                 return Err(reject(VerifyPhase::Table, "duplicate field name in record"));
             }
-            let tag = reader
-                .u8()
-                .ok_or(reject(VerifyPhase::Table, "short field type"))?;
-            let ty = decode_record_field_type(tag, &mut reader)?;
+            // A field is a scalar leaf (durable-storable) or a closed enum, record
+            // or collection value; sparseness is the `required` flag, never the
+            // optional bit. The referenced indices are read before the tables that
+            // bound them exist, so `validate_record_field_refs` range-checks them.
+            let ty = decode_type_ref(&mut reader, &FIELD)?;
             let required_byte = reader
                 .u8()
                 .ok_or(reject(VerifyPhase::Table, "short field required flag"))?;
@@ -344,14 +383,9 @@ fn decode_enums_with_work(
             }
             let mut payload = Vec::with_capacity(payload_count);
             for _ in 0..payload_count {
-                let tag = reader
-                    .u8()
-                    .ok_or(reject(VerifyPhase::Table, "short payload type"))?;
-                payload.push(decode_bare_payload_type(
-                    tag,
+                payload.push(decode_type_ref(
                     &mut reader,
-                    type_count,
-                    count,
+                    &PAYLOAD_LEAF.types(type_count).enums(count),
                 )?);
             }
             variants.push(DecodedVariant {
@@ -395,11 +429,13 @@ pub(super) fn decode_collections(
             .ok_or(reject(VerifyPhase::Table, "short collection kind"))?;
         let coll = match kind {
             0x00 => {
-                let elem = decode_collection_inner_ref(&mut reader, type_count, enum_count, row)?;
+                let elem =
+                    decode_type_ref(&mut reader, &collection_leaf(type_count, enum_count, row))?;
                 SealedCollectionType::List { elem }
             }
             0x01 => {
-                let key = decode_collection_inner_ref(&mut reader, type_count, enum_count, row)?;
+                let key =
+                    decode_type_ref(&mut reader, &collection_leaf(type_count, enum_count, row))?;
                 if !matches!(
                     key,
                     ImageType::Scalar {
@@ -412,7 +448,8 @@ pub(super) fn decode_collections(
                         "map key must be a bare scalar key type",
                     ));
                 }
-                let value = decode_collection_inner_ref(&mut reader, type_count, enum_count, row)?;
+                let value =
+                    decode_type_ref(&mut reader, &collection_leaf(type_count, enum_count, row))?;
                 SealedCollectionType::Map { key, value }
             }
             _ => {
@@ -431,187 +468,6 @@ pub(super) fn decode_collections(
         ));
     }
     Ok(collections)
-}
-
-/// Decode one bare element/key/value type inside a COLLTYPES row: a scalar, a record
-/// (index in range), an enum (index in range), or a collection (a strictly earlier
-/// row `< current`). Never optional — a collection's leaf types are bare.
-fn decode_collection_inner_ref(
-    reader: &mut Reader,
-    type_count: usize,
-    enum_count: usize,
-    current_row: usize,
-) -> Result<ImageType, VerifyRejection> {
-    let tag = reader
-        .u8()
-        .ok_or(reject(VerifyPhase::Table, "short collection leaf type"))?;
-    if tag & OPTIONAL_FLAG != 0 {
-        return Err(reject(
-            VerifyPhase::Table,
-            "collection leaf type cannot be optional",
-        ));
-    }
-    match tag {
-        TAG_INT | TAG_BOOL | TAG_TEXT | TAG_BYTES | TAG_DATE | TAG_INSTANT | TAG_DURATION => Ok(
-            ImageType::scalar(decode_bare_scalar(tag).expect("scalar base")),
-        ),
-        TAG_RECORD => {
-            let idx = reader
-                .u16()
-                .ok_or(reject(VerifyPhase::Table, "short collection record index"))?;
-            if idx as usize >= type_count {
-                return Err(reject(
-                    VerifyPhase::Table,
-                    "collection record index out of range",
-                ));
-            }
-            Ok(ImageType::Record {
-                idx: TypeId::from_index(idx),
-                optional: false,
-            })
-        }
-        TAG_ENUM => {
-            let idx = reader
-                .u16()
-                .ok_or(reject(VerifyPhase::Table, "short collection enum index"))?;
-            if idx as usize >= enum_count {
-                return Err(reject(
-                    VerifyPhase::Table,
-                    "collection enum index out of range",
-                ));
-            }
-            Ok(ImageType::Enum {
-                idx: EnumId::from_index(idx),
-                optional: false,
-            })
-        }
-        TAG_COLLECTION => {
-            let idx = reader
-                .u16()
-                .ok_or(reject(VerifyPhase::Table, "short nested collection index"))?;
-            if idx as usize >= current_row {
-                return Err(reject(
-                    VerifyPhase::Table,
-                    "nested collection index must name an earlier collection",
-                ));
-            }
-            Ok(ImageType::Collection {
-                idx: CollTypeId::from_index(idx),
-                optional: false,
-            })
-        }
-        _ => Err(reject(
-            VerifyPhase::Table,
-            "collection leaf type must be a bare scalar, record, enum, or earlier collection",
-        )),
-    }
-}
-
-/// Decode one bare enum-payload leaf type: a scalar, a record, or an enum
-/// reference, never optional. Record and enum indices are validated in range
-/// (`type_count`/`enum_count`) so a payload can never name a type outside the
-/// image.
-fn decode_bare_payload_type(
-    tag: u8,
-    reader: &mut Reader,
-    type_count: usize,
-    enum_count: usize,
-) -> Result<ImageType, VerifyRejection> {
-    if tag & OPTIONAL_FLAG != 0 {
-        return Err(reject(
-            VerifyPhase::Table,
-            "enum payload leaf cannot be optional",
-        ));
-    }
-    match tag {
-        TAG_INT | TAG_BOOL | TAG_TEXT | TAG_BYTES | TAG_DATE | TAG_INSTANT | TAG_DURATION => Ok(
-            ImageType::scalar(decode_bare_scalar(tag).expect("scalar base")),
-        ),
-        TAG_RECORD => {
-            let idx = reader
-                .u16()
-                .ok_or(reject(VerifyPhase::Table, "short payload record index"))?;
-            if idx as usize >= type_count {
-                return Err(reject(
-                    VerifyPhase::Table,
-                    "payload record index out of range",
-                ));
-            }
-            Ok(ImageType::Record {
-                idx: TypeId::from_index(idx),
-                optional: false,
-            })
-        }
-        TAG_ENUM => {
-            let idx = reader
-                .u16()
-                .ok_or(reject(VerifyPhase::Table, "short payload enum index"))?;
-            if idx as usize >= enum_count {
-                return Err(reject(
-                    VerifyPhase::Table,
-                    "payload enum index out of range",
-                ));
-            }
-            Ok(ImageType::Enum {
-                idx: EnumId::from_index(idx),
-                optional: false,
-            })
-        }
-        _ => Err(reject(
-            VerifyPhase::Table,
-            "enum payload leaf must be a bare scalar, record, or enum",
-        )),
-    }
-}
-
-/// Decode a record field type: a bare scalar or a bare enum. A field is a scalar
-/// leaf (durable-storable) or a closed enum value (local-only); it is never
-/// optional (sparseness is the `required` flag) and never a directly nested
-/// record. The enum index is only read here; `validate_record_field_enums`
-/// bounds-checks it once the ENUMS table has decoded.
-fn decode_record_field_type(tag: u8, reader: &mut Reader) -> Result<ImageType, VerifyRejection> {
-    if tag & OPTIONAL_FLAG != 0 {
-        return Err(reject(
-            VerifyPhase::Table,
-            "record field type cannot be optional",
-        ));
-    }
-    match tag {
-        TAG_INT | TAG_BOOL | TAG_TEXT | TAG_BYTES | TAG_DATE | TAG_INSTANT | TAG_DURATION => Ok(
-            ImageType::scalar(decode_bare_scalar(tag).expect("scalar base")),
-        ),
-        TAG_ENUM => {
-            let idx = reader
-                .u16()
-                .ok_or(reject(VerifyPhase::Table, "short field enum index"))?;
-            Ok(ImageType::Enum {
-                idx: EnumId::from_index(idx),
-                optional: false,
-            })
-        }
-        TAG_RECORD => {
-            let idx = reader
-                .u16()
-                .ok_or(reject(VerifyPhase::Table, "short field record index"))?;
-            Ok(ImageType::Record {
-                idx: TypeId::from_index(idx),
-                optional: false,
-            })
-        }
-        TAG_COLLECTION => {
-            let idx = reader
-                .u16()
-                .ok_or(reject(VerifyPhase::Table, "short field collection index"))?;
-            Ok(ImageType::Collection {
-                idx: CollTypeId::from_index(idx),
-                optional: false,
-            })
-        }
-        _ => Err(reject(
-            VerifyPhase::Table,
-            "record field type must be a bare scalar, record, enum, or collection",
-        )),
-    }
 }
 
 /// Bounds-check every record field's referenced value type against the decoded

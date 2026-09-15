@@ -14,7 +14,8 @@
 
 use crate::common::{CallOutcome, Project};
 use marrow_codes::Code;
-use marrow_verify::{RetShape, SealedExport, VerifiedImage};
+use marrow_image::ImageType;
+use marrow_verify::{SealedExport, VerifiedImage};
 use marrow_vm::{
     DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
 };
@@ -546,7 +547,7 @@ fn attach(image: &VerifiedImage) -> MemoryAttachment {
 }
 
 fn result_value(image: &VerifiedImage, name: &str, variant: &str, payload: Value) -> Option<Value> {
-    let RetShape::Enum {
+    let ImageType::Enum {
         idx,
         optional: false,
     } = image
@@ -557,6 +558,7 @@ fn result_value(image: &VerifiedImage, name: &str, variant: &str, payload: Value
     else {
         panic!("{name} returns a non-optional Result");
     };
+    let idx = u16::try_from(idx.index()).expect("a verified enum index");
     let variant = u16::try_from(
         image.enums()[usize::from(idx)]
             .variants()

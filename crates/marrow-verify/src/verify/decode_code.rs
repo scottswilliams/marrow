@@ -1,34 +1,32 @@
 //! Instruction decoding: operand readers, jump resolution, and the decoded-op model.
 
 use super::reject;
-use super::tables::decode_bare_scalar;
+use super::type_ref::{Optionality, TagSet, TypePosition, decode_type_ref, type_position};
 use crate::reader::Reader;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::SealedInstr;
 use marrow_image::{
-    CollTypeId, EnumId, ImageType, OP_ASSERT, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_BYTES_GE,
-    OP_BYTES_GT, OP_BYTES_LE, OP_BYTES_LT, OP_CALL, OP_CONST_LOAD, OP_CONV_BYTES_TEXT,
-    OP_CONV_STRING, OP_DATE_ADD_DAYS, OP_DATE_DAYS_BETWEEN, OP_DATE_GE, OP_DATE_GT, OP_DATE_LE,
-    OP_DATE_LT, OP_DUR_CREATE_ENTRY, OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_ERASE_GROUP,
-    OP_DUR_EXISTS, OP_DUR_FAMILY_EXISTS, OP_DUR_INDEX_EXISTS, OP_DUR_INDEX_LOOKUP,
-    OP_DUR_INDEX_SCAN, OP_DUR_ITERATE_BOUNDED, OP_DUR_READ_ENTRY, OP_DUR_READ_FIELD,
-    OP_DUR_READ_FIELD_PRESENT, OP_DUR_READ_GROUP, OP_DUR_READ_GROUP_PRESENT, OP_DUR_REPLACE_ENTRY,
-    OP_DUR_REPLACE_GROUP, OP_DUR_SET_FIELD, OP_DURATION_ADD, OP_DURATION_GE, OP_DURATION_GT,
-    OP_DURATION_LE, OP_DURATION_LT, OP_DURATION_SUB, OP_ENUM_CONSTRUCT, OP_ENUM_PAYLOAD_GET,
-    OP_ENUM_TAG, OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_DATE, OP_EQ_DURATION, OP_EQ_ENUM, OP_EQ_ID,
-    OP_EQ_INSTANT, OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET, OP_FIELD_SET, OP_FIELD_UNSET,
-    OP_IDENTITY_KEY_PATH, OP_INSTANT_ADD_DURATION, OP_INSTANT_GE, OP_INSTANT_GT, OP_INSTANT_LE,
-    OP_INSTANT_LT, OP_INSTANT_SUB_DURATION, OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV,
-    OP_INT_DIV_CHECKED, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED,
-    OP_INT_NEG, OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED,
-    OP_JUMP, OP_JUMP_IF_FALSE, OP_LIST_APPEND, OP_LIST_GET, OP_LIST_INDEX, OP_LIST_LEN,
-    OP_LIST_NEW, OP_LOCAL_GET, OP_LOCAL_SET, OP_MAKE_IDENTITY, OP_MAP_GET, OP_MAP_INSERT,
-    OP_MAP_KEY_AT, OP_MAP_LEN, OP_MAP_NEW, OP_MAP_REMOVE, OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD,
-    OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE,
-    OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN, OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT,
-    OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TODO, OP_TXN_BEGIN, OP_TXN_COMMIT, OP_UNREACHABLE,
-    OP_VACANT_LOAD, OPTIONAL_FLAG, TAG_BOOL, TAG_BYTES, TAG_COLLECTION, TAG_DATE, TAG_DURATION,
-    TAG_ENUM, TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT, TypeId,
+    OP_ASSERT, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_BYTES_GE, OP_BYTES_GT, OP_BYTES_LE, OP_BYTES_LT,
+    OP_CALL, OP_CONST_LOAD, OP_CONV_BYTES_TEXT, OP_CONV_STRING, OP_DATE_ADD_DAYS,
+    OP_DATE_DAYS_BETWEEN, OP_DATE_GE, OP_DATE_GT, OP_DATE_LE, OP_DATE_LT, OP_DUR_CREATE_ENTRY,
+    OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_ERASE_GROUP, OP_DUR_EXISTS,
+    OP_DUR_FAMILY_EXISTS, OP_DUR_INDEX_EXISTS, OP_DUR_INDEX_LOOKUP, OP_DUR_INDEX_SCAN,
+    OP_DUR_ITERATE_BOUNDED, OP_DUR_READ_ENTRY, OP_DUR_READ_FIELD, OP_DUR_READ_FIELD_PRESENT,
+    OP_DUR_READ_GROUP, OP_DUR_READ_GROUP_PRESENT, OP_DUR_REPLACE_ENTRY, OP_DUR_REPLACE_GROUP,
+    OP_DUR_SET_FIELD, OP_DURATION_ADD, OP_DURATION_GE, OP_DURATION_GT, OP_DURATION_LE,
+    OP_DURATION_LT, OP_DURATION_SUB, OP_ENUM_CONSTRUCT, OP_ENUM_PAYLOAD_GET, OP_ENUM_TAG,
+    OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_DATE, OP_EQ_DURATION, OP_EQ_ENUM, OP_EQ_ID, OP_EQ_INSTANT,
+    OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET, OP_FIELD_SET, OP_FIELD_UNSET, OP_IDENTITY_KEY_PATH,
+    OP_INSTANT_ADD_DURATION, OP_INSTANT_GE, OP_INSTANT_GT, OP_INSTANT_LE, OP_INSTANT_LT,
+    OP_INSTANT_SUB_DURATION, OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV, OP_INT_DIV_CHECKED,
+    OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED, OP_INT_NEG,
+    OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED, OP_JUMP,
+    OP_JUMP_IF_FALSE, OP_LIST_APPEND, OP_LIST_GET, OP_LIST_INDEX, OP_LIST_LEN, OP_LIST_NEW,
+    OP_LOCAL_GET, OP_LOCAL_SET, OP_MAKE_IDENTITY, OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT,
+    OP_MAP_LEN, OP_MAP_NEW, OP_MAP_REMOVE, OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW,
+    OP_RETURN, OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT,
+    OP_TEXT_IS_EMPTY, OP_TEXT_JOIN, OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT,
+    OP_TEXT_TRIM, OP_TODO, OP_TXN_BEGIN, OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD,
 };
 
 /// A decoded instruction with resolved operands and its byte offset. Jump targets
@@ -134,7 +132,7 @@ pub(super) fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> 
             OP_FIELD_SET => SealedInstr::FieldSet(operand_u16(&mut reader)?),
             OP_FIELD_UNSET => SealedInstr::FieldUnset(operand_u16(&mut reader)?),
             OP_SOME_WRAP => SealedInstr::SomeWrap,
-            OP_VACANT_LOAD => SealedInstr::VacantLoad(decode_vacant_operand(&mut reader)?),
+            OP_VACANT_LOAD => SealedInstr::VacantLoad(decode_type_ref(&mut reader, &VACANT_LOAD)?),
             OP_ENUM_CONSTRUCT => SealedInstr::EnumConstruct {
                 enum_idx: operand_u16(&mut reader)?,
                 variant: operand_u16(&mut reader)?,
@@ -273,63 +271,17 @@ fn operand_bool(reader: &mut Reader) -> Result<bool, VerifyRejection> {
     }
 }
 
-/// Decode a `VacantLoad` operand: a full optional type-ref — an optional scalar
-/// (one byte) or an optional enum (a tag plus a big-endian `u16` index, the enum
-/// bounds-checked in the abstract interpreter). Design §C, §D `VacantLoad`.
-fn decode_vacant_operand(reader: &mut Reader) -> Result<ImageType, VerifyRejection> {
-    let tag = reader
-        .u8()
-        .ok_or(reject(VerifyPhase::Function, "short vacant-load operand"))?;
-    if tag & OPTIONAL_FLAG == 0 {
-        return Err(reject(
-            VerifyPhase::Function,
-            "vacant-load operand must be optional",
-        ));
-    }
-    let base = tag & !OPTIONAL_FLAG;
-    match base {
-        TAG_INT | TAG_BOOL | TAG_TEXT | TAG_BYTES | TAG_DATE | TAG_INSTANT | TAG_DURATION => {
-            Ok(ImageType::Scalar {
-                scalar: decode_bare_scalar(base).expect("scalar base"),
-                optional: true,
-            })
-        }
-        TAG_RECORD => {
-            let idx = reader.u16().ok_or(reject(
-                VerifyPhase::Function,
-                "short vacant-load record index",
-            ))?;
-            Ok(ImageType::Record {
-                idx: TypeId::from_index(idx),
-                optional: true,
-            })
-        }
-        TAG_ENUM => {
-            let idx = reader.u16().ok_or(reject(
-                VerifyPhase::Function,
-                "short vacant-load enum index",
-            ))?;
-            Ok(ImageType::Enum {
-                idx: EnumId::from_index(idx),
-                optional: true,
-            })
-        }
-        TAG_COLLECTION => {
-            let idx = reader.u16().ok_or(reject(
-                VerifyPhase::Function,
-                "short vacant-load collection index",
-            ))?;
-            Ok(ImageType::Collection {
-                idx: CollTypeId::from_index(idx),
-                optional: true,
-            })
-        }
-        _ => Err(reject(
-            VerifyPhase::Function,
-            "vacant-load operand must be an optional scalar, record, enum, or collection",
-        )),
-    }
-}
+/// A `VacantLoad` operand: a full optional type reference. Its referenced indices
+/// are bounds-checked by the abstract interpreter against the sealed tables.
+const VACANT_LOAD: TypePosition = type_position!(
+    "vacant-load operand",
+    TagSet::SCALAR
+        .with(TagSet::RECORD)
+        .with(TagSet::ENUM)
+        .with(TagSet::COLLECTION),
+    Optionality::Optional
+)
+.in_phase(VerifyPhase::Function);
 
 /// Rewrite jump operands from container byte offsets to tape indices, rejecting a
 /// target that is not an instruction boundary in this function. Record targets
@@ -375,7 +327,7 @@ mod opcode_bijection {
     //! cannot land without an entry in [`samples`].
     use std::collections::HashMap;
 
-    use marrow_image::Scalar;
+    use marrow_image::{ImageType, OPTIONAL_FLAG, Scalar, TAG_INT};
 
     use super::*;
 
@@ -753,7 +705,7 @@ mod index_site_partition {
     //! detail its guard owns.
 
     use marrow_image::{
-        CanonicalDeclarationPathSelector, CollectionTypeDef, DeclarationMemberDef,
+        CanonicalDeclarationPathSelector, CollTypeId, CollectionTypeDef, DeclarationMemberDef,
         DeclarationMemberShape, DraftTxn, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType,
         Instr, KeyColumn, LedgerIdBytes, PlannedSiteRef, RecordTypeDef, RootOccurrenceDef,
         RootOccurrenceSelector, Scalar, SemanticTarget, SpanEntry,

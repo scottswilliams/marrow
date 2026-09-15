@@ -7,7 +7,7 @@ use super::reject;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::FunctionDemands;
 use crate::sealed::{
-    RetShape, SealedCollectionType, SealedEnumType, SealedFunction, SealedIndex, SealedInstr,
+    SealedCollectionType, SealedEnumType, SealedFunction, SealedIndex, SealedInstr,
     SealedRecordType, SealedRoot, SealedSite,
 };
 use marrow_image::{DemandAtom, ExportDemand, ImageType, SemanticPath};
@@ -31,7 +31,7 @@ pub(super) struct Ctx<'a> {
 /// A callee's signature, consulted by the per-function `Call` type check.
 pub(super) struct FnSig {
     pub(super) params: Vec<ImageType>,
-    pub(super) ret: RetShape,
+    pub(super) ret: ImageType,
 }
 
 /// All direct-call occurrences in tape order, certified acyclic before effects

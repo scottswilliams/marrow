@@ -18,8 +18,9 @@ mod scratch;
 
 use std::path::{Path, PathBuf};
 
+use marrow_image::ImageType;
 use marrow_runner::{CallOutcome, Json, attach_and_call};
-use marrow_verify::{RetShape, VerifiedImage};
+use marrow_verify::VerifiedImage;
 use marrow_vm::Value;
 use output::broken_output;
 
@@ -350,7 +351,7 @@ pub fn setMovesRequired(v: int): Result<int, string> {
             .iter()
             .find(|export| export.id().bytes() == &id)
             .expect("verified export");
-        let RetShape::Enum {
+        let ImageType::Enum {
             idx,
             optional: false,
         } = terminal
@@ -362,6 +363,7 @@ pub fn setMovesRequired(v: int): Result<int, string> {
         else {
             panic!("{name} returns a non-optional Result");
         };
+        let idx = u16::try_from(idx.index()).expect("a verified enum index");
         let variants = terminal.image.enums()[usize::from(idx)].variants();
         for (value, member, payload) in [
             (200, "err", Value::Text("value is large".into())),

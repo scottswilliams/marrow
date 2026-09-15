@@ -2,15 +2,11 @@
 
 use super::model::DecodedFunction;
 use super::reject;
-use super::tables::decode_bare_scalar;
+use super::type_ref::{Optionality, TagSet, TypePosition, decode_type_ref, type_position};
 use crate::reader::Reader;
 use crate::reject::{VerifyPhase, VerifyRejection};
-use crate::sealed::{RetShape, SealedConst};
-use marrow_image::{
-    CollTypeId, EnumId, ExportId, ImageType, OPTIONAL_FLAG, RootId, TAG_BOOL, TAG_BYTES,
-    TAG_COLLECTION, TAG_DATE, TAG_DURATION, TAG_ENUM, TAG_IDENTITY, TAG_INSTANT, TAG_INT,
-    TAG_RECORD, TAG_TEXT, TAG_UNIT, TypeId,
-};
+use crate::sealed::SealedConst;
+use marrow_image::ExportId;
 use std::rc::Rc;
 
 pub(super) fn decode_consts(
@@ -112,169 +108,44 @@ pub(super) fn decode_consts(
     Ok(consts)
 }
 
-fn decode_type_ref_ret(
-    tag: u8,
-    reader: &mut Reader,
-    type_count: usize,
-    enum_count: usize,
-    collection_count: usize,
-    root_count: usize,
-) -> Result<RetShape, VerifyRejection> {
-    let optional = tag & OPTIONAL_FLAG != 0;
-    let base = tag & !OPTIONAL_FLAG;
-    match base {
-        TAG_UNIT => {
-            if optional {
-                return Err(reject(VerifyPhase::Table, "unit return cannot be optional"));
-            }
-            Ok(RetShape::Unit)
-        }
-        TAG_INT | TAG_BOOL | TAG_TEXT | TAG_BYTES | TAG_DATE | TAG_INSTANT | TAG_DURATION => {
-            let scalar = decode_bare_scalar(base).expect("scalar base");
-            Ok(RetShape::Scalar { scalar, optional })
-        }
-        TAG_RECORD => {
-            let idx = reader
-                .u16()
-                .ok_or(reject(VerifyPhase::Table, "short record return type index"))?;
-            if idx as usize >= type_count {
-                return Err(reject(
-                    VerifyPhase::Table,
-                    "record return type index out of range",
-                ));
-            }
-            Ok(RetShape::Record { idx, optional })
-        }
-        TAG_ENUM => {
-            let idx = reader
-                .u16()
-                .ok_or(reject(VerifyPhase::Table, "short enum return type index"))?;
-            if idx as usize >= enum_count {
-                return Err(reject(
-                    VerifyPhase::Table,
-                    "enum return type index out of range",
-                ));
-            }
-            Ok(RetShape::Enum { idx, optional })
-        }
-        TAG_COLLECTION => {
-            let idx = reader.u16().ok_or(reject(
-                VerifyPhase::Table,
-                "short collection return type index",
-            ))?;
-            if idx as usize >= collection_count {
-                return Err(reject(
-                    VerifyPhase::Table,
-                    "collection return type index out of range",
-                ));
-            }
-            Ok(RetShape::Collection { idx, optional })
-        }
-        TAG_IDENTITY => {
-            let root = reader.u16().ok_or(reject(
-                VerifyPhase::Table,
-                "short identity return type root index",
-            ))?;
-            if root as usize >= root_count {
-                return Err(reject(
-                    VerifyPhase::Table,
-                    "identity return type root index out of range",
-                ));
-            }
-            Ok(RetShape::Identity { root, optional })
-        }
-        _ => Err(reject(VerifyPhase::Table, "unknown return type tag")),
-    }
-}
+/// A function parameter: a bare scalar, record, enum, collection or entry identity.
+/// An optional parameter and a unit parameter are outside the subset the compiler
+/// emits.
+const PARAM: TypePosition = type_position!(
+    "param",
+    TagSet::SCALAR
+        .with(TagSet::RECORD)
+        .with(TagSet::ENUM)
+        .with(TagSet::COLLECTION)
+        .with(TagSet::IDENTITY),
+    Optionality::Bare
+);
 
-/// Decode one parameter type reference: a bare scalar or a bare record (a dense
-/// `struct` value). Optional parameters and a unit parameter are outside the
-/// parameter subset the compiler emits, and are rejected.
-fn decode_param_ref(
-    tag: u8,
-    reader: &mut Reader,
+/// A function return: any value type, optional or bare, plus unit.
+const RETURN: TypePosition = type_position!(
+    "return",
+    TagSet::UNIT
+        .with(TagSet::SCALAR)
+        .with(TagSet::RECORD)
+        .with(TagSet::ENUM)
+        .with(TagSet::COLLECTION)
+        .with(TagSet::IDENTITY),
+    Optionality::Either
+);
+
+/// Both signature positions, bound to this image's tables.
+fn signature_types(
+    rules: TypePosition,
     type_count: usize,
     enum_count: usize,
     collection_count: usize,
     root_count: usize,
-) -> Result<ImageType, VerifyRejection> {
-    if tag & OPTIONAL_FLAG != 0 {
-        return Err(reject(
-            VerifyPhase::Table,
-            "parameter type cannot be optional",
-        ));
-    }
-    match tag {
-        TAG_INT | TAG_BOOL | TAG_TEXT | TAG_BYTES | TAG_DATE | TAG_INSTANT | TAG_DURATION => Ok(
-            ImageType::scalar(decode_bare_scalar(tag).expect("scalar base")),
-        ),
-        TAG_RECORD => {
-            let idx = reader
-                .u16()
-                .ok_or(reject(VerifyPhase::Table, "short record param type index"))?;
-            if idx as usize >= type_count {
-                return Err(reject(
-                    VerifyPhase::Table,
-                    "record param type index out of range",
-                ));
-            }
-            Ok(ImageType::Record {
-                idx: TypeId::from_index(idx),
-                optional: false,
-            })
-        }
-        TAG_ENUM => {
-            let idx = reader
-                .u16()
-                .ok_or(reject(VerifyPhase::Table, "short enum param type index"))?;
-            if idx as usize >= enum_count {
-                return Err(reject(
-                    VerifyPhase::Table,
-                    "enum param type index out of range",
-                ));
-            }
-            Ok(ImageType::Enum {
-                idx: EnumId::from_index(idx),
-                optional: false,
-            })
-        }
-        TAG_COLLECTION => {
-            let idx = reader.u16().ok_or(reject(
-                VerifyPhase::Table,
-                "short collection param type index",
-            ))?;
-            if idx as usize >= collection_count {
-                return Err(reject(
-                    VerifyPhase::Table,
-                    "collection param type index out of range",
-                ));
-            }
-            Ok(ImageType::Collection {
-                idx: CollTypeId::from_index(idx),
-                optional: false,
-            })
-        }
-        TAG_IDENTITY => {
-            let root = reader.u16().ok_or(reject(
-                VerifyPhase::Table,
-                "short identity param type root index",
-            ))?;
-            if root as usize >= root_count {
-                return Err(reject(
-                    VerifyPhase::Table,
-                    "identity param type root index out of range",
-                ));
-            }
-            Ok(ImageType::Identity {
-                root: RootId::from_index(root),
-                optional: false,
-            })
-        }
-        _ => Err(reject(
-            VerifyPhase::Table,
-            "param type must be a bare scalar, record, enum, or collection",
-        )),
-    }
+) -> TypePosition {
+    rules
+        .types(type_count)
+        .enums(enum_count)
+        .collections(collection_count)
+        .roots(root_count)
 }
 
 pub(super) fn decode_functions(
@@ -314,29 +185,14 @@ pub(super) fn decode_functions(
             return Err(reject(VerifyPhase::Table, "too many params"));
         }
         let mut params = Vec::with_capacity(param_count);
+        let param_rules =
+            signature_types(PARAM, type_count, enum_count, collection_count, root_count);
         for _ in 0..param_count {
-            let tag = reader
-                .u8()
-                .ok_or(reject(VerifyPhase::Table, "short param type"))?;
-            params.push(decode_param_ref(
-                tag,
-                &mut reader,
-                type_count,
-                enum_count,
-                collection_count,
-                root_count,
-            )?);
+            params.push(decode_type_ref(&mut reader, &param_rules)?);
         }
-        let ret_tag = reader
-            .u8()
-            .ok_or(reject(VerifyPhase::Table, "short return type"))?;
-        let ret = decode_type_ref_ret(
-            ret_tag,
+        let ret = decode_type_ref(
             &mut reader,
-            type_count,
-            enum_count,
-            collection_count,
-            root_count,
+            &signature_types(RETURN, type_count, enum_count, collection_count, root_count),
         )?;
         let local_count = reader
             .u16()

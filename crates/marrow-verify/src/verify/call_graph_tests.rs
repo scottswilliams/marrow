@@ -1,4 +1,4 @@
-use crate::{FunctionIndex, RetShape, SealedInstr, VerifiedImage, VerifyPhase};
+use crate::{FunctionIndex, SealedInstr, VerifiedImage, VerifyPhase};
 use marrow_image::{
     ConstId, DeclarationMemberDef, DeclarationMemberShape, DemandAtom, ExportDemand, ExportId,
     FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, OP_CALL,
@@ -185,7 +185,7 @@ fn the_demand_closure_is_independent_of_function_numbering() {
             assert_eq!(function.demand(), expected.as_view());
             assert!(!function.body().is_mutating());
             assert!(function.body().params().is_empty());
-            assert_eq!(function.body().ret(), RetShape::Unit);
+            assert_eq!(function.body().ret(), ImageType::Unit);
         }
         for index in [left, right] {
             assert!(matches!(
@@ -271,7 +271,7 @@ fn function_and_selected_demands_preserve_driver_semantics() {
         assert_eq!(function.demand(), expected.as_view());
         assert_eq!(function.demand().demand_set_id(), expected_id);
         assert!(function.body().params().is_empty());
-        assert_eq!(function.body().ret(), RetShape::Unit);
+        assert_eq!(function.body().ret(), ImageType::Unit);
         assert!(!function.body().is_mutating());
     }
     let export = &verified.exports()[0];
@@ -366,7 +366,7 @@ fn unequal_function_demands_borrow_the_same_atoms() {
         assert_eq!(function.demand().reads(), !expected.is_empty());
         assert!(!function.demand().writes());
         assert!(function.body().params().is_empty());
-        assert_eq!(function.body().ret(), RetShape::Unit);
+        assert_eq!(function.body().ret(), ImageType::Unit);
         assert!(!function.body().is_mutating());
     }
     assert!(matches!(

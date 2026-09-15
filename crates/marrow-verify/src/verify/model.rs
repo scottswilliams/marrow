@@ -1,6 +1,6 @@
 //! The decoded intermediate model: the plain records phase 1/2 build before sealing.
 
-use crate::sealed::{RetShape, SealedCollectionType, SealedConst, SealedSite};
+use crate::sealed::{SealedCollectionType, SealedConst, SealedSite};
 use marrow_image::{
     DurableContractGraph, DurableContractId, DurableIndexShape, DurableProductGraph, ExportId,
     ImageId, ImageType, LedgerIdBytes, Scalar, SemanticNode, SemanticPath,
@@ -64,7 +64,7 @@ pub(super) struct DecodedFunction {
     pub(super) name: u16,
     pub(super) source: u16,
     pub(super) params: Vec<ImageType>,
-    pub(super) ret: RetShape,
+    pub(super) ret: ImageType,
     pub(super) local_count: u16,
     pub(super) code: Vec<u8>,
     pub(super) spans: Vec<(u32, u32, u32)>,

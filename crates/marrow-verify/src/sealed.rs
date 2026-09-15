@@ -372,19 +372,6 @@ impl SealedEnumType {
     }
 }
 
-/// A function's return shape, used to check `Return` and to render the result. A
-/// record return names a sealed record type by index (a dense `struct` value); the
-/// verifier proved the index in range.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RetShape {
-    Unit,
-    Scalar { scalar: Scalar, optional: bool },
-    Record { idx: u16, optional: bool },
-    Enum { idx: u16, optional: bool },
-    Collection { idx: u16, optional: bool },
-    Identity { root: u16, optional: bool },
-}
-
 /// A source-position row: the instruction it maps and its 1-based line/column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpanRow {
@@ -399,7 +386,7 @@ pub struct SealedFunction {
     pub(crate) name: Rc<str>,
     pub(crate) source: Rc<str>,
     pub(crate) params: Vec<ImageType>,
-    pub(crate) ret: RetShape,
+    pub(crate) ret: ImageType,
     pub(crate) local_count: u16,
     pub(crate) instrs: Vec<SealedInstr>,
     pub(crate) spans: Vec<SpanRow>,
@@ -417,7 +404,7 @@ impl SealedFunction {
     pub fn params(&self) -> &[ImageType] {
         &self.params
     }
-    pub fn ret(&self) -> RetShape {
+    pub fn ret(&self) -> ImageType {
         self.ret
     }
     pub fn local_count(&self) -> u16 {

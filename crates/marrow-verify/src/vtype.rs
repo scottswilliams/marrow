@@ -2,8 +2,6 @@
 
 use marrow_image::{CollTypeId, EnumId, ImageType, RootId, Scalar, TypeId};
 
-use crate::sealed::RetShape;
-
 /// A verified operand-stack slot type. Optionals are tracked distinctly from bare
 /// values, so a `T?` can never reach a bare-`T` consumer on any path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,48 +151,6 @@ impl VType {
             // A spread identity key column is never optionalized; it flows only to a
             // durable key-path.
             VType::IdentityColumn { .. } => self,
-        }
-    }
-
-    /// Whether this stack type satisfies a function's declared return shape.
-    pub(crate) fn matches_ret(self, ret: RetShape) -> bool {
-        match (self, ret) {
-            (
-                VType::Scalar { scalar, optional },
-                RetShape::Scalar {
-                    scalar: want,
-                    optional: want_opt,
-                },
-            ) => scalar == want && optional == want_opt,
-            (
-                VType::Record { idx, optional },
-                RetShape::Record {
-                    idx: want,
-                    optional: want_opt,
-                },
-            ) => idx == TypeId::from_index(want) && optional == want_opt,
-            (
-                VType::Enum { idx, optional },
-                RetShape::Enum {
-                    idx: want,
-                    optional: want_opt,
-                },
-            ) => idx == EnumId::from_index(want) && optional == want_opt,
-            (
-                VType::Collection { idx, optional },
-                RetShape::Collection {
-                    idx: want,
-                    optional: want_opt,
-                },
-            ) => idx == CollTypeId::from_index(want) && optional == want_opt,
-            (
-                VType::Identity { root, optional },
-                RetShape::Identity {
-                    root: want,
-                    optional: want_opt,
-                },
-            ) => root == RootId::from_index(want) && optional == want_opt,
-            _ => false,
         }
     }
 }

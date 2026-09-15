@@ -24,6 +24,7 @@ mod presence;
 mod seal;
 mod spans;
 mod tables;
+mod type_ref;
 
 #[cfg(test)]
 #[path = "../../../marrow-image/tests/common/admitted_plan.rs"]

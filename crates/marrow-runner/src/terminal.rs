@@ -856,7 +856,7 @@ fn decode_reply(
         .expect("verified export function")
         .body()
         .ret();
-    match ret.image_type() {
+    match ret {
         marrow_image::ImageType::Unit => match data {
             Json::Null => Ok(CallOutcome::Value(None)),
             _ => Err(ClientError::ReplyDecode),

@@ -9,37 +9,12 @@
 //! `InterfaceId` unchanged; any signature change moves it.
 
 use marrow_image::{
-    CollectionShape, EnumShape, ExportSignature, FieldShape, ImageType, Interface, InterfaceError,
+    CollectionShape, EnumShape, ExportSignature, FieldShape, Interface, InterfaceError,
     InterfaceId, RecordShape, RootShape, TransferType, VariantShape,
 };
-use marrow_verify::{RetShape, SealedCollectionType, VerifiedImage};
+use marrow_verify::{SealedCollectionType, VerifiedImage};
 
 use crate::common::Project;
-
-/// Map a function's decoded return shape to the bare-or-optional `ImageType` the
-/// interface builder consumes. A one-to-one projection.
-fn ret_to_image(ret: RetShape) -> ImageType {
-    match ret {
-        RetShape::Unit => ImageType::Unit,
-        RetShape::Scalar { scalar, optional } => ImageType::Scalar { scalar, optional },
-        RetShape::Record { idx, optional } => ImageType::Record {
-            idx: marrow_image::TypeId::from_index(idx),
-            optional,
-        },
-        RetShape::Enum { idx, optional } => ImageType::Enum {
-            idx: marrow_image::EnumId::from_index(idx),
-            optional,
-        },
-        RetShape::Collection { idx, optional } => ImageType::Collection {
-            idx: marrow_image::CollTypeId::from_index(idx),
-            optional,
-        },
-        RetShape::Identity { root, optional } => ImageType::Identity {
-            root: marrow_image::RootId::from_index(root),
-            optional,
-        },
-    }
-}
 
 /// Reconstruct the wire interface from a verified image, using only its public
 /// accessors. This is the thin projection both real callers (the terminal and the
@@ -87,7 +62,7 @@ fn interface_of(image: &VerifiedImage) -> Result<Interface, InterfaceError> {
             ExportSignature {
                 id: export.id(),
                 params: function.params().to_vec(),
-                ret: ret_to_image(function.ret()),
+                ret: function.ret(),
                 demand_id: export.demand_id(),
             }
         })

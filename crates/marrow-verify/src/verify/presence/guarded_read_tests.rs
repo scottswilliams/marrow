@@ -1,5 +1,5 @@
 use super::{admitted_plan::admitted_plan, site_seam::site};
-use crate::{RetShape, SealedConst, SealedInstr, SealedSite, SealedSiteTarget, VerifyPhase};
+use crate::{SealedConst, SealedInstr, SealedSite, SealedSiteTarget, VerifyPhase};
 use marrow_codes::Code;
 use marrow_image::{
     DeclarationMemberDef, DeclarationMemberShape, ExportId, FieldDef, FunctionDef, ImageDraft,
@@ -225,13 +225,7 @@ fn a_guarded_key_pair_verifies_and_an_unguarded_one_is_refused() {
     assert_eq!(function.name(), "inspect");
     assert_eq!(function.source(), "retention.mw");
     assert_eq!(function.params(), &[ImageType::scalar(Scalar::Int); 3]);
-    assert_eq!(
-        function.ret(),
-        RetShape::Scalar {
-            scalar: Scalar::Int,
-            optional: false,
-        },
-    );
+    assert_eq!(function.ret(), ImageType::scalar(Scalar::Int));
     assert_eq!(function.local_count(), 3);
     assert_eq!(function.max_stack(), 3);
     assert!(!function.is_mutating());

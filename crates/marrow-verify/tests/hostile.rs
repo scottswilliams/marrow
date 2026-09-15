@@ -3914,7 +3914,7 @@ fn enum_payload_with_a_collection_leaf_rejects_at_table() {
     assert_eq!(rejection.phase(), VerifyPhase::Table);
     assert_eq!(
         rejection.detail(),
-        "enum payload leaf must be a bare scalar, record, or enum"
+        "enum payload leaf type tag is not admitted here"
     );
 }
 

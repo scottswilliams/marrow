@@ -9,9 +9,10 @@ use super::presence::{EntryFamilies, check_presence_flow, verify_function};
 use super::reject;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{
-    RetShape, SealedEnumType, SealedExport, SealedField, SealedFunction, SealedIndex, SealedInstr,
+    SealedEnumType, SealedExport, SealedField, SealedFunction, SealedIndex, SealedInstr,
     SealedRecordType, SealedRoot, SealedSite, SealedTestEntry, SealedVariant, VerifiedImage,
 };
+use marrow_image::ImageType;
 
 pub(super) fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
     let types: Vec<SealedRecordType> = decoded
@@ -265,7 +266,7 @@ fn check_test_entries(
                 "a test entry takes no parameters",
             ));
         }
-        if function.ret != RetShape::Unit {
+        if function.ret != ImageType::Unit {
             return Err(reject(
                 VerifyPhase::TestEntry,
                 "a test entry must return unit",

@@ -6,7 +6,7 @@ use super::model::DecodedFunction;
 use super::reject;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{
-    RetShape, SealedBranch, SealedCollectionType, SealedConst, SealedField, SealedIndexComponent,
+    SealedBranch, SealedCollectionType, SealedConst, SealedField, SealedIndexComponent,
     SealedInstr, SealedRoot, SealedSite, SealedSiteTarget,
 };
 use crate::vtype::VType;
@@ -383,9 +383,9 @@ fn discard(frame: &mut Frame) -> Result<Control, VerifyRejection> {
 }
 
 fn check_return(function: &DecodedFunction, frame: &mut Frame) -> Result<Control, VerifyRejection> {
-    match (frame.stack.pop(), function.ret) {
-        (Some(top), ret) if top.matches_ret(ret) => {}
-        (None, RetShape::Unit) => {}
+    match (frame.stack.pop(), VType::from_image(function.ret)) {
+        (Some(top), Some(want)) if top == want => {}
+        (None, None) => {}
         _ => {
             return Err(reject(
                 VerifyPhase::Function,
@@ -454,35 +454,8 @@ fn call(ctx: &Ctx, frame: &mut Frame, target: u16) -> Result<Control, VerifyReje
             return Err(reject(VerifyPhase::Function, "call argument type mismatch"));
         }
     }
-    match sig.ret {
-        RetShape::Unit => {}
-        RetShape::Scalar { scalar, optional } => {
-            frame.stack.push(VType::Scalar { scalar, optional });
-        }
-        RetShape::Record { idx, optional } => {
-            frame.stack.push(VType::Record {
-                idx: TypeId::from_index(idx),
-                optional,
-            });
-        }
-        RetShape::Enum { idx, optional } => {
-            frame.stack.push(VType::Enum {
-                idx: EnumId::from_index(idx),
-                optional,
-            });
-        }
-        RetShape::Collection { idx, optional } => {
-            frame.stack.push(VType::Collection {
-                idx: CollTypeId::from_index(idx),
-                optional,
-            });
-        }
-        RetShape::Identity { root, optional } => {
-            frame.stack.push(VType::Identity {
-                root: RootId::from_index(root),
-                optional,
-            });
-        }
+    if let Some(ret) = VType::from_image(sig.ret) {
+        frame.stack.push(ret);
     }
     Ok(Control::Fallthrough)
 }
