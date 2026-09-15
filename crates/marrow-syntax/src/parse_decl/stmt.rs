@@ -20,7 +20,7 @@ use crate::diagnostic::{
     SyntaxError, SyntaxSink, UnsupportedSyntax,
 };
 use crate::parse_expr::join_spans;
-use crate::token::{Keyword, Token, TokenKind};
+use crate::token::{ContextualKeyword, Keyword, Token, TokenKind};
 
 enum IfHead {
     Expr(Expression),
@@ -40,9 +40,22 @@ enum IfHead {
 
 /// Which fault a checked arm handles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CheckedFault {
+pub(crate) enum CheckedFault {
     OutOfRange,
     ZeroDivisor,
+}
+
+impl CheckedFault {
+    /// Every checked arm, in the order the formatter renders them.
+    pub(crate) const ALL: [Self; 2] = [Self::OutOfRange, Self::ZeroDivisor];
+
+    /// The contextual word naming this arm after `on`.
+    pub(crate) const fn spelling(self) -> ContextualKeyword {
+        match self {
+            Self::OutOfRange => ContextualKeyword::OutOfRange,
+            Self::ZeroDivisor => ContextualKeyword::ZeroDivisor,
+        }
+    }
 }
 
 /// A block-introducing keyword that has no statement of its own and only ever
@@ -259,13 +272,11 @@ impl<'a, 'c> StmtParser<'a, 'c> {
 
     /// Whether the next significant token after any `NEWLINE`s is the contextual
     /// identifier `word` (an `on`, `more`, `out_of_range`, ...).
-    fn at_word_past_newlines(&self, word: &str) -> bool {
+    fn at_word_past_newlines(&self, word: ContextualKeyword) -> bool {
         self.tokens[self.pos..]
             .iter()
             .find(|token| token.kind != TokenKind::Newline)
-            .is_some_and(|token| {
-                token.kind == TokenKind::Identifier && token.text(self.source) == word
-            })
+            .is_some_and(|token| token.is_contextual(self.source, word))
     }
 
     pub(super) fn peek(&self) -> Option<TokenKind> {
@@ -474,12 +485,14 @@ impl<'a, 'c> StmtParser<'a, 'c> {
     fn take_on_more_block(&mut self) -> Option<Block> {
         let save = self.pos;
         self.skip_newlines();
-        let is_on = self.tokens.get(self.pos).is_some_and(|token| {
-            token.kind == TokenKind::Identifier && token.text(self.source) == "on"
-        });
-        let is_more = self.tokens.get(self.pos + 1).is_some_and(|token| {
-            token.kind == TokenKind::Identifier && token.text(self.source) == "more"
-        });
+        let is_on = self
+            .tokens
+            .get(self.pos)
+            .is_some_and(|token| token.is_contextual(self.source, ContextualKeyword::On));
+        let is_more = self
+            .tokens
+            .get(self.pos + 1)
+            .is_some_and(|token| token.is_contextual(self.source, ContextualKeyword::More));
         if !(is_on && is_more) {
             self.pos = save;
             return None;
@@ -988,7 +1001,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         loop {
             let save = self.pos;
             self.skip_newlines();
-            if !self.at_word_past_newlines("on") {
+            if !self.at_word_past_newlines(ContextualKeyword::On) {
                 self.pos = save;
                 break;
             }
@@ -1030,15 +1043,12 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         let kind = self.tokens.get(self.pos + 1);
         let fault = match (on, kind) {
             (Some(on), Some(kind))
-                if on.kind == TokenKind::Identifier
-                    && on.text(self.source) == "on"
+                if on.is_contextual(self.source, ContextualKeyword::On)
                     && kind.kind == TokenKind::Identifier =>
             {
-                match kind.text(self.source) {
-                    "out_of_range" => Some(CheckedFault::OutOfRange),
-                    "zero_divisor" => Some(CheckedFault::ZeroDivisor),
-                    _ => None,
-                }
+                CheckedFault::ALL
+                    .into_iter()
+                    .find(|fault| kind.is_contextual(self.source, fault.spelling()))
             }
             _ => None,
         };

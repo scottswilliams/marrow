@@ -7,7 +7,7 @@ use super::tokens::{doc_comment_text, find_top_level_equal, parse_type, split_to
 use super::{FunctionHead, ParseError, ParseResult};
 use crate::ast::{KeyParam, ParamDecl, TypeConstraint, TypeParamDecl};
 use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, SourceSpan, UnsupportedSyntax};
-use crate::token::{Keyword, Token, TokenKind};
+use crate::token::{ContextualKeyword, Keyword, Token, TokenKind};
 
 /// Parse a function header's tokens: `pub? fn name(params) (: return)?`.
 pub(super) fn parse_function_head(source: &str, tokens: &[Token]) -> ParseResult<FunctionHead> {
@@ -22,18 +22,16 @@ pub(super) fn parse_function_head(source: &str, tokens: &[Token]) -> ParseResult
     ) {
         // `internal fn`/`private fn`: the visibility word lexes as an
         // identifier; reject it with a pointed message.
-        let word = tokens[0].text(source);
-        if word == "internal" {
-            return Err(ParseError::new(
-                ParseDiagnosticReason::InvalidVisibility,
-                "function visibility is only `pub` or module-private; remove `internal`",
-            ));
-        }
-        if word == "private" {
-            return Err(ParseError::new(
-                ParseDiagnosticReason::InvalidVisibility,
-                "function visibility is only `pub` or module-private; remove `private`",
-            ));
+        for word in [ContextualKeyword::Internal, ContextualKeyword::Private] {
+            if tokens[0].is_contextual(source, word) {
+                return Err(ParseError::new(
+                    ParseDiagnosticReason::InvalidVisibility,
+                    format!(
+                        "function visibility is only `pub` or module-private; remove `{}`",
+                        word.spelling()
+                    ),
+                ));
+            }
         }
         (false, tokens)
     } else {

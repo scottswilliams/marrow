@@ -9,7 +9,7 @@ use crate::ast::{Comment, CommentMarker, CommentPlacement};
 use crate::diagnostic::{
     DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, SourceSpan, SyntaxError,
 };
-use crate::token::{Keyword, Token, TokenKind};
+use crate::token::{ContextualKeyword, Keyword, Token, TokenKind};
 
 impl<'a> DeclParser<'a, '_> {
     /// Collect the tokens of the current header line (up to the next
@@ -231,7 +231,8 @@ impl<'a> DeclParser<'a, '_> {
                 self.space_after(lead) && self.followed_by_keyword_space(Keyword::Fn)
             }
             TokenKind::Identifier
-                if lead.text(self.source) == "internal" || lead.text(self.source) == "private" =>
+                if lead.is_contextual(self.source, ContextualKeyword::Internal)
+                    || lead.is_contextual(self.source, ContextualKeyword::Private) =>
             {
                 self.space_after(lead) && self.followed_by_keyword_space(Keyword::Fn)
             }

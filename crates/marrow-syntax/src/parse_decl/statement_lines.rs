@@ -19,7 +19,7 @@ use crate::diagnostic::{
     SyntaxError, SyntaxSink, UnsupportedSyntax,
 };
 use crate::parse_expr::join_spans;
-use crate::token::{Keyword, Token, TokenKind};
+use crate::token::{ContextualKeyword, Keyword, Token, TokenKind};
 
 /// Report that `line` does not form a statement, at the line span, and yield
 /// `None`. The single owner of the generic statement-shape failure, so every
@@ -534,20 +534,21 @@ pub(super) fn parse_for_header(
         let at_span = rest[at_index].span;
         let iterable = expr_of_in_header(source, &rest[..at_index], at_span)?;
         let after_most = &rest[at_index + 2..];
-        let (limit_tokens, from) = match find_top_level_word(source, after_most, "from") {
-            Some(from_index) => {
-                let from_span = after_most[from_index].span;
-                let from = expr_of_in_header(source, &after_most[from_index + 1..], from_span)?;
-                (&after_most[..from_index], Some(from))
-            }
-            None => (after_most, None),
-        };
+        let (limit_tokens, from) =
+            match find_top_level_word(source, after_most, ContextualKeyword::From) {
+                Some(from_index) => {
+                    let from_span = after_most[from_index].span;
+                    let from = expr_of_in_header(source, &after_most[from_index + 1..], from_span)?;
+                    (&after_most[..from_index], Some(from))
+                }
+                None => (after_most, None),
+            };
         let limit = expr_of_in_header(source, limit_tokens, at_span)?;
         return Some((binding, order, iterable, None, Some((limit, from))));
     }
     // A bare `reversed` in the head slot has no iterable to walk; the empty rest
     // fails `expr_of_in_header` below, which the caller reports as a for-header error.
-    let (iterable_tokens, step) = match find_top_level_word(source, rest, "by") {
+    let (iterable_tokens, step) = match find_top_level_word(source, rest, ContextualKeyword::By) {
         Some(by_index) => {
             let by_span = rest[by_index].span;
             let step = expr_of_in_header(source, &rest[by_index + 1..], by_span)?;
@@ -565,20 +566,20 @@ pub(super) fn parse_for_header(
 /// spelling `reversed`. It is reserved only in the loop-head order slot; anywhere
 /// else it is a normal name.
 fn is_reversed_keyword(source: &str, token: &Token) -> bool {
-    token.kind == TokenKind::Identifier && token.text(source) == "reversed"
+    token.is_contextual(source, ContextualKeyword::Reversed)
 }
 
 /// Index of a top-level contextual `word` in a for header. The clause words (`by`,
 /// `from`) are plain identifiers, not reserved words, so each splits the header only
 /// when it stands at bracket depth 0 — never inside a call's arguments or a name used
 /// as a value.
-fn find_top_level_word(source: &str, tokens: &[Token], word: &str) -> Option<usize> {
+fn find_top_level_word(source: &str, tokens: &[Token], word: ContextualKeyword) -> Option<usize> {
     let mut depth = 0usize;
     for (index, token) in tokens.iter().enumerate() {
         match token.kind {
             TokenKind::LeftParen | TokenKind::LeftBracket => depth += 1,
             TokenKind::RightParen | TokenKind::RightBracket => depth = depth.saturating_sub(1),
-            TokenKind::Identifier if depth == 0 && token.text(source) == word => {
+            TokenKind::Identifier if depth == 0 && token.is_contextual(source, word) => {
                 return Some(index);
             }
             _ => {}
@@ -597,10 +598,12 @@ fn find_top_level_at_most(source: &str, tokens: &[Token]) -> Option<usize> {
         match token.kind {
             TokenKind::LeftParen | TokenKind::LeftBracket => depth += 1,
             TokenKind::RightParen | TokenKind::RightBracket => depth = depth.saturating_sub(1),
-            TokenKind::Identifier if depth == 0 && token.text(source) == "at" => {
-                let most = tokens.get(index + 1).is_some_and(|next| {
-                    next.kind == TokenKind::Identifier && next.text(source) == "most"
-                });
+            TokenKind::Identifier
+                if depth == 0 && token.is_contextual(source, ContextualKeyword::At) =>
+            {
+                let most = tokens
+                    .get(index + 1)
+                    .is_some_and(|next| next.is_contextual(source, ContextualKeyword::Most));
                 if most {
                     return Some(index);
                 }

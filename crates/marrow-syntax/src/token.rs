@@ -178,6 +178,67 @@ define_keywords! {
     Id => { spelling: "Id", class: BuiltinType },
 }
 
+/// A word the grammar reserves only in one slot: it lexes as an ordinary
+/// [`TokenKind::Identifier`] everywhere, and is a keyword only where the construct
+/// that owns it looks for it. One owner for the spellings, so the parser that
+/// recognizes a contextual word and the formatter that renders it cannot drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextualKeyword {
+    /// Opens the `on more` clause of a bounded loop and each `on <fault>` arm of a
+    /// `checked` block.
+    On,
+    /// The bound-exceeded clause of a bounded loop: `on more`.
+    More,
+    /// Opens the `at most <limit>` bound of a `for` header.
+    At,
+    /// The second word of `at most`.
+    Most,
+    /// Separates a `for` header's limit from its inclusive lower bound.
+    From,
+    /// Reverses a `for` header's iteration order.
+    Reversed,
+    /// Steps a `for` header's range.
+    By,
+    /// Marks an enum member as a category head.
+    Category,
+    /// The `checked` arm for an out-of-range result.
+    OutOfRange,
+    /// The `checked` arm for a division by zero.
+    ZeroDivisor,
+    /// A visibility word from another language, recognized only to reject it.
+    Internal,
+    /// A visibility word from another language, recognized only to reject it.
+    Private,
+}
+
+impl ContextualKeyword {
+    /// The exact source spelling this word takes in its own slot.
+    pub const fn spelling(self) -> &'static str {
+        match self {
+            Self::On => "on",
+            Self::More => "more",
+            Self::At => "at",
+            Self::Most => "most",
+            Self::From => "from",
+            Self::Reversed => "reversed",
+            Self::By => "by",
+            Self::Category => "category",
+            Self::OutOfRange => "out_of_range",
+            Self::ZeroDivisor => "zero_divisor",
+            Self::Internal => "internal",
+            Self::Private => "private",
+        }
+    }
+}
+
+impl Token {
+    /// Whether this token is `word` standing in its own slot: a contextual keyword
+    /// lexes as an identifier, so the spelling is what distinguishes it.
+    pub(crate) fn is_contextual(self, source: &str, word: ContextualKeyword) -> bool {
+        self.kind == TokenKind::Identifier && self.text(source) == word.spelling()
+    }
+}
+
 macro_rules! token_kind_name_pattern {
     ($variant:ident) => {
         Self::$variant

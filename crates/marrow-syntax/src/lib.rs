@@ -49,7 +49,7 @@ pub use literal::{
 use marrow_codes::Code;
 pub use marrow_codes::kind_for_code;
 pub use token::{
-    Keyword, LexedSource, LexicalClass, Token, TokenKind, duration_unit_forms,
+    ContextualKeyword, Keyword, LexedSource, LexicalClass, Token, TokenKind, duration_unit_forms,
     duration_unit_seconds, duration_unit_spellings, is_expression_callable_keyword,
     is_expression_path_segment_keyword, is_unfixed_duration_unit,
 };

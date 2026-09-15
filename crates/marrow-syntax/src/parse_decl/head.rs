@@ -10,7 +10,7 @@ use crate::ast::{
 };
 use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, SourceSpan};
 use crate::parse_expr::join_spans;
-use crate::token::{Keyword, Token, TokenKind};
+use crate::token::{ContextualKeyword, Keyword, Token, TokenKind};
 
 /// Parse an enum header line: `[pub] enum Name`. Returns the visibility flag and
 /// the enum name. `pub` is recorded for consistency with `pub fn`; the body of
@@ -126,9 +126,7 @@ pub(super) struct EnumMemberHead {
 pub(super) fn enum_member_name(source: &str, tokens: &[Token]) -> ParseResult<EnumMemberHead> {
     let (category, rest) = match tokens.first() {
         Some(token)
-            if token.kind == TokenKind::Identifier
-                && token.text(source) == "category"
-                && tokens.len() > 1 =>
+            if token.is_contextual(source, ContextualKeyword::Category) && tokens.len() > 1 =>
         {
             (true, &tokens[1..])
         }

@@ -9,11 +9,11 @@
 
 use crate::{
     AliasDecl, Argument, BinaryOp, Block, CheckedBind, Comment, CommentMarker, CommentPlacement,
-    CompoundAssignOp, ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember, Expression, ForBinding,
-    FunctionDecl, IfConstBinding, InterpolationPart, KeyParam, LiteralKind, LoopOrder, MatchArm,
-    NominalDecl, NonEmptyCompleteSyntaxDiagnostics, ParamDecl, ResourceDecl, ResourceMember,
-    Statement, StoreDecl, StructDecl, SyntaxDiagnosticLimit, TokenKind, TraversalBound, TypeExpr,
-    UnaryOp, duration_unit_forms, encode_string_literal,
+    CompoundAssignOp, ConstDecl, ContextualKeyword, Declaration, ElseIf, EnumDecl, EnumMember,
+    Expression, ForBinding, FunctionDecl, IfConstBinding, InterpolationPart, KeyParam, LiteralKind,
+    LoopOrder, MatchArm, NominalDecl, NonEmptyCompleteSyntaxDiagnostics, ParamDecl, ResourceDecl,
+    ResourceMember, Statement, StoreDecl, StructDecl, SyntaxDiagnosticLimit, TokenKind,
+    TraversalBound, TypeExpr, UnaryOp, duration_unit_forms, encode_string_literal,
 };
 
 /// Why checked whole-document formatting was refused. This is the one syntax-owned
@@ -1514,11 +1514,15 @@ fn format_for(
         .collect::<Vec<_>>()
         .join(", ");
     let order = match order {
-        LoopOrder::Forward => "",
-        LoopOrder::Reversed => "reversed ",
+        LoopOrder::Forward => String::new(),
+        LoopOrder::Reversed => format!("{} ", ContextualKeyword::Reversed.spelling()),
     };
     let step = match step {
-        Some(step) => format!(" by {}", format_expression_at(step, ctx.level)),
+        Some(step) => format!(
+            " {} {}",
+            ContextualKeyword::By.spelling(),
+            format_expression_at(step, ctx.level)
+        ),
         None => String::new(),
     };
     // A bounded durable traversal renders `at most N [from f]` in place of a range
@@ -1527,11 +1531,17 @@ fn format_for(
     let bound_head = match bound {
         Some(bound) => {
             let from = match &bound.from {
-                Some(from) => format!(" from {}", format_expression_at(from, ctx.level)),
+                Some(from) => format!(
+                    " {} {}",
+                    ContextualKeyword::From.spelling(),
+                    format_expression_at(from, ctx.level)
+                ),
                 None => String::new(),
             };
             format!(
-                " at most {}{from}",
+                " {} {} {}{from}",
+                ContextualKeyword::At.spelling(),
+                ContextualKeyword::Most.spelling(),
                 format_expression_at(&bound.limit, ctx.level)
             )
         }
@@ -1557,7 +1567,15 @@ fn format_for(
         &format_block(ctx.source, body, ctx.level + 1),
         EmptyBody::Braces,
     );
-    push_clause_keyword(&mut out, &pad, "on more");
+    push_clause_keyword(
+        &mut out,
+        &pad,
+        &format!(
+            "{} {}",
+            ContextualKeyword::On.spelling(),
+            ContextualKeyword::More.spelling()
+        ),
+    );
     append_clause_block(&mut out, ctx.source, &pad, on_more, ctx.level);
     out
 }
@@ -1670,15 +1688,19 @@ fn format_checked(
     // Each `on <fault>` arm cuddles the previous arm's braced `}` (`} on zero_divisor
     // {`), or opens on its own line after the block-less header. Its body is a braced
     // multiline block.
-    let present: Vec<(&str, &Block)> = [
-        ("out_of_range", out_of_range),
-        ("zero_divisor", zero_divisor),
+    let present: Vec<(ContextualKeyword, &Block)> = [
+        (ContextualKeyword::OutOfRange, out_of_range),
+        (ContextualKeyword::ZeroDivisor, zero_divisor),
     ]
     .into_iter()
     .filter_map(|(kind, block)| block.map(|block| (kind, block)))
     .collect();
     for (kind, block) in present {
-        push_clause_keyword(&mut out, &arm_pad, &format!("on {kind}"));
+        push_clause_keyword(
+            &mut out,
+            &arm_pad,
+            &format!("{} {}", ContextualKeyword::On.spelling(), kind.spelling()),
+        );
         append_clause_block(&mut out, ctx.source, &arm_pad, block, ctx.level + 1);
     }
     out
