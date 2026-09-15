@@ -157,10 +157,8 @@ fn section_body(bytes: &[u8], id: u8) -> &[u8] {
 #[test]
 fn full_width_record_projection_is_linear_and_preserves_sealed_order() {
     let bytes = record_image();
-    let string_count = decode_strings(section_body(&bytes, 0x01))
-        .expect("canonical strings")
-        .len();
-    let decoded = decode_types_with_work(section_body(&bytes, 0x02), string_count)
+    let strings = decode_strings(section_body(&bytes, 0x01)).expect("canonical strings");
+    let decoded = decode_types_with_work(section_body(&bytes, 0x02), &strings)
         .expect("canonical record table");
     assert_eq!(decoded.name_count, RECORD_WIDTH);
     assert_eq!(decoded.name_checks, RECORD_WIDTH);
@@ -178,10 +176,8 @@ fn full_width_record_projection_is_linear_and_preserves_sealed_order() {
 #[test]
 fn enum_projection_is_linear_and_preserves_sealed_order() {
     let bytes = enum_image();
-    let string_count = decode_strings(section_body(&bytes, 0x01))
-        .expect("canonical strings")
-        .len();
-    let decoded = decode_enums_with_work(section_body(&bytes, 0x09), string_count, 0)
+    let strings = decode_strings(section_body(&bytes, 0x01)).expect("canonical strings");
+    let decoded = decode_enums_with_work(section_body(&bytes, 0x09), &strings, 0)
         .expect("canonical enum table");
     assert_eq!(decoded.name_count, ENUM_WIDTH);
     assert_eq!(decoded.name_checks, ENUM_WIDTH);
@@ -199,16 +195,13 @@ fn enum_projection_is_linear_and_preserves_sealed_order() {
 #[test]
 fn generation_marks_allow_the_same_name_in_distinct_rows() {
     let bytes = repeated_names_across_rows_image();
-    let string_count = decode_strings(section_body(&bytes, 0x01))
-        .expect("canonical strings")
-        .len();
-    let records = decode_types_with_work(section_body(&bytes, 0x02), string_count)
+    let strings = decode_strings(section_body(&bytes, 0x01)).expect("canonical strings");
+    let records = decode_types_with_work(section_body(&bytes, 0x02), &strings)
         .expect("record rows may reuse a field name");
     assert_eq!(records.name_count, 2);
     assert_eq!(records.name_checks, 2);
-    let enums =
-        decode_enums_with_work(section_body(&bytes, 0x09), string_count, records.rows.len())
-            .expect("enum rows may reuse a variant name");
+    let enums = decode_enums_with_work(section_body(&bytes, 0x09), &strings, records.rows.len())
+        .expect("enum rows may reuse a variant name");
     assert_eq!(enums.name_count, 2);
     assert_eq!(enums.name_checks, 2);
 
@@ -240,7 +233,7 @@ fn duplicate_record_name_rejects_before_its_poisoned_type_byte() {
     body[final_field + 2] = 0xff;
     rehash(&mut bytes);
 
-    let direct = match decode_types(section_body(&bytes, 0x02), strings.len()) {
+    let direct = match decode_types(section_body(&bytes, 0x02), &strings) {
         Ok(_) => panic!("duplicate field name must reject"),
         Err(rejection) => rejection,
     };
@@ -265,7 +258,7 @@ fn duplicate_variant_name_rejects_before_its_poisoned_category_byte() {
     body[final_variant + 2] = 0xff;
     rehash(&mut bytes);
 
-    let direct = match decode_enums(section_body(&bytes, 0x09), strings.len(), 0) {
+    let direct = match decode_enums(section_body(&bytes, 0x09), &strings, 0) {
         Ok(_) => panic!("duplicate variant name must reject"),
         Err(rejection) => rejection,
     };

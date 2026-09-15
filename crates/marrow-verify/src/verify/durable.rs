@@ -8,14 +8,14 @@
 //! at entry before reading the next tag, and [`value_shape_matches`] recursively
 //! follows that decoded shape when comparing its type.
 
-use super::model::{DecodedEnum, DecodedField, DecodedRecordType, DecodedRoot};
+use super::model::DecodedRoot;
 use super::reject;
 use super::tables::decode_bare_scalar;
 use crate::reader::Reader;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{
-    SealedBranch, SealedGroup, SealedIndex, SealedIndexComponent, SealedRecordType, SealedSite,
-    SealedSiteTarget,
+    SealedBranch, SealedEnumType, SealedField, SealedGroup, SealedIndex, SealedIndexComponent,
+    SealedRecordType, SealedSite, SealedSiteTarget,
 };
 use marrow_image::{
     AdmittedGraphInputPlan, CanonicalValueShapeDag, DeclarationMemberDef, DeclarationMemberShape,
@@ -110,8 +110,8 @@ pub(super) struct DecodedDurable {
 #[derive(Clone, Copy)]
 struct DecodedTables<'a> {
     strings: &'a [Rc<str>],
-    types: &'a [DecodedRecordType],
-    enums: &'a [DecodedEnum],
+    types: &'a [SealedRecordType],
+    enums: &'a [SealedEnumType],
 }
 
 /// The construction plan a section claiming `root_count` roots is decoded under.
@@ -180,8 +180,8 @@ fn reject_graph_input(refusal: DurableGraphInputRefusal) -> VerifyRejection {
 pub(super) fn decode_durable(
     body: &[u8],
     strings: &[Rc<str>],
-    types: &[DecodedRecordType],
-    enums: &[DecodedEnum],
+    types: &[SealedRecordType],
+    enums: &[SealedEnumType],
 ) -> Result<DecodedDurable, VerifyRejection> {
     let tables = DecodedTables {
         strings,
@@ -1150,10 +1150,10 @@ fn decode_key_tuple(
 /// ordinal` — so the fields-first invariant is verifier-enforced here rather than trusted
 /// from the compiler.
 fn tie_root_record(
-    record_fields: &[DecodedField],
+    record_fields: &[SealedField],
     members: &DurableProductGraph,
-    types: &[DecodedRecordType],
-    enums: &[DecodedEnum],
+    types: &[SealedRecordType],
+    enums: &[SealedEnumType],
     values: &CanonicalValueShapeDag,
 ) -> Result<(), VerifyRejection> {
     let mut slots = record_fields.iter();
@@ -1213,10 +1213,10 @@ fn tie_root_record(
 /// an optional record slot, an out-of-range record index, or a field/member mismatch is
 /// refused.
 fn tie_group_slot(
-    slot: &DecodedField,
+    slot: &SealedField,
     group_members: DurableMemberViews<'_>,
-    types: &[DecodedRecordType],
-    enums: &[DecodedEnum],
+    types: &[SealedRecordType],
+    enums: &[SealedEnumType],
     values: &CanonicalValueShapeDag,
 ) -> Result<(), VerifyRejection> {
     let ImageType::Record { idx, optional } = slot.ty else {
@@ -1273,8 +1273,8 @@ fn tie_group_slot(
 /// record disagreeing with the branch's field shapes is refused here.
 fn validate_branch_records(
     members: DurableMemberViews<'_>,
-    types: &[DecodedRecordType],
-    enums: &[DecodedEnum],
+    types: &[SealedRecordType],
+    enums: &[SealedEnumType],
     string_count: usize,
     values: &CanonicalValueShapeDag,
 ) -> Result<(), VerifyRejection> {
@@ -1838,8 +1838,8 @@ fn value_shape_matches(
     values: &CanonicalValueShapeDag,
     shape: ValueShapeNodeId,
     ty: ImageType,
-    types: &[DecodedRecordType],
-    enums: &[DecodedEnum],
+    types: &[SealedRecordType],
+    enums: &[SealedEnumType],
 ) -> bool {
     // A shape naming no node of this arena matches no record type: the decoded image
     // supplies both the id and the arena, so a dangling reference is a mismatch rather

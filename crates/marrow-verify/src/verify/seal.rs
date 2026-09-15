@@ -9,43 +9,14 @@ use super::presence::{EntryFamilies, check_presence_flow, verify_function};
 use super::reject;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{
-    SealedEnumType, SealedExport, SealedField, SealedFunction, SealedIndex, SealedInstr,
-    SealedRecordType, SealedRoot, SealedSite, SealedTestEntry, SealedVariant, VerifiedImage,
+    SealedExport, SealedFunction, SealedIndex, SealedInstr, SealedRoot, SealedSite,
+    SealedTestEntry, VerifiedImage,
 };
 use marrow_image::ImageType;
 
 pub(super) fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
-    let types: Vec<SealedRecordType> = decoded
-        .types
-        .iter()
-        .map(|record| SealedRecordType {
-            fields: record
-                .fields
-                .iter()
-                .map(|field| SealedField {
-                    name: decoded.strings[field.name as usize].clone(),
-                    ty: field.ty,
-                    required: field.required,
-                })
-                .collect(),
-        })
-        .collect();
-    let enums: Vec<SealedEnumType> = decoded
-        .enums
-        .iter()
-        .map(|enum_def| SealedEnumType {
-            name: decoded.strings[enum_def.name as usize].clone(),
-            variants: enum_def
-                .variants
-                .iter()
-                .map(|variant| SealedVariant {
-                    name: decoded.strings[variant.name as usize].clone(),
-                    category: variant.category,
-                    payload: variant.payload.clone(),
-                })
-                .collect(),
-        })
-        .collect();
+    let types = decoded.types.clone();
+    let enums = decoded.enums.clone();
     let roots: Vec<SealedRoot> = decoded
         .roots
         .iter()

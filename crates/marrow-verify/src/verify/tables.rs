@@ -1,11 +1,12 @@
 //! Phase 2 tables: string, type, enum, and collection decoding with value-type closure.
 
-use super::model::{DecodedEnum, DecodedField, DecodedRecordType, DecodedVariant};
 use super::reject;
 use super::type_ref::{Optionality, TagSet, TypePosition, decode_type_ref, type_position};
 use crate::reader::Reader;
 use crate::reject::{VerifyPhase, VerifyRejection};
-use crate::sealed::SealedCollectionType;
+use crate::sealed::{
+    SealedCollectionType, SealedEnumType, SealedField, SealedRecordType, SealedVariant,
+};
 use marrow_image::{
     EnumId, ImageType, Scalar, TAG_BOOL, TAG_BYTES, TAG_DATE, TAG_DURATION, TAG_INSTANT, TAG_INT,
     TAG_TEXT,
@@ -225,16 +226,17 @@ fn collection_leaf(type_count: usize, enum_count: usize, row: usize) -> TypePosi
 
 pub(super) fn decode_types(
     body: &[u8],
-    string_count: usize,
-) -> Result<Vec<DecodedRecordType>, VerifyRejection> {
-    decode_types_with_work(body, string_count)?
+    strings: &[Rc<str>],
+) -> Result<Vec<SealedRecordType>, VerifyRejection> {
+    decode_types_with_work(body, strings)?
         .within_linear_budget("record duplicate-name projection exceeds its linear work budget")
 }
 
 fn decode_types_with_work(
     body: &[u8],
-    string_count: usize,
-) -> Result<DecodedTable<Vec<DecodedRecordType>>, VerifyRejection> {
+    strings: &[Rc<str>],
+) -> Result<DecodedTable<Vec<SealedRecordType>>, VerifyRejection> {
+    let string_count = strings.len();
     let mut reader = Reader::new(body);
     let count = reader
         .u16()
@@ -288,13 +290,13 @@ fn decode_types_with_work(
                     ));
                 }
             };
-            fields.push(DecodedField {
-                name: fname,
+            fields.push(SealedField {
+                name: strings[fname as usize].clone(),
                 ty,
                 required,
             });
         }
-        types.push(DecodedRecordType { name, fields });
+        types.push(SealedRecordType { fields });
     }
     if !reader.is_empty() {
         return Err(reject(VerifyPhase::Table, "trailing bytes in type table"));
@@ -311,18 +313,19 @@ fn decode_types_with_work(
 /// itself), which the caller-facing acyclicity pass proves after decoding.
 pub(super) fn decode_enums(
     body: &[u8],
-    string_count: usize,
+    strings: &[Rc<str>],
     type_count: usize,
-) -> Result<Vec<DecodedEnum>, VerifyRejection> {
-    decode_enums_with_work(body, string_count, type_count)?
+) -> Result<Vec<SealedEnumType>, VerifyRejection> {
+    decode_enums_with_work(body, strings, type_count)?
         .within_linear_budget("enum duplicate-name projection exceeds its linear work budget")
 }
 
 fn decode_enums_with_work(
     body: &[u8],
-    string_count: usize,
+    strings: &[Rc<str>],
     type_count: usize,
-) -> Result<DecodedTable<Vec<DecodedEnum>>, VerifyRejection> {
+) -> Result<DecodedTable<Vec<SealedEnumType>>, VerifyRejection> {
+    let string_count = strings.len();
     let mut reader = Reader::new(body);
     let count = reader
         .u16()
@@ -388,13 +391,16 @@ fn decode_enums_with_work(
                     &PAYLOAD_LEAF.types(type_count).enums(count),
                 )?);
             }
-            variants.push(DecodedVariant {
-                name: vname,
+            variants.push(SealedVariant {
+                name: strings[vname as usize].clone(),
                 category,
                 payload,
             });
         }
-        enums.push(DecodedEnum { name, variants });
+        enums.push(SealedEnumType {
+            name: strings[name as usize].clone(),
+            variants,
+        });
     }
     if !reader.is_empty() {
         return Err(reject(VerifyPhase::Table, "trailing bytes in enum table"));
@@ -476,7 +482,7 @@ pub(super) fn decode_collections(
 /// each index before the referenced table exists, so this runs once both tables are
 /// decoded. Cycles among the in-range references are rejected separately.
 pub(super) fn validate_record_field_refs(
-    types: &[DecodedRecordType],
+    types: &[SealedRecordType],
     enum_count: usize,
     collection_count: usize,
 ) -> Result<(), VerifyRejection> {
@@ -515,8 +521,8 @@ pub(super) fn validate_record_field_refs(
 /// occupy node indices `0..R` and enums `R..R+E`. A three-colour DFS; a back edge to
 /// a node on the current stack is a cycle.
 pub(super) fn reject_value_type_cycles(
-    types: &[DecodedRecordType],
-    enums: &[DecodedEnum],
+    types: &[SealedRecordType],
+    enums: &[SealedEnumType],
 ) -> Result<(), VerifyRejection> {
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Colour {

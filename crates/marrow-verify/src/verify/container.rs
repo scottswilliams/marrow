@@ -92,8 +92,8 @@ pub(super) fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejec
     // Phase 2: decode each table. Spans are decoded per function, in FUNCTIONS
     // order, so they are attached to the already-decoded function list.
     let strings = decode_strings(sections[0].1)?;
-    let types = decode_types(sections[1].1, strings.len())?;
-    let enums = decode_enums(sections[8].1, strings.len(), types.len())?;
+    let types = decode_types(sections[1].1, &strings)?;
+    let enums = decode_enums(sections[8].1, &strings, types.len())?;
     let collections = decode_collections(sections[9].1, types.len(), enums.len())?;
     validate_record_field_refs(&types, enums.len(), collections.len())?;
     reject_value_type_cycles(&types, &enums)?;

@@ -1,40 +1,13 @@
 //! The decoded intermediate model: the plain records phase 1/2 build before sealing.
 
-use crate::sealed::{SealedCollectionType, SealedConst, SealedSite};
+use crate::sealed::{
+    SealedCollectionType, SealedConst, SealedEnumType, SealedRecordType, SealedSite,
+};
 use marrow_image::{
     DurableContractGraph, DurableContractId, DurableIndexShape, DurableProductGraph, ExportId,
     ImageId, ImageType, LedgerIdBytes, Scalar, SemanticNode, SemanticPath,
 };
 use std::rc::Rc;
-
-pub(super) struct DecodedRecordType {
-    #[allow(dead_code)]
-    pub(super) name: u16,
-    pub(super) fields: Vec<DecodedField>,
-}
-
-pub(super) struct DecodedField {
-    pub(super) name: u16,
-    /// A bare (non-optional) type: a scalar for a durable-storable field, or a
-    /// closed enum for a local-only value field. The enum index is bounds-checked
-    /// against the ENUMS table after it decodes (`validate_record_field_enums`).
-    pub(super) ty: ImageType,
-    pub(super) required: bool,
-}
-
-/// A decoded enum type: name string index and its ordered variants.
-pub(super) struct DecodedEnum {
-    pub(super) name: u16,
-    pub(super) variants: Vec<DecodedVariant>,
-}
-
-/// A decoded enum variant: name string index, `category` flag, and dense payload
-/// in declaration order. Each leaf is a bare (non-optional) [`ImageType`].
-pub(super) struct DecodedVariant {
-    pub(super) name: u16,
-    pub(super) category: bool,
-    pub(super) payload: Vec<ImageType>,
-}
 
 /// A decoded durable root: name string index, its ordered key tuple (each column a
 /// scalar and its ledger id; empty for a singleton root), record type index, the
@@ -74,8 +47,8 @@ pub(super) struct DecodedImage {
     pub(super) durable_graph: Rc<DurableContractGraph>,
     pub(super) image_id: ImageId,
     pub(super) strings: Vec<Rc<str>>,
-    pub(super) types: Vec<DecodedRecordType>,
-    pub(super) enums: Vec<DecodedEnum>,
+    pub(super) types: Vec<SealedRecordType>,
+    pub(super) enums: Vec<SealedEnumType>,
     pub(super) collections: Vec<SealedCollectionType>,
     pub(super) roots: Vec<DecodedRoot>,
     pub(super) sites: Vec<SealedSite>,
