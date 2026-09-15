@@ -210,11 +210,11 @@ fn execute_frame<'s>(
             SealedInstr::IntDiv => frame.int_div()?,
             SealedInstr::IntNeg => frame.int_neg()?,
             SealedInstr::BoolNot => frame.bool_not(),
-            SealedInstr::IntLt => frame.int_lt(),
-            SealedInstr::IntLe => frame.int_le(),
-            SealedInstr::IntGt => frame.int_gt(),
-            SealedInstr::IntGe => frame.int_ge(),
-            SealedInstr::EqInt => frame.eq_int(),
+            SealedInstr::IntLt
+            | SealedInstr::IntLe
+            | SealedInstr::IntGt
+            | SealedInstr::IntGe
+            | SealedInstr::EqInt => frame.int_compare(instr),
             SealedInstr::EqBool => frame.eq_bool(),
             SealedInstr::EqText => frame.eq_text(),
             SealedInstr::TextConcat => frame.text_concat()?,
@@ -518,33 +518,17 @@ impl<'i> Frame<'i> {
         self.pc += 1;
     }
 
-    fn int_lt(&mut self) {
+    fn int_compare(&mut self, instr: &SealedInstr) {
         let (a, b) = pop_ints(&mut self.stack);
-        self.stack.push(Value::Bool(a < b));
-        self.pc += 1;
-    }
-
-    fn int_le(&mut self) {
-        let (a, b) = pop_ints(&mut self.stack);
-        self.stack.push(Value::Bool(a <= b));
-        self.pc += 1;
-    }
-
-    fn int_gt(&mut self) {
-        let (a, b) = pop_ints(&mut self.stack);
-        self.stack.push(Value::Bool(a > b));
-        self.pc += 1;
-    }
-
-    fn int_ge(&mut self) {
-        let (a, b) = pop_ints(&mut self.stack);
-        self.stack.push(Value::Bool(a >= b));
-        self.pc += 1;
-    }
-
-    fn eq_int(&mut self) {
-        let (a, b) = pop_ints(&mut self.stack);
-        self.stack.push(Value::Bool(a == b));
+        let ordering = a.cmp(&b);
+        let result = match instr {
+            SealedInstr::EqInt => ordering.is_eq(),
+            SealedInstr::IntLt => ordering.is_lt(),
+            SealedInstr::IntLe => ordering.is_le(),
+            SealedInstr::IntGt => ordering.is_gt(),
+            _ => ordering.is_ge(),
+        };
+        self.stack.push(Value::Bool(result));
         self.pc += 1;
     }
 

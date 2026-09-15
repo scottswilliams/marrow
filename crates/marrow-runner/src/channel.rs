@@ -32,6 +32,37 @@ use marrow_local_wire::{
     ClientMessage, EncodedFrame, Id32, ServerMessage, WireError, frame_body_len,
 };
 
+/// Why a polled non-blocking operation stopped retrying.
+pub(crate) enum PollStop {
+    /// The deadline passed while the peer stayed silent.
+    Expired,
+    /// The operation failed for a reason retrying cannot fix.
+    Failed(io::Error),
+}
+
+/// Absorb one error from a non-blocking operation so its caller can retry. `WouldBlock`
+/// before the deadline sleeps one `interval`; `WouldBlock` after it is [`PollStop::Expired`];
+/// `Interrupted` retries at once; anything else stops. `setsockopt(SO_RCVTIMEO)` is
+/// `EINVAL` on `AF_UNIX` on macOS, so every deadline on both ends of this wire is a poll
+/// against a monotonic clock rather than a socket timeout.
+pub(crate) fn poll_until(
+    error: io::Error,
+    deadline: Instant,
+    interval: Duration,
+) -> Result<(), PollStop> {
+    match error.kind() {
+        io::ErrorKind::WouldBlock => {
+            if Instant::now() >= deadline {
+                return Err(PollStop::Expired);
+            }
+            sleep(interval);
+            Ok(())
+        }
+        io::ErrorKind::Interrupted => Ok(()),
+        _ => Err(PollStop::Failed(error)),
+    }
+}
+
 /// The observer-local deadlines and poll interval for the channel.
 #[derive(Debug, Clone, Copy)]
 pub struct Deadlines {
@@ -217,14 +248,11 @@ impl Channel {
         loop {
             match self.listener.accept() {
                 Ok((stream, _addr)) => return Ok(stream),
-                Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
-                    if Instant::now() >= deadline {
-                        return Err(AcceptError::Timeout);
-                    }
-                    sleep(poll);
-                }
-                Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
-                Err(err) => return Err(AcceptError::Io(err)),
+                Err(err) => match poll_until(err, deadline, poll) {
+                    Ok(()) => {}
+                    Err(PollStop::Expired) => return Err(AcceptError::Timeout),
+                    Err(PollStop::Failed(err)) => return Err(AcceptError::Io(err)),
+                },
             }
         }
     }
@@ -406,14 +434,11 @@ fn read_exact_deadline(
         match stream.read(&mut buf[filled..]) {
             Ok(0) => return Err(ReadError::PeerDied),
             Ok(n) => filled += n,
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
-                if Instant::now() >= deadline {
-                    return Err(ReadError::Timeout);
-                }
-                sleep(poll);
-            }
-            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
-            Err(err) => return Err(ReadError::Io(err)),
+            Err(err) => match poll_until(err, deadline, poll) {
+                Ok(()) => {}
+                Err(PollStop::Expired) => return Err(ReadError::Timeout),
+                Err(PollStop::Failed(err)) => return Err(ReadError::Io(err)),
+            },
         }
     }
     Ok(())
@@ -434,14 +459,13 @@ fn write_all_deadline(
                 ));
             }
             Ok(n) => buf = &buf[n..],
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
-                if Instant::now() >= deadline {
+            Err(err) => match poll_until(err, deadline, poll) {
+                Ok(()) => {}
+                Err(PollStop::Expired) => {
                     return Err(io::Error::new(io::ErrorKind::TimedOut, "write deadline"));
                 }
-                sleep(poll);
-            }
-            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
-            Err(err) => return Err(err),
+                Err(PollStop::Failed(err)) => return Err(err),
+            },
         }
     }
     Ok(())

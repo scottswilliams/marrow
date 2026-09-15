@@ -27,7 +27,7 @@ use marrow_local_wire::{
 use marrow_verify::VerifiedImage;
 use marrow_vm::Value;
 
-use crate::channel::mint_id;
+use crate::channel::{PollStop, mint_id, poll_until};
 use crate::staging::{StagedImage, stage_image};
 use crate::transfer;
 
@@ -706,9 +706,6 @@ fn read_descriptor(stdout: &mut UnixStream, timeout: Duration) -> Result<Descrip
     let mut line = Vec::new();
     let mut chunk = [0; 1024];
     loop {
-        if Instant::now() >= deadline {
-            return Err(ClientError::Io(io::ErrorKind::TimedOut.into()));
-        }
         let remaining = (MAX_DESCRIPTOR_BYTES - line.len()).min(chunk.len());
         match stdout.read(&mut chunk[..remaining]) {
             Ok(0) => return Err(ClientError::Descriptor),
@@ -725,14 +722,7 @@ fn read_descriptor(stdout: &mut UnixStream, timeout: Duration) -> Result<Descrip
                     return Err(ClientError::Descriptor);
                 }
             }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                sleep(
-                    Duration::from_millis(1)
-                        .min(deadline.saturating_duration_since(Instant::now())),
-                );
-            }
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) => return Err(ClientError::Io(error)),
+            Err(error) => poll_or_fail(error, deadline)?,
         }
     }
 }
@@ -882,7 +872,7 @@ pub(crate) fn write_message_with_turn(
         match stream.write(buf) {
             Ok(0) => return Err(ClientError::Io(io::ErrorKind::WriteZero.into())),
             Ok(n) => buf = &buf[n..],
-            Err(error) => poll_or_fail(&error, deadline)?,
+            Err(error) => poll_or_fail(error, deadline)?,
         }
     }
     Ok(())
@@ -911,28 +901,17 @@ fn read_exact_deadline(
         match stream.read(&mut buf[filled..]) {
             Ok(0) => return Err(ClientError::Io(io::ErrorKind::UnexpectedEof.into())),
             Ok(n) => filled += n,
-            Err(error) => poll_or_fail(&error, deadline)?,
+            Err(error) => poll_or_fail(error, deadline)?,
         }
     }
     Ok(())
 }
 
-/// Sleep one poll interval on `WouldBlock` until the deadline, ignore `Interrupted`, and surface
-/// anything else. A deadline reached while the peer is silent is a timed-out I/O error.
-fn poll_or_fail(error: &io::Error, deadline: Instant) -> Result<(), ClientError> {
-    match error.kind() {
-        io::ErrorKind::WouldBlock => {
-            if Instant::now() >= deadline {
-                Err(ClientError::Io(io::ErrorKind::TimedOut.into()))
-            } else {
-                sleep(POLL);
-                Ok(())
-            }
-        }
-        io::ErrorKind::Interrupted => Ok(()),
-        _ => Err(ClientError::Io(io::Error::new(
-            error.kind(),
-            error.to_string(),
-        ))),
-    }
+/// Absorb a polled read/write error through the channel's one poll discipline, mapping a
+/// silent deadline to a timed-out terminal I/O error.
+fn poll_or_fail(error: io::Error, deadline: Instant) -> Result<(), ClientError> {
+    poll_until(error, deadline, POLL).map_err(|stop| match stop {
+        PollStop::Expired => ClientError::Io(io::ErrorKind::TimedOut.into()),
+        PollStop::Failed(error) => ClientError::Io(error),
+    })
 }
