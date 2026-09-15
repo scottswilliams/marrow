@@ -4,7 +4,10 @@ use super::*;
 use crate as marrow_lifecycle;
 #[path = "../tests/support/actor_fixtures.rs"]
 mod fixtures;
+#[path = "../tests/support/compile.rs"]
+mod source_compile;
 use fixtures::*;
+use source_compile::compile_files;
 
 /// The image whose one group makes a kind swap numbering-neutral: `details` is the last
 /// (only) group and there is no branch, so a projection that respells it as a keyed branch
@@ -120,7 +123,7 @@ fn entry_root(name: &str, parts: &str) -> marrow_kernel::durable::StoreSchema {
 /// address; fresh preorder numbers would incorrectly move the second root to zero.
 #[test]
 fn accepted_numbers_follow_identity_across_projection_order() {
-    let bytes = fixtures::compile_files(&[("src/main.mw", GRAPH_SOURCE)], GRAPH_IDS);
+    let bytes = compile_files(&[("src/main.mw", GRAPH_SOURCE)], GRAPH_IDS);
     let image = marrow_verify::verify(&bytes).expect("verify");
 
     let derived = derive_projection(&image).expect("projection");
@@ -153,7 +156,7 @@ fn accepted_numbers_follow_identity_across_projection_order() {
 fn a_group_respelled_as_a_branch_projection_is_refused_by_kind() {
     use marrow_kernel::codec::value::ScalarKind;
 
-    let bytes = fixtures::compile_files(&[("src/main.mw", GROUPSWAP_SOURCE)], GROUPSWAP_IDS);
+    let bytes = compile_files(&[("src/main.mw", GROUPSWAP_SOURCE)], GROUPSWAP_IDS);
     let image = marrow_verify::verify(&bytes).expect("verify");
 
     // The substituted projection: `details` as a keyed branch instead of a group.
@@ -196,7 +199,7 @@ fn a_group_respelled_as_a_branch_projection_is_refused_by_kind() {
 fn a_projection_that_under_covers_the_image_is_refused_as_uncovered() {
     use marrow_kernel::codec::value::ScalarKind;
 
-    let bytes = fixtures::compile_files(&[("src/main.mw", GROUPSWAP_SOURCE)], GROUPSWAP_IDS);
+    let bytes = compile_files(&[("src/main.mw", GROUPSWAP_SOURCE)], GROUPSWAP_IDS);
     let image = marrow_verify::verify(&bytes).expect("verify");
     let mut builder =
         marrow_kernel::durable::StoreSchemaBuilder::root("books", vec![ScalarKind::Int]);
@@ -233,7 +236,7 @@ fn a_projection_that_under_covers_the_image_is_refused_as_uncovered() {
 /// A truncated map cannot hide these omissions because correspondence is checked first.
 #[test]
 fn coverage_is_decided_over_occurrence_identity_not_declaration_identity() {
-    let bytes = fixtures::compile_files(
+    let bytes = compile_files(
         &[("src/main.mw", SHARED_PRODUCT_SOURCE)],
         SHARED_PRODUCT_IDS,
     );
@@ -276,7 +279,7 @@ fn coverage_is_decided_over_occurrence_identity_not_declaration_identity() {
 fn an_unnamed_store_node_is_a_typed_refusal() {
     use marrow_kernel::codec::value::ScalarKind;
 
-    let bytes = fixtures::compile_files(&[("src/main.mw", GRAPH_SOURCE)], GRAPH_IDS);
+    let bytes = compile_files(&[("src/main.mw", GRAPH_SOURCE)], GRAPH_IDS);
     let image = marrow_verify::verify(&bytes).expect("verify");
     let schema = marrow_kernel::durable::StoreSchemaBuilder::root("phantom", vec![ScalarKind::Int])
         .finish()
@@ -301,7 +304,7 @@ fn an_unnamed_store_node_is_a_typed_refusal() {
 /// coverage, not historical authorship; even a same-type permutation retains its numbers.
 #[test]
 fn accepted_numbers_preserve_the_declared_map() {
-    let bytes = fixtures::compile_files(&[("src/main.mw", GRAPH_SOURCE)], GRAPH_IDS);
+    let bytes = compile_files(&[("src/main.mw", GRAPH_SOURCE)], GRAPH_IDS);
     let image = marrow_verify::verify(&bytes).expect("verify");
     let projection = derive_projection(&image).expect("projection");
     let map = head_map(&image).expect("head map");
@@ -320,7 +323,7 @@ fn accepted_numbers_preserve_the_declared_map() {
 
 #[test]
 fn accepted_mapping_refuses_an_unreached_binding() {
-    let bytes = fixtures::compile_files(&[("src/main.mw", GRAPH_SOURCE)], GRAPH_IDS);
+    let bytes = compile_files(&[("src/main.mw", GRAPH_SOURCE)], GRAPH_IDS);
     let image = marrow_verify::verify(&bytes).expect("verify");
     let projection = derive_projection(&image).expect("projection");
     let map = head_map(&image).expect("head map");

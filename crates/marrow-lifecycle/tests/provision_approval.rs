@@ -2,7 +2,7 @@
 //! in source vocabulary with no identity hash, provision refuses without a matching approval,
 //! and an accepted provision round-trips through open.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use marrow_lifecycle::{
     AttachOutcome, PreparedImage, ProvisionApproval, ProvisionImageError, ProvisionReport,
@@ -56,39 +56,9 @@ fn prepared(image: &VerifiedImage) -> PreparedImage {
     prepared
 }
 
-struct Scratch {
-    dir: PathBuf,
-}
-
-impl Scratch {
-    fn new() -> Self {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        // A process-monotonic counter guarantees two parallel scratch dirs never collide even
-        // when minted in the same nanosecond, so one test's Drop cleanup cannot remove
-        // another's store mid-provision.
-        let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "marrow-provision-approval-{}-{nonce}-{counter}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).expect("scratch dir");
-        Self { dir }
-    }
-    fn store(&self) -> PathBuf {
-        self.dir.join("store")
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
+#[path = "support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
 
 /// The rendered report is in source vocabulary — the destination, the roots by name, the
 /// effects and ceiling in demand terms — and carries no 32- or 64-character hex identity
@@ -128,7 +98,7 @@ fn the_report_names_roots_in_source_vocabulary_with_no_identity_hash() {
 #[test]
 fn provision_refuses_without_a_matching_approval() {
     let image = compile();
-    let scratch = Scratch::new();
+    let scratch = Scratch::new("provision-approval");
 
     let wrong = ProvisionApproval::from_token("not-the-right-token");
     let refused = provision_image(&scratch.store(), &prepared(&image), &wrong);
@@ -148,7 +118,7 @@ fn provision_refuses_without_a_matching_approval() {
 #[test]
 fn an_accepted_provision_round_trips_through_attach() {
     let image = compile();
-    let scratch = Scratch::new();
+    let scratch = Scratch::new("provision-approval");
 
     let prepared = prepared(&image);
     let report = ProvisionReport::new(&scratch.store(), &prepared).expect("report");

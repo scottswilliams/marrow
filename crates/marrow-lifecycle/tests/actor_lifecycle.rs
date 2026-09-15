@@ -2,7 +2,7 @@
 //! head-map ↔ kernel-numbering agreement, and the attach classifier (already-active, the
 //! binding-only rebind, and the typed contract-changed refusals).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use marrow_lifecycle::{
     AttachOutcome, ChangedFact, EngineKind, HEAD_FILE, LifecycleError, LogicalHead,
@@ -12,7 +12,10 @@ use marrow_lifecycle::{
 use marrow_verify::{VerifiedImage, verify};
 #[path = "support/actor_fixtures.rs"]
 mod actor_fixtures;
+#[path = "support/compile.rs"]
+mod source_compile;
 use actor_fixtures::*;
+use source_compile::compile_files;
 
 /// The base durable program: a `counters` root of `Counter` resources (a required `value`
 /// and a sparse `label`), keyed by `id: int`, with one read-only export.
@@ -42,11 +45,7 @@ const BASE_IDS: &str = "marrow ids v0\n\
      end\n";
 
 fn compile(source: &str, ids: &str) -> VerifiedImage {
-    compile_files(&[("src/main.mw", source)], ids)
-}
-
-fn compile_files(sources: &[(&str, &str)], ids: &str) -> VerifiedImage {
-    verify(&actor_fixtures::compile_files(sources, ids)).expect("verify")
+    verify(&compile_files(&[("src/main.mw", source)], ids)).expect("verify")
 }
 
 /// The store projection the lifecycle derives for `image`, for inspection.
@@ -57,39 +56,9 @@ fn projection_of(image: &VerifiedImage) -> marrow_kernel::durable::StoreProjecti
         .expect("the base image is flat-executable")
 }
 
-/// A unique scratch store directory, retained when a test fails.
-struct Scratch {
-    dir: PathBuf,
-}
-
-impl Scratch {
-    fn new(tag: &str) -> Self {
-        let base = std::env::temp_dir().join(format!(
-            "marrow-lifecycle-actor-{tag}-{}-{}",
-            std::process::id(),
-            now_nonce(),
-        ));
-        std::fs::create_dir_all(&base).expect("create scratch base");
-        Self {
-            dir: base.join("store"),
-        }
-    }
-    fn dir(&self) -> &Path {
-        &self.dir
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        if let Some(parent) = self.dir.parent() {
-            if std::thread::panicking() {
-                eprintln!("retained lifecycle fixture: {}", parent.display());
-                return;
-            }
-            let _ = std::fs::remove_dir_all(parent);
-        }
-    }
-}
+#[path = "support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
 
 #[test]
 fn refused_attach_preserves_absent_owner_marker() {
@@ -143,13 +112,6 @@ fn refused_attach_preserves_marker(marker: Option<&[u8]>) {
     after.sort();
     let names = before.into_iter().map(|(name, _)| name).collect::<Vec<_>>();
     assert_eq!(after, names, "refused admission changed store membership");
-}
-
-fn now_nonce() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0)
 }
 
 #[test]
@@ -265,8 +227,7 @@ pub fn setExtra(n: int, v: int): bool {
             "high-water 0",
             "id field Counter.extra 10101010101010101010101010101010\nhigh-water 0",
         );
-        let inserted_bytes =
-            actor_fixtures::compile_files(&[("src/main.mw", &inserted_source)], &inserted_ids);
+        let inserted_bytes = compile_files(&[("src/main.mw", &inserted_source)], &inserted_ids);
         let inserted = verify(&inserted_bytes).expect("verify inserted program");
         let export = |image: &VerifiedImage, name: &str| {
             image
@@ -598,10 +559,11 @@ fn the_persisted_interface_fingerprint_moves_exactly_with_the_export_set() {
         ("an export renamed", compile(&renamed, BASE_IDS)),
         (
             "an export relocated",
-            compile_files(
+            verify(&compile_files(
                 &[("src/main.mw", BASE_SOURCE), ("src/extra.mw", &relocated)],
                 BASE_IDS,
-            ),
+            ))
+            .expect("verify"),
         ),
     ] {
         assert_ne!(

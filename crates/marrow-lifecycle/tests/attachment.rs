@@ -3,14 +3,14 @@
 //! both hosts, selection is checked against the owned image before any store is minted, and a
 //! parked or storeless image keeps its identity and its storeless exports.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use marrow_lifecycle::{
     AttachOutcome, LifecycleError, MemoryAttachment, MintOutcome, NativeAttachment, PreparedImage,
     ProvisionApproval, ProvisionReport, attach, fresh_test, mint_ephemeral, prepare,
     provision_image,
 };
-use marrow_verify::{ExportId, VerifiedImage, verify};
+use marrow_verify::{ExportId, VerifiedImage};
 use marrow_vm::{DurableRun, Value, run_export, run_test};
 
 const COUNTER_IDS: &str = "marrow ids v0\n\
@@ -91,63 +91,13 @@ test "two is two" {
 }
 "#;
 
-fn capture(source: &str, ids: &str) -> marrow_project::ProjectInput {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    marrow_project::capture(
-        &manifest,
-        files,
-        Some(ids.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture")
-}
+#[path = "support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
 
-fn compile(source: &str, ids: &str) -> VerifiedImage {
-    let compiled = marrow_compile::compile(&capture(source, ids)).expect("compile");
-    verify(&compiled.image.bytes).expect("verify")
-}
-
-fn compile_with_tests(source: &str, ids: &str) -> VerifiedImage {
-    let compiled = marrow_compile::compile_with_tests(&capture(source, ids)).expect("compile");
-    verify(&compiled.image.bytes).expect("verify")
-}
-
-/// A unique scratch store directory, removed on drop.
-struct Scratch {
-    dir: PathBuf,
-}
-
-impl Scratch {
-    fn new(tag: &str) -> Self {
-        let base = std::env::temp_dir().join(format!(
-            "marrow-lifecycle-attachment-{tag}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-        ));
-        std::fs::create_dir_all(&base).expect("create scratch base");
-        Self {
-            dir: base.join("store"),
-        }
-    }
-    fn dir(&self) -> &Path {
-        &self.dir
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        if let Some(parent) = self.dir.parent() {
-            let _ = std::fs::remove_dir_all(parent);
-        }
-    }
-}
+#[path = "support/compile.rs"]
+mod source_compile;
+use source_compile::{compile, compile_with_tests};
 
 fn provision(store: &Path, image: &VerifiedImage) {
     let prepared = prepare(image.clone());

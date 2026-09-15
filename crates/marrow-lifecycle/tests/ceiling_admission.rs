@@ -7,7 +7,7 @@
 //! call, naming the exceeding export, effect, and place in source vocabulary; an image whose
 //! demand fits *within* the ceiling (even when narrower than a prior image's) is admitted.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use marrow_lifecycle::{
     AttachOutcome, LifecycleError, ProvisionApproval, ProvisionReport, attach, prepare,
@@ -89,37 +89,9 @@ fn attach_image(store: &Path, image: &VerifiedImage) -> Result<AttachOutcome, Li
     attach(store, prepare(image.clone()))
 }
 
-struct Scratch {
-    dir: PathBuf,
-}
-
-impl Scratch {
-    fn new(tag: &str) -> Self {
-        let base = std::env::temp_dir().join(format!(
-            "marrow-g03-ceiling-{tag}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-        ));
-        std::fs::create_dir_all(&base).expect("scratch base");
-        Self {
-            dir: base.join("store"),
-        }
-    }
-    fn dir(&self) -> &Path {
-        &self.dir
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        if let Some(parent) = self.dir.parent() {
-            let _ = std::fs::remove_dir_all(parent);
-        }
-    }
-}
+#[path = "support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
 
 /// The MUST-WIN: a store provisioned under the read-only image refuses the broadened image —
 /// the demand now exceeds the accepted ceiling — naming the export, the new effect, and the

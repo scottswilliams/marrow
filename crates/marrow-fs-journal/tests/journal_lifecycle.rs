@@ -5,9 +5,9 @@
 
 mod common;
 
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::MetadataExt;
 
-use common::Scratch;
+use common::{Scratch, require_mode_bits_bind, set_mode};
 use marrow_fs_journal::MarkerStats;
 use marrow_fs_journal::{
     AdmittedDir, CacheLock, CorruptionReason, CustodyError, CustodyOp, EntryName, EntryNameError,
@@ -1007,33 +1007,6 @@ fn a_closed_kind_journal_verifies_its_self_witness_on_replay() {
 fn identity_of(path: &std::path::Path) -> FsIdentity {
     let metadata = std::fs::metadata(path).expect("stat for identity");
     FsIdentity::new(metadata.dev(), metadata.ino())
-}
-
-fn set_mode(path: &std::path::Path, mode: u32) {
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("set mode");
-}
-
-/// Require that permission bits actually deny this process the access a mode
-/// withholds.
-///
-/// A check that planted a stripped mode nothing enforces would assert a refusal
-/// that never happened, so this panics rather than reporting green. Mode bits do
-/// not bind a process holding the mode-override capability (`root`, or
-/// `CAP_DAC_OVERRIDE` on Linux), and a filesystem that carries no mode bits does
-/// not enforce them at all.
-fn require_mode_bits_bind(scratch: &Scratch) {
-    let probe = scratch.path().join("deny-probe");
-    std::fs::write(&probe, b"").expect("plant the probe");
-    set_mode(&probe, 0o000);
-    let denied = std::fs::File::open(&probe).is_err();
-    set_mode(&probe, 0o600);
-    std::fs::remove_file(&probe).expect("remove the probe");
-    assert!(
-        denied,
-        "mode 0000 under {} did not refuse a read open, so this check never ran. Run the \
-         suite as a process the mode bits bind, on a filesystem that carries them.",
-        scratch.path().display()
-    );
 }
 
 fn assert_corrupt(dir: &AdmittedDir, names: &PendingName, expected: &CorruptionReason) {

@@ -14,12 +14,12 @@
 //! typed outcome so the hold cannot be released by accident, and pins the single-root
 //! control beside it so the refusal is proven specific to the sharing.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use marrow_lifecycle::{
     ProvisionApproval, ProvisionImageError, ProvisionReport, prepare, provision_image,
 };
-use marrow_verify::{VerifiedImage, verify};
+use marrow_verify::VerifiedImage;
 
 const SHARED: &str = r#"resource Counter {
     required value: int
@@ -75,54 +75,13 @@ const DISTINCT_IDS: &str = "marrow ids v0\n\
      high-water 0\n\
      end\n";
 
-fn compile(source: &str, ids: &str) -> VerifiedImage {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(ids.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    verify(&compiled.image.bytes).expect("verify")
-}
+#[path = "support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
 
-struct Scratch {
-    dir: PathBuf,
-}
-
-impl Scratch {
-    fn new(tag: &str) -> Self {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "marrow-shared-product-{tag}-{}-{nonce}-{counter}",
-            std::process::id(),
-        ));
-        std::fs::create_dir_all(&dir).expect("create scratch");
-        Self { dir }
-    }
-
-    fn store(&self) -> PathBuf {
-        self.dir.join("store")
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
+#[path = "support/compile.rs"]
+mod source_compile;
+use source_compile::compile;
 
 /// Provision `image` into a fresh destination with a matching approval, returning the
 /// outcome. The approval is accepted from the report the same call rebuilds, so nothing

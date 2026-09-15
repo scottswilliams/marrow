@@ -2,7 +2,7 @@
 //! gate, engine-byte preservation, the kernel's walk rendered in source vocabulary, and
 //! the content digest's stability and physical-integrity limitation.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::RuntimeScalar;
@@ -108,27 +108,6 @@ pub fn ping(): int {
 }
 "#;
 
-fn compile(source: &str, ids: &str) -> VerifiedImage {
-    verify(&compile_bytes(source, ids)).expect("verify")
-}
-
-fn compile_bytes(source: &str, ids: &str) -> Vec<u8> {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(ids.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    compiled.image.bytes
-}
-
 #[test]
 fn populated_backup_restores_fresh_identity_head_index_and_executable_values() {
     use marrow_vm::{DurableRun, Value};
@@ -145,8 +124,8 @@ fn populated_backup_restores_fresh_identity_head_index_and_executable_values() {
     let add = export("add");
     let name_of = export("nameOf");
     let scratch = std::mem::ManuallyDrop::new(Scratch::new("backup-restore"));
-    eprintln!("backup restore fixture: {}", scratch.base.display());
-    let source = scratch.store("source");
+    eprintln!("backup restore fixture: {}", scratch.base().display());
+    let source = scratch.named_store("source");
     provision_from(&source, &image);
     let AttachOutcome::AlreadyActive(mut source_attachment) =
         attach(&source, prepare(image.clone())).unwrap()
@@ -165,10 +144,10 @@ fn populated_backup_restores_fresh_identity_head_index_and_executable_values() {
     drop(source_attachment);
     std::fs::write(source.join(marrow_lifecycle::LOCK_FILE), b"unclean").unwrap();
     let before = store_files(&source);
-    let artifact = scratch.store("backup");
+    let artifact = scratch.named_store("backup");
     let backed = marrow_lifecycle::backup(&source, &bytes, &artifact).unwrap();
     assert!(store_files(&source) == before, "source artifacts changed");
-    let destination = scratch.store("restored");
+    let destination = scratch.named_store("restored");
     let restored =
         marrow_lifecycle::restore(&mut std::fs::File::open(artifact).unwrap(), &destination)
             .unwrap();
@@ -193,40 +172,13 @@ fn populated_backup_restores_fresh_identity_head_index_and_executable_values() {
     drop(std::mem::ManuallyDrop::into_inner(scratch));
 }
 
-struct Scratch {
-    base: PathBuf,
-}
+#[path = "support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
 
-impl Scratch {
-    fn new(tag: &str) -> Self {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let base = std::env::temp_dir().join(format!(
-            "marrow-audit-{tag}-{}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        ));
-        std::fs::create_dir(&base).expect("unique scratch base");
-        Self { base }
-    }
-
-    fn store(&self, name: &str) -> PathBuf {
-        self.base.join(name)
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            eprintln!("failed audit fixture retained at {}", self.base.display());
-            return;
-        }
-        let _ = std::fs::remove_dir_all(&self.base);
-    }
-}
+#[path = "support/compile.rs"]
+mod source_compile;
+use source_compile::{compile, compile_bytes};
 
 fn store_files(dir: &Path) -> std::collections::BTreeMap<std::ffi::OsString, Vec<u8>> {
     std::fs::read_dir(dir)
@@ -328,7 +280,7 @@ fn logical_inspection_preserves_all_store_artifacts() {
         ("invalid", Some(0xff)),
     ] {
         let scratch = Scratch::new(tag);
-        let store = scratch.store("store");
+        let store = scratch.named_store("store");
         let image = compile(SOURCE, IDS);
         provision_from(&store, &image);
         add_person(&store, &image, 1, "Ada Lovelace", None);
@@ -356,7 +308,7 @@ fn logical_inspection_preserves_all_store_artifacts() {
 #[test]
 fn a_populated_store_audits_clean_with_a_stable_digest_that_tracks_writes() {
     let scratch = Scratch::new("clean");
-    let store = scratch.store("store");
+    let store = scratch.named_store("store");
     let image = compile(SOURCE, IDS);
     provision_from(&store, &image);
     add_person(&store, &image, 1, "Ada", Some("ada@example.org"));
@@ -389,8 +341,8 @@ fn a_populated_store_audits_clean_with_a_stable_digest_that_tracks_writes() {
 #[test]
 fn an_engine_swapped_under_another_provisions_head_is_reported() {
     let scratch = Scratch::new("swap");
-    let populated = scratch.store("populated");
-    let other = scratch.store("other");
+    let populated = scratch.named_store("populated");
+    let other = scratch.named_store("other");
     let image = compile(SOURCE, IDS);
     let other_image = compile(SOURCE, OTHER_INDEX_IDS);
     provision_from(&populated, &image);
@@ -422,10 +374,10 @@ fn backup_rejects_inconsistent_source_indexes_without_publishing() {
     let scratch = std::mem::ManuallyDrop::new(Scratch::new("backup-invalid-index"));
     eprintln!(
         "preserved invalid-index backup fixture: {}",
-        scratch.base.display()
+        scratch.base().display()
     );
-    let populated = scratch.store("populated");
-    let source = scratch.store("source");
+    let populated = scratch.named_store("populated");
+    let source = scratch.named_store("source");
     let image = compile(SOURCE, IDS);
     let bytes = compile_bytes(SOURCE, OTHER_INDEX_IDS);
     let other_image = verify(&bytes).unwrap();
@@ -437,7 +389,7 @@ fn backup_rejects_inconsistent_source_indexes_without_publishing() {
     std::fs::copy(populated.join(ENGINE_FILE), source.join(ENGINE_FILE)).unwrap();
     std::fs::write(source.join(marrow_lifecycle::LOCK_FILE), b"unclean").unwrap();
     let before = store_files(&source);
-    let destination = scratch.store("backup");
+    let destination = scratch.named_store("backup");
     let error = marrow_lifecycle::backup(&source, &bytes, &destination).unwrap_err();
     let marrow_lifecycle::BackupFault::Invalid(report) = error.fault else {
         panic!("expected completed non-clean audit: {error:?}");
@@ -459,7 +411,7 @@ fn backup_rejects_inconsistent_source_indexes_without_publishing() {
     assert!(error.cleanup.is_none());
     assert!(!destination.exists());
     assert!(store_files(&source) == before, "source artifacts changed");
-    let mut remaining: Vec<_> = std::fs::read_dir(&scratch.base)
+    let mut remaining: Vec<_> = std::fs::read_dir(scratch.base())
         .unwrap()
         .map(|entry| entry.unwrap().file_name())
         .collect();
@@ -470,8 +422,8 @@ fn backup_rejects_inconsistent_source_indexes_without_publishing() {
 #[test]
 fn rebind_rejects_inconsistent_indexes_without_changing_store_artifacts() {
     let scratch = Scratch::new("rebind-invalid-index");
-    let populated = scratch.store("populated");
-    let destination = scratch.store("destination");
+    let populated = scratch.named_store("populated");
+    let destination = scratch.named_store("destination");
     let image = compile(SOURCE, IDS);
     let other = compile(SOURCE, OTHER_INDEX_IDS);
     let edited = compile(EDITED_SOURCE, OTHER_INDEX_IDS);
@@ -513,7 +465,7 @@ fn rebind_rejects_inconsistent_indexes_without_changing_store_artifacts() {
 #[test]
 fn a_same_shape_scalar_change_is_not_physical_integrity_evidence() {
     let scratch = Scratch::new("flip");
-    let store = scratch.store("store");
+    let store = scratch.named_store("store");
     let image = compile(SOURCE, IDS);
     provision_from(&store, &image);
     add_person(&store, &image, 1, "Ada Lovelace", None);
@@ -542,7 +494,7 @@ fn a_same_shape_scalar_change_is_not_physical_integrity_evidence() {
 #[test]
 fn only_the_exact_active_binding_may_audit() {
     let scratch = Scratch::new("binding");
-    let store = scratch.store("store");
+    let store = scratch.named_store("store");
     let image = compile(SOURCE, IDS);
     provision_from(&store, &image);
 
@@ -572,7 +524,7 @@ fn only_the_exact_active_binding_may_audit() {
 #[test]
 fn a_held_store_and_an_absent_store_are_open_refusals() {
     let scratch = Scratch::new("open");
-    let store = scratch.store("store");
+    let store = scratch.named_store("store");
     let image = compile(SOURCE, IDS);
     assert!(matches!(
         audit(&store, prepare(image.clone())),
@@ -603,7 +555,7 @@ fn unsupported_generations_refuses_audit_before_engine_open() {
     ] {
         for broken_engine in [true, false] {
             let scratch = Scratch::new("old-generation");
-            let dir = scratch.store("store");
+            let dir = scratch.named_store("store");
             provision_from(&dir, &image);
             let head_path = dir.join(marrow_lifecycle::HEAD_FILE);
             let current_head = std::fs::read(&head_path).expect("current head");

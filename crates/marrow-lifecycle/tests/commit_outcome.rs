@@ -3,7 +3,6 @@ use marrow_lifecycle::{
     ENGINE_FILE, LifecycleError, NativeAttachment, OpenError, PreparedImage, ProvisionApproval,
     ProvisionReport, attach, prepare, provision_image,
 };
-use std::sync::atomic::{AtomicU64, Ordering};
 
 const IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
@@ -26,31 +25,9 @@ pub fn readValue(id: int): int? {
 }
 "#;
 
-struct Scratch(std::path::PathBuf);
-
-static NEXT_SCRATCH: AtomicU64 = AtomicU64::new(0);
-
-impl Scratch {
-    fn new() -> Self {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_nanos())
-            .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!(
-            "marrow-commit-outcome-{}-{nonce}-{}",
-            std::process::id(),
-            NEXT_SCRATCH.fetch_add(1, Ordering::Relaxed),
-        ));
-        std::fs::create_dir(&dir).expect("unique scratch directory");
-        Self(dir)
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+#[path = "support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
 
 fn compile() -> PreparedImage {
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
@@ -94,8 +71,8 @@ fn recovery_consumes_the_old_owner_and_returns_only_a_known_reopened_owner() {
 
 #[test]
 fn ordinary_open_does_not_recreate_a_missing_engine_file() {
-    let scratch = Scratch::new();
-    let store = scratch.0.join("store");
+    let scratch = Scratch::new("commit-outcome");
+    let store = scratch.base().join("store");
     let prepared = provision_fixture(&store);
     let engine = store.join(ENGINE_FILE);
     std::fs::remove_file(&engine).expect("remove provisioned engine");
@@ -116,8 +93,8 @@ fn ordinary_open_does_not_recreate_a_missing_engine_file() {
 #[test]
 fn ordinary_open_does_not_adopt_empty_or_malformed_engine_files() {
     for (label, bytes) in [("empty", b"".as_slice()), ("malformed", b"not redb")] {
-        let scratch = Scratch::new();
-        let store = scratch.0.join(label);
+        let scratch = Scratch::new("commit-outcome");
+        let store = scratch.base().join(label);
         let prepared = provision_fixture(&store);
         let engine = store.join(ENGINE_FILE);
         std::fs::write(&engine, bytes).expect("replace engine with invalid body");

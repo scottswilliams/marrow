@@ -68,24 +68,3 @@ pub const GRAPH_IDS: &str = "marrow ids v0\n\
      id key tags.id 4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c\n\
      high-water 0\n\
      end\n";
-
-/// Compile a project of several modules, so an export's *module* — half of its declaration
-/// path identity — can be varied as well as its item name.
-pub fn compile_files(sources: &[(&str, &str)], ids: &str) -> Vec<u8> {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = sources
-        .iter()
-        .map(|(path, text)| {
-            marrow_project::CapturedFile::new(path.to_string(), text.as_bytes().to_vec())
-        })
-        .collect();
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(ids.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    compiled.image.bytes
-}

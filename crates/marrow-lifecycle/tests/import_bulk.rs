@@ -21,7 +21,7 @@ use marrow_lifecycle::{
     StoreEnvelope, StoreInstanceId, active_binding, attach, head_map, import_jsonl, prepare,
     provision,
 };
-use marrow_verify::{SealedSite, SealedSiteTarget, VerifiedImage, verify};
+use marrow_verify::{SealedSite, SealedSiteTarget, VerifiedImage};
 
 /// A `counters` root of `Counter` resources — a required `value: int` and a sparse
 /// `label: string` — keyed by `id: int`. The flat scalar shape the importer targets.
@@ -252,23 +252,6 @@ end\n";
     assert_eq!(audit.summary.index_cells, 4);
 }
 
-fn compile(source: &str, ids: &str) -> VerifiedImage {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(ids.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    verify(&compiled.image.bytes).expect("verify")
-}
-
 /// Attach `image` to the store at `dir` as its active binding.
 fn attach_active(dir: &Path, image: &VerifiedImage) -> NativeAttachment {
     match attach(dir, prepare(image.clone())).expect("attach the active image") {
@@ -296,42 +279,13 @@ fn whole_entry_site(image: &VerifiedImage) -> u16 {
         .expect("the fixture reads a whole entry")
 }
 
-/// A unique scratch store directory, retained on panic for failure inspection.
-struct Scratch {
-    dir: PathBuf,
-}
+#[path = "support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
 
-impl Scratch {
-    fn new(tag: &str) -> Self {
-        let base = std::env::temp_dir().join(format!(
-            "marrow-imp01-{tag}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-        ));
-        std::fs::create_dir_all(&base).expect("scratch base");
-        Self {
-            dir: base.join("store"),
-        }
-    }
-    fn dir(&self) -> &Path {
-        &self.dir
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            eprintln!("retained import fixture: {}", self.dir.display());
-            return;
-        }
-        if let Some(parent) = self.dir.parent() {
-            let _ = std::fs::remove_dir_all(parent);
-        }
-    }
-}
+#[path = "support/compile.rs"]
+mod source_compile;
+use source_compile::compile;
 
 /// Provision a fresh store at `dir` bound to `image`.
 fn provision_from(dir: &Path, image: &VerifiedImage) {
