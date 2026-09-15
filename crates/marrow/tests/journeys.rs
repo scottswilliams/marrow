@@ -1,4 +1,6 @@
-//! Whole-program journeys over frozen on-disk fixtures: the workshop, the graph reports, the scale corpus, the source-test and formatter runs, and diagnostic actionability.
+//! Whole-program journeys over frozen on-disk fixtures: the workshop, the graph
+//! reports, the scale corpus, the source-test and formatter runs, and diagnostic
+//! actionability.
 
 mod common;
 

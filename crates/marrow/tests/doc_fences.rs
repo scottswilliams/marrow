@@ -364,16 +364,14 @@ fn test_record(run: DurableRun) -> Option<FailureRecord> {
 /// machine-written identity artifact.
 fn verify_fence(fence: &DocFence) -> Result<(), FenceFailure> {
     match check_in_process(fence) {
-        InProcess::Clean => return Ok(()),
-        InProcess::Rejected(records) => {
-            return Err(FenceFailure {
-                status: None,
-                initial_records: Vec::new(),
-                records,
-                stdout: String::new(),
-                stderr: String::new(),
-            });
-        }
+        InProcess::Clean => Ok(()),
+        InProcess::Rejected(records) => Err(FenceFailure {
+            status: None,
+            initial_records: Vec::new(),
+            records,
+            stdout: String::new(),
+            stderr: String::new(),
+        }),
         InProcess::NeedsMint(pre_mint) => mint_and_verify(fence, pre_mint),
     }
 }

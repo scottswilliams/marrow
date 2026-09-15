@@ -1,4 +1,5 @@
-//! Durable evolution: field widening, widened values, enum reuse, identity allocation, and the identity ledger.
+//! Durable evolution: field widening, widened values, enum reuse, identity allocation,
+//! and the identity ledger.
 
 mod common;
 

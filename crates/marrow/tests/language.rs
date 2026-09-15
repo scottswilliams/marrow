@@ -1,4 +1,5 @@
-//! Language semantics through the production path: types, collections, enums, generics, groups, temporal values, bounds, and operation sites.
+//! Language semantics through the production path: types, collections, enums, generics,
+//! groups, temporal values, bounds, and operation sites.
 
 mod common;
 

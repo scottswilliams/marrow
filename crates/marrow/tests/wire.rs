@@ -1,4 +1,5 @@
-//! The wire interface and generated client: known-answer traces, the published interface projection, and the generator's output end to end.
+//! The wire interface and generated client: known-answer traces, the published
+//! interface projection, and the generator's output end to end.
 
 mod common;
 

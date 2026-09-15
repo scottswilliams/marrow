@@ -1,4 +1,5 @@
-//! Multiple roots and their indexes: root presence, managed indexes, index reads, entry identity, and optional presence steering.
+//! Multiple roots and their indexes: root presence, managed indexes, index reads, entry
+//! identity, and optional presence steering.
 
 mod common;
 

@@ -1,4 +1,5 @@
-//! The durable declaration graph: demand, breadth, groups and branches, composite keys, nested branches, subtree purge, and cross-module roots.
+//! The durable declaration graph: demand, breadth, groups and branches, composite keys,
+//! nested branches, subtree purge, and cross-module roots.
 
 mod common;
 
