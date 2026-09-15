@@ -480,6 +480,151 @@ pub enum Instr {
     MapValueAt,
 }
 
+/// What an instruction does to durable state.
+///
+/// The sole owner of the durable opcode partition. The compiler's
+/// requires-ambient-transaction check and its direct-durable-operation check both read
+/// it, so neither can classify an opcode differently from the other. The match in
+/// [`Instr::op_class`] is exhaustive — the pure complement is listed rather than elided —
+/// so a new opcode fails to compile until it is classified, welding the partition to the
+/// instruction set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpClass {
+    /// Stages a durable mutation over a `^` place: a field write, an entry or group
+    /// create, replace, or erase.
+    DurableMutation,
+    /// Reads a `^` place without changing it: a value read, a presence probe, a bounded
+    /// traversal, or a managed-index access.
+    DurableRead,
+    /// Names no `^` place. Transaction markers and `Duration*` arithmetic are here.
+    Pure,
+}
+
+impl Instr {
+    /// This instruction's place in the durable opcode partition.
+    pub fn op_class(&self) -> OpClass {
+        match self {
+            Instr::DurSetField { .. }
+            | Instr::DurCreateEntry(_)
+            | Instr::DurReplaceEntry(_)
+            | Instr::DurReplaceGroup { .. }
+            | Instr::DurEraseField(_)
+            | Instr::DurEraseEntry(_)
+            | Instr::DurEraseGroup(_) => OpClass::DurableMutation,
+            Instr::DurExists(_)
+            | Instr::DurFamilyExists(_)
+            | Instr::DurReadField(_)
+            | Instr::DurReadFieldPresent { .. }
+            | Instr::DurReadEntry(_)
+            | Instr::DurReadGroup(_)
+            | Instr::DurReadGroupPresent { .. }
+            | Instr::DurIterateBounded { .. }
+            | Instr::DurIndexScan { .. }
+            | Instr::DurIndexLookup(_)
+            | Instr::DurIndexExists(_) => OpClass::DurableRead,
+            Instr::ConstLoad(_)
+            | Instr::LocalGet(_)
+            | Instr::LocalSet(_)
+            | Instr::Pop
+            | Instr::Return
+            | Instr::Call(_)
+            | Instr::Jump(_)
+            | Instr::JumpIfFalse(_)
+            | Instr::BranchPresent(_)
+            | Instr::Unreachable(_)
+            | Instr::Todo(_)
+            | Instr::Assert
+            | Instr::IntAdd
+            | Instr::IntSub
+            | Instr::IntMul
+            | Instr::IntRem
+            | Instr::IntDiv
+            | Instr::IntNeg
+            | Instr::BoolNot
+            | Instr::IntLt
+            | Instr::IntLe
+            | Instr::IntGt
+            | Instr::IntGe
+            | Instr::EqInt
+            | Instr::EqBool
+            | Instr::EqText
+            | Instr::TextConcat
+            | Instr::TextLt
+            | Instr::TextLe
+            | Instr::TextGt
+            | Instr::TextGe
+            | Instr::EqBytes
+            | Instr::BytesLt
+            | Instr::BytesLe
+            | Instr::BytesGt
+            | Instr::BytesGe
+            | Instr::ConvString
+            | Instr::ConvBytesText
+            | Instr::TextIsEmpty
+            | Instr::TextContains
+            | Instr::TextTrim
+            | Instr::TextSplit(_)
+            | Instr::TextLines(_)
+            | Instr::TextJoin
+            | Instr::EqDate
+            | Instr::DateLt
+            | Instr::DateLe
+            | Instr::DateGt
+            | Instr::DateGe
+            | Instr::EqInstant
+            | Instr::InstantLt
+            | Instr::InstantLe
+            | Instr::InstantGt
+            | Instr::InstantGe
+            | Instr::EqDuration
+            | Instr::DurationLt
+            | Instr::DurationLe
+            | Instr::DurationGt
+            | Instr::DurationGe
+            | Instr::DateAddDays
+            | Instr::DateDaysBetween
+            | Instr::DurationAdd
+            | Instr::DurationSub
+            | Instr::InstantAddDuration
+            | Instr::InstantSubDuration
+            | Instr::IntAddChecked(_)
+            | Instr::IntSubChecked(_)
+            | Instr::IntMulChecked(_)
+            | Instr::IntNegChecked(_)
+            | Instr::IntDivChecked(_)
+            | Instr::IntRemChecked(_)
+            | Instr::RangeGuard { .. }
+            | Instr::RecordNew(_)
+            | Instr::FieldGet(_)
+            | Instr::FieldSet(_)
+            | Instr::FieldUnset(_)
+            | Instr::SomeWrap
+            | Instr::VacantLoad(_)
+            | Instr::EnumConstruct { .. }
+            | Instr::EnumTag
+            | Instr::EnumPayloadGet { .. }
+            | Instr::EqEnum
+            | Instr::EqId
+            | Instr::MakeIdentity { .. }
+            | Instr::IdentityKeyPath(_)
+            | Instr::TxnBegin
+            | Instr::TxnCommit
+            | Instr::ListNew(_)
+            | Instr::ListAppend
+            | Instr::ListLen
+            | Instr::ListGet
+            | Instr::ListIndex
+            | Instr::MapNew(_)
+            | Instr::MapInsert
+            | Instr::MapRemove
+            | Instr::MapGet
+            | Instr::MapLen
+            | Instr::MapKeyAt
+            | Instr::MapValueAt => OpClass::Pure,
+        }
+    }
+}
+
 impl Instr {
     /// The opcode byte for this instruction.
     pub(crate) fn opcode(&self) -> u8 {

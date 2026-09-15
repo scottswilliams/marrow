@@ -45,7 +45,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use marrow_codes::Code;
 use marrow_image::{
     CanonicalDeclarationPathSelector, CollTypeId, DraftTxn, EnumId, FuncId, FunctionDef,
-    ImageDraft, ImageType, Instr, OccurrenceSiteHandle, PlannedSiteRef, RootId,
+    ImageDraft, ImageType, Instr, OccurrenceSiteHandle, OpClass, PlannedSiteRef, RootId,
     RootOccurrenceSelector, Scalar, SemanticTarget, SpanEntry, TypeId,
 };
 use marrow_project::FileIdentity;

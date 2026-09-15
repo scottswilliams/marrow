@@ -301,158 +301,20 @@ pub(super) struct TraversalTarget<'a, 'e> {
 }
 
 /// Whether an instruction is a direct durable-place operation — a read, write,
-/// presence probe, erase, or managed-index access over a `^` place. A `Duration*`
-/// arithmetic opcode is not one. Tests must reach these operations through calls.
+/// presence probe, erase, or managed-index access over a `^` place. Tests must reach
+/// these operations through calls.
 pub(crate) fn is_durable_place_op(instr: &Instr) -> bool {
     matches!(
-        instr,
-        Instr::DurExists(_)
-            | Instr::DurFamilyExists(_)
-            | Instr::DurReadField(_)
-            | Instr::DurReadFieldPresent { .. }
-            | Instr::DurReadEntry(_)
-            | Instr::DurReadGroup(_)
-            | Instr::DurReadGroupPresent { .. }
-            | Instr::DurSetField { .. }
-            | Instr::DurCreateEntry(_)
-            | Instr::DurReplaceEntry(_)
-            | Instr::DurReplaceGroup { .. }
-            | Instr::DurEraseField(_)
-            | Instr::DurEraseEntry(_)
-            | Instr::DurEraseGroup(_)
-            | Instr::DurIterateBounded { .. }
-            | Instr::DurIndexScan { .. }
-            | Instr::DurIndexLookup(_)
-            | Instr::DurIndexExists(_)
+        instr.op_class(),
+        OpClass::DurableMutation | OpClass::DurableRead
     )
 }
 
-/// Whether an instruction stages a durable mutation (a write, replacement, or
-/// erase). The requires-ambient-transaction check treats these as the sites that
-/// demand a transaction; it mirrors the verifier's mutation classification over the
-/// same opcode set. The match is exhaustive over `Instr` — the closed complement is
-/// listed rather than elided — so a new opcode fails to compile until it is
-/// classified here, welding this owner to the instruction set.
+/// Whether an instruction stages a durable mutation (a write, replacement, or erase).
+/// The requires-ambient-transaction check treats these as the sites that demand a
+/// transaction.
 pub(crate) fn is_mutation_instr(instr: &Instr) -> bool {
-    match instr {
-        Instr::DurSetField { .. }
-        | Instr::DurCreateEntry(_)
-        | Instr::DurReplaceEntry(_)
-        | Instr::DurReplaceGroup { .. }
-        | Instr::DurEraseField(_)
-        | Instr::DurEraseEntry(_)
-        | Instr::DurEraseGroup(_) => true,
-        Instr::ConstLoad(_)
-        | Instr::LocalGet(_)
-        | Instr::LocalSet(_)
-        | Instr::Pop
-        | Instr::Return
-        | Instr::Call(_)
-        | Instr::Jump(_)
-        | Instr::JumpIfFalse(_)
-        | Instr::BranchPresent(_)
-        | Instr::Unreachable(_)
-        | Instr::Todo(_)
-        | Instr::Assert
-        | Instr::IntAdd
-        | Instr::IntSub
-        | Instr::IntMul
-        | Instr::IntRem
-        | Instr::IntDiv
-        | Instr::IntNeg
-        | Instr::BoolNot
-        | Instr::IntLt
-        | Instr::IntLe
-        | Instr::IntGt
-        | Instr::IntGe
-        | Instr::EqInt
-        | Instr::EqBool
-        | Instr::EqText
-        | Instr::TextConcat
-        | Instr::TextLt
-        | Instr::TextLe
-        | Instr::TextGt
-        | Instr::TextGe
-        | Instr::EqBytes
-        | Instr::BytesLt
-        | Instr::BytesLe
-        | Instr::BytesGt
-        | Instr::BytesGe
-        | Instr::ConvString
-        | Instr::ConvBytesText
-        | Instr::TextIsEmpty
-        | Instr::TextContains
-        | Instr::TextTrim
-        | Instr::TextSplit(_)
-        | Instr::TextLines(_)
-        | Instr::TextJoin
-        | Instr::EqDate
-        | Instr::DateLt
-        | Instr::DateLe
-        | Instr::DateGt
-        | Instr::DateGe
-        | Instr::EqInstant
-        | Instr::InstantLt
-        | Instr::InstantLe
-        | Instr::InstantGt
-        | Instr::InstantGe
-        | Instr::EqDuration
-        | Instr::DurationLt
-        | Instr::DurationLe
-        | Instr::DurationGt
-        | Instr::DurationGe
-        | Instr::DateAddDays
-        | Instr::DateDaysBetween
-        | Instr::DurationAdd
-        | Instr::DurationSub
-        | Instr::InstantAddDuration
-        | Instr::InstantSubDuration
-        | Instr::IntAddChecked(_)
-        | Instr::IntSubChecked(_)
-        | Instr::IntMulChecked(_)
-        | Instr::IntNegChecked(_)
-        | Instr::IntDivChecked(_)
-        | Instr::IntRemChecked(_)
-        | Instr::RangeGuard { .. }
-        | Instr::RecordNew(_)
-        | Instr::FieldGet(_)
-        | Instr::FieldSet(_)
-        | Instr::FieldUnset(_)
-        | Instr::SomeWrap
-        | Instr::VacantLoad(_)
-        | Instr::EnumConstruct { .. }
-        | Instr::EnumTag
-        | Instr::EnumPayloadGet { .. }
-        | Instr::EqEnum
-        | Instr::EqId
-        | Instr::MakeIdentity { .. }
-        | Instr::IdentityKeyPath(_)
-        | Instr::DurExists(_)
-        | Instr::DurFamilyExists(_)
-        | Instr::DurReadField(_)
-        | Instr::DurReadFieldPresent { .. }
-        | Instr::DurReadEntry(_)
-        | Instr::DurReadGroup(_)
-        | Instr::DurReadGroupPresent { .. }
-        | Instr::DurIterateBounded { .. }
-        | Instr::TxnBegin
-        | Instr::TxnCommit
-        | Instr::DurIndexScan { .. }
-        | Instr::DurIndexLookup(_)
-        | Instr::DurIndexExists(_)
-        | Instr::ListNew(_)
-        | Instr::ListAppend
-        | Instr::ListLen
-        | Instr::ListGet
-        | Instr::ListIndex
-        | Instr::MapNew(_)
-        | Instr::MapInsert
-        | Instr::MapRemove
-        | Instr::MapGet
-        | Instr::MapLen
-        | Instr::MapKeyAt
-        | Instr::MapValueAt => false,
-    }
+    instr.op_class() == OpClass::DurableMutation
 }
 
 impl<'a, 'd> FnLowerer<'a, 'd> {
