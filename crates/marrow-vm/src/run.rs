@@ -28,12 +28,12 @@ use crate::value::{Value, collection_within_limits, key_bytes};
 // CLI, environment variable, or caller can raise or disable them. The verifier
 // owns the complementary static bounds (stack depth, locals, code size).
 
-/// Per-invocation instruction budget (design §D). Bounds total work across the
+/// Per-invocation instruction budget. Bounds total work across the
 /// whole call tree regardless of loop or call structure, so a non-terminating loop
 /// faults with `run.budget` rather than running forever.
 const INSTRUCTION_BUDGET: u64 = 1 << 26;
 
-/// Maximum dynamic call depth (design §D). Static recursion is already rejected at
+/// Maximum dynamic call depth. Static recursion is already rejected at
 /// verify, so this guards a pathologically deep non-recursive chain.
 const MAX_CALL_DEPTH: u32 = 64;
 

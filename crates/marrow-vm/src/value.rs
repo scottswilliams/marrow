@@ -1,4 +1,4 @@
-//! The runtime value model (design §D).
+//! The runtime value model.
 //!
 //! The vacant state of an optional is the typed `Optional(None)`; there is no
 //! dedicated absent value variant. Records and optionals arrive with their

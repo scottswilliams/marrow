@@ -12,7 +12,7 @@
 //! The protocol is deliberately closed and small (campaign law 8): one protocol
 //! version, one canonical JSON encoding, a fixed set of message kinds, and no
 //! streaming, replay, cancellation, or pagination. Every decoder input is bounded
-//! before it allocates (campaign law 9): a frame length, a value's nesting depth,
+//! before it allocates: a frame length, a value's nesting depth,
 //! and a string's byte length each have a fixed maximum, and an over-limit or
 //! malformed input is rejected at the single wire owner with a typed
 //! [`WireError`].

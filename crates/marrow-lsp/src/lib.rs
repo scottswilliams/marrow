@@ -4,8 +4,8 @@
 //! diagnostics, checked formatting, hover, and definition over one exact
 //! [`marrow_compile::AnalysisSnapshot`] — and serves them over the Language Server
 //! Protocol. The server reconstructs no language semantics: types, paths, facts,
-//! diagnostics, and formatting come only from the compiler fact surface (H00f/H00f2)
-//! and the shared physical project adapter (CAP01).
+//! diagnostics, and formatting come only from the compiler fact surface and the
+//! shared physical project adapter.
 //!
 //! The server owns a private, closed JSON-RPC 2.0 envelope (`protocol`) and a bounded
 //! standard-library transport (`transport`); it depends on no LSP-server framework,

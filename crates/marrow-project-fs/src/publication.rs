@@ -32,31 +32,21 @@
 //! carries an entry that would make a fresh clone read a ledger this protocol
 //! calls indeterminate.
 //!
-//! # Which writers the contract admits, and what that bounds
+//! # Which writers the contract admits
 //!
-//! The writers this protocol is designed against are ordinary Git operations —
-//! a checkout, a `stash pop`, a pull — landing in `.marrow` while a publication
-//! runs. What makes them safe here is not how they write but *what* they write:
-//! a Git operation writes tracked paths, and every name in this directory
-//! except `ids` is a protocol transient that is never tracked. The write owner
-//! writes the ignore entry naming all five, the repository gate asserts none of
-//! them is in the index — by name and by contents, so a directory-shaped one
-//! cannot hide — and a tracked transient is therefore a caught defect rather
-//! than a state to design around. A cooperating Git operation does not touch a
-//! transient at all.
+//! The protocol is designed against ordinary Git operations landing in `.marrow`
+//! while a publication runs. What makes them safe is what they write: a Git
+//! operation writes tracked paths, and every name here except `ids` is an
+//! untracked protocol transient — the write owner writes the ignore entry, and
+//! the repository gate asserts by name and by contents that none is in the index.
 //!
-//! That is the whole argument, and it needs no assumption about descriptors:
-//! the stage, the quarantine, and the two marker names are outside what a
-//! cooperating writer addresses.
-//!
-//! Two writers are outside the contract, and the protocol says so rather than
-//! claiming to handle them. One holds a descriptor opened on a transient before
-//! a publication began: a descriptor survives every rename, and no process can
-//! revoke another's, so writes through it can still land while a removal judges
-//! and unlinks the object. The other deliberately writes the untracked protocol
-//! names. Against either, the interval between validating an object and
-//! unlinking the name that held it is irreducible on POSIX — `unlinkat` names a
-//! path and neither qualified platform offers an unlink through a descriptor.
+//! Two writers are outside the contract and the protocol says so rather than
+//! claiming to handle them: one holding a descriptor opened on a transient
+//! before publication began (a descriptor survives every rename and no process
+//! can revoke another's), and one deliberately writing the untracked names.
+//! Against either, the interval between validating an object and unlinking the
+//! name that held it is irreducible on POSIX — `unlinkat` names a path, and
+//! neither qualified platform offers an unlink through a descriptor.
 //! [`marrow_fs_journal::FsIdentity`] states the resulting bound.
 //!
 //! # Protocol
@@ -88,23 +78,13 @@
 //! that produced it the same way. `Installing` admits one reading more, because
 //! the mutation between them can leave the successor installed.
 //!
-//! The reverted terminal is what the reverted reading, a destination refusal,
-//! or a continuously proven third live inode settles into: the successor is not
-//! installed, the artifact
-//! keeps whatever the concurrent writer left, and the outcome is
-//! [`IdsPublication::ConcurrentChange`]. It is a recorded terminal rather than
-//! an abandoned journal because the frame's only exit is its terminal phase.
-//! Reaching it takes a writer the guard does not exclude, which is a writer
-//! that took no lock: `.marrow/ids` is committed, so an ordinary Git operation
-//! creates or replaces it. The stage name is covered by the ignore entry this
-//! owner writes, so an ordinary Git operation neither tracks nor recreates it —
-//! except where that coverage never reached the name. A repository can track it
-//! anyway, which a force-add or a commit predating the coverage leaves; and an
-//! ignore entry this owner left exactly as found — unwritable, unreadable, or
-//! past the read bound — gains no transient name at all, so an ordinary
-//! `git add .` tracks them even in a project publishing under the current name
-//! set. A writer otherwise reaches the same readings there through an edit
-//! outside the lock.
+//! The reverted terminal is what the reverted reading, a destination refusal, or
+//! a continuously proven third live inode settles into: the successor is not
+//! installed, the artifact keeps whatever the concurrent writer left, and the
+//! outcome is [`IdsPublication::ConcurrentChange`]. Reaching it takes a writer
+//! the guard does not exclude — one that took no lock, such as a Git operation
+//! over a transient an incomplete ignore entry never covered.
+//!
 //! Which terminal a mutation reached is read back from the map rather than
 //! decided from the mutation's own outcome, so the driver, the mutations, and
 //! the crash-tail derivation cannot disagree about what was installed.
@@ -154,16 +134,10 @@ const STAGE_SUFFIX: &str = ".publish.stage";
 const QUARANTINE_SUFFIX: &str = ".publish.quarantine";
 /// The cooperative project-metadata write lock's entry name.
 const LOCK_NAME: &str = "publish.lock";
-/// The fixed stage entry's spelling. The frozen row header embeds it and the
-/// guard admits it, and both take it from here so the ledger's entry name has
-/// one owner across the pure/adapter boundary.
-///
-/// The join is from the pure owner's constant rather than a literal here, so
-/// the source has one spelling of the ledger's entry name; the encoded form in
-/// a durable header is frozen, and a rename of that constant would decode every
-/// header already on disk as a `StageNameDrift` header corruption. It
-/// is performed once per process because the row header encodes and decodes it
-/// on every publication and every recovery.
+/// The fixed stage entry's spelling, joined once per process from the pure
+/// owner's ledger-entry constant so the source carries one spelling of it. The
+/// encoded form in a durable header is frozen: renaming that constant decodes
+/// every header already on disk as a `StageNameDrift` corruption.
 pub(crate) fn stage_spelling() -> &'static str {
     static STAGE: OnceLock<String> = OnceLock::new();
     STAGE.get_or_init(|| format!("{IDS_ENTRY}{STAGE_SUFFIX}"))
@@ -180,15 +154,11 @@ pub(crate) fn quarantine_spelling() -> &'static str {
 /// The fixed bound on either byte run the header carries.
 const LEDGER_BYTE_CEILING: usize = MAX_IDS_BYTES;
 
-/// Whether this process dropped an unrecovered publication.
-///
-/// A dropped pending publication is one this process claimed and did not
-/// conclude, so it publishes nothing further. Usually it leaves a marker whose
-/// live handles are gone, and that marker keeps gating capture until a fresh
-/// process recovers it. One arm leaves no marker at all — a finish that removed
-/// it and then refused its closing checks — and dropping that one abandons the
-/// answer rather than the marker: the publication happened, and no later
-/// command will say which one it was.
+/// Whether this process dropped an unrecovered publication, after which it
+/// publishes nothing further. The dropped claim usually leaves a marker that
+/// keeps gating capture until a fresh process recovers it; the one arm that
+/// leaves no marker abandons the answer instead, since the publication happened
+/// and no later command can say which one it was.
 static QUARANTINED: AtomicBool = AtomicBool::new(false);
 
 /// How one identity publication settled.
@@ -209,18 +179,12 @@ pub enum IdsPublication {
 /// and the only way to advance it is to consume [`recover`](Self::recover).
 /// Dropping it instead quarantines publication in this process until exit.
 ///
-/// It does not always retain a live journal, and it does not always name a
-/// marker that still exists. A publication interrupted with its journal intact
-/// resumes through it. A claim that refused at or after its first link attempt
-/// never received a journal, and a journal a refused finish already consumed
-/// cannot be resumed through either; those advance by adopting whatever marker
-/// is on disk. A finish that refused *after* its own unlink leaves no marker at
-/// all — the publication happened and its closing checks are what failed — and
-/// advances by reporting the terminal it had already recorded.
-///
-/// What every arm has in common is a publication this process claimed and did
-/// not conclude, which is what makes the value affine rather than an ordinary
-/// error.
+/// It does not always retain a live journal or name a marker that still exists:
+/// an interrupted publication resumes through its journal, a claim that never
+/// received one adopts whatever marker is on disk, and a finish that refused
+/// after its own unlink reports the terminal it had already recorded. What every
+/// arm shares is a publication this process claimed and did not conclude, which
+/// is what makes the value affine rather than an ordinary error.
 ///
 /// ```compile_fail
 /// fn duplicate(pending: marrow_project_fs::IdsPublicationPending<'_>) {
@@ -577,12 +541,8 @@ impl From<HeaderCorruption> for IdsPublicationError {
 /// which is what makes the protocol's identity witnesses a serialization rather
 /// than a hope. Dropping the guard releases the lock.
 ///
-/// The guard is the cross-kind seam: identity publication is the first kind
-/// under it, and a later lineage kind takes the same lock and the same admitted
-/// directory rather than opening a second write owner. The admitted directory
-/// and the lock are shared as they stand; the three kind-1 entry names are
-/// fields, so a second kind extends this struct rather than instantiating a
-/// second one per kind.
+/// Identity publication is the first kind under it; a later kind takes the same
+/// lock and admitted directory rather than opening a second write owner.
 #[derive(Debug)]
 pub struct ProjectMetadataWriteGuard {
     meta: AdmittedDir,
@@ -641,12 +601,8 @@ impl ProjectMetadataWriteGuard {
     /// Returns a typed refusal for a retained manual state or a fresh custody
     /// or journal refusal.
     ///
-    /// A refusal retains every byte the protocol had not already been committed
-    /// to removing. Recovery resumes an interrupted publication, so a removal
-    /// the durable record already authorized can complete before a later step
-    /// refuses — the stage a settled terminal names, or the object an
-    /// interrupted removal of it left behind. Nothing else is touched, and no
-    /// artifact byte is replaced by a refusing recovery.
+    /// A refusal retains every byte the protocol was not already committed to
+    /// removing, and replaces no artifact byte.
     pub fn recover_ids(&mut self) -> Result<Option<IdsPublication>, IdsPublicationError> {
         protocol::recover(self)
     }

@@ -7,7 +7,7 @@
 //! side never touches the store directory, the engine, or a lifecycle state — it only speaks the
 //! wire to the process that does.
 //!
-//! The one launched session is gated by two secrets exactly as the supervised g02p channel is:
+//! The one launched session is gated by two secrets exactly as the supervised channel is:
 //! the terminal mints a launch nonce, hands it to the spawned runner through the
 //! `MARROW_RUNNER_NONCE` environment variable (so it is never echoed on the descriptor line),
 //! proves it in the handshake, and checks the runner proves its session token and served

@@ -694,7 +694,7 @@ pub(crate) fn spawn_companion(
     Ok((companion, descriptor))
 }
 
-/// The most bytes the one launch-descriptor line may occupy — bounded before allocation (law 9)
+/// The most bytes the one launch-descriptor line may occupy — bounded before allocation
 /// even though the companion is release-verified. Includes the final LF; the object carries
 /// two 64-hex identities and a socket path.
 const MAX_DESCRIPTOR_BYTES: usize = 64 * 1024;

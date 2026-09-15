@@ -20,20 +20,20 @@ path = "src/main.rs"
 # The published diagnostic-code registry: the stable `Code` vocabulary and its
 # severity classification, consumed to project a diagnostic's code into LSP severity.
 marrow-codes = { path = "../marrow-codes" }
-# The published editor-analysis fact floor (H00f/H00f2): AnalysisSnapshot, hover,
+# The published editor-analysis fact floor: AnalysisSnapshot, hover,
 # definition, and checked formatting over one exact ProjectInput. The LSP reconstructs
 # no semantics; it consumes these facts only.
 marrow-compile = { path = "../marrow-compile" }
-# The shared bounded physical project adapter and its borrowed overlay/capture facade
-# (CAP01). The only H00a-added internal project/capture edge; it re-exports the pure
-# owner facts a thin consumer needs (ProjectInput, FileIdentity) so the LSP names the
-# project boundary without a direct marrow-project edge.
+# The shared bounded physical project adapter and its borrowed overlay/capture facade:
+# the only project/capture edge. It re-exports the owner facts a thin consumer needs
+# (ProjectInput, FileIdentity), so the LSP names the project boundary without a direct
+# marrow-project edge.
 marrow-project-fs = { path = "../marrow-project-fs" }
 # The syntax owner's SourceSpan and FormatRefusal, consumed through the analysis facade.
 marrow-syntax = { path = "../marrow-syntax" }
 
-# The standard LSP payload types and method-name constants. H00a owns its own bounded
-# JSON-RPC envelope and transport; lsp-types supplies only the standard structures.
+# The standard LSP payload types. This crate owns its own bounded JSON-RPC envelope
+# and transport; lsp-types supplies only the standard structures.
 lsp-types = { version = "=0.97.0", default-features = false }
 serde = { version = "=1.0.228", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "=1.0.150", default-features = false, features = ["raw_value", "std"] }

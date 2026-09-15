@@ -710,7 +710,7 @@ mod tests {
         );
     }
 
-    /// A lost-reply outcome renders as a distinct typed state (term 13): a distinct JSONL
+    /// A lost-reply outcome renders as a distinct typed state: a distinct JSONL
     /// outcome tag, a stable code, and text that tells the user the outcome is unknown, that
     /// it was not retried, and that a read-only refresh observes the current state — never a
     /// generic timeout and never a replay/exactly-once claim.

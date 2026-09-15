@@ -1,7 +1,7 @@
 //! The analysis worker's work: capture the project through the shared physical adapter
 //! with a version-selected overlay, then analyze it through the compiler fact floor.
 //!
-//! This module is the *only* consumer of the CAP01 capture allowlist. It constructs the
+//! This module is the *only* consumer of the capture allowlist. It constructs the
 //! overlay from the open-document texts, captures, and calls
 //! [`marrow_compile::analyze`]. It reclassifies no capture failure: it renders the
 //! opaque [`CaptureFailure`] through the borrowed facade's operating-system-prose-free

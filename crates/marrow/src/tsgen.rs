@@ -8,7 +8,7 @@
 //! and the export directory — no clock, path, environment, or map-order input —
 //! so stable inputs yield byte-identical output; a drift test freezes a golden.
 //!
-//! Type projection (the G00a transfer graph):
+//! Type projection (the transfer graph):
 //!
 //! | transfer type | TypeScript |
 //! |---|---|

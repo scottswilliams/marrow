@@ -33,8 +33,8 @@ const MANIFEST_NAME: &str = "marrow-companions";
 /// The manifest is tiny; anything larger is malformed rather than read unbounded.
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 
-/// A generous ceiling on the companion binary read for hashing (law 9: bound before
-/// allocating). A stock runner is a few megabytes; a file past this is refused as damaged.
+/// A generous ceiling on the companion binary read for hashing, checked before
+/// allocating. A stock runner is a few megabytes; a file past this is refused as damaged.
 const MAX_COMPANION_BYTES: u64 = 1 << 30;
 
 /// Why the companion could not be located and verified. Every variant is installation damage

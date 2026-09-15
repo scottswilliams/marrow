@@ -77,20 +77,13 @@ impl BoundRole {
     }
 }
 
-/// Proof that the quarantine name has been reconciled against a
-/// publication's own header and recorded terminal.
+/// Proof that the quarantine name has been reconciled against a publication's
+/// own header and recorded terminal.
 ///
 /// Reading the artifact map while an interrupted removal still holds an object
-/// misreads the map: the name that object came from is absent, so a state with
-/// a removal still owed looks like one already finished. The proof is produced
-/// only by [`Session::reconcile`] and required by [`Session::read_map`] — every
-/// map reading in this module, not the driver alone — so no path can reach one
-/// without having reconciled first. Forgetting is a compile error rather than a
-/// defect found in review.
-///
-/// The header-less callers — the arms that read the stage with no publication
-/// to judge it against — reconcile without producing one, because they read no
-/// map.
+/// misreads it: the name that object came from is absent, so a removal still
+/// owed looks finished. Only [`Session::reconcile`] produces this proof and
+/// [`Session::read_map`] requires it, so no map reading can skip it.
 #[must_use = "the driver consumes this proof; producing it and dropping it reconciles nothing"]
 pub(super) struct Reconciled(());
 
@@ -310,17 +303,11 @@ pub(super) fn recover(
 /// Refuse before anything is staged when the project already carries a
 /// publication state. A fresh publication starts only from a clear one.
 ///
-/// The journal is classified first, and a project carrying a durable claim is
-/// refused before anything is reconciled. That ordering is the point: a
-/// recorded terminal is the only thing that makes an object at the quarantine
-/// name judgeable, and only recovery has the header to judge it with. A
-/// publication that reconciled first would put that object back under the stage
-/// name, manufacturing a map the terminal record contradicts and leaving a
-/// state the later recovery could no longer settle. Refusing touches nothing
-/// and leaves the judgement to the owner that can make it.
-///
-/// Reconciliation therefore happens only where no marker exists, so no terminal
-/// exists either and a restore can contradict nothing.
+/// The journal is classified before anything is reconciled, because only
+/// recovery holds the header that makes a quarantined object judgeable;
+/// reconciling first would put it back and manufacture a map the recorded
+/// terminal contradicts. Reconciliation therefore runs only where no marker
+/// exists, so no terminal exists either and a restore can contradict nothing.
 fn preflight(guard: &ProjectMetadataWriteGuard) -> Result<(), IdsPublicationError> {
     let meta = guard.meta();
     match classify(MarkerStats::read(meta, guard.journal_names().markers())?).admit(
@@ -536,24 +523,12 @@ fn discard_stage(
 /// Remove the object at `name`, and only after proving through a descriptor on
 /// that object that `accepts` admits it.
 ///
-/// The unlink cannot itself be the validated act. `unlinkat` names a path, and
-/// neither qualified platform offers an unlink through a descriptor, so between
-/// any validation and any unlink the name can be repointed and the wrong object
-/// deleted. What this owner does is move the object to a name no cooperating
-/// writer ever touches before judging it: every name here but the ledger is a
-/// protocol transient, gate-enforced never-tracked, and a cooperating Git
-/// operation writes tracked paths only. A writer that reaches the quarantine
-/// name is one deliberately writing untracked protocol names, which is outside
-/// the cooperative contract. See [`marrow_fs_journal::FsIdentity`] for the
-/// bound that leaves.
-///
-/// The move is a rename within one directory, which is the atomicity this
-/// platform qualification already rests on everywhere else in the protocol, so
-/// it adds no filesystem property to the envelope.
-///
-/// An object `accepts` rejects is never deleted: it is moved back under the
-/// name it came from. A restore that cannot land leaves it at the quarantine
-/// name, which the next command reconciles.
+/// The unlink cannot be the validated act — `unlinkat` names a path, so between
+/// validation and unlink the name can be repointed — so the object is first
+/// renamed within the directory to the quarantine name, which no cooperating
+/// writer touches, and judged there. An object `accepts` rejects is moved back;
+/// a restore that cannot land leaves it quarantined for the next command to
+/// reconcile.
 fn remove_validated(
     guard: &ProjectMetadataWriteGuard,
     name: &EntryName,
@@ -710,31 +685,10 @@ impl<'a> Session<'a> {
         Ok(())
     }
 
-    /// The window before any artifact mutation: this publication has created
-    /// its own stage and touched nothing else.
-    ///
-    /// Two readings are admitted. `Prepared` is the state the header binds,
-    /// exact byte runs included: the map resolves every entry against the runs
-    /// the header carries, so reaching this reading is already the comparison.
-    /// `Reverted` — the stage still the exact successor at one link, the
-    /// artifact neither the successor nor the generation the header binds —
-    /// cannot be this publication's own work, because no mutation of the
-    /// artifact has run. It is the outside writer the destination-refusing arms
-    /// exist for, and the same fact the pre-claim recapture in
-    /// `publish_admitted` reports as a concurrent change. The `Installing`
-    /// window reads that writer identically, so which record an ordinary
-    /// `git checkout` lands between does not decide whether the project settles
-    /// or is retained.
-    ///
-    /// Admitting a reading names no terminal. The driver appends `Installing`
-    /// and the map is read again there, where `terminal_of_map` decides; that
-    /// window admits one reading more than this one, because the mutation
-    /// between them can leave the successor installed.
-    ///
-    /// Every other reading is retained. An installed artifact names a mutation
-    /// that has not run. An absent stage — which an outside writer sweeping the
-    /// ignored transient can also produce — leaves nothing this publication may
-    /// settle on or clean, and the `Installing` window refuses it too.
+    /// The window before any artifact mutation, where the module doc's `Prepared`
+    /// and `Reverted` readings are the only admitted states. Admitting one names
+    /// no terminal: the driver appends `Installing` and reads the map again, where
+    /// `terminal_of_map` decides. Every other reading is retained corruption.
     fn require_pre_mutation_map(&self, reconciled: &Reconciled) -> Result<(), IdsPublicationError> {
         match self.read_map(1, reconciled)? {
             MapState::Prepared | MapState::Reverted => Ok(()),
@@ -887,19 +841,11 @@ impl<'a> Session<'a> {
     /// Reconcile the quarantine with this publication's header and recorded
     /// terminal in hand.
     ///
-    /// A blind restore is wrong here. When a terminal is already recorded, the
-    /// cleanup it authorizes was running when the crash landed, and the object
-    /// at the quarantine name is the one that cleanup had taken. Putting it
-    /// back manufactures a pre-cleanup map the terminal record contradicts —
-    /// and the target is independently mutable, so an outside writer can make
-    /// that contradiction permanent. Finishing the removal instead is both what
-    /// the terminal already committed to and the only reading that cannot be
-    /// invalidated by what happened at the other name.
-    ///
-    /// Only an object resolving to the exact run that cleanup was entitled to
-    /// remove is removed. Anything else is put back, and an object under no
-    /// recorded terminal is put back too: no cleanup was authorized, so nothing
-    /// here may finish one.
+    /// A blind restore would manufacture a pre-cleanup map an already-recorded
+    /// terminal contradicts, so under a recorded terminal the removal is
+    /// finished instead — but only for an object resolving to the exact run that
+    /// cleanup was entitled to remove. Anything else, and everything under no
+    /// recorded terminal, is put back.
     pub(super) fn reconcile(&self) -> Result<Reconciled, IdsPublicationError> {
         let meta = self.meta();
         let held = self.guard.quarantine_name();
@@ -1149,15 +1095,11 @@ impl<'a> Session<'a> {
 /// claimed under and the marker inode it was written into. A header that
 /// witnesses another directory or another inode is substituted evidence.
 ///
-/// Both comparisons are numbers recorded before a crash against numbers read
-/// after it, and neither is descriptor-backed for the epoch it names: the
-/// descriptors this process holds were opened after the crash, so they pin the
-/// numbers only from that point on. The comparison is still worth making — it
-/// refuses a header carried into another project or another marker — but it
-/// establishes that the numbers agree, not that the objects are the ones the
-/// crashed process saw. What makes the header safe to act on is that the states
-/// it authorizes are resolved against its byte runs, not that these two numbers
-/// matched. See [`marrow_fs_journal::FsIdentity`] for the bound.
+/// Both comparisons read pre-crash numbers against post-crash ones and neither
+/// is descriptor-backed for the epoch it names, so they establish agreement, not
+/// that the objects are the ones the crashed process saw. What makes the header
+/// safe to act on is that the states it authorizes are resolved against its byte
+/// runs. See [`marrow_fs_journal::FsIdentity`] for the bound.
 fn admit_header(
     meta: &AdmittedDir,
     bytes: &[u8],

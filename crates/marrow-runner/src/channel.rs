@@ -1,4 +1,4 @@
-//! The supervised local channel: the g02p Unix-domain discipline in safe `std`.
+//! The supervised local channel: the Unix-domain discipline in safe `std`.
 //!
 //! The runner is the server. It creates a mode-0700 temporary directory, binds one
 //! Unix listener inside it before any client connects, and accepts connections until
@@ -8,7 +8,7 @@
 //! client is accepted on a later one). On a successful handshake the runner proves
 //! its session token back and pins the served interface identity.
 //!
-//! Two platform disciplines are enforced here (g02p carry-forwards):
+//! Two platform disciplines are enforced here:
 //!
 //! - **Poll-based deadlines.** `setsockopt(SO_RCVTIMEO)` is `EINVAL` on `AF_UNIX` on
 //!   macOS, so a read deadline is enforced by putting the stream in non-blocking mode

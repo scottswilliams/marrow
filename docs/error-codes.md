@@ -218,7 +218,7 @@ Rejections from the runner that serves a launched program.
 | `runner.unknown_export` | A request named an export the served image does not carry. Nothing runs. |
 | `runner.arg_mismatch` | A request's arguments do not match the export's signature: the count differs, or a value does not decode as the parameter type. Nothing runs. |
 | `runner.durable_unsupported` | A request named a durable export the runner cannot serve: the storeless serve mode has no store, or the program's durable shape is one the runner does not execute today. A storeless export, and a durable export over a provisioned store, are unaffected. |
-| `runner.spawn` | The `marrow` process could not start the companion runner for a persistent run. The store is untouched. |
+| `runner.spawn` | The `marrow` process could not start the companion runner. The store is untouched. |
 
 ### Internal codes
 
