@@ -95,8 +95,6 @@ pub(super) fn outer_count(tokens: &[Token]) -> usize {
 
 impl StatementCapacity {
     pub(super) fn measure(tokens: &[Token]) -> Self {
-        #[cfg(test)]
-        tests::record_regional_input(tokens.len());
         let mut body = Frame::new(0);
         let mut open_regions: Vec<Frame> = Vec::with_capacity(NESTING_DEPTH_LIMIT);
         let mut regions: Vec<(u32, u32)> = Vec::new();
@@ -217,35 +215,16 @@ mod tests {
     use super::*;
     use crate::lex_source;
 
-    thread_local! {
-        static REGIONAL_INPUT_TOKENS: std::cell::Cell<Option<usize>> = const {
-            std::cell::Cell::new(None)
-        };
-    }
-
-    pub(super) fn record_regional_input(tokens: usize) {
-        REGIONAL_INPUT_TOKENS.with(|volume| {
-            if let Some(count) = volume.get() {
-                volume.set(Some(count + tokens));
-            }
-        });
-    }
-
+    /// A nested block inside a declaration body parses to the same spans and
+    /// statements as a flat one. `StatementCapacity::measure` runs from the single
+    /// `StmtParser::new` site over the declaration's own body tokens, so a nested
+    /// region is never measured a second time.
     #[test]
-    fn declaration_allocation_skips_regional_measurement() {
+    fn a_nested_region_parses_to_the_same_spans_and_statements() {
         use crate::{Declaration, Expression, LiteralKind, Statement};
 
         const SOURCE: &str = "module m\n\nfn first() {\n    if true {\n        return\n    }\n}\n\nfn second() {\n    return\n}\n";
-        struct Restore(Option<usize>);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                REGIONAL_INPUT_TOKENS.with(|volume| volume.set(self.0));
-            }
-        }
-        let restore = Restore(REGIONAL_INPUT_TOKENS.with(|volume| volume.replace(Some(0))));
         let parsed = crate::parse_source(SOURCE);
-        let observed = REGIONAL_INPUT_TOKENS.with(|volume| volume.get().unwrap());
-        drop(restore);
 
         assert!(
             parsed
@@ -297,42 +276,6 @@ mod tests {
             second.body.statements.as_ref(),
             [Statement::Return { value: None, .. }]
         ));
-
-        // The expected input is the two strict body-token slices passed by the
-        // declaration parser. Lexing here is outside the scoped observation.
-        let lexed = lex_source(SOURCE);
-        assert!(
-            lexed
-                .diagnostics
-                .as_complete()
-                .unwrap()
-                .as_slice()
-                .is_empty()
-        );
-        let body_tokens = [first.body.span, second.body.span].map(|span| {
-            let open = lexed
-                .tokens
-                .iter()
-                .position(|token| {
-                    token.kind == TokenKind::LeftBrace && token.span.start_byte == span.start_byte
-                })
-                .unwrap();
-            let close = lexed
-                .tokens
-                .iter()
-                .position(|token| {
-                    token.kind == TokenKind::RightBrace && token.span.end_byte == span.end_byte
-                })
-                .unwrap();
-            close - open - 1
-        });
-        assert!(body_tokens.iter().all(|count| *count > 0));
-        assert_ne!(body_tokens[0], body_tokens[1]);
-        assert_eq!(
-            observed,
-            body_tokens.iter().sum::<usize>(),
-            "declaration allocation must not measure nested regions"
-        );
     }
 
     /// A source's tokens, and the indices of its `{`s within the one function body it

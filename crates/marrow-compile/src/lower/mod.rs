@@ -529,8 +529,6 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         display: Box<str>,
         definition: Option<DefinitionTarget>,
     ) {
-        #[cfg(test)]
-        crate::types::bump_hover_spelling_chars(display.len());
         self.facts.hover(span, display, definition);
     }
 

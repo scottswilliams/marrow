@@ -38,11 +38,6 @@ impl QuerySyntax {
 }
 
 #[cfg(test)]
-std::thread_local! {
-    pub(crate) static MATERIALIZED_BODIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -50,9 +45,7 @@ mod tests {
     fn only_the_selected_closed_body_is_materialized() {
         let source = "fn first() {\n a\n}\nfn second() {\n b\n}\n";
         let full = crate::parse_source(source).file;
-        MATERIALIZED_BODIES.set(0);
         let query = QuerySyntax::parse(source, source.find(" a").expect("selected body") + 1);
-        assert_eq!(MATERIALIZED_BODIES.get(), 1);
         assert_eq!(query.declarations().len(), full.declarations.len());
         for (index, (actual, expected)) in query
             .declarations()

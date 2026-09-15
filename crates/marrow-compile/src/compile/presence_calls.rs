@@ -9,9 +9,6 @@ use std::collections::{HashMap, HashSet};
 use super::{AcyclicCallGraph, DiagnosticCollector, LoweredFn, LoweredFunctionSet};
 use crate::durable::Family;
 use crate::lower::{PresenceObligation, requires_presence};
-#[cfg(test)]
-use crate::types::bump_call_graph;
-
 struct Query<'a> {
     function: usize,
     family: usize,
@@ -69,29 +66,16 @@ pub(super) fn reject_unproven_uses(
         .flat_map(|function| &function.erased_families)
         .collect();
     let (families, queries) = collect_queries(functions, acyclic, &erased);
-    #[cfg(test)]
-    bump_call_graph(|counts| {
-        counts.presence_erased_families = counts.presence_erased_families.max(erased.len());
-        counts.presence_query_rows = counts.presence_query_rows.max(queries.len());
-    });
     if queries.is_empty() {
         return;
     }
     let erases = collect_erases(functions, acyclic, &families);
     let mut summary = vec![0u64; functions.len()];
-    #[cfg(test)]
-    bump_call_graph(|counts| {
-        counts.presence_summary_words = counts.presence_summary_words.max(summary.len());
-        counts.presence_erase_rows = counts.presence_erase_rows.max(erases.len());
-        counts.presence_families += families.len();
-    });
     let mut next = Vec::new();
     let mut failures = Vec::new();
     let mut erase_cursor = 0;
     let mut query_cursor = 0;
     for stripe in 0..families.len().div_ceil(64) {
-        #[cfg(test)]
-        bump_call_graph(|counts| counts.presence_stripes += 1);
         summary.fill(0);
         while let Some(erase) = erases
             .get(erase_cursor)
@@ -150,8 +134,6 @@ fn collect_queries<'a>(
             if obligation.calls.is_empty() {
                 continue;
             }
-            #[cfg(test)]
-            bump_call_graph(|counts| counts.presence_obligations += 1);
             if !erased.contains(&obligation.family) {
                 continue;
             }
@@ -206,8 +188,6 @@ fn collect_erases(
 
 fn propagate(functions: &[Option<LoweredFn>], acyclic: &AcyclicCallGraph, summary: &mut [u64]) {
     for &function in acyclic.order().callee_before_caller() {
-        #[cfg(test)]
-        bump_call_graph(|counts| counts.presence_row_visits += 1);
         let mut word = summary[function];
         #[expect(
             clippy::expect_used,
@@ -218,8 +198,6 @@ fn propagate(functions: &[Option<LoweredFn>], acyclic: &AcyclicCallGraph, summar
             .expect("eligible functions have bodies")
             .callees;
         for &callee in calls {
-            #[cfg(test)]
-            bump_call_graph(|counts| counts.presence_edge_visits += 1);
             // Eligibility is closed over every direct callee.
             word |= summary[usize::from(callee)];
         }
@@ -239,18 +217,12 @@ fn settle(
     let mut pending = 0u64;
     let mut cursor = 0;
     next.resize(queries.len(), None);
-    #[cfg(test)]
-    bump_call_graph(|counts| {
-        counts.presence_next_slots = counts.presence_next_slots.max(next.len())
-    });
     let end = queries
         .iter()
         .map(|query| query.obligation.calls.end)
         .max()
         .unwrap_or(0);
     for (position, &callee) in calls[..end].iter().enumerate() {
-        #[cfg(test)]
-        bump_call_graph(|counts| counts.presence_query_positions += 1);
         while let Some(query) = queries
             .get(cursor)
             .filter(|query| query.obligation.calls.start <= position)
@@ -260,16 +232,12 @@ fn settle(
                 next[cursor] = head[bit];
                 head[bit] = Some(cursor);
                 pending |= 1 << bit;
-                #[cfg(test)]
-                bump_call_graph(|counts| counts.presence_queries_queued += 1);
             }
             cursor += 1;
         }
         if pending == 0 {
             continue;
         }
-        #[cfg(test)]
-        bump_call_graph(|counts| counts.presence_summary_lookups += 1);
         let mut hits = pending & summary.get(usize::from(callee)).copied().unwrap_or(0);
         pending &= !hits;
         while hits != 0 {
@@ -277,8 +245,6 @@ fn settle(
             hits &= hits - 1;
             let mut chain = head[bit].take();
             while let Some(index) = chain {
-                #[cfg(test)]
-                bump_call_graph(|counts| counts.presence_queries_drained += 1);
                 if position < queries[index].obligation.calls.end {
                     failures.push(Failure {
                         query: offset + index,
@@ -289,10 +255,6 @@ fn settle(
             }
         }
     }
-    #[cfg(test)]
-    bump_call_graph(|counts| {
-        counts.presence_failure_rows = counts.presence_failure_rows.max(failures.len());
-    });
 }
 
 fn report(

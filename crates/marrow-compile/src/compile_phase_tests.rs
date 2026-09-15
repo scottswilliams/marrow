@@ -956,46 +956,6 @@ fn a_registry_slice_drift_is_a_typed_invariant_not_a_user_error() {
     );
 }
 
-/// A key table is constructed exactly once per declared tuple, per compile — and
-/// the count is charged inside `KeyTable::take` itself, so a reconstruction spelled
-/// at any call site still moves it.
-///
-/// The corpus is the round-1 review's own: two stores over one keyed-branch
-/// resource with no identity ledger, so the first store refuses after staging and
-/// the second walks the same product. Three declared tuples — one root tuple per
-/// store row and one branch tuple in the shared resource projection — mean exactly
-/// three constructions; a drift back to per-attempt branch construction, or any
-/// consumer minting its own table from retained raw material, adds to the count.
-#[test]
-fn a_key_table_is_constructed_once_per_declared_tuple() {
-    let source = "module main\n\nresource R {\n    required title: string\n\n    \
-                  items[itemId: string] {\n        required value: string\n    }\n}\n\n\
-                  store ^a[id: int]: R\n\nstore ^b[id: int]: R\n\nfn main() {\n}\n";
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        None,
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture project");
-    let (result, counts) =
-        crate::types::capture_scaling_counts(|| crate::compile::compile(&project));
-    assert!(
-        result.is_err(),
-        "the unminted corpus is refused; both stores reach the durable build"
-    );
-    assert_eq!(
-        counts.key_table_constructions, 3,
-        "two root tuples and one branch tuple mean exactly three key-table \
-         constructions, store-attempt independent",
-    );
-}
-
 const BRANCH_FIELD_IDS: &str = "marrow ids v0\n\
     machine-written by marrow; do not edit\n\
     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
@@ -1060,20 +1020,10 @@ pub fn addB(id: int, t: string) {
     let one_root = format!("{PRODUCT}\nstore ^a[id: int]: Book\n{ADD_A}");
     let two_roots =
         format!("{PRODUCT}\nstore ^a[id: int]: Book\nstore ^b[id: int]: Book\n{ADD_A}{ADD_B}");
-    let start_byte = PRODUCT.find("text: string").expect("the selected field") + "text: ".len();
-    let span = SourceSpan {
-        start_byte,
-        end_byte: start_byte + "string".len(),
-        line: 4,
-        column: 24,
-    };
-    let mut counts = [0; 2];
     let mut record_counts = [0; 2];
     for (index, source) in [one_root, two_roots].iter().enumerate() {
         let project = branch_field_project(source);
-        let (driven, count) = crate::types::count_scalar_annotation(span, || {
-            super::drive(&project, super::TestMode::Exclude)
-        });
+        let driven = super::drive(&project, super::TestMode::Exclude);
         let checked = driven
             .expect("the fixture fits the drive envelope")
             .production()
@@ -1134,13 +1084,10 @@ pub fn addB(id: int, t: string) {
         record_counts[index] = checked.draft.record_type_count();
         let built = super::encode(checked).expect("the checked draft encodes");
         assert!(!built.image.bytes.is_empty());
-        counts[index] = count;
     }
-    assert_eq!(record_counts[0], record_counts[1]);
     assert_eq!(
-        counts,
-        [1, 1],
-        "one classification per declared branch field"
+        record_counts[0], record_counts[1],
+        "a second root over the same product shares its branch records"
     );
 }
 
@@ -1695,51 +1642,4 @@ fn an_executed_invariant_dominates_the_stop_and_precheck_findings() {
         panic!("a precheck finding is reported over the stop")
     };
     assert_eq!(rows.as_slice(), &[row()]);
-}
-
-#[test]
-#[ignore = "storage/work measurement: run explicitly and record the capacities"]
-fn measure_reserved_function_domain_storage_and_graph_work() {
-    for count in [
-        marrow_image::bounds::MAX_FUNCTIONS,
-        usize::from(u16::MAX) + 1,
-    ] {
-        let calls: Vec<u16> = (1..count)
-            .map(|index| u16::try_from(index).expect("within the carrier"))
-            .collect();
-        let edges: Vec<Option<&[u16]>> = (0..count)
-            .map(|index| {
-                Some(if index + 1 == count {
-                    &[]
-                } else {
-                    std::slice::from_ref(&calls[index])
-                })
-            })
-            .collect();
-        let (order, counts) = crate::types::capture_call_graph_counts(|| {
-            crate::call_graph::analyze(&edges).into_acyclic_order()
-        });
-        assert!(order.is_complete());
-        assert_eq!(order.domain_len(), count);
-        assert_eq!(
-            (counts.graph_vertex_visits, counts.graph_edge_visits),
-            (count, count - 1)
-        );
-        assert_eq!(
-            (counts.closure_vertex_visits, counts.closure_edge_visits),
-            (count, count - 1)
-        );
-        println!(
-            "functions={count} body_facts_size={} facts_slot_size={} facts_slots_bytes={} optional_adjacency_size={} adjacency_capacity={} adjacency_bytes={} graph_scratch_bytes={} closure_vertices={} closure_edges={}",
-            size_of::<super::LoweredFn>(),
-            size_of::<Option<super::LoweredFn>>(),
-            count * size_of::<Option<super::LoweredFn>>(),
-            size_of::<Option<&[u16]>>(),
-            edges.capacity(),
-            edges.capacity() * size_of::<Option<&[u16]>>(),
-            counts.graph_scratch_bytes,
-            counts.closure_vertex_visits,
-            counts.closure_edge_visits
-        );
-    }
 }

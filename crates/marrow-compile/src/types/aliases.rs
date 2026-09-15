@@ -78,8 +78,6 @@ impl AliasTable {
             if !cyclic[node] {
                 continue;
             }
-            #[cfg(test)]
-            bump_alias_cycle(|counts| counts.cyclic_aliases += 1);
             let refusal = refuse(
                 diagnostics,
                 DeclarationSite {
@@ -137,11 +135,6 @@ impl AliasTable {
                 None => {
                     let terminal = AliasTerminalId(table.terminals.len());
                     table.terminals.push(input.target.into());
-                    #[cfg(test)]
-                    bump_alias_cycle(|counts| {
-                        counts.terminal_rows += 1;
-                        counts.terminal_bytes += input.target.len();
-                    });
                     AliasDenotation {
                         terminal,
                         presence: input.presence,
@@ -182,12 +175,6 @@ fn dependency_order(edges: &[Option<usize>]) -> (Vec<usize>, Vec<bool>) {
             visited[node] = true;
             stack.push(node);
             next = edges[node];
-            #[cfg(test)]
-            bump_alias_cycle(|counts| {
-                counts.node_entries += 1;
-                counts.resolved_edges += usize::from(next.is_some());
-                counts.edge_inspections += usize::from(next.is_some());
-            });
         }
         while let Some(node) = stack.pop() {
             finished[node] = true;

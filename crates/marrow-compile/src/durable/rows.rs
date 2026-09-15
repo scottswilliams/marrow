@@ -425,8 +425,6 @@ impl<'a> KeyTable<'a> {
         file: &FileIdentity,
         records: &TypeRegistry,
     ) -> Result<Self, GenericInvariant> {
-        #[cfg(test)]
-        crate::types::bump_key_table_construction();
         let resolution = resolve_key_columns(file, &owner, keys, records)?;
         Ok(Self {
             owner,

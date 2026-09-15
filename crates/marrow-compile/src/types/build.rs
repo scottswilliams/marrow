@@ -550,8 +550,6 @@ pub(super) fn build_alias_table(
             ));
             continue;
         }
-        #[cfg(test)]
-        bump_alias_cycle(|counts| counts.target_visits += 1);
         let target = match ty {
             TypeExpr::Name { text, .. } => Some((text.as_str(), AliasPresence::Bare)),
             TypeExpr::Optional { inner, .. } => match inner.as_ref() {

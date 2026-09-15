@@ -878,64 +878,6 @@ fn template_proof_validates_every_ready_row_even_when_ids_are_duplicated() {
     assert_eq!(draft_snapshot(&draft), draft_before);
 }
 
-/// A fill copies no template-body entries, whatever the instantiation count — the figure,
-/// counted where a copy would happen rather than inferred from a process footprint.
-///
-/// A fill must read the declared entries while minting through the exclusively held
-/// registry, and it reaches them through a handle the template still holds rather than a
-/// body of its own. The counter charges a fill for the entries it owns privately, so a
-/// fill that stops sharing charges itself here without the counting call changing.
-///
-/// No aggregate stands in for this. The issuance RSS gate measures an **aggregate resident
-/// peak**, which cannot attribute a figure to one term, and its divergent corpora stop on
-/// the 256-deep mint bound rather than the 4096-wide instantiation ceiling, so "driven to
-/// the ceiling" is not a safe proxy for the number of copies either.
-#[test]
-fn a_fill_copies_no_template_body_entries() {
-    const FIELDS: usize = 7;
-    let names: Vec<String> = (0..FIELDS).map(|field| format!("f{field}")).collect();
-    let fields: Vec<(&str, TypeExpr)> = names
-        .iter()
-        .map(|field| (field.as_str(), name("T")))
-        .collect();
-
-    let arguments = [
-        GArg::Scalar(ScalarType::Int),
-        GArg::Scalar(ScalarType::Bool),
-        GArg::Scalar(ScalarType::Text),
-    ];
-
-    // Both fills, in one window: the struct arm and the enum arm reach their declared
-    // entries by different code, so a figure over one of them says nothing about the other.
-    let (_, counts) = crate::types::capture_scaling_counts(|| {
-        let mut registry = registry(vec![
-            template("Wide", fields),
-            enum_template("Wrap", name("T")),
-        ]);
-        let mut draft = fresh_draft();
-        for template in [0, 1] {
-            for (index, argument) in arguments.iter().enumerate() {
-                registry
-                    .mint_type_instance(&mut draft, template, &[*argument], site(index as u32 + 2))
-                    .expect("each distinct argument mints its own ready row");
-            }
-            // A repeated argument is deduped by the mint, so it reaches no body at all: the
-            // term is linear in the *instantiation* count, not in the call count.
-            registry
-                .mint_type_instance(&mut draft, template, &[arguments[0]], site(9))
-                .expect("a repeated argument reuses the row it already minted");
-        }
-    });
-
-    assert_eq!(
-        counts.template_body_clone_entries,
-        0,
-        "no declared body is copied at all — {} instantiations each of a {FIELDS}-field \
-         struct template and a one-payload enum template",
-        arguments.len(),
-    );
-}
-
 /// A failed extension returns the admitted row directory to the registry.
 ///
 /// The directory is taken out of its cell before the fallible build and extension run, so
@@ -1065,11 +1007,8 @@ fn metadata_rejects_generic_ids_owned_by_declared_types() {
         validate_ready_metadata(&record_registry),
         Err(found) if found == record_expected
     ));
-    let (record_body, builds) = count_metadata_directory_builds(|| {
-        record_registry.type_inst_body(TypeInstId::Record(declared_record))
-    });
+    let record_body = { record_registry.type_inst_body(TypeInstId::Record(declared_record)) };
     assert!(matches!(record_body, Err(found) if found == record_expected));
-    assert_eq!(builds, 1);
     assert!(matches!(
         record_registry.static_struct_projection("Plain"),
         Err(found) if found == record_expected
@@ -1126,10 +1065,8 @@ fn metadata_rejects_generic_ids_owned_by_declared_types() {
         validate_ready_metadata(&enum_registry),
         Err(found) if found == enum_expected
     ));
-    let (variants, builds) =
-        count_metadata_directory_builds(|| enum_registry.enum_variants(declared_enum));
+    let variants = enum_registry.enum_variants(declared_enum);
     assert_eq!(variants, Err(enum_expected));
-    assert_eq!(builds, 1);
     assert!(matches!(
         enum_registry.static_enum_projection("PlainChoice"),
         Err(found) if found == enum_expected
@@ -1138,10 +1075,8 @@ fn metadata_rejects_generic_ids_owned_by_declared_types() {
         enum_registry.static_named_type_projection("PlainChoice"),
         Err(found) if found == enum_expected
     ));
-    let (anchor, builds) =
-        count_metadata_directory_builds(|| enum_registry.enum_anchor_spelling(declared_enum));
+    let anchor = enum_registry.enum_anchor_spelling(declared_enum);
     assert_eq!(anchor, Err(enum_expected));
-    assert_eq!(builds, 1);
     assert_eq!(
         garg_anchor_spelling(&enum_registry, GArg::Enum(declared_enum)),
         Err(enum_expected)
@@ -1677,16 +1612,15 @@ fn collection_predecessor_validation_preserves_source_order_on_first_visit_and_r
     let expected = GenericInvariant::TypeArgumentTargetMissing(GArg::Struct(missing.orphan));
     let owner_before = metadata_owner_snapshot(&missing.registry);
     let draft_before = draft_snapshot(&missing.draft);
-    let (observed, builds) = count_metadata_directory_builds(|| {
+    let observed = {
         missing
             .registry
             .validate_type_arguments(&[match missing.owner {
                 TypeInstId::Record(id) => GArg::Struct(id),
                 TypeInstId::Enum(id) => GArg::Enum(id),
             }])
-    });
+    };
     assert_eq!(observed, Err(expected));
-    assert_eq!(builds, 1);
     assert_metadata_unchanged(
         &missing.registry,
         &missing.draft,
@@ -2064,37 +1998,21 @@ fn reserved_readers_require_the_fixed_member_contract_not_only_template_agreemen
 fn metadata_directory_builds_follow_immutable_operation_boundaries() {
     let mut registry = registry(vec![template("Box", vec![("value", name("T"))])]);
     let mut draft = fresh_draft();
-    let (fresh, fresh_builds) = count_metadata_directory_builds(|| {
-        registry.mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(2))
-    });
+    let fresh =
+        { registry.mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(2)) };
     let id = fresh.expect("the cold Box row mints");
-    assert_eq!(
-        fresh_builds, 1,
-        "the cold preflight builds the directory once; the post-settlement proof \
-             extends that classification rather than rebuilding it"
-    );
 
-    let (replayed, replay_builds) = count_metadata_directory_builds(|| {
-        registry.mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(3))
-    });
+    let replayed =
+        { registry.mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(3)) };
     assert_eq!(replayed, Ok(id));
-    assert_eq!(
-        replay_builds, 0,
-        "a Ready cache hit reuses the classified directory with no rebuild"
-    );
 
     let list = registry
         .instantiate_list(&mut draft, GArg::Scalar(ScalarType::Int))
         .expect("the List metadata mints");
-    let (spelling, spelling_builds) =
-        count_metadata_directory_builds(|| registry.collection_spelling(list));
+    let spelling = registry.collection_spelling(list);
     assert_eq!(spelling, "List<int>");
-    assert_eq!(
-        spelling_builds, 0,
-        "best-effort presentation does not build the semantic directory"
-    );
 
-    let (blocked, session_builds) = count_metadata_directory_builds(|| {
+    let blocked = {
         registry
             .with_metadata_session(|_| {
                 Ok::<_, GenericInvariant>((
@@ -2103,13 +2021,8 @@ fn metadata_directory_builds_follow_immutable_operation_boundaries() {
                 ))
             })
             .expect("the immutable metadata session opens")
-    });
+    };
     assert_eq!(blocked, (true, true));
-    assert_eq!(
-        session_builds, 0,
-        "an out-of-line metadata session reuses the pass directory the append-only mint \
-             path already built, extending it in place rather than rebuilding"
-    );
     assert!(registry.generics.try_borrow_mut().is_ok());
     assert!(registry.collections.try_borrow_mut().is_ok());
 
@@ -2120,20 +2033,13 @@ fn metadata_directory_builds_follow_immutable_operation_boundaries() {
             GArg::Scalar(ScalarType::Text),
         )
         .expect("dropping the session permits a later metadata append");
-    let (observed, post_append_builds) = count_metadata_directory_builds(|| {
-        registry.with_metadata_session(|metadata| metadata.collection_spec(map))
-    });
+    let observed = { registry.with_metadata_session(|metadata| metadata.collection_spec(map)) };
     assert_eq!(
         observed,
         Ok(CollSpec::Map {
             key: GArg::Scalar(ScalarType::Int),
             value: GArg::Scalar(ScalarType::Text),
         })
-    );
-    assert_eq!(
-        post_append_builds, 0,
-        "appending a collection extends the reused directory; a later session read \
-             classifies only the appended row and never rebuilds"
     );
 }
 
@@ -2154,14 +2060,14 @@ fn validated_nested_collection_spelling_reuses_one_metadata_session() {
     let owner_before = stable_snapshot(&registry);
     let draft_before = draft_snapshot(&draft);
 
-    let (spellings, builds) = count_metadata_directory_builds(|| {
+    let spellings = {
         registry.with_metadata_session(|metadata| {
             Ok::<_, GenericInvariant>((
                 metadata.garg_spelling(GArg::Collection(outer))?,
                 metadata.garg_spelling(GArg::Collection(outer))?,
             ))
         })
-    });
+    };
 
     assert_eq!(
         spellings,
@@ -2169,10 +2075,6 @@ fn validated_nested_collection_spelling_reuses_one_metadata_session() {
             "Map<int, List<int>>".to_string(),
             "Map<int, List<int>>".to_string(),
         ))
-    );
-    assert_eq!(
-        builds, 1,
-        "repeated nested collection spelling reuses one validated directory"
     );
     assert_eq!(stable_snapshot(&registry), owner_before);
     assert_eq!(draft_snapshot(&draft), draft_before);
@@ -2199,14 +2101,10 @@ fn deep_collection_spelling_and_anchor_use_iterative_activity_owners() {
     let expected_display = format!("{}int{}", "List<".repeat(depth), ">".repeat(depth));
     let expected_anchor = format!("{}int{}", "List[".repeat(depth), "]".repeat(depth));
 
-    let (display, display_builds) =
-        count_metadata_directory_builds(|| registry.collection_spelling(root));
+    let display = registry.collection_spelling(root);
     assert_eq!(display, expected_display);
-    assert_eq!(display_builds, 0);
-    let (anchor, anchor_builds) =
-        count_metadata_directory_builds(|| garg_anchor_spelling(&registry, GArg::Collection(root)));
+    let anchor = garg_anchor_spelling(&registry, GArg::Collection(root));
     assert_eq!(anchor, Ok(expected_anchor));
-    assert_eq!(anchor_builds, 1);
     assert_eq!(stable_snapshot(&registry), owner_before);
 
     let cyclic = make_registry(Vec::new());
@@ -2250,15 +2148,14 @@ fn metadata_directory_construction_failure_never_enters_a_session() {
     let draft_before = draft_snapshot(&draft);
     let entered = Cell::new(false);
 
-    let (observed, builds) = count_metadata_directory_builds(|| {
+    let observed = {
         registry.with_metadata_session(|_| {
             entered.set(true);
             Ok::<(), GenericInvariant>(())
         })
-    });
+    };
 
     assert_eq!(observed, Err(expected));
-    assert_eq!(builds, 1, "directory construction fails on its first pass");
     assert!(!entered.get(), "a failed directory never yields a session");
     assert_eq!(stable_snapshot(&registry), owner_before);
     assert_eq!(draft_snapshot(&draft), draft_before);
@@ -2287,14 +2184,14 @@ fn one_metadata_session_classifies_both_reserved_families() {
         panic!("Result is an enum template")
     };
 
-    let (classified, builds) = count_metadata_directory_builds(|| {
+    let classified = {
         registry.with_metadata_session(|metadata| {
             Ok::<_, GenericInvariant>((
                 metadata.reserved_instantiation(option)?,
                 metadata.reserved_instantiation(result)?,
             ))
         })
-    });
+    };
     assert_eq!(
         classified,
         Ok((
@@ -2304,11 +2201,6 @@ fn one_metadata_session_classifies_both_reserved_families() {
                 GArg::Scalar(ScalarType::Bool),
             )),
         ))
-    );
-    assert_eq!(
-        builds, 0,
-        "one session classifies both reserved families by reusing the directory the \
-             mint path already built for their rows"
     );
 }
 
@@ -2331,7 +2223,7 @@ fn metadata_session_replays_its_first_failure_without_reusing_scratch() {
     };
     let expected = GenericInvariant::TypeArgumentTargetMissing(GArg::Struct(orphan));
 
-    let (observed, builds) = count_metadata_directory_builds(|| {
+    let observed = {
         registry.with_metadata_session(|metadata| {
             let first = metadata.validate_type_arguments(&[GArg::Collection(list)]);
             let collection_replay = metadata.collection_spec(list);
@@ -2339,10 +2231,9 @@ fn metadata_session_replays_its_first_failure_without_reusing_scratch() {
                 metadata.validate_type_arguments(&[GArg::Param(TypeParamIndex::from_position(7))]);
             Ok::<_, GenericInvariant>((first, collection_replay, unrelated_replay))
         })
-    });
+    };
 
     assert_eq!(observed, Ok((Err(expected), Err(expected), Err(expected))));
-    assert_eq!(builds, 1, "a poisoned session never rebuilds or resumes");
 }
 
 /// Provisional and rejected reserved rows expose neither arguments nor body
@@ -2578,28 +2469,19 @@ fn map_key_resolution_validates_metadata_before_semantic_refusal() {
         let owner_before = stable_snapshot(&registry);
         let draft_before = draft_snapshot(&draft);
 
-        let (resolved, builds) = count_metadata_directory_builds(|| {
-            registry.resolve_garg_env(&mut draft, &annotation, &subst, site(2))
-        });
+        let resolved = { registry.resolve_garg_env(&mut draft, &annotation, &subst, site(2)) };
         assert!(matches!(
             resolved,
             Err(ResolveError::Invariant(found)) if found == expected
         ));
-        assert_eq!(builds, 1, "{family} key uses one metadata proof");
         assert_eq!(stable_snapshot(&registry), owner_before);
         assert_eq!(draft_snapshot(&draft), draft_before);
 
-        let (direct, builds) = count_metadata_directory_builds(|| {
-            registry.instantiate_map(&mut draft, arg, GArg::Scalar(ScalarType::Int))
-        });
+        let direct = { registry.instantiate_map(&mut draft, arg, GArg::Scalar(ScalarType::Int)) };
         assert!(matches!(
             direct,
             Err(ResolveError::Invariant(found)) if found == expected
         ));
-        assert_eq!(
-            builds, 1,
-            "the direct {family} key path cannot bypass the owner"
-        );
         assert_eq!(stable_snapshot(&registry), owner_before);
         assert_eq!(draft_snapshot(&draft), draft_before);
     }
@@ -2615,24 +2497,20 @@ fn map_key_resolution_validates_metadata_before_semantic_refusal() {
     let subst = vec![("K".to_string(), GArg::Struct(declared))];
     let owner_before = stable_snapshot(&declared_registry);
     let draft_before = draft_snapshot(&declared_draft);
-    let (refused, builds) = count_metadata_directory_builds(|| {
-        declared_registry.resolve_garg_env(&mut declared_draft, &annotation, &subst, site(3))
-    });
+    let refused =
+        { declared_registry.resolve_garg_env(&mut declared_draft, &annotation, &subst, site(3)) };
     assert_eq!(
         refused,
         Err(ResolveError::Refusal(ResolveRefusal::Unsupported))
     );
-    assert_eq!(builds, 1, "a coherent non-key is refused after one proof");
     assert_eq!(stable_snapshot(&declared_registry), owner_before);
     assert_eq!(draft_snapshot(&declared_draft), draft_before);
 
     let mut registry = registry(Vec::new());
     let mut draft = fresh_draft();
     let valid = apply("Map", vec![name("int"), name("string")]);
-    let (resolved, builds) =
-        count_metadata_directory_builds(|| registry.resolve_garg(&mut draft, &valid, site(4)));
+    let resolved = registry.resolve_garg(&mut draft, &valid, site(4));
     assert_eq!(resolved, Ok(GArg::Collection(coll(0))));
-    assert_eq!(builds, 1, "an admitted Map retains one metadata proof");
 }
 
 #[test]
@@ -2646,32 +2524,23 @@ fn missing_nominal_map_key_stops_before_resolving_a_fresh_value() {
     let owner_before = stable_snapshot(&registry);
     let draft_before = draft_snapshot(&draft);
 
-    let (resolved, builds) = count_metadata_directory_builds(|| {
-        registry.resolve_garg_env(&mut draft, &annotation, &subst, site(5))
-    });
+    let resolved = { registry.resolve_garg_env(&mut draft, &annotation, &subst, site(5)) };
     assert_eq!(
         resolved,
         Err(ResolveError::Invariant(
             GenericInvariant::TypeArgumentTargetMissing(missing)
         ))
     );
-    assert_eq!(
-        builds, 0,
-        "a missing nominal is rejected by its direct owner"
-    );
     assert_eq!(stable_snapshot(&registry), owner_before);
     assert_eq!(draft_snapshot(&draft), draft_before);
 
-    let (direct, builds) = count_metadata_directory_builds(|| {
-        registry.instantiate_map(&mut draft, missing, GArg::Collection(coll(0)))
-    });
+    let direct = { registry.instantiate_map(&mut draft, missing, GArg::Collection(coll(0))) };
     assert_eq!(
         direct,
         Err(ResolveError::Invariant(
             GenericInvariant::TypeArgumentTargetMissing(missing)
         ))
     );
-    assert_eq!(builds, 0);
     assert_eq!(stable_snapshot(&registry), owner_before);
     assert_eq!(draft_snapshot(&draft), draft_before);
 

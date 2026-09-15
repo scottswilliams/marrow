@@ -1564,12 +1564,6 @@ impl DisplayScratch {
     }
 }
 
-#[cfg(test)]
-#[path = "test_probes.rs"]
-mod test_probes;
-#[cfg(test)]
-pub(crate) use test_probes::*;
-
 impl TypeRegistry {
     pub(crate) fn with_metadata_session<'registry, T, E>(
         &'registry self,
@@ -2084,8 +2078,6 @@ impl TypeRegistry {
             // index, not a linear scan of the authority vector. The row it names is
             // re-checked against the looked-up key so index/authority drift surfaces
             // as a typed coherence failure rather than a wrong reuse.
-            #[cfg(test)]
-            bump_scaling(|counts| counts.type_inst_scan_steps += 1);
             let existing = match view.generics.type_index.get(&(template, args.to_vec())) {
                 Some(&index) => {
                     let drifted = view
@@ -2447,8 +2439,6 @@ impl TypeRegistry {
             // the divergent struct corpus stops on the 256-deep mint bound rather than
             // the 4096-wide count. `a_fill_copies_no_template_body_entries` pins it.
             let fields = Rc::clone(fields);
-            #[cfg(test)]
-            count_template_body_copy(&fields, <[(String, TypeExpr)]>::len);
             (subst, fields)
         };
         // Keep one pending representation across recursive field resolution.
@@ -2516,8 +2506,6 @@ impl TypeRegistry {
             // copy avoided here is the larger of the two bodies: `MAX_VARIANTS` variants
             // each of `MAX_PAYLOAD_FIELDS` leaves.
             let variants = Rc::clone(variants);
-            #[cfg(test)]
-            count_template_body_copy(&variants, variant_entries);
             (subst, variants, template_info.name.clone())
         };
         let enum_name = enum_name.as_str();
@@ -3218,8 +3206,6 @@ impl TypeRegistry {
         // Mint-dedup reuse probe: a keyed lookup into the append-only secondary index.
         // The reused row's index is read from `collections` (the authority); a row that
         // does not carry the looked-up spec is drift.
-        #[cfg(test)]
-        bump_scaling(|counts| counts.coll_inst_probe_steps += 1);
         if let Some(&index) = self.collection_index.borrow().get(&spec) {
             if collections.get(index.index() as usize) != Some(&spec) {
                 return Err(
@@ -3471,8 +3457,6 @@ impl TypeRegistry {
     }
 
     pub(crate) fn scalar_annotation(&self, ty: &TypeExpr) -> Result<ScalarType, ResolveError> {
-        #[cfg(test)]
-        test_probes::observe_scalar_annotation(ty.span());
         let TypeExpr::Name { text, .. } = ty else {
             return Err(ResolveRefusal::Unsupported.into());
         };
@@ -3668,8 +3652,6 @@ impl TypeRegistry {
             .try_borrow()
             .map_err(|_| GenericInvariant::TemplateProof(TemplateProofError::UnstableFillState))?
             .len();
-        #[cfg(test)]
-        bump_scaling(|counts| counts.template_proofs += 1);
         let savepoint = RegistryInverse {
             type_insts: generics.type_insts.len(),
             collections,
@@ -4103,8 +4085,6 @@ impl ValueGraph {
                     )]
                     let top = stack.last_mut().expect("stack is non-empty");
                     top.1 += 1;
-                    #[cfg(test)]
-                    bump_scaling(|counts| counts.cycle_walk_steps += 1);
                     let next = edges[node][edge];
                     match colour[next] {
                         GREY => has_cycle = true,
@@ -4195,10 +4175,10 @@ fn unsupported(file: &FileIdentity, span: SourceSpan, subject: &str) -> SourceDi
 mod types_metadata_successor_tests;
 
 #[cfg(test)]
-mod generic_scaling_counts_tests;
+mod generic_instantiation_tests;
 
 #[cfg(test)]
-mod alias_cycle_scaling_tests;
+mod alias_cycle_tests;
 
 #[cfg(test)]
 mod refusal_join_tests;

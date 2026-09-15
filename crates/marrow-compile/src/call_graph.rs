@@ -14,9 +14,6 @@
 //! acyclic program does not allocate one nested vector per function. Cycle reporting
 //! remains the caller's decision and order: this owner supplies membership only.
 
-#[cfg(test)]
-use crate::types::bump_call_graph;
-
 /// Cycle membership and the flat SCC emission order of one direct-call graph.
 pub(crate) struct CallGraphAnalysis {
     /// Available callee-closed vertices in callee-before-caller order.
@@ -90,12 +87,8 @@ impl AcyclicCallOrder {
     ) -> Vec<bool> {
         let mut value = vec![false; self.domain_len()];
         for &function in &self.reverse_topological {
-            #[cfg(test)]
-            bump_call_graph(|counts| counts.propagation_visits += 1);
             let mut settled = base(function);
             successors(function, &mut |callee| {
-                #[cfg(test)]
-                bump_call_graph(|counts| counts.propagation_edge_visits += 1);
                 if value.get(callee).copied().unwrap_or(false) {
                     settled = true;
                 }
@@ -138,16 +131,12 @@ pub(crate) fn analyze(callees: &[Option<&[u16]>]) -> CallGraphAnalysis {
         component_stack.push(root);
         on_stack[root] = true;
         frames.push((root, 0));
-        #[cfg(test)]
-        bump_call_graph(|counts| counts.graph_vertex_visits += 1);
 
         while let Some(&mut (vertex, ref mut cursor)) = frames.last_mut() {
             let edges = callees[vertex].unwrap_or(&[]);
             if *cursor < edges.len() {
                 let callee = usize::from(edges[*cursor]);
                 *cursor += 1;
-                #[cfg(test)]
-                bump_call_graph(|counts| counts.graph_edge_visits += 1);
 
                 if callee == vertex {
                     on_cycle[vertex] = true;
@@ -162,8 +151,6 @@ pub(crate) fn analyze(callees: &[Option<&[u16]>]) -> CallGraphAnalysis {
                     component_stack.push(callee);
                     on_stack[callee] = true;
                     frames.push((callee, 0));
-                    #[cfg(test)]
-                    bump_call_graph(|counts| counts.graph_vertex_visits += 1);
                 } else if on_stack[callee] {
                     lowlink[vertex] = lowlink[vertex].min(index_of[callee]);
                 }
@@ -205,8 +192,6 @@ pub(crate) fn analyze(callees: &[Option<&[u16]>]) -> CallGraphAnalysis {
         *eligible = body.is_some() && !cycle;
     }
     for &function in &reverse_topological {
-        #[cfg(test)]
-        bump_call_graph(|counts| counts.closure_vertex_visits += 1);
         if eligible[function] {
             #[expect(
                 clippy::expect_used,
@@ -215,27 +200,11 @@ pub(crate) fn analyze(callees: &[Option<&[u16]>]) -> CallGraphAnalysis {
             let closed = callees[function]
                 .expect("eligible functions have bodies")
                 .iter()
-                .all(|&callee| {
-                    #[cfg(test)]
-                    bump_call_graph(|counts| counts.closure_edge_visits += 1);
-                    eligible.get(usize::from(callee)).copied().unwrap_or(false)
-                });
+                .all(|&callee| eligible.get(usize::from(callee)).copied().unwrap_or(false));
             eligible[function] = closed;
         }
     }
     reverse_topological.retain(|&function| eligible[function]);
-
-    #[cfg(test)]
-    bump_call_graph(|counts| {
-        let bytes = (index_of.capacity()
-            + lowlink.capacity()
-            + component_stack.capacity()
-            + reverse_topological.capacity())
-            * size_of::<usize>()
-            + (on_cycle.capacity() + eligible.capacity()) * size_of::<bool>()
-            + frames.capacity() * size_of::<(usize, usize)>();
-        counts.graph_scratch_bytes = counts.graph_scratch_bytes.max(bytes);
-    });
 
     CallGraphAnalysis {
         reverse_topological,

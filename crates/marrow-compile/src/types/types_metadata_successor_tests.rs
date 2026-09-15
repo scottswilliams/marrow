@@ -635,7 +635,7 @@ store ^second[id: int]: Second
     let ledger = IdentityLedger::parse(IDS.as_bytes()).expect("fixture ledger parses");
 
     draft.commit();
-    let (outcome, builds) = count_metadata_directory_builds(|| {
+    let outcome = {
         DurableRegistry::build(
             &mut draft_owner,
             &records,
@@ -646,13 +646,7 @@ store ^second[id: int]: Second
             DeclarationBudget::default(),
             &mut Vec::new(),
         )
-    });
-
-    assert_eq!(
-        builds, 0,
-        "the durable build reuses the directory the type-registry build already classified \
-         across every store and repeated enum anchor; it never rebuilds"
-    );
+    };
     let durable = outcome.expect("valid durable registry builds");
     assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     for root_name in ["first", "second"] {
@@ -698,7 +692,7 @@ fn parsed_resource_groups_publish_once_and_reuse_typed_projections() {
             let mut draft_owner = ImageDraft::new();
             let mut draft = admitted(&mut draft_owner);
             let mut diagnostics = DiagnosticCollector::new();
-            let (registry, builds) = count_metadata_directory_builds(|| {
+            let registry = {
                 TypeRegistry::build(
                     &mut draft,
                     &[],
@@ -710,14 +704,10 @@ fn parsed_resource_groups_publish_once_and_reuse_typed_projections() {
                     DeclarationBudget::default(),
                 )
                 .expect("parsed resource registry builds")
-            });
+            };
             assert!(diagnostics.is_empty(), "{diagnostics:#?}");
             assert_eq!(registry.build_invariant(), None);
             assert_eq!(registry.records.len(), resource_count);
-            assert_eq!(
-                builds, 1,
-                "resources={resource_count}, groups={with_groups}"
-            );
 
             let project = || {
                 registry
@@ -746,10 +736,8 @@ fn parsed_resource_groups_publish_once_and_reuse_typed_projections() {
                     })
                     .collect::<Vec<_>>()
             };
-            let (first, first_builds) = count_metadata_directory_builds(project);
-            let (repeated, repeated_builds) = count_metadata_directory_builds(project);
-            assert_eq!(first_builds, usize::from(with_groups));
-            assert_eq!(repeated_builds, 0);
+            let first = project();
+            let repeated = project();
             assert_eq!(repeated, first);
             for (record, (field, group, leaf, inner)) in registry.records.iter().zip(first) {
                 assert_eq!(

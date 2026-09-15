@@ -168,8 +168,6 @@ pub(super) fn place_generic_row(
     row: usize,
     id: TypeInstId,
 ) -> Result<(), GenericInvariant> {
-    #[cfg(test)]
-    bump_scaling(|counts| counts.directory_row_visits += 1);
     match id {
         TypeInstId::Record(record_id) => {
             let index = record_id.index() as usize;
@@ -274,10 +272,6 @@ pub(super) fn collection_generic_target(
 
 impl MetadataScratch {
     pub(super) fn try_new(view: &TypeMetadataView<'_>) -> Result<Self, GenericInvariant> {
-        #[cfg(test)]
-        METADATA_DIRECTORY_BUILDS.with(|count| count.set(count.get() + 1));
-        #[cfg(test)]
-        bump_scaling(|counts| counts.directory_builds += 1);
         let mut records = Vec::new();
         let mut enums = Vec::new();
         for (record_row, record) in view.registry.records.iter().enumerate() {
@@ -909,8 +903,6 @@ impl TypeMetadataView<'_> {
     ) -> Result<bool, GenericInvariant> {
         let mut pending: Vec<(&TypeExpr, GArg)> = vec![(expected, actual)];
         while let Some((expected, actual)) = pending.pop() {
-            #[cfg(test)]
-            READY_BODY_MATCH_VISITS.with(|count| count.set(count.get() + 1));
             match expected {
                 TypeExpr::Name { text, .. } => {
                     if let Some(&index) = param_indices.get(text.as_str()) {
@@ -1767,15 +1759,10 @@ impl RowDirectory {
     /// The appending half of [`Self::extend`], which its caller makes atomic.
     fn extend_appended(&mut self, view: &TypeMetadataView<'_>) -> Result<(), GenericInvariant> {
         let type_insts = view.generics.type_insts.len();
+        // During an isolated template proof the reused directory already classifies the
+        // whole settled population, so extension only reaches the rows the proof body
+        // itself mints.
         for row in self.built_type_insts..type_insts {
-            // During an isolated template proof the reused directory already classifies the
-            // whole settled population, so extension only reaches the rows the proof body
-            // itself mints. Counting them here is the proof's per-template row cost — the
-            // owner-decoupled successor to the discarded clone's whole-population replay.
-            #[cfg(test)]
-            if view.generics.argument_domain == ArgumentDomain::TemplateProof {
-                bump_scaling(|counts| counts.template_proof_rows += 1);
-            }
             let id = view.generics.type_insts[row].id;
             place_generic_row(&mut self.scratch.records, &mut self.scratch.enums, row, id)?;
         }

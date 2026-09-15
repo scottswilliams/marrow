@@ -7,9 +7,6 @@ use super::{
     MintSite, ResolveError, ResolveRefusal, TypeRegistry,
 };
 
-#[cfg(test)]
-use super::bump_scaling;
-
 impl TypeRegistry {
     /// Reserve the image function index for `(fn template, args)`, minting and
     /// enqueuing a fresh instance on first request and reusing it thereafter. A shared
@@ -26,8 +23,6 @@ impl TypeRegistry {
         // Reservation-dedup reuse probe: a keyed lookup into the append-only secondary
         // index. The reserved image function index is read from the named row (the
         // authority), and a row that does not carry the looked-up key is drift.
-        #[cfg(test)]
-        bump_scaling(|counts| counts.fn_inst_scan_steps += 1);
         if let Some(&row) = generics.fn_index.get(&(template, args.clone())) {
             let reused = generics
                 .fn_insts

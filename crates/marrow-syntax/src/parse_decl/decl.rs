@@ -1028,8 +1028,6 @@ impl<'a, 'c> DeclParser<'a, 'c> {
                 span,
             };
         }
-        #[cfg(test)]
-        crate::query::MATERIALIZED_BODIES.with(|count| count.set(count.get() + 1));
         let (statements, comments) =
             StmtParser::new(self.source, body_tokens, &mut self.sink).parse_block();
         Block {

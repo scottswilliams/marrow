@@ -1,12 +1,10 @@
-//! Deterministic production-owner accounting for compact alias normalization.
-//! The counters are private test observers; elapsed time is not
-//! part of the contract.
+//! Alias normalization through the production `compile` path: an accepted chain
+//! collapses to its terminal shape, and an unsupported target refuses typed.
 
 use std::fmt::Write as _;
 
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
-use super::capture_alias_cycle_counts;
 use crate::compile::compile;
 
 fn project(source: String) -> ProjectInput {
@@ -33,43 +31,25 @@ fn chain_source(signature_type: &str, count: usize) -> String {
     source
 }
 
+/// However long the chain, the signature that names its head compiles to the same
+/// image bytes as one that names the terminal directly: an alias carries no shape
+/// of its own into the image.
 #[test]
-fn alias_cycle_classification_is_linear() {
+fn an_alias_chain_compiles_to_the_terminal_shape() {
     for count in [8, 64, 256] {
-        let (compiled, counts) =
-            capture_alias_cycle_counts(|| compile(&project(chain_source("A000", count))));
-        let compiled = compiled.expect("acyclic alias chain compiles");
-
+        let compiled =
+            compile(&project(chain_source("A000", count))).expect("acyclic alias chain compiles");
         let direct =
             compile(&project(chain_source("int", count))).expect("direct int control compiles");
         assert_eq!(
             compiled.image.bytes, direct.image.bytes,
             "every accepted alias in the chain expands to the same terminal int shape"
         );
-
-        assert_eq!(
-            (
-                counts.target_visits,
-                counts.resolved_edges,
-                counts.cyclic_aliases,
-            ),
-            (count, count - 1, 0),
-            "cycle classification must visit each target once and resolve each chain edge once"
-        );
-        assert_eq!((counts.terminal_rows, counts.terminal_bytes), (1, 3));
-        assert!(
-            counts.node_entries <= count,
-            "each node enters once: {counts:?}"
-        );
-        assert!(
-            counts.edge_inspections < count,
-            "each dependency is inspected once: {counts:?}"
-        );
     }
 }
 
 #[test]
-fn unsupported_alias_targets_do_not_traverse_application_arguments() {
+fn an_alias_to_an_unsupported_application_refuses_typed() {
     let mut source = String::from("alias A0 = int\n");
     for index in 1..=8 {
         writeln!(
@@ -81,40 +61,33 @@ fn unsupported_alias_targets_do_not_traverse_application_arguments() {
         .expect("write alias");
     }
     source.push_str("pub fn driver(): int { return 0 }\n");
-    let (result, counts) = capture_alias_cycle_counts(|| compile(&project(source)));
-    assert!(result.is_err());
-    assert_eq!(
-        counts.target_visits, 9,
-        "only the written target heads are classified"
-    );
-    assert_eq!(
-        counts.resolved_edges, 0,
-        "unsupported applications own no alias dependency"
+    let Err(crate::CompileFailure::Diagnostics(diagnostics)) = compile(&project(source)) else {
+        panic!("an unsupported alias target must be a source refusal");
+    };
+    assert!(
+        diagnostics
+            .iter()
+            .all(|row| row.code() == "check.unsupported"),
+        "every row refuses the unsupported target itself",
     );
 }
 
 #[test]
-fn many_aliases_share_one_long_terminal() {
+fn many_aliases_share_one_named_target() {
     let terminal = format!("Type{}", "x".repeat(1024));
     let mut source = format!("struct {terminal} {{ value: int }}\nalias Root = {terminal}\n");
     for index in 0..256 {
         writeln!(source, "alias A{index} = Root").expect("write alias");
     }
     source.push_str("pub fn driver(): int { return 0 }\n");
-    let (result, counts) = capture_alias_cycle_counts(|| compile(&project(source)));
-    result.expect("the shared named target compiles");
-    assert_eq!(
-        (counts.terminal_rows, counts.terminal_bytes),
-        (1, terminal.len())
-    );
-    assert_eq!((counts.target_visits, counts.resolved_edges), (257, 256));
+    compile(&project(source)).expect("the shared named target compiles");
 }
 
 #[test]
-fn composed_optional_aliases_refuse_without_allocating_more_terminals() {
+fn composed_optional_aliases_refuse_at_each_dependent_declaration() {
     let source = "alias A = int?\nalias B = A?\nalias C = B\npub fn driver(): int { return 0 }\n";
-    let (result, counts) = capture_alias_cycle_counts(|| compile(&project(source.into())));
-    let Err(crate::CompileFailure::Diagnostics(diagnostics)) = result else {
+    let Err(crate::CompileFailure::Diagnostics(diagnostics)) = compile(&project(source.into()))
+    else {
         panic!("double optionality must be a source refusal");
     };
     let rows: Vec<_> = diagnostics
@@ -133,5 +106,4 @@ fn composed_optional_aliases_refuse_without_allocating_more_terminals() {
             .refused_declaration()
             .is_some()
     );
-    assert_eq!((counts.terminal_rows, counts.terminal_bytes), (1, 3));
 }

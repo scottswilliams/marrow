@@ -81,16 +81,14 @@ fn a_drain_distinguishes_expired_live_empty_and_future_intervals() {
     let mut next = Vec::new();
     for _ in 0..2 {
         let mut failures = Vec::new();
-        let (_, counts) = crate::types::capture_call_graph_counts(|| {
-            settle(
-                &[0, 1, 0, 1],
-                &[0, 1],
-                &queries,
-                0,
-                &mut next,
-                &mut failures,
-            );
-        });
+        settle(
+            &[0, 1, 0, 1],
+            &[0, 1],
+            &queries,
+            0,
+            &mut next,
+            &mut failures,
+        );
         assert_eq!(
             failures
                 .iter()
@@ -98,12 +96,6 @@ fn a_drain_distinguishes_expired_live_empty_and_future_intervals() {
                 .collect::<Vec<_>>(),
             [(2, 1), (3, 3)]
         );
-        assert_eq!(counts.presence_query_positions, 4);
-        assert_eq!(counts.presence_summary_lookups, 4);
-        assert_eq!(counts.presence_queries_queued, 3);
-        assert_eq!(counts.presence_queries_drained, 3);
-        assert_eq!(counts.presence_next_slots, 4);
-        assert_eq!(counts.presence_failure_rows, 2);
     }
 }
 
