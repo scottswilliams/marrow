@@ -408,7 +408,7 @@ fn decorate(value: string): string {
         "../../../docs/language/modules-and-functions.md"
     ));
     let future = normalize(include_str!(
-        "../../../docs/future/source-standard-library.md"
+        "../../../docs/future/general-purpose-language.md"
     ));
 
     assert!(standard.contains("The current toolchain supplies no `std::` modules."));

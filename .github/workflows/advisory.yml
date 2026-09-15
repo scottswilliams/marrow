@@ -44,12 +44,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Prebuilt release binaries; neither tool is a workspace dependency and
+      - name: Install Rust
+        run: rustup toolchain install --profile minimal
+
+      # Prebuilt release binary; neither tool here is a workspace dependency and
       # neither touches Cargo.lock.
-      - name: Install advisory tools
+      - name: Install cargo-audit
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-audit,cargo-cyclonedx
+          tool: cargo-audit
+
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx --locked
 
       - name: Audit dependencies
         run: cargo audit
