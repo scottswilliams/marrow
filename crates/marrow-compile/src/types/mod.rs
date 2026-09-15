@@ -66,8 +66,8 @@ use owner_txn::RegistryInverse;
 #[cfg(test)]
 use render::garg_anchor_spelling;
 use render::{
-    collection_spelling_for_display, garg_spelling_validated, inst_spelling_for_display,
-    render_validated_anchor_arg, render_validated_display_arg,
+    ANCHOR, DISPLAY, collection_spelling_for_display, garg_spelling_validated,
+    inst_spelling_for_display, render_validated_arg,
 };
 
 /// The identity of a nominal type in [`TypeRegistry`] order, carried by the
@@ -3005,11 +3005,8 @@ impl TypeRegistry {
     /// spelling is stable across appending an enum member, so an append preserves the
     /// sum anchor while minting only the new member.
     ///
-    /// The bracket, space-free-comma recursion below is deliberately independent of
-    /// the angle-form display owner ([`inst_spelling`](Self::inst_spelling) and its
-    /// family): the two never call each other, so changing a user-facing diagnostic
-    /// delimiter can never move an opaque durable identity byte. The near-duplication
-    /// is the isolation boundary, not accidental repetition.
+    /// The bracket, space-free-comma form is fixed by [`ANCHOR`], so changing a
+    /// user-facing diagnostic delimiter cannot move an opaque durable identity byte.
     #[cfg(test)]
     pub(crate) fn enum_anchor_spelling(
         &self,
@@ -3034,9 +3031,7 @@ impl TypeRegistry {
     }
 
     /// The durable-anchor spelling of a generic instantiation, `Name[arg,arg]` with a
-    /// space-free comma, or `None` if `id` names no instantiation. The opaque-ledger
-    /// twin of [`inst_spelling`](Self::inst_spelling); it never calls the display
-    /// family.
+    /// space-free comma, or `None` if `id` names no instantiation.
     #[cfg(test)]
     fn inst_anchor_spelling(&self, id: TypeInstId) -> Result<Option<String>, GenericInvariant> {
         let view = self.metadata_view();
@@ -3066,7 +3061,7 @@ impl TypeRegistry {
             TypeInstId::Record(id) => GArg::Struct(id),
             TypeInstId::Enum(id) => GArg::Enum(id),
         };
-        render_validated_anchor_arg(self, view, metadata, arg, display).map(Some)
+        render_validated_arg(self, view, metadata, arg, display, ANCHOR).map(Some)
     }
 
     /// The source spelling of a generic type instantiation, `Name<arg, ...>`, if
@@ -3102,7 +3097,7 @@ impl TypeRegistry {
         if matches!(inst.state, TypeInstState::Filling { .. }) {
             return Ok(None);
         }
-        render_validated_display_arg(self, view, metadata, arg, display).map(Some)
+        render_validated_arg(self, view, metadata, arg, display, DISPLAY).map(Some)
     }
 
     /// Drain the one owner-ordered generic outcome: replace the active live

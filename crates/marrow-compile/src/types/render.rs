@@ -440,11 +440,41 @@ pub(super) fn garg_spelling_validated(
     arg: GArg,
     display: &mut DisplayScratch,
 ) -> Result<String, GenericInvariant> {
-    render_validated_display_arg(registry, view, metadata, arg, display)
+    render_validated_arg(registry, view, metadata, arg, display, DISPLAY)
+}
+/// How a validated spelling walker renders a generic instantiation and what it
+/// does with an unsubstituted type parameter.
+///
+/// Diagnostics spell `Name<a, b>`; the durable anchor ledger spells `Name[a,b]`
+/// and admits no type parameter at all, because an identity byte may not depend on
+/// a parameter that was never bound. A ledger byte stays stable because [`ANCHOR`]
+/// is fixed, not because the walk exists twice.
+#[derive(Clone, Copy)]
+pub(super) struct Spelling {
+    open: char,
+    close: &'static str,
+    separator: &'static str,
+    parameters: bool,
 }
 
+/// The angle-form spelling diagnostics and cycle labels read.
+pub(super) const DISPLAY: Spelling = Spelling {
+    open: '<',
+    close: ">",
+    separator: ", ",
+    parameters: true,
+};
+
+/// The bracket-form, space-free spelling the opaque durable-anchor ledger reads.
+pub(super) const ANCHOR: Spelling = Spelling {
+    open: '[',
+    close: "]",
+    separator: ",",
+    parameters: false,
+};
+
 #[derive(Clone, Copy)]
-enum ValidatedDisplayFrame {
+enum ValidatedFrame {
     Arg(GArg),
     Inst {
         row: usize,
@@ -456,29 +486,32 @@ enum ValidatedDisplayFrame {
     Leave(DisplayNode),
 }
 
-pub(super) fn render_validated_display_arg(
+/// Spell a metadata-validated value-type argument, recursing through nested generic
+/// instantiations and collections on an explicit frame stack.
+///
+/// A `TypeId` has exactly one metadata owner — resource record, declared struct,
+/// group, or generic row — so the lookups below are mutually exclusive and their
+/// order carries no meaning.
+pub(super) fn render_validated_arg(
     registry: &TypeRegistry,
     view: &TypeMetadataView<'_>,
     metadata: &MetadataScratch,
     arg: GArg,
     display: &mut DisplayScratch,
+    spelling: Spelling,
 ) -> Result<String, GenericInvariant> {
     let mut output = String::new();
-    let mut frames = vec![ValidatedDisplayFrame::Arg(arg)];
+    let mut frames = vec![ValidatedFrame::Arg(arg)];
     let mut entered = Vec::new();
     let result = (|| {
         while let Some(frame) = frames.pop() {
             match frame {
-                ValidatedDisplayFrame::Text(text) => output.push_str(text),
-                ValidatedDisplayFrame::Leave(node) => {
-                    // Profiles cannot disagree: `leave` takes the frame's own node, so
-                    // nothing here reads what this compares; the pop keeps `entered` in
-                    // step for the unwind path below.
-                    let removed = entered.pop();
-                    debug_assert_eq!(removed, Some(node));
+                ValidatedFrame::Text(text) => output.push_str(text),
+                ValidatedFrame::Leave(node) => {
+                    entered.pop();
                     display.leave(node);
                 }
-                ValidatedDisplayFrame::Arg(arg) => match arg {
+                ValidatedFrame::Arg(arg) => match arg {
                     GArg::Scalar(scalar) => output.push_str(scalar.spelling()),
                     GArg::Nominal(id) => output.push_str(
                         &registry
@@ -492,7 +525,7 @@ pub(super) fn render_validated_display_arg(
                             return Err(GenericInvariant::TypeArgumentTargetMissing(arg));
                         }
                         if let Some(row) = metadata.row(TypeInstId::Record(id)) {
-                            frames.push(ValidatedDisplayFrame::Inst {
+                            frames.push(ValidatedFrame::Inst {
                                 row,
                                 id: TypeInstId::Record(id),
                                 arg,
@@ -525,7 +558,7 @@ pub(super) fn render_validated_display_arg(
                     }
                     GArg::Enum(id) => {
                         if let Some(row) = metadata.row(TypeInstId::Enum(id)) {
-                            frames.push(ValidatedDisplayFrame::Inst {
+                            frames.push(ValidatedFrame::Inst {
                                 row,
                                 id: TypeInstId::Enum(id),
                                 arg,
@@ -544,13 +577,16 @@ pub(super) fn render_validated_display_arg(
                         }
                     }
                     GArg::Collection(index) => {
-                        frames.push(ValidatedDisplayFrame::Collection(index));
+                        frames.push(ValidatedFrame::Collection(index));
                     }
                     GArg::Param(index) => {
+                        if !spelling.parameters {
+                            return Err(GenericInvariant::TypeArgumentParameter(index));
+                        }
                         output.push_str(&format!("<type parameter {index}>"));
                     }
                 },
-                ValidatedDisplayFrame::Inst { row, id, arg } => {
+                ValidatedFrame::Inst { row, id, arg } => {
                     let inst = view
                         .generics
                         .type_insts
@@ -566,17 +602,17 @@ pub(super) fn render_validated_display_arg(
                         .get(inst.template)
                         .ok_or(GenericInvariant::TypeTemplateMissing(inst.template))?;
                     output.push_str(&template.name);
-                    output.push('<');
-                    frames.push(ValidatedDisplayFrame::Leave(node));
-                    frames.push(ValidatedDisplayFrame::Text(">"));
+                    output.push(spelling.open);
+                    frames.push(ValidatedFrame::Leave(node));
+                    frames.push(ValidatedFrame::Text(spelling.close));
                     for (index, arg) in inst.args.iter().copied().enumerate().rev() {
-                        frames.push(ValidatedDisplayFrame::Arg(arg));
+                        frames.push(ValidatedFrame::Arg(arg));
                         if index > 0 {
-                            frames.push(ValidatedDisplayFrame::Text(", "));
+                            frames.push(ValidatedFrame::Text(spelling.separator));
                         }
                     }
                 }
-                ValidatedDisplayFrame::Collection(index) => {
+                ValidatedFrame::Collection(index) => {
                     let arg = GArg::Collection(index);
                     if !display.enter_collection(index) {
                         return Err(GenericInvariant::TypeArgumentTargetMissing(arg));
@@ -588,18 +624,20 @@ pub(super) fn render_validated_display_arg(
                         .get(index.index() as usize)
                         .copied()
                         .ok_or(GenericInvariant::TypeArgumentTargetMissing(arg))?;
-                    frames.push(ValidatedDisplayFrame::Leave(node));
-                    frames.push(ValidatedDisplayFrame::Text(">"));
+                    frames.push(ValidatedFrame::Leave(node));
+                    frames.push(ValidatedFrame::Text(spelling.close));
                     match spec {
                         CollSpec::List { elem } => {
-                            output.push_str("List<");
-                            frames.push(ValidatedDisplayFrame::Arg(elem));
+                            output.push_str("List");
+                            output.push(spelling.open);
+                            frames.push(ValidatedFrame::Arg(elem));
                         }
                         CollSpec::Map { key, value } => {
-                            output.push_str("Map<");
-                            frames.push(ValidatedDisplayFrame::Arg(value));
-                            frames.push(ValidatedDisplayFrame::Text(", "));
-                            frames.push(ValidatedDisplayFrame::Arg(key));
+                            output.push_str("Map");
+                            output.push(spelling.open);
+                            frames.push(ValidatedFrame::Arg(value));
+                            frames.push(ValidatedFrame::Text(spelling.separator));
+                            frames.push(ValidatedFrame::Arg(key));
                         }
                     }
                 }
@@ -615,10 +653,7 @@ pub(super) fn render_validated_display_arg(
 
 /// The durable-anchor spelling of a bare value-type argument: the space-free,
 /// bracket-form opaque-ledger twin of [`garg_spelling`], recursing through nested
-/// generic instantiations. It never calls the angle-form display owner, so the
-/// ledger bytes stay byte-stable and independent of diagnostic spelling. The
-/// deliberate near-duplication is the isolation boundary the durable identity relies
-/// on; do not merge the two behind a shared delimiter policy.
+/// generic instantiations.
 #[cfg(test)]
 pub(super) fn garg_anchor_spelling(
     registry: &TypeRegistry,
@@ -628,183 +663,5 @@ pub(super) fn garg_anchor_spelling(
     let mut metadata = MetadataScratch::try_new(&view)?;
     view.validate_args_with(std::slice::from_ref(&arg), None, &mut metadata)?;
     let mut display = DisplayScratch::for_view(&view);
-    garg_anchor_spelling_validated(registry, &view, &metadata, arg, &mut display)
-}
-
-#[derive(Clone, Copy)]
-enum ValidatedAnchorFrame {
-    Arg(GArg),
-    Inst {
-        row: usize,
-        id: TypeInstId,
-        arg: GArg,
-    },
-    Collection(CollTypeId),
-    Text(&'static str),
-    Leave(DisplayNode),
-}
-
-#[cfg(test)]
-fn garg_anchor_spelling_validated(
-    registry: &TypeRegistry,
-    view: &TypeMetadataView<'_>,
-    metadata: &MetadataScratch,
-    arg: GArg,
-    display: &mut DisplayScratch,
-) -> Result<String, GenericInvariant> {
-    render_validated_anchor_arg(registry, view, metadata, arg, display)
-}
-
-pub(super) fn render_validated_anchor_arg(
-    registry: &TypeRegistry,
-    view: &TypeMetadataView<'_>,
-    metadata: &MetadataScratch,
-    arg: GArg,
-    display: &mut DisplayScratch,
-) -> Result<String, GenericInvariant> {
-    let mut output = String::new();
-    let mut frames = vec![ValidatedAnchorFrame::Arg(arg)];
-    let mut entered = Vec::new();
-    let result = (|| {
-        while let Some(frame) = frames.pop() {
-            match frame {
-                ValidatedAnchorFrame::Text(text) => output.push_str(text),
-                ValidatedAnchorFrame::Leave(node) => {
-                    // Unread on the same terms as the validated-display walker above.
-                    let removed = entered.pop();
-                    debug_assert_eq!(removed, Some(node));
-                    display.leave(node);
-                }
-                ValidatedAnchorFrame::Arg(arg) => match arg {
-                    GArg::Scalar(scalar) => output.push_str(scalar.spelling()),
-                    GArg::Nominal(id) => output.push_str(
-                        &registry
-                            .nominals
-                            .get(id.0 as usize)
-                            .ok_or(GenericInvariant::TypeArgumentTargetMissing(arg))?
-                            .name,
-                    ),
-                    GArg::Struct(id) => {
-                        if let Some(row) = metadata.declared_struct(id) {
-                            output.push_str(
-                                &registry
-                                    .structs
-                                    .get(row)
-                                    .ok_or(GenericInvariant::TypeArgumentTargetMissing(arg))?
-                                    .name,
-                            );
-                        } else {
-                            let inst_id = TypeInstId::Record(id);
-                            let row = metadata
-                                .row(inst_id)
-                                .ok_or(GenericInvariant::TypeArgumentTargetMissing(arg))?;
-                            frames.push(ValidatedAnchorFrame::Inst {
-                                row,
-                                id: inst_id,
-                                arg,
-                            });
-                        }
-                    }
-                    GArg::Group(id) => {
-                        let (record, group) = metadata
-                            .group(id)
-                            .ok_or(GenericInvariant::TypeArgumentTargetMissing(arg))?;
-                        output.push_str(
-                            &registry
-                                .records
-                                .get(record)
-                                .and_then(|record| record.groups.get(group))
-                                .ok_or(GenericInvariant::TypeArgumentTargetMissing(arg))?
-                                .name,
-                        );
-                    }
-                    GArg::Enum(id) => {
-                        if let Some(row) = metadata.declared_enum(id) {
-                            output.push_str(
-                                &registry
-                                    .enums
-                                    .get(row)
-                                    .ok_or(GenericInvariant::TypeArgumentTargetMissing(arg))?
-                                    .name,
-                            );
-                        } else {
-                            let inst_id = TypeInstId::Enum(id);
-                            let row = metadata
-                                .row(inst_id)
-                                .ok_or(GenericInvariant::TypeArgumentTargetMissing(arg))?;
-                            frames.push(ValidatedAnchorFrame::Inst {
-                                row,
-                                id: inst_id,
-                                arg,
-                            });
-                        }
-                    }
-                    GArg::Collection(index) => {
-                        frames.push(ValidatedAnchorFrame::Collection(index));
-                    }
-                    GArg::Param(index) => {
-                        return Err(GenericInvariant::TypeArgumentParameter(index));
-                    }
-                },
-                ValidatedAnchorFrame::Inst { row, id, arg } => {
-                    let inst = view
-                        .generics
-                        .type_insts
-                        .get(row)
-                        .ok_or(GenericInvariant::ReadyBodyMissing(id))?;
-                    if !matches!(inst.state, TypeInstState::Ready(_)) || !display.enter_row(row) {
-                        return Err(GenericInvariant::TypeArgumentTargetMissing(arg));
-                    }
-                    let node = DisplayNode::Row(row);
-                    entered.push(node);
-                    let template = registry
-                        .type_templates
-                        .get(inst.template)
-                        .ok_or(GenericInvariant::TypeTemplateMissing(inst.template))?;
-                    output.push_str(&template.name);
-                    output.push('[');
-                    frames.push(ValidatedAnchorFrame::Leave(node));
-                    frames.push(ValidatedAnchorFrame::Text("]"));
-                    for (index, arg) in inst.args.iter().copied().enumerate().rev() {
-                        frames.push(ValidatedAnchorFrame::Arg(arg));
-                        if index > 0 {
-                            frames.push(ValidatedAnchorFrame::Text(","));
-                        }
-                    }
-                }
-                ValidatedAnchorFrame::Collection(index) => {
-                    let arg = GArg::Collection(index);
-                    if !display.enter_collection(index) {
-                        return Err(GenericInvariant::TypeArgumentTargetMissing(arg));
-                    }
-                    let node = DisplayNode::Collection(index);
-                    entered.push(node);
-                    let spec = view
-                        .collections
-                        .get(index.index() as usize)
-                        .copied()
-                        .ok_or(GenericInvariant::TypeArgumentTargetMissing(arg))?;
-                    frames.push(ValidatedAnchorFrame::Leave(node));
-                    frames.push(ValidatedAnchorFrame::Text("]"));
-                    match spec {
-                        CollSpec::List { elem } => {
-                            output.push_str("List[");
-                            frames.push(ValidatedAnchorFrame::Arg(elem));
-                        }
-                        CollSpec::Map { key, value } => {
-                            output.push_str("Map[");
-                            frames.push(ValidatedAnchorFrame::Arg(value));
-                            frames.push(ValidatedAnchorFrame::Text(","));
-                            frames.push(ValidatedAnchorFrame::Arg(key));
-                        }
-                    }
-                }
-            }
-        }
-        Ok(output)
-    })();
-    while let Some(node) = entered.pop() {
-        display.leave(node);
-    }
-    result
+    render_validated_arg(registry, &view, &metadata, arg, &mut display, ANCHOR)
 }
