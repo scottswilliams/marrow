@@ -41,16 +41,11 @@ impl WireError {
             WireError::Noncanonical => Code::WireNoncanonical,
         }
     }
-
-    /// The canonical dotted code string.
-    pub const fn code_str(self) -> &'static str {
-        self.code().as_str()
-    }
 }
 
 impl std::fmt::Display for WireError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.code_str())
+        f.write_str(self.code().as_str())
     }
 }
 

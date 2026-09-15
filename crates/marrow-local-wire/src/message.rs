@@ -82,19 +82,19 @@ pub enum ServerMessage {
     /// A successful call result (JSON `null` for a unit return).
     Value { data: Json },
     /// A source-mapped runtime fault raised while running the export.
-    Fault { code: &'static str, span: Span },
+    Fault { code: Code, span: Span },
     /// The invocation stopped without returning. Its durable state is reported
     /// independently of the source-mapped fault; no recovery witness crosses
     /// the wire.
     Incomplete {
-        code: &'static str,
+        code: Code,
         durable: DurableState,
         span: Span,
     },
     /// The request could not be admitted or run (an unknown export, an argument
     /// mismatch, or a durable export the stock runner will not execute). The
     /// `code` is the runner's typed reason.
-    Reject { code: &'static str },
+    Reject { code: Code },
     /// A store was provisioned: `instance` is the fresh store instance identity
     /// (lowercase hex). The receipt of a completed provision.
     Provisioned { instance: String },
@@ -106,7 +106,7 @@ pub enum ServerMessage {
     /// Provision failed before publication and cleanup of its private stage also failed.
     /// `stage` is a generated sibling component of the requested destination, not a child.
     ProvisionFailed {
-        code: &'static str,
+        code: Code,
         stage: String,
         os_error: Option<i32>,
     },
@@ -246,7 +246,7 @@ impl ServerMessage {
                     write_value_response(object, turn, |slot| slot.json(data))
                 }
                 ServerMessage::Fault { code, span } => {
-                    object.field("code", |slot| slot.string(code))?;
+                    object.field("code", |slot| slot.string(code.as_str()))?;
                     object.field("kind", |slot| slot.string("fault"))?;
                     object.field("span", |slot| slot.json(&span.to_json()))?;
                     object.field("turn", |slot| slot.integer(i64::from(turn)))
@@ -256,14 +256,14 @@ impl ServerMessage {
                     durable,
                     span,
                 } => {
-                    object.field("code", |slot| slot.string(code))?;
+                    object.field("code", |slot| slot.string(code.as_str()))?;
                     object.field("durable", |slot| slot.string(durable.as_str()))?;
                     object.field("kind", |slot| slot.string("incomplete"))?;
                     object.field("span", |slot| slot.json(&span.to_json()))?;
                     object.field("turn", |slot| slot.integer(i64::from(turn)))
                 }
                 ServerMessage::Reject { code } => {
-                    object.field("code", |slot| slot.string(code))?;
+                    object.field("code", |slot| slot.string(code.as_str()))?;
                     object.field("kind", |slot| slot.string("reject"))?;
                     object.field("turn", |slot| slot.integer(i64::from(turn)))
                 }
@@ -291,7 +291,7 @@ impl ServerMessage {
                             cleanup.field("stage", |slot| slot.string(stage))
                         })
                     })?;
-                    object.field("code", |slot| slot.string(code))?;
+                    object.field("code", |slot| slot.string(code.as_str()))?;
                     object.field("kind", |slot| slot.string("provision_failed"))
                 }
             })
@@ -349,7 +349,7 @@ impl ServerMessage {
                 object.exact(&["code", "kind", "span", "turn"])?;
                 Ok((
                     ServerMessage::Fault {
-                        code: object.code_str("code")?,
+                        code: object.code("code")?,
                         span: object.span("span")?,
                     },
                     Some(object.u32("turn")?),
@@ -359,7 +359,7 @@ impl ServerMessage {
                 object.exact(&["code", "durable", "kind", "span", "turn"])?;
                 Ok((
                     ServerMessage::Incomplete {
-                        code: object.code_str("code")?,
+                        code: object.code("code")?,
                         durable: object.durable_state("durable")?,
                         span: object.span("span")?,
                     },
@@ -370,7 +370,7 @@ impl ServerMessage {
                 object.exact(&["code", "kind", "turn"])?;
                 Ok((
                     ServerMessage::Reject {
-                        code: object.code_str("code")?,
+                        code: object.code("code")?,
                     },
                     Some(object.u32("turn")?),
                 ))
@@ -410,7 +410,7 @@ impl ServerMessage {
                 };
                 Ok((
                     ServerMessage::ProvisionFailed {
-                        code: object.code_str("code")?,
+                        code: object.code("code")?,
                         stage,
                         os_error,
                     },
@@ -544,12 +544,6 @@ impl<'a> Fields<'a> {
         }
     }
 
-    /// The registered code's own static spelling, so a decoded message carries the
-    /// interned string rather than a fresh allocation the reader must re-intern.
-    fn code_str(&self, key: &str) -> Result<&'static str, WireError> {
-        self.code(key).map(Code::as_str)
-    }
-
     fn span(&self, key: &str) -> Result<Span, WireError> {
         let span = Fields::new(self.get(key)?)?;
         span.exact(&["column", "line"])?;
@@ -640,7 +634,7 @@ mod tests {
         }
         assert!(
             ServerMessage::ProvisionFailed {
-                code: Code::StoreIo.as_str(),
+                code: Code::StoreIo,
                 stage: "../stage".into(),
                 os_error: None,
             }
@@ -697,7 +691,7 @@ mod tests {
         assert_eq!(
             json_of(
                 &ServerMessage::Fault {
-                    code: Code::RunOverflow.as_str(),
+                    code: Code::RunOverflow,
                     span: Span { line: 7, column: 2 },
                 }
                 .encode()
@@ -708,7 +702,7 @@ mod tests {
         assert_eq!(
             json_of(
                 &ServerMessage::Incomplete {
-                    code: Code::RunCommit.as_str(),
+                    code: Code::RunCommit,
                     durable: DurableState::KnownNew,
                     span: Span { line: 9, column: 4 },
                 }
@@ -720,7 +714,7 @@ mod tests {
         assert_eq!(
             json_of(
                 &ServerMessage::Reject {
-                    code: Code::RunnerUnknownExport.as_str()
+                    code: Code::RunnerUnknownExport
                 }
                 .encode()
                 .unwrap()
@@ -870,7 +864,7 @@ mod tests {
             data: Json::Array(vec![Json::Int(-1)]),
         });
         server_round_trip(ServerMessage::Fault {
-            code: Code::RunBudget.as_str(),
+            code: Code::RunBudget,
             span: Span { line: 1, column: 1 },
         });
         for durable in [
@@ -879,13 +873,13 @@ mod tests {
             DurableState::Unknown,
         ] {
             server_round_trip(ServerMessage::Incomplete {
-                code: Code::RunCommit.as_str(),
+                code: Code::RunCommit,
                 durable,
                 span: Span { line: 2, column: 3 },
             });
         }
         server_round_trip(ServerMessage::Reject {
-            code: Code::RunnerArgMismatch.as_str(),
+            code: Code::RunnerArgMismatch,
         });
     }
 
