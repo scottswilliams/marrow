@@ -46,6 +46,42 @@ pub(super) fn parse(mut args: impl Iterator<Item = String>) -> Option<Command> {
     })
 }
 
+/// What apply did to the store, decided once from the lifecycle result and rendered as a
+/// word only at the output boundary. A failure that may have changed persistent metadata,
+/// and one whose activation outcome is unknown, are each distinct from a refusal that
+/// published nothing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    Applied,
+    ActivationUncertain,
+    MetadataFailed,
+    Refused,
+}
+
+impl Outcome {
+    fn of(result: &Result<marrow_lifecycle::ApplyReceipt, ApplyError>) -> Self {
+        match result {
+            Ok(_) => Self::Applied,
+            Err(ApplyError::Lifecycle(marrow_lifecycle::LifecycleError::ActivationUncertain {
+                ..
+            })) => Self::ActivationUncertain,
+            Err(ApplyError::Lifecycle(marrow_lifecycle::LifecycleError::Metadata(_))) => {
+                Self::MetadataFailed
+            }
+            Err(_) => Self::Refused,
+        }
+    }
+
+    fn word(self) -> &'static str {
+        match self {
+            Self::Applied => "applied",
+            Self::ActivationUncertain => "activation_uncertain",
+            Self::MetadataFailed => "metadata_failed",
+            Self::Refused => "refused",
+        }
+    }
+}
+
 pub(super) fn run(command: Command) -> io::Result<ExitCode> {
     validate_store_output(&command.store)?;
     // Each loader drops its raw buffer before the next artifact is read.
@@ -58,11 +94,16 @@ pub(super) fn run(command: Command) -> io::Result<ExitCode> {
         Err(code) => return Ok(code),
     };
     let result = marrow_lifecycle::apply(&command.store, old, new, command.accepted);
-    let mut fields = vec![("kind".into(), Json::Str("apply".into()))];
+    let mut fields = vec![
+        ("kind".into(), Json::Str("apply".into())),
+        (
+            "outcome".into(),
+            Json::Str(Outcome::of(&result).word().into()),
+        ),
+    ];
     let text = |value: String| Json::Str(value);
     match &result {
         Ok(receipt) => fields.extend([
-            ("outcome".into(), text("applied".into())),
             ("instance".into(), text(receipt.instance.to_hex())),
             ("old_image".into(), text(receipt.old_image.to_hex())),
             ("new_image".into(), text(receipt.new_image.to_hex())),
@@ -70,16 +111,6 @@ pub(super) fn run(command: Command) -> io::Result<ExitCode> {
             ("ceiling".into(), text(receipt.ceiling.to_hex())),
         ]),
         Err(error) => {
-            let outcome = match error {
-                ApplyError::Lifecycle(marrow_lifecycle::LifecycleError::ActivationUncertain {
-                    ..
-                }) => "activation_uncertain",
-                ApplyError::Lifecycle(marrow_lifecycle::LifecycleError::Metadata(_)) => {
-                    "metadata_failed"
-                }
-                _ => "refused",
-            };
-            fields.push(("outcome".into(), text(outcome.into())));
             fields.push(("code".into(), text(error.code().into())));
             if let ApplyError::Lifecycle(marrow_lifecycle::LifecycleError::ActivationUncertain {
                 instance,
@@ -137,10 +168,10 @@ mod tests {
     use crate::{Failure, Sink};
     use marrow_local_wire::encode;
 
-    fn receipt(outcome: &str) -> Json {
+    fn receipt(outcome: Outcome) -> Json {
         Json::Object(vec![
             ("kind".into(), Json::Str("apply".into())),
-            ("outcome".into(), Json::Str(outcome.into())),
+            ("outcome".into(), Json::Str(outcome.word().into())),
         ])
     }
 
@@ -184,10 +215,10 @@ mod tests {
     #[test]
     fn receipt_delivery_failure_retains_the_known_outcome() {
         for outcome in [
-            "applied",
-            "activation_uncertain",
-            "metadata_failed",
-            "refused",
+            Outcome::Applied,
+            Outcome::ActivationUncertain,
+            Outcome::MetadataFailed,
+            Outcome::Refused,
         ] {
             let report = receipt(outcome);
             for format in [ReportFormat::Text, ReportFormat::Jsonl] {
