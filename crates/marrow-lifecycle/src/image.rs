@@ -54,18 +54,25 @@ pub fn accepted_ceiling(image: &VerifiedImage) -> Vec<u8> {
     CeilingDescriptor::from_demand_union(image.demand_union()).atom_set_payload()
 }
 
+/// The declaration identity of every durable node the store numbers, in the kernel's
+/// canonical split pre-order (see [`split_order`]). This is the sole owner of head-map node
+/// eligibility: a managed index carries a 16-byte identity in its cell keys rather than a
+/// number, so the walk excludes it, and every caller that asks which nodes the map binds
+/// asks here.
+pub(crate) fn numbered_node_ids(image: &VerifiedImage) -> Vec<LedgerIdBytes> {
+    let (nodes, order) = split_order(image);
+    order.iter().map(|&i| nodes[i].path.node_id()).collect()
+}
+
 /// Build the head identity map for `image`: the ledger-id ↔ cell-number bijection (FR01 §3),
-/// where node `i` in the store-local cell-key numbering is the `i`-th durable node in the
-/// kernel's canonical split pre-order (see [`split_order`]). A projection of that one walk:
-/// number `i` binds to the ledger id of the `i`-th walked node.
+/// where node `i` in the store-local cell-key numbering is the `i`-th durable node in
+/// [`numbered_node_ids`].
 ///
 /// Returns a [`FormatError`] when the node count exceeds the head map's bound, and when the
 /// walk yields one declaration identity twice. Two roots sharing one resource
 /// share member identities, so this persisted map cannot provision them today.
 pub fn head_map(image: &VerifiedImage) -> Result<HeadMap, FormatError> {
-    let (nodes, order) = split_order(image);
-    let ledger_ids: Vec<LedgerIdBytes> = order.iter().map(|&i| nodes[i].path.node_id()).collect();
-    HeadMap::assign(&ledger_ids)
+    HeadMap::assign(&numbered_node_ids(image))
 }
 
 /// A mismatch between the verified image, its projection and the accepted identity map.

@@ -11,7 +11,6 @@ use marrow_image::{
     DurableMemberViews, ImageId, LedgerIdBytes, ValueShapeComparison, ValueShapeView,
 };
 use marrow_kernel::durable::NativeOpenAccess;
-use marrow_verify::SemanticNodeKind;
 
 use crate::actor::{ImageAdmission, rewrite_atomically};
 use crate::envelope::{EnvelopeRecord, EnvelopeState};
@@ -131,11 +130,8 @@ pub fn apply(
         .iter()
         .map(|entry| entry.ledger_id)
         .collect();
-    let additions: Vec<_> = new
-        .semantic_nodes()
-        .iter()
-        .filter(|node| node.kind != SemanticNodeKind::Index)
-        .map(|node| node.path.node_id())
+    let additions: Vec<_> = crate::image::numbered_node_ids(&new)
+        .into_iter()
         .filter(|id| !old_ids.contains(id))
         .collect();
     let head_map = opened
