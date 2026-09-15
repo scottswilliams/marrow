@@ -1,6 +1,5 @@
 //! Shared checking context, certified direct calls, and durable-effect closures.
 
-use super::flow::durable_op_class;
 use super::flow::durable_site;
 use super::flow::is_mutation;
 use super::presence::flow_successors;
@@ -156,7 +155,7 @@ impl Effects {
             for instr in function.instrs() {
                 if let Some(site) = durable_site(instr) {
                     sites.insert(site);
-                    if let Some(class) = durable_op_class(instr) {
+                    if let Some(class) = instr.operation_class() {
                         let next = lookup.len();
                         let ordinal = *lookup
                             .entry(DemandAtom::new(
@@ -344,7 +343,7 @@ impl Effects {
                     // inside its region and returns values it captured there; a read
                     // after commit is refused here so the runtime never reaches a
                     // consumed transaction.
-                    let durable_here = durable_op_class(instr).is_some()
+                    let durable_here = instr.operation_class().is_some()
                         || matches!(instr, SealedInstr::Call(target) if !self.demands.get(usize::from(*target)).is_empty());
                     if durable_here && state == State::AfterCommit {
                         return Err(reject(

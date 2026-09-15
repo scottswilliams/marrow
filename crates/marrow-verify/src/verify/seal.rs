@@ -4,7 +4,6 @@ use super::context::{CallGraph, Ctx, Effects, FnSig};
 use super::durable::{
     is_flat_executable_root, member_flat_at_root, seal_branches, seal_groups, seal_root_indexes,
 };
-use super::flow::durable_op_class;
 use super::model::DecodedImage;
 use super::presence::{EntryFamilies, check_presence_flow, verify_function};
 use super::reject;
@@ -295,7 +294,7 @@ fn check_test_entries(
         let has_direct_durable = function
             .instrs()
             .iter()
-            .any(|instr| durable_op_class(instr).is_some());
+            .any(|instr| instr.operation_class().is_some());
         if has_direct_durable {
             return Err(reject(
                 VerifyPhase::TestEntry,

@@ -10,7 +10,7 @@ use crate::sealed::{
     SealedInstr, SealedRoot, SealedSite, SealedSiteTarget,
 };
 use crate::vtype::VType;
-use marrow_image::{CollTypeId, EnumId, ImageType, OperationClass, RootId, Scalar, TypeId};
+use marrow_image::{CollTypeId, EnumId, ImageType, OpClass, RootId, Scalar, TypeId};
 
 #[cfg(test)]
 #[path = "flow/flow_tests.rs"]
@@ -212,9 +212,6 @@ fn apply(
     consts: &[SealedConst],
     frame: &mut Frame,
 ) -> Result<Control, VerifyRejection> {
-    if is_durable(instr) {
-        return apply_durable(ctx, instr, frame);
-    }
     match instr {
         SealedInstr::ConstLoad(idx) => const_load(frame, consts, *idx),
         SealedInstr::LocalGet(slot) => local_get(frame, *slot),
@@ -336,9 +333,7 @@ fn apply(
         | SealedInstr::DurIndexLookup(_)
         | SealedInstr::DurIndexExists(_)
         | SealedInstr::TxnBegin
-        | SealedInstr::TxnCommit => {
-            unreachable!("a durable opcode or transaction marker returns from apply_durable")
-        }
+        | SealedInstr::TxnCommit => apply_durable(ctx, instr, frame),
     }
 }
 
@@ -1214,14 +1209,6 @@ fn map_kv(ctx: &Ctx, value: VType) -> Result<(CollTypeId, ImageType, ImageType),
     }
 }
 
-/// Whether `instr` is handled by [`apply_durable`] (a durable op or a transaction
-/// marker).
-fn is_durable(instr: &SealedInstr) -> bool {
-    is_mutation(instr)
-        || is_durable_read(instr)
-        || matches!(instr, SealedInstr::TxnBegin | SealedInstr::TxnCommit)
-}
-
 /// The site operand of a durable op, or `None` for a transaction marker.
 pub(super) fn durable_site(instr: &SealedInstr) -> Option<u16> {
     match instr {
@@ -1247,155 +1234,9 @@ pub(super) fn durable_site(instr: &SealedInstr) -> Option<u16> {
     }
 }
 
-/// The single owner of the durable-opcode → [`OperationClass`] partition. The
-/// closed projection of the durable operation algebra onto authority atoms:
-/// `create`, `replace`, and the field set are all writes; the two
-/// erases are erases; presence is a probe; field/entry reads are reads; and the
-/// bounded traversal is ordered traversal. Transaction markers and every pure opcode
-/// make no atom.
-///
-/// The match is exhaustive with no `_` fallthrough, so a new durable opcode added
-/// to [`SealedInstr`] without a class here fails to compile rather than silently
-/// projecting to "no access". [`is_mutation`] and [`is_durable_read`] derive from
-/// this partition and never restate it.
-pub(super) fn durable_op_class(instr: &SealedInstr) -> Option<OperationClass> {
-    match instr {
-        SealedInstr::DurExists(_) | SealedInstr::DurFamilyExists(_) => {
-            Some(OperationClass::Presence)
-        }
-        SealedInstr::DurReadField(_)
-        | SealedInstr::DurReadFieldPresent { .. }
-        | SealedInstr::DurReadEntry(_)
-        | SealedInstr::DurReadGroup(_)
-        | SealedInstr::DurReadGroupPresent { .. } => Some(OperationClass::Read),
-        SealedInstr::DurSetField { .. }
-        | SealedInstr::DurCreateEntry(_)
-        | SealedInstr::DurReplaceEntry(_)
-        | SealedInstr::DurReplaceGroup { .. } => Some(OperationClass::Write),
-        SealedInstr::DurEraseField(_)
-        | SealedInstr::DurEraseEntry(_)
-        | SealedInstr::DurEraseGroup(_) => Some(OperationClass::Erase),
-        // A unique-index presence probe reads the same index cell family as the lookup —
-        // revealing strictly less (a bool, not the identity) — so it demands the same
-        // index-read authority rather than a novel presence-over-an-index atom.
-        SealedInstr::DurIterateBounded { .. }
-        | SealedInstr::DurIndexScan { .. }
-        | SealedInstr::DurIndexLookup(_)
-        | SealedInstr::DurIndexExists(_) => Some(OperationClass::IndexRead),
-        // Region markers open and close the transaction but stage no access.
-        SealedInstr::TxnBegin | SealedInstr::TxnCommit => None,
-        // The closed complement: every pure opcode stages no durable access.
-        SealedInstr::ConstLoad(_)
-        | SealedInstr::LocalGet(_)
-        | SealedInstr::LocalSet(_)
-        | SealedInstr::Pop
-        | SealedInstr::Return
-        | SealedInstr::Jump(_)
-        | SealedInstr::JumpIfFalse(_)
-        | SealedInstr::IntAdd
-        | SealedInstr::IntSub
-        | SealedInstr::IntMul
-        | SealedInstr::IntRem
-        | SealedInstr::IntDiv
-        | SealedInstr::IntNeg
-        | SealedInstr::BoolNot
-        | SealedInstr::IntLt
-        | SealedInstr::IntLe
-        | SealedInstr::IntGt
-        | SealedInstr::IntGe
-        | SealedInstr::EqInt
-        | SealedInstr::EqBool
-        | SealedInstr::EqText
-        | SealedInstr::TextConcat
-        | SealedInstr::TextLt
-        | SealedInstr::TextLe
-        | SealedInstr::TextGt
-        | SealedInstr::TextGe
-        | SealedInstr::EqBytes
-        | SealedInstr::BytesLt
-        | SealedInstr::BytesLe
-        | SealedInstr::BytesGt
-        | SealedInstr::BytesGe
-        | SealedInstr::ConvString
-        | SealedInstr::ConvBytesText
-        | SealedInstr::TextIsEmpty
-        | SealedInstr::TextContains
-        | SealedInstr::TextTrim
-        | SealedInstr::TextSplit(_)
-        | SealedInstr::TextLines(_)
-        | SealedInstr::TextJoin
-        | SealedInstr::EqDate
-        | SealedInstr::DateLt
-        | SealedInstr::DateLe
-        | SealedInstr::DateGt
-        | SealedInstr::DateGe
-        | SealedInstr::EqInstant
-        | SealedInstr::InstantLt
-        | SealedInstr::InstantLe
-        | SealedInstr::InstantGt
-        | SealedInstr::InstantGe
-        | SealedInstr::EqDuration
-        | SealedInstr::DurationLt
-        | SealedInstr::DurationLe
-        | SealedInstr::DurationGt
-        | SealedInstr::DurationGe
-        | SealedInstr::DateAddDays
-        | SealedInstr::DateDaysBetween
-        | SealedInstr::DurationAdd
-        | SealedInstr::DurationSub
-        | SealedInstr::InstantAddDuration
-        | SealedInstr::InstantSubDuration
-        | SealedInstr::IntAddChecked(_)
-        | SealedInstr::IntSubChecked(_)
-        | SealedInstr::IntMulChecked(_)
-        | SealedInstr::IntNegChecked(_)
-        | SealedInstr::IntDivChecked(_)
-        | SealedInstr::IntRemChecked(_)
-        | SealedInstr::RangeGuard { .. }
-        | SealedInstr::RecordNew(_)
-        | SealedInstr::FieldGet(_)
-        | SealedInstr::FieldSet(_)
-        | SealedInstr::FieldUnset(_)
-        | SealedInstr::SomeWrap
-        | SealedInstr::VacantLoad(_)
-        | SealedInstr::EnumConstruct { .. }
-        | SealedInstr::EnumTag
-        | SealedInstr::EnumPayloadGet { .. }
-        | SealedInstr::EqEnum
-        | SealedInstr::EqId
-        | SealedInstr::MakeIdentity { .. }
-        | SealedInstr::IdentityKeyPath(_)
-        | SealedInstr::BranchPresent(_)
-        | SealedInstr::Unreachable(_)
-        | SealedInstr::Todo(_)
-        | SealedInstr::Assert
-        | SealedInstr::Call(_)
-        | SealedInstr::ListNew(_)
-        | SealedInstr::ListAppend
-        | SealedInstr::ListLen
-        | SealedInstr::ListGet
-        | SealedInstr::ListIndex
-        | SealedInstr::MapNew(_)
-        | SealedInstr::MapInsert
-        | SealedInstr::MapRemove
-        | SealedInstr::MapGet
-        | SealedInstr::MapLen
-        | SealedInstr::MapKeyAt
-        | SealedInstr::MapValueAt => None,
-    }
-}
-
-/// Whether `instr` stages a durable mutation (a write or erase). Derived from the
-/// [`durable_op_class`] partition so the mutation set never drifts from the atom it
-/// projects.
+/// Whether `instr` stages a durable mutation (a write or erase).
 pub(super) fn is_mutation(instr: &SealedInstr) -> bool {
-    durable_op_class(instr).is_some_and(|class| class.mutates())
-}
-
-/// Whether `instr` reads durable data — a presence probe, a field/entry read, or an
-/// ordered bounded traversal. The classified durable ops that are not mutations.
-fn is_durable_read(instr: &SealedInstr) -> bool {
-    durable_op_class(instr).is_some_and(|class| !class.mutates())
+    instr.op_class() == OpClass::DurableMutation
 }
 
 /// Phase-3 type check for durable opcodes and transaction markers (design §D). The

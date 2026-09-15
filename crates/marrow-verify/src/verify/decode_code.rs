@@ -371,174 +371,47 @@ mod opcode_bijection {
     //! scope silently becomes an irrefutable binding pattern that swallows every
     //! opcode listed after it onto one variant; that class is caught here (and, at
     //! build time, by the workspace `unreachable_patterns`/`unused_variables` deny
-    //! lints). The match over `SealedInstr` is the growth gate: a new opcode cannot
-    //! land without extending both `canonical_bytes` and `SAMPLES`.
+    //! lints). The 256-byte sweep is the growth gate: a new opcode the decoder knows
+    //! cannot land without an entry in [`samples`].
     use std::collections::HashMap;
 
     use marrow_image::Scalar;
 
     use super::*;
 
-    /// The smallest valid byte encoding the decoder accepts for `instr`: its opcode
-    /// followed by minimal in-range operands (a `u16`/`u32` is `0`, a `RangeGuard`
-    /// interval is the non-empty `[0, 0]`, a `VacantLoad` type is optional `int`, a
-    /// present-set key-path is one slot, a bounded traversal is a false `from`).
+    /// The smallest valid byte encoding the decoder accepts for `instr`, derived from
+    /// the shared width owner: its opcode, then `encoded_len() - 1` operand bytes
+    /// whose zero value is in range. Three families need a nonzero minimum and spell
+    /// it here — a `VacantLoad` type must carry the optional flag, and a present-set
+    /// key-path must claim at least one slot.
     fn canonical_bytes(instr: &SealedInstr) -> Vec<u8> {
-        fn none(op: u8) -> Vec<u8> {
-            vec![op]
-        }
-        fn u16op(op: u8) -> Vec<u8> {
-            vec![op, 0, 0]
-        }
-        fn u32op(op: u8) -> Vec<u8> {
-            vec![op, 0, 0, 0, 0]
-        }
-        fn two_u16(op: u8) -> Vec<u8> {
-            vec![op, 0, 0, 0, 0]
-        }
+        let mut bytes = Vec::with_capacity(instr.encoded_len());
+        bytes.push(instr.opcode());
         match instr {
-            SealedInstr::ConstLoad(_) => u16op(OP_CONST_LOAD),
-            SealedInstr::LocalGet(_) => u16op(OP_LOCAL_GET),
-            SealedInstr::LocalSet(_) => u16op(OP_LOCAL_SET),
-            SealedInstr::Pop => none(OP_POP),
-            SealedInstr::Return => none(OP_RETURN),
-            SealedInstr::Jump(_) => u32op(OP_JUMP),
-            SealedInstr::JumpIfFalse(_) => u32op(OP_JUMP_IF_FALSE),
-            SealedInstr::IntAdd => none(OP_INT_ADD),
-            SealedInstr::IntSub => none(OP_INT_SUB),
-            SealedInstr::IntMul => none(OP_INT_MUL),
-            SealedInstr::IntRem => none(OP_INT_REM),
-            SealedInstr::IntDiv => none(OP_INT_DIV),
-            SealedInstr::IntNeg => none(OP_INT_NEG),
-            SealedInstr::BoolNot => none(OP_BOOL_NOT),
-            SealedInstr::IntLt => none(OP_INT_LT),
-            SealedInstr::IntLe => none(OP_INT_LE),
-            SealedInstr::IntGt => none(OP_INT_GT),
-            SealedInstr::IntGe => none(OP_INT_GE),
-            SealedInstr::EqInt => none(OP_EQ_INT),
-            SealedInstr::EqBool => none(OP_EQ_BOOL),
-            SealedInstr::EqText => none(OP_EQ_TEXT),
-            SealedInstr::TextConcat => none(OP_TEXT_CONCAT),
-            SealedInstr::TextLt => none(OP_TEXT_LT),
-            SealedInstr::TextLe => none(OP_TEXT_LE),
-            SealedInstr::TextGt => none(OP_TEXT_GT),
-            SealedInstr::TextGe => none(OP_TEXT_GE),
-            SealedInstr::EqBytes => none(OP_EQ_BYTES),
-            SealedInstr::BytesLt => none(OP_BYTES_LT),
-            SealedInstr::BytesLe => none(OP_BYTES_LE),
-            SealedInstr::BytesGt => none(OP_BYTES_GT),
-            SealedInstr::BytesGe => none(OP_BYTES_GE),
-            SealedInstr::ConvString => none(OP_CONV_STRING),
-            SealedInstr::ConvBytesText => none(OP_CONV_BYTES_TEXT),
-            SealedInstr::TextIsEmpty => none(OP_TEXT_IS_EMPTY),
-            SealedInstr::TextContains => none(OP_TEXT_CONTAINS),
-            SealedInstr::TextTrim => none(OP_TEXT_TRIM),
-            SealedInstr::TextSplit(_) => u16op(OP_TEXT_SPLIT),
-            SealedInstr::TextLines(_) => u16op(OP_TEXT_LINES),
-            SealedInstr::TextJoin => none(OP_TEXT_JOIN),
-            SealedInstr::EqDate => none(OP_EQ_DATE),
-            SealedInstr::DateLt => none(OP_DATE_LT),
-            SealedInstr::DateLe => none(OP_DATE_LE),
-            SealedInstr::DateGt => none(OP_DATE_GT),
-            SealedInstr::DateGe => none(OP_DATE_GE),
-            SealedInstr::EqInstant => none(OP_EQ_INSTANT),
-            SealedInstr::InstantLt => none(OP_INSTANT_LT),
-            SealedInstr::InstantLe => none(OP_INSTANT_LE),
-            SealedInstr::InstantGt => none(OP_INSTANT_GT),
-            SealedInstr::InstantGe => none(OP_INSTANT_GE),
-            SealedInstr::EqDuration => none(OP_EQ_DURATION),
-            SealedInstr::DurationLt => none(OP_DURATION_LT),
-            SealedInstr::DurationLe => none(OP_DURATION_LE),
-            SealedInstr::DurationGt => none(OP_DURATION_GT),
-            SealedInstr::DurationGe => none(OP_DURATION_GE),
-            SealedInstr::DateAddDays => none(OP_DATE_ADD_DAYS),
-            SealedInstr::DateDaysBetween => none(OP_DATE_DAYS_BETWEEN),
-            SealedInstr::DurationAdd => none(OP_DURATION_ADD),
-            SealedInstr::DurationSub => none(OP_DURATION_SUB),
-            SealedInstr::InstantAddDuration => none(OP_INSTANT_ADD_DURATION),
-            SealedInstr::InstantSubDuration => none(OP_INSTANT_SUB_DURATION),
-            SealedInstr::IntAddChecked(_) => u32op(OP_INT_ADD_CHECKED),
-            SealedInstr::IntSubChecked(_) => u32op(OP_INT_SUB_CHECKED),
-            SealedInstr::IntMulChecked(_) => u32op(OP_INT_MUL_CHECKED),
-            SealedInstr::IntNegChecked(_) => u32op(OP_INT_NEG_CHECKED),
-            SealedInstr::IntDivChecked(_) => u32op(OP_INT_DIV_CHECKED),
-            SealedInstr::IntRemChecked(_) => u32op(OP_INT_REM_CHECKED),
-            SealedInstr::RangeGuard { .. } => {
-                let mut bytes = vec![OP_RANGE_GUARD];
-                bytes.extend_from_slice(&[0u8; 16]);
-                bytes
+            SealedInstr::VacantLoad(_) => bytes.push(TAG_INT | OPTIONAL_FLAG),
+            SealedInstr::DurSetField { key_slots, .. }
+            | SealedInstr::DurReadFieldPresent { key_slots, .. }
+            | SealedInstr::DurReadGroupPresent { key_slots, .. }
+            | SealedInstr::DurReplaceGroup { key_slots, .. } => {
+                bytes.extend_from_slice(&0u16.to_be_bytes());
+                bytes.extend_from_slice(&(key_slots.len() as u16).to_be_bytes());
+                bytes.resize(instr.encoded_len(), 0);
             }
-            SealedInstr::RecordNew(_) => u16op(OP_RECORD_NEW),
-            SealedInstr::FieldGet(_) => u16op(OP_FIELD_GET),
-            SealedInstr::FieldSet(_) => u16op(OP_FIELD_SET),
-            SealedInstr::FieldUnset(_) => u16op(OP_FIELD_UNSET),
-            SealedInstr::SomeWrap => none(OP_SOME_WRAP),
-            SealedInstr::VacantLoad(_) => vec![OP_VACANT_LOAD, OPTIONAL_FLAG | TAG_INT],
-            SealedInstr::EnumConstruct { .. } => two_u16(OP_ENUM_CONSTRUCT),
-            SealedInstr::EnumTag => none(OP_ENUM_TAG),
-            SealedInstr::EnumPayloadGet { .. } => two_u16(OP_ENUM_PAYLOAD_GET),
-            SealedInstr::EqEnum => none(OP_EQ_ENUM),
-            SealedInstr::EqId => none(OP_EQ_ID),
-            SealedInstr::MakeIdentity { .. } => two_u16(OP_MAKE_IDENTITY),
-            SealedInstr::IdentityKeyPath(_) => u16op(OP_IDENTITY_KEY_PATH),
-            SealedInstr::BranchPresent(_) => u32op(OP_BRANCH_PRESENT),
-            SealedInstr::Unreachable(_) => u16op(OP_UNREACHABLE),
-            SealedInstr::Todo(_) => u16op(OP_TODO),
-            SealedInstr::Assert => none(OP_ASSERT),
-            SealedInstr::Call(_) => u16op(OP_CALL),
-            SealedInstr::DurExists(_) => u16op(OP_DUR_EXISTS),
-            SealedInstr::DurFamilyExists(_) => u16op(OP_DUR_FAMILY_EXISTS),
-            SealedInstr::DurReadField(_) => u16op(OP_DUR_READ_FIELD),
-            SealedInstr::DurReadFieldPresent { .. } => {
-                vec![OP_DUR_READ_FIELD_PRESENT, 0, 0, 0, 1, 0, 0]
-            }
-            SealedInstr::DurReadEntry(_) => u16op(OP_DUR_READ_ENTRY),
-            SealedInstr::DurSetField { .. } => vec![OP_DUR_SET_FIELD, 0, 0, 0, 1, 0, 0],
-            SealedInstr::DurReadGroupPresent { .. } => {
-                vec![OP_DUR_READ_GROUP_PRESENT, 0, 0, 0, 1, 0, 0]
-            }
-            SealedInstr::DurCreateEntry(_) => u16op(OP_DUR_CREATE_ENTRY),
-            SealedInstr::DurReplaceEntry(_) => u16op(OP_DUR_REPLACE_ENTRY),
-            SealedInstr::DurEraseField(_) => u16op(OP_DUR_ERASE_FIELD),
-            SealedInstr::DurEraseEntry(_) => u16op(OP_DUR_ERASE_ENTRY),
-            SealedInstr::DurReadGroup(_) => u16op(OP_DUR_READ_GROUP),
-            SealedInstr::DurReplaceGroup { .. } => {
-                vec![OP_DUR_REPLACE_GROUP, 0, 0, 0, 1, 0, 0]
-            }
-            SealedInstr::DurEraseGroup(_) => u16op(OP_DUR_ERASE_GROUP),
-            SealedInstr::DurIterateBounded { .. } => {
-                let mut bytes = vec![OP_DUR_ITERATE_BOUNDED];
-                bytes.extend_from_slice(&[0u8; 9]);
-                bytes
-            }
-            SealedInstr::DurIndexScan { .. } => {
-                let mut bytes = vec![OP_DUR_INDEX_SCAN];
-                bytes.extend_from_slice(&[0u8; 9]);
-                bytes
-            }
-            SealedInstr::DurIndexLookup(_) => u16op(OP_DUR_INDEX_LOOKUP),
-            SealedInstr::DurIndexExists(_) => u16op(OP_DUR_INDEX_EXISTS),
-            SealedInstr::TxnBegin => none(OP_TXN_BEGIN),
-            SealedInstr::TxnCommit => none(OP_TXN_COMMIT),
-            SealedInstr::ListNew(_) => u16op(OP_LIST_NEW),
-            SealedInstr::ListAppend => none(OP_LIST_APPEND),
-            SealedInstr::ListLen => none(OP_LIST_LEN),
-            SealedInstr::ListGet => none(OP_LIST_GET),
-            SealedInstr::ListIndex => none(OP_LIST_INDEX),
-            SealedInstr::MapNew(_) => u16op(OP_MAP_NEW),
-            SealedInstr::MapInsert => none(OP_MAP_INSERT),
-            SealedInstr::MapRemove => none(OP_MAP_REMOVE),
-            SealedInstr::MapGet => none(OP_MAP_GET),
-            SealedInstr::MapLen => none(OP_MAP_LEN),
-            SealedInstr::MapKeyAt => none(OP_MAP_KEY_AT),
-            SealedInstr::MapValueAt => none(OP_MAP_VALUE_AT),
+            _ => bytes.resize(instr.encoded_len(), 0),
         }
+        assert_eq!(
+            bytes.len(),
+            instr.encoded_len(),
+            "the canonical encoding of {instr:?} must be exactly its shared width",
+        );
+        bytes
     }
 
-    /// One value of every `SealedInstr` variant. Kept complete by the exhaustive match
-    /// in [`canonical_bytes`]: a new opcode fails that match to compile, and this list
-    /// gains the matching entry so the round trip covers it. Reused by the sibling
-    /// `index_site_partition` sweep as the canonical opcode enumeration.
+    /// One value of every `SealedInstr` variant. Kept complete by
+    /// [`every_decodable_opcode_has_a_sample`], which sweeps all 256 opcode bytes and
+    /// demands that the ones the decoder knows are exactly the ones listed here.
+    /// Reused by the sibling `index_site_partition` sweep as the canonical opcode
+    /// enumeration.
     pub(super) fn samples() -> Vec<SealedInstr> {
         let optional_int = ImageType::Scalar {
             scalar: Scalar::Int,
@@ -725,6 +598,28 @@ mod opcode_bijection {
         }
     }
 
+    /// The sample list is complete: over all 256 opcode bytes, the ones the decoder
+    /// recognizes are exactly the ones a sample spells.
+    #[test]
+    fn every_decodable_opcode_has_a_sample() {
+        let sampled: std::collections::BTreeSet<u8> =
+            samples().iter().map(SealedInstr::opcode).collect();
+        for byte in 0..=u8::MAX {
+            // A lone opcode either decodes (no operands) or fails on its operands;
+            // only an unrecognized byte fails on the opcode itself.
+            let known = match decode_code(&[byte]) {
+                Ok(_) => true,
+                Err(rejection) => rejection.detail() != "unknown or not-yet-supported opcode",
+            };
+            assert_eq!(
+                known,
+                sampled.contains(&byte),
+                "opcode {byte:#04x}: decoder knows it = {known}, a sample spells it = {}",
+                sampled.contains(&byte),
+            );
+        }
+    }
+
     #[test]
     fn strict_place_tags_retain_site_and_ordered_key_slots() {
         assert_eq!(
@@ -847,7 +742,7 @@ mod index_site_partition {
     //! is wider than that index-*site* family: `DurIterateBounded` is IndexRead-class
     //! yet iterates an *entry* family, so the entry-site guard refuses it over a
     //! field-leaf site with a different typed detail. The partition therefore cannot
-    //! derive from `durable_op_class`, and a future index-site opcode omitted from the
+    //! derive from `operation_class`, and a future index-site opcode omitted from the
     //! `apply_durable` guard would reach the `unreachable!` on a forged image.
     //!
     //! This sweep enumerates every opcode from the decode-bijection [`samples()`]

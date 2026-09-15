@@ -7,6 +7,7 @@
 //! its target, and the encoder resolves indices to byte offsets once the code
 //! layout is known — so the compiler never computes byte offsets by hand.
 
+use crate::demand::OperationClass;
 use crate::draft::{CollTypeId, ConstId, EnumId, RootId, TypeId};
 use crate::site_plan::PlannedSiteRef;
 use crate::ty::ImageType;
@@ -544,14 +545,11 @@ pub enum Instruction<R: Operands> {
     MapValueAt,
 }
 
-/// What an instruction does to durable state.
+/// What an instruction does to durable state: the coarse partition, derived from
+/// [`Instruction::operation_class`].
 ///
-/// The sole owner of the durable opcode partition. The compiler's
-/// requires-ambient-transaction check and its direct-durable-operation check both read
-/// it, so neither can classify an opcode differently from the other. The match in
-/// [`Instr::op_class`] is exhaustive — the pure complement is listed rather than elided —
-/// so a new opcode fails to compile until it is classified, welding the partition to the
-/// instruction set.
+/// The compiler's requires-ambient-transaction check and its direct-durable-operation
+/// check both read it, so neither can classify an opcode differently from the other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpClass {
     /// Stages a durable mutation over a `^` place: a field write, an entry or group
@@ -565,27 +563,41 @@ pub enum OpClass {
 }
 
 impl<R: Operands> Instruction<R> {
-    /// This instruction's place in the durable opcode partition.
-    pub fn op_class(&self) -> OpClass {
+    /// The durable authority atom this instruction stages, or `None` when it names no
+    /// `^` place.
+    ///
+    /// The sole owner of the durable opcode partition, and the closed projection of
+    /// the durable operation algebra onto authority atoms: `create`, `replace` and
+    /// the field set are writes; the two erases are erases; presence is a probe;
+    /// field, entry and group reads are reads; the bounded traversal and every
+    /// managed-index access are ordered index reads — a unique-index presence probe
+    /// reads the same index cell family as the lookup and reveals strictly less, so
+    /// it demands the same authority rather than a novel atom. Transaction markers
+    /// open and close the region but stage no access.
+    ///
+    /// The match is exhaustive with no `_` fallthrough — the pure complement is
+    /// listed rather than elided — so a new opcode fails to compile until it is
+    /// classified, welding the partition to the instruction set.
+    pub fn operation_class(&self) -> Option<OperationClass> {
         match self {
-            Self::DurSetField { .. }
-            | Self::DurCreateEntry(_)
-            | Self::DurReplaceEntry(_)
-            | Self::DurReplaceGroup { .. }
-            | Self::DurEraseField(_)
-            | Self::DurEraseEntry(_)
-            | Self::DurEraseGroup(_) => OpClass::DurableMutation,
-            Self::DurExists(_)
-            | Self::DurFamilyExists(_)
-            | Self::DurReadField(_)
+            Self::DurExists(_) | Self::DurFamilyExists(_) => Some(OperationClass::Presence),
+            Self::DurReadField(_)
             | Self::DurReadFieldPresent { .. }
             | Self::DurReadEntry(_)
             | Self::DurReadGroup(_)
-            | Self::DurReadGroupPresent { .. }
-            | Self::DurIterateBounded { .. }
+            | Self::DurReadGroupPresent { .. } => Some(OperationClass::Read),
+            Self::DurSetField { .. }
+            | Self::DurCreateEntry(_)
+            | Self::DurReplaceEntry(_)
+            | Self::DurReplaceGroup { .. } => Some(OperationClass::Write),
+            Self::DurEraseField(_) | Self::DurEraseEntry(_) | Self::DurEraseGroup(_) => {
+                Some(OperationClass::Erase)
+            }
+            Self::DurIterateBounded { .. }
             | Self::DurIndexScan { .. }
             | Self::DurIndexLookup(_)
-            | Self::DurIndexExists(_) => OpClass::DurableRead,
+            | Self::DurIndexExists(_) => Some(OperationClass::IndexRead),
+            Self::TxnBegin | Self::TxnCommit => None,
             Self::ConstLoad(_)
             | Self::LocalGet(_)
             | Self::LocalSet(_)
@@ -671,8 +683,6 @@ impl<R: Operands> Instruction<R> {
             | Self::EqId
             | Self::MakeIdentity { .. }
             | Self::IdentityKeyPath(_)
-            | Self::TxnBegin
-            | Self::TxnCommit
             | Self::ListNew(_)
             | Self::ListAppend
             | Self::ListLen
@@ -684,7 +694,16 @@ impl<R: Operands> Instruction<R> {
             | Self::MapGet
             | Self::MapLen
             | Self::MapKeyAt
-            | Self::MapValueAt => OpClass::Pure,
+            | Self::MapValueAt => None,
+        }
+    }
+
+    /// This instruction's place in the coarse durable partition.
+    pub fn op_class(&self) -> OpClass {
+        match self.operation_class() {
+            Some(class) if class.mutates() => OpClass::DurableMutation,
+            Some(_) => OpClass::DurableRead,
+            None => OpClass::Pure,
         }
     }
 }
