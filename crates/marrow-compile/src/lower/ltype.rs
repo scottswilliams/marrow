@@ -160,52 +160,65 @@ impl LTy {
         }
     }
 
+    /// This type's source spelling, with composite instance spellings read from the
+    /// registry's already-minted set. A composite the registry has not named yet falls
+    /// back to its declaration name, then to its kind.
     pub(super) fn spelling(self, records: &TypeRegistry) -> String {
+        self.spell(records, |composite| match composite {
+            Composite::Struct(ty) => records
+                .inst_spelling(TypeInstId::Record(ty))
+                .or_else(|| records.struct_by_type(ty).map(|info| info.name.clone()))
+                .unwrap_or_else(|| "struct".to_string()),
+            Composite::Enum(ty) => records
+                .inst_spelling(TypeInstId::Enum(ty))
+                .or_else(|| records.enum_by_id(ty).map(|info| info.name.clone()))
+                .unwrap_or_else(|| "enum".to_string()),
+            Composite::Collection(idx) => records.collection_spelling(idx),
+        })
+    }
+
+    /// This type's source spelling inside a live metadata session, which can mint the
+    /// spelling of a composite instance the registry has not named yet. The one renderer
+    /// below produces both forms, so a diagnostic and the image metadata cannot drift on
+    /// a type's name.
+    pub(super) fn spelling_in(
+        self,
+        records: &TypeRegistry,
+        metadata: &mut TypeMetadataSession<'_>,
+    ) -> Result<String, LowerInvariant> {
+        let minted = match self.composite() {
+            Some(composite) => metadata.garg_spelling(composite.garg())?,
+            None => String::new(),
+        };
+        Ok(self.spell(records, move |_| minted))
+    }
+
+    /// The composite instance whose spelling this type defers to, if any.
+    fn composite(self) -> Option<Composite> {
+        match self {
+            LTy::Struct { ty, .. } => Some(Composite::Struct(ty)),
+            LTy::Enum { ty, .. } => Some(Composite::Enum(ty)),
+            LTy::Collection { idx, .. } => Some(Composite::Collection(idx)),
+            _ => None,
+        }
+    }
+
+    /// The one spelling renderer. `composite` supplies the base spelling of a struct,
+    /// enum, or collection instance; every other arm is spelled from the registry alone.
+    fn spell(self, records: &TypeRegistry, composite: impl FnOnce(Composite) -> String) -> String {
         let (base, optional) = match self {
             LTy::Scalar { scalar, optional } => (scalar.spelling().to_string(), optional),
             LTy::Nominal { id, optional } => (records.nominal(id).name.clone(), optional),
             LTy::Record { optional, .. } => ("record".to_string(), optional),
-            LTy::Struct { ty, optional } => (
-                records
-                    .inst_spelling(TypeInstId::Record(ty))
-                    .or_else(|| records.struct_by_type(ty).map(|info| info.name.clone()))
-                    .unwrap_or_else(|| "struct".to_string()),
-                optional,
-            ),
-            LTy::Enum { ty, optional } => {
-                let base = records
-                    .inst_spelling(TypeInstId::Enum(ty))
-                    .or_else(|| records.enum_by_id(ty).map(|info| info.name.clone()))
-                    .unwrap_or_else(|| "enum".to_string());
-                (base, optional)
-            }
-            LTy::Collection { idx, optional } => (records.collection_spelling(idx), optional),
+            LTy::Struct { ty, optional } => (composite(Composite::Struct(ty)), optional),
+            LTy::Enum { ty, optional } => (composite(Composite::Enum(ty)), optional),
+            LTy::Collection { idx, optional } => (composite(Composite::Collection(idx)), optional),
             LTy::Param { index, optional } => (format!("type parameter #{index}"), optional),
             // A program declares one store root, so the identity spelling needs no root
             // discriminator to stay unambiguous in a diagnostic.
             LTy::Identity { optional, .. } => ("Id(^root)".to_string(), optional),
         };
         if optional { format!("{base}?") } else { base }
-    }
-
-    pub(super) fn spelling_in(
-        self,
-        records: &TypeRegistry,
-        metadata: &mut TypeMetadataSession<'_>,
-    ) -> Result<String, LowerInvariant> {
-        let (base, optional) = match self {
-            LTy::Scalar { scalar, optional } => (scalar.spelling().to_string(), optional),
-            LTy::Nominal { id, optional } => (records.nominal(id).name.clone(), optional),
-            LTy::Record { optional, .. } => ("record".to_string(), optional),
-            LTy::Struct { ty, optional } => (metadata.garg_spelling(GArg::Struct(ty))?, optional),
-            LTy::Enum { ty, optional } => (metadata.garg_spelling(GArg::Enum(ty))?, optional),
-            LTy::Collection { idx, optional } => {
-                (metadata.garg_spelling(GArg::Collection(idx))?, optional)
-            }
-            LTy::Param { index, optional } => (format!("type parameter #{index}"), optional),
-            LTy::Identity { optional, .. } => ("Id(^root)".to_string(), optional),
-        };
-        Ok(if optional { format!("{base}?") } else { base })
     }
 
     /// The bare nominal identity, if this is one.
@@ -301,6 +314,24 @@ impl LTy {
             } => ImageType::scalar(Scalar::Int),
             LTy::Param { optional: true, .. } => ImageType::opt_scalar(Scalar::Int),
             LTy::Identity { root, optional } => ImageType::Identity { root, optional },
+        }
+    }
+}
+
+/// A composite type instance whose spelling is minted rather than declared.
+#[derive(Clone, Copy)]
+enum Composite {
+    Struct(TypeId),
+    Enum(EnumId),
+    Collection(CollTypeId),
+}
+
+impl Composite {
+    fn garg(self) -> GArg {
+        match self {
+            Composite::Struct(ty) => GArg::Struct(ty),
+            Composite::Enum(ty) => GArg::Enum(ty),
+            Composite::Collection(idx) => GArg::Collection(idx),
         }
     }
 }

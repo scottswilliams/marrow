@@ -471,6 +471,11 @@ pub(crate) struct GenericTemplate<'p> {
 #[derive(Default)]
 pub(crate) struct GenericRegistry<'p> {
     pub(super) templates: Vec<GenericTemplate<'p>>,
+    /// `(module, name)` to template index, keyed exactly as the signature ledger keys
+    /// its own declarations, so a generic call and a monomorphic call resolve a name
+    /// the same way and at the same cost. A repeated declaration keeps the first, which
+    /// is the one its own duplicate check reports against.
+    by_name: BTreeMap<(String, String), usize>,
 }
 
 impl<'p> GenericRegistry<'p> {
@@ -498,8 +503,14 @@ impl<'p> GenericRegistry<'p> {
                     })
                     .collect(),
             })
-            .collect();
-        Self { templates }
+            .collect::<Vec<GenericTemplate<'p>>>();
+        let mut by_name = BTreeMap::new();
+        for (index, template) in templates.iter().enumerate() {
+            by_name
+                .entry((template.module.clone(), template.decl.name.clone()))
+                .or_insert(index);
+        }
+        Self { templates, by_name }
     }
 
     /// The templates, for the once-checked template pass and instance draining.
@@ -507,19 +518,17 @@ impl<'p> GenericRegistry<'p> {
         &self.templates
     }
 
-    /// The template index of an unqualified generic call `name` from `module`.
+    /// The template index of a generic call to `name` in `module`, qualified or not.
     pub(super) fn same_module(&self, module: &str, name: &str) -> Option<usize> {
-        self.templates
-            .iter()
-            .position(|template| template.decl.name == name && template.module == module)
+        self.by_name
+            .get(&(module.to_string(), name.to_string()))
+            .copied()
     }
 
     /// The template named `item` in `module`, with its `pub` flag, for a qualified
     /// generic call. The caller checks visibility against the calling module.
     pub(super) fn in_module(&self, module: &str, item: &str) -> Option<(usize, bool)> {
-        self.templates
-            .iter()
-            .position(|template| template.decl.name == item && template.module == module)
+        self.same_module(module, item)
             .map(|index| (index, self.templates[index].public))
     }
 }
