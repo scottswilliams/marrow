@@ -145,7 +145,7 @@ impl From<ProvisionFault> for ProvisionError {
 
 impl ProvisionError {
     /// The primary failure's code, independent of cleanup.
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> Code {
         self.fault.code()
     }
 }
@@ -173,14 +173,14 @@ impl std::error::Error for ProvisionError {
 
 impl ProvisionFault {
     /// The stable dotted code a tool reports.
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> Code {
         match self {
-            ProvisionFault::AlreadyProvisioned => Code::StoreLocked.as_str(),
+            ProvisionFault::AlreadyProvisioned => Code::StoreLocked,
             ProvisionFault::Admission(error) => error.code(),
             ProvisionFault::Store(error) => error.code(),
-            ProvisionFault::Io(_) => Code::StoreIo.as_str(),
-            ProvisionFault::PublicationUncertain { .. } => Code::StorePublicationUncertain.as_str(),
-            ProvisionFault::ActivationUncertain { .. } => Code::StoreActivationUncertain.as_str(),
+            ProvisionFault::Io(_) => Code::StoreIo,
+            ProvisionFault::PublicationUncertain { .. } => Code::StorePublicationUncertain,
+            ProvisionFault::ActivationUncertain { .. } => Code::StoreActivationUncertain,
         }
     }
 }
@@ -605,16 +605,16 @@ pub enum OpenError {
 
 impl OpenError {
     /// The stable dotted code a tool reports.
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> Code {
         match self {
-            OpenError::NotProvisioned => Code::StoreIo.as_str(),
-            OpenError::ActivationRequired { .. } => Code::StoreActivationRequired.as_str(),
+            OpenError::NotProvisioned => Code::StoreIo,
+            OpenError::ActivationRequired { .. } => Code::StoreActivationRequired,
             OpenError::Access(error) => error.code(),
-            OpenError::Incomplete | OpenError::Corruption { .. } => Code::StoreCorruption.as_str(),
+            OpenError::Incomplete | OpenError::Corruption { .. } => Code::StoreCorruption,
             OpenError::Admission(error) => error.code(),
             OpenError::Lock(error) => error.code(),
             OpenError::Store(error) => error.code(),
-            OpenError::Io(_) => Code::StoreIo.as_str(),
+            OpenError::Io(_) => Code::StoreIo,
         }
     }
 }
@@ -1108,9 +1108,9 @@ mod tests {
             assert_eq!(
                 error.code(),
                 if point.is_some() {
-                    Code::StoreIo.as_str()
+                    Code::StoreIo
                 } else {
-                    Code::StoreLocked.as_str()
+                    Code::StoreLocked
                 }
             );
             if point.is_none() {
@@ -1163,7 +1163,7 @@ mod tests {
             }));
             let error =
                 provision(&destination, request).expect_err("failed construction cannot publish");
-            assert_eq!(error.code(), Code::StoreIo.as_str());
+            assert_eq!(error.code(), Code::StoreIo);
             assert!(
                 error.cleanup.is_none(),
                 "successful cleanup has no failure evidence"
@@ -1667,7 +1667,7 @@ mod tests {
         })
         .unwrap_or_else(|_| panic!("the open completes under its own owner"));
 
-        assert_eq!(contended, Some("store.locked"));
+        assert_eq!(contended, Some(Code::StoreLocked));
         assert_eq!(
             opened.envelope.instance, original,
             "the open reports the envelope its owner admitted, not one rewritten behind it",

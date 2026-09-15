@@ -51,6 +51,7 @@ use crate::attachment::PreparedImage;
 use crate::authority::DemandExceedsCeiling;
 use crate::image::HeadMapPinMismatch;
 use crate::provision::{AdmitError, OpenError, open_admitted};
+use marrow_codes::Code;
 
 /// The bounds every import obeys before it allocates. The defaults suit a
 /// personal-tool export; a caller may tighten them but the importer never runs unbounded.
@@ -257,7 +258,7 @@ pub enum CommitFault {
     Engine(marrow_kernel::durable::StoreError),
     /// A non-engine kernel fault surfaced during a write (corruption, value range, or poison),
     /// carried as its stable dotted code.
-    Kernel { code: &'static str },
+    Kernel { code: Code },
     /// The engine confirmed that the batch did not commit.
     Aborted,
     /// The batch invocation did not complete; recovery classified whether its
@@ -275,7 +276,9 @@ impl std::fmt::Display for CommitFault {
                 )
             }
             CommitFault::Engine(error) => write!(f, "the engine transaction failed: {error}"),
-            CommitFault::Kernel { code } => write!(f, "a durable write faulted ({code})"),
+            CommitFault::Kernel { code } => {
+                write!(f, "a durable write faulted ({})", code.as_str())
+            }
             CommitFault::Aborted => write!(f, "the batch commit aborted"),
             CommitFault::Incomplete { durable } => {
                 let state = match durable {
@@ -340,20 +343,19 @@ pub enum ImportError {
 
 impl ImportError {
     /// The stable dotted code a tool reports.
-    pub fn code(&self) -> &'static str {
-        use marrow_codes::Code;
+    pub fn code(&self) -> Code {
         match self {
             ImportError::Open(error) => error.code(),
-            ImportError::ImageNotActive => Code::StoreImageNotActive.as_str(),
-            ImportError::InconsistentBinding => Code::StoreCorruption.as_str(),
+            ImportError::ImageNotActive => Code::StoreImageNotActive,
+            ImportError::InconsistentBinding => Code::StoreCorruption,
             ImportError::ContractChanged(refusal) => refusal.code(),
             ImportError::DemandExceedsCeiling(refusal) => refusal.code(),
             ImportError::HeadMapPin(refusal) => refusal.code(),
-            ImportError::UnsupportedShape(_) => Code::CliDurableUnsupported.as_str(),
-            ImportError::Denied => Code::RunAuthority.as_str(),
-            ImportError::Row { .. } => Code::ConfigInvalid.as_str(),
-            ImportError::Commit { .. } => Code::RunCommit.as_str(),
-            ImportError::Io { .. } => Code::IoRead.as_str(),
+            ImportError::UnsupportedShape(_) => Code::CliDurableUnsupported,
+            ImportError::Denied => Code::RunAuthority,
+            ImportError::Row { .. } => Code::ConfigInvalid,
+            ImportError::Commit { .. } => Code::RunCommit,
+            ImportError::Io { .. } => Code::IoRead,
         }
     }
 

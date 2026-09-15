@@ -126,7 +126,7 @@ fn memory(image: &VerifiedImage) -> MemoryAttachment {
     match mint_ephemeral(prepare(image.clone())).into_mint() {
         MintOutcome::Ready(attachment) => attachment,
         MintOutcome::Storeless | MintOutcome::Parked => panic!("the fixture is flat-executable"),
-        MintOutcome::Failed(cause) => panic!("mint failed: {cause}"),
+        MintOutcome::Failed(cause) => panic!("mint failed: {}", cause.as_str()),
     }
 }
 
@@ -146,9 +146,9 @@ fn call<H: marrow_kernel::durable::SessionHost>(
     let export = export(attachment.image(), name);
     match run_export(attachment, export, args).expect("the export is in the attached image") {
         DurableRun::Ran(Ok(value)) => value,
-        DurableRun::Ran(Err(fault)) => panic!("{name} faulted: {}", fault.code()),
+        DurableRun::Ran(Err(fault)) => panic!("{name} faulted: {}", fault.code().as_str()),
         DurableRun::Parked => panic!("{name} parked"),
-        DurableRun::Failed(code) => panic!("{name} failed: {code}"),
+        DurableRun::Failed(code) => panic!("{name} failed: {}", code.as_str()),
     }
 }
 

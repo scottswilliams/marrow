@@ -91,6 +91,7 @@ fn attach_image(store: &Path, image: &VerifiedImage) -> Result<AttachOutcome, Li
 
 #[path = "support/scratch.rs"]
 mod scratch;
+use marrow_codes::Code;
 use scratch::Scratch;
 
 /// The MUST-WIN: a store provisioned under the read-only image refuses the broadened image —
@@ -112,13 +113,13 @@ fn a_broadened_demand_is_refused_naming_the_exceeding_place() {
         Err(LifecycleError::DemandExceedsCeiling(refusal)) => refusal,
         Err(other) => panic!(
             "the broadened image must be refused as demand-exceeds-ceiling, got: {}",
-            other.code()
+            other.code().as_str()
         ),
         Ok(_) => panic!("the broadened image must be refused, not admitted"),
     };
 
     let rendered = refusal.to_string();
-    assert_eq!(refusal.code(), "store.demand_exceeds_ceiling");
+    assert_eq!(refusal.code(), Code::StoreDemandExceedsCeiling);
     // The refusal names the export, the new effect, and the place in source vocabulary.
     assert!(
         rendered.contains("export `readValue`"),
@@ -178,11 +179,11 @@ fn a_demand_beyond_the_ceiling_preempts_the_contract_refusal() {
     provision(scratch.dir(), &read_only);
     match attach_image(scratch.dir(), &both) {
         Err(LifecycleError::DemandExceedsCeiling(refusal)) => {
-            assert_eq!(refusal.code(), "store.demand_exceeds_ceiling");
+            assert_eq!(refusal.code(), Code::StoreDemandExceedsCeiling);
         }
         Err(other) => panic!(
             "the ceiling refusal must preempt the contract one, got code {}",
-            other.code()
+            other.code().as_str()
         ),
         Ok(_) => panic!("an over-ceiling image must be refused, not admitted"),
     }
@@ -256,7 +257,10 @@ store ^tallies[name: string]: Tally
 
     let refusal = match attach_image(scratch.dir(), &image_b) {
         Err(LifecycleError::DemandExceedsCeiling(refusal)) => refusal,
-        Err(other) => panic!("expected demand-exceeds-ceiling, got {}", other.code()),
+        Err(other) => panic!(
+            "expected demand-exceeds-ceiling, got {}",
+            other.code().as_str()
+        ),
         Ok(_) => panic!("the two-root broadening must be refused"),
     };
     let rendered = refusal.to_string();
@@ -292,7 +296,7 @@ fn a_narrowed_demand_within_the_ceiling_is_admitted() {
         }
         Err(other) => panic!(
             "a demand within the accepted ceiling must be admitted, got refusal: {}",
-            other.code()
+            other.code().as_str()
         ),
     }
 }
@@ -319,7 +323,10 @@ fn a_rebind_preserves_the_stores_standing_ceiling() {
     match attach_image(scratch.dir(), &read_only) {
         Ok(AttachOutcome::Rebound { .. }) => {}
         Ok(AttachOutcome::AlreadyActive(_)) => panic!("the narrower image differs in code"),
-        Err(other) => panic!("the narrower image must rebind, got {}", other.code()),
+        Err(other) => panic!(
+            "the narrower image must rebind, got {}",
+            other.code().as_str()
+        ),
     }
 
     let head = marrow_lifecycle::LogicalHead::decode(
@@ -342,7 +349,7 @@ fn a_rebind_preserves_the_stores_standing_ceiling() {
         Ok(AttachOutcome::AlreadyActive(_)) => panic!("the broader image differs in code"),
         Err(other) => panic!(
             "the store over-refuses the image it was provisioned under: {}",
-            other.code()
+            other.code().as_str()
         ),
     }
 }

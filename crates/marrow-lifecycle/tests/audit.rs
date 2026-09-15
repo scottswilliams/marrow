@@ -178,6 +178,7 @@ use scratch::Scratch;
 
 #[path = "support/compile.rs"]
 mod source_compile;
+use marrow_codes::Code;
 use source_compile::{compile, compile_bytes};
 
 fn store_files(dir: &Path) -> std::collections::BTreeMap<std::ffi::OsString, Vec<u8>> {
@@ -579,7 +580,7 @@ fn unsupported_generations_refuses_audit_before_engine_open() {
             .collect();
             let outcome = audit(&dir, prepare(image.clone()));
             let error = outcome.expect_err("an older layout must not be opened");
-            assert_eq!(error.code(), "store.format_version");
+            assert_eq!(error.code(), Code::StoreFormatVersion);
             assert!(matches!(
                 error,
                 AuditError::Open(marrow_lifecycle::OpenError::Admission(

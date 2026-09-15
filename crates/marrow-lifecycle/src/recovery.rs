@@ -33,7 +33,7 @@ pub struct RecoveryError {
 }
 
 impl RecoveryError {
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> Code {
         self.fault.code()
     }
 }
@@ -72,13 +72,13 @@ pub enum RecoveryFault {
 }
 
 impl RecoveryFault {
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> Code {
         match self {
             Self::Validation(error) => error.code(),
-            Self::HeadMismatch | Self::Logical(_) => Code::StoreCorruption.as_str(),
+            Self::HeadMismatch | Self::Logical(_) => Code::StoreCorruption,
             Self::Metadata(error) => error.code(),
-            Self::Io(_) => Code::StoreIo.as_str(),
-            Self::Completion { .. } => Code::StoreActivationUncertain.as_str(),
+            Self::Io(_) => Code::StoreIo,
+            Self::Completion { .. } => Code::StoreActivationUncertain,
         }
     }
 }
@@ -310,7 +310,7 @@ mod tests {
         let error =
             recover(&target.store(), prepare(boolean_image)).expect_err("logical corruption");
         assert!(error.preserved.is_empty());
-        assert_eq!(error.code(), Code::StoreCorruption.as_str());
+        assert_eq!(error.code(), Code::StoreCorruption);
         let RecoveryFault::Logical(report) = error.fault else {
             panic!("physical validation must reach the logical refusal");
         };
@@ -420,7 +420,7 @@ mod tests {
                 recover(&scratch.store(), prepare(image.clone()))
             })
             .expect_err("unsynced replacement cannot finish activation");
-            assert_eq!(error.code(), Code::StoreActivationUncertain.as_str());
+            assert_eq!(error.code(), Code::StoreActivationUncertain);
             assert!(
                 matches!(error.fault, RecoveryFault::Completion { instance: found, .. } if found == instance)
             );
@@ -738,7 +738,7 @@ mod tests {
         )
         .expect("decode head");
         assert_eq!(head.binding, active_binding(&new));
-        if error.code() != Code::StoreActivationUncertain.as_str() {
+        if error.code() != Code::StoreActivationUncertain {
             let original = scratch.base().to_path_buf();
             std::mem::forget(scratch);
             panic!(
@@ -898,13 +898,13 @@ mod tests {
                 assert!(
                     matches!(error.fault, RecoveryFault::Completion { instance: found, .. } if found == instance)
                 );
-                assert_eq!(error.code(), Code::StoreActivationUncertain.as_str());
+                assert_eq!(error.code(), Code::StoreActivationUncertain);
             } else if point == Point::RecoveryParent {
                 assert!(matches!(error.fault, RecoveryFault::Io(_)));
-                assert_eq!(error.code(), Code::StoreIo.as_str());
+                assert_eq!(error.code(), Code::StoreIo);
             } else {
                 assert!(matches!(error.fault, RecoveryFault::Metadata(_)));
-                assert_eq!(error.code(), Code::StoreIo.as_str());
+                assert_eq!(error.code(), Code::StoreIo);
             }
             assert_eq!(error.preserved.len(), 1);
             let first = scratch.store().join(&error.preserved[0]);
@@ -987,7 +987,7 @@ mod tests {
                 marrow_kernel::durable::NativeLockError::StoreInUse { .. }
             )))
         ));
-        assert_eq!(error.code(), Code::StoreLocked.as_str());
+        assert_eq!(error.code(), Code::StoreLocked);
         assert!(error.preserved.is_empty());
         assert_eq!(
             std::fs::read(scratch.store().join(crate::ENGINE_FILE)).expect("engine unchanged"),
@@ -1037,7 +1037,7 @@ mod tests {
                 || recover(&scratch.store(), prepare(image.clone())),
             )
             .expect_err("cached admission cannot certify changed metadata");
-            assert_eq!(error.code(), Code::StoreActivationUncertain.as_str());
+            assert_eq!(error.code(), Code::StoreActivationUncertain);
             assert!(matches!(error.fault,
                 RecoveryFault::Completion {
                     instance: found,
@@ -1062,7 +1062,7 @@ mod tests {
     #[test]
     fn binding_preparation_refuses_a_replaced_engine_before_metadata_writes() {
         use crate::actor::binding_fault::{self, Mutation, Point};
-        use marrow_kernel::durable::StoreError;
+        use marrow_kernel::durable::{StoreError, StoreOp};
         let scratch = Scratch::new("recovery");
         let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
         let edited =
@@ -1081,7 +1081,7 @@ mod tests {
             result,
             Err(crate::LifecycleError::Open(OpenError::Store(
                 StoreError::Io {
-                    op: "service preparation",
+                    op: StoreOp::ServicePreparation,
                     ..
                 }
             )))

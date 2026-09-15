@@ -23,6 +23,7 @@
 
 use std::path::{Path, PathBuf};
 
+use marrow_codes::Code;
 use marrow_kernel::durable::{DemandCoverage, InvocationGrant, PrincipalPredicate, SessionError};
 use marrow_lifecycle::{
     AttachOutcome, LifecycleError, ProvisionApproval, ProvisionReport, attach, prepare,
@@ -119,11 +120,11 @@ fn effective_authority_is_demand_ceiling_grant_and_the_reserved_principal_slot()
     let head_before = std::fs::read(store.join("head")).expect("head");
     match attach_image(&store, &broadened) {
         Err(LifecycleError::DemandExceedsCeiling(refusal)) => {
-            assert_eq!(refusal.code(), "store.demand_exceeds_ceiling");
+            assert_eq!(refusal.code(), Code::StoreDemandExceedsCeiling);
         }
         Err(other) => panic!(
             "term 1: the broadened demand must be refused at the ceiling, got: {}",
-            other.code()
+            other.code().as_str()
         ),
         Ok(_) => panic!("term 1: the broadened demand must be refused, not admitted"),
     }
@@ -140,7 +141,7 @@ fn effective_authority_is_demand_ceiling_grant_and_the_reserved_principal_slot()
         Ok(AttachOutcome::Rebound { attachment, .. }) => attachment,
         Err(err) => panic!(
             "the covering image must open the store, got: {}",
-            err.code()
+            err.code().as_str()
         ),
     };
     let (_, opened) = attachment.bridge();

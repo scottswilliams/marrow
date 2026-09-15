@@ -21,6 +21,7 @@ use crate::{
     AuditError, BackupReadError, EngineKind, EntropyUnavailable, LogicalHead, ProvisionFault,
     StoreAudit, StoreEnvelope, StoreInstanceId, prepare,
 };
+use marrow_codes::Code;
 
 #[derive(Debug)]
 pub struct RestoredStore {
@@ -75,28 +76,25 @@ impl RestoreError {
         }
     }
 
-    pub fn code(&self) -> &'static str {
-        use marrow_codes::Code;
+    pub fn code(&self) -> Code {
         use marrow_kernel::durable::RestoreError as Body;
         match &self.fault {
             RestoreFault::Input(error) | RestoreFault::Body(Body::Input(error)) => error.code(),
-            RestoreFault::Image(error) => error.code(),
+            RestoreFault::Image(error) => crate::image::rejection_code(error),
             RestoreFault::Admission(error) => error.code(),
-            RestoreFault::Entropy(_) => Code::IoRead.as_str(),
-            RestoreFault::Io(_) => Code::StoreIo.as_str(),
+            RestoreFault::Entropy(_) => Code::IoRead,
+            RestoreFault::Io(_) => Code::StoreIo,
             RestoreFault::Provision(error) => error.code(),
             RestoreFault::Open(NativeOwnerOpenError::Lock(error)) => error.code(),
             RestoreFault::Open(NativeOwnerOpenError::Store(error))
             | RestoreFault::Body(Body::Store(error)) => error.code(),
             RestoreFault::Open(NativeOwnerOpenError::Refused(never)) => match *never {},
-            RestoreFault::Body(Body::CellLimit) => Code::StoreLimit.as_str(),
-            RestoreFault::Body(Body::Aborted | Body::Indeterminate) => {
-                Code::StoreRestoreCommit.as_str()
-            }
+            RestoreFault::Body(Body::CellLimit) => Code::StoreLimit,
+            RestoreFault::Body(Body::Aborted | Body::Indeterminate) => Code::StoreRestoreCommit,
             RestoreFault::Body(
                 Body::NotEmpty | Body::Unordered | Body::OutsideNamespace | Body::Invalid(_),
-            ) => Code::StoreCorruption.as_str(),
-            RestoreFault::Completion { .. } => Code::StoreActivationUncertain.as_str(),
+            ) => Code::StoreCorruption,
+            RestoreFault::Completion { .. } => Code::StoreActivationUncertain,
         }
     }
 
@@ -618,10 +616,7 @@ mod tests {
                 fault: RestoreFault::Body(body),
                 stage: Some(PathBuf::from("private-stage")),
             };
-            assert_eq!(
-                error.code(),
-                marrow_codes::Code::StoreRestoreCommit.as_str()
-            );
+            assert_eq!(error.code(), marrow_codes::Code::StoreRestoreCommit);
             assert_eq!(error.batch_outcome(), Some(outcome));
             assert_eq!(error.published_instance(), None);
         }

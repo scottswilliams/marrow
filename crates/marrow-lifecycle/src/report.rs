@@ -23,6 +23,7 @@ use crate::provision::{
     ProvisionCleanupFailure, ProvisionError, ProvisionFault, ProvisionRequest, Provisioned,
     provision,
 };
+use marrow_codes::Code;
 
 /// The report a first provision presents for acceptance, in source vocabulary only. It names
 /// the destination, the durable roots by name, and whether the program reads and/or writes
@@ -172,12 +173,11 @@ impl ProvisionImageError {
     }
 
     /// The stable dotted code a tool reports.
-    pub fn code(&self) -> &'static str {
-        use marrow_codes::Code;
+    pub fn code(&self) -> Code {
         match self {
-            ProvisionImageError::NotExecutable => Code::CliDurableUnsupported.as_str(),
-            ProvisionImageError::Unapproved => Code::ConfigInvalid.as_str(),
-            ProvisionImageError::Entropy(_) => Code::IoRead.as_str(),
+            ProvisionImageError::NotExecutable => Code::CliDurableUnsupported,
+            ProvisionImageError::Unapproved => Code::ConfigInvalid,
+            ProvisionImageError::Entropy(_) => Code::IoRead,
             ProvisionImageError::Head(error) => error.code(),
             ProvisionImageError::Provision(error) => error.code(),
         }

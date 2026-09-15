@@ -58,6 +58,7 @@ fn projection_of(image: &VerifiedImage) -> marrow_kernel::durable::StoreProjecti
 
 #[path = "support/scratch.rs"]
 mod scratch;
+use marrow_codes::Code;
 use scratch::Scratch;
 
 #[test]
@@ -96,7 +97,7 @@ fn refused_attach_preserves_marker(marker: Option<&[u8]>) {
         Err(LifecycleError::ContractChanged(refusal)) => {
             assert_eq!(refusal.changed, ChangedFact::DurableContract);
         }
-        Err(error) => panic!("expected contract refusal, got {}", error.code()),
+        Err(error) => panic!("expected contract refusal, got {}", error.code().as_str()),
         Ok(_) => panic!("an incompatible image was attached"),
     }
     for (name, bytes) in &before {
@@ -491,7 +492,7 @@ fn old_image_binding_refuses_active_and_rebind_before_engine_open() {
             let error = attach(dir, prepare(presented.clone()))
                 .err()
                 .expect("an old image binding must not be attached or rebound");
-            assert_eq!(error.code(), "store.format_version");
+            assert_eq!(error.code(), Code::StoreFormatVersion);
             assert!(matches!(
                 error,
                 LifecycleError::Open(marrow_lifecycle::OpenError::Admission(
@@ -895,7 +896,7 @@ fn a_store_with_a_foreign_head_map_pin_is_refused_at_attach() {
         Err(LifecycleError::HeadMapPin(refusal)) => {
             assert_eq!(
                 refusal.code(),
-                "store.corruption",
+                Code::StoreCorruption,
                 "fail-closed, recovery-shaped"
             );
             // Refusal names the first uncovered image identity in structural order.
@@ -906,7 +907,10 @@ fn a_store_with_a_foreign_head_map_pin_is_refused_at_attach() {
                 },
             );
         }
-        Err(other) => panic!("expected the pin refusal, got code {}", other.code()),
+        Err(other) => panic!(
+            "expected the pin refusal, got code {}",
+            other.code().as_str()
+        ),
         Ok(_) => panic!(
             "a store whose persisted head-map pin disagrees with the derived numbering must \
              be refused, but attach served it"
@@ -934,7 +938,7 @@ fn the_pin_refusal_precedes_any_engine_call() {
         Err(LifecycleError::HeadMapPin(_)) => {}
         Err(other) => panic!(
             "the pin must refuse before the engine is touched, got code {}",
-            other.code()
+            other.code().as_str()
         ),
         Ok(_) => panic!("a foreign pin over a garbage engine was served"),
     }
@@ -963,7 +967,10 @@ fn a_rebind_over_a_foreign_pin_is_refused_without_a_write() {
     );
     match attach(scratch.dir(), prepare(edited.clone())) {
         Err(LifecycleError::HeadMapPin(_)) => {}
-        Err(other) => panic!("expected the pin refusal, got code {}", other.code()),
+        Err(other) => panic!(
+            "expected the pin refusal, got code {}",
+            other.code().as_str()
+        ),
         Ok(_) => panic!("a rebind over a foreign pin was served"),
     }
     assert_eq!(
@@ -1006,7 +1013,10 @@ fn a_contract_change_over_a_foreign_pin_stays_a_contract_refusal() {
         Err(LifecycleError::ContractChanged(refusal)) => {
             assert_eq!(refusal.changed, ChangedFact::DurableContract);
         }
-        Err(other) => panic!("expected the contract refusal, got code {}", other.code()),
+        Err(other) => panic!(
+            "expected the contract refusal, got code {}",
+            other.code().as_str()
+        ),
         Ok(_) => panic!("a contract change must be refused"),
     }
 }
@@ -1034,7 +1044,10 @@ fn accepted_high_water_is_independent_of_current_node_count() {
         Ok(AttachOutcome::AlreadyActive(attachment)) => {
             assert_eq!(attachment.head().head_map.next_number(), u32::MAX);
         }
-        Err(other) => panic!("accepted high-water refused, got code {}", other.code()),
+        Err(other) => panic!(
+            "accepted high-water refused, got code {}",
+            other.code().as_str()
+        ),
         Ok(_) => panic!("the exact accepted image must not rebind"),
     }
 }
@@ -1063,7 +1076,7 @@ fn a_changed_contract_is_refused_before_engine_open() {
         }
         Err(other) => panic!(
             "the incompatible contract must refuse before engine opening, got code {}",
-            other.code()
+            other.code().as_str()
         ),
         Ok(_) => panic!("an incompatible contract must not open"),
     }
@@ -1083,10 +1096,13 @@ fn adding_an_export_is_a_typed_interface_refusal() {
     match attach(scratch.dir(), prepare(changed)) {
         Err(LifecycleError::ContractChanged(refusal)) => {
             assert_eq!(refusal.changed, ChangedFact::Interface);
-            assert_eq!(refusal.code(), "store.contract_changed");
-            assert_ne!(refusal.code(), "store.corruption");
+            assert_eq!(refusal.code(), Code::StoreContractChanged);
+            assert_ne!(refusal.code(), Code::StoreCorruption);
         }
-        Err(other) => panic!("expected an interface refusal, got code {}", other.code()),
+        Err(other) => panic!(
+            "expected an interface refusal, got code {}",
+            other.code().as_str()
+        ),
         Ok(_) => panic!("an interface change must be refused, but attach succeeded"),
     }
 }
@@ -1107,11 +1123,11 @@ fn changing_the_durable_contract_is_a_typed_refusal() {
     match attach(scratch.dir(), prepare(changed)) {
         Err(LifecycleError::ContractChanged(refusal)) => {
             assert_eq!(refusal.changed, ChangedFact::DurableContract);
-            assert_eq!(refusal.code(), "store.contract_changed");
+            assert_eq!(refusal.code(), Code::StoreContractChanged);
         }
         Err(other) => panic!(
             "expected a durable-contract refusal, got code {}",
-            other.code()
+            other.code().as_str()
         ),
         Ok(_) => panic!("a durable-contract change must be refused, but attach succeeded"),
     }
@@ -1168,11 +1184,11 @@ fn a_changed_schema_fact_is_a_durable_contract_refusal() {
         match attach(scratch.dir(), prepare(changed)) {
             Err(LifecycleError::ContractChanged(refusal)) => {
                 assert_eq!(refusal.changed, ChangedFact::DurableContract, "{fact}");
-                assert_eq!(refusal.code(), "store.contract_changed", "{fact}");
+                assert_eq!(refusal.code(), Code::StoreContractChanged, "{fact}");
             }
             Err(other) => panic!(
                 "{fact}: expected a durable-contract refusal, got code {}",
-                other.code()
+                other.code().as_str()
             ),
             Ok(_) => panic!("{fact} changed but the store was served"),
         }
@@ -1222,11 +1238,11 @@ fn a_key_tuple_arity_change_alone_is_a_durable_contract_refusal() {
     match attach(scratch.dir(), prepare(narrow)) {
         Err(LifecycleError::ContractChanged(refusal)) => {
             assert_eq!(refusal.changed, ChangedFact::DurableContract);
-            assert_eq!(refusal.code(), "store.contract_changed");
+            assert_eq!(refusal.code(), Code::StoreContractChanged);
         }
         Err(other) => panic!(
             "dropping a key column must be a durable-contract refusal, got code {}",
-            other.code()
+            other.code().as_str()
         ),
         Ok(_) => panic!("the key tuple narrowed but the store was served"),
     }
@@ -1275,7 +1291,7 @@ fn generation_one_refuses_active_and_rebind_before_engine_open() {
                 Err(error) => error,
                 Ok(_) => panic!("an older layout must not be attached or rebound"),
             };
-            assert_eq!(error.code(), "store.format_version");
+            assert_eq!(error.code(), Code::StoreFormatVersion);
             assert!(matches!(
                 error,
                 LifecycleError::Open(marrow_lifecycle::OpenError::Admission(

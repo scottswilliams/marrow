@@ -305,10 +305,7 @@ fn sparse_apply_preserves_populated_irregular_addresses_and_refuses_exhaustion()
                     crate::FormatError::LengthOverflow { .. }
                 ))
             ));
-            assert_eq!(
-                result.unwrap_err().code(),
-                marrow_codes::Code::StoreLimit.as_str()
-            );
+            assert_eq!(result.unwrap_err().code(), marrow_codes::Code::StoreLimit);
             assert_eq!(store_bytes(&scratch.store()), bytes);
             continue;
         }

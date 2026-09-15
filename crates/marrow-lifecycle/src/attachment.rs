@@ -40,6 +40,7 @@
 
 use std::rc::Rc;
 
+use marrow_codes::Code;
 use marrow_kernel::durable::{
     CeilingIdToken, CommitRecovery, DemandCoverage, DeploymentCeiling, DurableCommitState,
     EphemeralAttachment, SessionHost, StoreProjection,
@@ -160,7 +161,7 @@ pub enum MintOutcome<T> {
     /// The image's durable shape is not yet executable by the flat kernel.
     Parked,
     /// Minting the store failed operationally; the stable code names why.
-    Failed(&'static str),
+    Failed(Code),
 }
 
 impl<T> MintOutcome<T> {
@@ -170,7 +171,7 @@ impl<T> MintOutcome<T> {
             Self::Storeless => MintOutcome::Storeless,
             Self::Ready(ready) => MintOutcome::Ready(ready),
             Self::Parked => MintOutcome::Parked,
-            Self::Failed(cause) => MintOutcome::Failed(cause),
+            Self::Failed(cause) => MintOutcome::Failed(*cause),
         }
     }
 
@@ -229,7 +230,7 @@ pub fn mint_ephemeral(prepared: PreparedImage) -> EphemeralOutcome {
     let ceiling = deployment_ceiling(image.demand_union());
     let mint = match EphemeralAttachment::mint(projection, ceiling) {
         Ok(host) => MintOutcome::Ready(Attachment::new(Rc::clone(&image), Box::new(host))),
-        Err(_) => MintOutcome::Failed(marrow_codes::Code::CliDurableUnsupported.as_str()),
+        Err(_) => MintOutcome::Failed(Code::CliDurableUnsupported),
     };
     EphemeralOutcome { image, mint }
 }
@@ -263,9 +264,7 @@ pub fn fresh_test(prepared: &PreparedImage, index: usize) -> Option<FreshTest> {
                 let ceiling = deployment_ceiling(prepared.image.test_demand_union());
                 match EphemeralAttachment::mint(projection.clone(), ceiling) {
                     Ok(host) => MintOutcome::Ready(Box::new(host)),
-                    Err(_) => {
-                        MintOutcome::Failed(marrow_codes::Code::CliDurableUnsupported.as_str())
-                    }
+                    Err(_) => MintOutcome::Failed(Code::CliDurableUnsupported),
                 }
             }
         }

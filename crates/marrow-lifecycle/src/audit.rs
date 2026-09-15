@@ -87,17 +87,17 @@ pub enum AuditError {
 
 impl AuditError {
     /// The stable dotted code a tool reports.
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> Code {
         match self {
-            AuditError::NotExecutable => Code::CliDurableUnsupported.as_str(),
+            AuditError::NotExecutable => Code::CliDurableUnsupported,
             AuditError::Open(error) => error.code(),
-            AuditError::ImageNotActive => Code::StoreImageNotActive.as_str(),
-            AuditError::InconsistentBinding => Code::StoreCorruption.as_str(),
+            AuditError::ImageNotActive => Code::StoreImageNotActive,
+            AuditError::InconsistentBinding => Code::StoreCorruption,
             AuditError::ContractChanged(refusal) => refusal.code(),
             AuditError::DemandExceedsCeiling(refusal) => refusal.code(),
             AuditError::HeadMapPin(refusal) => refusal.code(),
-            AuditError::Read(SessionError::Poisoned) => Code::RunCommit.as_str(),
-            AuditError::Read(SessionError::Denied) => Code::RunAuthority.as_str(),
+            AuditError::Read(SessionError::Poisoned) => Code::RunCommit,
+            AuditError::Read(SessionError::Denied) => Code::RunAuthority,
             AuditError::Read(SessionError::Engine(error)) => error.code(),
         }
     }

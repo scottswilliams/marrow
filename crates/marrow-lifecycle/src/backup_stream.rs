@@ -13,6 +13,7 @@ use marrow_image::{StoreBackupDigest, bounds::MAX_IMAGE_BYTES};
 use marrow_kernel::durable::{Cell, ExportSink, MAX_KEY_LEN, MAX_VALUE_LEN};
 
 use crate::{FormatError, MAX_HEAD_FILE_BYTES};
+use marrow_codes::Code;
 
 const PREFIX: &[u8; 5] = b"MWBK\0";
 
@@ -23,9 +24,9 @@ pub enum StreamError {
 }
 
 impl StreamError {
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> Code {
         match self {
-            Self::Io(_) => marrow_codes::Code::IoRead.as_str(),
+            Self::Io(_) => marrow_codes::Code::IoRead,
             Self::Format(error) => error.code(),
         }
     }

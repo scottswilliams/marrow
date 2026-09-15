@@ -247,8 +247,8 @@ pub struct ContractChanged {
 impl ContractChanged {
     /// The stable dotted code — `store.contract_changed`, a typed lifecycle refusal, never
     /// `store.corruption`.
-    pub fn code(&self) -> &'static str {
-        Code::StoreContractChanged.as_str()
+    pub fn code(&self) -> Code {
+        Code::StoreContractChanged
     }
 }
 
@@ -317,17 +317,17 @@ impl From<AdmissionRefusal> for LifecycleError {
 
 impl LifecycleError {
     /// The stable dotted code a tool reports.
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> Code {
         match self {
-            LifecycleError::NotExecutable => Code::CliDurableUnsupported.as_str(),
+            LifecycleError::NotExecutable => Code::CliDurableUnsupported,
             LifecycleError::Open(error) => error.code(),
             LifecycleError::DemandExceedsCeiling(refusal) => refusal.code(),
             LifecycleError::ContractChanged(refusal) => refusal.code(),
             LifecycleError::HeadMapPin(refusal) => refusal.code(),
             LifecycleError::Audit(error) => error.code(),
-            LifecycleError::Invalid(_) => Code::StoreCorruption.as_str(),
+            LifecycleError::Invalid(_) => Code::StoreCorruption,
             LifecycleError::Metadata(error) => error.code(),
-            LifecycleError::ActivationUncertain { .. } => Code::StoreActivationUncertain.as_str(),
+            LifecycleError::ActivationUncertain { .. } => Code::StoreActivationUncertain,
         }
     }
 }

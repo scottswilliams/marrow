@@ -55,11 +55,11 @@ pub enum ApplyError {
 }
 
 impl ApplyError {
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> Code {
         match self {
-            Self::Unsupported => Code::StoreApplyUnsupported.as_str(),
-            Self::ComparisonExhausted | Self::CeilingTooLarge => Code::StoreLimit.as_str(),
-            Self::CeilingUnaccepted { .. } => Code::StoreCeilingUnaccepted.as_str(),
+            Self::Unsupported => Code::StoreApplyUnsupported,
+            Self::ComparisonExhausted | Self::CeilingTooLarge => Code::StoreLimit,
+            Self::CeilingUnaccepted { .. } => Code::StoreCeilingUnaccepted,
             Self::HeadMap(error) => error.code(),
             Self::Lifecycle(error) => error.code(),
         }

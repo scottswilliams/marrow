@@ -14,6 +14,7 @@ use crate::backup_stream::{Encoder, StreamError};
 use crate::durable_fs::{Publication, custody_io};
 use crate::provision::{open_admitted, temp_sibling};
 use crate::{AuditError, FormatError, StoreAudit, prepare};
+use marrow_codes::Code;
 
 /// A complete published backup and its source's logical audit. Physical source
 /// checksums are not verified by the logical export.
@@ -57,15 +58,14 @@ impl From<BackupFault> for BackupError {
 }
 
 impl BackupError {
-    pub fn code(&self) -> &'static str {
-        use marrow_codes::Code;
+    pub fn code(&self) -> Code {
         match &self.fault {
-            BackupFault::Image(error) => error.code(),
+            BackupFault::Image(error) => crate::image::rejection_code(error),
             BackupFault::Audit(error) => error.code(),
-            BackupFault::Invalid(_) => Code::StoreCorruption.as_str(),
+            BackupFault::Invalid(_) => Code::StoreCorruption,
             BackupFault::Format(error) => error.code(),
-            BackupFault::Io(_) => Code::StoreIo.as_str(),
-            BackupFault::PublicationUncertain { .. } => Code::StorePublicationUncertain.as_str(),
+            BackupFault::Io(_) => Code::StoreIo,
+            BackupFault::PublicationUncertain { .. } => Code::StorePublicationUncertain,
         }
     }
 }

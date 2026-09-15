@@ -22,6 +22,7 @@ use crate::{
     ActiveBinding, EngineKind, HeadMap, LogicalHead, OpenError, ProvisionRequest, StoreEnvelope,
     StoreInstanceId, provision,
 };
+use marrow_codes::Code;
 use marrow_image::LedgerIdBytes;
 use marrow_kernel::codec::value::ScalarKind;
 use marrow_kernel::durable::{SiteTarget, StoreProjection, StoreSchemaBuilder};
@@ -279,7 +280,7 @@ fn a_contender_is_locked_out_whatever_state_the_holder_envelope_is_in() {
         match open(&store, projection()) {
             Err(OpenError::Lock(error)) => assert_eq!(
                 error.code(),
-                "store.locked",
+                Code::StoreLocked,
                 "a contender meeting a {} holder envelope must be told the store is locked",
                 damage.label(),
             ),
@@ -309,7 +310,7 @@ fn a_contender_is_locked_out_whatever_state_the_holder_head_is_in() {
         match open(&store, projection()) {
             Err(OpenError::Lock(error)) => assert_eq!(
                 error.code(),
-                "store.locked",
+                Code::StoreLocked,
                 "a contender meeting a {} holder head must be told the store is locked",
                 damage.label(),
             ),
@@ -355,7 +356,7 @@ fn a_contender_is_locked_out_whatever_state_the_holder_marker_is_in() {
         match open(&store, projection()) {
             Err(OpenError::Lock(error)) => assert_eq!(
                 error.code(),
-                "store.locked",
+                Code::StoreLocked,
                 "a contender meeting a {tag} holder marker must be told the store is locked",
             ),
             Ok(_) => panic!("a contender opened a held store whose marker is {tag}"),
@@ -367,7 +368,7 @@ fn a_contender_is_locked_out_whatever_state_the_holder_marker_is_in() {
     match open(&store, projection()) {
         Err(OpenError::Lock(error)) => assert_eq!(
             error.code(),
-            "store.locked",
+            Code::StoreLocked,
             "a second link to the holder's marker must not preempt exclusion",
         ),
         Ok(_) => panic!("a contender opened a held store through a multiply-linked marker"),
@@ -406,7 +407,7 @@ fn replacing_every_replaceable_node_a_holder_locks_admits_no_second_owner() {
     match open(&store, projection()) {
         Err(OpenError::Lock(error)) => assert_eq!(
             error.code(),
-            "store.locked",
+            Code::StoreLocked,
             "replacing both of the holder's replaceable locked nodes must still yield the \
              exclusion verdict",
         ),
@@ -443,7 +444,7 @@ fn a_store_directory_that_denies_access_refuses_as_a_permission_denial() {
                 Ok(_) => panic!("a store directory that cannot be looked inside was opened"),
                 Err(error) => assert_eq!(
                     error.code(),
-                    "store.permission_denied",
+                    Code::StorePermissionDenied,
                     "a denied look at a {tag} store must report the denial, not what it could \
                      not see: {error}",
                 ),
@@ -480,7 +481,7 @@ fn no_door_into_a_held_store_admits_a_second_owner() {
     /// it must still refuse rather than proceed.
     enum Verdict {
         Locked,
-        Refused(&'static [&'static str]),
+        Refused(&'static [Code]),
     }
 
     /// One door: how a held store is damaged, and the verdict the next open must reach.
@@ -576,14 +577,14 @@ fn no_door_into_a_held_store_admits_a_second_owner() {
             // A process that may read it regardless (a privileged test runner) reaches the
             // directory node and meets the holder; one that may not cannot reach it at all,
             // and is told that rather than anything about the store.
-            Verdict::Refused(&["store.permission_denied", "store.locked"]),
+            Verdict::Refused(&[Code::StorePermissionDenied, Code::StoreLocked]),
         ),
         door(
             "the store directory removed under the holder",
             Box::new(|store: &Path| {
                 std::fs::remove_dir_all(store).expect("remove the store directory");
             }),
-            Verdict::Refused(&["store.io"]),
+            Verdict::Refused(&[Code::StoreIo]),
         ),
     ];
 
@@ -602,13 +603,13 @@ fn no_door_into_a_held_store_admits_a_second_owner() {
             Err(error) => match expected {
                 Verdict::Locked => assert_eq!(
                     error.code(),
-                    "store.locked",
+                    Code::StoreLocked,
                     "{name} must yield the exclusion verdict, got {error}",
                 ),
                 Verdict::Refused(codes) => assert!(
                     codes.contains(&error.code()),
                     "{name} must refuse as one of {codes:?}, got {} ({error})",
-                    error.code(),
+                    error.code().as_str(),
                 ),
             },
         }
@@ -664,7 +665,7 @@ fn the_envelope_ceiling_admits_its_maximum_and_refuses_one_byte_more() {
     match open(&store, projection()) {
         Err(error) => assert_eq!(
             error.code(),
-            "store.limit",
+            Code::StoreLimit,
             "one byte past the envelope ceiling is a limit refusal, not a decode verdict",
         ),
         Ok(_) => panic!("an envelope past its ceiling was admitted"),
@@ -704,7 +705,7 @@ fn the_head_ceiling_admits_its_maximum_and_refuses_one_byte_more() {
     match open(&store, projection()) {
         Err(error) => assert_eq!(
             error.code(),
-            "store.limit",
+            Code::StoreLimit,
             "one byte past the head ceiling is a limit refusal, not a decode verdict",
         ),
         Ok(_) => panic!("a head past its ceiling was admitted"),
@@ -735,7 +736,7 @@ fn a_symbolic_link_standing_in_for_an_artifact_is_refused() {
             Ok(_) => panic!("admission followed a symbolic link standing in for the {artifact}"),
             Err(error) => assert_eq!(
                 error.code(),
-                "store.corruption",
+                Code::StoreCorruption,
                 "a linked {artifact} is a substitution refusal, not contention or I/O: {error}",
             ),
         }
@@ -759,7 +760,7 @@ fn a_second_hard_link_to_an_artifact_is_refused() {
             Ok(_) => panic!("admission accepted a multiply-linked {artifact}"),
             Err(error) => assert_eq!(
                 error.code(),
-                "store.corruption",
+                Code::StoreCorruption,
                 "a multiply-linked {artifact} is a substitution refusal, not contention: {error}",
             ),
         }
@@ -806,29 +807,29 @@ fn each_artifact_malformation_is_reported_as_itself() {
             (
                 "tampered",
                 Box::new(|bytes: &mut Vec<u8>| bytes[5] ^= 0xFF) as Box<dyn Fn(&mut Vec<u8>)>,
-                "store.corruption",
+                Code::StoreCorruption,
             ),
             (
                 "unknown-version",
                 Box::new(|bytes: &mut Vec<u8>| bytes[4] = 0x7F),
-                "store.format_version",
+                Code::StoreFormatVersion,
             ),
             (
                 "bad-magic",
                 Box::new(|bytes: &mut Vec<u8>| bytes[0] = b'X'),
-                "store.corruption",
+                Code::StoreCorruption,
             ),
             (
                 "trailing",
                 Box::new(|bytes: &mut Vec<u8>| bytes.push(0x00)),
-                "store.corruption",
+                Code::StoreCorruption,
             ),
             (
                 "truncated",
                 Box::new(|bytes: &mut Vec<u8>| {
                     bytes.pop();
                 }),
-                "store.corruption",
+                Code::StoreCorruption,
             ),
         ] {
             let (_dir, store) = provisioned(&format!("typed-{artifact}-{tag}"));
@@ -903,10 +904,10 @@ fn an_artifact_rewritten_under_a_read_is_never_admitted_spliced() {
                     Err(error) => assert!(
                         matches!(
                             error.code(),
-                            "store.corruption"
-                                | "store.limit"
-                                | "store.format_version"
-                                | "store.io",
+                            Code::StoreCorruption
+                                | Code::StoreLimit
+                                | Code::StoreFormatVersion
+                                | Code::StoreIo,
                         ),
                         "a torn read must be a typed refusal, got {error}",
                     ),

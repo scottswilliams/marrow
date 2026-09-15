@@ -12,12 +12,13 @@ use marrow_kernel::durable::{
 };
 use marrow_verify::{
     CeilingDescriptor, ImageType, Scalar, SealedIndexComponent, SealedSite, SealedSiteTarget,
-    SemanticNode, SemanticNodeKind, SemanticStep, VerifiedImage,
+    SemanticNode, SemanticNodeKind, SemanticStep, VerifiedImage, VerifyRejection,
 };
 
 use crate::codec::FormatError;
 use crate::head::ActiveBinding;
 use crate::headmap::HeadMap;
+use marrow_codes::Code;
 
 /// Derive the active binding a store records for `image`: the active image's byte identity
 /// plus the binding facts a binding-only rebind compares (the durable contract and the
@@ -118,9 +119,16 @@ pub struct HeadMapPinMismatch {
 
 impl HeadMapPinMismatch {
     /// The typed store-corruption code for an unusable image/projection/Head pairing.
-    pub fn code(&self) -> &'static str {
-        marrow_codes::Code::StoreCorruption.as_str()
+    pub fn code(&self) -> Code {
+        marrow_codes::Code::StoreCorruption
     }
+}
+
+/// The registered code a verifier rejection reports. `marrow-verify` still spells its
+/// `image.*` codes as strings, so they are re-interned at that one crate boundary; the
+/// call disappears when `VerifyRejection::code` returns a [`Code`].
+pub(crate) fn rejection_code(rejection: &VerifyRejection) -> Code {
+    Code::from_code(rejection.code()).expect("the verifier reports a registered image code")
 }
 
 /// The noun a refusal uses for a durable node kind.

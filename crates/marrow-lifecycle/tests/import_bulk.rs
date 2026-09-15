@@ -285,6 +285,7 @@ use scratch::Scratch;
 
 #[path = "support/compile.rs"]
 mod source_compile;
+use marrow_codes::Code;
 use source_compile::compile;
 
 /// Provision a fresh store at `dir` bound to `image`.
@@ -892,9 +893,12 @@ fn import_refuses_every_non_active_image_before_the_engine_opens() {
 #[test]
 fn the_stale_image_refusal_is_typed_and_commits_nothing() {
     let error = ImportError::ImageNotActive;
-    assert_eq!(error.code(), "store.image_not_active");
+    assert_eq!(error.code(), Code::StoreImageNotActive);
     assert_eq!(error.committed().rows_imported, 0);
-    assert_eq!(ImportError::InconsistentBinding.code(), "store.corruption");
+    assert_eq!(
+        ImportError::InconsistentBinding.code(),
+        Code::StoreCorruption
+    );
 }
 
 /// The closed lifecycle boundary, drawn on the Cargo DAG. The bytecode executor depends on
@@ -1070,7 +1074,7 @@ fn unsupported_generations_refuses_import_before_engine_open() {
                 ImportLimits::DEFAULT,
             );
             let error = outcome.expect_err("an older layout must not be opened");
-            assert_eq!(error.code(), "store.format_version");
+            assert_eq!(error.code(), Code::StoreFormatVersion);
             assert!(matches!(
                 error,
                 ImportError::Open(marrow_lifecycle::OpenError::Admission(

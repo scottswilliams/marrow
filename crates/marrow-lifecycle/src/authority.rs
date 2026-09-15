@@ -60,8 +60,8 @@ pub struct DemandExceedsCeiling {
 
 impl DemandExceedsCeiling {
     /// The stable dotted code a tool reports.
-    pub fn code(&self) -> &'static str {
-        Code::StoreDemandExceedsCeiling.as_str()
+    pub fn code(&self) -> Code {
+        Code::StoreDemandExceedsCeiling
     }
 }
 

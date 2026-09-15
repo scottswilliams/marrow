@@ -44,18 +44,18 @@ impl FormatError {
     /// The stable dotted code a tool reports. A version this build does not read is a
     /// format-version refusal; a length beyond its bound is a representational limit;
     /// every other malformation is store corruption (the persisted bytes do not decode).
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> Code {
         match self {
             FormatError::UnknownVersion { .. } | FormatError::UnsupportedImageVersion { .. } => {
-                Code::StoreFormatVersion.as_str()
+                Code::StoreFormatVersion
             }
-            FormatError::LengthOverflow { .. } => Code::StoreLimit.as_str(),
+            FormatError::LengthOverflow { .. } => Code::StoreLimit,
             FormatError::BadMagic
             | FormatError::Truncated
             | FormatError::TrailingBytes
             | FormatError::UnknownDiscriminant { .. }
             | FormatError::DigestMismatch
-            | FormatError::Malformed { .. } => Code::StoreCorruption.as_str(),
+            | FormatError::Malformed { .. } => Code::StoreCorruption,
         }
     }
 }
@@ -230,13 +230,13 @@ mod tests {
     fn distinct_malformations_carry_distinct_codes() {
         assert_eq!(
             FormatError::UnknownVersion { found: 9 }.code(),
-            "store.format_version"
+            Code::StoreFormatVersion
         );
         assert_eq!(
             FormatError::LengthOverflow { field: "map" }.code(),
-            "store.limit"
+            Code::StoreLimit
         );
-        assert_eq!(FormatError::DigestMismatch.code(), "store.corruption");
-        assert_eq!(FormatError::BadMagic.code(), "store.corruption");
+        assert_eq!(FormatError::DigestMismatch.code(), Code::StoreCorruption);
+        assert_eq!(FormatError::BadMagic.code(), Code::StoreCorruption);
     }
 }

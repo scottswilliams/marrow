@@ -12,6 +12,7 @@ use crate::{
     ActiveBinding, EngineKind, HeadMap, LogicalHead, OpenError, Preflight, ProvisionError,
     ProvisionRequest, StoreEnvelope, StoreInstanceId, preflight, provision,
 };
+use marrow_codes::Code;
 use marrow_image::LedgerIdBytes;
 use marrow_kernel::codec::value::ScalarKind;
 use marrow_kernel::durable::{SiteTarget, StoreProjection, StoreSchemaBuilder};
@@ -234,7 +235,7 @@ fn failed_publication_sync_reports_uncertainty_and_retains_destination() {
         .map(|entry| entry.expect("child").file_name())
         .collect::<Vec<_>>();
     assert_eq!(children, [std::ffi::OsString::from("store")]);
-    assert_eq!(error.code(), "store.publication_uncertain");
+    assert_eq!(error.code(), Code::StorePublicationUncertain);
     assert!(
         matches!(error.fault, crate::ProvisionFault::PublicationUncertain { instance, source }
         if instance == id && source.kind() == std::io::ErrorKind::Other)
@@ -275,10 +276,7 @@ fn failed_active_sync_reports_distinct_uncertainty_after_publication_barrier() {
     assert!(
         matches!(error.fault, crate::ProvisionFault::ActivationUncertain { instance, .. } if instance == id)
     );
-    assert_eq!(
-        error.code(),
-        marrow_codes::Code::StoreActivationUncertain.as_str()
-    );
+    assert_eq!(error.code(), marrow_codes::Code::StoreActivationUncertain);
     let record = crate::envelope::EnvelopeRecord::decode(
         &std::fs::read(store.join(crate::store_dir::ENVELOPE_FILE)).expect("visible record"),
     )
@@ -366,7 +364,7 @@ fn a_second_open_is_store_in_use_naming_the_owner() {
     let held = open(&store, projection()).expect("first open holds the lock");
     match open(&store, projection()) {
         Err(OpenError::Lock(error)) => {
-            assert_eq!(error.code(), "store.locked");
+            assert_eq!(error.code(), Code::StoreLocked);
             match error {
                 marrow_kernel::durable::NativeLockError::StoreInUse { owner: Some(owner) } => {
                     assert_eq!(owner.pid, std::process::id(), "names the live owner pid");

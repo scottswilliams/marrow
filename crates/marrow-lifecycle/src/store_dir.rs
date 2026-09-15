@@ -112,10 +112,10 @@ impl StoreAccessError {
     }
 
     /// The stable dotted code a tool reports.
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> Code {
         match self.source.kind() {
-            std::io::ErrorKind::PermissionDenied => Code::StorePermissionDenied.as_str(),
-            _ => Code::StoreIo.as_str(),
+            std::io::ErrorKind::PermissionDenied => Code::StorePermissionDenied,
+            _ => Code::StoreIo,
         }
     }
 }
@@ -241,13 +241,13 @@ impl AdmissionError {
     }
 
     /// The stable dotted code a tool reports.
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> Code {
         match &self.fault {
             AdmissionFault::Format(error) => error.code(),
-            AdmissionFault::OverCeiling { .. } => Code::StoreLimit.as_str(),
+            AdmissionFault::OverCeiling { .. } => Code::StoreLimit,
             AdmissionFault::MultiplyLinked { .. }
             | AdmissionFault::NotAFile { .. }
-            | AdmissionFault::Unstable(_) => Code::StoreCorruption.as_str(),
+            | AdmissionFault::Unstable(_) => Code::StoreCorruption,
             AdmissionFault::Custody(error) => custody_code(error),
         }
     }
@@ -263,25 +263,25 @@ impl AdmissionError {
 /// cannot provide an operation's required semantics, are neither a property of the store nor
 /// of this process's access to it: no store can be opened here at all. They report as I/O
 /// because no dotted code distinguishes them today; the refusal names the platform in prose.
-fn custody_code(error: &CustodyError) -> &'static str {
+fn custody_code(error: &CustodyError) -> Code {
     match error {
-        CustodyError::ModeDenied { .. } => Code::StorePermissionDenied.as_str(),
+        CustodyError::ModeDenied { .. } => Code::StorePermissionDenied,
         // The entry's own bits are one way an open is denied; the access this process has to
         // the path leading to it is the other, and both are the same refusal to a reader.
         CustodyError::Io { source, .. }
             if source.kind() == std::io::ErrorKind::PermissionDenied =>
         {
-            Code::StorePermissionDenied.as_str()
+            Code::StorePermissionDenied
         }
         CustodyError::SymlinkRefused { .. }
         | CustodyError::WrongNodeKind { .. }
         | CustodyError::NotADirectory { .. }
         | CustodyError::IdentityDrift { .. }
         | CustodyError::NotFound { .. }
-        | CustodyError::AlreadyExists { .. } => Code::StoreCorruption.as_str(),
+        | CustodyError::AlreadyExists { .. } => Code::StoreCorruption,
         CustodyError::UnqualifiedPlatform { .. }
         | CustodyError::Unsupported { .. }
-        | CustodyError::Io { .. } => Code::StoreIo.as_str(),
+        | CustodyError::Io { .. } => Code::StoreIo,
     }
 }
 
@@ -911,20 +911,20 @@ mod tests {
                 CustodyError::SymlinkRefused {
                     op: CustodyOp::OpenFile,
                 },
-                Code::StoreCorruption.as_str(),
+                Code::StoreCorruption,
             ),
             (
                 CustodyError::WrongNodeKind {
                     op: CustodyOp::OpenFile,
                     found: marrow_fs_journal::NodeKind::Directory,
                 },
-                Code::StoreCorruption.as_str(),
+                Code::StoreCorruption,
             ),
             (
                 CustodyError::NotFound {
                     op: CustodyOp::OpenFile,
                 },
-                Code::StoreCorruption.as_str(),
+                Code::StoreCorruption,
             ),
             (
                 CustodyError::ModeDenied {
@@ -932,7 +932,7 @@ mod tests {
                     found: 0o400,
                     required: 0o600,
                 },
-                Code::StorePermissionDenied.as_str(),
+                Code::StorePermissionDenied,
             ),
         ] {
             assert_eq!(refusal(AdmissionFault::Custody(fault)).code(), code);
@@ -943,14 +943,14 @@ mod tests {
         // observation a substituted node makes.
         assert_eq!(
             refusal(AdmissionFault::MultiplyLinked { links: 2 }).code(),
-            Code::StoreCorruption.as_str(),
+            Code::StoreCorruption,
         );
 
         let unqualified = refusal(AdmissionFault::Custody(CustodyError::UnqualifiedPlatform {
             os: "freebsd",
             arch: "riscv64",
         }));
-        assert_eq!(unqualified.code(), Code::StoreIo.as_str());
+        assert_eq!(unqualified.code(), Code::StoreIo);
         let rendered = unqualified.to_string();
         assert!(
             rendered.contains("freebsd/riscv64"),
