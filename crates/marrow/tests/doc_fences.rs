@@ -1,20 +1,26 @@
 //! Docs-honesty verification gate: every `mw` fence in the current reference is
-//! a complete source file that travels the real production path (`marrow test`)
-//! through capture, compile, and independent image verification. The syntax
-//! corpus proves the same fences parse and format; this gate additionally fails
-//! when a documented example no longer checks or its compiled image is rejected.
+//! a complete source file that travels the real production path — capture,
+//! compile, independent image verification, and the source tests it declares.
+//! The syntax corpus proves the same fences parse and format; this gate
+//! additionally fails when a documented example no longer checks, its compiled
+//! image is rejected, or one of its `test` declarations no longer passes.
 //!
-//! A fence is extracted to a correctly-pathed scratch project — module identity
-//! is path-derived, so a `module a::b` header sits at `src/a/b.mw`; a moduleless
-//! script sits at `src/main.mw`. Durable fences need a minted `.marrow/ids`; the
-//! one convenience mint action (`marrow run`) publishes it before the durable
-//! export parks, so a durable fence verifies after the mint pre-pass exactly as a
-//! caller's project would. Contextual fragments and deliberately future examples
-//! use `text` fences and are skipped by construction.
+//! A fence is extracted to a correctly-pathed project — module identity is
+//! path-derived, so a `module a::b` header sits at `src/a/b.mw`; a moduleless
+//! script sits at `src/main.mw`. A storeless fence travels that path in process.
+//! A durable fence needs a minted `.marrow/ids`, and `marrow run` is the one
+//! convenience mint, so those fences take the CLI: mint, then compile and verify
+//! over the minted ledger exactly as a caller's project would. Contextual
+//! fragments and deliberately future examples use `text` fences and are skipped
+//! by construction.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Output;
+
+use marrow_compile::CompileFailure;
+use marrow_project::{CaptureLimits, CapturedFile, Manifest};
+use marrow_vm::{DurableExecutionFault, DurableRun, IncompleteDisposition};
 
 mod common;
 
@@ -226,12 +232,6 @@ impl FenceFailure {
             .any(|record| record.outcome == outcome && record.code.as_deref() == Some(code))
     }
 
-    fn has_code(&self, code: &str) -> bool {
-        self.records
-            .iter()
-            .any(|record| record.code.as_deref() == Some(code))
-    }
-
     fn initially_has(&self, outcome: &str, code: &str) -> bool {
         self.initial_records
             .iter()
@@ -259,30 +259,137 @@ fn finish(output: Output) -> Result<(), FenceFailure> {
     }
 }
 
-/// Compile and independently verify one fence on the production CLI path. A
-/// durable fence is minted once (`marrow run` is the sole mint owner) and then
-/// retried, so a clean durable example reaches verification rather than stopping
-/// at its missing machine-written identity artifact.
+/// One fence's verdict from the in-process production path.
+enum InProcess {
+    /// Compiled, verified, and every declared source test passed.
+    Clean,
+    /// The fence is durable and its ledger rows are unminted, which only the CLI
+    /// mint publishes. Carries the pre-mint diagnostics.
+    NeedsMint(Vec<FailureRecord>),
+    /// The fence failed, carrying the same typed records the CLI would stream.
+    Rejected(Vec<FailureRecord>),
+}
+
+fn record(outcome: &str, code: Option<&str>) -> FailureRecord {
+    FailureRecord {
+        outcome: outcome.to_string(),
+        code: code.map(str::to_string),
+    }
+}
+
+/// Capture, compile, verify, and run one fence's source tests without a process.
+/// The records mirror the CLI's typed stream, so both paths report alike.
+fn check_in_process(fence: &DocFence) -> InProcess {
+    let manifest = Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let files = vec![CapturedFile::new(
+        fence.source_rel_path().to_string_lossy().into_owned(),
+        fence.source.clone().into_bytes(),
+    )];
+    let project = match marrow_project::capture(&manifest, files, None, &CaptureLimits::DEFAULT) {
+        Ok(project) => project,
+        Err(_) => return InProcess::Rejected(vec![record("error", None)]),
+    };
+    // The test-inclusive compile is the one `marrow test` drives: the production
+    // `compile` emits an empty TEST-ENTRY table, so a fence's `test` declarations
+    // would never run.
+    let compiled = match marrow_compile::compile_with_tests(&project) {
+        Ok(compiled) => compiled,
+        Err(CompileFailure::Diagnostics(diagnostics)) => {
+            let records: Vec<_> = diagnostics
+                .as_slice()
+                .iter()
+                .map(|diagnostic| record("diagnostic", Some(diagnostic.code())))
+                .collect();
+            return if records
+                .iter()
+                .any(|entry| entry.code.as_deref() == Some("check.durable_identity"))
+            {
+                InProcess::NeedsMint(records)
+            } else {
+                InProcess::Rejected(records)
+            };
+        }
+        Err(_) => return InProcess::Rejected(vec![record("error", None)]),
+    };
+    let image = match marrow_verify::verify(&compiled.image.bytes) {
+        Ok(image) => image,
+        Err(rejection) => {
+            return InProcess::Rejected(vec![record("artifact_rejected", Some(rejection.code()))]);
+        }
+    };
+
+    let prepared = marrow_vm::prepare(image);
+    let mut records = Vec::new();
+    for index in 0..prepared.image().test_entries().len() {
+        let test = marrow_vm::fresh_test(&prepared, index)
+            .expect("the entry index came from the prepared image's own test table");
+        records.extend(test_record(marrow_vm::run_test(test)));
+    }
+    if records.is_empty() {
+        InProcess::Clean
+    } else {
+        InProcess::Rejected(records)
+    }
+}
+
+/// The failure record one source test leaves, or none when it passes. A false
+/// `assert` fails; any other source-mapped fault, a park, or an operational mint
+/// failure errors.
+fn test_record(run: DurableRun) -> Option<FailureRecord> {
+    let fault = match run {
+        DurableRun::Ran(Ok(_)) => return None,
+        DurableRun::Ran(Err(fault)) => fault,
+        DurableRun::Parked => return Some(record("errored", None)),
+        DurableRun::Failed(code) => return Some(record("errored", Some(code))),
+    };
+    let fault = match fault {
+        DurableExecutionFault::Runtime(fault) => fault,
+        DurableExecutionFault::Incomplete(incomplete) => match incomplete.into_disposition() {
+            IncompleteDisposition::Classified { fault, .. } => fault,
+            IncompleteDisposition::Pending { fault, .. } => fault,
+        },
+    };
+    let outcome = if fault.code() == "run.assert" {
+        "failed"
+    } else {
+        "fault"
+    };
+    Some(record(outcome, Some(fault.code())))
+}
+
+/// Compile, independently verify, and run one fence's source tests. A storeless
+/// fence takes the in-process path; a durable one is minted once (`marrow run` is
+/// the sole mint owner) and then driven through the CLI, so a clean durable
+/// example reaches verification rather than stopping at its missing
+/// machine-written identity artifact.
 fn verify_fence(fence: &DocFence) -> Result<(), FenceFailure> {
+    match check_in_process(fence) {
+        InProcess::Clean => return Ok(()),
+        InProcess::Rejected(records) => {
+            return Err(FenceFailure {
+                status: None,
+                initial_records: Vec::new(),
+                records,
+                stdout: String::new(),
+                stderr: String::new(),
+            });
+        }
+        InProcess::NeedsMint(pre_mint) => mint_and_verify(fence, pre_mint),
+    }
+}
+
+/// A durable fence is missing only its machine-written ids until the one
+/// convenience mint publishes them. Mint, then require a fresh compile,
+/// verification and source-test run over the minted ledger. The final result
+/// remains authoritative if minting fails.
+fn mint_and_verify(fence: &DocFence, pre_mint: Vec<FailureRecord>) -> Result<(), FenceFailure> {
     let temp = TempDir::new("fence");
     write(&temp.join("marrow.toml"), "edition = \"2026\"\n");
     write(&temp.join(fence.source_rel_path()), &fence.source);
 
-    let first = marrow_in(&temp, &["test", "--format", "jsonl"]).output;
-    if first.status.success() {
-        return finish(first);
-    }
-    let first_failure = FenceFailure::from_output(first);
-    if !first_failure.has_code("check.durable_identity") {
-        return Err(first_failure);
-    }
-
-    // A durable fence is missing only its machine-written ids until the one
-    // convenience mint publishes them; require a fresh final compile+verify over
-    // the minted ledger. The final result remains authoritative if minting fails.
     let _ = marrow_in(&temp, &["run", "__doc_fence_probe__"]);
     finish(marrow_in(&temp, &["test", "--format", "jsonl"]).output).map_err(|mut failure| {
-        failure.initial_records = first_failure.records;
+        failure.initial_records = pre_mint;
         failure
     })
 }
