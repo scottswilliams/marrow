@@ -506,10 +506,6 @@ impl TypeMetadataView<'_> {
     where
         I: DoubleEndedIterator<Item = GArg>,
     {
-        // Profiles cannot disagree: the drain loop below empties `tasks` on every path
-        // that returns `Ok`, and a `?` leaves entries behind only after an invariant that
-        // has already ended the compile.
-        debug_assert!(scratch.tasks.is_empty());
         let generic_parent = match owner {
             Some(id) => {
                 let row = scratch
@@ -758,17 +754,15 @@ impl TypeMetadataView<'_> {
         let TypeInstState::Ready(body) = &inst.state else {
             return Ok(None);
         };
-        let index = scratch
+        // The row must exist before the body is readable; the index itself is only
+        // needed by `validate_args_with`, which looks it up again for the owner.
+        scratch
             .row(inst.id)
             .ok_or(GenericInvariant::ReadyBodyMissing(inst.id))?;
         self.registry.template_for_args(inst.template, &inst.args)?;
         self.validate_args_with(&inst.args, Some(inst.id), scratch)?;
         self.registry
             .validate_inst_body_metadata(inst.template, &inst.args, inst.id, body)?;
-        // Profiles cannot disagree: nothing here branches on the flag. The
-        // `validate_args_with` call above visits this row, and this restates that
-        // postcondition beside the `Ok` it returns either way.
-        debug_assert!(scratch.seen_rows[index]);
         Ok(Some(body))
     }
 

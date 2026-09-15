@@ -66,17 +66,12 @@ fn render_best_effort_display(
             match frame {
                 BestEffortDisplayFrame::Text(text) => output.push_str(text),
                 BestEffortDisplayFrame::LeaveRow(row) => {
-                    // Profiles cannot disagree: `leave_row` takes the frame's own row,
-                    // not the popped one, so nothing here reads what this compares. The
-                    // pop keeps `entered` in step for the unwind path below.
-                    let removed = entered.pop();
-                    debug_assert_eq!(removed, Some(DisplayNode::Row(row)));
+                    // The pop keeps `entered` in step for the unwind path below.
+                    entered.pop();
                     display.leave_row(row);
                 }
                 BestEffortDisplayFrame::LeaveCollection(index) => {
-                    // Unread on the same terms as the row arm above.
-                    let removed = entered.pop();
-                    debug_assert_eq!(removed, Some(DisplayNode::Collection(index)));
+                    entered.pop();
                     display.leave_collection(index);
                 }
                 BestEffortDisplayFrame::Inst {

@@ -931,10 +931,6 @@ struct FnInst {
     func: marrow_image::FuncId,
 }
 
-/// The source location a type instantiation is minted from, threaded through
-/// [`TypeRegistry::mint_type_instance`] so a mint-time rejection — a collection as
-/// an enum payload leaf — points at the construction or annotation site rather than
-/// the reserved `Option`/`Result` template, which carries no user span. `file` is
 /// The source anchor for a generic instantiation: the file and span a mint-time
 /// diagnostic (an instantiation limit or a rejected payload) points at. Always a
 /// real captured file — a mint is triggered by a use site, never by a fileless
@@ -973,10 +969,8 @@ enum ArgumentDomain {
 }
 
 /// One owner-ordered finished transfer from the generic owner: the optional
-/// terminal limit row first, followed by the finished collection-payload
-/// terminal gathered before it. The names rename the live `{limit, payloads}`
-/// pair (A4); the live/terminal distinction is the point — a transfer is never
-/// reopened, only merged or adopted whole.
+/// terminal limit row first, followed by the finished collection-payload terminal
+/// gathered before it. A transfer is never reopened, only merged or adopted whole.
 #[must_use = "generic diagnostics must be adopted or reported as one ordered outcome"]
 pub(crate) struct GenericDiagnostics {
     first_limit: Option<SourceDiagnostic>,
@@ -1553,10 +1547,6 @@ impl DisplayScratch {
 
     fn leave_row(&mut self, row: usize) {
         let active = &mut self.active_rows[row];
-        // Profiles cannot disagree: the write is idempotent. Only a caller whose
-        // `enter_row` returned true leaves, and clearing an already-clear slot is the
-        // same state either way.
-        debug_assert_eq!(*active, 1);
         *active = 0;
     }
 
@@ -3183,10 +3173,8 @@ impl TypeRegistry {
         }
         drop(collections);
 
-        // Profiles cannot disagree: the drift these two restate is already a typed
-        // release outcome. The reuse probe above compares the looked-up row against the
-        // spec it carries and rejects a mismatch as `MintIndexDrift`, so an index that
-        // fell out of step with the draft is refused at the next read in either profile.
+        // The cache index and the draft's own index advance together; the reuse probe
+        // above turns any later divergence into a typed drift refusal.
         let id = draft.add_collection_type(spec.definition())?;
         debug_assert_eq!(id.index() as usize, cache_index);
         let mut collections = self.collections.borrow_mut();

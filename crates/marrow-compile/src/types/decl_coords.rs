@@ -1,26 +1,15 @@
 //! The declaration coordinate tables the declare pass owns: where each declared
 //! `struct` and `resource` was written.
 //!
-//! Those are the families a later pass reports at. The value-containment cycle check
-//! reports each struct and record on a cycle at its own declaration; a cyclic generic
-//! instantiation is reported at its template's own span instead, and a declared enum's
-//! payload is a bare scalar, so a non-generic payload cannot name an enum. So
-//! `declare_enums` records no coordinate, and an enum has no row here.
+//! A pass that must report at a declaration reads the coordinate from here rather
+//! than scanning the syntax tree for a declaration whose name matches. Enums have no
+//! row: the value-containment cycle check is the only reader, a cyclic generic
+//! instantiation is reported at its template's span, and a declared enum's payload is
+//! a bare scalar, so no cycle passes through one.
 //!
-//! A pass that must report at a declaration reads the coordinate from here instead of
-//! scanning the syntax tree for a declaration whose name matches. That scan was linear
-//! in the project's declarations and ran once per reported type, and it could only be
-//! written at all because the pass still borrowed the tree.
-//!
-//! The tables are owned fields of [`super::TypeRegistry`], the bundle declaration
-//! admission builds and hands out whole. Declaration admission is one-shot: a pass
-//! that fails returns `Err` and the partially built registry is dropped with
-//! everything it owns, so a failed admission leaves no coordinate reachable and
-//! there is no window in which a stale row could be read. That ownership is the
-//! whole rollback discipline for these tables. **If declaration admission ever
-//! becomes transactional, they owe the same inverse the generic owners already
-//! carry in `super::owner_txn`**, because a surviving prefix would then outlive
-//! the declarations that minted it.
+//! The tables are owned fields of [`super::TypeRegistry`]. Declaration admission is
+//! one-shot — a pass that fails returns `Err` and the partially built registry is
+//! dropped whole — so no stale coordinate is ever reachable.
 
 use std::collections::BTreeMap;
 use std::ops::Deref;
@@ -35,28 +24,15 @@ use crate::analysis::FileRef;
 /// The admitted `resource` records, each with the position of the declaration it was
 /// built from in the resource slice the declare pass was given.
 ///
-/// Index `i` of one addresses index `i` of the other. What the type enforces is that no
-/// record can MOVE: [`Self::admit`] is the only append and appends to both vectors, so a
-/// helper pushing a record alone would leave every later record carrying another
-/// declaration's ordinal, and no route hands out a `&mut [RecordInfo]`, so `swap`, `sort`,
-/// `reverse`, `truncate` and slice assignment do not compile against this type. Positions
-/// are therefore stable by construction.
-///
-/// What it does NOT enforce is that a record's CONTENTS at a stable position belong to the
-/// declaration that position's ordinal names. [`Self::at_mut`] hands out a `&mut RecordInfo`
-/// so the reserve-then-fill pass can fill a record where it lies, and a caller inside this
-/// crate could instead assign a whole different record through it, leaving index `i`
-/// holding one declaration's record beside another's ordinal.
-///
-/// The sole PRODUCTION caller — `build.rs`'s fill pass — fills a reserved record from its
-/// own surviving declaration and never replaces one. Neither test caller replaces a record
-/// either: one pushes a group onto an admitted record, the other rewrites a group's
-/// `type_id` to manufacture a `TypeIdentityCollision`, which is the point of that fixture.
-/// Structural here means stable positions, not authenticated contents.
+/// Index `i` of one addresses index `i` of the other, and the type enforces that no
+/// record can move: [`Self::admit`] is the only append and appends to both vectors,
+/// and no route hands out a `&mut [RecordInfo]`, so `swap`, `sort`, `reverse`,
+/// `truncate` and slice assignment do not compile against this type. [`Self::at_mut`]
+/// lends one record so the reserve-then-fill pass can fill it in place; positions are
+/// stable by construction, contents are not authenticated.
 ///
 /// The durable build reads this pairing rather than rebuilding one from resource name
-/// spellings. Reading is the record slice itself; the ordinals are read through
-/// [`Self::ordinals`].
+/// spellings: the record slice itself, and the ordinals through [`Self::ordinals`].
 #[derive(Default)]
 pub(crate) struct AdmittedRecords {
     records: Vec<RecordInfo>,
