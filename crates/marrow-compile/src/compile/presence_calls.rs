@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::{AcyclicCallGraph, DiagnosticCollector, LoweredFn, LoweredFunctionSet};
+use super::{AcyclicCallOrder, DiagnosticCollector, LoweredFn, LoweredFunctionSet};
 use crate::durable::Family;
 use crate::lower::{PresenceObligation, requires_presence};
 struct Query<'a> {
@@ -49,7 +49,7 @@ struct Failure {
 /// entry-erasing call. No function body or graph analysis is repeated here.
 pub(super) fn reject_unproven_uses(
     lowered: &LoweredFunctionSet,
-    acyclic: &AcyclicCallGraph,
+    acyclic: &AcyclicCallOrder,
     diagnostics: &mut DiagnosticCollector,
 ) {
     let functions = lowered.functions();
@@ -118,16 +118,13 @@ pub(super) fn reject_unproven_uses(
 
 fn collect_queries<'a>(
     functions: &'a [Option<LoweredFn>],
-    acyclic: &AcyclicCallGraph,
+    acyclic: &AcyclicCallOrder,
     erased: &HashSet<&Family>,
 ) -> (HashMap<&'a Family, usize>, Vec<Query<'a>>) {
     let mut families = HashMap::new();
     let mut queries = Vec::new();
     for (function, lowered) in functions.iter().enumerate() {
-        let Some(lowered) = lowered
-            .as_ref()
-            .filter(|_| acyclic.order().contains(function))
-        else {
+        let Some(lowered) = lowered.as_ref().filter(|_| acyclic.contains(function)) else {
             continue;
         };
         for (original, obligation) in lowered.presence_obligations.iter().enumerate() {
@@ -161,15 +158,12 @@ fn collect_queries<'a>(
 
 fn collect_erases(
     functions: &[Option<LoweredFn>],
-    acyclic: &AcyclicCallGraph,
+    acyclic: &AcyclicCallOrder,
     families: &HashMap<&Family, usize>,
 ) -> Vec<Erase> {
     let mut erases = Vec::new();
     for (function, lowered) in functions.iter().enumerate() {
-        let Some(lowered) = lowered
-            .as_ref()
-            .filter(|_| acyclic.order().contains(function))
-        else {
+        let Some(lowered) = lowered.as_ref().filter(|_| acyclic.contains(function)) else {
             continue;
         };
         for family in &lowered.erased_families {
@@ -186,8 +180,8 @@ fn collect_erases(
     erases
 }
 
-fn propagate(functions: &[Option<LoweredFn>], acyclic: &AcyclicCallGraph, summary: &mut [u64]) {
-    for &function in acyclic.order().callee_before_caller() {
+fn propagate(functions: &[Option<LoweredFn>], acyclic: &AcyclicCallOrder, summary: &mut [u64]) {
+    for &function in acyclic.callee_before_caller() {
         let mut word = summary[function];
         #[expect(
             clippy::expect_used,

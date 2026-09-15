@@ -13,11 +13,12 @@ use marrow_image::bounds;
 use marrow_image::{DraftTxn, EncodedImage, ExportId, FuncId, ImageBuildError, ImageDraft, Instr};
 use marrow_project::{CaptureLimits, FileIdentity, ProjectInput};
 use marrow_syntax::{
-    AliasDecl, ConstDecl, Declaration, EnumDecl, NominalDecl, ResourceDecl, ResourceMember,
-    SourceFile, SourceSpan, StoreDecl, StructDecl, TestDecl, parse_source,
+    ConstDecl, Declaration, ResourceDecl, ResourceMember, SourceFile, SourceSpan, TestDecl,
+    parse_source,
 };
 
 use crate::analysis::{AnalysisFactCollector, BoundedAnalysisFacts, FileRef, StagedBodyTxn};
+use crate::call_graph::AcyclicCallOrder;
 use crate::decl::{
     Binding, DeclarationBudget, DeclarationLedgerFull, DeclarationNamespace, DeclarationOccurrence,
     DeclarationSite, DeclareError, MAX_DECLARATION_LEDGER_BYTES, SourceStage, refuse,
@@ -35,7 +36,9 @@ use crate::lower::{
     is_reserved_builtin_name, reserved_builtin_name,
 };
 use crate::types::BuildError;
-use crate::types::{GenericInvariant, GenericOwnerTxn, NominalBoundaryKind, TypeRegistry};
+use crate::types::{
+    GenericInvariant, GenericOwnerTxn, NominalBoundaryKind, NominalBoundaryRoot, TypeRegistry,
+};
 
 mod presence_calls;
 use presence_calls::reject_unproven_uses;
@@ -745,14 +748,6 @@ struct Driven {
     symbol_bounded_files: Vec<FileRef>,
 }
 
-/// Allocation-free admission for one compiler drive.
-///
-/// [`marrow_project::capture`] intentionally accepts caller-selected limits. This
-/// boundary keeps that pure construction API unchanged while ensuring every compiler
-/// and analysis entry point uses the one production envelope before it mints or
-/// retains parser, diagnostic, or fact state.
-struct DriveInputAdmission;
-
 /// Proof that a project passed drive admission: its module count is at most
 /// `max_files`, which is inside the fact coordinate domain. Carrying the count out of
 /// admission is what makes minting a coordinate per module total, so the drive states
@@ -801,49 +796,53 @@ pub const MAX_PARSED_FILE_BYTES: usize =
 /// is checked here rather than either copying the other's number.
 const _: () = assert!(MAX_PARSED_FILE_BYTES <= CaptureLimits::DEFAULT.max_file_bytes());
 
-impl DriveInputAdmission {
-    fn check(project: &ProjectInput) -> Result<AdmittedModules, CompileResourceLimit> {
-        let limits = CaptureLimits::DEFAULT;
-        let modules = project.modules();
-        if modules.len() > limits.max_files() {
-            return Err(CompileResourceLimit::new(
-                ResourceLimitKind::ProjectFiles,
-                limits.max_files() as u64,
-            ));
-        }
-
-        // Refuse before materializing: what a file's parse costs is arithmetic over its
-        // byte length and a pinned rate, so an over-ceiling file is turned away here
-        // rather than parsed and found to be too large afterwards. The reader is given
-        // the length they can act on, not the heap figure it was derived from.
-        if modules.iter().any(|module| {
-            marrow_syntax::max_parse_bytes(module.source().len()) > MAX_QUERY_PARSE_TRANSIENT_BYTES
-        }) {
-            return Err(CompileResourceLimit::new(
-                ResourceLimitKind::ProjectFileBytes,
-                MAX_PARSED_FILE_BYTES as u64,
-            ));
-        }
-
-        let mut source_bytes = 0usize;
-        for module in modules {
-            source_bytes = source_bytes
-                .checked_add(module.source().len())
-                .ok_or_else(|| {
-                    CompileResourceLimit::new(
-                        ResourceLimitKind::ProjectSourceBytes,
-                        limits.max_total_bytes() as u64,
-                    )
-                })?;
-        }
-        if source_bytes > limits.max_total_bytes() {
-            return Err(CompileResourceLimit::new(
-                ResourceLimitKind::ProjectSourceBytes,
-                limits.max_total_bytes() as u64,
-            ));
-        }
-        Ok(AdmittedModules(modules.len() as u16))
+/// Admit one compiler drive's project.
+///
+/// [`marrow_project::capture`] intentionally accepts caller-selected limits. This
+/// boundary keeps that pure construction API unchanged while ensuring every compiler
+/// and analysis entry point uses the one production envelope before it mints or
+/// retains parser, diagnostic, or fact state.
+fn admit_modules(project: &ProjectInput) -> Result<AdmittedModules, CompileResourceLimit> {
+    let limits = CaptureLimits::DEFAULT;
+    let modules = project.modules();
+    if modules.len() > limits.max_files() {
+        return Err(CompileResourceLimit::new(
+            ResourceLimitKind::ProjectFiles,
+            limits.max_files() as u64,
+        ));
     }
+
+    // Refuse before materializing: what a file's parse costs is arithmetic over its
+    // byte length and a pinned rate, so an over-ceiling file is turned away here
+    // rather than parsed and found to be too large afterwards. The reader is given
+    // the length they can act on, not the heap figure it was derived from.
+    if modules.iter().any(|module| {
+        marrow_syntax::max_parse_bytes(module.source().len()) > MAX_QUERY_PARSE_TRANSIENT_BYTES
+    }) {
+        return Err(CompileResourceLimit::new(
+            ResourceLimitKind::ProjectFileBytes,
+            MAX_PARSED_FILE_BYTES as u64,
+        ));
+    }
+
+    let mut source_bytes = 0usize;
+    for module in modules {
+        source_bytes = source_bytes
+            .checked_add(module.source().len())
+            .ok_or_else(|| {
+                CompileResourceLimit::new(
+                    ResourceLimitKind::ProjectSourceBytes,
+                    limits.max_total_bytes() as u64,
+                )
+            })?;
+    }
+    if source_bytes > limits.max_total_bytes() {
+        return Err(CompileResourceLimit::new(
+            ResourceLimitKind::ProjectSourceBytes,
+            limits.max_total_bytes() as u64,
+        ));
+    }
+    Ok(AdmittedModules(modules.len() as u16))
 }
 
 /// The outcome of the semantic pass over the cleanly-parsed modules: a checked program,
@@ -900,65 +899,6 @@ impl From<BuildError> for SemanticOutcome {
     }
 }
 
-/// The type registry resolved every declared type. Root of the artifact dependency
-/// order: every later phase resolves annotations through it.
-struct CompleteTypeRegistry;
-
-/// The signature table and the proof that it is complete, kept in their own module
-/// so the proof's private field is out of reach of every other line in this file.
-mod signatures {
-    use super::FunctionRegistry;
-
-    /// Every declared function signature resolved, as a zero-size proof token.
-    ///
-    /// `Artifacts.functions` holds this, not the table. The private field is what
-    /// makes the property the artifact set protects — a resolved signature table
-    /// nothing vouches for is unrepresentable at `encode` — a compile-time one: the
-    /// token has no literal form outside this module, so
-    /// [`CompleteFunctionRegistry::complete`] below is the only expression in the
-    /// crate that produces one. A fieldless unit struct would be constructible by
-    /// name anywhere the type is visible, which is the whole of the encode gate.
-    pub(super) struct SignaturesComplete(());
-
-    /// The sole owner of the resolved signature table.
-    ///
-    /// The table is always built: a signature refused for a parameter or return type
-    /// is a refused ledger entry, not a withheld table, so a call to it reuses that
-    /// cause while every unrelated body still lowers and reports its own errors.
-    /// Availability and the value are minted by this one owner.
-    pub(super) struct CompleteFunctionRegistry(pub(super) FunctionRegistry);
-
-    impl CompleteFunctionRegistry {
-        /// The resolved signature table every dependent phase resolves call sites
-        /// through. Always available: a refused signature answers with its cause.
-        pub(super) fn signatures(&self) -> &FunctionRegistry {
-            &self.0
-        }
-
-        /// The completeness proof, `Some` exactly when every declared signature was
-        /// accepted. Read from the ledger, not from a flag the build loop
-        /// maintained.
-        pub(super) fn complete(&self) -> Option<SignaturesComplete> {
-            self.0
-                .every_signature_accepted()
-                .then_some(SignaturesComplete(()))
-        }
-    }
-}
-
-use signatures::{CompleteFunctionRegistry, SignaturesComplete};
-
-/// Every generic template's once-checked proof was accepted and no instantiation
-/// limit stopped the pass, so the queued instance set is trustworthy.
-struct AcceptedQueuedTemplateProofs;
-
-/// Every declared non-generic function body lowered into the draft.
-struct CompleteDeclaredFunctionBodies;
-
-/// Every declared test body lowered without a duplicate-title skip. Vacuously
-/// available when tests are excluded.
-struct CompleteDeclaredTestBodies;
-
 /// Body facts at their reserved image indices. A missing body remains an explicit
 /// hole; no diagnostic consumer may infer a negative effect from that absence.
 struct LoweredFunctionSet(Vec<Option<LoweredFn>>);
@@ -984,90 +924,14 @@ impl LoweredFunctionSet {
 
     fn eligible<'a>(
         &'a self,
-        acyclic: &'a AcyclicCallGraph,
+        acyclic: &'a AcyclicCallOrder,
     ) -> impl Iterator<Item = &'a LoweredFn> {
         self.0.iter().enumerate().filter_map(|(index, function)| {
             acyclic
-                .order()
                 .contains(index)
                 .then_some(function.as_ref())
                 .flatten()
         })
-    }
-}
-
-/// Available functions whose entire callee closure is available and acyclic.
-struct AcyclicCallGraph {
-    order: crate::call_graph::AcyclicCallOrder,
-}
-
-impl AcyclicCallGraph {
-    fn order(&self) -> &crate::call_graph::AcyclicCallOrder {
-        &self.order
-    }
-}
-
-/// Every export entry that mutates durable state owns its transaction region, so the
-/// requires-ambient-transaction propagation has nothing to report.
-struct AmbientTransactionClosure;
-
-/// The eight semantic artifacts of one pass, each present exactly when its phase ran
-/// to completion. `encode` consumes all eight.
-struct Artifacts {
-    types: Option<CompleteTypeRegistry>,
-    functions: Option<SignaturesComplete>,
-    template_proofs: Option<AcceptedQueuedTemplateProofs>,
-    function_bodies: Option<CompleteDeclaredFunctionBodies>,
-    test_bodies: Option<CompleteDeclaredTestBodies>,
-    lowered: Option<LoweredFunctionSet>,
-    call_graph: Option<AcyclicCallGraph>,
-    transactions: Option<AmbientTransactionClosure>,
-}
-
-impl Artifacts {
-    /// Whether every artifact is available. Written as an exhaustive destructure so a
-    /// ninth artifact is a build error here rather than a silently ignored field.
-    fn all_available(&self) -> bool {
-        let Artifacts {
-            types,
-            functions,
-            template_proofs,
-            function_bodies,
-            test_bodies,
-            lowered,
-            call_graph,
-            transactions,
-        } = self;
-        types.is_some()
-            && functions.is_some()
-            && template_proofs.is_some()
-            && function_bodies.is_some()
-            && test_bodies.is_some()
-            && lowered
-                .as_ref()
-                .is_some_and(LoweredFunctionSet::is_complete)
-            && call_graph
-                .as_ref()
-                .is_some_and(|graph| graph.order().is_complete())
-            && transactions.is_some()
-    }
-
-    /// The semantic fence, in exact order, over the pass's finished terminal. An
-    /// invariant returned earlier; a non-empty terminal — rows, or a `Limited` terminal
-    /// reporting its own diagnostic bound — is the diagnostic outcome; an empty terminal
-    /// with any artifact unavailable is an invariant, because an unavailable artifact
-    /// always follows a refusal that reported. `None` is the checked program, and the
-    /// image-policy verdict is taken strictly after that point.
-    fn refusal(&self, terminal: BoundedDiagnostics) -> Option<SemanticOutcome> {
-        if !terminal.is_empty() {
-            return Some(SemanticOutcome::Diagnostics(
-                terminal,
-                CompileStage::PostLoweringValidation,
-            ));
-        }
-        (!self.all_available()).then_some(SemanticOutcome::Invariant(
-            InvariantCause::UnavailableWithoutReport,
-        ))
     }
 }
 
@@ -1084,9 +948,9 @@ pub(crate) struct CheckedProgram {
 }
 
 impl CheckedProgram {
-    /// Encode the checked draft into canonical image bytes. This is the single point at
-    /// which a public image-policy bound is consulted, and the projection-shared
-    /// [`encode`] is its only caller.
+    /// Encode the checked draft into canonical image bytes. The single point at which a
+    /// public image-policy bound is consulted, taken strictly after the projection has
+    /// ruled out its own failure.
     fn encode(self) -> Result<Built, ImagePolicyOutcome> {
         match self.draft.encode() {
             Ok(image) => Ok(Built {
@@ -1115,12 +979,12 @@ impl Driven {
     /// The production compile result: the production projection's checked program,
     /// encoded.
     fn production_built(self) -> Result<Built, CompileFailure> {
-        encode(self.production()?)
+        Ok(self.production()?.encode()?)
     }
 
     /// The check result: the complete projection's checked program, encoded.
     fn check_built(self) -> Result<Built, CompileFailure> {
-        encode(self.complete()?)
+        Ok(self.complete()?.encode()?)
     }
 
     /// The production projection. The first logically non-empty stage in order —
@@ -1191,13 +1055,6 @@ impl Driven {
     }
 }
 
-/// The single point at which a checked program becomes an image: both projections
-/// pass through it, so an image-policy verdict is taken here and nowhere else, strictly
-/// after the projection's own failure has been ruled out.
-fn encode(checked: Box<CheckedProgram>) -> Result<Built, CompileFailure> {
-    Ok(checked.encode()?)
-}
-
 /// Parse every module, then analyze the cleanly-parsed ones. A module with a parse
 /// error contributes its parse diagnostics and its declarations are left unanalyzed —
 /// dependency resilience: a syntax error in one component does not suppress the
@@ -1209,7 +1066,7 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
     tests::observe_drive();
     // The admission proof carries one coordinate per module, so every fact this pass
     // retains has a coordinate before the first one allocates.
-    let admitted = DriveInputAdmission::check(project)?;
+    let admitted = admit_modules(project)?;
     let mut parse = DiagnosticCollector::new();
     let mut facts = AnalysisFactCollector::new(project);
     // Every project module an earlier stage refused whole, with the stage that
@@ -1330,48 +1187,37 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
     })
 }
 
-/// Analyze the cleanly-parsed modules: build the named types and function signatures,
-/// lower every body, and validate the whole, or return the accumulated failure tagged
-/// with the stage that produced it. Editor hover facts from each monomorphic function and
-/// test body are admitted to the fact ledger as it is lowered, and each generic
-/// template body's facts once at its template proof.
-fn run_semantic(
-    parsed: &[Module],
-    project: &ProjectInput,
-    mode: TestMode,
-    unparsed: &[UnparsedModule],
-    facts: &mut AnalysisFactCollector,
-) -> SemanticOutcome {
-    /// A path's segments in the dotted spelling this crate identifies modules by. The
-    /// source spells the same path with `::`; the two are different representations of
-    /// one path, so this builds the identity from the segments rather than rewriting the
-    /// separators of a rendered spelling.
-    fn dotted_module_path(segments: &[marrow_syntax::NameSegment]) -> String {
-        segments
-            .iter()
-            .map(marrow_syntax::NameSegment::text)
-            .collect::<Vec<_>>()
-            .join(".")
-    }
+/// A path's segments in the dotted spelling this crate identifies modules by. The
+/// source spells the same path with `::`; the two are different representations of one
+/// path, so this builds the identity from the segments rather than rewriting the
+/// separators of a rendered spelling.
+fn dotted_module_path(segments: &[marrow_syntax::NameSegment]) -> String {
+    segments
+        .iter()
+        .map(marrow_syntax::NameSegment::text)
+        .collect::<Vec<_>>()
+        .join(".")
+}
 
-    let mut diagnostics = DiagnosticCollector::new();
-    // One retention budget for the whole pass. Every ledger below charges its
-    // retained refusals against it, so the declared ceiling bounds what the pass
-    // holds rather than what any single namespace holds.
-    let budget = DeclarationBudget::default();
-    // Store roots whose durable identity failed admission, steered to their identity
-    // reports once each across the whole compile rather than at every reference.
-    // The source-root-relative path is the authority for module identity. A file
-    // that declares a `module` header is an importable module and must spell the
-    // path-derived name (with `::` as the dotted separator). A file with no header
-    // is a single-file script: it keeps a path-derived identity for its own scope
-    // and its exports, but is not importable by module path.
-    //
-    // A refused module keeps its dotted path: the file is in the project whether or
-    // not it was admitted, so denying that the project contains it is a false
-    // statement about a file the reader can see. Module order is not observed —
-    // nothing takes a slot from this ledger — so the stage-refused modules are
-    // declared first and the header-checked ones after.
+/// Declare every project module.
+///
+/// The source-root-relative path is the authority for module identity. A file that
+/// declares a `module` header is an importable module and must spell the path-derived
+/// name (with `::` as the dotted separator). A file with no header is a single-file
+/// script: it keeps a path-derived identity for its own scope and its exports, but is
+/// not importable by module path.
+///
+/// A refused module keeps its dotted path: the file is in the project whether or not it
+/// was admitted, so denying that the project contains it is a false statement about a
+/// file the reader can see. Module order is not observed — nothing takes a slot from
+/// this ledger — so the stage-refused modules are declared first and the header-checked
+/// ones after.
+fn declare_modules(
+    parsed: &[Module],
+    unparsed: &[UnparsedModule],
+    budget: &DeclarationBudget,
+    diagnostics: &mut DiagnosticCollector,
+) -> Result<ModuleLedger, SemanticOutcome> {
     let mut modules = ModuleLedger::new(DeclarationNamespace::Module, budget.clone());
     for module in unparsed {
         let refusal = refuse_at_earlier_stage(
@@ -1381,7 +1227,7 @@ fn run_semantic(
         if let Err(error) =
             modules.declare(module.name.clone(), DeclarationOccurrence::Refused(refusal))
         {
-            return error.into();
+            return Err(error.into());
         }
     }
     for module in parsed {
@@ -1393,7 +1239,7 @@ fn run_semantic(
             DeclarationOccurrence::Accepted(ModuleBinding)
         } else {
             DeclarationOccurrence::Refused(refuse(
-                &mut diagnostics,
+                diagnostics,
                 DeclarationSite {
                     name: &module.name,
                     file: &module.file,
@@ -1409,13 +1255,20 @@ fn run_semantic(
             ))
         };
         if let Err(error) = modules.declare(module.name.clone(), occurrence) {
-            return error.into();
+            return Err(error.into());
         }
     }
+    Ok(modules)
+}
 
-    // Each module's `use` bindings (final segment -> dotted target). A `use` must
-    // name an importable project module; two imports binding the same final segment
-    // in one module are ambiguous.
+/// Each module's `use` bindings (final segment -> dotted target). A `use` must name an
+/// importable project module; two imports binding the same final segment in one module
+/// are ambiguous.
+fn bind_imports(
+    parsed: &[Module],
+    modules: &ModuleLedger,
+    diagnostics: &mut DiagnosticCollector,
+) -> Result<BTreeMap<String, Vec<(String, String)>>, SemanticOutcome> {
     let mut imports: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     for module in parsed {
         let bindings = imports.entry(module.name.clone()).or_default();
@@ -1430,7 +1283,9 @@ fn run_semantic(
             let binding = match modules.lookup(target.as_str()) {
                 Ok(binding) => binding,
                 Err(drift) => {
-                    return SemanticOutcome::Invariant(InvariantCause::Generic(drift.into()));
+                    return Err(SemanticOutcome::Invariant(InvariantCause::Generic(
+                        drift.into(),
+                    )));
                 }
             };
             match binding {
@@ -1472,6 +1327,161 @@ fn run_semantic(
             bindings.push((segment, target));
         }
     }
+    Ok(imports)
+}
+
+/// Every declaration of one kind across the project, paired with the two
+/// representations of its file: the owned identity a diagnostic renders, and the `Copy`
+/// coordinate a retained refusal keeps.
+fn declared_items<'a, T>(
+    parsed: &'a [Module],
+    select: impl Fn(&'a Declaration) -> Option<&'a T>,
+) -> Vec<(FileRef, FileIdentity, &'a T)> {
+    let select = &select;
+    parsed
+        .iter()
+        .flat_map(move |module| {
+            module.ast.declarations.iter().filter_map(move |decl| {
+                select(decl).map(|item| (module.at, module.file.clone(), item))
+            })
+        })
+        .collect()
+}
+
+/// Every declared function the filter selects, paired with its dotted module, in
+/// declaration order — the order lowering assigns image indices in.
+fn declared_functions<'a>(
+    parsed: &'a [Module],
+    select: impl Fn(&'a marrow_syntax::FunctionDecl) -> bool,
+) -> Vec<DeclaredFn<'a>> {
+    let select = &select;
+    parsed
+        .iter()
+        .flat_map(move |module| {
+            module.ast.declarations.iter().filter_map(move |decl| {
+                let Declaration::Function(function) = decl else {
+                    return None;
+                };
+                select(function).then(|| DeclaredFn {
+                    file: module.file.clone(),
+                    at: module.at,
+                    module: module.name.clone(),
+                    decl: function,
+                })
+            })
+        })
+        .collect()
+}
+
+/// Report the first durable or public-aggregate root whose value contains a nominal
+/// type. The metadata session answers over the whole root set at once, so one walk
+/// covers every root the durable and signature builds recorded.
+fn report_nominal_boundary(
+    records: &mut TypeRegistry,
+    roots: &[NominalBoundaryRoot<'_>],
+    diagnostics: &mut DiagnosticCollector,
+) -> Result<(), GenericInvariant> {
+    if roots.is_empty() {
+        return Ok(());
+    }
+    let Some(index) = records.with_metadata_session(|metadata| metadata.nominal_boundary(roots))?
+    else {
+        return Ok(());
+    };
+    let root = &roots[index];
+    let message = match root.kind {
+        NominalBoundaryKind::Input => {
+            "public aggregate parameters containing nominal values are not supported"
+        }
+        NominalBoundaryKind::Durable => {
+            "bound durable values containing nominal values are not supported"
+        }
+    };
+    diagnostics.push(SourceDiagnostic::at(
+        Code::CheckUnsupported.as_str(),
+        root.file,
+        root.span,
+        message.to_string(),
+    ));
+    Ok(())
+}
+
+/// Build the named types: the transparent aliases, nominals, structs, enums, and the
+/// record types the declared resources project. The reserve/fill batches run under one
+/// admitted transaction — the first owned mutation of the compile.
+fn build_type_registry(
+    parsed: &[Module],
+    resources: &[(FileRef, FileIdentity, &ResourceDecl)],
+    draft: &mut ImageDraft,
+    budget: &DeclarationBudget,
+    diagnostics: &mut DiagnosticCollector,
+) -> Result<TypeRegistry, PhaseStop> {
+    let aliases = declared_items(parsed, |decl| match decl {
+        Declaration::Alias(alias) => Some(alias),
+        _ => None,
+    });
+    let nominals = declared_items(parsed, |decl| match decl {
+        Declaration::Nominal(nominal) => Some(nominal),
+        _ => None,
+    });
+    let structs = declared_items(parsed, |decl| match decl {
+        Declaration::Struct(item) => Some(item),
+        _ => None,
+    });
+    let enums = declared_items(parsed, |decl| match decl {
+        Declaration::Enum(item) => Some(item),
+        _ => None,
+    });
+    let records = {
+        let mut txn = admitted(draft);
+        let records = TypeRegistry::build(
+            &mut txn,
+            &aliases,
+            &nominals,
+            &structs,
+            &enums,
+            resources,
+            diagnostics,
+            budget.clone(),
+        )?;
+        txn.commit();
+        records
+    };
+    if let Some(invariant) = records.build_invariant() {
+        return Err(PhaseStop::Invariant(InvariantCause::Generic(invariant)));
+    }
+    if records.has_instantiation_limit() {
+        records.take_generic_diagnostics().merge_into(diagnostics);
+        return Err(PhaseStop::StageDiagnostics(CompileStage::TypeInstantiation));
+    }
+    Ok(records)
+}
+
+/// Analyze the cleanly-parsed modules: build the named types and function signatures,
+/// lower every body, and validate the whole, or return the accumulated failure tagged
+/// with the stage that produced it. Editor hover facts from each monomorphic function and
+/// test body are admitted to the fact ledger as it is lowered, and each generic
+/// template body's facts once at its template proof.
+fn run_semantic(
+    parsed: &[Module],
+    project: &ProjectInput,
+    mode: TestMode,
+    unparsed: &[UnparsedModule],
+    facts: &mut AnalysisFactCollector,
+) -> SemanticOutcome {
+    let mut diagnostics = DiagnosticCollector::new();
+    // One retention budget for the whole pass. Every ledger below charges its
+    // retained refusals against it, so the declared ceiling bounds what the pass
+    // holds rather than what any single namespace holds.
+    let budget = DeclarationBudget::default();
+    let modules = match declare_modules(parsed, unparsed, &budget, &mut diagnostics) {
+        Ok(modules) => modules,
+        Err(outcome) => return outcome,
+    };
+    let imports = match bind_imports(parsed, &modules, &mut diagnostics) {
+        Ok(imports) => imports,
+        Err(outcome) => return outcome,
+    };
 
     // A module has at most one function with a given name, so an unqualified or
     // qualified call resolves to one target.
@@ -1479,131 +1489,25 @@ fn run_semantic(
 
     // The function signatures paired with their dotted module, in declaration order
     // (the order lowering assigns image indices).
-    let functions: Vec<DeclaredFn<'_>> = parsed
-        .iter()
-        .flat_map(|module| {
-            module.ast.declarations.iter().filter_map(|decl| {
-                if let Declaration::Function(function) = decl {
-                    Some(DeclaredFn {
-                        file: module.file.clone(),
-                        at: module.at,
-                        module: module.name.clone(),
-                        decl: function,
-                    })
-                } else {
-                    None
-                }
-            })
-        })
-        .collect();
+    let functions = declared_functions(parsed, |_| true);
 
     // Build the named types — transparent aliases plus the single project record
     // type — and the function signatures before body lowering, so annotations,
     // constructors, field reads, and forward calls resolve.
     let mut draft = ImageDraft::new();
-    let aliases: Vec<(FileRef, FileIdentity, &AliasDecl)> = parsed
-        .iter()
-        .flat_map(|module| {
-            module.ast.declarations.iter().filter_map(|decl| {
-                if let Declaration::Alias(alias) = decl {
-                    Some((module.at, module.file.clone(), alias))
-                } else {
-                    None
-                }
-            })
-        })
-        .collect();
-    let nominals: Vec<(FileRef, FileIdentity, &NominalDecl)> = parsed
-        .iter()
-        .flat_map(|module| {
-            module.ast.declarations.iter().filter_map(|decl| {
-                if let Declaration::Nominal(nominal) = decl {
-                    Some((module.at, module.file.clone(), nominal))
-                } else {
-                    None
-                }
-            })
-        })
-        .collect();
-    let resources: Vec<(FileRef, FileIdentity, &ResourceDecl)> = parsed
-        .iter()
-        .flat_map(|module| {
-            module.ast.declarations.iter().filter_map(|decl| {
-                if let Declaration::Resource(resource) = decl {
-                    Some((module.at, module.file.clone(), resource))
-                } else {
-                    None
-                }
-            })
-        })
-        .collect();
-    let structs: Vec<(FileRef, FileIdentity, &StructDecl)> = parsed
-        .iter()
-        .flat_map(|module| {
-            module.ast.declarations.iter().filter_map(|decl| {
-                if let Declaration::Struct(item) = decl {
-                    Some((module.at, module.file.clone(), item))
-                } else {
-                    None
-                }
-            })
-        })
-        .collect();
-    let enums: Vec<(FileRef, FileIdentity, &EnumDecl)> = parsed
-        .iter()
-        .flat_map(|module| {
-            module.ast.declarations.iter().filter_map(|decl| {
-                if let Declaration::Enum(item) = decl {
-                    Some((module.at, module.file.clone(), item))
-                } else {
-                    None
-                }
-            })
-        })
-        .collect();
-    // The type/generic phase's reserve/fill batches run under one admitted
-    // transaction — the first owned mutation of the compile.
-    let mut records = {
-        let mut txn = admitted(&mut draft);
-        let records = match TypeRegistry::build(
-            &mut txn,
-            &aliases,
-            &nominals,
-            &structs,
-            &enums,
-            &resources,
-            &mut diagnostics,
-            budget.clone(),
-        ) {
+    let resources = declared_items(parsed, |decl| match decl {
+        Declaration::Resource(resource) => Some(resource),
+        _ => None,
+    });
+    let mut records =
+        match build_type_registry(parsed, &resources, &mut draft, &budget, &mut diagnostics) {
             Ok(records) => records,
-            Err(error) => return error.into(),
+            Err(stop) => return stop.into_outcome(diagnostics),
         };
-        txn.commit();
-        records
-    };
-    if let Some(invariant) = records.build_invariant() {
-        return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
-    }
-    if records.has_instantiation_limit() {
-        records
-            .take_generic_diagnostics()
-            .merge_into(&mut diagnostics);
-        return SemanticOutcome::Diagnostics(diagnostics.finish(), CompileStage::TypeInstantiation);
-    }
-    // Each store carries its file in both representations: the owned identity a
-    // diagnostic renders, and the `Copy` coordinate a retained refusal keeps.
-    let stores: Vec<(FileRef, FileIdentity, &StoreDecl)> = parsed
-        .iter()
-        .flat_map(|module| {
-            module.ast.declarations.iter().filter_map(|decl| {
-                if let Declaration::Store(store) = decl {
-                    Some((module.at, module.file.clone(), store))
-                } else {
-                    None
-                }
-            })
-        })
-        .collect();
+    let stores = declared_items(parsed, |decl| match decl {
+        Declaration::Store(store) => Some(store),
+        _ => None,
+    });
     let mut boundary_roots = Vec::new();
     let durable = match DurableRegistry::build(
         &mut draft,
@@ -1618,9 +1522,6 @@ fn run_semantic(
         Ok(durable) => durable,
         Err(error) => return error.into(),
     };
-    // The type registry resolved every declared type: every later phase resolves its
-    // annotations through it.
-    let types = Some(CompleteTypeRegistry);
 
     // The signature table is always built. A refused signature is a refused ledger
     // entry, so every phase below still resolves call sites — a call to the refused
@@ -1646,61 +1547,23 @@ fn run_semantic(
                 budget.clone(),
                 &mut boundary_roots,
             ) {
-                Ok(signatures) => CompleteFunctionRegistry(signatures),
+                Ok(signatures) => signatures,
                 Err(error) => return error.into(),
             }
         };
         batch.commit();
         signatures
     };
-    let function_registry = signatures.complete();
-    if !boundary_roots.is_empty() {
-        match records.with_metadata_session(|metadata| metadata.nominal_boundary(&boundary_roots)) {
-            Ok(Some(index)) => {
-                let root = &boundary_roots[index];
-                let message = match root.kind {
-                    NominalBoundaryKind::Input => {
-                        "public aggregate parameters containing nominal values are not supported"
-                    }
-                    NominalBoundaryKind::Durable => {
-                        "bound durable values containing nominal values are not supported"
-                    }
-                };
-                diagnostics.push(SourceDiagnostic::at(
-                    Code::CheckUnsupported.as_str(),
-                    root.file,
-                    root.span,
-                    message.to_string(),
-                ));
-            }
-            Ok(None) => {}
-            Err(invariant) => {
-                return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
-            }
-        }
+    // Read from the ledger, not from a flag the build loop maintained.
+    let signatures_complete = signatures.every_signature_accepted();
+    if let Err(invariant) = report_nominal_boundary(&mut records, &boundary_roots, &mut diagnostics)
+    {
+        return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
     }
     drop(boundary_roots);
     // Generic functions are templates with no image index; they are monomorphized at
     // each call site and once-checked below against their constraints.
-    let generic_functions: Vec<DeclaredFn<'_>> = parsed
-        .iter()
-        .flat_map(|module| {
-            module.ast.declarations.iter().filter_map(|decl| {
-                if let Declaration::Function(function) = decl
-                    && !function.type_params.is_empty()
-                {
-                    Some(DeclaredFn {
-                        file: module.file.clone(),
-                        at: module.at,
-                        module: module.name.clone(),
-                        decl: function,
-                    })
-                } else {
-                    None
-                }
-            })
-        })
-        .collect();
+    let generic_functions = declared_functions(parsed, |function| !function.type_params.is_empty());
     let generics = GenericRegistry::build(&generic_functions);
 
     // Module-private constants, evaluated before body lowering so a reference folds
@@ -1724,54 +1587,39 @@ fn run_semantic(
 
     // Everything from the template proof to the instance drain resolves call sites
     // through the signature table, which is always available.
-    let template_proofs = match template_proof_phase(
-        &mut records,
-        &durable,
-        signatures.signatures(),
-        &generics,
-        &constants,
-        &mut draft,
-        &mut diagnostics,
-        facts,
-    ) {
-        Ok(template_proofs) => template_proofs,
-        Err(PhaseStop::StageDiagnostics(stage)) => {
-            return SemanticOutcome::Diagnostics(diagnostics.finish(), stage);
-        }
-        Err(PhaseStop::Invariant(cause)) => return SemanticOutcome::Invariant(cause),
-        Err(PhaseStop::ResourceLimit(limit)) => return SemanticOutcome::ResourceLimit(limit),
-    };
     let resolution = Resolution {
         durable: &durable,
-        signatures: signatures.signatures(),
+        signatures: &signatures,
         generics: &generics,
         constants: &constants,
     };
-    let phases = match registry_phases(
-        parsed,
-        mode,
+    if let Err(stop) = template_proof_phase(
         &mut records,
         resolution,
-        template_proofs,
         &mut draft,
         &mut diagnostics,
         facts,
     ) {
-        Ok(phases) => phases,
-        Err(PhaseStop::StageDiagnostics(stage)) => {
-            return SemanticOutcome::Diagnostics(diagnostics.finish(), stage);
-        }
-        Err(PhaseStop::Invariant(cause)) => return SemanticOutcome::Invariant(cause),
-        Err(PhaseStop::ResourceLimit(limit)) => return SemanticOutcome::ResourceLimit(limit),
-    };
+        return stop.into_outcome(diagnostics);
+    }
     let RegistryPhases {
-        template_proofs,
         function_bodies,
         test_bodies,
         lowered_set,
         exports,
         tests,
-    } = phases;
+    } = match registry_phases(
+        parsed,
+        mode,
+        &mut records,
+        resolution,
+        &mut draft,
+        &mut diagnostics,
+        facts,
+    ) {
+        Ok(phases) => phases,
+        Err(stop) => return stop.into_outcome(diagnostics),
+    };
 
     // Report any diagnostics recorded while minting generic type instantiations
     // (the shared instantiation limit) and reject a value-containment cycle over the
@@ -1789,90 +1637,24 @@ fn run_semantic(
         return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
     }
 
-    // The compiled subset does not admit recursion: the direct-call graph must be
-    // acyclic. Reported at check time so the source carries the diagnostic. The
-    // verifier independently rejects any cycle that still reaches it (image.closure),
-    // so this is a source-facing check, not the trust boundary. It runs over the
-    // available bodies, retaining independent components beside missing or cyclic ones.
-    let call_graph = lowered_set
-        .as_ref()
-        .map(|set| reject_recursion(set, &mut diagnostics));
-
-    // All body transactions and generic draining have settled. Couple each actual
-    // filled function with its coordinates before any transaction validation.
-    let bodies = match lowered_set
-        .as_ref()
-        .map(|set| {
-            set.functions()
-                .iter()
-                .map(|function| {
-                    function
-                        .as_ref()
-                        .map(|function| function.borrow_body(&draft))
-                        .transpose()
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .transpose()
-    {
-        Ok(bodies) => bodies,
+    let lowered_complete = match validate_lowered(&lowered_set, &draft, &mut diagnostics) {
+        Ok(complete) => complete,
         Err(invariant) => return SemanticOutcome::Invariant(invariant),
     };
 
-    // A function that mutates durable state carries a checked requires-ambient-
-    // transaction effect: it is callable only inside a `transaction` block or from
-    // another function carrying the effect. Reported at check time so the source, not
-    // the image, carries the diagnostic; the verifier reconstructs the same closure and
-    // rejects a tampered image as defense in depth. Run once the call
-    // owner has selected complete acyclic call components.
-    let transactions = lowered_set
-        .as_ref()
-        .zip(call_graph.as_ref())
-        .and_then(|(set, acyclic)| {
-            reject_unproven_uses(set, acyclic, &mut diagnostics);
-            reject_missing_transaction(set, acyclic, &mut diagnostics)
-        });
-
-    // The remaining transaction-ownership laws — exactly one region per mutating export,
-    // committed on every normal exit after begin, with no durable operation after commit; a `transaction`
-    // marker only in the export that owns it; and no call to a transaction owner — are
-    // reconstructed from the lowered tape and reported at the offending source construct.
-    // Reported at check time so the source, not the image, carries the diagnostic; the
-    // verifier reconstructs the same lattice from the image alone and rejects a tampered
-    // image (image.flow) as defense in depth. Run over complete acyclic components when
-    // no requires-ambient-transaction report already stands, so a single mutation cannot
-    // cascade into an ownership report. A computed transaction closure is that
-    // prerequisite: without one an unsatisfied requires-ambient-transaction report already
-    // stands, and a single unwrapped mutation would cascade into a second report here.
-    if let (Some(bodies), Some(acyclic), Some(_)) = (&bodies, &call_graph, &transactions) {
-        reject_transaction_ownership(bodies, acyclic, &mut diagnostics);
-    }
-
-    // Tests reach durable data through ordinary invocations. Report direct operations
-    // in complete components here; the verifier independently enforces this boundary.
-    if let (Some(set), Some(acyclic)) = (&lowered_set, &call_graph) {
-        reject_direct_test_operations(set, acyclic, &mut diagnostics);
-    }
-
     // The semantic fence, in exact order. An invariant has already returned above. A
     // non-empty terminal — rows, or a Limited terminal reporting its own diagnostic
-    // bound — is the diagnostic outcome. An empty terminal with any artifact
-    // unavailable is an invariant: an unavailable artifact always follows a refusal
-    // that reported. Only an empty terminal with all eight artifacts available is a
-    // checked program, and the image-policy verdict is taken strictly after this
-    // point, in the production projection alone.
-    let artifacts = Artifacts {
-        types,
-        functions: function_registry,
-        template_proofs,
-        function_bodies,
-        test_bodies,
-        lowered: lowered_set,
-        call_graph,
-        transactions,
-    };
-    if let Some(refusal) = artifacts.refusal(diagnostics.finish()) {
-        return refusal;
+    // bound — is the diagnostic outcome. An empty terminal with any phase incomplete is
+    // an invariant: an incomplete phase always follows a refusal that reported. Only an
+    // empty terminal over a complete pass is a checked program, and the image-policy
+    // verdict is taken strictly after this point, in the production projection alone.
+    let complete = signatures_complete && function_bodies && test_bodies && lowered_complete;
+    let terminal = diagnostics.finish();
+    if !terminal.is_empty() {
+        return SemanticOutcome::Diagnostics(terminal, CompileStage::PostLoweringValidation);
+    }
+    if !complete {
+        return SemanticOutcome::Invariant(InvariantCause::UnavailableWithoutReport);
     }
     SemanticOutcome::Checked(Box::new(CheckedProgram {
         draft,
@@ -1880,6 +1662,59 @@ fn run_semantic(
         tests,
         naming: durable.naming(),
     }))
+}
+
+/// Validate the settled bodies: recursion, the requires-ambient-transaction closure,
+/// the transaction-ownership lattice, and direct durable operations in tests. Each is
+/// reported at check time so the source, not the image, carries the diagnostic; the
+/// verifier independently reconstructs all four from the image alone and rejects a
+/// tampered one as defense in depth.
+///
+/// Returns whether the lowered set, the call graph, and the transaction closure are all
+/// complete — the part of the semantic fence this pass owns.
+fn validate_lowered(
+    lowered: &LoweredFunctionSet,
+    draft: &ImageDraft,
+    diagnostics: &mut DiagnosticCollector,
+) -> Result<bool, InvariantCause> {
+    // The compiled subset does not admit recursion: the direct-call graph must be
+    // acyclic. It runs over the available bodies, retaining independent components
+    // beside missing or cyclic ones.
+    let acyclic = reject_recursion(lowered, diagnostics);
+
+    // All body transactions and generic draining have settled. Couple each actual
+    // filled function with its coordinates before any transaction validation.
+    let bodies = lowered
+        .functions()
+        .iter()
+        .map(|function| {
+            function
+                .as_ref()
+                .map(|function| function.borrow_body(draft))
+                .transpose()
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // A function that mutates durable state carries a checked requires-ambient-
+    // transaction effect: it is callable only inside a `transaction` block or from
+    // another function carrying the effect.
+    reject_unproven_uses(lowered, &acyclic, diagnostics);
+    let transactions_closed = reject_missing_transaction(lowered, &acyclic, diagnostics);
+
+    // The remaining transaction-ownership laws — exactly one region per mutating export,
+    // committed on every normal exit after begin, with no durable operation after
+    // commit; a `transaction` marker only in the export that owns it; and no call to a
+    // transaction owner — are reconstructed from the lowered tape and reported at the
+    // offending source construct.
+    if transactions_closed {
+        reject_transaction_ownership(&bodies, &acyclic, diagnostics);
+    }
+
+    // Tests reach durable data through ordinary invocations. Report direct operations
+    // in complete components here.
+    reject_direct_test_operations(lowered, &acyclic, diagnostics);
+
+    Ok(lowered.is_complete() && acyclic.is_complete() && transactions_closed)
 }
 
 /// The registries the registry-dependent phases resolve names through that stay shared
@@ -1909,19 +1744,43 @@ enum PhaseStop {
     ResourceLimit(CompileResourceLimit),
 }
 
+impl From<BuildError> for PhaseStop {
+    fn from(error: BuildError) -> Self {
+        match error {
+            BuildError::Invariant(invariant) => Self::Invariant(InvariantCause::Generic(invariant)),
+            BuildError::LedgerFull(full) => Self::ResourceLimit(full.into()),
+        }
+    }
+}
+
 impl From<GenericInvariant> for PhaseStop {
     fn from(invariant: GenericInvariant) -> Self {
         Self::Invariant(InvariantCause::Generic(invariant))
     }
 }
 
-/// What the phases that resolve through the function registry produced: their artifacts,
-/// the image content they minted, and the export and test-entry tables they filled.
+impl PhaseStop {
+    /// Seal the pass's collector against this stop. A staged limit reports the rows
+    /// already merged into the collector; the other two stops discard them, exactly as
+    /// the semantic outcome's own arms do.
+    fn into_outcome(self, diagnostics: DiagnosticCollector) -> SemanticOutcome {
+        match self {
+            Self::StageDiagnostics(stage) => {
+                SemanticOutcome::Diagnostics(diagnostics.finish(), stage)
+            }
+            Self::Invariant(cause) => SemanticOutcome::Invariant(cause),
+            Self::ResourceLimit(limit) => SemanticOutcome::ResourceLimit(limit),
+        }
+    }
+}
+
+/// What the phases that resolve through the function registry produced: the image
+/// content they minted, the export and test-entry tables they filled, and whether each
+/// declaration set took every index reserved for it.
 struct RegistryPhases {
-    template_proofs: Option<AcceptedQueuedTemplateProofs>,
-    function_bodies: Option<CompleteDeclaredFunctionBodies>,
-    test_bodies: Option<CompleteDeclaredTestBodies>,
-    lowered_set: Option<LoweredFunctionSet>,
+    function_bodies: bool,
+    test_bodies: bool,
+    lowered_set: LoweredFunctionSet,
     exports: Vec<ExportEntry>,
     tests: Vec<TestEntry>,
 }
@@ -1968,17 +1827,19 @@ struct LoweredTests {
 /// every generic function's body is type-checked once against its type parameters'
 /// constraints — independently of whether or how it is instantiated — under the
 /// generic-owner composite guard, which takes the registry by exclusive `&mut`.
-#[allow(clippy::too_many_arguments)]
 fn template_proof_phase(
     records: &mut TypeRegistry,
-    durable: &DurableRegistry,
-    signatures: &FunctionRegistry,
-    generics: &GenericRegistry<'_>,
-    constants: &ConstRegistry,
+    resolution: Resolution<'_, '_>,
     draft: &mut ImageDraft,
     diagnostics: &mut DiagnosticCollector,
     facts: &mut AnalysisFactCollector,
-) -> Result<AcceptedQueuedTemplateProofs, PhaseStop> {
+) -> Result<(), PhaseStop> {
+    let Resolution {
+        durable,
+        signatures,
+        generics,
+        constants,
+    } = resolution;
     for template in generics.templates() {
         // The template's editor facts are the product this pass keeps — its image work is
         // thrown away — so they are staged against the scope the proof erases, exactly as
@@ -1998,22 +1859,20 @@ fn template_proof_phase(
         records.take_generic_diagnostics().merge_into(diagnostics);
         return Err(PhaseStop::StageDiagnostics(CompileStage::TemplateProof));
     }
-    // Reaching here is the artifact: the pass returned above on the one outcome that
-    // withholds it, so every phase below runs with the queued instance set trustworthy.
-    Ok(AcceptedQueuedTemplateProofs)
+    // Returning `Ok` is the guarantee the phases below rely on: the one outcome that
+    // could leave the queued instance set untrustworthy returned above.
+    Ok(())
 }
 
 /// Run every phase that resolves call sites through the complete function registry: the
 /// once-checked template proof, the declared function bodies, the declared test bodies,
 /// and the generic instance drain. Each phase records its own artifact as it completes;
 /// none is inferred from the diagnostic set.
-#[allow(clippy::too_many_arguments)]
 fn registry_phases(
     parsed: &[Module],
     mode: TestMode,
     records: &mut TypeRegistry,
     resolution: Resolution<'_, '_>,
-    template_proofs: AcceptedQueuedTemplateProofs,
     draft: &mut ImageDraft,
     diagnostics: &mut DiagnosticCollector,
     facts: &mut AnalysisFactCollector,
@@ -2046,10 +1905,7 @@ fn registry_phases(
         facts,
         &mut lowered,
     )?;
-    let function_bodies = functions
-        .exit
-        .complete()
-        .then_some(CompleteDeclaredFunctionBodies);
+    let function_bodies = functions.exit.complete();
 
     let tests = lower_declared_tests(
         &reserved_tests,
@@ -2060,7 +1916,7 @@ fn registry_phases(
         facts,
         &mut lowered,
     )?;
-    let test_bodies = tests.exit.complete().then_some(CompleteDeclaredTestBodies);
+    let test_bodies = tests.exit.complete();
 
     // A refused instance leaves its reserved slot vacant, but does not discard work
     // already queued by other bodies or discovered before the refusal.
@@ -2127,10 +1983,9 @@ fn registry_phases(
     lowered.0.resize_with(draft.function_count(), || None);
 
     Ok(RegistryPhases {
-        template_proofs: Some(template_proofs),
         function_bodies,
         test_bodies,
-        lowered_set: Some(lowered),
+        lowered_set: lowered,
         exports: functions.exports,
         tests: tests.entries,
     })
@@ -2310,9 +2165,12 @@ fn lower_declared_tests(
             exit: DeclarationExit::StoppedOnInstantiationLimit,
         });
     }
+    // Declared test titles are unique across the project, so a repeat is refused at its
+    // own declaration rather than found by rescanning the entries built so far.
+    let mut declared: BTreeSet<&str> = BTreeSet::new();
     let mut exit = DeclarationExit::Exhausted;
     for &(module, test, func) in tests {
-        if entries.iter().any(|existing| existing.name == test.name) {
+        if !declared.insert(test.name.as_str()) {
             diagnostics.push(SourceDiagnostic::at(
                 Code::CheckNameConflict.as_str(),
                 &module.file,
@@ -2562,7 +2420,7 @@ fn reject_duplicate_functions(parsed: &[Module], diagnostics: &mut DiagnosticCol
 fn reject_recursion(
     lowered: &LoweredFunctionSet,
     diagnostics: &mut DiagnosticCollector,
-) -> AcyclicCallGraph {
+) -> AcyclicCallOrder {
     let callees: Vec<Option<&[u16]>> = lowered
         .functions()
         .iter()
@@ -2583,9 +2441,7 @@ fn reject_recursion(
             ));
         }
     }
-    AcyclicCallGraph {
-        order: analysis.into_acyclic_order(),
-    }
+    analysis.into_acyclic_order()
 }
 
 /// Report `check.requires_transaction` for every durable mutation or mutating call an
@@ -2602,9 +2458,9 @@ fn reject_recursion(
 /// examined once, with no convergence sweep.
 fn reject_missing_transaction(
     lowered: &LoweredFunctionSet,
-    acyclic: &AcyclicCallGraph,
+    acyclic: &AcyclicCallOrder,
     diagnostics: &mut DiagnosticCollector,
-) -> Option<AmbientTransactionClosure> {
+) -> bool {
     let by_index = lowered.functions();
     let count = by_index.len();
 
@@ -2612,7 +2468,7 @@ fn reject_missing_transaction(
     // case is a direct unwrapped mutation; the inductive case is an unwrapped call to a
     // function that itself requires one. The graph owner supplies complete acyclic
     // components and their callee-first order.
-    let requires = acyclic.order().propagate(
+    let requires = acyclic.propagate(
         |index| {
             by_index
                 .get(index)
@@ -2684,7 +2540,7 @@ fn reject_missing_transaction(
             }
         }
     }
-    (!reported).then_some(AmbientTransactionClosure)
+    !reported
 }
 
 /// The three-state ownership lattice a mutating export's region walks.
@@ -2729,11 +2585,12 @@ fn instr_successors(code: &[Instr], index: usize) -> Vec<usize> {
 /// verifier reconstructs from the image. The verifier separately checks agreement
 /// at control-flow joins. The requires-ambient-transaction pass runs first and already
 /// covers a durable mutation outside any region, so this pass need not restate it.
-/// `acyclic` carries the shared callee-before-caller order for the two ownership
-/// relations.
+/// Run only once the requires-ambient-transaction pass has reported nothing: otherwise
+/// a single unwrapped mutation would cascade into a second ownership report. `acyclic`
+/// carries the shared callee-before-caller order for the two ownership relations.
 fn reject_transaction_ownership(
     lowered: &[Option<LoweredBody<'_>>],
-    acyclic: &AcyclicCallGraph,
+    acyclic: &AcyclicCallOrder,
     diagnostics: &mut DiagnosticCollector,
 ) {
     let count = lowered.len();
@@ -2768,7 +2625,7 @@ fn reject_transaction_ownership(
             }
         }
     };
-    let mutates = acyclic.order().propagate(
+    let mutates = acyclic.propagate(
         |index| {
             by_index
                 .get(index)
@@ -2777,7 +2634,7 @@ fn reject_transaction_ownership(
         },
         visit_callees,
     );
-    let durable = acyclic.order().propagate(
+    let durable = acyclic.propagate(
         |index| {
             by_index
                 .get(index)
@@ -2790,7 +2647,7 @@ fn reject_transaction_ownership(
     for body in lowered.iter().flatten() {
         let function = body.function;
         let i = usize::from(function.func.index());
-        if !acyclic.order().contains(i) {
+        if !acyclic.contains(i) {
             continue;
         }
 
@@ -2967,7 +2824,7 @@ fn owner_lattice_violation(
 /// callees. The graph owner restricts reporting to complete acyclic components.
 fn reject_direct_test_operations(
     lowered: &LoweredFunctionSet,
-    acyclic: &AcyclicCallGraph,
+    acyclic: &AcyclicCallOrder,
     diagnostics: &mut DiagnosticCollector,
 ) {
     for test in lowered

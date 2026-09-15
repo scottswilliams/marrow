@@ -272,9 +272,7 @@ fn sparse_presence_reports_only_callee_closed_available_functions() {
     let mut diagnostics = DiagnosticCollector::new();
     let acyclic = crate::compile::reject_recursion(&lowered, &mut diagnostics);
     assert_eq!(
-        (0..5)
-            .map(|id| acyclic.order().contains(id))
-            .collect::<Vec<_>>(),
+        (0..5).map(|id| acyclic.contains(id)).collect::<Vec<_>>(),
         vec![false, true, true, false, true]
     );
     let erased = HashSet::from([&family]);

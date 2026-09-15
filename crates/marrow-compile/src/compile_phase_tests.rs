@@ -5,11 +5,8 @@ use crate::compile::admitted;
 
 use super::valid_export_path;
 use super::{
-    AcceptedQueuedTemplateProofs, AcyclicCallGraph, AmbientTransactionClosure, Analyzed, Artifacts,
-    BoundedDiagnostics, Built, CompileFailure, CompileStage, CompleteDeclaredFunctionBodies,
-    CompleteDeclaredTestBodies, CompleteFunctionRegistry, CompleteTypeRegistry, DeclarationExit,
-    Driven, InvariantCause, LoweredFunctionSet, SemanticOutcome, SignaturesComplete,
-    analyze_outcome,
+    Analyzed, BoundedDiagnostics, Built, CompileFailure, CompileStage, DeclarationExit, Driven,
+    InvariantCause, SemanticOutcome, analyze_outcome,
 };
 use crate::compile::Declaration;
 use crate::diag::{DiagnosticCollector, MAX_DIAGNOSTIC_COUNT, SourceDiagnostic};
@@ -284,36 +281,14 @@ fn only_an_exhausted_declaration_set_is_complete() {
     assert!(!DeclarationExit::StoppedOnInstantiationLimit.complete());
 }
 
-/// Availability and the value are minted by one owner, and the availability
-/// proof is zero-sized.
-///
-/// `Artifacts.functions` holds the proof token, never the table, so what `encode`
-/// consumes cannot be forged outside [`CompleteFunctionRegistry`] — the property
-/// the artifact set protects, that a resolved signature table nothing vouches for
-/// is unrepresentable at encode, is preserved verbatim while the table itself
-/// stays available to every phase that resolves call sites through it.
-///
-/// Unforgeability is enforced by the token's private field rather than asserted
-/// here: `SignaturesComplete(())` has no literal form outside the `signatures`
-/// module, so writing one in this file does not compile. Zero size is what this
-/// test still owns — the proof must cost the artifact set nothing.
-#[test]
-fn the_signature_completeness_proof_is_zero_sized() {
-    assert_eq!(std::mem::size_of::<SignaturesComplete>(), 0);
-}
-
 /// A refused signature standing behind an accepted duplicate of its name still
-/// withholds the completeness proof.
+/// leaves the signature table incomplete.
 ///
-/// The proof reads the ledger's refused set. A set that answered only for the
-/// keys a lookup resolves to a refusal would skip this one, and `Artifacts`
-/// would hold a proof minted over a table the compiler refused a declaration
-/// in — the amendment's sentence would be false for exactly this source shape.
-/// Resolve `functions` through the production registry owners, over a project
+/// Completeness reads the ledger's refused set. A set that answered only for the
+/// keys a lookup resolves to a refusal would skip this one, and the semantic fence
+/// would call the pass complete over a table the compiler refused a declaration in.
+/// Resolve the signatures through the production registry owners, over a project
 /// that declares nothing else.
-///
-/// Built through the real builders rather than hand-assembled: a completeness
-/// proof is only meaningful over a table the production build produced.
 fn signature_registry(functions: &[crate::lower::DeclaredFn<'_>]) -> FunctionRegistry {
     let budget = crate::decl::DeclarationBudget::default();
     let mut draft_owner = marrow_image::ImageDraft::new();
@@ -358,7 +333,7 @@ fn signature_registry(functions: &[crate::lower::DeclaredFn<'_>]) -> FunctionReg
 }
 
 #[test]
-fn a_refusal_behind_an_accepted_duplicate_withholds_the_completeness_proof() {
+fn a_refusal_behind_an_accepted_duplicate_leaves_the_signature_table_incomplete() {
     let (identity, _) =
         marrow_project::FileIdentity::validate("src/main.mw").expect("a valid source path");
     let parsed = marrow_syntax::parse_source(
@@ -386,64 +361,6 @@ fn a_refusal_behind_an_accepted_duplicate_withholds_the_completeness_proof() {
         !signatures.every_signature_accepted(),
         "the second `dup` was refused for its parameter type",
     );
-    assert!(
-        CompleteFunctionRegistry(signatures).complete().is_none(),
-        "a refused signature withholds the completeness proof",
-    );
-}
-
-/// The fence's positive direction. Production cannot reach it — an unavailable
-/// artifact always follows a refusal that reported, so the terminal is non-empty and
-/// the diagnostic arm wins — which is exactly why the rule needs a direct test:
-/// without one, deleting the availability arm outright leaves the whole workspace
-/// green. Every artifact is withheld in turn, so each conjunct of the availability
-/// destructure is load-bearing, and the all-available base is checked to be checked.
-#[test]
-fn an_empty_terminal_with_a_withheld_artifact_is_an_invariant() {
-    let available = || Artifacts {
-        types: Some(CompleteTypeRegistry),
-        functions: CompleteFunctionRegistry(signature_registry(&[])).complete(),
-        template_proofs: Some(AcceptedQueuedTemplateProofs),
-        function_bodies: Some(CompleteDeclaredFunctionBodies),
-        test_bodies: Some(CompleteDeclaredTestBodies),
-        lowered: Some(LoweredFunctionSet(Vec::new())),
-        call_graph: Some(AcyclicCallGraph {
-            order: crate::call_graph::analyze(&[]).into_acyclic_order(),
-        }),
-        transactions: Some(AmbientTransactionClosure),
-    };
-    assert!(
-        available().refusal(empty_terminal()).is_none(),
-        "an empty terminal with every artifact available is a checked program"
-    );
-
-    /// One artifact withheld from an otherwise complete set, by name.
-    type Withhold = (&'static str, fn(&mut Artifacts));
-    let withhold: [Withhold; 8] = [
-        ("types", |a| a.types = None),
-        ("functions", |a| a.functions = None),
-        ("template_proofs", |a| a.template_proofs = None),
-        ("function_bodies", |a| a.function_bodies = None),
-        ("test_bodies", |a| a.test_bodies = None),
-        ("lowered", |a| a.lowered = None),
-        ("call_graph", |a| a.call_graph = None),
-        ("transactions", |a| a.transactions = None),
-    ];
-    for (name, withhold) in withhold {
-        let mut artifacts = available();
-        withhold(&mut artifacts);
-        let refusal = artifacts
-            .refusal(empty_terminal())
-            .unwrap_or_else(|| panic!("withholding {name} must refuse the program"));
-        assert!(
-            matches!(
-                refusal,
-                SemanticOutcome::Invariant(InvariantCause::UnavailableWithoutReport)
-            ),
-            "withholding {name} with an empty terminal is the unavailable-without-report \
-             invariant, not a checked program or a diagnostic outcome"
-        );
-    }
 }
 
 /// A complete-but-empty semantic diagnostics terminal is a private
@@ -1003,7 +920,9 @@ pub fn addB(id: int, t: string) {
                 .all(|record| *record == branch_records[0])
         );
         record_counts[index] = checked.draft.record_type_count();
-        let built = super::encode(checked).expect("the checked draft encodes");
+        let built = checked
+            .encode()
+            .unwrap_or_else(|_| panic!("the checked draft encodes"));
         assert!(!built.image.bytes.is_empty());
     }
     assert_eq!(
@@ -1113,7 +1032,9 @@ pub fn readWeight(id: int, noteId: int, tagId: int): int? {
         contract.value_shapes().view(weight.value()),
         Some(ValueShapeView::Scalar(Scalar::Int))
     );
-    let built = super::encode(checked).expect("typed branch reads encode");
+    let built = checked
+        .encode()
+        .unwrap_or_else(|_| panic!("typed branch reads encode"));
     assert!(!built.image.bytes.is_empty());
 }
 
