@@ -1317,7 +1317,7 @@ for (const [label, bytes] of [
 
 for (const boundary of [0n, 0xffff_ffffn]) {
   const { observed, session } = driveReply([{
-    code: "run.boundary",
+    code: "run.overflow",
     kind: "fault",
     span: { column: boundary, line: boundary },
   }], { pendingTurn: boundary, replyTurn: boundary });

@@ -66,7 +66,7 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
             return emit_records(
                 args.format,
                 &[Record::ArtifactRejected {
-                    code: rejection.code(),
+                    code: crate::rejection_code(&rejection),
                 }],
                 ExitCode::FAILURE,
             );
@@ -143,7 +143,7 @@ fn durable_outcome(run: marrow_vm::DurableRun, meta: &marrow_compile::TestEntry)
     match run {
         marrow_vm::DurableRun::Ran(result) => classify(result),
         marrow_vm::DurableRun::Parked => TestOutcome::Errored {
-            code: Code::CliDurableUnsupported.as_str(),
+            code: Code::CliDurableUnsupported,
             line: meta.line,
             column: meta.column,
         },
@@ -164,7 +164,7 @@ fn classify(
     match result {
         Ok(_) => TestOutcome::Passed,
         Err(marrow_vm::DurableExecutionFault::Runtime(fault))
-            if fault.code() == Code::RunAssert.as_str() =>
+            if fault.code() == Code::RunAssert =>
         {
             TestOutcome::Failed {
                 code: fault.code(),
@@ -333,7 +333,7 @@ mod output_tests {
     #[test]
     fn failure_records_and_results_stop_at_write_or_flush_failure() {
         let records = [Record::OperationalError {
-            code: Code::IoRead.as_str(),
+            code: Code::IoRead,
             detail: None,
         }];
         let tests = [TestRecord {

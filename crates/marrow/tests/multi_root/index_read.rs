@@ -165,9 +165,9 @@ impl std::fmt::Debug for DebugRun<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.0 {
             DurableRun::Ran(Ok(_)) => write!(f, "Ran(Ok(value))"),
-            DurableRun::Ran(Err(fault)) => write!(f, "Ran(Err({}))", fault.code()),
+            DurableRun::Ran(Err(fault)) => write!(f, "Ran(Err({}))", fault.code().as_str()),
             DurableRun::Parked => write!(f, "Parked"),
-            DurableRun::Failed(code) => write!(f, "Failed({code})"),
+            DurableRun::Failed(code) => write!(f, "Failed({})", code.as_str()),
         }
     }
 }
@@ -190,7 +190,7 @@ fn attach(image: &VerifiedImage) -> MemoryAttachment {
     match mint_ephemeral(prepare(image.clone())).into_mint() {
         MintOutcome::Ready(attachment) => attachment,
         MintOutcome::Storeless | MintOutcome::Parked => panic!("the books root must be executable"),
-        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {cause}"),
+        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {}", cause.as_str()),
     }
 }
 
@@ -824,7 +824,7 @@ fn key_only_unique_subset_collision_rolls_back_the_complete_transaction() {
     let result = run_export(&mut store, export(&image, "collide").id(), vec![]).expect("export");
     match result {
         DurableRun::Ran(Err(marrow_vm::DurableExecutionFault::Runtime(fault))) => {
-            assert_eq!(fault.code(), "run.unique_index");
+            assert_eq!(fault.code(), Code::RunUniqueIndex);
             assert_eq!((fault.line(), fault.column()), (35, 9));
         }
         other => panic!(

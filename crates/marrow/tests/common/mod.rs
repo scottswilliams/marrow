@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use marrow_codes::Code;
 use marrow_compile::{CompileFailure, Compiled, SourceDiagnostic, compile};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput, capture};
 use marrow_verify::{VerifiedImage, verify};
@@ -187,7 +188,7 @@ impl Project {
                     panic!("durable shape is not executable by the ephemeral kernel")
                 }
                 MintOutcome::Failed(cause) => {
-                    panic!("minting the attachment failed: {cause}")
+                    panic!("minting the attachment failed: {}", cause.as_str())
                 }
             }
         };
@@ -272,7 +273,7 @@ impl Session {
         if function.demand().is_empty() {
             return match marrow_vm::run(function, args) {
                 Ok(value) => CallOutcome::Value(value),
-                Err(fault) => CallOutcome::Fault(fault.code().to_string()),
+                Err(fault) => CallOutcome::Fault(fault.code()),
             };
         }
         let attachment = self
@@ -281,9 +282,9 @@ impl Session {
             .expect("a durable export requires a minted attachment");
         match run_export(attachment, sealed.id(), args).expect("the export is in the image") {
             DurableRun::Ran(Ok(value)) => CallOutcome::Value(value),
-            DurableRun::Ran(Err(fault)) => CallOutcome::Fault(fault.code().to_string()),
+            DurableRun::Ran(Err(fault)) => CallOutcome::Fault(fault.code()),
             DurableRun::Parked => CallOutcome::Parked,
-            DurableRun::Failed(code) => CallOutcome::Failed(code.to_string()),
+            DurableRun::Failed(code) => CallOutcome::Failed(code),
         }
     }
 
@@ -298,12 +299,12 @@ impl Session {
 pub enum CallOutcome {
     /// The export returned; `None` for a Unit return.
     Value(Option<Value>),
-    /// A source-mapped runtime fault, named by its stable `marrow-codes` string.
-    Fault(String),
+    /// A source-mapped runtime fault, named by its registered code.
+    Fault(Code),
     /// The image's durable shape is not executable by the ephemeral kernel.
     Parked,
-    /// Minting or opening the session failed operationally, named by stable code.
-    Failed(String),
+    /// Minting or opening the session failed operationally, named by its registered code.
+    Failed(Code),
 }
 
 // ---------------------------------------------------------------------------

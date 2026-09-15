@@ -8,6 +8,7 @@
 
 use std::fmt::{self, Write};
 
+use marrow_codes::Code;
 use marrow_verify::{SealedEnumType, SealedRecordType};
 use marrow_vm::Value;
 
@@ -33,22 +34,18 @@ pub(crate) enum Record {
     /// Attach reported unconfirmed activation before any invocation was sent.
     ActivationUncertain { instance: String },
     /// Native attach was spawned, but its result could not be established.
-    ActivationOutcomeUnknown { cause_code: &'static str },
+    ActivationOutcomeUnknown { cause_code: Code },
     /// A successful value (or `None` for a Unit return).
     Value(Option<Value>),
     /// Family 1: a source diagnostic (parse/check).
-    Diagnostic {
-        code: &'static str,
-        line: u32,
-        column: u32,
-    },
+    Diagnostic { code: Code, line: u32, column: u32 },
     /// Family 2: an image decode/verify rejection.
-    ArtifactRejected { code: &'static str },
+    ArtifactRejected { code: Code },
     /// Family 3: a source-mapped runtime fault. `detail` is the static author text
     /// of an `unreachable("...")` fault, surfaced in text output only; the typed
     /// JSONL surface stays the code and span.
     Fault {
-        code: &'static str,
+        code: Code,
         line: u32,
         column: u32,
         detail: Option<String>,
@@ -56,7 +53,7 @@ pub(crate) enum Record {
     /// The invocation did not return. The source-mapped fault and durable
     /// commit state are orthogonal typed facts.
     Incomplete {
-        code: &'static str,
+        code: Code,
         durable: marrow_vm::DurableCommitState,
         line: u32,
         column: u32,
@@ -65,16 +62,13 @@ pub(crate) enum Record {
     /// typed human message (e.g. the file and reason a `.marrow/ids` read was
     /// rejected), surfaced in text output only; the KAT-frozen JSONL surface stays
     /// the code alone.
-    OperationalError {
-        code: &'static str,
-        detail: Option<String>,
-    },
+    OperationalError { code: Code, detail: Option<String> },
     /// A durable call was dispatched but no exact valid correlated reply could
     /// be accepted. The cause kind and its stable diagnostic code remain
     /// orthogonal to this outcome and never imply a retry.
     OutcomeUnknown {
-        cause: &'static str,
-        cause_code: &'static str,
+        cause: marrow_runner::CauseKind,
+        cause_code: Code,
     },
     /// Family 4 specialization: an aggregate compiler resource-limit outcome. Unlike a
     /// bare operational error it carries the typed kind — which fixed bound was
@@ -104,7 +98,7 @@ impl Record {
                 vec![Record::CompilerResourceLimit { kind: limit.kind() }]
             }
             marrow_compile::CompileFailure::Invariant(_) => vec![Record::OperationalError {
-                code: marrow_codes::Code::CliCompilerInvariant.as_str(),
+                code: marrow_codes::Code::CliCompilerInvariant,
                 detail: None,
             }],
         }
@@ -115,7 +109,7 @@ impl Record {
         diagnostics
             .iter()
             .map(|diagnostic| Record::Diagnostic {
-                code: diagnostic.code().as_str(),
+                code: diagnostic.code(),
                 line: diagnostic.line(),
                 column: diagnostic.column(),
             })
@@ -152,14 +146,18 @@ impl Record {
                     .unwrap_or_default(),
             ),
             Record::CompanionStaging { path, cause } => {
-                format!("companion staging removal failed for {path}: {cause}")
+                format!(
+                    "companion staging removal failed for {path}: {}",
+                    cause.as_str()
+                )
             }
             Record::ActivationUncertain { instance } => format!(
                 "{}: activation is unconfirmed for store {instance}; no invocation was sent",
                 marrow_codes::Code::StoreActivationUncertain.as_str(),
             ),
             Record::ActivationOutcomeUnknown { cause_code } => format!(
-                "activation outcome unknown: attach may have changed the binding; no invocation was sent (cause: {cause_code})",
+                "activation outcome unknown: attach may have changed the binding; no invocation was sent (cause: {})",
+                cause_code.as_str(),
             ),
             Record::Value(Some(Value::Text(text))) if text.len() > MAX_TEXT_BYTES => return Err(()),
             // Aggregate text has no byte ceiling; the bare-string limit is checked above.
@@ -167,15 +165,17 @@ impl Record {
                 marrow_vm::render::value_text(value, types, enums, usize::MAX).map_err(|_| ())?
             }
             Record::Value(None) => String::new(),
-            Record::Diagnostic { code, line, column } => format!("{code} at {line}:{column}"),
+            Record::Diagnostic { code, line, column } => {
+                format!("{} at {line}:{column}", code.as_str())
+            }
             Record::Fault {
                 code,
                 line,
                 column,
                 detail,
             } => match detail {
-                Some(text) => format!("{code} at {line}:{column}: {text}"),
-                None => format!("{code} at {line}:{column}"),
+                Some(text) => format!("{} at {line}:{column}: {text}", code.as_str()),
+                None => format!("{} at {line}:{column}", code.as_str()),
             },
             Record::Incomplete {
                 code,
@@ -183,19 +183,22 @@ impl Record {
                 line,
                 column,
             } => format!(
-                "{code} at {line}:{column}: invocation incomplete; durable state {}",
+                "{} at {line}:{column}: invocation incomplete; durable state {}",
+                code.as_str(),
                 durable_state_name(*durable),
             ),
-            Record::ArtifactRejected { code } => code.to_string(),
+            Record::ArtifactRejected { code } => code.as_str().to_string(),
             Record::OperationalError { code, detail } => match detail {
-                Some(text) => format!("{code}: {text}"),
-                None => code.to_string(),
+                Some(text) => format!("{}: {text}", code.as_str()),
+                None => code.as_str().to_string(),
             },
             Record::OutcomeUnknown { cause, cause_code } => format!(
                 "{}: the call was dispatched but no exact valid reply could be accepted, so its \
                  outcome is unknown and it was not retried; run a read-only export to observe \
-                 the store's current state (cause: {cause}, {cause_code})",
+                 the store's current state (cause: {}, {})",
                 marrow_codes::Code::RunOutcomeUnknown.as_str(),
+                cause.as_str(),
+                cause_code.as_str(),
             ),
             Record::CompilerResourceLimit { kind } => format!(
                 "{}: {}",
@@ -221,7 +224,7 @@ impl Record {
                 kill_error,
             } => format!(
                 r#"{{"cause":{},"kill_error":{},"kind":"cleanup","outcome":"unreaped","pid":{pid},"staging":{}}}"#,
-                json_string(cause),
+                json_string(cause.as_str()),
                 kill_error
                     .as_ref()
                     .map(|error| json_string(error))
@@ -230,7 +233,7 @@ impl Record {
             ),
             Record::CompanionStaging { path, cause } => format!(
                 r#"{{"cause":{},"kind":"cleanup","outcome":"staging_removal_failed","path":{}}}"#,
-                json_string(cause),
+                json_string(cause.as_str()),
                 json_string(path),
             ),
             Record::Value(value) => {
@@ -239,18 +242,18 @@ impl Record {
             }
             Record::Diagnostic { code, line, column } => format!(
                 r#"{{"code":{},"kind":"run","outcome":"diagnostic","span":{}}}"#,
-                json_string(code),
+                json_string(code.as_str()),
                 span_object(*line, *column)
             ),
             Record::ArtifactRejected { code } => format!(
                 r#"{{"code":{},"kind":"run","outcome":"artifact_rejected"}}"#,
-                json_string(code)
+                json_string(code.as_str())
             ),
             Record::Fault {
                 code, line, column, ..
             } => format!(
                 r#"{{"code":{},"kind":"run","outcome":"fault","span":{}}}"#,
-                json_string(code),
+                json_string(code.as_str()),
                 span_object(*line, *column)
             ),
             Record::Incomplete {
@@ -260,7 +263,7 @@ impl Record {
                 column,
             } => format!(
                 r#"{{"code":{},"durable":{},"kind":"run","outcome":"incomplete","span":{}}}"#,
-                json_string(code),
+                json_string(code.as_str()),
                 json_string(durable_state_name(*durable)),
                 span_object(*line, *column),
             ),
@@ -271,16 +274,16 @@ impl Record {
             ),
             Record::ActivationOutcomeUnknown { cause_code } => format!(
                 r#"{{"cause_code":{},"kind":"activation","outcome":"outcome_unknown"}}"#,
-                json_string(cause_code),
+                json_string(cause_code.as_str()),
             ),
             Record::OperationalError { code, .. } => format!(
                 r#"{{"code":{},"kind":"run","outcome":"error"}}"#,
-                json_string(code)
+                json_string(code.as_str())
             ),
             Record::OutcomeUnknown { cause, cause_code } => format!(
                 r#"{{"cause":{},"cause_code":{},"code":{},"kind":"run","outcome":"outcome_unknown"}}"#,
-                json_string(cause),
-                json_string(cause_code),
+                json_string(cause.as_str()),
+                json_string(cause_code.as_str()),
                 json_string(marrow_codes::Code::RunOutcomeUnknown.as_str()),
             ),
             Record::CompilerResourceLimit { kind } => format!(
@@ -300,17 +303,17 @@ impl Record {
 pub(crate) enum TestOutcome {
     Passed,
     Failed {
-        code: &'static str,
+        code: Code,
         line: u32,
         column: u32,
     },
     Errored {
-        code: &'static str,
+        code: Code,
         line: u32,
         column: u32,
     },
     Incomplete {
-        code: &'static str,
+        code: Code,
         durable: marrow_vm::DurableCommitState,
         line: u32,
         column: u32,
@@ -341,10 +344,10 @@ impl TestRecord {
                 span_object(self.decl_line, self.decl_column),
             ),
             TestOutcome::Failed { code, line, column } => {
-                self.fault_jsonl("failed", code, *line, *column)
+                self.fault_jsonl("failed", *code, *line, *column)
             }
             TestOutcome::Errored { code, line, column } => {
-                self.fault_jsonl("errored", code, *line, *column)
+                self.fault_jsonl("errored", *code, *line, *column)
             }
             TestOutcome::Incomplete {
                 code,
@@ -353,7 +356,7 @@ impl TestRecord {
                 column,
             } => format!(
                 r#"{{"code":{},"durable":{},"file":{},"kind":"test","name":{},"outcome":"incomplete","span":{}}}"#,
-                json_string(code),
+                json_string(code.as_str()),
                 json_string(durable_state_name(*durable)),
                 json_string(&self.file),
                 json_string(&self.name),
@@ -362,10 +365,10 @@ impl TestRecord {
         }
     }
 
-    fn fault_jsonl(&self, outcome: &str, code: &str, line: u32, column: u32) -> String {
+    fn fault_jsonl(&self, outcome: &str, code: Code, line: u32, column: u32) -> String {
         format!(
             r#"{{"code":{},"file":{},"kind":"test","name":{},"outcome":"{outcome}","span":{}}}"#,
-            json_string(code),
+            json_string(code.as_str()),
             json_string(&self.file),
             json_string(&self.name),
             span_object(line, column),
@@ -377,10 +380,10 @@ impl TestRecord {
         match &self.outcome {
             TestOutcome::Passed => format!("ok    {}", self.name),
             TestOutcome::Failed { code, line, column } => {
-                format!("FAIL  {} ({code} at {line}:{column})", self.name)
+                format!("FAIL  {} ({} at {line}:{column})", self.name, code.as_str())
             }
             TestOutcome::Errored { code, line, column } => {
-                format!("ERROR {} ({code} at {line}:{column})", self.name)
+                format!("ERROR {} ({} at {line}:{column})", self.name, code.as_str())
             }
             TestOutcome::Incomplete {
                 code,
@@ -388,8 +391,9 @@ impl TestRecord {
                 line,
                 column,
             } => format!(
-                "ERROR {} ({code} at {line}:{column}; incomplete, durable {})",
+                "ERROR {} ({} at {line}:{column}; incomplete, durable {})",
                 self.name,
+                code.as_str(),
                 durable_state_name(*durable),
             ),
         }
@@ -630,6 +634,7 @@ fn json_string(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{JsonData, MAX_DATA_BYTES, Record, json_string, render_data};
+    use marrow_codes::Code;
     use marrow_vm::Value;
 
     #[test]
@@ -670,7 +675,7 @@ mod tests {
             r#"{"code":"store.activation_uncertain","instance":"12121212121212121212121212121212","kind":"activation","outcome":"uncertain"}"#
         );
         let missing = Record::ActivationOutcomeUnknown {
-            cause_code: "runner.handshake",
+            cause_code: Code::RunnerHandshake,
         };
         assert_eq!(
             missing.to_jsonl(&[], &[]).unwrap(),
@@ -716,16 +721,16 @@ mod tests {
     fn outcome_unknown_is_a_distinct_typed_state() {
         assert_eq!(
             Record::OutcomeUnknown {
-                cause: "wire",
-                cause_code: "wire.malformed",
+                cause: marrow_runner::CauseKind::Wire,
+                cause_code: Code::WireMalformed,
             }
             .to_jsonl(&[], &[])
             .expect("record renders"),
             r#"{"cause":"wire","cause_code":"wire.malformed","code":"run.outcome_unknown","kind":"run","outcome":"outcome_unknown"}"#,
         );
         let text = Record::OutcomeUnknown {
-            cause: "wire",
-            cause_code: "wire.malformed",
+            cause: marrow_runner::CauseKind::Wire,
+            cause_code: Code::WireMalformed,
         }
         .to_text(&[], &[])
         .expect("record renders");
@@ -756,7 +761,7 @@ mod tests {
     fn each_family_projects_a_distinct_outcome() {
         assert!(
             Record::Diagnostic {
-                code: "check.type",
+                code: Code::CheckType,
                 line: 3,
                 column: 5
             }
@@ -766,7 +771,7 @@ mod tests {
         );
         assert!(
             Record::ArtifactRejected {
-                code: "image.function"
+                code: Code::ImageFunction
             }
             .to_jsonl(&[], &[])
             .expect("record renders")
@@ -774,7 +779,7 @@ mod tests {
         );
         assert!(
             Record::Fault {
-                code: "run.overflow",
+                code: Code::RunOverflow,
                 line: 1,
                 column: 1,
                 detail: None,
@@ -785,7 +790,7 @@ mod tests {
         );
         assert_eq!(
             Record::Incomplete {
-                code: "run.commit",
+                code: Code::RunCommit,
                 durable: marrow_vm::DurableCommitState::KnownOld,
                 line: 7,
                 column: 9,
@@ -796,7 +801,7 @@ mod tests {
         );
         assert!(
             Record::OperationalError {
-                code: "store.io",
+                code: Code::StoreIo,
                 detail: None,
             }
             .to_jsonl(&[], &[])
@@ -810,7 +815,7 @@ mod tests {
     #[test]
     fn operational_detail_is_text_only() {
         let record = Record::OperationalError {
-            code: "project.ids_corrupt",
+            code: Code::ProjectIdsCorrupt,
             detail: Some(".marrow/ids: unresolved Git conflict markers".to_string()),
         };
         assert_eq!(
@@ -848,7 +853,7 @@ mod tests {
     #[test]
     fn keys_are_in_ascending_byte_order() {
         let line = Record::Fault {
-            code: "run.overflow",
+            code: Code::RunOverflow,
             line: 7,
             column: 2,
             detail: None,

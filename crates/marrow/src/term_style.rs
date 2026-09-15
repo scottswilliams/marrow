@@ -1,3 +1,5 @@
+use marrow_codes::Code;
+
 use std::io::IsTerminal;
 
 #[derive(Clone, Copy)]
@@ -46,8 +48,8 @@ impl Palette {
         paint_if(self.enabled, style, text.as_ref())
     }
 
-    pub(crate) fn code_message(self, code: &str, message: impl std::fmt::Display) -> String {
-        format!("{}: {message}", self.paint(Style::Code, code))
+    pub(crate) fn code_message(self, code: Code, message: impl std::fmt::Display) -> String {
+        format!("{}: {message}", self.paint(Style::Code, code.as_str()))
     }
 }
 
@@ -55,7 +57,7 @@ pub(crate) fn paint(stream: Stream, style: Style, text: impl AsRef<str>) -> Stri
     Palette::for_stream(stream).paint(style, text)
 }
 
-pub(crate) fn code_message(stream: Stream, code: &str, message: impl std::fmt::Display) -> String {
+pub(crate) fn code_message(stream: Stream, code: Code, message: impl std::fmt::Display) -> String {
     Palette::for_stream(stream).code_message(code, message)
 }
 
@@ -130,11 +132,11 @@ mod tests {
     #[test]
     fn code_message_styles_only_the_code_token() {
         assert_eq!(
-            Palette::for_test(true).code_message("io.write", "failed to write output"),
+            Palette::for_test(true).code_message(Code::IoWrite, "failed to write output"),
             "\x1b[36mio.write\x1b[0m: failed to write output"
         );
         assert_eq!(
-            Palette::for_test(false).code_message("io.write", "failed to write output"),
+            Palette::for_test(false).code_message(Code::IoWrite, "failed to write output"),
             "io.write: failed to write output"
         );
     }

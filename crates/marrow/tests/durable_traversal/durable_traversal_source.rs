@@ -7,6 +7,7 @@
 //! capture -> compile -> verify -> attach -> VM — over one persistent ephemeral
 //! attachment, seeding through ordinary writes and reading the traversal back.
 
+use marrow_codes::Code;
 use marrow_verify::{SealedExport, VerifiedImage};
 use marrow_vm::{
     DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
@@ -357,9 +358,9 @@ fn run(
         .expect("the export is in the image")
     {
         DurableRun::Ran(Ok(value)) => value,
-        DurableRun::Ran(Err(fault)) => panic!("{name} faulted: {}", fault.code()),
+        DurableRun::Ran(Err(fault)) => panic!("{name} faulted: {}", fault.code().as_str()),
         DurableRun::Parked => panic!("{name} parked"),
-        DurableRun::Failed(code) => panic!("{name} failed: {code}"),
+        DurableRun::Failed(code) => panic!("{name} failed: {}", code.as_str()),
     }
 }
 
@@ -369,7 +370,7 @@ fn attach(image: &VerifiedImage) -> MemoryAttachment {
         MintOutcome::Storeless | MintOutcome::Parked => {
             panic!("a flat root with a simple branch must be executable")
         }
-        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {cause}"),
+        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {}", cause.as_str()),
     }
 }
 
@@ -591,11 +592,11 @@ fn run_fault(
     attachment: &mut MemoryAttachment,
     name: &str,
     args: Vec<Value>,
-) -> String {
+) -> Code {
     match run_export(attachment, export(image, name).id(), args)
         .expect("the export is in the image")
     {
-        DurableRun::Ran(Err(fault)) => fault.code().to_string(),
+        DurableRun::Ran(Err(fault)) => fault.code(),
         other => panic!("{name} did not fault: {:?}", DebugRun(&other)),
     }
 }
@@ -605,9 +606,9 @@ impl std::fmt::Debug for DebugRun<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.0 {
             DurableRun::Ran(Ok(value)) => write!(f, "Ran(Ok({value:?}))"),
-            DurableRun::Ran(Err(fault)) => write!(f, "Ran(Err({}))", fault.code()),
+            DurableRun::Ran(Err(fault)) => write!(f, "Ran(Err({}))", fault.code().as_str()),
             DurableRun::Parked => write!(f, "Parked"),
-            DurableRun::Failed(code) => write!(f, "Failed({code})"),
+            DurableRun::Failed(code) => write!(f, "Failed({})", code.as_str()),
         }
     }
 }
@@ -696,7 +697,7 @@ fn every_abnormal_body_exit_decides_the_on_more_timing() {
     // A fault in a body aborts the whole traversal; `on more` is never reached.
     assert_eq!(
         run_fault(&image, &mut attachment, "faultOnSecond", vec![]),
-        "run.unreachable"
+        Code::RunUnreachable
     );
 }
 
@@ -849,6 +850,6 @@ fn an_inner_abnormal_exit_decides_the_inner_on_more_while_the_outer_is_independe
     // book 2's first frozen note faults before any `on more`, inner or outer, is reached.
     assert_eq!(
         run_fault(&image, &mut attachment, "nestedInnerFault", vec![]),
-        "run.unreachable",
+        Code::RunUnreachable,
     );
 }

@@ -93,10 +93,7 @@ fn dispatch_os(command: &OsStr, rest: &[OsString]) -> ExitCode {
         return ExitCode::from(2);
     };
     let Some(rest) = utf8_args(rest) else {
-        report_simple_error(
-            Code::ConfigInvalid.as_str(),
-            "command arguments must be valid UTF-8",
-        );
+        report_simple_error(Code::ConfigInvalid, "command arguments must be valid UTF-8");
         return ExitCode::FAILURE;
     };
     dispatch(command, &rest)
@@ -167,7 +164,7 @@ fn run_worker_thread(worker: std::io::Result<std::thread::JoinHandle<ExitCode>>)
             .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
         Err(error) => {
             report_simple_error(
-                Code::IoThread.as_str(),
+                Code::IoThread,
                 &format!("failed to spawn Marrow worker thread: {error}"),
             );
             ExitCode::FAILURE
@@ -177,7 +174,7 @@ fn run_worker_thread(worker: std::io::Result<std::thread::JoinHandle<ExitCode>>)
 
 /// Print a typed `code: message` line to standard error. The thin CLI renders
 /// only text; structured output returns with the commands that need it.
-pub(crate) fn report_simple_error(code: &str, message: &str) {
+pub(crate) fn report_simple_error(code: Code, message: &str) {
     eprintln!(
         "{}",
         term_style::code_message(Stream::Stderr, code, message)
@@ -192,11 +189,15 @@ pub(crate) fn resource_limit_message(description: &str) -> String {
     format!("the compiler reached a fixed resource limit: {description}")
 }
 
+/// The registered code a verifier rejection reports. `marrow-verify` still spells its
+/// `image.*` codes as strings, so they are re-interned at that one crate boundary; the
+/// call disappears when `VerifyRejection::code` returns a [`Code`].
+pub(crate) fn rejection_code(rejection: &marrow_verify::VerifyRejection) -> Code {
+    Code::from_code(rejection.code()).expect("the verifier reports a registered image code")
+}
+
 pub(crate) fn report_io_error(file: &str, error: &std::io::Error) {
-    report_simple_error(
-        Code::IoRead.as_str(),
-        &format!("failed to read {file}: {error}"),
-    );
+    report_simple_error(Code::IoRead, &format!("failed to read {file}: {error}"));
 }
 
 pub(crate) fn unknown_option(command: &str, value: &str) -> ExitCode {

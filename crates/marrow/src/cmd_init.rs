@@ -61,14 +61,14 @@ pub(crate) fn init(args: &[String]) -> ExitCode {
         }
         Err(ClaimError::AlreadyExists) => {
             report_simple_error(
-                Code::ConfigInvalid.as_str(),
+                Code::ConfigInvalid,
                 &format!("cannot create {}: it already exists", root.display()),
             );
             ExitCode::FAILURE
         }
         Err(ClaimError::Io(error)) => {
             report_simple_error(
-                Code::IoWrite.as_str(),
+                Code::IoWrite,
                 &format!("failed to create {}: {error}", root.display()),
             );
             ExitCode::FAILURE

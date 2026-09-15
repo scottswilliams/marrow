@@ -848,7 +848,7 @@ fn an_invalid_scalar_reports_a_logical_finding(toolchain: &Path) {
         .expect("stored label");
     bytes[at] = 0xff;
     fs::write(&engine, &bytes).expect("write malformed UTF-8");
-    let code = marrow_codes::Code::StoreAuditUndecodable.as_str();
+    let code = marrow_codes::Code::StoreAuditUndecodable;
     let place = "^counters[1].label";
     for format in ["text", "jsonl"] {
         let output = marrow(
@@ -865,7 +865,10 @@ fn an_invalid_scalar_reports_a_logical_finding(toolchain: &Path) {
         assert_eq!(output.status.code(), Some(1));
         let out = text(&output.stdout);
         if format == "text" {
-            assert!(out.contains(&format!("  {code} at {place}\n")), "{out}");
+            assert!(
+                out.contains(&format!("  {} at {place}\n", code.as_str())),
+                "{out}"
+            );
             assert!(
                 out.contains("Physical integrity was not checked.\n"),
                 "{out}"
@@ -881,7 +884,10 @@ fn an_invalid_scalar_reports_a_logical_finding(toolchain: &Path) {
             );
             assert_eq!(
                 lines[1],
-                format!("{{\"code\":\"{code}\",\"kind\":\"finding\",\"place\":\"{place}\"}}")
+                format!(
+                    "{{\"code\":\"{}\",\"kind\":\"finding\",\"place\":\"{place}\"}}",
+                    code.as_str()
+                )
             );
         }
         assert_eq!(fs::read(&engine).expect("unchanged engine"), bytes);

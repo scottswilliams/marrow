@@ -7,6 +7,7 @@
 //! and cannot silently drift: a fix that lands without moving its row to
 //! [`Expect::RoundTrips`] fails the gate on the changed verdict.
 
+use marrow_codes::Code;
 use marrow_verify::VerifiedImage;
 use marrow_vm::{
     DurableRun, MintOutcome, Value, fresh_test, mint_ephemeral, prepare, run_export, run_test,
@@ -593,7 +594,7 @@ fn run_all_tests(label: &str, image: &VerifiedImage) {
                 panic!(
                     "{label}: test `{}` faulted at run: {}",
                     entry.name(),
-                    fault.code()
+                    fault.code().as_str()
                 )
             }
             DurableRun::Parked => {
@@ -604,8 +605,9 @@ fn run_all_tests(label: &str, image: &VerifiedImage) {
             }
             DurableRun::Failed(code) => {
                 panic!(
-                    "{label}: test `{}` failed to mint its attachment: {code}",
-                    entry.name()
+                    "{label}: test `{}` failed to mint its attachment: {}",
+                    entry.name(),
+                    code.as_str()
                 )
             }
         }
@@ -773,7 +775,7 @@ fn a_faulting_export_invocation_rolls_back_without_disturbing_a_prior_commit() {
     {
         DurableRun::Ran(Err(fault)) => assert_eq!(
             fault.code(),
-            "run.divide_by_zero",
+            Code::RunDivideByZero,
             "the fault reached the caller"
         ),
         other => panic!("badUpdate must fault, not {:?}", DurableRunDebug(&other)),
@@ -822,9 +824,9 @@ impl std::fmt::Debug for DurableRunDebug<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.0 {
             DurableRun::Ran(Ok(value)) => write!(f, "Ran(Ok({value:?}))"),
-            DurableRun::Ran(Err(fault)) => write!(f, "Ran(Err({}))", fault.code()),
+            DurableRun::Ran(Err(fault)) => write!(f, "Ran(Err({}))", fault.code().as_str()),
             DurableRun::Parked => write!(f, "Parked"),
-            DurableRun::Failed(code) => write!(f, "Failed({code})"),
+            DurableRun::Failed(code) => write!(f, "Failed({})", code.as_str()),
         }
     }
 }

@@ -4,6 +4,7 @@
 //! projects asserting typed diagnostics.
 
 use crate::common::{Project, conformance_dir, marrow_in};
+use marrow_codes::Code;
 use marrow_vm::{Value, run};
 
 /// The collection conformance fixture passes end to end: list construction, append,
@@ -432,7 +433,7 @@ fn conversion_respects_the_text_result_boundary() {
         Err(fault) => fault,
         Ok(_) => panic!("the over-limit conversion must fault before returning text"),
     };
-    assert_eq!(fault.code(), "run.text_limit");
+    assert_eq!(fault.code(), Code::RunTextLimit);
     assert_eq!((fault.line(), fault.column()), (9, 12));
 }
 

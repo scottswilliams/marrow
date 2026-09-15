@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
 
+use marrow_codes::Code;
 use marrow_compile::{CompileFailure, ExportEntry, ExportId, SourceDiagnostic, compile};
 use marrow_project::{DurableIdentityId, IdentityAnchor, ProjectInput};
 use marrow_project_fs::IdsPublication;
@@ -75,7 +76,7 @@ impl Outcome {
         }
     }
 
-    fn operational(code: &'static str, detail: Option<String>) -> Outcome {
+    fn operational(code: Code, detail: Option<String>) -> Outcome {
         Outcome::failed(vec![Record::OperationalError { code, detail }])
     }
 
@@ -127,7 +128,7 @@ fn run_inner(args: &RunArgs, image_slot: &mut Option<VerifiedImage>) -> Result<O
     // verified image — only `marrow_verify::verify` can.
     let verified = marrow_verify::verify(&compiled.image.bytes).map_err(|rejection| {
         Outcome::failed(vec![Record::ArtifactRejected {
-            code: rejection.code(),
+            code: crate::rejection_code(&rejection),
         }])
     })?;
     let image: &VerifiedImage = image_slot.insert(verified);
@@ -136,7 +137,7 @@ fn run_inner(args: &RunArgs, image_slot: &mut Option<VerifiedImage>) -> Result<O
         // The directory named an id the verified image does not carry: a compiler
         // bug, since the same draft produced both.
         return Err(Outcome::operational(
-            marrow_codes::Code::CliCompilerInvariant.as_str(),
+            marrow_codes::Code::CliCompilerInvariant,
             Some("the export directory and the verified image disagree".to_string()),
         ));
     };
@@ -164,7 +165,7 @@ fn run_inner(args: &RunArgs, image_slot: &mut Option<VerifiedImage>) -> Result<O
     // source tests already run through `marrow test`.
     if !function.demand().is_empty() {
         return Err(Outcome::operational(
-            marrow_codes::Code::CliDurableUnsupported.as_str(),
+            marrow_codes::Code::CliDurableUnsupported,
             None,
         ));
     }
@@ -222,7 +223,7 @@ enum MintOutcome {
     /// The failure is not (only) missing mintable identity; report it as-is.
     NotApplicable,
     /// Minting itself failed; `.marrow/ids` is unchanged.
-    Failed(&'static str),
+    Failed(Code),
 }
 
 /// The `marrow run` mint: when a compile failed *only* because fresh durable
@@ -273,14 +274,14 @@ fn mint_missing_identities(
         Ok::<_, std::io::Error>(candidates)
     }) {
         Ok(publication) => publication,
-        Err(_) => return MintOutcome::Failed(marrow_codes::Code::ProjectIdsMint.as_str()),
+        Err(_) => return MintOutcome::Failed(marrow_codes::Code::ProjectIdsMint),
     };
     match crate::project::publish_identity_ledger(Path::new("."), publication) {
         Ok(IdsPublication::Published) => MintOutcome::Minted,
         // The ledger was replaced between admission and publication, so the
         // successor was never installed and the artifact is the other writer's.
         Ok(IdsPublication::ConcurrentChange) => {
-            MintOutcome::Failed(marrow_codes::Code::ProjectIdsMint.as_str())
+            MintOutcome::Failed(marrow_codes::Code::ProjectIdsMint)
         }
         Err(failure) => MintOutcome::Failed(failure.code),
     }
@@ -456,8 +457,8 @@ fn call_outcome_to_record(outcome: marrow_runner::CallOutcome) -> Record {
             column,
         },
         marrow_runner::CallOutcome::Reject { code } => Record::OperationalError {
-            code: if code == marrow_codes::Code::RunnerDurableUnsupported.as_str() {
-                marrow_codes::Code::CliDurableUnsupported.as_str()
+            code: if code == marrow_codes::Code::RunnerDurableUnsupported {
+                marrow_codes::Code::CliDurableUnsupported
             } else {
                 code
             },
@@ -494,7 +495,7 @@ fn decode_call_args(params: &[ImageType], args: &CallArgs) -> Result<Vec<Value>,
     materialize_args(params, args, &mut io::stdin().lock()).map_err(|error| match error {
         ArgumentError::Usage(message) => Outcome::reported(crate::command_output::usage(&message)),
         ArgumentError::Input(error) => {
-            Outcome::operational(marrow_codes::Code::IoRead.as_str(), Some(error.to_string()))
+            Outcome::operational(marrow_codes::Code::IoRead, Some(error.to_string()))
         }
     })
 }
@@ -694,7 +695,7 @@ fn emit_to(
         let text = rendered.unwrap_or_else(|()| {
             exit = ExitCode::FAILURE;
             let failure = Record::OperationalError {
-                code: marrow_codes::Code::IoWrite.as_str(),
+                code: marrow_codes::Code::IoWrite,
                 detail: None,
             };
             match format {
@@ -737,7 +738,7 @@ mod terminal_tests {
                     cause: Box::new(marrow_runner::ClientError::Handshake),
                 }),
                 Record::ActivationOutcomeUnknown {
-                    cause_code: "runner.handshake",
+                    cause_code: Code::RunnerHandshake,
                 },
             ),
         ] {

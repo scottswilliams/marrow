@@ -53,7 +53,10 @@ pub(crate) fn image(rest: &[String]) -> ExitCode {
     let image = match marrow_verify::verify(&compiled.image.bytes) {
         Ok(image) => image,
         Err(rejection) => {
-            crate::report_simple_error(rejection.code(), "the compiled image failed verification");
+            crate::report_simple_error(
+                crate::rejection_code(&rejection),
+                "the compiled image failed verification",
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -67,7 +70,7 @@ pub(crate) fn image(rest: &[String]) -> ExitCode {
     match &args.accept_ceiling {
         None => {
             crate::report_simple_error(
-                marrow_codes::Code::CliCeilingUnaccepted.as_str(),
+                marrow_codes::Code::CliCeilingUnaccepted,
                 &format!(
                     "this image's deployment ceiling id is {ceiling_id}; re-run with \
                      --accept-ceiling {ceiling_id} to compose the deployment image after \
@@ -80,7 +83,7 @@ pub(crate) fn image(rest: &[String]) -> ExitCode {
         }
         Some(accepted) if accepted != &ceiling_id => {
             crate::report_simple_error(
-                marrow_codes::Code::CliCeilingUnaccepted.as_str(),
+                marrow_codes::Code::CliCeilingUnaccepted,
                 &format!(
                     "the accepted ceiling id does not match this image; its deployment ceiling \
                      id is {ceiling_id}. No image was written."
@@ -95,7 +98,7 @@ pub(crate) fn image(rest: &[String]) -> ExitCode {
 
     if let Err(error) = std::fs::create_dir_all(&args.out) {
         crate::report_simple_error(
-            marrow_codes::Code::IoWrite.as_str(),
+            marrow_codes::Code::IoWrite,
             &format!("failed to create {}: {error}", args.out.display()),
         );
         return ExitCode::FAILURE;
@@ -103,7 +106,7 @@ pub(crate) fn image(rest: &[String]) -> ExitCode {
     let image_path = args.out.join("program.image");
     if let Err(error) = std::fs::write(&image_path, &compiled.image.bytes) {
         crate::report_simple_error(
-            marrow_codes::Code::IoWrite.as_str(),
+            marrow_codes::Code::IoWrite,
             &format!("failed to write {}: {error}", image_path.display()),
         );
         return ExitCode::FAILURE;

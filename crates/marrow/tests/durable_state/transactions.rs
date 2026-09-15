@@ -543,7 +543,7 @@ fn run_faulting(
     match run_export(attachment, export(image, name).id(), args)
         .expect("the export is in the image")
     {
-        DurableRun::Ran(Err(fault)) => fault.code().to_string(),
+        DurableRun::Ran(Err(fault)) => fault.code().as_str().to_string(),
         other => panic!("{name} did not fault: {:?}", DebugRun(&other)),
     }
 }
@@ -554,9 +554,9 @@ impl std::fmt::Debug for DebugRun<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.0 {
             DurableRun::Ran(Ok(_)) => write!(f, "Ran(Ok(value))"),
-            DurableRun::Ran(Err(fault)) => write!(f, "Ran(Err({}))", fault.code()),
+            DurableRun::Ran(Err(fault)) => write!(f, "Ran(Err({}))", fault.code().as_str()),
             DurableRun::Parked => write!(f, "Parked"),
-            DurableRun::Failed(code) => write!(f, "Failed({code})"),
+            DurableRun::Failed(code) => write!(f, "Failed({})", code.as_str()),
         }
     }
 }
@@ -567,7 +567,7 @@ fn attach(image: &VerifiedImage) -> MemoryAttachment {
         MintOutcome::Storeless | MintOutcome::Parked => {
             panic!("the flat counter image must be executable, not parked")
         }
-        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {cause}"),
+        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {}", cause.as_str()),
     }
 }
 

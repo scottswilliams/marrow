@@ -62,6 +62,9 @@ fn compile_verify(source: &str, ids: &str) -> Result<VerifiedImage, String> {
 fn two_fields_of_one_enum_type_verify() {
     match compile_verify(SOURCE, IDS) {
         Ok(_) => {}
-        Err(code) => panic!("two same-enum durable fields rejected as `{code}`"),
+        Err(code) => panic!(
+            "two same-enum durable fields rejected as `{}`",
+            code.as_str()
+        ),
     }
 }

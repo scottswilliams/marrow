@@ -45,7 +45,10 @@ pub(crate) fn client(rest: &[String]) -> ExitCode {
     let image = match marrow_verify::verify(&compiled.image.bytes) {
         Ok(image) => image,
         Err(rejection) => {
-            crate::report_simple_error(rejection.code(), "the compiled image failed verification");
+            crate::report_simple_error(
+                crate::rejection_code(&rejection),
+                "the compiled image failed verification",
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -54,7 +57,7 @@ pub(crate) fn client(rest: &[String]) -> ExitCode {
         Ok(interface) => interface,
         Err(error) => {
             crate::report_simple_error(
-                marrow_codes::Code::CliInterfaceUnbuildable.as_str(),
+                marrow_codes::Code::CliInterfaceUnbuildable,
                 &render_interface_error(&error, &compiled.exports),
             );
             return ExitCode::FAILURE;
@@ -74,7 +77,7 @@ pub(crate) fn client(rest: &[String]) -> ExitCode {
 
     if let Err(error) = std::fs::create_dir_all(&args.out) {
         crate::report_simple_error(
-            marrow_codes::Code::IoWrite.as_str(),
+            marrow_codes::Code::IoWrite,
             &format!("failed to create {}: {error}", args.out.display()),
         );
         return ExitCode::FAILURE;
@@ -87,7 +90,7 @@ pub(crate) fn client(rest: &[String]) -> ExitCode {
         let path = args.out.join(name);
         if let Err(error) = std::fs::write(&path, contents) {
             crate::report_simple_error(
-                marrow_codes::Code::IoWrite.as_str(),
+                marrow_codes::Code::IoWrite,
                 &format!("failed to write {}: {error}", path.display()),
             );
             return ExitCode::FAILURE;

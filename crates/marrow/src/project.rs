@@ -33,7 +33,7 @@ pub(crate) const MANIFEST_FILE: &str = "marrow.toml";
 /// line. `location` names the manifest and 1-based position when the fault is a
 /// located manifest syntax error.
 pub(crate) struct CaptureFailure {
-    pub(crate) code: &'static str,
+    pub(crate) code: Code,
     pub(crate) message: String,
     pub(crate) location: Option<ManifestLocation>,
 }
@@ -95,7 +95,7 @@ pub(crate) fn publish_identity_ledger(
 /// the code and the message; nothing is classified here.
 fn publication_projection(error: IdsPublicationError) -> CaptureFailure {
     CaptureFailure {
-        code: error.code().as_str(),
+        code: error.code(),
         message: error.to_string(),
         location: None,
     }
@@ -106,7 +106,7 @@ fn publication_projection(error: IdsPublicationError) -> CaptureFailure {
 /// facade-owned code, the streamed message body, and the optional located file.
 fn terminal_projection(root: &Path, failure: &PhysicalCaptureFailure) -> CaptureFailure {
     let presentation = failure.presentation(root);
-    let code = presentation.code().as_str();
+    let code = presentation.code();
 
     let mut message = String::new();
     // Writing into a `String` never fails at the `fmt::Write` boundary.
@@ -164,11 +164,11 @@ pub(crate) fn report_compile_failure(
             }
         }
         marrow_compile::CompileFailure::ResourceLimit(limit) => crate::report_simple_error(
-            Code::CliCompilerResourceLimit.as_str(),
+            Code::CliCompilerResourceLimit,
             &crate::resource_limit_message(limit.kind().description()),
         ),
         marrow_compile::CompileFailure::Invariant(_) => crate::report_simple_error(
-            Code::CliCompilerInvariant.as_str(),
+            Code::CliCompilerInvariant,
             "the compiler failed an internal consistency check",
         ),
     }

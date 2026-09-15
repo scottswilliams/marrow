@@ -273,7 +273,7 @@ fn attach(image: &VerifiedImage) -> MemoryAttachment {
         MintOutcome::Storeless | MintOutcome::Parked => {
             panic!("a flat root with simple branches must be executable")
         }
-        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {cause}"),
+        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {}", cause.as_str()),
     }
 }
 
@@ -287,9 +287,9 @@ fn run(
         .expect("the export is in the image")
     {
         DurableRun::Ran(Ok(value)) => value,
-        DurableRun::Ran(Err(fault)) => panic!("{name} faulted: {}", fault.code()),
+        DurableRun::Ran(Err(fault)) => panic!("{name} faulted: {}", fault.code().as_str()),
         DurableRun::Parked => panic!("{name} parked"),
-        DurableRun::Failed(code) => panic!("{name} failed: {code}"),
+        DurableRun::Failed(code) => panic!("{name} failed: {}", code.as_str()),
     }
 }
 

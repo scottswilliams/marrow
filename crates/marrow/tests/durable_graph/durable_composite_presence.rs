@@ -103,7 +103,7 @@ fn attach(image: &VerifiedImage) -> MemoryAttachment {
         MintOutcome::Storeless | MintOutcome::Parked => {
             panic!("the enrollments root must be executable")
         }
-        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {cause}"),
+        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {}", cause.as_str()),
     }
 }
 
@@ -117,11 +117,13 @@ fn run(
         .expect("the export is in the image")
     {
         DurableRun::Ran(Ok(value)) => value,
-        DurableRun::Ran(Err(fault)) => panic!("{name} faulted at run: {}", fault.code()),
+        DurableRun::Ran(Err(fault)) => panic!("{name} faulted at run: {}", fault.code().as_str()),
         DurableRun::Parked => {
             panic!("{name} parked — the composite-root shortcut is not executable")
         }
-        DurableRun::Failed(code) => panic!("{name} failed to mint its attachment: {code}"),
+        DurableRun::Failed(code) => {
+            panic!("{name} failed to mint its attachment: {}", code.as_str())
+        }
     }
 }
 

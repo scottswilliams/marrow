@@ -25,6 +25,7 @@ use marrow_vm::{DurableExecutionFault, DurableRun, IncompleteDisposition};
 mod common;
 
 use common::{TempDir, marrow_in, write};
+use marrow_codes::Code;
 
 #[test]
 fn scratch_projects_are_unique_within_the_test_process() {
@@ -340,7 +341,7 @@ fn test_record(run: DurableRun) -> Option<FailureRecord> {
         DurableRun::Ran(Ok(_)) => return None,
         DurableRun::Ran(Err(fault)) => fault,
         DurableRun::Parked => return Some(record("errored", None)),
-        DurableRun::Failed(code) => return Some(record("errored", Some(code))),
+        DurableRun::Failed(code) => return Some(record("errored", Some(code.as_str()))),
     };
     let fault = match fault {
         DurableExecutionFault::Runtime(fault) => fault,
@@ -349,12 +350,12 @@ fn test_record(run: DurableRun) -> Option<FailureRecord> {
             IncompleteDisposition::Pending { fault, .. } => fault,
         },
     };
-    let outcome = if fault.code() == "run.assert" {
+    let outcome = if fault.code() == Code::RunAssert {
         "failed"
     } else {
         "fault"
     };
-    Some(record(outcome, Some(fault.code())))
+    Some(record(outcome, Some(fault.code().as_str())))
 }
 
 /// Compile, independently verify, and run one fence's source tests. A storeless

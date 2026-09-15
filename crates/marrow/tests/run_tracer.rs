@@ -12,6 +12,7 @@
 mod common;
 
 use common::{CallOutcome, Diagnostics, Project, conformance_dir, marrow_in};
+use marrow_codes::Code;
 use marrow_vm::Value;
 
 /// A multi-module project: each `(path, source)` is placed at `src/<path>`.
@@ -29,7 +30,7 @@ fn value(source: &str, export: &str, args: Vec<Value>) -> Option<Value> {
 }
 
 /// The stable code of the runtime fault one export raises.
-fn fault(source: &str, export: &str, args: Vec<Value>) -> String {
+fn fault(source: &str, export: &str, args: Vec<Value>) -> Code {
     match Project::single(source).session().try_call(export, args) {
         CallOutcome::Fault(code) => code,
         other => panic!("expected `{export}` to fault, got {other:?}"),
@@ -381,7 +382,7 @@ fn runtime_overflow_is_a_source_mapped_fault() {
             "over",
             vec![],
         ),
-        "run.overflow"
+        Code::RunOverflow
     );
 }
 
@@ -393,7 +394,7 @@ fn integer_division_by_zero_is_a_source_mapped_fault() {
             "q",
             vec![Value::Int(1), Value::Int(0)],
         ),
-        "run.divide_by_zero"
+        Code::RunDivideByZero
     );
 }
 
@@ -441,7 +442,7 @@ fn nonterminating_loop_faults_on_the_instruction_budget() {
             "spin",
             vec![],
         ),
-        "run.budget"
+        Code::RunBudget
     );
 }
 
@@ -1159,7 +1160,10 @@ fn todo_diverges_and_faults_run_todo() {
         value(SOURCE, "classify", vec![Value::Int(7)]),
         Some(Value::Int(1))
     );
-    assert_eq!(fault(SOURCE, "classify", vec![Value::Int(-1)]), "run.todo");
+    assert_eq!(
+        fault(SOURCE, "classify", vec![Value::Int(-1)]),
+        Code::RunTodo
+    );
 
     // A computed argument is rejected, like `unreachable`.
     let diagnostics = refused(Project::single(

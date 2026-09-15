@@ -3,6 +3,7 @@
 //! the aggregate record crosses the durable-cell bound. The kernel plans the complete
 //! encoded value before applying a write, so a rejected value leaves no entry behind.
 
+use marrow_codes::Code;
 use marrow_verify::{SealedExport, VerifiedImage};
 use marrow_vm::{
     DurableRun, MemoryAttachment, MintOutcome, RuntimeFault, Value, mint_ephemeral, prepare,
@@ -99,7 +100,7 @@ fn attach(image: &VerifiedImage) -> MemoryAttachment {
         MintOutcome::Storeless | MintOutcome::Parked => {
             panic!("the durable-value fixture must be executable")
         }
-        MintOutcome::Failed(cause) => panic!("attachment mint failed: {cause}"),
+        MintOutcome::Failed(cause) => panic!("attachment mint failed: {}", cause.as_str()),
     }
 }
 
@@ -126,7 +127,7 @@ fn run(
             }
         }
         DurableRun::Parked => panic!("{name} parked"),
-        DurableRun::Failed(code) => panic!("{name} failed before execution: {code}"),
+        DurableRun::Failed(code) => panic!("{name} failed before execution: {}", code.as_str()),
     }
 }
 
@@ -156,7 +157,7 @@ fn aggregate_durable_value_bound_is_source_reachable_and_write_atomic() {
         vec![Value::Int(1), text_of_len(61_680)],
     )
     .expect_err("the over-cap aggregate must fault");
-    assert_eq!(fault.code(), "value.range");
+    assert_eq!(fault.code(), Code::ValueRange);
     assert_eq!(fault.line(), write_line());
     assert_eq!(fault.column(), 9);
 

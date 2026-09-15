@@ -208,7 +208,7 @@ pub(crate) fn manifest_text(release: &str, runner_name: &str, companion_bytes: &
 /// Installation damage is reported here and the command never spawns.
 pub(crate) fn companion_command(subcommand: &str) -> Result<Command, ExitCode> {
     let runner = discover_companion().map_err(|damage| {
-        crate::report_simple_error(Code::CliInstallationDamaged.as_str(), damage.message());
+        crate::report_simple_error(Code::CliInstallationDamaged, damage.message());
         ExitCode::FAILURE
     })?;
     let mut command = Command::new(runner);
@@ -219,7 +219,7 @@ pub(crate) fn companion_command(subcommand: &str) -> Result<Command, ExitCode> {
 /// Stage the compiled image where the companion can read and verify it independently.
 pub(crate) fn stage_image(image: &[u8]) -> Result<StagedImage, ExitCode> {
     marrow_runner::stage_image(image).map_err(|error| {
-        crate::report_simple_error(Code::IoWrite.as_str(), &error.to_string());
+        crate::report_simple_error(Code::IoWrite, &error.to_string());
         ExitCode::FAILURE
     })
 }
@@ -231,7 +231,7 @@ pub(crate) fn run_companion(mut command: Command) -> ExitCode {
         Ok(status) if status.success() => ExitCode::SUCCESS,
         Ok(_) => ExitCode::FAILURE,
         Err(error) => {
-            crate::report_simple_error(Code::RunnerSpawn.as_str(), &error.to_string());
+            crate::report_simple_error(Code::RunnerSpawn, &error.to_string());
             ExitCode::FAILURE
         }
     }

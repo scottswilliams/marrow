@@ -87,7 +87,7 @@ directory, no flag checks without writing. `marrow fmt` does not read from stdin
             // name one bound under their own typed codes; their byte figures are not
             // interchangeable.
             report_simple_error(
-                Code::CliCompilerResourceLimit.as_str(),
+                Code::CliCompilerResourceLimit,
                 &format!("`{target}` is {actual} bytes, over the per-file byte limit ({limit})"),
             );
             return ExitCode::FAILURE;
@@ -131,10 +131,7 @@ fn fmt_project(dir: &Path, mode: FmtMode) -> ExitCode {
             .display()
             .to_string();
         let Ok(source) = std::str::from_utf8(module.source()) else {
-            report_simple_error(
-                Code::IoRead.as_str(),
-                &format!("{label}: source is not valid UTF-8"),
-            );
+            report_simple_error(Code::IoRead, &format!("{label}: source is not valid UTF-8"));
             any_error = true;
             continue;
         };
@@ -261,7 +258,7 @@ fn fmt_one(file: &str, source: &str, mode: FmtMode) -> Result<FmtOutcome, ()> {
                 }
             };
             report_simple_error(
-                Code::FmtDiagnosticLimit.as_str(),
+                Code::FmtDiagnosticLimit,
                 &format!(
                     "refusing to format {file}: its parse diagnostics exceeded the {bound} \
                      bound, so no complete parse exists; repair the source's parse errors first"
@@ -271,7 +268,7 @@ fn fmt_one(file: &str, source: &str, mode: FmtMode) -> Result<FmtOutcome, ()> {
         }
         Err(marrow_syntax::FormatRefusal::CommentLoss) => {
             report_simple_error(
-                Code::FmtCommentLoss.as_str(),
+                Code::FmtCommentLoss,
                 &format!("refusing to format {file}: formatting would discard retained comments"),
             );
             return Err(());
@@ -294,10 +291,7 @@ fn fmt_one(file: &str, source: &str, mode: FmtMode) -> Result<FmtOutcome, ()> {
             if source == formatted {
                 Ok(FmtOutcome::Unchanged)
             } else if let Err(error) = write_formatted_source(file, &formatted) {
-                report_simple_error(
-                    Code::IoWrite.as_str(),
-                    &format!("failed to write {file}: {error}"),
-                );
+                report_simple_error(Code::IoWrite, &format!("failed to write {file}: {error}"));
                 Err(())
             } else {
                 Ok(FmtOutcome::Formatted)

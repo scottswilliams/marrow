@@ -152,7 +152,7 @@ fn attach(image: &VerifiedImage) -> MemoryAttachment {
         MintOutcome::Storeless | MintOutcome::Parked => {
             panic!("a widened-field store is executable, not parked")
         }
-        MintOutcome::Failed(cause) => panic!("attach failed: {cause}"),
+        MintOutcome::Failed(cause) => panic!("attach failed: {}", cause.as_str()),
     }
 }
 
@@ -166,9 +166,9 @@ fn run(
         .expect("the export is in the image")
     {
         DurableRun::Ran(Ok(value)) => value,
-        DurableRun::Ran(Err(fault)) => panic!("{name} faulted: {}", fault.code()),
+        DurableRun::Ran(Err(fault)) => panic!("{name} faulted: {}", fault.code().as_str()),
         DurableRun::Parked => panic!("{name} parked"),
-        DurableRun::Failed(code) => panic!("{name} failed: {code}"),
+        DurableRun::Failed(code) => panic!("{name} failed: {}", code.as_str()),
     }
 }
 

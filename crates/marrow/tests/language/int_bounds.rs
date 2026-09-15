@@ -56,7 +56,7 @@ fn run_named(image: &VerifiedImage, name: &str) -> Result<Option<Value>, String>
         })
         .find(|function| function.body().name() == name)
         .unwrap_or_else(|| panic!("export `{name}` present"));
-    run(function, Vec::new()).map_err(|fault| fault.code().to_string())
+    run(function, Vec::new()).map_err(|fault| fault.code().as_str().to_string())
 }
 
 #[test]
