@@ -18,24 +18,24 @@ use crate::demand::frame_id;
 
 /// The digest kind of the persistent store envelope (writer/engine identity and the
 /// store's own instance identity).
-pub const STORE_ENVELOPE_KIND: &[u8] = b"marrow.store.env.v0";
+pub(crate) const STORE_ENVELOPE_KIND: &[u8] = b"marrow.store.env.v0";
 
 /// The digest kind of the store's logical active head (the active binding, the reserved
 /// sequencing/data-digest slots, and the head identity map).
-pub const STORE_HEAD_KIND: &[u8] = b"marrow.store.head.v0";
+pub(crate) const STORE_HEAD_KIND: &[u8] = b"marrow.store.head.v0";
 
 /// The digest kind used by the logical audit's hash chain over entry cells.
 /// Managed indexes, witnesses and backup framing are outside this digest.
-pub const STORE_DATA_KIND: &[u8] = b"marrow.store.data.v0";
+pub(crate) const STORE_DATA_KIND: &[u8] = b"marrow.store.data.v0";
 
 /// The digest domain for complete logical backup framing, including image,
 /// accepted head, entry/index records and completion. Distinct from entry content.
-pub const STORE_BACKUP_KIND: &[u8] = b"marrow.store.backup.v0";
+pub(crate) const STORE_BACKUP_KIND: &[u8] = b"marrow.store.backup.v0";
 
 /// The digest kind of the store's interface binding fingerprint: a digest over the store's
 /// export set (declaration identities), one of the binding facts a binding-only rebind
 /// compares.
-pub const STORE_INTERFACE_KIND: &[u8] = b"marrow.store.iface.v0";
+pub(crate) const STORE_INTERFACE_KIND: &[u8] = b"marrow.store.iface.v0";
 
 /// A runner-free **export-set** binding fingerprint: a domain-separated digest over the
 /// sorted sequence of the program's export declaration identities (each an
@@ -126,10 +126,12 @@ store_digest! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        CEILING_KIND, DEMAND_SET_KIND, DURABLE_CONTRACT_KIND, EXPORT_ID_KIND, IMAGE_DIGEST_KIND,
-        INTERFACE_ID_KIND, image_id,
-    };
+    use crate::ceiling::CEILING_KIND;
+    use crate::demand::DEMAND_SET_KIND;
+    use crate::digest::{IMAGE_DIGEST_KIND, image_id};
+    use crate::durable_id::DURABLE_CONTRACT_KIND;
+    use crate::export_id::EXPORT_ID_KIND;
+    use crate::interface::INTERFACE_ID_KIND;
 
     #[test]
     fn backup_digest_known_answer() {

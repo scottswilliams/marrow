@@ -40,7 +40,6 @@ use crate::durable_id::{
 use crate::encode::SPAN_ROW_BYTES;
 use crate::export_id::ExportId;
 use crate::instr::Instr;
-use crate::policy_ledger::{CurrentValidationOccurrence, TablePolicyKind, TablePolicyLedger};
 use crate::product::{
     CanonicalDeclarationPathSelector, DeclarationMember, DeclarationMemberDef,
     DurableContractGraph, DurableGraphCheckpoint, OccurrenceGraph, ProductClaimConflict,
@@ -592,12 +591,6 @@ pub enum ImageBuildError {
     /// applications wearing one draft. The first identity is retained and the
     /// divergence is latched as a sticky coherence fact the fence reports.
     ApplicationIdentityConflict,
-    /// The table-policy ledger disagrees with the final draft state the independent
-    /// audit recomputed, or the legacy policy walk's verdict disagrees with the
-    /// ledger's canonical minimum. Unreachable from any input by construction — the
-    /// one mutation surface records every crossing — so an occurrence is a producer
-    /// defect, named by the check that caught it.
-    LedgerDrift(&'static str),
     InvalidReference(&'static str),
     /// An emitted section's byte length disagrees with the length the measure core
     /// counted for it through the same writer. Unreachable from any input by
@@ -734,8 +727,6 @@ pub struct ImageDraft {
     /// The current one-shot transaction epoch (see [`TransactionEpoch`]). Its nested
     /// draft anchor distinguishes foreign savepoints without a second brand per token.
     epoch: Rc<TransactionEpoch>,
-    /// The eight-slot policy-crossing observer the one mutation surface maintains.
-    ledger: TablePolicyLedger,
 }
 
 /// The charge at which the function payload alone proves the image cannot fit.
@@ -836,7 +827,7 @@ impl From<crate::site_plan::SitePlanStateError> for DraftStateError {
 }
 
 /// One prepared string mint: the id the row will carry, and — when the row is new — the
-/// spelling to append and the policy observations appending it crosses.
+/// spelling to append.
 struct PreparedString {
     id: StrId,
     fresh: Option<FreshString>,
@@ -844,7 +835,6 @@ struct PreparedString {
 
 struct FreshString {
     text: String,
-    observations: Vec<(TablePolicyKind, CurrentValidationOccurrence)>,
 }
 
 /// One prepared constant mint (see [`PreparedString`]).
@@ -855,15 +845,13 @@ struct PreparedConst {
 
 struct FreshConst {
     value: ConstValue,
-    crosses: bool,
 }
 
 /// The private structural image a savepoint carries and a transaction's journal
 /// restores to: every owner's append-only length, the durable graph's checkpoint,
-/// and the conflict/receipt slots. Deliberately **not** a ledger copy or fill-state
-/// scan: only an unarmed draft can mint a savepoint, and admission immediately rotates
-/// the one-shot epoch before a transaction can fill anything. The armed inverse takes
-/// its own fixed ledger copy at admission.
+/// and the conflict/receipt slots. Deliberately **not** a fill-state scan: only an
+/// unarmed draft can mint a savepoint, and admission immediately rotates the one-shot
+/// epoch before a transaction can fill anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DraftSnapshot {
     strings: usize,
@@ -966,14 +954,13 @@ enum FillInverse {
 }
 
 /// The pre-reserved inverse journal the armed guard holds from admission: the
-/// admission-time structural image, the fixed ledger copy, and the one-time-fill
-/// inverses. Every element's storage is reserved in the preflight of the mutation
+/// admission-time structural image and the one-time-fill inverses. Every element's
+/// storage is reserved in the preflight of the mutation
 /// that needs it, so the armed `Drop` inverse is a closed total operation —
 /// allocation-free, assertion-free, indexing-free, and non-panicking.
 #[derive(Debug)]
 struct DraftJournal {
     at: DraftSnapshot,
-    ledger: TablePolicyLedger,
     fills: Vec<FillInverse>,
 }
 
@@ -1322,8 +1309,6 @@ impl<'d> DraftTxn<'d> {
             }
             draft.strings.pop();
         }
-        // The admission-time fixed ledger copy, byte for byte.
-        draft.ledger = self.journal.ledger;
         // The consumed epoch is deliberately not restored: it is monotone
         // authentication state outside the logical inverse.
     }
@@ -1369,7 +1354,6 @@ impl ImageDraft {
             exports: Vec::new(),
             test_entries: Vec::new(),
             epoch: Rc::new(TransactionEpoch { draft }),
-            ledger: TablePolicyLedger::vacant(),
         }
     }
 
@@ -1399,24 +1383,10 @@ impl ImageDraft {
             return Ok(PreparedString { id, fresh: None });
         }
         let id = StrId(wide_ordinal(self.strings.len())?);
-        let mut observations = Vec::new();
-        if text.len() > bounds::MAX_STRING_BYTES {
-            observations.push((
-                TablePolicyKind::StringBytes,
-                CurrentValidationOccurrence::at_row(id.0),
-            ));
-        }
-        if self.strings.len() + 1 > bounds::MAX_STRINGS {
-            observations.push((
-                TablePolicyKind::Strings,
-                CurrentValidationOccurrence::at_row(bounds::MAX_STRINGS as u32),
-            ));
-        }
         Ok(PreparedString {
             id,
             fresh: Some(FreshString {
                 text: text.to_string(),
-                observations,
             }),
         })
     }
@@ -1424,12 +1394,9 @@ impl ImageDraft {
     /// Apply a prepared string mint. Infallible by construction.
     fn commit_string(&mut self, prepared: PreparedString) -> StrId {
         let PreparedString { id, fresh } = prepared;
-        let Some(FreshString { text, observations }) = fresh else {
+        let Some(FreshString { text }) = fresh else {
             return id;
         };
-        for (kind, occurrence) in observations {
-            self.ledger.observe(kind, occurrence);
-        }
         self.string_index.insert(text.clone(), id);
         self.strings.push(text);
         id
@@ -1491,27 +1458,20 @@ impl ImageDraft {
             return Ok(PreparedConst { id, fresh: None });
         }
         let id = ConstId(wide_ordinal(self.consts.len())?);
-        let crosses = self.consts.len() + 1 > bounds::MAX_CONSTS;
         Ok(PreparedConst {
             id,
-            fresh: Some(FreshConst { value, crosses }),
+            fresh: Some(FreshConst { value }),
         })
     }
 
     /// Apply a prepared constant mint. Infallible by construction.
     fn commit_const(&mut self, prepared: PreparedConst) -> ConstId {
         let PreparedConst { id, fresh } = prepared;
-        let Some(FreshConst { value, crosses }) = fresh else {
+        let Some(FreshConst { value }) = fresh else {
             return id;
         };
         self.consts.push(value);
         self.const_index.insert(value, id);
-        if crosses {
-            self.ledger.observe(
-                TablePolicyKind::Consts,
-                CurrentValidationOccurrence::at_row(bounds::MAX_CONSTS as u32),
-            );
-        }
         id
     }
 
@@ -1547,12 +1507,6 @@ impl ImageDraft {
         let id = TypeId(wide_ordinal(self.types.len())?);
         self.types.push(def);
         self.types_fill.push(fill);
-        if self.types.len() > bounds::MAX_TYPES {
-            self.ledger.observe(
-                TablePolicyKind::Types,
-                CurrentValidationOccurrence::at_row(bounds::MAX_TYPES as u32),
-            );
-        }
         Ok(id)
     }
 
@@ -1582,12 +1536,6 @@ impl ImageDraft {
         let id = EnumId(wide_ordinal(self.enums.len())?);
         self.enums.push(def);
         self.enums_fill.push(fill);
-        if self.enums.len() > bounds::MAX_ENUMS {
-            self.ledger.observe(
-                TablePolicyKind::Enums,
-                CurrentValidationOccurrence::at_row(bounds::MAX_ENUMS as u32),
-            );
-        }
         Ok(id)
     }
 
@@ -1612,12 +1560,6 @@ impl ImageDraft {
     ) -> Result<CollTypeId, DraftStateError> {
         let id = CollTypeId(wide_ordinal(self.colls.len())?);
         self.colls.push(def);
-        if self.colls.len() > bounds::MAX_COLLECTIONS {
-            self.ledger.observe(
-                TablePolicyKind::Collections,
-                CurrentValidationOccurrence::at_row(bounds::MAX_COLLECTIONS as u32),
-            );
-        }
         Ok(id)
     }
 
@@ -1710,12 +1652,6 @@ impl ImageDraft {
             .graph()
             .publish(&occurrence)
             .ok_or_else(|| SitePlanStateError::new(SitePlanState::StaleBinding))?;
-        if self.root_occurrences().len() > bounds::MAX_ROOTS {
-            self.ledger.observe(
-                TablePolicyKind::Roots,
-                CurrentValidationOccurrence::at_row(bounds::MAX_ROOTS as u32),
-            );
-        }
         Ok(AdmittedRoot {
             occurrence,
             root_id,
@@ -1840,12 +1776,6 @@ impl ImageDraft {
         // The one mint path is the one Sites observation point: a crossing is present
         // exactly when the plan holds its earliest receipt, recorded at the virtual
         // zero-based N+1 ordinal `MAX_SITES` — never a physical row index or wire id.
-        if self.sites.receipt().is_some() {
-            self.ledger.observe(
-                TablePolicyKind::Sites,
-                CurrentValidationOccurrence::at_row(bounds::MAX_SITES as u32),
-            );
-        }
         Ok(site)
     }
 
@@ -1964,8 +1894,8 @@ impl ImageDraft {
     /// A foreign, stale, or internally incoherent token is the closed
     /// [`DraftStateError`] before any mutation, without rotating the epoch or
     /// changing any owner. On success the fresh epoch is installed before any table
-    /// mutation, staling every sibling savepoint of the consumed epoch; the fixed
-    /// ledger copy and the pre-reserved inverse journal arm the guard.
+    /// mutation, staling every sibling savepoint of the consumed epoch; the
+    /// pre-reserved inverse journal arms the guard.
     #[doc(hidden)]
     pub fn begin_transaction(
         &mut self,
@@ -1983,11 +1913,9 @@ impl ImageDraft {
         self.epoch = Rc::new(TransactionEpoch {
             draft: Rc::clone(&self.epoch.draft),
         });
-        let ledger = self.ledger;
         Ok(DraftTxn {
             journal: DraftJournal {
                 at: savepoint.snapshot,
-                ledger,
                 fills: Vec::new(),
             },
             draft: self,
@@ -2019,7 +1947,6 @@ impl ImageDraft {
             exports,
             test_entries,
             epoch: _,
-            ledger: _,
         } = self;
         DraftSnapshot {
             strings: strings.len(),
@@ -2037,11 +1964,6 @@ impl ImageDraft {
             application_conflict: *application_conflict,
             receipt: sites.receipt(),
         }
-    }
-
-    /// The eight-slot policy ledger, for the fence's independent audit.
-    pub(crate) fn policy_ledger(&self) -> &TablePolicyLedger {
-        &self.ledger
     }
 
     /// The sticky application-identity divergence, if one was latched.
@@ -2211,12 +2133,6 @@ impl ImageDraft {
         self.validate_site_ref(site).is_ok()
     }
 
-    /// The earliest site-policy crossing the plan has recorded, if any — the fence
-    /// audit's recomputation source for the Sites ledger slot.
-    pub(crate) fn site_receipt(&self) -> Option<SitePolicyReceipt> {
-        self.sites.receipt()
-    }
-
     /// The exact wire ordinal of one validated fitting site ref — the policy-clean final
     /// projection. Reached only through the measured wire plan's site projection, so no
     /// numeric site id exists before fitting policy-clean capped measurement.
@@ -2324,73 +2240,6 @@ impl ConstValue {
             ConstValue::Instant(v) => (0x05, v.to_be_bytes().to_vec()),
             ConstValue::Duration(v) => (0x06, v.to_be_bytes().to_vec()),
         }
-    }
-}
-
-#[cfg(test)]
-mod ledger_corruption_tests {
-    use super::ImageDraft;
-    use crate::draft::ImageBuildError;
-    use crate::policy_ledger::{CurrentValidationOccurrence, TablePolicyKind, TablePolicyLedger};
-
-    /// A draft whose constant pool has crossed `MAX_CONSTS` through the production
-    /// transaction surface.
-    fn consts_crossed_owner() -> ImageDraft {
-        let mut owner = ImageDraft::new();
-        let savepoint = owner.savepoint();
-        let mut txn = owner
-            .begin_transaction(savepoint)
-            .expect("a fresh savepoint admits");
-        for value in 0..=(crate::bounds::MAX_CONSTS as i64) {
-            txn.intern_int(value).expect("a within-domain mint");
-        }
-        txn.commit();
-        owner
-    }
-
-    /// A missing, wrong-occurrence, or extra ledger state — unreachable through the one
-    /// mutation surface, planted here through the owner's own private field — is refused
-    /// at the fence as the ledger-drift invariant, before any policy verdict.
-    #[test]
-    fn a_corrupted_ledger_is_invariant_at_the_fence() {
-        // Missing: a crossed draft whose ledger observed nothing.
-        let mut owner = consts_crossed_owner();
-        assert_eq!(
-            owner.encode().map(|_| ()),
-            Err(ImageBuildError::TooManyConsts),
-            "the true ledger reaches the policy verdict",
-        );
-        owner.ledger = TablePolicyLedger::vacant();
-        assert!(
-            matches!(owner.encode(), Err(ImageBuildError::LedgerDrift(_))),
-            "a vacant ledger over a crossed draft is the drift invariant",
-        );
-
-        // Wrong occurrence: the right slot at a coordinate the walk would never report.
-        let mut owner = consts_crossed_owner();
-        let mut wrong = TablePolicyLedger::vacant();
-        wrong.observe(
-            TablePolicyKind::Consts,
-            CurrentValidationOccurrence::at_row(crate::bounds::MAX_CONSTS as u32 + 7),
-        );
-        owner.ledger = wrong;
-        assert!(matches!(
-            owner.encode(),
-            Err(ImageBuildError::LedgerDrift(_))
-        ));
-
-        // Extra: a clean draft whose ledger claims a crossing that never happened.
-        let mut owner = ImageDraft::new();
-        let mut extra = TablePolicyLedger::vacant();
-        extra.observe(
-            TablePolicyKind::Strings,
-            CurrentValidationOccurrence::at_row(crate::bounds::MAX_STRINGS as u32),
-        );
-        owner.ledger = extra;
-        assert!(matches!(
-            owner.encode(),
-            Err(ImageBuildError::LedgerDrift(_))
-        ));
     }
 }
 

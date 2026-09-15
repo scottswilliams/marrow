@@ -55,7 +55,7 @@ pub use selection::{DemandSelection, DemandView};
 /// The domain-separation tag for the demand-set identity. Distinct from every other
 /// Marrow identity's `kind`, so a `DemandSetId` can never collide with an `ImageId`,
 /// `ExportId`, or `DurableContractId` computed over the same bytes.
-pub const DEMAND_SET_KIND: &[u8; 16] = b"marrow.demand.v0";
+pub(crate) const DEMAND_SET_KIND: &[u8; 16] = b"marrow.demand.v0";
 
 /// The lineage of demand computed in the local project root: the single tag byte
 /// `0x00`. A dependency package's lineage begins with `0x01` at a later phase.
@@ -346,7 +346,7 @@ fn atom_set_payload<'a>(atoms: impl ExactSizeIterator<Item = &'a DemandAtom>) ->
 /// A fixed upper bound on the number of atoms a decoded ceiling payload may carry,
 /// validated before any allocation (campaign law 9). Comfortably above any real
 /// program's whole-demand union and far below memory exhaustion.
-pub const MAX_CEILING_ATOMS: usize = 65_536;
+pub(crate) const MAX_CEILING_ATOMS: usize = 65_536;
 
 /// A fixed upper bound on the step count of one decoded atom's path, validated before
 /// allocation. Derived, not chosen: a decoded atom's path is a [`SemanticPath`], so the

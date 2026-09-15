@@ -119,7 +119,7 @@ use crate::value_dag::{
 /// The domain-separation tag for the durable-contract identity. Distinct from every
 /// other Marrow identity's `kind`, so a `DurableContractId` can never collide with
 /// an `ImageId` or `ExportId` computed over the same bytes.
-pub const DURABLE_CONTRACT_KIND: &[u8; 17] = b"marrow.durable.v0";
+pub(crate) const DURABLE_CONTRACT_KIND: &[u8; 17] = b"marrow.durable.v0";
 
 /// The lineage of a durable graph declared in the local project root: the single tag
 /// byte `0x00`. A dependency package's lineage begins with `0x01` at a later phase,
@@ -368,53 +368,6 @@ durable_identity!(
     /// indexes.
     RootPlacementIdentity,
     "Minted where the ledger resolves the `Root` kind (tag 3) for a `store` root."
-);
-
-durable_identity!(
-    /// The ledger identity of one nested keyed branch placement. A branch placement
-    /// is a Product declaration fact — it belongs to the resource's member graph —
-    /// even though it shares the ledger's `Root` kind with an outer store root.
-    BranchPlacementIdentity,
-    "Minted where the ledger resolves the `Root` kind (tag 3) for a nested keyed branch."
-);
-
-durable_identity!(
-    /// The ledger identity of one key column of a placement.
-    DurableKeyIdentity,
-    "Minted where the ledger resolves the `Key` kind (tag 4)."
-);
-
-durable_identity!(
-    /// The ledger identity of one stored field declaration of a resource, group, or
-    /// branch.
-    DurableFieldIdentity,
-    "Minted where the ledger resolves the `Field` kind (tag 2)."
-);
-
-durable_identity!(
-    /// The ledger identity of one unkeyed static field-path namespace (`group`).
-    DurableGroupIdentity,
-    "Minted where the ledger resolves the `Group` kind (tag 7)."
-);
-
-durable_identity!(
-    /// The ledger identity of one compiler-maintained managed index of a keyed store
-    /// root. An index belongs to the root occurrence that declares it, not to the
-    /// Product.
-    ManagedIndexIdentity,
-    "Minted where the ledger resolves the `Index` kind (tag 8)."
-);
-
-durable_identity!(
-    /// The ledger identity of one durable-reachable closed enum (sum) type.
-    DurableSumIdentity,
-    "Minted where the ledger resolves the `Sum` kind (tag 5)."
-);
-
-durable_identity!(
-    /// The ledger identity of one variant of a durable-reachable closed enum.
-    DurableMemberIdentity,
-    "Minted where the ledger resolves the `Member` kind (tag 6)."
 );
 
 /// One projected leaf of a managed index, as it contributes to the contract

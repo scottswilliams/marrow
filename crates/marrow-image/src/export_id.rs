@@ -50,7 +50,7 @@ use sha2::{Digest, Sha256};
 /// The domain-separation tag for the export identity. Distinct from every other
 /// Marrow identity's `kind`, so an `ExportId` can never collide with an `ImageId`
 /// or a later identity computed over the same bytes.
-pub const EXPORT_ID_KIND: &[u8; 16] = b"marrow.export.v0";
+pub(crate) const EXPORT_ID_KIND: &[u8; 16] = b"marrow.export.v0";
 
 /// The lineage of an export declared in the local project root: the single tag
 /// byte `0x00`. A dependency package's lineage begins with `0x01` at a later phase,

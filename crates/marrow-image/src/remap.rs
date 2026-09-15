@@ -52,7 +52,7 @@ use crate::value_dag::{ImageByteSink, push_u16};
 ///     takes_const(token)
 /// }
 /// ```
-pub struct StringToken(u16);
+pub(crate) struct StringToken(u16);
 
 impl StringToken {
     /// Append this token's two big-endian bytes — the one operation a token has. The
@@ -97,7 +97,7 @@ impl StringToken {
 ///     takes_string(token)
 /// }
 /// ```
-pub struct ConstToken(u16);
+pub(crate) struct ConstToken(u16);
 
 impl ConstToken {
     /// Append this token's two big-endian bytes — the one operation a token has,

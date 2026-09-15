@@ -33,7 +33,7 @@ use crate::demand::{CeilingDecodeError, DemandAtom, ExportDemand, frame_id};
 /// other Marrow identity's `kind`, so a `CeilingId` can never collide with a
 /// `DemandSetId`, `ImageId`, `ExportId`, or `DurableContractId` computed over the
 /// same bytes.
-pub const CEILING_KIND: &[u8; 16] = b"marrow.ceilng.v0";
+pub(crate) const CEILING_KIND: &[u8; 16] = b"marrow.ceilng.v0";
 
 /// The descriptor of a deployment ceiling: the sorted, deduplicated atom set the
 /// store admits, as a canonical [`ExportDemand`]. Built only from a demand union, so

@@ -67,7 +67,7 @@ use crate::ty::{ImageType, Scalar};
 /// The domain-separation tag for the wire-interface identity. Distinct from every
 /// other Marrow identity's `kind`, so an `InterfaceId` can never collide with an
 /// `ImageId`, `ExportId`, `DemandSetId`, or `DurableContractId` over the same bytes.
-pub const INTERFACE_ID_KIND: &[u8; 16] = b"marrow.interf.v0";
+pub(crate) const INTERFACE_ID_KIND: &[u8; 16] = b"marrow.interf.v0";
 
 /// The lineage of an interface computed in the local project root: the single tag
 /// byte `0x00`. A dependency package's lineage begins with `0x01` at a later phase.

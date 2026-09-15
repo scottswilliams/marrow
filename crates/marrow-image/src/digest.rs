@@ -16,7 +16,7 @@
 use sha2::{Digest, Sha256};
 
 /// The domain-separation tag for the image digest.
-pub const IMAGE_DIGEST_KIND: &[u8; 15] = b"marrow.image.v1";
+pub(crate) const IMAGE_DIGEST_KIND: &[u8; 15] = b"marrow.image.v1";
 
 /// A 32-byte program-image digest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +50,7 @@ pub fn image_id(payload: &[u8]) -> ImageId {
 }
 
 /// The domain-separation tag for the companion-runner release identity.
-pub const COMPANION_RELEASE_KIND: &[u8; 24] = b"marrow.release.companion";
+pub(crate) const COMPANION_RELEASE_KIND: &[u8; 24] = b"marrow.release.companion";
 
 /// A 32-byte companion-runner release identity: the digest over a stock `marrow-runner`
 /// binary's bytes. The terminal reads the expected value from the release manifest beside

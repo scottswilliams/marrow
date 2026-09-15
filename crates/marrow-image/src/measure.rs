@@ -93,7 +93,6 @@ use crate::encode::{
     remap_of, write_image_header,
 };
 use crate::instr::Instr;
-use crate::policy_ledger::{LedgerSlotIndex, TablePolicyAudit, TablePolicyKind};
 use crate::product::{
     DeclarationMemberShape, DeclarationNode, ProductClaimConflict, ProductDeclarationGraph,
 };
@@ -223,26 +222,16 @@ impl<'d> CoherentDraft<'d> {
         })
     }
 
-    /// Step 3: the resource-policy walk, in the exact legacy candidate order — the
-    /// eleven aggregate caps as `check_bounds` declared them, then per-function
-    /// CodeBytes in function order. Nothing is measured, hashed, or allocated here.
+    /// Step 3: the resource-policy walk, in candidate order — the eleven aggregate
+    /// caps, then per-function CodeBytes in function order. Nothing is measured,
+    /// hashed, or allocated here.
     pub(crate) fn policy(self) -> Result<PolicyClean<'d>, ImageBuildError> {
-        let draft = self.0;
-        // The independent eight-slot ledger audit runs over the coherent draft before
-        // the walk: every slot is recomputed from final draft state and compared
-        // byte-exactly. It authorizes nothing; the walk below remains the public
-        // candidate authority, and its verdict is shadow-compared afterwards.
-        if let Err(drift) = TablePolicyAudit::cross_validate(draft) {
-            return Err(ImageBuildError::LedgerDrift(drift));
-        }
-        let verdict = Self::legacy_walk(&self);
-        Self::shadow_compare(draft, &verdict)?;
-        verdict?;
+        Self::check_policy(&self)?;
         Ok(PolicyClean(self))
     }
 
-    /// The exact legacy candidate walk, unchanged in order and authority.
-    fn legacy_walk(draft: &CoherentDraft<'_>) -> Result<(), ImageBuildError> {
+    /// The candidate walk: the first cap a draft crosses names the refusal.
+    fn check_policy(draft: &CoherentDraft<'_>) -> Result<(), ImageBuildError> {
         if draft.strings().len() > bounds::MAX_STRINGS {
             return Err(ImageBuildError::TooManyStrings);
         }
@@ -284,40 +273,6 @@ impl<'d> CoherentDraft<'d> {
             }
         }
         Ok(())
-    }
-
-    /// Shadow-compare the walk's verdict against the audited ledger: a table-owned
-    /// refusal must name exactly the ledger's canonical minimum, and any other
-    /// verdict (clean or a function-family kind) admits no active-slot crossing — a
-    /// lower-ranked crossing would have been the walk's own earlier candidate. A
-    /// function result grants the audit no authority.
-    fn shadow_compare(
-        draft: &ImageDraft,
-        verdict: &Result<(), ImageBuildError>,
-    ) -> Result<(), ImageBuildError> {
-        let owned_rank = match verdict {
-            Err(ImageBuildError::TooManyStrings) => Some(TablePolicyKind::Strings),
-            Err(ImageBuildError::StringTooLong) => Some(TablePolicyKind::StringBytes),
-            Err(ImageBuildError::TooManyConsts) => Some(TablePolicyKind::Consts),
-            Err(ImageBuildError::TooManyTypes) => Some(TablePolicyKind::Types),
-            Err(ImageBuildError::TooManyEnums) => Some(TablePolicyKind::Enums),
-            Err(ImageBuildError::TooManyCollections) => Some(TablePolicyKind::Collections),
-            Err(ImageBuildError::TooManyRoots) => Some(TablePolicyKind::Roots),
-            Err(ImageBuildError::TooManySites) => Some(TablePolicyKind::Sites),
-            _ => None,
-        };
-        let minimum = draft.policy_ledger().cached_minimum();
-        let agrees = match owned_rank {
-            Some(kind) => minimum == Some(LedgerSlotIndex::of(kind)),
-            None => minimum.is_none(),
-        };
-        if agrees {
-            Ok(())
-        } else {
-            Err(ImageBuildError::LedgerDrift(
-                "the legacy walk's verdict disagrees with the ledger's canonical minimum",
-            ))
-        }
     }
 }
 

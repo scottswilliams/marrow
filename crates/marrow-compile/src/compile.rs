@@ -492,11 +492,10 @@ fn image_build_outcome(error: ImageBuildError) -> ImagePolicyOutcome {
             aggregate(ResourceLimitKind::TestEntries, bounds::MAX_TEST_ENTRIES)
         }
         ImageBuildError::ImageTooLarge => ImagePolicyOutcome::ResourceLimit(image_bytes_limit()),
-        // A divergent application-identity latch and a ledger/audit disagreement are
-        // producer-state contradictions: the compiler sets one application identity
-        // per project and the one mutation surface records every crossing, so both
-        // are unreachable from a coherent compiler.
-        ImageBuildError::ApplicationIdentityConflict | ImageBuildError::LedgerDrift(_) => {
+        // A divergent application-identity latch is a producer-state contradiction: the
+        // compiler sets one application identity per project, so it is unreachable from
+        // a coherent compiler.
+        ImageBuildError::ApplicationIdentityConflict => {
             ImagePolicyOutcome::Invariant(InvariantCause::ImageBuild(error))
         }
         // A per-construct bound reachable through a path no pre-mutation source

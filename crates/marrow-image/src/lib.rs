@@ -20,7 +20,6 @@ mod instr;
 mod interface;
 mod issuance;
 mod measure;
-mod policy_ledger;
 mod product;
 mod remap;
 mod semantic;
@@ -29,15 +28,12 @@ mod store_digest;
 mod ty;
 mod value_dag;
 
-pub use ceiling::{CEILING_KIND, CeilingDescriptor, CeilingId};
+pub use ceiling::{CeilingDescriptor, CeilingId};
 pub use demand::{
-    CeilingDecodeError, DEMAND_SET_KIND, DemandAtom, DemandSelection, DemandSetId, DemandView,
-    ExportDemand, MAX_CEILING_ATOMS, OperationClass,
+    CeilingDecodeError, DemandAtom, DemandSelection, DemandSetId, DemandView, ExportDemand,
+    OperationClass,
 };
-pub use digest::{
-    COMPANION_RELEASE_KIND, CompanionReleaseId, IMAGE_DIGEST_KIND, ImageId, companion_release_id,
-    image_id,
-};
+pub use digest::{CompanionReleaseId, ImageId, companion_release_id, image_id};
 pub use draft::{
     AdmittedGraphInputPlan, AdmittedRoot, CollTypeId, CollectionTypeDef, ConstId, DraftSavepoint,
     DraftStateError, DraftTxn, EnumId, EnumTypeDef, FieldDef, FuncId, FunctionDef, ImageBuildError,
@@ -45,15 +41,12 @@ pub use draft::{
     VariantDef,
 };
 pub use durable_id::{
-    BranchPlacementIdentity, DURABLE_CONTRACT_KIND, DurableBranchView, DurableContractId,
-    DurableContractView, DurableFieldIdentity, DurableFieldView, DurableGraphTooLarge,
-    DurableGroupIdentity, DurableGroupView, DurableIndexComponent, DurableIndexShape,
-    DurableKeyIdentity, DurableMemberIdentity, DurableMemberView, DurableMemberViewKind,
-    DurableMemberViews, DurableProductIdentity, DurableRootView, DurableSumIdentity, LedgerIdBytes,
-    ManagedIndexIdentity, RootPlacementIdentity,
+    DurableBranchView, DurableContractId, DurableContractView, DurableFieldView,
+    DurableGraphTooLarge, DurableGroupView, DurableIndexComponent, DurableIndexShape,
+    DurableMemberView, DurableMemberViewKind, DurableMemberViews, DurableRootView, LedgerIdBytes,
 };
 pub use encode::{EncodedImage, IMAGE_FORMAT_VERSION};
-pub use export_id::{EXPORT_ID_KIND, ExportId};
+pub use export_id::ExportId;
 pub use instr::{
     Instr, OP_ASSERT, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_BYTES_GE, OP_BYTES_GT, OP_BYTES_LE,
     OP_BYTES_LT, OP_CALL, OP_CONST_LOAD, OP_CONV_BYTES_TEXT, OP_CONV_STRING, OP_DATE_ADD_DAYS,
@@ -78,26 +71,21 @@ pub use instr::{
     OP_TEXT_TRIM, OP_TODO, OP_TXN_BEGIN, OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD,
 };
 pub use interface::{
-    CollectionShape, EnumShape, ExportSignature, FieldShape, FunctionDescriptor, INTERFACE_ID_KIND,
-    Interface, InterfaceError, InterfaceId, RecordShape, RootShape, TransferField, TransferType,
-    TransferVariant, VariantShape,
+    CollectionShape, EnumShape, ExportSignature, FieldShape, FunctionDescriptor, Interface,
+    InterfaceError, InterfaceId, RecordShape, RootShape, TransferType, VariantShape,
 };
-pub use measure::EncodeDriftSection;
 pub use product::{
     CanonicalDeclarationPathSelector, DeclarationMember, DeclarationMemberDef,
     DeclarationMemberShape, DurableContractGraph, DurableGraphInputRefusal, DurableProductGraph,
     RootOccurrenceSelector,
 };
-pub use remap::{ConstToken, StringToken};
 pub use semantic::{
     SemanticNode, SemanticNodeKind, SemanticPath, SemanticPathRefusal, SemanticStep,
     SemanticStepKind, SemanticTarget,
 };
 pub use site_plan::{OccurrenceSiteHandle, PlannedSiteRef, SitePlanStateError};
 pub use store_digest::{
-    STORE_BACKUP_KIND, STORE_DATA_KIND, STORE_ENVELOPE_KIND, STORE_HEAD_KIND, STORE_INTERFACE_KIND,
-    StoreBackupDigest, StoreDataDigest, StoreEnvelopeDigest, StoreHeadDigest,
-    interface_fingerprint,
+    StoreBackupDigest, StoreDataDigest, StoreEnvelopeDigest, StoreHeadDigest, interface_fingerprint,
 };
 pub use ty::{
     ImageType, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES, TAG_COLLECTION, TAG_DATE, TAG_DURATION,
