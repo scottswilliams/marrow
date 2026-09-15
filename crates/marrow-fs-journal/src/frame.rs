@@ -103,6 +103,13 @@ impl JournalKind {
         }
     }
 
+    /// Whether `phase_tag` is the kind's terminal phase. This is the one
+    /// statement of what completeness means; every holder of a last tag asks
+    /// here rather than comparing against the registry itself.
+    pub const fn is_terminal(self, phase_tag: u8) -> bool {
+        phase_tag == self.phase_count()
+    }
+
     /// The exact `header_len` for kinds whose row header is closed (4 and 5).
     /// Kinds 1–3 carry their consumer rows' headers, bounded by the ceiling.
     pub const fn exact_header_len(self) -> Option<usize> {
@@ -262,11 +269,14 @@ impl DecodedFrame {
         &self.tail
     }
 
+    /// The last recorded phase tag; zero before the first record.
+    pub fn last_tag(&self) -> u8 {
+        self.records.last().map_or(0, |record| record.phase_tag)
+    }
+
     /// Whether the final registry phase has been recorded.
     pub fn is_complete(&self) -> bool {
-        self.records
-            .last()
-            .is_some_and(|record| record.phase_tag == self.kind.phase_count())
+        self.kind.is_terminal(self.last_tag())
     }
 
     /// The `JournalCommon` leading kinds 4 and 5; `None` for kinds 1–3.
@@ -279,6 +289,133 @@ impl DecodedFrame {
             .expect("a closed-kind header begins with the 48-byte common");
         Some(JournalCommon::decode(common))
     }
+}
+
+/// The record law: the rules every record satisfies at its position in the
+/// frame, stated once. The encoder checks them before it writes; the decoder
+/// checks the same rules against the bytes it finds. Neither direction
+/// restates one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordLaw {
+    /// The position is beyond the kind's registry: each phase appears at most
+    /// once, so a frame holds at most `phase_count` records.
+    SequenceOutOfRegistry,
+    /// The phase tag is outside the kind's registry `1..=n`.
+    TagOutOfRegistry { found: u8 },
+    /// The first record's phase is always `Prepared`.
+    FirstTagNotPrepared { found: u8 },
+    /// The phase tag does not strictly advance past the preceding record's.
+    TagNotAdvancing { previous: u8, found: u8 },
+    /// A closed-record kind requires dense phase tags equal to position + 1.
+    TagNotDense { found: u8 },
+    /// A closed-record kind requires the exact payload length for the position.
+    WrongPayloadLength { expected: usize, found: usize },
+    /// The record does not end under the kind's ceiling at this position.
+    OverCeiling { ceiling: usize, end: usize },
+}
+
+impl fmt::Display for RecordLaw {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SequenceOutOfRegistry => formatter.write_str("is beyond the kind's registry"),
+            Self::TagOutOfRegistry { found } => {
+                write!(formatter, "carries phase tag {found}, outside the registry")
+            }
+            Self::FirstTagNotPrepared { found } => {
+                write!(formatter, "carries phase tag {found}, not Prepared")
+            }
+            Self::TagNotAdvancing { previous, found } => write!(
+                formatter,
+                "carries phase tag {found}, which does not advance past {previous}"
+            ),
+            Self::TagNotDense { found } => write!(
+                formatter,
+                "carries phase tag {found}, breaking this kind's dense registry"
+            ),
+            Self::WrongPayloadLength { expected, found } => write!(
+                formatter,
+                "carries {found} payload bytes, not the exact {expected}"
+            ),
+            Self::OverCeiling { ceiling, end } => {
+                write!(
+                    formatter,
+                    "ends at byte {end}, past the {ceiling}-byte ceiling"
+                )
+            }
+        }
+    }
+}
+
+impl JournalKind {
+    /// The half of the record law a declared length settles: registry
+    /// position, exact payload length, and ceiling fit for a record beginning
+    /// at byte `start`.
+    pub(crate) fn check_record_size(
+        self,
+        sequence: u32,
+        payload_len: usize,
+        start: usize,
+    ) -> Result<(), RecordLaw> {
+        if sequence >= u32::from(self.phase_count()) {
+            return Err(RecordLaw::SequenceOutOfRegistry);
+        }
+        if let Some(expected) = self.exact_payload_len(sequence)
+            && payload_len != expected
+        {
+            return Err(RecordLaw::WrongPayloadLength {
+                expected,
+                found: payload_len,
+            });
+        }
+        let end = start + RECORD_OVERHEAD + payload_len;
+        if end > self.ceiling() {
+            return Err(RecordLaw::OverCeiling {
+                ceiling: self.ceiling(),
+                end,
+            });
+        }
+        Ok(())
+    }
+
+    /// The half of the record law a phase tag settles, against the preceding
+    /// record's tag (zero before the first record).
+    pub(crate) fn check_record_tag(
+        self,
+        sequence: u32,
+        previous: u8,
+        phase_tag: u8,
+    ) -> Result<(), RecordLaw> {
+        if phase_tag == 0 || phase_tag > self.phase_count() {
+            return Err(RecordLaw::TagOutOfRegistry { found: phase_tag });
+        }
+        if sequence == 0 && phase_tag != 1 {
+            return Err(RecordLaw::FirstTagNotPrepared { found: phase_tag });
+        }
+        if phase_tag <= previous {
+            return Err(RecordLaw::TagNotAdvancing {
+                previous,
+                found: phase_tag,
+            });
+        }
+        if self.exact_payload_len(sequence).is_some() && u32::from(phase_tag) != sequence + 1 {
+            return Err(RecordLaw::TagNotDense { found: phase_tag });
+        }
+        Ok(())
+    }
+}
+
+/// Check a whole record against its kind's law: the one gate a producer
+/// passes, and the two halves the decoder reaches as the bytes arrive.
+pub(crate) fn check_record_law(
+    kind: JournalKind,
+    sequence: u32,
+    previous: u8,
+    phase_tag: u8,
+    payload_len: usize,
+    start: usize,
+) -> Result<(), RecordLaw> {
+    kind.check_record_size(sequence, payload_len, start)?;
+    kind.check_record_tag(sequence, previous, phase_tag)
 }
 
 /// A producer-side refusal: the requested header or record violates the
@@ -294,23 +431,8 @@ pub enum FrameLawError {
     /// The row header leaves no room for the Prepared record under the
     /// kind's ceiling.
     HeaderOverCeiling { kind: JournalKind, found: usize },
-    /// The phase tag is outside the kind's registry `1..=n`.
-    TagOutOfRegistry { kind: JournalKind, found: u8 },
-    /// The phase tag does not advance past the record's sequence position.
-    TagBehindSequence { sequence: u32, found: u8 },
-    /// A closed-record kind requires dense phase tags equal to sequence + 1.
-    TagNotDense { sequence: u32, found: u8 },
-    /// A closed-record kind requires the exact payload length by position.
-    WrongPayloadLength {
-        sequence: u32,
-        expected: usize,
-        found: usize,
-    },
-    /// The payload alone exceeds the kind's ceiling.
-    PayloadOverCeiling { kind: JournalKind, found: usize },
-    /// The sequence is beyond the kind's registry (each phase appears at most
-    /// once, so a frame holds at most `phase_count` records).
-    SequenceOutOfRegistry { kind: JournalKind, found: u32 },
+    /// The record at `sequence` violates the kind's record law.
+    Record { sequence: u32, law: RecordLaw },
 }
 
 impl fmt::Display for FrameLawError {
@@ -328,35 +450,8 @@ impl fmt::Display for FrameLawError {
                 formatter,
                 "a {found}-byte row header leaves no record room under the {kind} ceiling"
             ),
-            Self::TagOutOfRegistry { kind, found } => {
-                write!(
-                    formatter,
-                    "phase tag {found} is outside the {kind} registry"
-                )
-            }
-            Self::TagBehindSequence { sequence, found } => write!(
-                formatter,
-                "phase tag {found} does not advance past sequence {sequence}"
-            ),
-            Self::TagNotDense { sequence, found } => write!(
-                formatter,
-                "this kind requires phase tag {} at sequence {sequence} (found {found})",
-                sequence + 1
-            ),
-            Self::WrongPayloadLength {
-                sequence,
-                expected,
-                found,
-            } => write!(
-                formatter,
-                "the record at sequence {sequence} carries exactly {expected} payload bytes (found {found})"
-            ),
-            Self::PayloadOverCeiling { kind, found } => write!(
-                formatter,
-                "a {found}-byte payload exceeds the {kind} ceiling"
-            ),
-            Self::SequenceOutOfRegistry { kind, found } => {
-                write!(formatter, "sequence {found} is beyond the {kind} registry")
+            Self::Record { sequence, law } => {
+                write!(formatter, "the record at sequence {sequence} {law}")
             }
         }
     }
@@ -391,31 +486,15 @@ pub enum FrameCorruption {
     /// The bytes end inside the row header, which the claim protocol makes
     /// durable before any link.
     HeaderTruncated { expected: usize, found: usize },
-    /// A record's declared length is below the sequence-and-tag base or does
-    /// not fit under the ceiling.
+    /// A record's declared length is below the sequence-and-tag base, so no
+    /// payload length can be derived from it.
     BadRecordLength { sequence: u32, found: u32 },
-    /// A closed-record kind's record does not have its exact position length.
-    WrongRecordSize {
-        sequence: u32,
-        expected: u32,
-        found: u32,
-    },
     /// A record's trailing length echo differs from its leading length.
     LengthEchoMismatch { sequence: u32 },
     /// The record sequence is not dense from zero.
     SequenceNotDense { expected: u32, found: u32 },
-    /// A phase tag is outside the kind's registry.
-    TagOutOfRegistry { sequence: u32, found: u8 },
-    /// A phase tag fails to strictly advance.
-    TagNotAdvancing {
-        sequence: u32,
-        previous: u8,
-        found: u8,
-    },
-    /// A closed-record kind's phase tag is not sequence + 1.
-    TagNotDense { sequence: u32, found: u8 },
-    /// The first record's phase is not `Prepared`.
-    FirstTagNotPrepared { found: u8 },
+    /// The record found at `sequence` violates the kind's record law.
+    Record { sequence: u32, law: RecordLaw },
     /// Bytes follow the terminal registry phase.
     TrailingBytes { found: usize },
 }
@@ -453,14 +532,6 @@ impl fmt::Display for FrameCorruption {
                 formatter,
                 "the record at sequence {sequence} declares an impossible length {found}"
             ),
-            Self::WrongRecordSize {
-                sequence,
-                expected,
-                found,
-            } => write!(
-                formatter,
-                "the record at sequence {sequence} declares length {found}, not the exact {expected}"
-            ),
             Self::LengthEchoMismatch { sequence } => write!(
                 formatter,
                 "the record at sequence {sequence} has a mismatched trailing length echo"
@@ -469,26 +540,9 @@ impl fmt::Display for FrameCorruption {
                 formatter,
                 "record sequence {found} arrived where {expected} was required"
             ),
-            Self::TagOutOfRegistry { sequence, found } => write!(
-                formatter,
-                "phase tag {found} at sequence {sequence} is outside the registry"
-            ),
-            Self::TagNotAdvancing {
-                sequence,
-                previous,
-                found,
-            } => write!(
-                formatter,
-                "phase tag {found} at sequence {sequence} does not advance past {previous}"
-            ),
-            Self::TagNotDense { sequence, found } => write!(
-                formatter,
-                "phase tag {found} at sequence {sequence} breaks this kind's dense registry"
-            ),
-            Self::FirstTagNotPrepared { found } => write!(
-                formatter,
-                "the first record's phase tag is {found}, not Prepared"
-            ),
+            Self::Record { sequence, law } => {
+                write!(formatter, "the record at sequence {sequence} {law}")
+            }
             Self::TrailingBytes { found } => write!(
                 formatter,
                 "{found} bytes follow the terminal registry phase"
@@ -534,58 +588,25 @@ pub fn encode_header(kind: JournalKind, row_header: &[u8]) -> Result<Vec<u8>, Fr
 }
 
 /// Encode one record for `kind`, refusing a sequence, tag, or payload that
-/// violates the kind's law. The producer precomputes the same complete length
-/// the decoder will require.
+/// violates the kind's law. A producer knows only its own record, so the
+/// ceiling is measured from a minimal frame and the preceding tag from the
+/// weakest value the sequence admits; the decoder measures both exactly.
 pub fn encode_record(
     kind: JournalKind,
     sequence: u32,
     phase_tag: u8,
     payload: &[u8],
 ) -> Result<Vec<u8>, FrameLawError> {
-    let phases = kind.phase_count();
-    if phase_tag == 0 || phase_tag > phases {
-        return Err(FrameLawError::TagOutOfRegistry {
-            kind,
-            found: phase_tag,
-        });
-    }
-    if sequence >= u32::from(phases) {
-        return Err(FrameLawError::SequenceOutOfRegistry {
-            kind,
-            found: sequence,
-        });
-    }
-    if u32::from(phase_tag) <= sequence {
-        return Err(FrameLawError::TagBehindSequence {
-            sequence,
-            found: phase_tag,
-        });
-    }
-    match kind.exact_payload_len(sequence) {
-        Some(expected) => {
-            if u32::from(phase_tag) != sequence + 1 {
-                return Err(FrameLawError::TagNotDense {
-                    sequence,
-                    found: phase_tag,
-                });
-            }
-            if payload.len() != expected {
-                return Err(FrameLawError::WrongPayloadLength {
-                    sequence,
-                    expected,
-                    found: payload.len(),
-                });
-            }
-        }
-        None => {
-            if PREFIX_LEN + RECORD_OVERHEAD + payload.len() > kind.ceiling() {
-                return Err(FrameLawError::PayloadOverCeiling {
-                    kind,
-                    found: payload.len(),
-                });
-            }
-        }
-    }
+    let previous = u8::try_from(sequence).unwrap_or(u8::MAX);
+    check_record_law(
+        kind,
+        sequence,
+        previous,
+        phase_tag,
+        payload.len(),
+        PREFIX_LEN,
+    )
+    .map_err(|law| FrameLawError::Record { sequence, law })?;
     let record_len =
         RECORD_LEN_BASE + u32::try_from(payload.len()).expect("a lawful payload fits the ceiling");
     let mut bytes = Vec::with_capacity(RECORD_OVERHEAD + payload.len());
@@ -597,15 +618,15 @@ pub fn encode_record(
     Ok(bytes)
 }
 
-/// Decode `bytes` as an `expected`-kind frame. The caller reads at most
-/// `ceiling + 1` bytes; the decoder refuses the surplus byte before any
-/// length-derived allocation and fully validates every structurally visible
-/// field, including the visible fields of an incomplete tail.
-pub fn decode_frame(expected: JournalKind, bytes: &[u8]) -> Result<DecodedFrame, FrameCorruption> {
-    let ceiling = expected.ceiling();
-    if bytes.len() > ceiling {
-        return Err(FrameCorruption::Oversized { limit: ceiling });
-    }
+/// The decoded fixed prefix and row header, and where the records begin.
+struct FramePrefix {
+    row_header: Vec<u8>,
+    records_at: usize,
+}
+
+/// Decode and validate the fixed 16-byte prefix and the row header that
+/// follows it.
+fn decode_prefix(expected: JournalKind, bytes: &[u8]) -> Result<FramePrefix, FrameCorruption> {
     if bytes.len() < PREFIX_LEN {
         return Err(FrameCorruption::TooShort { found: bytes.len() });
     }
@@ -633,131 +654,146 @@ pub fn decode_frame(expected: JournalKind, bytes: &[u8]) -> Result<DecodedFrame,
             .expect("the fixed prefix carries four header-length bytes"),
     );
     let header_len = declared_header as usize;
-    let header_lawful = match kind.exact_header_len() {
+    let lawful = match kind.exact_header_len() {
         Some(exact) => header_len == exact,
-        None => PREFIX_LEN + header_len + RECORD_OVERHEAD <= ceiling,
+        None => PREFIX_LEN + header_len + RECORD_OVERHEAD <= kind.ceiling(),
     };
-    if !header_lawful {
+    if !lawful {
         return Err(FrameCorruption::BadHeaderLength {
             found: declared_header,
         });
     }
-    let header_end = PREFIX_LEN + header_len;
-    if bytes.len() < header_end {
+    let records_at = PREFIX_LEN + header_len;
+    if bytes.len() < records_at {
         return Err(FrameCorruption::HeaderTruncated {
             expected: header_len,
             found: bytes.len() - PREFIX_LEN,
         });
     }
-    let row_header = bytes[PREFIX_LEN..header_end].to_vec();
+    Ok(FramePrefix {
+        row_header: bytes[PREFIX_LEN..records_at].to_vec(),
+        records_at,
+    })
+}
 
-    let phases = expected.phase_count();
+/// How much of the next record `remaining` carries.
+enum RecordExtent {
+    /// The record is present in full and occupies `disk` bytes.
+    Complete { disk: usize },
+    /// The record is truncated. Every field visible in `remaining` has
+    /// already been checked against the law.
+    Incomplete,
+}
+
+/// Check every structurally visible field of the next record, whether or not
+/// the record is complete. A truncated record is a tail candidate only once
+/// the fields that are present have passed the same law a complete record
+/// passes.
+fn check_visible_fields(
+    kind: JournalKind,
+    sequence: u32,
+    previous_tag: u8,
+    start: usize,
+    remaining: &[u8],
+) -> Result<RecordExtent, FrameCorruption> {
+    let law = |law| FrameCorruption::Record { sequence, law };
+    if remaining.len() < 4 {
+        return Ok(RecordExtent::Incomplete);
+    }
+    let declared = u32::from_be_bytes(
+        remaining[0..4]
+            .try_into()
+            .expect("four declared-length bytes"),
+    );
+    if declared < RECORD_LEN_BASE {
+        return Err(FrameCorruption::BadRecordLength {
+            sequence,
+            found: declared,
+        });
+    }
+    let payload_len = (declared - RECORD_LEN_BASE) as usize;
+    kind.check_record_size(sequence, payload_len, start)
+        .map_err(law)?;
+    if remaining.len() >= 8 {
+        let found = u32::from_be_bytes(remaining[4..8].try_into().expect("four sequence bytes"));
+        if found != sequence {
+            return Err(FrameCorruption::SequenceNotDense {
+                expected: sequence,
+                found,
+            });
+        }
+    }
+    if remaining.len() >= 9 {
+        kind.check_record_tag(sequence, previous_tag, remaining[8])
+            .map_err(law)?;
+    }
+    let disk = RECORD_OVERHEAD + payload_len;
+    if remaining.len() < disk {
+        return Ok(RecordExtent::Incomplete);
+    }
+    let echo = u32::from_be_bytes(
+        remaining[disk - 4..disk]
+            .try_into()
+            .expect("four echo bytes"),
+    );
+    if echo != declared {
+        return Err(FrameCorruption::LengthEchoMismatch { sequence });
+    }
+    Ok(RecordExtent::Complete { disk })
+}
+
+/// Take the complete record `remaining` begins with, whose visible fields
+/// [`check_visible_fields`] has already admitted.
+fn take_record(sequence: u32, remaining: &[u8], disk: usize) -> PhaseRecord {
+    PhaseRecord {
+        sequence,
+        phase_tag: remaining[8],
+        payload: remaining[9..disk - 4].to_vec(),
+    }
+}
+
+/// Decode `bytes` as an `expected`-kind frame. The caller reads at most
+/// `ceiling + 1` bytes; the decoder refuses the surplus byte before any
+/// length-derived allocation and fully validates every structurally visible
+/// field, including the visible fields of an incomplete tail.
+pub fn decode_frame(expected: JournalKind, bytes: &[u8]) -> Result<DecodedFrame, FrameCorruption> {
+    if bytes.len() > expected.ceiling() {
+        return Err(FrameCorruption::Oversized {
+            limit: expected.ceiling(),
+        });
+    }
+    let FramePrefix {
+        row_header,
+        records_at,
+    } = decode_prefix(expected, bytes)?;
+
     let mut records: Vec<PhaseRecord> = Vec::new();
-    let mut offset = header_end;
+    let mut offset = records_at;
     let mut last_tag: u8 = 0;
     let tail = loop {
         if offset == bytes.len() {
             break TailState::Clean;
         }
-        if last_tag == phases {
+        if expected.is_terminal(last_tag) {
             return Err(FrameCorruption::TrailingBytes {
                 found: bytes.len() - offset,
             });
         }
         let sequence = u32::try_from(records.len()).expect("at most phase_count records");
         let remaining = &bytes[offset..];
-
-        // Validate every structurally visible field of the (possibly
-        // incomplete) next record before accepting it as a tail candidate.
-        if remaining.len() < 4 {
-            break TailState::IncompletePrefix {
-                bytes: remaining.to_vec(),
-            };
-        }
-        let declared = u32::from_be_bytes(
-            remaining[0..4]
-                .try_into()
-                .expect("four declared-length bytes"),
-        );
-        if declared < RECORD_LEN_BASE {
-            return Err(FrameCorruption::BadRecordLength {
-                sequence,
-                found: declared,
-            });
-        }
-        if let Some(exact_payload) = expected.exact_payload_len(sequence) {
-            let exact = RECORD_LEN_BASE
-                + u32::try_from(exact_payload).expect("closed payload lengths are small");
-            if declared != exact {
-                return Err(FrameCorruption::WrongRecordSize {
-                    sequence,
-                    expected: exact,
-                    found: declared,
-                });
+        match check_visible_fields(expected, sequence, last_tag, offset, remaining)? {
+            RecordExtent::Incomplete => {
+                break TailState::IncompletePrefix {
+                    bytes: remaining.to_vec(),
+                };
+            }
+            RecordExtent::Complete { disk } => {
+                let record = take_record(sequence, remaining, disk);
+                last_tag = record.phase_tag;
+                records.push(record);
+                offset += disk;
             }
         }
-        let disk = declared as usize + 8;
-        if offset + disk > ceiling {
-            return Err(FrameCorruption::BadRecordLength {
-                sequence,
-                found: declared,
-            });
-        }
-        if remaining.len() >= 8 {
-            let found_sequence =
-                u32::from_be_bytes(remaining[4..8].try_into().expect("four sequence bytes"));
-            if found_sequence != sequence {
-                return Err(FrameCorruption::SequenceNotDense {
-                    expected: sequence,
-                    found: found_sequence,
-                });
-            }
-        }
-        if remaining.len() >= 9 {
-            let tag = remaining[8];
-            if tag == 0 || tag > phases {
-                return Err(FrameCorruption::TagOutOfRegistry {
-                    sequence,
-                    found: tag,
-                });
-            }
-            if sequence == 0 && tag != 1 {
-                return Err(FrameCorruption::FirstTagNotPrepared { found: tag });
-            }
-            if tag <= last_tag {
-                return Err(FrameCorruption::TagNotAdvancing {
-                    sequence,
-                    previous: last_tag,
-                    found: tag,
-                });
-            }
-            if expected.exact_payload_len(sequence).is_some() && u32::from(tag) != sequence + 1 {
-                return Err(FrameCorruption::TagNotDense {
-                    sequence,
-                    found: tag,
-                });
-            }
-        }
-        if remaining.len() < disk {
-            break TailState::IncompletePrefix {
-                bytes: remaining.to_vec(),
-            };
-        }
-        let echo = u32::from_be_bytes(
-            remaining[disk - 4..disk]
-                .try_into()
-                .expect("four echo bytes"),
-        );
-        if echo != declared {
-            return Err(FrameCorruption::LengthEchoMismatch { sequence });
-        }
-        records.push(PhaseRecord {
-            sequence,
-            phase_tag: remaining[8],
-            payload: remaining[9..disk - 4].to_vec(),
-        });
-        last_tag = remaining[8];
-        offset += disk;
     };
 
     Ok(DecodedFrame {

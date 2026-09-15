@@ -4,7 +4,7 @@
 
 use marrow_fs_journal::{
     DecodedFrame, FrameCorruption, FrameLawError, FsIdentity, JournalCommon, JournalKind,
-    TailState, decode_frame, encode_header, encode_record,
+    RecordLaw, TailState, decode_frame, encode_header, encode_record,
 };
 
 const PARENT: FsIdentity = FsIdentity::new(0x0102_0304_0506_0708, 0x1112_1314_1516_1718);
@@ -382,9 +382,12 @@ fn an_impossible_declared_record_length_is_corruption() {
     over.extend_from_slice(&0xFFFF_FF00u32.to_be_bytes()); // over the ceiling
     assert_eq!(
         decode_frame(JournalKind::Provision, &over),
-        Err(FrameCorruption::BadRecordLength {
+        Err(FrameCorruption::Record {
             sequence: 0,
-            found: 0xFFFF_FF00,
+            law: RecordLaw::OverCeiling {
+                ceiling: 4096,
+                end: 0xFFFF_FF00 - 5 + 13 + 20,
+            },
         })
     );
 }
@@ -448,9 +451,9 @@ fn tag_law_violations_are_corruption() {
     zero.extend_from_slice(&record(0, 0, b"a"));
     assert_eq!(
         decode_frame(JournalKind::Provision, &zero),
-        Err(FrameCorruption::TagOutOfRegistry {
+        Err(FrameCorruption::Record {
             sequence: 0,
-            found: 0,
+            law: RecordLaw::TagOutOfRegistry { found: 0 },
         })
     );
 
@@ -459,9 +462,9 @@ fn tag_law_violations_are_corruption() {
     beyond.extend_from_slice(&record(0, 4, b"a"));
     assert_eq!(
         decode_frame(JournalKind::Provision, &beyond),
-        Err(FrameCorruption::TagOutOfRegistry {
+        Err(FrameCorruption::Record {
             sequence: 0,
-            found: 4,
+            law: RecordLaw::TagOutOfRegistry { found: 4 },
         })
     );
 
@@ -470,7 +473,10 @@ fn tag_law_violations_are_corruption() {
     unprepared.extend_from_slice(&record(0, 2, b"a"));
     assert_eq!(
         decode_frame(JournalKind::Provision, &unprepared),
-        Err(FrameCorruption::FirstTagNotPrepared { found: 2 })
+        Err(FrameCorruption::Record {
+            sequence: 0,
+            law: RecordLaw::FirstTagNotPrepared { found: 2 },
+        })
     );
 
     let mut stalled = prefix(2, 4);
@@ -479,10 +485,12 @@ fn tag_law_violations_are_corruption() {
     stalled.extend_from_slice(&record(1, 1, b"b"));
     assert_eq!(
         decode_frame(JournalKind::Provision, &stalled),
-        Err(FrameCorruption::TagNotAdvancing {
+        Err(FrameCorruption::Record {
             sequence: 1,
-            previous: 1,
-            found: 1,
+            law: RecordLaw::TagNotAdvancing {
+                previous: 1,
+                found: 1,
+            },
         })
     );
 
@@ -493,9 +501,9 @@ fn tag_law_violations_are_corruption() {
     sparse.extend_from_slice(&record(1, 3, &[0xB1; 33]));
     assert_eq!(
         decode_frame(JournalKind::Lineage, &sparse),
-        Err(FrameCorruption::TagNotDense {
+        Err(FrameCorruption::Record {
             sequence: 1,
-            found: 3,
+            law: RecordLaw::TagNotDense { found: 3 },
         })
     );
 }
@@ -507,10 +515,12 @@ fn a_closed_kind_record_needs_its_exact_position_size() {
     frame.extend_from_slice(&record(0, 1, &[0x01, 0x02]));
     assert_eq!(
         decode_frame(JournalKind::Lineage, &frame),
-        Err(FrameCorruption::WrongRecordSize {
+        Err(FrameCorruption::Record {
             sequence: 0,
-            expected: 6,
-            found: 7,
+            law: RecordLaw::WrongPayloadLength {
+                expected: 1,
+                found: 2,
+            },
         })
     );
 }
@@ -546,10 +556,12 @@ fn an_incomplete_final_record_is_a_validated_tail_candidate() {
     bad_visible.extend_from_slice(&9u32.to_be_bytes());
     assert_eq!(
         decode_frame(JournalKind::Lineage, &bad_visible),
-        Err(FrameCorruption::WrongRecordSize {
+        Err(FrameCorruption::Record {
             sequence: 2,
-            expected: 38,
-            found: 9,
+            law: RecordLaw::WrongPayloadLength {
+                expected: 33,
+                found: 4,
+            },
         })
     );
 
@@ -572,9 +584,9 @@ fn an_incomplete_final_record_is_a_validated_tail_candidate() {
     bad_tag.push(9);
     assert_eq!(
         decode_frame(JournalKind::Lineage, &bad_tag),
-        Err(FrameCorruption::TagOutOfRegistry {
+        Err(FrameCorruption::Record {
             sequence: 2,
-            found: 9,
+            law: RecordLaw::TagOutOfRegistry { found: 9 },
         })
     );
 }
@@ -610,52 +622,60 @@ fn producer_law_refusals_are_typed() {
     );
     assert_eq!(
         encode_record(JournalKind::Provision, 0, 0, b""),
-        Err(FrameLawError::TagOutOfRegistry {
-            kind: JournalKind::Provision,
-            found: 0,
+        Err(FrameLawError::Record {
+            sequence: 0,
+            law: RecordLaw::TagOutOfRegistry { found: 0 },
         })
     );
     assert_eq!(
         encode_record(JournalKind::Ids, 0, 4, b""),
-        Err(FrameLawError::TagOutOfRegistry {
-            kind: JournalKind::Ids,
-            found: 4,
+        Err(FrameLawError::Record {
+            sequence: 0,
+            law: RecordLaw::TagOutOfRegistry { found: 4 },
         })
     );
     assert_eq!(
         encode_record(JournalKind::Ids, 1, 1, b""),
-        Err(FrameLawError::TagBehindSequence {
+        Err(FrameLawError::Record {
             sequence: 1,
-            found: 1,
+            law: RecordLaw::TagNotAdvancing {
+                previous: 1,
+                found: 1,
+            },
         })
     );
     assert_eq!(
         encode_record(JournalKind::Ids, 3, 3, b""),
-        Err(FrameLawError::SequenceOutOfRegistry {
-            kind: JournalKind::Ids,
-            found: 3,
+        Err(FrameLawError::Record {
+            sequence: 3,
+            law: RecordLaw::SequenceOutOfRegistry,
         })
     );
     assert_eq!(
         encode_record(JournalKind::Lineage, 1, 3, &[0xB1; 33]),
-        Err(FrameLawError::TagNotDense {
+        Err(FrameLawError::Record {
             sequence: 1,
-            found: 3,
+            law: RecordLaw::TagNotDense { found: 3 },
         })
     );
     assert_eq!(
         encode_record(JournalKind::Lineage, 0, 1, &[0x01, 0x02]),
-        Err(FrameLawError::WrongPayloadLength {
+        Err(FrameLawError::Record {
             sequence: 0,
-            expected: 1,
-            found: 2,
+            law: RecordLaw::WrongPayloadLength {
+                expected: 1,
+                found: 2,
+            },
         })
     );
     assert_eq!(
         encode_record(JournalKind::Provision, 0, 1, &[0u8; 5000]),
-        Err(FrameLawError::PayloadOverCeiling {
-            kind: JournalKind::Provision,
-            found: 5000,
+        Err(FrameLawError::Record {
+            sequence: 0,
+            law: RecordLaw::OverCeiling {
+                ceiling: 4096,
+                end: 5029,
+            },
         })
     );
 }
