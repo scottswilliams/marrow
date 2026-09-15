@@ -11,7 +11,7 @@
 
 use marrow_verify::{SealedExport, VerifiedImage};
 use marrow_vm::{
-    DurableRun, EphemeralOutcome, MemoryAttachment, Value, mint_ephemeral, prepare, run_export,
+    DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
 };
 
 const IDS: &str = "marrow ids v0\n\
@@ -136,10 +136,12 @@ fn run(
 }
 
 fn attach(image: &VerifiedImage) -> MemoryAttachment {
-    match mint_ephemeral(prepare(image.clone())) {
-        EphemeralOutcome::Ready(attachment) => attachment,
-        EphemeralOutcome::Parked(_) => panic!("a two-root image must be executable, not parked"),
-        EphemeralOutcome::Failed { cause, .. } => panic!("minting the attachment failed: {cause}"),
+    match mint_ephemeral(prepare(image.clone())).into_mint() {
+        MintOutcome::Ready(attachment) => attachment,
+        MintOutcome::Storeless | MintOutcome::Parked => {
+            panic!("a two-root image must be executable, not parked")
+        }
+        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {cause}"),
     }
 }
 

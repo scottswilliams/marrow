@@ -146,27 +146,72 @@ impl NativeAttachment {
     }
 }
 
-/// Whether an in-memory attachment could be minted for a prepared image. Every arm owns the
-/// image, so a service over a parked or failed mint still runs the image's storeless exports.
-pub enum EphemeralOutcome {
-    /// The pairing over the image's executable durable shape.
-    Ready(MemoryAttachment),
+/// Whether a fresh in-memory store could be minted, over whatever its ready arm carries.
+///
+/// One classification for every mint in this module: the deployment pairing, a fresh test's
+/// owned attachment, and the borrow of that attachment a test executes against. They are the
+/// same four-way fact about one mint, so they are one enum rather than three joined by
+/// hand-written mappings.
+pub enum MintOutcome<T> {
+    /// No store was needed: the entry declares no durable demand.
+    Storeless,
+    /// The store was minted; `T` is what runs against it.
+    Ready(T),
     /// The image's durable shape is not yet executable by the flat kernel.
-    Parked(Rc<VerifiedImage>),
-    /// Minting the store failed operationally; `cause` is the stable code.
-    Failed {
-        image: Rc<VerifiedImage>,
-        cause: &'static str,
-    },
+    Parked,
+    /// Minting the store failed operationally; the stable code names why.
+    Failed(&'static str),
+}
+
+impl<T> MintOutcome<T> {
+    /// The same outcome over a mutable borrow of what the ready arm carries.
+    pub fn as_mut(&mut self) -> MintOutcome<&mut T> {
+        match self {
+            Self::Storeless => MintOutcome::Storeless,
+            Self::Ready(ready) => MintOutcome::Ready(ready),
+            Self::Parked => MintOutcome::Parked,
+            Self::Failed(cause) => MintOutcome::Failed(cause),
+        }
+    }
+
+    /// The same outcome with the ready arm mapped.
+    pub fn map<U>(self, ready: impl FnOnce(T) -> U) -> MintOutcome<U> {
+        match self {
+            Self::Storeless => MintOutcome::Storeless,
+            Self::Ready(value) => MintOutcome::Ready(ready(value)),
+            Self::Parked => MintOutcome::Parked,
+            Self::Failed(cause) => MintOutcome::Failed(cause),
+        }
+    }
+}
+
+/// An in-memory attachment minted for a prepared image. The image is owned whatever the
+/// outcome, so a service over a parked or failed mint still runs the image's storeless
+/// exports.
+pub struct EphemeralOutcome {
+    image: Rc<VerifiedImage>,
+    mint: MintOutcome<MemoryAttachment>,
 }
 
 impl EphemeralOutcome {
     /// The owned image, whatever the mint outcome.
     pub fn image(&self) -> &Rc<VerifiedImage> {
-        match self {
-            EphemeralOutcome::Ready(attachment) => attachment.image(),
-            EphemeralOutcome::Parked(image) | EphemeralOutcome::Failed { image, .. } => image,
-        }
+        &self.image
+    }
+
+    /// The mint outcome.
+    pub fn mint(&self) -> &MintOutcome<MemoryAttachment> {
+        &self.mint
+    }
+
+    /// The mint outcome, mutably, to run an export against a ready attachment.
+    pub fn mint_mut(&mut self) -> &mut MintOutcome<MemoryAttachment> {
+        &mut self.mint
+    }
+
+    /// Consume this outcome into its mint.
+    pub fn into_mint(self) -> MintOutcome<MemoryAttachment> {
+        self.mint
     }
 }
 
@@ -176,16 +221,17 @@ impl EphemeralOutcome {
 pub fn mint_ephemeral(prepared: PreparedImage) -> EphemeralOutcome {
     let (image, projection) = prepared.into_parts();
     let Some(projection) = projection else {
-        return EphemeralOutcome::Parked(image);
+        return EphemeralOutcome {
+            image,
+            mint: MintOutcome::Parked,
+        };
     };
     let ceiling = deployment_ceiling(image.demand_union());
-    match EphemeralAttachment::mint(projection, ceiling) {
-        Ok(host) => EphemeralOutcome::Ready(Attachment::new(image, Box::new(host))),
-        Err(_) => EphemeralOutcome::Failed {
-            image,
-            cause: marrow_codes::Code::CliDurableUnsupported.as_str(),
-        },
-    }
+    let mint = match EphemeralAttachment::mint(projection, ceiling) {
+        Ok(host) => MintOutcome::Ready(Attachment::new(Rc::clone(&image), Box::new(host))),
+        Err(_) => MintOutcome::Failed(marrow_codes::Code::CliDurableUnsupported.as_str()),
+    };
+    EphemeralOutcome { image, mint }
 }
 
 /// One source test selected from its own image: the retained image, the checked entry index,
@@ -194,14 +240,7 @@ pub fn mint_ephemeral(prepared: PreparedImage) -> EphemeralOutcome {
 pub struct FreshTest {
     image: Rc<VerifiedImage>,
     entry: usize,
-    state: FreshTestState,
-}
-
-enum FreshTestState {
-    Storeless,
-    Ready(Box<EphemeralAttachment>),
-    Parked,
-    Failed(&'static str),
+    state: MintOutcome<Box<EphemeralAttachment>>,
 }
 
 /// Select test entry `index` of the prepared image. `None` when the image has no such entry,
@@ -216,16 +255,16 @@ pub fn fresh_test(prepared: &PreparedImage, index: usize) -> Option<FreshTest> {
         .function(entry.func())
         .expect("verified test function");
     let state = if function.demand().is_empty() {
-        FreshTestState::Storeless
+        MintOutcome::Storeless
     } else {
         match prepared.projection() {
-            None => FreshTestState::Parked,
+            None => MintOutcome::Parked,
             Some(projection) => {
                 let ceiling = deployment_ceiling(prepared.image.test_demand_union());
                 match EphemeralAttachment::mint(projection.clone(), ceiling) {
-                    Ok(host) => FreshTestState::Ready(Box::new(host)),
+                    Ok(host) => MintOutcome::Ready(Box::new(host)),
                     Err(_) => {
-                        FreshTestState::Failed(marrow_codes::Code::CliDurableUnsupported.as_str())
+                        MintOutcome::Failed(marrow_codes::Code::CliDurableUnsupported.as_str())
                     }
                 }
             }
@@ -247,27 +286,16 @@ pub struct TestExecution<'a> {
 }
 
 /// Where a fresh test runs, selected from its verified function demand.
-pub enum TestHost<'a> {
-    /// A storeless entry: no session.
-    Storeless,
-    /// A durable entry over its own fresh in-memory store.
-    Ready(&'a mut dyn SessionHost<Engine = MemoryEngine>),
-    /// A durable entry whose image shape the flat kernel does not execute yet.
-    Parked,
-    /// A durable entry whose store could not be minted; the stable code names why.
-    Failed(&'static str),
-}
+pub type TestHost<'a> = MintOutcome<&'a mut dyn SessionHost<Engine = MemoryEngine>>;
 
 impl FreshTest {
     /// Borrow the image, the entry, and the host together for execution.
     pub fn execution(&mut self) -> TestExecution<'_> {
         let entry = &self.image.test_entries()[self.entry];
-        let host = match &mut self.state {
-            FreshTestState::Storeless => TestHost::Storeless,
-            FreshTestState::Ready(host) => TestHost::Ready(&mut **host),
-            FreshTestState::Parked => TestHost::Parked,
-            FreshTestState::Failed(cause) => TestHost::Failed(cause),
-        };
+        let host = self
+            .state
+            .as_mut()
+            .map(|host| &mut **host as &mut dyn SessionHost<Engine = MemoryEngine>);
         TestExecution {
             image: &self.image,
             entry,

@@ -21,7 +21,7 @@ use marrow_image::{
 };
 use marrow_verify::{VerifiedImage, verify};
 use marrow_vm::{
-    DurableRun, EphemeralOutcome, MemoryAttachment, Value, mint_ephemeral, prepare, run_export,
+    DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
 };
 
 #[path = "../../marrow-image/tests/common/site_seam.rs"]
@@ -330,7 +330,8 @@ fn add_read(
 }
 
 fn seeded(image: &VerifiedImage) -> MemoryAttachment {
-    let EphemeralOutcome::Ready(mut attachment) = mint_ephemeral(prepare(image.clone())) else {
+    let MintOutcome::Ready(mut attachment) = mint_ephemeral(prepare(image.clone())).into_mint()
+    else {
         panic!("the groups image is flat-executable");
     };
     match run_export(&mut attachment, export_id("seed"), Vec::new()).expect("seed export") {

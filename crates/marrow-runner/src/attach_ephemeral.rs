@@ -22,7 +22,7 @@
 //! [`MemoryAttachment`]: marrow_lifecycle::MemoryAttachment
 
 use marrow_codes::Code;
-use marrow_lifecycle::{EphemeralOutcome, PreparedImage, mint_ephemeral};
+use marrow_lifecycle::{EphemeralOutcome, MintOutcome, PreparedImage, mint_ephemeral};
 use marrow_local_wire::{ClientMessage, EncodedFrame, Json, ServerMessage, WireError};
 
 use crate::channel::Handler;
@@ -99,17 +99,17 @@ impl AttachedEphemeralService {
                 turn,
             );
         }
-        let projection = match &mut self.outcome {
-            EphemeralOutcome::Ready(attachment) => {
+        let projection = match self.outcome.mint_mut() {
+            MintOutcome::Ready(attachment) => {
                 let run = marrow_vm::run_export(attachment, decoded.export, decoded.values);
                 dispatch::project_durable_run(attachment.image(), run, turn)
             }
             // A durable request against an image whose shape is not yet executable, or whose
             // attachment could not be minted, is a typed reject — never a partial reply.
-            EphemeralOutcome::Parked(_) => dispatch::RunProjection::Reply(
+            MintOutcome::Storeless | MintOutcome::Parked => dispatch::RunProjection::Reply(
                 dispatch::reject(Code::RunnerDurableUnsupported).encode_frame(turn),
             ),
-            EphemeralOutcome::Failed { cause, .. } => dispatch::RunProjection::Reply(
+            MintOutcome::Failed(cause) => dispatch::RunProjection::Reply(
                 ServerMessage::Reject {
                     code: cause.to_string(),
                 }

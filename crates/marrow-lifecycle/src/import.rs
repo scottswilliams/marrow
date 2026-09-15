@@ -46,7 +46,7 @@ use marrow_kernel::durable::{
 };
 use marrow_kernel::equality::ValueDomain;
 
-use crate::actor::{AdmissionRefusal, ContractChanged, ExactRefusal, ImageAdmission};
+use crate::actor::{AdmissionRefusal, BindingStrictness, ContractChanged, ImageAdmission};
 use crate::attachment::PreparedImage;
 use crate::authority::DemandExceedsCeiling;
 use crate::image::HeadMapPinMismatch;
@@ -476,24 +476,20 @@ pub fn import_jsonl(
     let mut opened = open_admitted(
         dir,
         marrow_kernel::durable::NativeOpenAccess::ReadWrite,
-        |head| admission.admit_exact(head),
+        |head| admission.admit(head, BindingStrictness::Exact),
     )
     .map_err(|error| match error {
         AdmitError::Open(error) => ImportError::Open(error),
-        AdmitError::Refused(ExactRefusal::NotActive) => ImportError::ImageNotActive,
-        AdmitError::Refused(ExactRefusal::InconsistentBinding) => ImportError::InconsistentBinding,
-        AdmitError::Refused(ExactRefusal::ContractChanged(refusal)) => {
-            ImportError::ContractChanged(refusal)
-        }
-        AdmitError::Refused(ExactRefusal::Admission(AdmissionRefusal::Exceeds(refusal))) => {
-            ImportError::DemandExceedsCeiling(refusal)
-        }
-        AdmitError::Refused(ExactRefusal::Admission(AdmissionRefusal::CeilingCorrupt)) => {
-            ImportError::Open(AdmissionRefusal::ceiling_corrupt())
-        }
-        AdmitError::Refused(ExactRefusal::Admission(AdmissionRefusal::Pin(refusal))) => {
-            ImportError::HeadMapPin(refusal)
-        }
+        AdmitError::Refused(refusal) => match refusal {
+            AdmissionRefusal::NotActive => ImportError::ImageNotActive,
+            AdmissionRefusal::InconsistentBinding => ImportError::InconsistentBinding,
+            AdmissionRefusal::ContractChanged(refusal) => ImportError::ContractChanged(refusal),
+            AdmissionRefusal::Exceeds(refusal) => ImportError::DemandExceedsCeiling(refusal),
+            AdmissionRefusal::CeilingCorrupt => {
+                ImportError::Open(AdmissionRefusal::ceiling_corrupt())
+            }
+            AdmissionRefusal::Pin(refusal) => ImportError::HeadMapPin(refusal),
+        },
     })?;
 
     match import_rows_into(&mut opened, &plan, source, grant, limits) {

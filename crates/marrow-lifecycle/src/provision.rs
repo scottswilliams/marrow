@@ -748,7 +748,7 @@ impl LockedStore {
         self,
         admission: crate::actor::ImageAdmission<'_>,
     ) -> Result<OpenBinding, crate::actor::LifecycleError> {
-        use crate::actor::LifecycleError;
+        use crate::actor::{BindingStrictness, LifecycleError};
         if self.envelope.state != EnvelopeState::Active {
             return Err(LifecycleError::Open(OpenError::ActivationRequired {
                 instance: self.envelope.metadata.instance,
@@ -757,7 +757,7 @@ impl LockedStore {
         let (head, digest) = decode_head(&self.directory).map_err(LifecycleError::Open)?;
         let exact = admission.incoming() == &head.binding;
         let names = (!exact).then(|| admission.audit_names());
-        let layout = admission.admit_compatible(&head)?;
+        let layout = admission.admit(&head, BindingStrictness::Compatible)?;
         match names {
             None => self
                 .open_decoded(NativeOpenAccess::ReadWrite, head, digest, layout)

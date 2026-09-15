@@ -10,7 +10,7 @@ use marrow_kernel::durable::{
 };
 use marrow_verify::VerifyRejection;
 
-use crate::actor::ImageAdmission;
+use crate::actor::{BindingStrictness, ImageAdmission};
 use crate::audit::{self, ChainDigest, Names};
 use crate::backup_stream::Decoder;
 use crate::durable_fs::{Publication, custody_io};
@@ -186,7 +186,7 @@ pub fn restore(input: &mut dyn Read, destination: &Path) -> Result<RestoredStore
     let names = Names::new(&projection);
     let admission = ImageAdmission::derive(&image, projection);
     let layout = admission
-        .admit_exact(&head)
+        .admit(&head, BindingStrictness::Exact)
         .map_err(|error| RestoreFault::Admission(audit::open_error(AdmitError::Refused(error))))?;
     let instance = StoreInstanceId::draw().map_err(RestoreFault::Entropy)?;
     let envelope = StoreEnvelope {
@@ -535,7 +535,7 @@ mod tests {
         let projection = projection.unwrap();
         let (head, digest) = LogicalHead::decode_with_digest(&header.head).unwrap();
         let layout = ImageAdmission::derive(&image, projection)
-            .admit_exact(&head)
+            .admit(&head, BindingStrictness::Exact)
             .unwrap_or_else(|_| panic!("fixture head admitted"));
         let instance = StoreInstanceId::draw().unwrap();
         let envelope = StoreEnvelope {

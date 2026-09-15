@@ -28,8 +28,8 @@ pub use attach::{DurableRun, run_export, run_test};
 pub use fault::{DurableExecutionFault, IncompleteDisposition, InvocationIncomplete, RuntimeFault};
 pub use marrow_kernel::durable::DurableCommitState;
 pub use marrow_lifecycle::{
-    EphemeralOutcome, FreshTest, MemoryAttachment, PreparedImage, fresh_test, mint_ephemeral,
-    prepare,
+    EphemeralOutcome, FreshTest, MemoryAttachment, MintOutcome, PreparedImage, fresh_test,
+    mint_ephemeral, prepare,
 };
 pub use run::run;
 pub use value::{Value, collection_within_limits, key_bytes};

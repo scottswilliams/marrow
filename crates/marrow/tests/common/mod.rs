@@ -126,7 +126,7 @@ use marrow_compile::{CompileFailure, SourceDiagnostic, compile};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput, capture};
 use marrow_verify::{VerifiedImage, verify};
 use marrow_vm::{
-    DurableRun, EphemeralOutcome, MemoryAttachment, Value, mint_ephemeral, prepare, run_export,
+    DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
 };
 
 /// The built `marrow` binary under test.
@@ -270,12 +270,12 @@ impl Project {
         let attachment = if image.roots().is_empty() {
             None
         } else {
-            match mint_ephemeral(prepare(image.clone())) {
-                EphemeralOutcome::Ready(attachment) => Some(attachment),
-                EphemeralOutcome::Parked(_) => {
+            match mint_ephemeral(prepare(image.clone())).into_mint() {
+                MintOutcome::Ready(attachment) => Some(attachment),
+                MintOutcome::Storeless | MintOutcome::Parked => {
                     panic!("durable shape is not executable by the ephemeral kernel")
                 }
-                EphemeralOutcome::Failed { cause, .. } => {
+                MintOutcome::Failed(cause) => {
                     panic!("minting the attachment failed: {cause}")
                 }
             }

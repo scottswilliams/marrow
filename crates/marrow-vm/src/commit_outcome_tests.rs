@@ -9,7 +9,7 @@ use marrow_kernel::durable::{
     Durable, DurableCommitState, EntryValue, EraseOutcome, InvocationGrant, KernelFault, Presence,
 };
 use marrow_kernel::equality::ValueDomain;
-use marrow_lifecycle::{EphemeralOutcome, MemoryAttachment, mint_ephemeral, prepare};
+use marrow_lifecycle::{MemoryAttachment, MintOutcome, mint_ephemeral, prepare};
 use marrow_verify::verify;
 
 use crate::attach::{DurableRun, run_export};
@@ -360,10 +360,10 @@ impl<D: Durable> Durable for CommitOverride<D> {
 }
 
 fn attach(bytes: Vec<u8>) -> MemoryAttachment {
-    match mint_ephemeral(prepare(verify(&bytes).expect("verify"))) {
-        EphemeralOutcome::Ready(attachment) => attachment,
-        EphemeralOutcome::Parked(_) => panic!("fixture must be executable"),
-        EphemeralOutcome::Failed { cause, .. } => panic!("attachment failed: {cause}"),
+    match mint_ephemeral(prepare(verify(&bytes).expect("verify"))).into_mint() {
+        MintOutcome::Ready(attachment) => attachment,
+        MintOutcome::Storeless | MintOutcome::Parked => panic!("fixture must be executable"),
+        MintOutcome::Failed(cause) => panic!("attachment failed: {cause}"),
     }
 }
 

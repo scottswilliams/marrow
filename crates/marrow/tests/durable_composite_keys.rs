@@ -10,7 +10,7 @@
 use marrow_compile::SourceDiagnostic;
 use marrow_verify::{SealedExport, VerifiedImage};
 use marrow_vm::{
-    DurableRun, EphemeralOutcome, MemoryAttachment, Value, mint_ephemeral, prepare, run_export,
+    DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
 };
 
 // A composite-key root `^enrollments(student: string, course: string)` with a required
@@ -249,10 +249,12 @@ fn run(
 }
 
 fn attach(image: &VerifiedImage) -> MemoryAttachment {
-    match mint_ephemeral(prepare(image.clone())) {
-        EphemeralOutcome::Ready(attachment) => attachment,
-        EphemeralOutcome::Parked(_) => panic!("a composite-key root must be executable"),
-        EphemeralOutcome::Failed { cause, .. } => panic!("minting the attachment failed: {cause}"),
+    match mint_ephemeral(prepare(image.clone())).into_mint() {
+        MintOutcome::Ready(attachment) => attachment,
+        MintOutcome::Storeless | MintOutcome::Parked => {
+            panic!("a composite-key root must be executable")
+        }
+        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {cause}"),
     }
 }
 

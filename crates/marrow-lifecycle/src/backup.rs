@@ -8,7 +8,7 @@ use marrow_image::StoreBackupDigest;
 use marrow_kernel::durable::{ExportError, NativeOpenAccess};
 use marrow_verify::VerifyRejection;
 
-use crate::actor::ImageAdmission;
+use crate::actor::{BindingStrictness, ImageAdmission};
 use crate::audit::{self, ChainDigest, Names};
 use crate::backup_stream::{Encoder, StreamError};
 use crate::durable_fs::{Publication, custody_io};
@@ -142,7 +142,7 @@ pub fn backup(
     let names = Names::new(&projection);
     let admission = ImageAdmission::derive(&image, projection);
     let opened = open_admitted(source, NativeOpenAccess::ReadOnly, |head| {
-        admission.admit_exact(head)
+        admission.admit(head, BindingStrictness::Exact)
     })
     .map_err(|error| BackupFault::Audit(audit::open_error(error)))?;
     let stage = temp_sibling(destination);

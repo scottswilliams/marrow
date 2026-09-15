@@ -5,7 +5,7 @@
 
 use marrow_verify::{SealedExport, VerifiedImage};
 use marrow_vm::{
-    DurableRun, EphemeralOutcome, MemoryAttachment, RuntimeFault, Value, mint_ephemeral, prepare,
+    DurableRun, MemoryAttachment, MintOutcome, RuntimeFault, Value, mint_ephemeral, prepare,
     run_export,
 };
 
@@ -94,10 +94,12 @@ fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
 }
 
 fn attach(image: &VerifiedImage) -> MemoryAttachment {
-    match mint_ephemeral(prepare(image.clone())) {
-        EphemeralOutcome::Ready(attachment) => attachment,
-        EphemeralOutcome::Parked(_) => panic!("the durable-value fixture must be executable"),
-        EphemeralOutcome::Failed { cause, .. } => panic!("attachment mint failed: {cause}"),
+    match mint_ephemeral(prepare(image.clone())).into_mint() {
+        MintOutcome::Ready(attachment) => attachment,
+        MintOutcome::Storeless | MintOutcome::Parked => {
+            panic!("the durable-value fixture must be executable")
+        }
+        MintOutcome::Failed(cause) => panic!("attachment mint failed: {cause}"),
     }
 }
 

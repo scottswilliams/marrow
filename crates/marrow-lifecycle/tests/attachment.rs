@@ -6,8 +6,8 @@
 use std::path::{Path, PathBuf};
 
 use marrow_lifecycle::{
-    AttachOutcome, EphemeralOutcome, LifecycleError, MemoryAttachment, NativeAttachment,
-    PreparedImage, ProvisionApproval, ProvisionReport, attach, fresh_test, mint_ephemeral, prepare,
+    AttachOutcome, LifecycleError, MemoryAttachment, MintOutcome, NativeAttachment, PreparedImage,
+    ProvisionApproval, ProvisionReport, attach, fresh_test, mint_ephemeral, prepare,
     provision_image,
 };
 use marrow_verify::{ExportId, VerifiedImage, verify};
@@ -173,10 +173,10 @@ fn export(image: &VerifiedImage, name: &str) -> ExportId {
 }
 
 fn memory(image: &VerifiedImage) -> MemoryAttachment {
-    match mint_ephemeral(prepare(image.clone())) {
-        EphemeralOutcome::Ready(attachment) => attachment,
-        EphemeralOutcome::Parked(_) => panic!("the fixture is flat-executable"),
-        EphemeralOutcome::Failed { cause, .. } => panic!("mint failed: {cause}"),
+    match mint_ephemeral(prepare(image.clone())).into_mint() {
+        MintOutcome::Ready(attachment) => attachment,
+        MintOutcome::Storeless | MintOutcome::Parked => panic!("the fixture is flat-executable"),
+        MintOutcome::Failed(cause) => panic!("mint failed: {cause}"),
     }
 }
 
@@ -320,11 +320,11 @@ fn a_storeless_image_keeps_its_identity_and_mints_no_store() {
     let id = image.image_id().0;
 
     let outcome = mint_ephemeral(prepare(image.clone()));
-    let EphemeralOutcome::Parked(owned) = &outcome else {
+    let MintOutcome::Parked = outcome.mint() else {
         panic!("a storeless image has no store to mint");
     };
     assert_eq!(
-        owned.image_id().0,
+        outcome.image().image_id().0,
         id,
         "the parked outcome owns the same image"
     );

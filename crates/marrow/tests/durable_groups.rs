@@ -19,7 +19,7 @@ mod presence_lifetime;
 use marrow_compile::SourceDiagnostic;
 use marrow_verify::VerifiedImage;
 use marrow_vm::{
-    DurableRun, EphemeralOutcome, MemoryAttachment, Value, mint_ephemeral, prepare, run_export,
+    DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
 };
 
 // application, product, the top-level `title` field, the composite root placement and its
@@ -164,12 +164,12 @@ impl std::fmt::Debug for DebugRun<'_> {
 }
 
 fn attach(image: &VerifiedImage) -> MemoryAttachment {
-    match mint_ephemeral(prepare(image.clone())) {
-        EphemeralOutcome::Ready(attachment) => attachment,
-        EphemeralOutcome::Parked(_) => {
+    match mint_ephemeral(prepare(image.clone())).into_mint() {
+        MintOutcome::Ready(attachment) => attachment,
+        MintOutcome::Storeless | MintOutcome::Parked => {
             panic!("a flat root with a root-level group must be executable")
         }
-        EphemeralOutcome::Failed { cause, .. } => panic!("minting the attachment failed: {cause}"),
+        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {cause}"),
     }
 }
 

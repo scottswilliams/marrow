@@ -24,7 +24,7 @@ use marrow_kernel::durable::{CommitResult, DemandCoverage, Durable, EntryValue, 
 use marrow_kernel::equality::ValueDomain;
 use marrow_verify::{VerifiedImage, verify};
 use marrow_vm::{
-    DurableRun, EphemeralOutcome, MemoryAttachment, Value, mint_ephemeral, prepare, run_export,
+    DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
 };
 
 #[path = "../../marrow-image/tests/common/site_seam.rs"]
@@ -322,7 +322,8 @@ fn traversal_image() -> VerifiedImage {
 /// Mint a fresh attachment and run the seed export against it, leaving a populated
 /// store the caller reads.
 fn seeded_attachment(image: &VerifiedImage) -> MemoryAttachment {
-    let EphemeralOutcome::Ready(mut attachment) = mint_ephemeral(prepare(image.clone())) else {
+    let MintOutcome::Ready(mut attachment) = mint_ephemeral(prepare(image.clone())).into_mint()
+    else {
         panic!("the traversal image is flat-executable");
     };
     match run_export(&mut attachment, export_id("seed"), Vec::new()).expect("seed export") {
@@ -628,7 +629,8 @@ fn wide_key_image() -> (VerifiedImage, u16) {
 #[test]
 fn a_frozen_list_that_exceeds_the_aggregate_ceiling_faults() {
     let (image, root_entry) = wide_key_image();
-    let EphemeralOutcome::Ready(mut attachment) = mint_ephemeral(prepare(image.clone())) else {
+    let MintOutcome::Ready(mut attachment) = mint_ephemeral(prepare(image.clone())).into_mint()
+    else {
         panic!("the wide-key image is flat-executable");
     };
 

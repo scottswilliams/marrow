@@ -13,7 +13,7 @@ use marrow_image::{
 use marrow_kernel::durable::NativeOpenAccess;
 use marrow_verify::VerifiedImage;
 
-use crate::actor::{ImageAdmission, rewrite_atomically};
+use crate::actor::{BindingStrictness, ImageAdmission, rewrite_atomically};
 use crate::codec::FormatError;
 use crate::envelope::{EnvelopeRecord, EnvelopeState};
 use crate::head::{ActiveBinding, MAX_ACCEPTED_CEILING_BYTES};
@@ -122,7 +122,7 @@ pub fn apply(
     let admission = ImageAdmission::derive(&old, old_projection);
     let names = admission.audit_names();
     let opened = open_admitted(dir, NativeOpenAccess::ReadOnly, |head| {
-        admission.admit_exact(head)
+        admission.admit(head, BindingStrictness::Exact)
     })
     .map_err(|error| audit_failure(audit::open_error(error)))?;
 

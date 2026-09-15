@@ -57,8 +57,8 @@ pub use actor::{
 };
 pub use apply::{ApplyError, ApplyReceipt, apply};
 pub use attachment::{
-    Attachment, EphemeralOutcome, FreshTest, MemoryAttachment, MemoryEngine, NativeAttachment,
-    PreparedImage, TestExecution, TestHost, fresh_test, mint_ephemeral, prepare,
+    Attachment, EphemeralOutcome, FreshTest, MemoryAttachment, MemoryEngine, MintOutcome,
+    NativeAttachment, PreparedImage, TestExecution, TestHost, fresh_test, mint_ephemeral, prepare,
 };
 pub use audit::{AuditError, Finding, StoreAudit, audit};
 pub use authority::{DemandExceedsCeiling, ExceedingDemand};

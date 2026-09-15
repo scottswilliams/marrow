@@ -29,7 +29,7 @@ use marrow_kernel::durable::{
     SessionError, StoreProjection, StoreSchema,
 };
 
-use crate::actor::{AdmissionRefusal, ContractChanged, ExactRefusal, ImageAdmission};
+use crate::actor::{AdmissionRefusal, BindingStrictness, ContractChanged, ImageAdmission};
 use crate::attachment::PreparedImage;
 use crate::authority::DemandExceedsCeiling;
 use crate::image::HeadMapPinMismatch;
@@ -149,28 +149,28 @@ pub fn audit(dir: &Path, prepared: PreparedImage) -> Result<StoreAudit, AuditErr
     let names = Names::new(&projection);
     let admission = ImageAdmission::derive(&image, projection);
     let opened = open_admitted(dir, NativeOpenAccess::ReadOnly, |head| {
-        admission.admit_exact(head)
+        admission.admit(head, BindingStrictness::Exact)
     })
     .map_err(open_error)?;
     inspect(&opened, &names, image.image_id())
 }
 
-pub(crate) fn open_error(error: AdmitError<ExactRefusal>) -> AuditError {
+pub(crate) fn open_error(error: AdmitError<AdmissionRefusal>) -> AuditError {
     match error {
         AdmitError::Open(error) => AuditError::Open(error),
-        AdmitError::Refused(ExactRefusal::NotActive) => AuditError::ImageNotActive,
-        AdmitError::Refused(ExactRefusal::InconsistentBinding) => AuditError::InconsistentBinding,
-        AdmitError::Refused(ExactRefusal::ContractChanged(refusal)) => {
-            AuditError::ContractChanged(refusal)
-        }
-        AdmitError::Refused(ExactRefusal::Admission(AdmissionRefusal::Exceeds(refusal))) => {
-            AuditError::DemandExceedsCeiling(refusal)
-        }
-        AdmitError::Refused(ExactRefusal::Admission(AdmissionRefusal::CeilingCorrupt)) => {
-            AuditError::Open(AdmissionRefusal::ceiling_corrupt())
-        }
-        AdmitError::Refused(ExactRefusal::Admission(AdmissionRefusal::Pin(refusal))) => {
-            AuditError::HeadMapPin(refusal)
+        AdmitError::Refused(refusal) => refusal.into(),
+    }
+}
+
+impl From<AdmissionRefusal> for AuditError {
+    fn from(refusal: AdmissionRefusal) -> Self {
+        match refusal {
+            AdmissionRefusal::NotActive => Self::ImageNotActive,
+            AdmissionRefusal::InconsistentBinding => Self::InconsistentBinding,
+            AdmissionRefusal::ContractChanged(refusal) => Self::ContractChanged(refusal),
+            AdmissionRefusal::Exceeds(refusal) => Self::DemandExceedsCeiling(refusal),
+            AdmissionRefusal::CeilingCorrupt => Self::Open(AdmissionRefusal::ceiling_corrupt()),
+            AdmissionRefusal::Pin(refusal) => Self::HeadMapPin(refusal),
         }
     }
 }

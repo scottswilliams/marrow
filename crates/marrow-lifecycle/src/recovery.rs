@@ -8,7 +8,7 @@ use marrow_codes::Code;
 use marrow_image::{ImageId, StoreHeadDigest};
 use marrow_kernel::durable::NativeOpenAccess;
 
-use crate::actor::ImageAdmission;
+use crate::actor::{BindingStrictness, ImageAdmission};
 use crate::audit::{self, AuditError, Names, StoreAudit};
 use crate::envelope::{EnvelopeRecord, EnvelopeState};
 use crate::provision::{AdmitError, LockedStore, OpenError};
@@ -152,9 +152,11 @@ fn recover_inner(
             if !accepts_head(state, digest) {
                 return Err(RecoveryFault::HeadMismatch);
             }
-            admission.admit_exact(head).map_err(|error| {
-                RecoveryFault::Validation(audit::open_error(AdmitError::Refused(error)))
-            })
+            admission
+                .admit(head, BindingStrictness::Exact)
+                .map_err(|error| {
+                    RecoveryFault::Validation(audit::open_error(AdmitError::Refused(error)))
+                })
         })
         .map_err(|error| match error {
             AdmitError::Open(error) => validation(error),

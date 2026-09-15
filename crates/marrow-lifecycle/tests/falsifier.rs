@@ -286,7 +286,7 @@ fn journey() {
     //    schema teardown would overflow on.
     let attachment = marrow_lifecycle::mint_ephemeral(prepared);
     assert!(
-        matches!(attachment, marrow_lifecycle::EphemeralOutcome::Ready(_)),
+        matches!(attachment.mint(), marrow_lifecycle::MintOutcome::Ready(_)),
         "the maximum corpus attaches"
     );
     drop(attachment);

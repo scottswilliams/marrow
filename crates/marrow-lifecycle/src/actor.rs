@@ -25,10 +25,12 @@ use crate::image::{
 use crate::provision::{LockedStore, OpenBinding, OpenError};
 use crate::store_dir;
 
-/// The ways the admission gate can decline before any engine call: the presented image
-/// demands authority beyond the accepted ceiling, the persisted ceiling payload is itself
-/// corrupt, or the persisted head-map pin disagrees with the derived numbering. Each maps to
-/// a distinct typed refusal at the attach and import entries.
+/// Why the admission gate declined before any engine call.
+///
+/// One enum for both strictnesses: the ceiling and pin facts are the same
+/// whichever gate ran, and the binding arms differ only in which comparison
+/// reached them. Callers render it into their own reported error; none re-wraps
+/// it in a parallel refusal type.
 pub(crate) enum AdmissionRefusal {
     /// The image's demand exceeds the accepted ceiling — a typed authority refusal.
     Exceeds(DemandExceedsCeiling),
@@ -37,6 +39,14 @@ pub(crate) enum AdmissionRefusal {
     /// The persisted head-map pin disagrees with the numbering this toolchain derives —
     /// fail-closed, the store is never attached under a disagreeing numbering.
     Pin(HeadMapPinMismatch),
+    /// The head binds a different image with different binding facts.
+    ContractChanged(ContractChanged),
+    /// Exact admission only: the head binds a different image whose binding facts are
+    /// equal, so the presented image is a code-only edit the store has not been rebound to.
+    NotActive,
+    /// Exact admission only: the head names this image's identity but records binding facts
+    /// the image does not have — inconsistent binding metadata, recovery-shaped.
+    InconsistentBinding,
 }
 
 impl AdmissionRefusal {
@@ -48,20 +58,16 @@ impl AdmissionRefusal {
     }
 }
 
-/// Why the exact-binding gate the importer runs declined: the head binds another image
-/// (a stale presented image or a changed contract), the head names this image with facts the
-/// image does not have, or the shared admission gate refused.
-pub(crate) enum ExactRefusal {
-    /// The head binds a different image whose binding facts are equal: the presented image is
-    /// a code-only edit the store has not been rebound to.
-    NotActive,
-    /// The head names this image's identity but records binding facts the image does not
-    /// have — inconsistent binding metadata, recovery-shaped.
-    InconsistentBinding,
-    /// The head binds a different image with different binding facts.
-    ContractChanged(ContractChanged),
-    /// The ceiling or pin gate refused.
-    Admission(AdmissionRefusal),
+/// How strictly the persisted head must already bind the presented image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BindingStrictness {
+    /// The durable contract must match; a code-only difference is admitted and the caller
+    /// rebinds. The ceiling is judged first, so an over-demanding image is refused on
+    /// authority even when its contract also changed.
+    Compatible,
+    /// The head must already bind exactly this image. The binding is judged first, so a
+    /// stale or foreign image is named as such before its demand is measured.
+    Exact,
 }
 
 /// One image's active binding, occurrence correspondence and owned projection.
@@ -92,74 +98,64 @@ impl<'a> ImageAdmission<'a> {
         Names::new(&self.projection)
     }
 
-    /// Check the ceiling before contract compatibility, then mint the accepted layout.
-    /// An incompatible graph has no mapping for this handle and never opens an engine.
-    pub(crate) fn admit_compatible(
+    /// Admit the presented image against `head` at `strictness` and mint the accepted
+    /// numbered layout. An incompatible graph has no mapping for this handle and never
+    /// opens an engine.
+    pub(crate) fn admit(
         self,
         head: &LogicalHead,
-    ) -> Result<NumberedProjection, LifecycleError> {
-        self.admit_ceiling(head).map_err(|refusal| match refusal {
-            AdmissionRefusal::Exceeds(refusal) => LifecycleError::DemandExceedsCeiling(refusal),
-            AdmissionRefusal::CeilingCorrupt => {
-                LifecycleError::Open(AdmissionRefusal::ceiling_corrupt())
+        strictness: BindingStrictness,
+    ) -> Result<NumberedProjection, AdmissionRefusal> {
+        match strictness {
+            BindingStrictness::Compatible => {
+                self.admit_ceiling(head)?;
+                self.require_compatible_binding(head)?;
             }
-            AdmissionRefusal::Pin(refusal) => LifecycleError::HeadMapPin(refusal),
-        })?;
-        if !self.incoming.facts_equal(&head.binding) {
-            return Err(LifecycleError::ContractChanged(ContractChanged {
-                changed: classify_delta(&head.binding, &self.incoming),
-            }));
+            BindingStrictness::Exact => {
+                self.require_exact_binding(head)?;
+                self.admit_ceiling(head)?;
+            }
         }
-        self.numbered(head).map_err(LifecycleError::HeadMapPin)
+        self.numbered(head).map_err(AdmissionRefusal::Pin)
     }
 
-    /// The import gate: the head binds exactly this image, the accepted ceiling admits it,
-    /// and the persisted pin is exactly the derived binding — all before the engine opens.
-    pub(crate) fn admit_exact(
-        self,
-        head: &LogicalHead,
-    ) -> Result<NumberedProjection, ExactRefusal> {
-        self.exact_binding(head)?;
-        let demand = self.image.demand_union();
-        self.exact_layout(head, &demand)
-    }
-
-    /// Reuse the whole demand already derived from this admission's image.
+    /// Admit exactly, reusing the demand already derived from this admission's image.
     /// The caller must supply that same image's demand, not a subset or another image's.
     pub(crate) fn admit_exact_with_demand(
         self,
         head: &LogicalHead,
         demand: &ExportDemand,
-    ) -> Result<NumberedProjection, ExactRefusal> {
-        self.exact_binding(head)?;
-        self.exact_layout(head, demand)
+    ) -> Result<NumberedProjection, AdmissionRefusal> {
+        self.require_exact_binding(head)?;
+        self.admit_ceiling_demand(head, demand)?;
+        self.numbered(head).map_err(AdmissionRefusal::Pin)
     }
 
-    fn exact_binding(&self, head: &LogicalHead) -> Result<(), ExactRefusal> {
-        let stored = &head.binding;
-        if self.incoming != *stored {
-            return Err(if self.incoming.image_id == stored.image_id {
-                ExactRefusal::InconsistentBinding
-            } else if stored.facts_equal(&self.incoming) {
-                ExactRefusal::NotActive
-            } else {
-                ExactRefusal::ContractChanged(ContractChanged {
-                    changed: classify_delta(stored, &self.incoming),
-                })
-            });
+    /// The durable contract must be unchanged; a code-only difference is admitted.
+    fn require_compatible_binding(&self, head: &LogicalHead) -> Result<(), AdmissionRefusal> {
+        if self.incoming.facts_equal(&head.binding) {
+            return Ok(());
         }
-        Ok(())
+        Err(AdmissionRefusal::ContractChanged(ContractChanged {
+            changed: classify_delta(&head.binding, &self.incoming),
+        }))
     }
 
-    fn exact_layout(
-        self,
-        head: &LogicalHead,
-        demand: &ExportDemand,
-    ) -> Result<NumberedProjection, ExactRefusal> {
-        self.admit_ceiling_demand(head, demand)
-            .map_err(ExactRefusal::Admission)?;
-        self.numbered(head)
-            .map_err(|refusal| ExactRefusal::Admission(AdmissionRefusal::Pin(refusal)))
+    /// The head must already name exactly this image with exactly its facts.
+    fn require_exact_binding(&self, head: &LogicalHead) -> Result<(), AdmissionRefusal> {
+        let stored = &head.binding;
+        if self.incoming == *stored {
+            return Ok(());
+        }
+        Err(if self.incoming.image_id == stored.image_id {
+            AdmissionRefusal::InconsistentBinding
+        } else if stored.facts_equal(&self.incoming) {
+            AdmissionRefusal::NotActive
+        } else {
+            AdmissionRefusal::ContractChanged(ContractChanged {
+                changed: classify_delta(stored, &self.incoming),
+            })
+        })
     }
 
     /// Reconstruct the accepted ceiling from the persisted head and intersect it with the
@@ -301,6 +297,22 @@ pub enum LifecycleError {
         instance: crate::StoreInstanceId,
         source: AuditError,
     },
+}
+
+impl From<AdmissionRefusal> for LifecycleError {
+    fn from(refusal: AdmissionRefusal) -> Self {
+        match refusal {
+            AdmissionRefusal::Exceeds(refusal) => Self::DemandExceedsCeiling(refusal),
+            AdmissionRefusal::CeilingCorrupt => Self::Open(AdmissionRefusal::ceiling_corrupt()),
+            AdmissionRefusal::Pin(refusal) => Self::HeadMapPin(refusal),
+            AdmissionRefusal::ContractChanged(refusal) => Self::ContractChanged(refusal),
+            AdmissionRefusal::NotActive | AdmissionRefusal::InconsistentBinding => {
+                Self::Open(OpenError::Corruption {
+                    message: "the store's head does not bind the presented image".to_string(),
+                })
+            }
+        }
+    }
 }
 
 impl LifecycleError {

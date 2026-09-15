@@ -13,7 +13,7 @@
 
 use marrow_verify::{SealedExport, VerifiedImage};
 use marrow_vm::{
-    DurableRun, EphemeralOutcome, MemoryAttachment, Value, mint_ephemeral, prepare, run_export,
+    DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
 };
 
 // application, product, the top-level `title` field, the root and its key, the `notes`
@@ -144,12 +144,12 @@ fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
 }
 
 fn attach(image: &VerifiedImage) -> MemoryAttachment {
-    match mint_ephemeral(prepare(image.clone())) {
-        EphemeralOutcome::Ready(attachment) => attachment,
-        EphemeralOutcome::Parked(_) => {
+    match mint_ephemeral(prepare(image.clone())).into_mint() {
+        MintOutcome::Ready(attachment) => attachment,
+        MintOutcome::Storeless | MintOutcome::Parked => {
             panic!("a flat root with nested scalar branches must be executable")
         }
-        EphemeralOutcome::Failed { cause, .. } => panic!("minting the attachment failed: {cause}"),
+        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {cause}"),
     }
 }
 

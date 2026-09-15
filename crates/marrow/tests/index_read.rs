@@ -13,7 +13,7 @@ use marrow_verify::{
     LedgerIdBytes, SealedExport, SealedInstr, SealedSite, SealedSiteTarget, VerifiedImage,
 };
 use marrow_vm::{
-    DurableRun, EphemeralOutcome, MemoryAttachment, Value, mint_ephemeral, prepare, run_export,
+    DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
 };
 
 // `^books[id: int]: Book` with a nonunique `byShelf[shelf, id]` and a unique
@@ -187,10 +187,10 @@ fn run(
 }
 
 fn attach(image: &VerifiedImage) -> MemoryAttachment {
-    match mint_ephemeral(prepare(image.clone())) {
-        EphemeralOutcome::Ready(attachment) => attachment,
-        EphemeralOutcome::Parked(_) => panic!("the books root must be executable"),
-        EphemeralOutcome::Failed { cause, .. } => panic!("minting the attachment failed: {cause}"),
+    match mint_ephemeral(prepare(image.clone())).into_mint() {
+        MintOutcome::Ready(attachment) => attachment,
+        MintOutcome::Storeless | MintOutcome::Parked => panic!("the books root must be executable"),
+        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {cause}"),
     }
 }
 
