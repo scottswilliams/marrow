@@ -372,21 +372,6 @@ store ^elsewhere[id: int]: Elsewhere
 store ^alsoNowhere[id: int]: StillNeverDeclared
 "#;
 
-/// The artifact this corpus reported before the store binding became a typed row,
-/// captured from the pre-conversion tree and unchanged by it.
-const STORE_BINDING_ARTIFACT: &str = "src/main.mw:13:7 check.durable_identity durable identity for application `.` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-src/main.mw:13:7 check.durable_identity durable identity for root `kept` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-src/main.mw:13:7 check.durable_identity durable identity for product `Kept` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-src/main.mw:13:7 check.durable_identity durable identity for key `kept.id` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-src/main.mw:13:7 check.durable_identity durable identity for field `Kept.title` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-src/main.mw:15:1 check.type `NotAResource` is not a resource in this project\n\
-src/main.mw:17:1 check.type `NeverDeclared` is not a resource in this project\n\
-src/other.mw:7:7 check.durable_identity durable identity for root `elsewhere` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-src/other.mw:7:7 check.durable_identity durable identity for product `Elsewhere` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-src/other.mw:7:7 check.durable_identity durable identity for key `elsewhere.id` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-src/other.mw:7:7 check.durable_identity durable identity for field `Elsewhere.label` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-src/other.mw:9:1 check.type `StillNeverDeclared` is not a resource in this project";
-
 #[test]
 fn the_store_binding_corpus_reports_its_exact_ordered_artifact() {
     let project = project_capture::project_with_ids(
@@ -522,53 +507,6 @@ fn index_width_module() -> String {
     )
 }
 
-/// The artifact this corpus reported before the index declarations became typed
-/// rows, captured from the pre-conversion tree and unchanged by it.
-const INDEX_ADMISSION_ARTIFACT: &str = "src/main.mw:19:7 check.durable_identity durable identity for application `.` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/main.mw:19:7 check.durable_identity durable identity for root `books` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/main.mw:19:7 check.durable_identity durable identity for product `Book` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/main.mw:19:7 check.durable_identity durable identity for key `books.id` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/main.mw:19:7 check.durable_identity durable identity for field `Book.title` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/main.mw:19:7 check.durable_identity durable identity for field `Book.isbn` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/main.mw:19:7 check.durable_identity durable identity for field `Book.shelf` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/main.mw:19:7 check.durable_identity durable identity for group `Book.details` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/main.mw:19:7 check.durable_identity durable identity for field `Book.details.pages` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/main.mw:19:7 check.durable_identity durable identity for index `books.byIsbn` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/main.mw:19:7 check.durable_identity durable identity for index `books.byShelf` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/main.mw:24:7 check.durable_identity durable identity for root `only` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/main.mw:24:7 check.durable_identity durable identity for product `Single` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/main.mw:24:7 check.durable_identity durable identity for field `Single.label` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/main.mw:25:1 check.type index `byLabel` requires a keyed store root\n\
-         src/main.mw:28:7 check.durable_identity durable identity for root `collide` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/main.mw:28:7 check.durable_identity durable identity for key `collide.id` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/main.mw:29:1 check.type index `title` collides with an identity key, a stored field, or another index of `collide`\n\
-         src/main.mw:28:7 check.durable_identity durable identity for index `collide.sameName` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/main.mw:31:1 check.type index `sameName` collides with an identity key, a stored field, or another index of `collide`\n\
-         src/main.mw:34:7 check.durable_identity durable identity for root `many` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/main.mw:34:7 check.durable_identity durable identity for key `many.id` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/main.mw:43:1 check.type store root `many` declares 9 managed indexes; at most 8 are allowed\n\
-         src/other.mw:13:7 check.durable_identity durable identity for root `notes` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/other.mw:13:7 check.durable_identity durable identity for product `Note` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/other.mw:13:7 check.durable_identity durable identity for key `notes.id` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/other.mw:13:7 check.durable_identity durable identity for field `Note.text` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/other.mw:13:7 check.durable_identity durable identity for field `Note.tag` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/other.mw:13:7 check.durable_identity durable identity for field `Note.weight` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/other.mw:13:7 check.durable_identity durable identity for sum `Option[duration]` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/other.mw:13:7 check.durable_identity durable identity for member `Option[duration].none` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/other.mw:13:7 check.durable_identity durable identity for member `Option[duration].some` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/other.mw:13:7 check.durable_identity durable identity for group `Note.body` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/other.mw:13:7 check.durable_identity durable identity for field `Note.body.line` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/other.mw:14:26 check.type index `repeatArg` repeats component `tag`; each projection component appears at most once\n\
-         src/other.mw:15:21 check.type index `nestedArg` component `body.line` reaches through a nested member; an index projects only top-level fields and identity keys\n\
-         src/other.mw:16:21 check.type index `absentArg` component `missing` names no identity key or stored field of this root\n\
-         src/other.mw:17:24 check.type index `unorderedArg` component `weight` is not an orderable durable-key scalar\n\
-         src/other.mw:18:1 check.type non-unique index `noSuffix` must end with the store's identity keys in declaration order\n\
-         src/wide.mw:7:7 check.durable_identity durable identity for root `wide` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/wide.mw:7:7 check.durable_identity durable identity for product `Wide` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/wide.mw:7:7 check.durable_identity durable identity for key `wide.id` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/wide.mw:7:7 check.durable_identity durable identity for field `Wide.label` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-         src/wide.mw:8:1 check.resource_limit a managed index projects 73 components; the fixed limit is 72";
-
 #[test]
 fn the_index_admission_corpus_reports_its_exact_ordered_artifact() {
     let wide = index_width_module();
@@ -639,6 +577,21 @@ fn the_index_admission_corpus_reports_its_exact_ordered_artifact() {
 /// passing an owner that refused every index. Both are asserted rather than assumed.
 #[test]
 fn the_index_admission_corpus_reaches_every_admission_rule() {
+    let wide = index_width_module();
+    let project = project_capture::project_with_ids(
+        &[
+            ("src/main.mw", INDEX_ADMISSION_MAIN),
+            ("src/other.mw", INDEX_ADMISSION_OTHER),
+            ("src/wide.mw", &wide),
+        ],
+        None,
+    );
+    let reported = rows(&refused(&project));
+    let reaches = |needle: &str| {
+        reported
+            .iter()
+            .any(|(_, _, _, _, message)| message.contains(needle))
+    };
     for rule in [
         "declares 9 managed indexes; at most 8 are allowed",
         "a managed index projects 73 components; the fixed limit is 72",
@@ -652,13 +605,13 @@ fn the_index_admission_corpus_reaches_every_admission_rule() {
         "non-unique index `noSuffix` must end with the store's identity keys",
     ] {
         assert!(
-            INDEX_ADMISSION_ARTIFACT.contains(rule),
+            reaches(rule),
             "the corpus no longer reaches this rule: {rule}",
         );
     }
     for admitted in ["index `books.byIsbn`", "index `books.byShelf`"] {
         assert!(
-            INDEX_ADMISSION_ARTIFACT.contains(admitted),
+            reaches(admitted),
             "the corpus must keep admitted indexes beside the refused ones: {admitted}",
         );
     }
