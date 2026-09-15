@@ -971,17 +971,10 @@ fn sync_dir(_path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // `Database` is not imported here: every redb open in this crate routes through
-    // `open_past_lock_release`, so nothing in these tests names the type and the
-    // unused-import lint removed it.
-    //
-    // That is tidiness, NOT enforcement, and an earlier version of this comment claimed
-    // otherwise. Opening directly still needs no import — `::redb::Database::create(...)`
-    // works as written, and inside `redb.rs` so does `super::Database::open(...)`. Only
-    // the bare spelling would need the import back. Nor does the guard beside
-    // `open_past_lock_release` cover it: that guard reads `redb.rs` only, so a direct
-    // `::redb::Database::create(...)` written HERE bypasses the retry and leaves it green.
-    // What holds in this file is that nothing does so today, checked by reading it.
+    // Nothing here names `Database`: every redb open in this crate routes through
+    // `open_past_lock_release`. That is a property of what is written, not an enforced
+    // one — a fully qualified `::redb::Database::create(...)` would compile here and
+    // bypass the retry.
     use ::redb::{ReadableDatabase, TableDefinition};
 
     use crate::redb::{create_raw, reopen_raw};

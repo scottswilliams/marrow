@@ -213,10 +213,10 @@ pub struct RebindReceipt {
     pub new_image_id: [u8; 32],
 }
 
-/// Which binding fact differs — the category a contract-changed refusal names.
-/// Authority is not a binding
-/// fact: a demand change that exceeds the accepted ceiling is the distinct, more actionable
-/// [`DemandExceedsCeiling`] refusal, and a demand change within it is admitted.
+/// Which binding fact differs — the category a contract-changed refusal names. Authority is
+/// not a binding fact: a demand change that exceeds the accepted ceiling is the distinct,
+/// more actionable [`DemandExceedsCeiling`] refusal, and a demand change within it is
+/// admitted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangedFact {
     /// The durable contract — the durable graph over ledger ids — changed (an evolution).
@@ -279,7 +279,7 @@ pub enum LifecycleError {
     /// The image is not a binding-only code update — a typed refusal pointing at `marrow
     /// apply`, never corruption.
     ContractChanged(ContractChanged),
-    /// The store's persisted head-map pin (the ledger-id ↔ cell-number bijection, FR01 §3)
+    /// The store's persisted head-map pin (the ledger-id ↔ cell-number bijection)
     /// disagrees with the (ledger id → cell number) binding this toolchain would serve the
     /// store under. Fail-closed and recovery-shaped: serving the store would readdress
     /// durable cells, so the attach refuses with zero engine calls; Head, envelope,
@@ -456,7 +456,7 @@ fn classify_delta(stored: &ActiveBinding, incoming: &ActiveBinding) -> ChangedFa
 }
 
 /// The exact released toolchain version performing this write, recorded in the envelope's
-/// writer tuple (FR01 R2).
+/// writer tuple.
 pub(crate) fn current_toolchain() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }

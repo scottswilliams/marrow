@@ -276,13 +276,11 @@ pub enum CustodyError {
     IdentityDrift { op: CustodyOp },
     /// The entry exists as a regular file whose owner bits do not carry the
     /// access the operation requires, so no process those bits bind can open
-    /// it. A crash inside the create-then-`fchmod` window under an
-    /// owner-stripping umask leaves exactly this state on an entry this crate
-    /// created. An entry another user owns whose owner bits fall short is the
-    /// same observation from outside, and the observed mode alone cannot tell
-    /// the two apart, so the refusal reports what it saw and what the open
-    /// required and leaves the repair — restoring `required`, or removing the
-    /// entry — to whoever owns it.
+    /// it. An entry another user owns whose owner bits fall short is
+    /// indistinguishable from one a crash left inside the crate's documented
+    /// create-then-`fchmod` window, so the refusal reports what it saw and what
+    /// the open required and leaves the repair — restoring `required`, or
+    /// removing the entry — to whoever owns it.
     ModeDenied {
         /// The refused operation.
         op: CustodyOp,
@@ -510,6 +508,9 @@ impl AdmittedDir {
     /// unsupported-semantics errno this crate reads as
     /// [`CustodyError::Unsupported`], so an acquisition that locked first would
     /// report the platform's lock semantics rather than name the planted node.
+    ///
+    /// An entry a crash left inside the crate's create-then-restore window is
+    /// refused here with the mode an operator must restore.
     pub fn open_or_create_lock_entry(&self, name: &EntryName) -> Result<OpenedFile, CustodyError> {
         let mut passes = 0;
         let handle = loop {
@@ -593,15 +594,12 @@ fn witness_regular(handle: sys::FileHandle, op: CustodyOp) -> Result<OpenedFile,
 }
 
 /// One typed reading of a refused open: an entry that exists as a regular file
-/// whose owner bits do not carry `required` is refused to every process those
-/// bits bind, so the refusal names its observed mode and the mode to restore
-/// rather than arriving as an unclassified I/O error. The reading rests on the
-/// observed mode and on a permission-denied refusal together: an entry whose
-/// bits do carry `required` was refused for some other reason — another user
-/// owns it, say — and keeps its original refusal. A process holding the
-/// mode-override capability (`root`, or `CAP_DAC_OVERRIDE` on Linux) is not
-/// refused by those bits at all: its open succeeds and reaches no reading here.
-/// Nothing was opened either way; the stat only names the refusal.
+/// whose owner bits do not carry `required` names its observed mode and the
+/// mode to restore rather than arriving as an unclassified I/O error. The
+/// reading rests on the observed mode and on a permission-denied refusal
+/// together, so an entry whose bits do carry `required` was refused for some
+/// other reason and keeps its original refusal. Nothing was opened either way;
+/// the stat only names the refusal.
 fn refine_open_refusal(
     refusal: CustodyError,
     observed: Option<EntryStat>,
@@ -647,23 +645,13 @@ fn require_dir_mode(op: CustodyOp, stat: &EntryStat) -> Result<(), CustodyError>
 /// one no-follow stat of the refused entry.
 ///
 /// A directory whose owner bits fall short is refined the same way a regular
-/// file's is, into the mode-repair refusal naming what was found and what is
-/// required. That state is reachable without any hostile actor: `mkdirat`
-/// requests `0700` but the umask masks it, and the exact mode is restored only
-/// on the admitted descriptor — so a umask withholding an owner bit makes the
-/// admission between those two steps fail, and a crash in the same window
-/// leaves the masked directory on disk for the next run to meet.
-///
-/// The refinement covers the whole requirement, not the half that stops the
-/// open. A mode missing owner read or execute refuses the admission itself and
-/// is refined here from the permission error. A mode missing only owner write
-/// admits fine and then refuses the first entry this owner creates — so the
-/// mode is checked on the admitted directory's own stat as well, and named the
-/// same way, rather than surfacing later as a generic permission error from
-/// whichever call reached it first.
+/// file's is, into the mode-repair refusal. The refinement covers the whole
+/// requirement, not the half that stops the open: a mode missing owner read or
+/// execute refuses the admission itself, while a mode missing only owner write
+/// admits and would refuse the first entry created in it, so the admitted
+/// directory's own stat is checked too.
 ///
 /// Nothing was admitted either way; the stat only names the refusal.
-///
 fn refine_dir_refusal(refusal: CustodyError, observed: Option<EntryStat>) -> CustodyError {
     if let CustodyError::Io { op, source } = &refusal
         && source.kind() == std::io::ErrorKind::PermissionDenied

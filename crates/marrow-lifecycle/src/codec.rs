@@ -18,7 +18,7 @@ pub enum FormatError {
     /// artifact at all.
     BadMagic,
     /// The artifact records a container version this build does not read. A future version
-    /// is a typed refusal, never a best-effort decode (FR01 §6).
+    /// is a typed refusal, never a best-effort decode.
     UnknownVersion { found: u8 },
     /// The active binding names an image generation this build does not admit.
     UnsupportedImageVersion { found: u8 },

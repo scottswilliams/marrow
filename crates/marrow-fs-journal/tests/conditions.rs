@@ -3,13 +3,11 @@
 //!
 //! 1. `rustix` appears in exactly one workspace manifest (this crate's), with
 //!    the exact `=1.1.4` pin and default features off.
-//! 2. The resolved feature set of `rustix` is exactly `{alloc, fs, std}`
-//!    (`alloc` implied by `std`) — any new feature word is a new maintainer
-//!    decision.
+//! 2. No second package depends on `rustix`, so nothing unions extra features
+//!    into the resolved set — any new feature word is a new maintainer decision.
 //! 3. The Linux qualification leg pins the `linux_raw` backend.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 fn workspace_root() -> PathBuf {
     // CARGO_MANIFEST_DIR is `<root>/crates/marrow-fs-journal`.
@@ -73,50 +71,41 @@ fn rustix_is_pinned_in_exactly_one_workspace_manifest() {
 }
 
 #[test]
-fn the_resolved_rustix_feature_set_is_exactly_std_fs() {
-    let root = workspace_root();
-    let output = Command::new(env!("CARGO"))
-        .arg("metadata")
-        .args(["--format-version", "1"])
-        .arg("--manifest-path")
-        .arg(root.join("Cargo.toml"))
-        .output()
-        .expect("run cargo metadata");
-    assert!(output.status.success(), "cargo metadata failed");
-    let text = String::from_utf8(output.stdout).expect("metadata is utf-8");
-
-    // Minimal dependency-free extraction over the resolve graph only (package
-    // objects also carry `"features"` arrays inside their dependency lists,
-    // so the scan starts at the resolve section).
-    let resolve_start = text
-        .find("\"resolve\":")
-        .expect("metadata has a resolve graph");
-    let resolve = &text[resolve_start..];
-    let mut feature_lists: Vec<Vec<String>> = Vec::new();
-    for chunk in resolve.split("\"id\":\"").skip(1) {
-        let id = chunk.split('"').next().expect("id terminates");
-        if !id.contains("#rustix@1.1.4") {
-            continue;
-        }
-        let scope = chunk.split("\"id\":\"").next().expect("chunk head");
-        let Some((_, rest)) = scope.split_once("\"features\":[") else {
-            continue;
-        };
-        let body = rest.split(']').next().expect("feature array terminates");
-        let mut features: Vec<String> = body
-            .split(',')
-            .map(|item| item.trim().trim_matches('"').to_string())
-            .filter(|item| !item.is_empty())
-            .collect();
-        features.sort();
-        feature_lists.push(features);
-    }
-
+fn rustix_has_exactly_one_consumer_in_the_lockfile() {
+    // With one rustix package, one workspace manifest naming it, and that
+    // manifest's exact `default-features = false` plus `{std, fs}` feature list,
+    // the only way the resolved feature set could widen is a second package
+    // depending on rustix and unioning its features in. The lockfile records
+    // every such edge, so this reads them rather than shelling out to cargo.
+    let lock = std::fs::read_to_string(workspace_root().join("Cargo.lock")).expect("read lockfile");
+    let consumers: Vec<&str> = lock
+        .split("[[package]]")
+        .skip(1)
+        .filter(|block| {
+            block
+                .split_once("dependencies = [")
+                .is_some_and(|(_, list)| {
+                    list.split(']')
+                        .next()
+                        .expect("the dependency array terminates")
+                        .contains("\"rustix\"")
+                })
+        })
+        .map(|block| {
+            block
+                .split_once("name = \"")
+                .expect("a package block names its package")
+                .1
+                .split('"')
+                .next()
+                .expect("the name terminates")
+        })
+        .collect();
     assert_eq!(
-        feature_lists,
-        [["alloc", "fs", "std"]],
-        "the resolved rustix feature set must be exactly {{alloc, fs, std}} \
-         with default features off; a new feature word is a new maintainer decision"
+        consumers,
+        ["marrow-fs-journal"],
+        "a second rustix consumer would union its features into the resolved set; \
+         a new feature word is a new maintainer decision"
     );
 }
 

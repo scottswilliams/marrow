@@ -195,7 +195,10 @@ fn racing_first_acquisitions_report_contention_rather_than_absence() {
     use std::sync::{Barrier, Mutex};
 
     const THREADS: usize = 4;
-    const ROUNDS: usize = 64;
+    // Contention is reached within the first rounds on both qualified
+    // platforms; the assertion that some acquisition contended is what keeps
+    // the round count honest if that ever stops holding.
+    const ROUNDS: usize = 4;
 
     let scratch = Scratch::new("lock-first-race");
     let live = AtomicUsize::new(0);

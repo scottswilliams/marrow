@@ -76,7 +76,7 @@ fn commit_one(store: &mut DurableStore<FaultEngine>, key: &str, v: i64) -> Commi
 }
 
 /// An indeterminate commit returns one affine fact, latches poison, and the latch is
-/// consulted at session open (E02 residue, F02a): every later session open — read or
+/// consulted at session open: every later session open — read or
 /// write — refuses with [`SessionError::Poisoned`], so a poisoned handle can neither
 /// replay a commit nor observe its own indeterminate state. Recovery consumes the fact and
 /// classifies exact before/after state.

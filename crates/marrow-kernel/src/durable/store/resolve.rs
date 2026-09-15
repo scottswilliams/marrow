@@ -2,7 +2,7 @@
 //! executable [`AuthorizedSite`] the kernel ops address: branch-path descent, index-
 //! projection component kinds, and the numbered record fields a site carries. No source
 //! spelling enters a resolved site — every addressed node carries its cell-key number
-//! (FR01 §3), so the physical layer keys cells by number, never by name.
+//!, so the physical layer keys cells by number, never by name.
 
 use super::super::schema::BranchPos;
 use super::super::site::CheckedTarget;
@@ -52,7 +52,7 @@ pub(super) fn resolve_site(
     }
     // A root-level group addresses the root entry (empty branch path); it carries the
     // group's own numbered record. Group-in-branch is durable-only future work, so a group
-    // site is root-level at T01.
+    // site is root-level.
     if let CheckedTarget::GroupEntry(position) = target {
         let group = position.of(schema.groups());
         let group_numbering = position.of(numbering.groups());

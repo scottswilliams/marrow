@@ -643,7 +643,7 @@ fn a_nested_root_shape_is_refused() {
 /// Bounded-batch behavior on a large corpus: 40,000 rows stream through the importer with a
 /// small batch, committing in exactly `ceil(rows / batch_rows)` batches. The source is streamed
 /// from a lazy reader, so a whole-corpus import never materializes the corpus — memory is
-/// bounded by one line plus one batch (campaign law 9). The wall time is recorded.
+/// bounded by one line plus one batch. The wall time is recorded.
 #[test]
 fn a_large_corpus_commits_in_bounded_batches() {
     let scratch = Scratch::new("large");

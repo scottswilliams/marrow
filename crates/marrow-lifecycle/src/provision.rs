@@ -593,7 +593,7 @@ pub enum OpenError {
     /// its entry was refused, it was reachable under a second name, it changed while it was
     /// being read, or its bytes did not decode. A decode failure carries the typed
     /// [`FormatError`] so an unknown writer version (`store.format_version`) or an over-bound
-    /// length (`store.limit`) is reported as itself, not flattened to corruption (FR01 §6).
+    /// length (`store.limit`) is reported as itself, not flattened to corruption.
     Admission(AdmissionError),
     /// The unclean-open integrity audit found the engine's stored bytes corrupt.
     Corruption { message: String },

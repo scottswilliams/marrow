@@ -1,4 +1,4 @@
-//! The durable store handle and its read/transaction sessions (design §G).
+//! The durable store handle and its read/transaction sessions.
 
 use super::{
     AuthorizedSite, BoundedKeys, BoundedLimit, CommitResult, CreateOutcome, EntryValue,

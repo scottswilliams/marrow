@@ -64,8 +64,8 @@ pub(crate) fn numbered_node_ids(image: &VerifiedImage) -> Vec<LedgerIdBytes> {
     order.iter().map(|&i| nodes[i].path.node_id()).collect()
 }
 
-/// Build the head identity map for `image`: the ledger-id ↔ cell-number bijection (FR01 §3),
-/// where node `i` in the store-local cell-key numbering is the `i`-th durable node in
+/// Build the head identity map for `image`: the ledger-id ↔ cell-number bijection, where
+/// node `i` in the store-local cell-key numbering is the `i`-th durable node in
 /// [`numbered_node_ids`].
 ///
 /// Returns a [`FormatError`] when the node count exceeds the head map's bound, and when the

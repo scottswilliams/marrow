@@ -1,4 +1,4 @@
-//! The production ephemeral-memory attachment (E01).
+//! The production ephemeral-memory attachment.
 //!
 //! An attachment is a live binding between a verified program image and a durable
 //! store the path kernel drives. The ephemeral-memory attachment is the first
@@ -9,9 +9,9 @@
 //! [`AttachmentId`] from process entropy, and each invocation opens its own session
 //! bounded by `demand ∩ ceiling ∩ grant`.
 //!
-//! This is the T01 store session machinery generalized, not a second kernel: an
+//! This is the store session machinery generalized, not a second kernel: an
 //! attachment owns exactly one [`DurableStore`] and delegates every session open to
-//! it. The persistent native attachment (F02) reuses the same session machinery
+//! it. The persistent native attachment reuses the same session machinery
 //! over a durable engine.
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -72,8 +72,8 @@ impl CeilingIdToken {
 /// under. The attach path derives both the coverage and the id from the verified
 /// image's demand union and binds them together, so widening the coverage would
 /// change the id. Comparing the token against an independently supplied ceiling
-/// arrives with the persistent native attachment (F02). The read/write coverage is
-/// the projection the T01 store ceiling checks; a path-granular atom-level ceiling
+/// arrives with the persistent native attachment. The read/write coverage is
+/// the projection the store ceiling checks; a path-granular atom-level ceiling
 /// is a later lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeploymentCeiling {

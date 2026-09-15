@@ -15,23 +15,16 @@
 //!   → derived address without I/O → demand/ceiling/grant/budgets
 //! ```
 //!
-//! Each rejection class and how its zero-engine-call property is established:
-//!
-//! | Rejection class            | Where established                    | Zero-call proof |
-//! |----------------------------|--------------------------------------|-----------------|
-//! | verified site              | verifier (phase 3) rejects an opcode  | by construction: a verified image names only sealed sites; the kernel resolves them from an in-memory table built with no engine call |
-//! | active binding             | type system + `VerifiedImage`         | by construction: an attachment is a live owned handle, and a forged image cannot be verified, so it can never mint one |
-//! | view/invocation state      | verifier + typed session              | by construction: a read-only session's mutation ops are `unreachable!` (verifier-proven), and a committed transaction is consumed, so no op runs after it |
-//! | typed operands             | VM (before the kernel op)             | operational (below): a value the codec cannot represent faults before any engine write |
-//! | derived address without I/O | kernel (pure codec)                  | operational (below): the physical address and value are computed in memory; a rejected write stages zero engine writes |
-//! | demand/ceiling/grant/budgets | kernel session open (pure)          | operational (below): a denied session returns before the store's first engine access, with the open tally at zero |
+//! Three of the ordered classes are unrepresentable rather than tested: a verified image
+//! names only sealed sites, an attachment cannot be minted from an unverified image, and a
+//! read-only session has no mutation op to call. The three this harness witnesses are the
+//! ones a running kernel can get wrong: typed operands, address derivation, and the
+//! demand/ceiling/grant/budget gate.
 //!
 //! The boundary: a permitted session opens the engine (a read view or a write
 //! transaction) as its *first* engine access. The zero-call property covers exactly the
 //! rejection classes ordered before that first access — authority denial and the poison
 //! latch, both decided in memory. Once the session is open, ordinary engine access begins.
-//! (Schema-binding consistency is no longer an in-store profile read: the id-keyed layout
-//! makes a rename zero-cell, so the lifecycle head owns binding, not a profile cell.)
 
 mod common;
 

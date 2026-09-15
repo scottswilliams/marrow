@@ -166,13 +166,10 @@ mod imp {
         let file = rustix::fs::openat(dir, name, flags, file_mode())
             .map(File::from)
             .map_err(|errno| map(CustodyOp::CreateFile, Reading::Nofollow, errno))?;
-        // The open-time mode is masked by the process umask; the exact 0600
-        // the claim law rechecks is restored on the creating descriptor
-        // before any use, so no umask can manufacture a wrong-mode claim.
-        // A refused mode restoration removes nothing. The entry this call
+        // The create-then-restore window is the crate documentation's.
+        // A refused mode restoration removes nothing: the entry this call
         // created is left as never-linked debris, which the pending-journal
-        // classification reads as preclaim and the protocol's retained-state
-        // handling already owns.
+        // classification reads as preclaim.
         //
         // Removing it is not available at this layer. `unlinkat` names a path,
         // so a removal here could only witness the name with a stat and then
@@ -222,25 +219,18 @@ mod imp {
             .map_err(|errno| map(CustodyOp::OpenLock, Reading::Nofollow, errno))
     }
 
-    /// Restore the lock entry's exact `0600`. The creating open is granted
-    /// whatever mode the umask masked its request down to, so this call is
-    /// what makes a just-created entry exactly `0600`; on an entry that
-    /// already existed it tightens a mode carrying extra bits and is otherwise
-    /// idempotent. From a process the mode bits bind it never reaches an entry
-    /// whose owner bits a crash inside that window left stripped, because no
-    /// reopen of such an entry succeeds: that entry is refused by name with the
-    /// mode an operator must restore. From a process holding the mode-override
-    /// capability (`root`, or `CAP_DAC_OVERRIDE` on Linux) the reopen does
-    /// succeed, and this call is then what returns the entry to `0600`.
-    /// The caller admits the node as a regular file and takes the lock before
-    /// calling, so a refused non-regular node and a contended entry both keep
-    /// the mode they carried.
+    /// Restore the lock entry's exact `0600`: the second half of the
+    /// create-then-restore window the crate documentation states. On an entry
+    /// that already existed this tightens a mode carrying extra bits and is
+    /// otherwise idempotent.
     pub(crate) fn restore_lock_mode(file: &FileHandle) -> Result<(), CustodyError> {
         rustix::fs::fchmod(file, file_mode())
             .map_err(|errno| map(CustodyOp::OpenLock, Reading::Plain, errno))
     }
 
-    /// `flock(LOCK_EX | LOCK_NB)`. `Ok(false)` reports a held lock.
+    /// `flock(LOCK_EX | LOCK_NB)`; `Ok(false)` reports a held lock. The typed
+    /// [`LockAcquisition`](crate::LockAcquisition) is minted at the custody
+    /// boundary, which is the only caller.
     pub(crate) fn try_lock_exclusive(file: &FileHandle) -> Result<bool, CustodyError> {
         match rustix::fs::flock(file, FlockOperation::NonBlockingLockExclusive) {
             Ok(()) => Ok(true),

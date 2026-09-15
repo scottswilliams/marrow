@@ -581,21 +581,14 @@ impl LiveJournal<'_> {
 
 /// A claim that refused, carrying whether a marker may exist because of it.
 ///
-/// The two arms call for opposite handling, and the caller cannot tell them
-/// apart from the error alone, so the distinction is a type rather than a
-/// judgement made at the call site.
-///
 /// The boundary is the first attempt to link the marker into place, not the
 /// parent sync that follows it. A link that has been issued may have taken
 /// effect and been persisted whether or not the sync ran or returned: an
-/// unsynced directory entry is not guaranteed absent after a crash, only
-/// not guaranteed present. Treating an unsynced or outcome-uncertain link as
-/// clean is exactly the mistake that lets a caller clean up under a marker
-/// that survives.
+/// unsynced directory entry is not guaranteed absent after a crash, only not
+/// guaranteed present.
 ///
-/// There is no conversion into the bare error. Discarding this distinction is
-/// what a caller must not do silently, so it must name an arm to reach the
-/// refusal inside.
+/// There is no conversion into the bare error: a caller must name an arm to
+/// reach the refusal inside, so the distinction cannot be discarded silently.
 #[derive(Debug)]
 pub enum ClaimRefusal {
     /// The refusal happened strictly before the first link attempt. No link
@@ -611,12 +604,11 @@ pub enum ClaimRefusal {
 /// A row header as a caller can build it: the generation slot and everything
 /// after the shared leading common.
 ///
-/// The claim composes the common itself, from the directory it is claiming
-/// under and the inode it created, so a caller supplies no part of it and runs
-/// no code inside the claim. That is the point of this being a value: a
-/// callback invoked partway through the claim could reach the same directory
-/// and link the marker itself, and every refusal after that would still be
-/// reported as leaving no marker.
+/// This is a value rather than a callback: the claim composes the common from
+/// the directory it is claiming under and the inode it created, and a callback
+/// invoked partway through the claim could reach the same directory and link
+/// the marker itself, after which every refusal would still be reported as
+/// leaving no marker.
 #[derive(Debug, Clone)]
 pub enum BuiltHeader {
     /// A header led by the shared common. The caller supplies the generation
@@ -672,12 +664,10 @@ pub fn claim<'d>(
     header: BuiltHeader,
     prepared_payload: &[u8],
 ) -> Result<LiveJournal<'d>, ClaimRefusal> {
-    // The split is the enforcement. Everything whose refusal is genuinely
-    // preclaim happens inside `claim_preflight`, which cannot reach the link;
-    // everything from the link onward happens inside `claim_commit`, whose
-    // every refusal is possibly-durable by construction. Neither arm is chosen
-    // by inspecting an error or a flag, so a step that moves across the
-    // boundary changes which function it is written in and nothing else.
+    // Everything whose refusal is genuinely preclaim happens inside
+    // `claim_preflight`, which cannot reach the link; everything from the link
+    // onward happens inside `claim_commit`, whose every refusal is
+    // possibly-durable by construction.
     if kind.carries_self_witness() && matches!(header, BuiltHeader::Plain(_)) {
         return Err(ClaimRefusal::Preclaim(JournalError::WitnessNotEmbedded));
     }
@@ -710,10 +700,9 @@ struct PreparedClaim {
 /// Everything strictly before the first link attempt.
 ///
 /// No link is issued here, so every refusal this returns leaves no marker. A
-/// refusal after the claim file exists discards it under witness first, which
-/// is sound precisely because nothing has been linked: the entry is this
-/// call's own, never-linked, and classification reads whatever a failed
-/// discard leaves as preclaim.
+/// refusal after the claim file exists discards it under witness first, sound
+/// precisely because the entry is this call's own and never-linked;
+/// classification reads whatever a failed discard leaves as preclaim.
 fn claim_preflight(
     dir: &AdmittedDir,
     name: &PendingName,
@@ -758,12 +747,10 @@ fn claim_preflight(
 /// The first link attempt through the checks that follow it.
 ///
 /// Every refusal from here is possibly-durable, and nothing here removes
-/// anything. Once a link has been issued the marker may exist — an entry an
-/// unsynced directory carries can still survive a crash, and an errored link
-/// reports no outcome at all — so a cleanup issued on the strength of a
-/// refusal here could make a marker's own successor absent underneath it.
-/// Whatever state a refusal leaves is classification's to read and recovery's
-/// to settle.
+/// anything: once a link has been issued the marker may exist, so a cleanup
+/// issued on the strength of a refusal here could make a marker's own successor
+/// absent underneath it. Whatever state a refusal leaves is classification's to
+/// read and recovery's to settle.
 fn claim_commit(
     dir: &AdmittedDir,
     name: &PendingName,
@@ -820,9 +807,8 @@ impl MarkerStats {
     ///
     /// This is the pre-reconciliation read: a caller that classifies before
     /// reconciling other state depends on it touching no artifact. It receives
-    /// the two names it may stat rather than the pair they came from, so the
-    /// base name a `PendingName` also carries is not in scope here and an
-    /// artifact read does not compile.
+    /// the two names it may stat rather than the pair they came from, so an
+    /// artifact read through the base name does not compile.
     ///
     /// # Errors
     ///
@@ -838,8 +824,8 @@ impl MarkerStats {
 /// The two marker names, separated from the pair that also carries the base.
 ///
 /// Minted only by [`PendingName::markers`], so the pair is still the one owner
-/// of the spellings; what this removes is the reach back to the base name at
-/// the point where reaching it would be a defect.
+/// of the spellings; this removes the reach back to the base name where
+/// reaching it would be a defect.
 #[derive(Debug, Clone, Copy)]
 pub struct MarkerNames<'n> {
     claim: &'n EntryName,
@@ -850,9 +836,7 @@ pub struct MarkerNames<'n> {
 ///
 /// This is the whole of what the name pair decides, and it is decided from the
 /// stats alone: [`classify`] receives no directory and no names, so a
-/// classification cannot read an artifact however it is later edited. A caller
-/// that classifies before reconciling other state depends on exactly that, and
-/// it is now a property of the signature rather than of the body.
+/// classification cannot read an artifact.
 ///
 /// Turning a shape into a state that can act — discard, adopt, resume — reads
 /// the marker file and needs the directory, so it is a separate, named step the
@@ -879,8 +863,7 @@ impl MarkerShape {
     ///
     /// This is the stat the classification itself acted on, so a caller that
     /// needs the marker's identity reads it from here rather than statting the
-    /// name again. A second read could see a different object than the one
-    /// classified; this cannot.
+    /// name again: a second read could see a different object.
     #[must_use]
     pub fn marker_identity(&self) -> Option<FsIdentity> {
         match self {
@@ -912,10 +895,9 @@ impl MarkerShape {
     ///
     /// This runs after the shape is decided, so it is not the reader the
     /// classify-before-reconcile ordering depends on — that one is
-    /// [`MarkerStats::read`], which is narrowed to the two names. Admission
-    /// takes the full pair and directory deliberately: the states it returns
-    /// act through both afterwards, a preclaim discard and a pending resume
-    /// among them, and the base name is what a `PendingName` is for.
+    /// [`MarkerStats::read`], narrowed to the two names. Admission takes the
+    /// full pair and the directory because the states it returns act through
+    /// both afterwards: a preclaim discard and a pending resume among them.
     ///
     /// # Errors
     ///

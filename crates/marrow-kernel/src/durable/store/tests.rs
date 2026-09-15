@@ -1027,7 +1027,7 @@ fn a_field_exact_branch_set_writes_one_leaf_regardless_of_branch_width() {
     }
 }
 
-// --- E04 bounded acquisition law (the freeze-then-run kernel primitive). ---
+// --- The bounded acquisition law (the freeze-then-run kernel primitive). ---
 //
 // `iterate_bounded` freezes the first N immediate keys of a durable layer and
 // reports whether an (N+1)th existed. It is the bounded, cursor-free acquisition

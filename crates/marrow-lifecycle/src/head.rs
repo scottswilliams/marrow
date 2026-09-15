@@ -1,5 +1,5 @@
 //! The store's logical active head: which program is active, the reserved sequencing and
-//! data-digest slots, and the head identity map (FR01 §1/§2/§3/§8).
+//! data-digest slots, and the head identity map.
 //!
 //! The head is a versioned, big-endian, length-prefixed container sealed by a
 //! [`StoreHeadDigest`]. It records the active binding — the active image's identity plus the
@@ -29,7 +29,8 @@ const MAGIC: &[u8; 4] = b"MWSH";
 const HEAD_VERSION: u8 = 0x02;
 
 /// A fixed upper bound on the accepted-ceiling payload the head carries, validated before
-/// allocation. Explicit ceiling expansion uses this same persisted bound before copying.
+/// allocation, and by explicit ceiling expansion before it copies. Comfortably above any
+/// real program's whole-demand atom-set encoding and far below memory exhaustion.
 pub(crate) const MAX_ACCEPTED_CEILING_BYTES: u32 = 4 * 1024 * 1024;
 
 /// The fixed head bytes ahead of the identity map: magic, container version, image format
@@ -84,7 +85,7 @@ pub(crate) fn file_ceiling(prefix: &[u8; ARTIFACT_PREFIX_BYTES]) -> Result<u64, 
 /// comparison without a head-format break.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ActiveBinding {
-    /// The image container format version (rides the writer tuple, FR01 §6).
+    /// The image container format version (rides the writer tuple).
     pub image_format_version: u8,
     /// The active program image's byte identity. Changes on any body edit.
     pub image_id: [u8; 32],
@@ -117,15 +118,15 @@ impl ActiveBinding {
 pub struct LogicalHead {
     /// The active binding: the active image and its binding facts.
     pub binding: ActiveBinding,
-    /// The monotone confirmed-commit sequence position (FR01 §1 R1). Reserved: zero means
-    /// unsequenced, and F02a maintains no position.
+    /// The monotone confirmed-commit sequence position. Reserved: zero means
+    /// unsequenced; provision maintains no position.
     pub commit_position: u64,
     /// The logical data-root digest slot. Reserved: all zero. Logical inspection
     /// reports a digest without persisting it here.
     pub data_digest: [u8; 32],
-    /// The commit position the data digest was computed at (FR01 §2). Reserved: zero.
+    /// The commit position the data digest was computed at. Reserved: zero.
     pub data_digest_position: u64,
-    /// The head identity map: the ledger-id ↔ number bijection (FR01 §3).
+    /// The head identity map: the ledger-id ↔ number bijection.
     pub head_map: HeadMap,
     /// The store's accepted deployment ceiling — the separately owned standing maximum
     /// authority — as a canonical [`marrow_image::ExportDemand`] atom-set payload
@@ -140,7 +141,7 @@ pub struct LogicalHead {
 impl LogicalHead {
     /// The head a provision writes: the active binding, its head map, and the accepted
     /// deployment ceiling, with every reserved slot zero and no commit position maintained
-    /// (FR01 §2 — provision is not a population point).
+    /// (provision is not a population point).
     pub fn provision(binding: ActiveBinding, accepted_ceiling: Vec<u8>, head_map: HeadMap) -> Self {
         Self {
             binding,
@@ -341,9 +342,9 @@ mod tests {
         );
     }
 
-    /// The FR01 reserved slots are zero at provision: the commit position, the data digest,
+    /// The reserved slots are zero at provision: the commit position, the data digest,
     /// and the data-digest position each read back all-zero. Provision is not a population
-    /// point, so these carry no claim (FR01 §2).
+    /// point, so these carry no claim.
     #[test]
     fn provision_leaves_the_reserved_slots_zero() {
         let head = head();
@@ -385,7 +386,7 @@ mod tests {
     }
 
     /// A head whose reserved slots are forged nonzero — and validly resealed so the digest
-    /// passes — is rejected on decode (FR01 §2, coherence finding F-4): zero-ness is enforced
+    /// passes — is rejected on decode: zero-ness is enforced
     /// on read, not only on write, so the incoherent "stale digest reads current" state is
     /// unrepresentable.
     #[test]

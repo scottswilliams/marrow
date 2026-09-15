@@ -76,7 +76,7 @@ pub enum ValueError {
     InstantOutOfRange {
         nanos: i128,
     },
-    /// A composite value's encoding exceeds a Law-9 size cap (a scalar leaf past
+    /// A composite value's encoding exceeds a size cap (a scalar leaf past
     /// [`MAX_LEAF_BYTES`] or the whole value past [`MAX_DURABLE_VALUE_BYTES`]), refused at
     /// encode before any engine write. Maps to the kernel's `value.range` fault.
     ValueTooLarge,
@@ -241,7 +241,7 @@ use crate::equality::ValueDomain;
 pub const MAX_LEAF_BYTES: usize = 64 * 1024;
 /// The whole-value encoded byte cap. Chosen (not inherited); it must stay `<=` the engine
 /// `MAX_VALUE_LEN` so a value this codec admits always fits the engine and the codec's own
-/// Law-9 fault fires first (see the slice-E design brief §4).
+/// The limit fault fires first.
 pub const MAX_DURABLE_VALUE_BYTES: usize = 1 << 20;
 /// The value-shape nesting depth cap (mirrors `marrow_image::bounds::MAX_DURABLE_VALUE_DEPTH`),
 /// bounding decoder recursion before allocation.
@@ -971,15 +971,12 @@ mod composite_codec {
         assert_eq!(decode_domain(&[0x02], &opt), None);
     }
 
-    /// Over-cap is a Law-9 refusal at encode; over-depth is refused one step earlier, at
-    /// construction, so no over-deep shape exists to hand a decoder.
-    ///
-    /// This case previously proved the decoder refused a caller-built over-deep shape. That
-    /// shape can no longer be built: the refusal moved from the entry point to the sole
-    /// minter, which is the stronger property and the only one that closes the class — an
-    /// entry point that refuses its argument still has to drop it, and dropping an
-    /// unbounded recursive argument overflows the stack. The decoder's own depth guard
-    /// stays as defense in depth over a representation defect.
+    /// Over-cap is a refusal at encode; over-depth is refused one step earlier, at
+    /// construction, so no over-deep shape exists to hand a decoder. Refusing at the sole
+    /// minter rather than at the entry point is what closes the class: an entry point that
+    /// refuses its argument still has to drop it, and dropping an unbounded recursive
+    /// argument overflows the stack. The decoder's own depth guard stays as defense in
+    /// depth over a representation defect.
     #[test]
     fn over_cap_is_refused_and_over_depth_is_unconstructible() {
         // An over-`MAX_LEAF_BYTES` scalar leaf inside a product is refused at encode.

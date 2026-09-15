@@ -1,7 +1,7 @@
 //! The session-opening seam shared by the two production attachment kinds.
 //!
 //! An export invocation opens exactly one session bounded by `demand ∩ ceiling ∩ grant`.
-//! Both the ephemeral-memory attachment (E01) and the persistent native store (F02) open
+//! Both the ephemeral-memory attachment and the persistent native store open
 //! that session the same way, so the executor drives an export against either kind through
 //! one generic path rather than a duplicated read/write branch per attachment kind. This is
 //! the "same session machinery over a durable engine" the native attachment reuses.

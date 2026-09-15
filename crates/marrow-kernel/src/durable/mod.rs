@@ -57,7 +57,7 @@ pub use marrow_store::{
 pub type NativeStore = NativeStoreOwner;
 
 /// The native engine's on-disk format version, re-exported so a downstream lifecycle owner
-/// records the engine tuple (FR01 R2) from the engine's single owner rather than a mirrored
+/// records the engine tuple from the engine's single owner rather than a mirrored
 /// literal — without a direct dependency on the byte-engine crate.
 pub const NATIVE_ENGINE_FORMAT_VERSION: u32 = marrow_store::NATIVE_ENGINE_FORMAT_VERSION;
 
@@ -68,10 +68,10 @@ use crate::codec::key::KeyScalar;
 use crate::codec::value::{ScalarKind, ValueShape};
 use crate::equality::ValueDomain;
 
-/// A durable node's store-local cell-key number (FR01 §3): a store-wide, never-reused
+/// A durable node's store-local cell-key number: a store-wide, never-reused
 /// `u32` assigned to each root, field, group, and branch. Cell keys are prefixed by these
 /// numbers rather than by source spelling, so a rename is zero-cell metadata. The width is
-/// `u32` for lifetime headroom, independent of the image's `u16` table rings (FR01 §4).
+/// `u32` for lifetime headroom, independent of the image's `u16` table rings.
 pub type NodeNumber = u32;
 
 /// The maximum simultaneous durable-node count in one projection. The builder refuses
@@ -422,7 +422,7 @@ pub(super) struct ResolvedGroup {
 
 /// The read/write coverage of a durable demand: whether it observes or mutates the
 /// store at all. This is the projection of the compiler-side
-/// `marrow_image::ExportDemand` atom set (its `reads()`/`writes()`) that the T01
+/// `marrow_image::ExportDemand` atom set (its `reads()`/`writes()`) that the
 /// store ceiling checks; the store ceiling is read/write granular, so a
 /// path-granular ceiling reserves finer intersection for a later lane. An input to
 /// the authority check, never a source of rights.
@@ -557,7 +557,7 @@ enum NextKey {
 /// keys a bounded acquisition freezes before probing one beyond to decide the
 /// `on more` arm. `NonZeroU32` makes the invariant's positivity unrepresentable when
 /// violated; the verifier additionally caps the compile-time constant, and the kernel
-/// bounds its frozen-key allocation by it (campaign law 9).
+/// bounds its frozen-key allocation by it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BoundedLimit(NonZeroU32);
 
@@ -706,7 +706,7 @@ impl KernelFault {
 /// `key`, defended by the kernel at the independently verified image boundary.
 #[derive(Debug, Clone)]
 pub struct AuthorizedSite {
-    /// The addressed root's cell-key number (FR01 §3): the fixed-width component that keys
+    /// The addressed root's cell-key number: the fixed-width component that keys
     /// the root's physical cell family, in place of its source spelling.
     root_number: NodeNumber,
     /// The addressed root's declaration position — its index into the store's

@@ -26,7 +26,7 @@
 //! reaches this mode; the engine-generic core is crate-private and adds no privilege a
 //! caller with direct kernel access would not already have.
 //!
-//! # Bounds (campaign law 9)
+//! # Bounds
 //!
 //! Every input is bounded before allocation: each JSONL line, the field count of a row, and
 //! each string value are capped by [`ImportLimits`], and the store is populated in bounded
@@ -52,7 +52,7 @@ use crate::authority::DemandExceedsCeiling;
 use crate::image::HeadMapPinMismatch;
 use crate::provision::{AdmitError, OpenError, open_admitted};
 
-/// The bounds every import obeys before it allocates (campaign law 9). The defaults suit a
+/// The bounds every import obeys before it allocates. The defaults suit a
 /// personal-tool export; a caller may tighten them but the importer never runs unbounded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImportLimits {

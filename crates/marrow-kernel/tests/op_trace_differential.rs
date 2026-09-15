@@ -1,4 +1,4 @@
-//! The reusable kernel operation-trace differential (design §I, finding 14).
+//! The reusable kernel operation-trace differential.
 //!
 //! One typed trace of durable operations plus their expected outcomes is replayed
 //! over *both* engines — the in-memory engine (the differential proving ground) and

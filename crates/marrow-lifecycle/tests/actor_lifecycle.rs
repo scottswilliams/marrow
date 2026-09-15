@@ -636,7 +636,7 @@ fn the_persisted_interface_fingerprint_moves_exactly_with_the_export_set() {
 /// the durable graph in the same canonical split pre-order, so position `i` in both walks
 /// must be the *same node* — same kind **and same ledger identity**, resolved here through
 /// [`GRAPH_IDS`]'s explicit anchor table. This is the cross-crate enforcement artifact
-/// against pre-order drift between the two independent numbering owners (FR01 §3): a
+/// against pre-order drift between the two independent numbering owners: a
 /// divergence in the order of, or the fields/groups/branches split within, either walk fails
 /// here — including two same-kind siblings swapped in only one walk, which a kind-only
 /// comparison would miss while the head map bound their ledger ids to each other's numbers.

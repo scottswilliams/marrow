@@ -1,5 +1,5 @@
 //! The head identity map: the store-local bijection between a durable node's stable
-//! 16-byte ledger id and a compact never-reused number (FR01 §3).
+//! 16-byte ledger id and a compact never-reused number.
 //!
 //! Cell keys under the id-keyed layout are prefixed by a node's compact number rather than
 //! its source spelling, so a rename is zero-cell metadata: the ledger id is unchanged, the
@@ -10,7 +10,7 @@
 //! activation allocates fresh numbers from, above every number the store has ever used.
 //!
 //! The number is a `u32`, chosen for the store's lifetime headroom, and is deliberately
-//! independent of the program image's `u16` table rings (FR01 §4): the store outlives
+//! independent of the program image's `u16` table rings: the store outlives
 //! toolchains and its identifiers are never reused, so its number width is not the image's.
 //! The map count is a separate `u32` store framing length bounded by [`MAX_HEAD_MAP_ENTRIES`]
 //! before any allocation, so a hostile head can never drive an unbounded reservation.
@@ -175,7 +175,7 @@ impl HeadMap {
 
     /// Append the map's canonical bytes: the `u32` high-water, the `u32` entry count, then
     /// per entry the 16-byte ledger id and the `u32` number. Every integer is big-endian;
-    /// the number's `u32` width is a frozen durability-contract byte (FR01 §3).
+    /// the number's `u32` width is a frozen durability-contract byte.
     pub(crate) fn encode(&self, out: &mut Vec<u8>) {
         put_u32(out, self.next_number);
         put_u32(out, self.entries.len() as u32);
@@ -276,7 +276,7 @@ mod tests {
     /// The number is a `u32` (four bytes), independent of the image's `u16` rings: one
     /// entry encodes to exactly 4 (high-water) + 4 (count) + 16 (ledger id) + 4 (number) =
     /// 28 bytes, and the trailing four bytes are the number big-endian. This is the frozen
-    /// head-map width KAT (FR01 §3/§4).
+    /// head-map width KAT.
     #[test]
     fn head_map_number_width_is_u32_frozen() {
         let map = HeadMap::assign(&[id(0xAB)]).expect("assign");

@@ -278,7 +278,7 @@ impl<E: ByteEngine> DurableStore<E> {
     }
 
     /// Open a transaction session after resolving effective authority. Schema-binding
-    /// consistency is owned by the lifecycle head (F02a provision), not an in-store profile
+    /// consistency is owned by the lifecycle head, not an in-store profile
     /// cell: the id-keyed layout makes a rename zero-cell, so no name-keyed profile
     /// descriptor is written or revalidated here.
     pub fn txn_session(
@@ -464,7 +464,7 @@ mod tests {
         txn.commit()
     }
 
-    /// The E02 poison-latch consult at session open: a poisoned handle refuses every
+    /// The poison-latch consult at session open: a poisoned handle refuses every
     /// further read and write session with [`SessionError::Poisoned`], before any view or
     /// transaction opens, until the store is reopened and the interrupted commit
     /// reclassified. The latch is set here directly because the ephemeral memory engine

@@ -11,7 +11,7 @@
 //!   an image with a store it was not admitted for;
 //! - the store's own identity ([`StoreInstanceId`], entropy-minted at provision);
 //! - the persisted [`StoreEnvelope`] recording store instance and writer/engine provenance;
-//! - the logical active [`LogicalHead`] recording the active binding, the FR01 reserved
+//! - the logical active [`LogicalHead`] recording the active binding, the reserved
 //!   sequencing and data-digest slots, and the head identity map;
 //! - the head identity map ([`HeadMap`]), the store-local ledger-id ↔ number bijection the
 //!   id-keyed cell layout is prefixed by;

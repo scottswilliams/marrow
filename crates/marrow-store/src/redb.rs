@@ -208,8 +208,7 @@ fn contain_panic<T>(
 /// the file lock for `ReadOnlyDatabase::open` too, so a read-only inspection issued right
 /// after a failed write-capable open — which drops the writer it acquired — can observe
 /// the lock and surface as [`StoreError::Locked`] instead of the corruption or
-/// format-version verdict the caller was testing for. That sequence is real and appears
-/// twice in this file's own tests, which is how it was found.
+/// format-version verdict the caller was testing for.
 ///
 /// redb guards a store with an OS file lock — `flock` on Unix targets that support it,
 /// and redb proceeds unlocked where the platform reports locking unsupported — acquired on open and
@@ -217,11 +216,10 @@ fn contain_panic<T>(
 /// on the same path was dropped can still observe that lock held and fail with
 /// `DatabaseAlreadyOpen`, and the window widens with machine load.
 ///
-/// Why the lock is still held is NOT established, and this comment previously asserted
-/// one cause. Two candidates fit every observation: the kernel's release trailing the
-/// close the drop performs, and a concurrently spawned child inheriting the descriptor
-/// until its exec. Both are absorbed by the same wait, so the retry does not depend on
-/// choosing between them. A genuine CONFLICTING holder — conflicting rather than merely
+/// Why the lock is still held is not established. Two candidates fit every observation:
+/// the kernel's release trailing the close the drop performs, and a concurrently spawned
+/// child inheriting the descriptor until its exec. Both are absorbed by the same wait, so
+/// the retry does not depend on choosing between them. A genuine conflicting holder — conflicting rather than merely
 /// concurrent, since two read-only handles take compatible shared locks and the second
 /// simply succeeds — keeps the lock for the whole budget and surfaces as
 /// [`StoreError::Locked`], as does a transient window longer than
@@ -605,7 +603,7 @@ fn open_commit_error(error: redb::CommitError) -> StoreError {
 
 impl NativeEngine {
     /// The on-disk format version this build stamps into a new store and requires on open.
-    /// The single owner of the value; a store's persisted-envelope engine tuple (FR01 R2)
+    /// The single owner of the value; a store's persisted-envelope engine tuple
     /// records it from here rather than mirroring the literal, so provenance cannot drift from
     /// what the engine actually wrote.
     pub(crate) const FORMAT_VERSION: u32 = FORMAT_VERSION;
