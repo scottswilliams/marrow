@@ -8,7 +8,7 @@ use crate::envelope::{EnvelopeRecord, EnvelopeState};
 use crate::recovery::{RecoveryFault, recover};
 use crate::store_dir::Artifact;
 use crate::test_support::{
-    IDS, SOURCE, Scratch, compile_bytes, compile_with_ids, populate_counter, request,
+    IDS, SOURCE, Scratch, compile, compile_bytes, populate_counter, request,
 };
 use crate::{
     AuditError, LifecycleError, LogicalHead, StoreInstanceId, accepted_ceiling, active_binding,
@@ -26,7 +26,7 @@ fn sparse_images() -> (Vec<u8>, Vec<u8>) {
     );
     let source = SOURCE.replace("required value", "extra: int\nrequired value")
         + "\npub fn readExtra(n: int): int { return ^counters[n].extra ?? -1 }\n";
-    let new = compile_with_ids(&source, &ids);
+    let new = compile::compile_bytes(&source, &ids);
     (old, new)
 }
 
@@ -59,7 +59,7 @@ fn sparse_apply_refusals_preserve_populated_store_bytes() {
     let (old, new) = sparse_images();
     let old = marrow_verify::verify(&old).expect("old image");
     let new = marrow_verify::verify(&new).expect("new image");
-    let scratch = Scratch::new();
+    let scratch = Scratch::new("apply");
     provision(
         &scratch.store(),
         request(&old, StoreInstanceId::draw().expect("instance")),
@@ -162,7 +162,7 @@ fn sparse_apply_refusals_preserve_populated_store_bytes() {
 fn sparse_apply_rejects_incompatible_graphs_without_store_changes() {
     let (old, _) = sparse_images();
     let old = marrow_verify::verify(&old).expect("old image");
-    let scratch = Scratch::new();
+    let scratch = Scratch::new("apply");
     provision(
         &scratch.store(),
         request(&old, StoreInstanceId::draw().expect("instance")),
@@ -201,7 +201,7 @@ fn sparse_apply_rejects_incompatible_graphs_without_store_changes() {
         let source = format!(
             "resource Counter {{ {fields} }}\nstore ^counters[id: {key}]: Counter {suffix}\npub fn bootstrap(): int {{ return 0 }}\n"
         );
-        let new = marrow_verify::verify(&compile_with_ids(&source, &ids))
+        let new = marrow_verify::verify(&compile::compile_bytes(&source, &ids))
             .unwrap_or_else(|error| panic!("{label}: {error:?}"));
         assert!(
             matches!(
@@ -227,8 +227,8 @@ fn sparse_apply_rejects_changed_index_meaning_without_store_changes() {
         "high-water",
         "id index counters.byValue 10101010101010101010101010101010\nhigh-water",
     );
-    let old = marrow_verify::verify(&compile_with_ids(&source, &ids)).expect("indexed image");
-    let scratch = Scratch::new();
+    let old = marrow_verify::verify(&compile::compile_bytes(&source, &ids)).expect("indexed image");
+    let scratch = Scratch::new("apply");
     provision(
         &scratch.store(),
         request(&old, StoreInstanceId::draw().expect("instance")),
@@ -247,7 +247,8 @@ fn sparse_apply_rejects_changed_index_meaning_without_store_changes() {
         "index byValue[value, id]",
     ] {
         let changed = source.replace("index byValue[value, id] unique", replacement);
-        let new = marrow_verify::verify(&compile_with_ids(&changed, &ids)).expect("changed index");
+        let new =
+            marrow_verify::verify(&compile::compile_bytes(&changed, &ids)).expect("changed index");
         assert!(
             matches!(
                 apply(&scratch.store(), prepare(old.clone()), prepare(new), None),
@@ -273,7 +274,7 @@ fn sparse_apply_preserves_populated_irregular_addresses_and_refuses_exhaustion()
         .expect("bounded union")
         .ceiling_id();
     for high_water in [90, u32::MAX] {
-        let scratch = Scratch::new();
+        let scratch = Scratch::new("apply");
         let mut request = request(&old, StoreInstanceId::draw().expect("instance"));
         let mut encoded = Vec::new();
         request.head.head_map.encode(&mut encoded);
@@ -358,7 +359,7 @@ fn interrupted_sparse_apply_recovers_only_the_actual_head() {
         Point::RebindHead,
         Point::RebindActive,
     ] {
-        let scratch = Scratch::new();
+        let scratch = Scratch::new("apply");
         let instance = StoreInstanceId::draw().expect("instance");
         provision(&scratch.store(), request(&old, instance)).expect("provision");
         populate_counter(&scratch.store(), &old);
@@ -470,7 +471,7 @@ fn sparse_apply_final_verification_preserves_uncertainty_and_instance() {
         .expect("union")
         .ceiling_id();
     for artifact in [Artifact::Head, Artifact::Envelope] {
-        let scratch = Scratch::new();
+        let scratch = Scratch::new("apply");
         let instance = StoreInstanceId::draw().expect("instance");
         let req = request(&old, instance);
         let replacement = match artifact {
@@ -528,10 +529,10 @@ fn sparse_apply_refuses_logical_corruption_before_publication() {
     );
     let new_source = source.replace("required value", "extra: int\nrequired value")
         + "\npub fn readExtra(n: int): int { return ^counters[n].extra ?? -1 }\n";
-    let new =
-        marrow_verify::verify(&compile_with_ids(&new_source, &ids)).expect("new boolean image");
-    let populated = Scratch::new();
-    let target = Scratch::new();
+    let new = marrow_verify::verify(&compile::compile_bytes(&new_source, &ids))
+        .expect("new boolean image");
+    let populated = Scratch::new("apply");
+    let target = Scratch::new("apply");
     provision(
         &populated.store(),
         request(&integer, StoreInstanceId::draw().expect("instance")),
@@ -582,7 +583,7 @@ fn sparse_apply_refuses_a_store_awaiting_activation() {
         )
         .expect("bounded union")
         .ceiling_id();
-    let scratch = Scratch::new();
+    let scratch = Scratch::new("apply");
     let instance = StoreInstanceId::draw().expect("instance");
     provision(&scratch.store(), request(&old, instance)).expect("provision");
     populate_counter(&scratch.store(), &old);

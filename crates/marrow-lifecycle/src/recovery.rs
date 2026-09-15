@@ -280,8 +280,8 @@ mod tests {
 
     #[test]
     fn logical_corruption_refuses_recovery_before_preserving_debris_or_activating() {
-        let populated = Scratch::new();
-        let target = Scratch::new();
+        let populated = Scratch::new("recovery");
+        let target = Scratch::new("recovery");
         let integer_image = marrow_verify::verify(&compile_bytes(&format!(
             "{SOURCE}\npub fn setValue(n: int, v: int) {{ transaction {{ ^counters[n] = Counter(value: v) }} }}\n"
         ))).expect("verify");
@@ -337,7 +337,7 @@ mod tests {
     #[test]
     fn recovery_activates_an_actual_uncertain_publication_without_replaying_the_head() {
         use crate::provision::publication_sync_fault::{self, Point};
-        let scratch = Scratch::new();
+        let scratch = Scratch::new("recovery");
         let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
         let instance = StoreInstanceId::draw().expect("instance");
         assert!(matches!(
@@ -386,8 +386,8 @@ mod tests {
             Point::ReplacementBody(Artifact::Envelope),
             Point::ReplacementRename(Artifact::Envelope),
         ] {
-            let scratch = std::mem::ManuallyDrop::new(Scratch::new());
-            eprintln!("replacement-prefix fixture: {}", scratch.root().display());
+            let scratch = std::mem::ManuallyDrop::new(Scratch::new("recovery"));
+            eprintln!("replacement-prefix fixture: {}", scratch.base().display());
             let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
             let instance = StoreInstanceId::draw().expect("instance");
             assert!(matches!(
@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn recovery_preserves_occupied_replacements_before_activation() {
-        let scratch = Scratch::new();
+        let scratch = Scratch::new("recovery");
         let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
         provision(
             &scratch.store(),
@@ -498,7 +498,7 @@ mod tests {
         let receipt = match recover(&scratch.store(), prepare(image)) {
             Ok(receipt) => receipt,
             Err(error) => {
-                let original = scratch.root().to_path_buf();
+                let original = scratch.base().to_path_buf();
                 std::mem::forget(scratch);
                 panic!(
                     "eligible recovery did not preserve replacement files: {error}; preserve {}",
@@ -529,7 +529,7 @@ mod tests {
         let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
         for slot in ["envelope.replacing", "head.replacing"] {
             for bytes in [b"".as_slice(), b"partial", &[0xff, 0, 0xfe, 0x80]] {
-                let scratch = Scratch::new();
+                let scratch = Scratch::new("recovery");
                 provision(
                     &scratch.store(),
                     request(&image, StoreInstanceId::draw().expect("instance")),
@@ -579,14 +579,14 @@ mod tests {
         let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
         for slot in ["envelope.replacing", "head.replacing"] {
             for shape in [Shape::Directory, Shape::Symlink, Shape::Hardlink] {
-                let scratch = Scratch::new();
+                let scratch = Scratch::new("recovery");
                 provision(
                     &scratch.store(),
                     request(&image, StoreInstanceId::draw().expect("instance")),
                 )
                 .expect("provision");
                 let path = scratch.store().join(slot);
-                let peer = scratch.root().join("peer");
+                let peer = scratch.base().join("peer");
                 std::fs::write(&peer, b"peer bytes").expect("peer");
                 match shape {
                     Shape::Directory => std::fs::create_dir(&path).expect("directory"),
@@ -637,7 +637,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_later_preservation_failure_reports_the_earlier_move() {
-        let scratch = Scratch::new();
+        let scratch = Scratch::new("recovery");
         let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
         provision(
             &scratch.store(),
@@ -681,7 +681,7 @@ mod tests {
 
     #[test]
     fn a_failed_preservation_barrier_reports_the_move_without_creating_a_replacement() {
-        let scratch = Scratch::new();
+        let scratch = Scratch::new("recovery");
         let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
         provision(
             &scratch.store(),
@@ -721,7 +721,7 @@ mod tests {
     #[test]
     fn failed_rebind_activation_reports_uncertainty_after_the_new_head_is_visible() {
         use crate::store_dir::barrier_fault::{self, Point};
-        let scratch = Scratch::new();
+        let scratch = Scratch::new("recovery");
         let old = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
         let new =
             marrow_verify::verify(&compile_bytes(&SOURCE.replace("?? 0", "?? 1"))).expect("verify");
@@ -739,7 +739,7 @@ mod tests {
         .expect("decode head");
         assert_eq!(head.binding, active_binding(&new));
         if error.code() != Code::StoreActivationUncertain.as_str() {
-            let original = scratch.root().to_path_buf();
+            let original = scratch.base().to_path_buf();
             std::mem::forget(scratch);
             panic!(
                 "visible new binding lost activation uncertainty: {error:?}; preserve {}",
@@ -767,8 +767,8 @@ mod tests {
             Point::ReplacementBody(Artifact::Head),
             Point::RebindHead,
         ] {
-            let scratch = std::mem::ManuallyDrop::new(Scratch::new());
-            eprintln!("rebind-prefix fixture: {}", scratch.root().display());
+            let scratch = std::mem::ManuallyDrop::new(Scratch::new("recovery"));
+            eprintln!("rebind-prefix fixture: {}", scratch.base().display());
             let instance = StoreInstanceId::draw().expect("instance");
             provision(&scratch.store(), request(&old, instance)).expect("provision");
             populate_counter(&scratch.store(), &old);
@@ -871,7 +871,7 @@ mod tests {
             Point::RecoveryParent,
             Point::RecoveryActive,
         ] {
-            let scratch = Scratch::new();
+            let scratch = Scratch::new("recovery");
             let instance = StoreInstanceId::draw().expect("instance");
             assert!(matches!(
                 publication_sync_fault::with_failure(
@@ -963,7 +963,7 @@ mod tests {
 
     #[test]
     fn recovery_refuses_a_held_owner_before_engine_access_or_preservation() {
-        let scratch = Scratch::new();
+        let scratch = Scratch::new("recovery");
         let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
         provision(
             &scratch.store(),
@@ -1010,7 +1010,7 @@ mod tests {
         let edited =
             marrow_verify::verify(&compile_bytes(&SOURCE.replace("?? 0", "?? 1"))).expect("verify");
         for artifact in [Artifact::Envelope, Artifact::Head] {
-            let scratch = Scratch::new();
+            let scratch = Scratch::new("recovery");
             let instance = StoreInstanceId::draw().expect("instance");
             let req = request(&image, instance);
             let mut changed_metadata = req.envelope.clone();
@@ -1063,7 +1063,7 @@ mod tests {
     fn binding_preparation_refuses_a_replaced_engine_before_metadata_writes() {
         use crate::actor::binding_fault::{self, Mutation, Point};
         use marrow_kernel::durable::StoreError;
-        let scratch = Scratch::new();
+        let scratch = Scratch::new("recovery");
         let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
         let edited =
             marrow_verify::verify(&compile_bytes(&SOURCE.replace("?? 0", "?? 1"))).expect("verify");
@@ -1074,7 +1074,7 @@ mod tests {
         let result = binding_fault::with_mutation(
             &scratch.store(),
             Point::Admitted,
-            Mutation::Engine(scratch.root().join("admitted-engine")),
+            Mutation::Engine(scratch.base().join("admitted-engine")),
             || crate::attach(&scratch.store(), prepare(edited)),
         );
         assert!(matches!(
@@ -1108,7 +1108,7 @@ mod tests {
         let edited =
             marrow_verify::verify(&compile_bytes(&SOURCE.replace("?? 0", "?? 1"))).expect("verify");
         for move_directory in [false, true] {
-            let scratch = Scratch::new();
+            let scratch = Scratch::new("recovery");
             let instance = StoreInstanceId::draw().expect("instance");
             let req = request(&image, instance);
             let old_head = req.head.encode();
@@ -1117,7 +1117,7 @@ mod tests {
                 std::fs::read(scratch.store().join(crate::ENVELOPE_FILE)).expect("envelope");
             let changed_head = request(&edited, instance).head.encode();
             let (mutation, retained, expected_head) = if move_directory {
-                let moved = scratch.root().join("moved");
+                let moved = scratch.base().join("moved");
                 (Mutation::Directory(moved.clone()), moved, old_head)
             } else {
                 (
@@ -1154,7 +1154,7 @@ mod tests {
         let edited =
             marrow_verify::verify(&compile_bytes(&SOURCE.replace("?? 0", "?? 1"))).expect("verify");
         for artifact in [Artifact::Head, Artifact::Envelope] {
-            let scratch = Scratch::new();
+            let scratch = Scratch::new("recovery");
             let instance = StoreInstanceId::draw().expect("instance");
             let req = request(&image, instance);
             let replacement = match artifact {
@@ -1196,7 +1196,7 @@ mod tests {
 
     #[test]
     fn recovery_refuses_a_different_image_before_opening_the_engine() {
-        let scratch = Scratch::new();
+        let scratch = Scratch::new("recovery");
         let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
         let edited =
             marrow_verify::verify(&compile_bytes(&SOURCE.replace("?? 0", "?? 1"))).expect("verify");
@@ -1223,7 +1223,7 @@ mod tests {
     fn unsupported_stamp_refuses_admission_before_engine_or_preservation() {
         let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
         for pending in [false, true] {
-            let scratch = Scratch::new();
+            let scratch = Scratch::new("recovery");
             let req = request(&image, StoreInstanceId::draw().expect("instance"));
             let digest = req.head.encode_with_digest().1;
             let mut metadata = req.envelope.clone();
@@ -1291,7 +1291,7 @@ mod tests {
         let old = request(&images[0], instance).head.encode_with_digest().1;
         let new = request(&images[1], instance).head.encode_with_digest().1;
         for (index, image) in images.into_iter().enumerate() {
-            let scratch = Scratch::new();
+            let scratch = Scratch::new("recovery");
             let req = request(&image, instance);
             let record = EnvelopeRecord {
                 metadata: req.envelope.clone(),

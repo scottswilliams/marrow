@@ -1,4 +1,5 @@
-//! The one temporary-directory fixture the lifecycle integration tests share.
+//! The one temporary-directory fixture the lifecycle crate's suites share, in-crate
+//! and integration alike.
 
 #![allow(dead_code)]
 
@@ -56,6 +57,13 @@ impl Scratch {
 
 impl Drop for Scratch {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!(
+                "failed lifecycle fixture retained at {}",
+                self.base.display()
+            );
+            return;
+        }
         let _ = std::fs::remove_dir_all(&self.base);
     }
 }
