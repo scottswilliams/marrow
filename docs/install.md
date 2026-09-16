@@ -12,23 +12,46 @@ what a store on disk needs.
 
 ## Install
 
+[`scripts/stage-release.sh`](../scripts/stage-release.sh) builds the toolchain
+and stages a complete install directory:
+
 ```sh
 git clone https://github.com/scottswilliams/marrow
 cd marrow
-cargo install --locked --path crates/marrow
-cargo install --locked --path crates/marrow-lsp
+CARGO_TARGET_DIR=/absolute/path/to/marrow-target ./scripts/stage-release.sh
 ```
 
-These install `marrow`, the command-line tool, and `marrow-lsp`, the editor
-language server. Installing them starts no service and creates no data
-directory.
+The staged directory is `dist/<short-revision>-<os>-<arch>/` and holds four
+files:
 
-To build without installing:
+```text
+marrow              the command-line tool
+marrow-runner       the companion runner the store commands spawn
+marrow-lsp          the editor language server
+marrow-companions   the release manifest naming the runner's release identity
+```
+
+The script prints `marrow --version`, the source revision, whether the tree was
+clean, and the SHA-256 of all four files. It refuses a tree with uncommitted
+changes unless given `--allow-dirty`, and requires `CARGO_TARGET_DIR`
+([contributing](../CONTRIBUTING.md)). Re-running it rebuilds the directory from
+scratch.
+
+Install by moving that directory where it will stay and putting it on `PATH`:
 
 ```sh
-cargo build --release --locked -p marrow -p marrow-lsp
-./target/release/marrow --version
+mv dist/<short-revision>-<os>-<arch> ~/.local/marrow
+export PATH="$HOME/.local/marrow:$PATH"
 ```
+
+Install the directory, not the individual files. `marrow` locates its companion
+runner beside the path it was launched from, so a `marrow` symlinked or copied
+into a directory on its own leaves the store commands reporting
+`cli.installation_damaged`.
+
+Installing starts no service and creates no data directory. The four files are
+unsigned, so a copy transferred through a browser download is quarantined on
+macOS; transfer the directory with `tar`, `rsync` or `scp`.
 
 ## Verify
 
@@ -56,7 +79,8 @@ architecture.
 
 A store on disk is opened by a companion runner. `marrow run --store` and
 `marrow import` need the `marrow-runner` binary and the `marrow-companions`
-manifest in the same directory as `marrow`. The two `cargo install` commands
-above install `marrow` and `marrow-lsp` only; without the companion layout,
-the store commands stop with `cli.installation_damaged`. A command that
-installs the layout is future work ([status](status.md)).
+manifest in the same directory as `marrow`; a staged directory has both. The
+terminal verifies the runner against the manifest before spawning it, so a
+missing, mismatched, or altered component stops with
+`cli.installation_damaged` rather than running. `cargo install --path
+crates/marrow` installs the terminal alone and does not produce that layout.

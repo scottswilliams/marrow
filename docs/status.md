@@ -131,9 +131,11 @@ contains at most 64 cells with a soft 1 MiB key/value byte target; an oversized
 first cell is returned to make progress
 ([storage](implementation/storage.md#navigating-entries)).
 
-The toolchain builds on Linux and macOS with Rust 1.89; opening a store on disk
-has its own platform and layout requirements
-([Running against a store](install.md#running-against-a-store)).
+The toolchain builds on Linux and macOS with Rust 1.89. `scripts/stage-release.sh`
+stages the installable directory — the three binaries and the release manifest the
+store commands verify — and opening a store on disk has its own platform
+requirements ([install](install.md#running-against-a-store)). There is no signed,
+packaged, or downloadable build.
 
 ## Trust boundaries
 
