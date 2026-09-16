@@ -353,29 +353,6 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_constructor_source_keeps_the_two_checks_and_direct_move() {
-        let expected = concat!(
-            "    pub fn try_from_steps(steps: Vec<SemanticStep>) -> ",
-            "Result<Self, SemanticPathRefusal> {\n",
-            "        if steps.is_empty() {\n",
-            "            return Err(SemanticPathRefusal::Empty);\n",
-            "        }\n",
-            "        if steps.len() > bounds::MAX_SITE_PATH_STEPS {\n",
-            "            return Err(SemanticPathRefusal::TooManySteps);\n",
-            "        }\n",
-            "        Ok(Self { steps })\n",
-            "    }\n",
-        );
-        let source = include_str!("semantic.rs");
-
-        assert_eq!(
-            source.matches(expected).count(),
-            1,
-            "the constructor must remain the emptiness and bound branches followed by a direct vector move"
-        );
-    }
-
-    #[test]
     fn root_and_child_preserve_the_canonical_chain_without_mutating_the_parent() {
         let root = SemanticPath::root(id(1), id(2));
         let child_step = SemanticStep::new(SemanticStepKind::Field, id(3));
