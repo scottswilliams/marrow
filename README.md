@@ -86,13 +86,14 @@ program that uses no durable data needs no store.
 ## Status
 
 Marrow is unreleased. Today keyed durable roots, transactions, bounded
-traversal, indexes, durable tests, and local-path project dependencies run end
-to end, and `marrow apply` adds a sparse scalar field to a populated store.
-Remote package acquisition, schema evolution past that, and path authority are
-future work. The [beta scope](docs/vision.md#beta-scope) is a useful storeless
-program and a recoverable local application on one machine; that is a scope
-decision, not a readiness claim, and [status](docs/status.md) lists what is
-still missing.
+traversal, indexes, and durable tests run end to end, a project may name
+local-path dependencies, and `marrow apply` adds a sparse scalar field to a
+populated store. Remote package acquisition, schema evolution past that, and
+path authority are future work.
+
+The [beta scope](docs/vision.md#beta-scope) is a useful storeless program and a
+recoverable local application on one machine; that is a scope decision, not a
+readiness claim, and [status](docs/status.md) lists what is still missing.
 
 ## Documentation
 
