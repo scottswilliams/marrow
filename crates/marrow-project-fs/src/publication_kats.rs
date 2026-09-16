@@ -2005,58 +2005,58 @@ fn a_non_regular_ignore_entry_is_still_refused() {
 }
 
 /// Acquisitions racing one fresh project write one ignore entry between them.
-/// The entry is installed under the write lock, so however the seats interleave
-/// exactly one of them appends and the rest find the lock already named.
+/// The entry is installed under the write lock, so whichever seat wins installs
+/// it once and every other seat is refused as contended while the winner holds
+/// the lock.
 #[test]
 fn concurrent_acquisitions_write_one_ignore_entry() {
     use std::sync::Barrier;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     let _serial = serialized();
     const THREADS: usize = 8;
-    const ROUNDS: usize = 12;
-    /// Each seat needs one uncontended acquisition; the bound turns a livelock
-    /// into a failure rather than a hung suite. A seat that yields between
-    /// attempts retries about once per seat ahead of it, so the bound sits far
-    /// above what contention costs and measures nothing.
-    const ATTEMPTS: usize = 10_000;
+    const ROUNDS: usize = 2;
 
     for round in 0..ROUNDS {
         let project = Project::new(&format!("ignore-race-{round}"));
         assert!(!project.meta().exists(), "the round starts from a clone");
-        let barrier = Barrier::new(THREADS);
-        let start = &barrier;
+        let start = Barrier::new(THREADS);
+        // The winner keeps the lock until every seat has attempted, so each
+        // round has exactly one holder and THREADS - 1 contentions without
+        // depending on scheduling.
+        let attempted = Barrier::new(THREADS);
+        let contended = AtomicUsize::new(0);
         let root = project.path();
 
         std::thread::scope(|scope| {
             for seat in 0..THREADS {
-                scope.spawn(move || {
+                scope.spawn(|| {
                     start.wait();
-                    for attempt in 0..ATTEMPTS {
-                        match ProjectMetadataWriteGuard::acquire(root) {
-                            Ok(guard) => {
-                                drop(guard);
-                                return;
-                            }
-                            Err(refusal) => {
-                                assert_eq!(
-                                    refusal.refusal(),
-                                    IdsRefusal::Contended,
-                                    "seat {seat} attempt {attempt} of round {round} reported \
-                                     {refusal:?} rather than the contention it is in"
-                                );
-                                // The lock is uncontended for a few syscalls at
-                                // a time, so a seat that spun would burn its
-                                // whole slice racing the holder it is waiting
-                                // for.
-                                std::thread::yield_now();
-                            }
+                    match ProjectMetadataWriteGuard::acquire(root) {
+                        Ok(guard) => {
+                            attempted.wait();
+                            drop(guard);
+                        }
+                        Err(refusal) => {
+                            assert_eq!(
+                                refusal.refusal(),
+                                IdsRefusal::Contended,
+                                "seat {seat} of round {round} reported {refusal:?} rather than \
+                                 the contention it is in"
+                            );
+                            contended.fetch_add(1, Ordering::SeqCst);
+                            attempted.wait();
                         }
                     }
-                    panic!("seat {seat} of round {round} never acquired the write lock");
                 });
             }
         });
 
+        assert_eq!(
+            contended.load(Ordering::SeqCst),
+            THREADS - 1,
+            "round {round}: every seat but the holder reports contention"
+        );
         assert_eq!(
             project.read_meta(".gitignore").as_deref(),
             Some(WRITTEN_IGNORE),
