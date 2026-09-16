@@ -1,18 +1,16 @@
-//! The deployment-ceiling descriptor and its `CeilingId` identity (E01).
+//! The deployment-ceiling descriptor and its `CeilingId` identity.
 //!
 //! A **deployment ceiling** is the maximum durable authority a store admits: an
 //! attachment resolves each invocation's effective authority as
 //! `demand ∩ ceiling ∩ grant`, and the ceiling is the standing upper bound the
 //! store was minted under. Its descriptor is a sorted, deduplicated set of
-//! durable-access atoms — exactly the D04 atom model the verifier reconstructs for
-//! [`ExportDemand`] — so a deployment's ceiling is the program-wide demand *union*
-//! it chooses to admit. The compiler describes demand; a deployment picks a ceiling;
-//! neither grants — the kernel intersects the two with the invocation grant.
+//! durable-access atoms — the same atom model the verifier reconstructs for
+//! [`ExportDemand`] — so a deployment's ceiling is the program-wide demand *union* it
+//! chooses to admit. The compiler describes demand and a deployment picks a ceiling;
+//! neither grants, and the kernel intersects the two with the invocation grant.
 //!
-//! The [`CeilingId`] is a stable-boundary hash identity exactly as the kernel
-//! identity rule requires — a domain-separated SHA-256 over the same
-//! length-delimited canonical atom-set payload [`ExportDemand`] owns, under a
-//! *distinct* frozen `kind`:
+//! [`CeilingId`] is a domain-separated SHA-256 over the same length-delimited canonical
+//! atom-set payload [`ExportDemand`] owns, under a *distinct* frozen `kind`:
 //!
 //! ```text
 //! CeilingId = SHA-256( KIND ‖ u64_be(len(payload)) ‖ payload )

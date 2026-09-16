@@ -24,29 +24,25 @@ use crate::value_dag::{ImageByteSink, push_u16};
 /// An opaque remapped string-pool reference: two wire bytes a writer can append and
 /// nothing else.
 ///
+/// A token cannot be compared, read, forged from a raw index, or crossed with the
+/// constant domain, so no writer can branch on a remap value.
+///
 /// ```compile_fail,E0369
-/// // Two string tokens cannot be compared, so a writer cannot branch on a remap value.
 /// fn same(a: marrow_image::StringToken, b: marrow_image::StringToken) -> bool {
 ///     a == b
 /// }
 /// ```
-///
 /// ```compile_fail,E0616
-/// // A token's value cannot be read.
 /// fn value(token: marrow_image::StringToken) -> u16 {
 ///     token.0
 /// }
 /// ```
-///
 /// ```compile_fail,E0603
-/// // Nor can a token be forged from a raw index.
 /// fn forge() -> marrow_image::StringToken {
 ///     marrow_image::StringToken(0)
 /// }
 /// ```
-///
 /// ```compile_fail,E0308
-/// // A string token cannot stand where a constant token is expected.
 /// fn takes_const(_: marrow_image::ConstToken) {}
 /// fn cross(token: marrow_image::StringToken) {
 ///     takes_const(token)
@@ -64,10 +60,9 @@ impl StringToken {
     }
 
     /// The DURABLE writer's spending path: `write_durable_body` keeps its pinned
-    /// public-sink signature, so its tokens append through the bound the gate pins.
-    /// The writer lives in a sibling module, so no visibility narrower than
-    /// `pub(crate)` can reach it; the spend gate pins every spelling of this call —
-    /// dot and UFCS alike — to the writer file instead.
+    /// public-sink signature, so its tokens append through the bound the gate pins. The
+    /// writer is in a sibling module, so no visibility narrower than `pub(crate)` reaches
+    /// it; the spend gate pins every spelling of this call to the writer file instead.
     pub(crate) fn emit_durable(self, sink: &mut impl ImageByteSink) {
         push_u16(sink, self.0);
     }
@@ -77,21 +72,16 @@ impl StringToken {
 /// nothing else.
 ///
 /// ```compile_fail,E0369
-/// // Two constant tokens cannot be compared.
 /// fn same(a: marrow_image::ConstToken, b: marrow_image::ConstToken) -> bool {
 ///     a == b
 /// }
 /// ```
-///
 /// ```compile_fail,E0616
-/// // A token's value cannot be read.
 /// fn value(token: marrow_image::ConstToken) -> u16 {
 ///     token.0
 /// }
 /// ```
-///
 /// ```compile_fail,E0308
-/// // A constant token cannot stand where a string token is expected.
 /// fn takes_string(_: marrow_image::StringToken) {}
 /// fn cross(token: marrow_image::ConstToken) {
 ///     takes_string(token)

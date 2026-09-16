@@ -9,31 +9,25 @@
 //!
 //! The draft therefore holds two flat tables rather than one graph per root: a
 //! [`ProductDeclarationTable`] keyed by [`DurableProductIdentity`], and a flat
-//! [`RootOccurrence`] row per root that references its declaration. The wire format is
-//! unchanged — v0 still carries the full member graph per root — so the encoder projects
-//! each occurrence from its one retained declaration. Nothing is retained per
-//! (root x member).
+//! [`RootOccurrence`] row per root that references its declaration. v0 wire bytes still
+//! carry the full member graph per root, so the encoder projects each occurrence from its
+//! one retained declaration; nothing is retained per (root x member).
 //!
 //! A declaration's member graph is itself flat: [`ProductDeclarationGraph`] is a table of
 //! [`DeclarationNode`] rows, each carrying its parent's ordinal and the contiguous run of
 //! rows holding its own direct members. Rows are appended level by level, so a node's
 //! members are always one run and a walk follows spans rather than owned child vectors.
 //! The wire bytes and the durable contract id are both projected from these rows, so the
-//! two derive from one set of facts and cannot drift apart.
+//! two cannot drift apart.
 //!
-//! Both tables publish **selectors**: a completed occurrence row publishes one
-//! [`RootOccurrenceSelector`], and every canonical path — a root's own placement, one of
-//! its managed indexes, or one Product declaration row — publishes one
-//! [`CanonicalDeclarationPathSelector`]. A selector is opaque and carries the exact live
-//! row it was published by, so it names a place without exposing an ordinal a caller
-//! could write by hand. The pair of them is the only input to the site binder
-//! ([`crate::ImageDraft::bind_occurrence_site`]).
-//!
-//! The occurrence ordinal is not itself secret: [`crate::AdmittedRoot::root_id`] publishes
-//! it beside the selectors, because it is the wire RootId an entry identity `Id(^root)`
-//! carries and the compiler must emit it into identity instructions. What the selectors
-//! establish is that no ordinal a caller holds can *name a place*: the binder accepts
-//! selectors only, so a number is a wire value here and never an address.
+//! Both tables publish **selectors**: [`RootOccurrenceSelector`] for a completed
+//! occurrence row, [`CanonicalDeclarationPathSelector`] for every canonical path. A
+//! selector is opaque and carries the exact live row it was published by, so it names a
+//! place without exposing an ordinal a caller could write by hand, and the pair is the
+//! only input to [`crate::ImageDraft::bind_occurrence_site`]. The occurrence ordinal
+//! itself is published beside them by [`crate::AdmittedRoot::root_id`], because it is the
+//! wire RootId an entry identity `Id(^root)` carries: a number is a wire value here and
+//! never an address.
 
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -50,17 +44,14 @@ use crate::value_dag::{CanonicalValueShapeDag, ValueShapeNodeId};
 
 /// The stamp one appended row carries.
 ///
-/// Row ordinals are reused deterministically — a proof pass appends rows and the rewind
+/// Row ordinals are reused deterministically — a proof pass appends rows, the rewind
 /// discards them, and the next append lands on the same ordinal — so an ordinal alone
 /// cannot say whether the row a selector, handle, or operand was minted against is still
-/// the row that is there. The stamp is drawn from the graph's one monotone counter, which
-/// a rewind deliberately does **not** restore, so a re-minted row is never mistaken for
-/// the row it replaced.
+/// there. The stamp is drawn from the graph's one monotone counter, which a rewind
+/// deliberately does **not** restore.
 ///
-/// It lives beside that counter and its field is private, so
-/// [`DurableContractGraph::next_stamp`] is the only place in the crate a stamp comes into
-/// being: an owner appending a row against this graph draws one, and no owner can mint a
-/// stamp of its own that would collide with a row's.
+/// Its field is private and [`DurableContractGraph::next_stamp`] is the only place in the
+/// crate a stamp comes into being, so no owner can mint one that collides with a row's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RowStamp(u64);
 
@@ -224,10 +215,8 @@ impl ProductDeclarationGraph {
     /// **Nesting depth is decided here, before a row exists.** A parent always precedes
     /// its children in the command vector, so one forward pass fixes every command's level
     /// and a command past [`bounds::MAX_DURABLE_DEPTH`] is refused with nothing
-    /// materialized. The bound is a property of the *level*, not of what the level holds:
-    /// an over-deep body declaring no member of its own is still an over-deep row, and is
-    /// refused as one. Every consumer of these rows — the member walks, the projected site
-    /// paths, the contract-identity payload — therefore meets a graph no deeper than a
+    /// materialized. The bound is a property of the *level*, not of what the level holds,
+    /// so every consumer of these rows meets a graph no deeper than a
     /// [`crate::SemanticPath`] can name.
     pub(crate) fn from_commands(
         commands: Vec<DeclarationMemberDef>,
@@ -768,12 +757,9 @@ pub(crate) struct RootOccurrenceTable {
 impl RootOccurrenceTable {
     /// Append one occurrence row under `plan` and publish its selector.
     ///
-    /// This is the one place the plan's root-occurrence budget is spent, so the draft and
-    /// the independent verifier's own contract graph enter the table through the same
-    /// check rather than each restating it — the same way
-    /// [`ProductDeclarationTable::admit_under`] owns the Product and command terms. All
-    /// three of the plan's terms are therefore spent by the table that holds the rows they
-    /// bound, in one refusal vocabulary.
+    /// This is the one place the plan's root-occurrence budget is spent, as
+    /// [`ProductDeclarationTable::admit_under`] is for the Product and command terms: each
+    /// of the plan's three terms is spent by the table holding the rows it bounds.
     pub(crate) fn push_under(
         &mut self,
         plan: &AdmittedGraphInputPlan,
@@ -827,12 +813,9 @@ impl RootOccurrenceTable {
 ///
 /// It names one occurrence without spelling an ordinal a caller could write: it carries
 /// the draft it was published by and the exact live row it was published for, and has no
-/// public field, constructor, accessor, `Default`, or `From`. It is `Clone` but
-/// deliberately not `Copy` — a selector is a published capability to name an occurrence,
-/// and copying one implicitly is how a carrier ends up naming an occurrence it was never
-/// given.
-///
-/// A staged row publishes none; only a completed canonical publication does.
+/// public field, constructor, accessor, `Default`, or `From`. `Clone` but deliberately not
+/// `Copy`: implicit copying is how a carrier ends up naming an occurrence it was never
+/// given. A staged row publishes none; only a completed canonical publication does.
 #[derive(Debug, Clone)]
 pub struct RootOccurrenceSelector {
     draft: DraftIdentity,
@@ -1265,18 +1248,12 @@ impl BoundDemand {
 /// declaration id and two distinct places, so a terminal-id key would hand one occurrence
 /// the other occurrence's site.
 ///
-/// This key is strictly finer than the `(semantic path, target)` pair the site table
-/// deduplicated on before it, so it can only fail to merge two demands that the coarser key
-/// merged — never merge two the coarser key kept apart. Where it could differ is where two
-/// distinct `(occurrence, node)` pairs project one identical path: two occurrences sharing a
-/// placement ledger id, or two declaration rows with equal ancestry and equal ledger ids.
-/// Both are one ledger id claimed by two durable declarations, which is refused twice over:
-/// the identity ledger refuses to parse two anchors carrying one id, and the independent
-/// verifier refuses such an image at its table phase. So the two keys agree on every graph
-/// that can be *accepted*, which is what byte preservation is a claim about. That double
-/// rejection is the load-bearing fact here, and its verifier half is pinned exhaustively by
-/// the pairwise identity matrix over all eleven declaration kinds
-/// (`marrow-verify/tests/enum_reuse_hostile.rs`).
+/// This key is strictly finer than the `(semantic path, target)` pair alone: it can only
+/// fail to merge two demands the coarser key merged, never merge two it kept apart. The
+/// two differ only where two distinct `(occurrence, node)` pairs project one identical
+/// path, which requires one ledger id claimed by two durable declarations — refused twice
+/// over, by the identity ledger when it parses the anchors and by the independent verifier
+/// at its table phase. So the two keys agree on every graph that can be accepted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct OccurrenceSiteDemandKey {
     occurrence: RootOccurrenceOrdinal,
@@ -1310,17 +1287,15 @@ pub(crate) struct DurableGraphCheckpoint {
 /// It holds the four owners a contract is derived from — the application identity, the
 /// canonical Product declaration table, the flat root-occurrence table, and the one
 /// value-shape DAG their fields reference — and publishes them as one zero-allocation
-/// [`DurableContractView`]. It is the owner the **independent verifier** builds from
-/// received bytes; the compiler's draft holds the same four owners beside its own site
-/// plan and publishes the same view from them, so both sides compute one canonical
-/// contract encoding from rows of one shape rather than from two models that could drift.
+/// [`DurableContractView`]. The independent verifier builds this owner from received bytes
+/// and the compiler's draft holds the same four, so both sides compute one canonical
+/// contract encoding from rows of one shape.
 ///
 /// Construction is flat, bottom-up, and admitted: every entry point requires an
 /// [`AdmittedGraphInputPlan`], a Product's members arrive as a command vector whose rows
 /// name their parent by an earlier command, and no entry accepts a built recursive owner
 /// by value. There is no public raw-row constructor and no way to reach the rows except
-/// through the borrowed views, so nothing a caller states can be deeper than the rows a
-/// bounded producer wrote.
+/// through the borrowed views.
 ///
 /// It owns its arena. A [`crate::ValueShapeNodeId`] a caller reads from this graph's
 /// views addresses a node this graph holds, for as long as it holds it.
@@ -1406,12 +1381,10 @@ impl DurableContractGraph {
     /// The append-only lengths of every owner this graph holds, for a caller that appends
     /// a throwaway pass against it and discards what the pass wrote.
     ///
-    /// The graph is destructured exhaustively rather than read field by field: a new owner
-    /// stops this compiling until it is either recorded here or bound to `_` beside the two
-    /// whose exclusion is stated below, so no field can be left out of a rewind by
-    /// omission. `identity` is fixed at mint and no pass can change it; `next_stamp`
-    /// advances monotonically on purpose, so a re-minted row is never mistaken for the row
-    /// it replaced.
+    /// The graph is destructured exhaustively, so a new owner stops this compiling until it
+    /// is recorded here or deliberately bound to `_`. `identity` is fixed at mint;
+    /// `next_stamp` advances monotonically on purpose, so a re-minted row is never mistaken
+    /// for the row it replaced.
     pub(crate) fn checkpoint(&self) -> DurableGraphCheckpoint {
         let Self {
             identity: _,
@@ -1570,13 +1543,11 @@ mod tests {
 
     /// **The enforcement artifact for the published row charges.** Every row the
     /// maximum-live equations price names all of its fields here, so adding one fails to
-    /// build until the charge that prices it has been re-derived.
+    /// build until the charge pricing it has been re-derived.
     ///
     /// `size_of` sees a heap-owning field as one pointer triple, so a new `Vec` field would
-    /// otherwise widen the real cost while leaving every published charge and every
-    /// equation over them unchanged and still green. The patterns are typechecked and never
-    /// run; a closure body is the smallest place to write one without constructing a value
-    /// of every row.
+    /// otherwise widen the real cost while leaving every published charge green. The
+    /// patterns are typechecked and never run.
     #[test]
     fn every_priced_row_names_all_of_its_fields() {
         let _ = |value: &super::DeclarationMemberDef| {

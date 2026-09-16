@@ -1,33 +1,22 @@
 //! The typed validating `ImageDraft`.
 //!
-//! The compiler builds an image through this owner: it interns strings and
-//! constants, adds record types, roots, sites, functions, and exports, and calls
-//! [`ImageDraft::encode`] to produce canonical container bytes with a computed
-//! digest. Building works in logical intern ids (`StrId`, `ConstId`); the encoder
-//! sorts the string and constant pools into their canonical order and rewrites
-//! every reference, so the compiler never reasons about final pool positions.
+//! The compiler builds an image through this owner and calls [`ImageDraft::encode`] to
+//! produce canonical container bytes with a computed digest. Building works in logical
+//! intern ids; the encoder sorts the string and constant pools into canonical order and
+//! rewrites every reference, so the compiler never reasons about final pool positions.
 //!
-//! The draft enforces the operation-site bound as it is built: sites are minted
-//! through one bounded [`SiteDemandPlan`] that checks vacant capacity before it mints an
-//! id, so no site id is ever a narrowed table length. A site is named by binding a live
-//! root occurrence to a live canonical declaration path, so a producer cannot address a
-//! node the graph does not contain, and appending a function validates every site operand
-//! its code carries. The remaining `add_*` owners still append unconditionally on the
-//! string, constant, type, enum, collection, export, and test-entry paths and are bounded
-//! only by the encoder's recheck. The independent verifier rechecks every bound against
-//! the received bytes; the draft's checks are a producer-side guard, not the trust
+//! Sites are minted only through the bounded [`SiteDemandPlan`], by binding a live root
+//! occurrence to a live canonical declaration path, so a producer cannot address a node
+//! the graph does not contain. The remaining `add_*` owners append unconditionally,
+//! bounded only by the encoder's recheck. The independent verifier rechecks every bound
+//! against received bytes; the draft's checks are a producer-side guard, not the trust
 //! boundary.
 //!
-//! Those unconditional owners mint a logical id as the table's current length carried in
-//! the wide `u32` ordinal every owned pre-seal id newtype holds, so no mint is ever a
-//! narrowed table length and an over-policy table still mints the N+1 id (the
-//! nonblocking provisional-commit law). The id itself never carries a wire width: the
-//! only narrowing to the wire's `u16` spelling is the measure core's policy-clean
-//! checked path (`crate::measure::wire_ordinal`/`wire_len`), which runs strictly after
-//! the policy walk has refused any draft past its bound (`MAX_STRINGS`,
-//! `MAX_CONSTS`, `MAX_TYPES`, `MAX_ENUMS`, `MAX_COLLECTIONS`, `MAX_FUNCTIONS`) — every
-//! one at or below `u16::MAX` by the `const _` encoded-width block in
-//! [`crate::bounds`].
+//! Every owned pre-seal id newtype carries a wide `u32` ordinal, so no mint is a narrowed
+//! table length and an over-policy table still mints the N+1 id, refused later at the
+//! encode fence. The only narrowing to the wire's `u16` spelling is the measure core's
+//! policy-clean checked path (`crate::measure`), which runs strictly after the policy
+//! walk has refused any draft past its bound.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -78,15 +67,11 @@ impl DraftIdentity {
 /// may be — so a caller cannot hand the draft an unbounded, uncounted, unadmitted command
 /// stream and have it discovered only by the encoder afterwards.
 ///
-/// It is unforgeable on the compiler's `SignaturesComplete` idiom: the counts are private
-/// and [`Self::admit`] is the only constructor, so it has no literal form outside this
-/// module and its existence is proof that an admission owner checked its counts against
-/// what a ProgramImage can hold. A plan carrying unadmitted counts does not exist.
+/// The counts are private and [`Self::admit`] is the only constructor, so a plan carrying
+/// unadmitted counts has no literal form outside this module.
 ///
-/// It is a budget, not permission to reach it. Every table the entry points append to
-/// still rechecks its own bound, the declaration graph's own command validation remains the
-/// one structural validator of a command vector, and the independent verifier rechecks
-/// every bound against received bytes. The plan bounds *intake*; it classifies nothing.
+/// It is a budget, not permission to reach it: every table the entry points append to
+/// still rechecks its own bound, and the plan bounds *intake* while classifying nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AdmittedGraphInputPlan {
     products: usize,
@@ -107,17 +92,10 @@ impl AdmittedGraphInputPlan {
     /// The construction budget for `products` Product declarations, `roots` root
     /// occurrences, and `commands` member commands in any one declaration.
     ///
-    /// Each term saturates at the public ceiling of the same name — one past the bound
-    /// whose refusal owner keeps its refusal (see
-    /// [`bounds::MAX_ADMITTED_ROOT_OCCURRENCES`]) — so a census that overruns still
-    /// reaches [`ImageBuildError::TooManyRoots`] or
-    /// [`ImageBuildError::TooManyDurableMembers`] over a *complete* graph instead of
-    /// being truncated at the entry point. A plan therefore never carries a count the
-    /// durable graph could not be handed.
-    ///
-    /// The budget binds where it is spent: the construction entry points check each
-    /// arrival cumulatively against the graph already receiving it, and there is no
-    /// third route into those tables.
+    /// Each term saturates one past the bound whose refusal owner keeps its refusal (see
+    /// [`bounds::MAX_ADMITTED_ROOT_OCCURRENCES`]), so a census that overruns still reaches
+    /// [`ImageBuildError::TooManyRoots`] or [`ImageBuildError::TooManyDurableMembers`]
+    /// over a *complete* graph instead of being truncated at the entry point.
     pub fn admit(products: usize, roots: usize, commands: usize) -> Self {
         Self {
             products: products.min(bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS),
@@ -126,17 +104,15 @@ impl AdmittedGraphInputPlan {
         }
     }
 
-    /// Product declarations this plan admits.
     pub(crate) fn products(&self) -> usize {
         self.products
     }
 
-    /// Root occurrences this plan admits.
     pub(crate) fn roots(&self) -> usize {
         self.roots
     }
 
-    /// Member commands this plan admits in any one declaration.
+    /// Member commands admitted in any one declaration.
     pub(crate) fn commands(&self) -> usize {
         self.commands
     }
@@ -144,34 +120,24 @@ impl AdmittedGraphInputPlan {
 
 /// Mint the next logical ordinal for an owned pre-seal table of `len` rows.
 ///
-/// The wide-ordinal issuance check: the carrier domain is the `u32` the id newtypes
-/// hold, not a public policy maximum — an over-policy table still mints the N+1 id
-/// (the nonblocking provisional-commit law) and the image is refused at the encode
-/// fence by the policy walk. A caller at the `u32` boundary receives the closed
-/// carrier-domain refusal before any owner mutates; the production compiler's
-/// envelope proof makes that arm unreachable and maps it to a compiler invariant.
+/// The domain checked here is the `u32` the id newtypes hold, not a public policy
+/// maximum: an over-policy table still mints the N+1 id and the encode fence's policy
+/// walk refuses the image. A caller at the `u32` boundary receives the carrier-domain
+/// refusal before any owner mutates.
 pub(crate) fn wide_ordinal(len: usize) -> Result<u32, DraftStateError> {
     u32::try_from(len).map_err(|_| DraftStateError::CarrierDomain)
 }
 
 /// The function-slot ordinal, checked at its mint.
 ///
-/// Function width is `IMGFUNC01`'s to widen and stays `u16` here, but *unchecked* is a
-/// different property from *narrow*: a draft carrying more functions than the carrier
-/// spells would wrap and alias slot zero, and an arbitrary external caller on this
-/// `#[doc(hidden)] pub` surface can reach that. The mint therefore returns the same
-/// closed builder-domain refusal every other id-minting mutator returns, rather than
-/// leaving the bound to the encoder to notice afterwards.
+/// Function width stays `u16` here, so a draft carrying more functions than the carrier
+/// spells would wrap and alias slot zero. The mint returns the builder-domain refusal
+/// rather than leaving the bound to the encoder to notice afterwards.
 fn function_ordinal(len: usize) -> Result<u16, DraftStateError> {
     u16::try_from(len).map_err(|_| DraftStateError::CarrierDomain)
 }
 
 /// A logical string-pool id, stable across the sort the encoder performs.
-///
-/// Like every owned pre-seal logical id it is a typed newtype over a private wide
-/// `u32` ordinal: the id itself never carries a wire width, and the only narrowing
-/// to the wire's `u16` spelling is the measure core's policy-clean checked path
-/// (`crate::measure`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StrId(u32);
 
@@ -180,18 +146,15 @@ pub struct StrId(u32);
 pub struct ConstId(pub(crate) u32);
 
 impl ConstId {
-    /// The constant-pool id at `index`, widened from a `u16` ordinal. Its only
-    /// cross-crate consumers are the frozen legacy accepted-bytes pins
-    /// (`marrow-verify/tests/legacy_ok_pins.rs`), which spell known-answer operands
-    /// against a draft whose pool they built; production ids come from the draft's
-    /// own checked interning mints.
+    /// The constant-pool id at `index`, widened from a `u16` ordinal. Production ids
+    /// come from the draft's own checked interning mints; this spells a known-answer
+    /// operand against a pool the caller already built.
     pub const fn from_index(index: u16) -> Self {
         Self(index as u32)
     }
 
     /// The wide logical ordinal, as carried in a `ConstLoad` operand until the encoder
-    /// rewrites it to the final sorted pool position. A logical ordinal, never a wire
-    /// value: emission narrows only through the measure core's policy-clean path.
+    /// rewrites it to the final sorted pool position. Never a wire value.
     pub const fn index(self) -> u32 {
         self.0
     }
@@ -202,17 +165,13 @@ impl ConstId {
 pub struct TypeId(pub(crate) u32);
 
 impl TypeId {
-    /// The record-type index at `index`.
-    ///
-    /// A record-type index is a container-table position, not a capability, for the same
-    /// reason [`StrId::from_index`] is: the independent verifier reads one from received
-    /// bytes and every owner that resolves one range-checks it.
+    /// The record-type index at `index` — the widening of a received `u16` wire read.
     pub const fn from_index(index: u16) -> Self {
         Self(index as u32)
     }
 
     /// The wide logical record-type ordinal, as carried in a `RecordNew` operand and
-    /// in an `ImageType::Record`. A logical ordinal, never a wire value.
+    /// in an `ImageType::Record`. Never a wire value.
     pub const fn index(self) -> u32 {
         self.0
     }
@@ -229,7 +188,7 @@ impl EnumId {
     }
 
     /// The wide logical enum-type ordinal, as carried in `EnumConstruct` operands and
-    /// in an `ImageType::Enum`. A logical ordinal, never a wire value.
+    /// in an `ImageType::Enum`. Never a wire value.
     pub const fn index(self) -> u32 {
         self.0
     }
@@ -248,8 +207,7 @@ impl CollTypeId {
     }
 
     /// The wide logical collection-type ordinal, as carried in `ListNew`/`MapNew`
-    /// operands and in an `ImageType::Collection`. A logical ordinal, never a wire
-    /// value.
+    /// operands and in an `ImageType::Collection`. Never a wire value.
     pub const fn index(self) -> u32 {
         self.0
     }
@@ -257,9 +215,7 @@ impl CollTypeId {
 
 /// A durable root reference: the wide logical ordinal of one row in the flat
 /// root-occurrence table — the reference an `ImageType::Identity` and a
-/// `MakeIdentity` instruction embed, and the fact [`AdmittedRoot::root_id`]
-/// publishes. The wire's `u16` RootId discriminant is the policy-clean narrowing of
-/// this ordinal, performed only on the measure core's fitting arm.
+/// `MakeIdentity` instruction embed, and the fact [`AdmittedRoot::root_id`] publishes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RootId(pub(crate) u32);
 
@@ -269,7 +225,7 @@ impl RootId {
         Self(index as u32)
     }
 
-    /// The wide logical occurrence ordinal. A logical ordinal, never a wire value.
+    /// The wide logical occurrence ordinal. Never a wire value.
     pub const fn index(self) -> u32 {
         self.0
     }
@@ -417,10 +373,9 @@ impl AdmittedRoot {
     }
 
     /// The typed durable root reference of this occurrence — the wide logical ordinal
-    /// whose policy-clean `u16` narrowing is the discriminant an entry identity
-    /// `Id(^root)` carries on the wire. It is a fact the compiler embeds into identity
-    /// instructions, not a way to name the occurrence row: naming it is what the
-    /// selector is for.
+    /// whose `u16` narrowing is the discriminant an entry identity `Id(^root)` carries
+    /// on the wire. A fact the compiler embeds into identity instructions, not a way to
+    /// name the occurrence row: that is what the selector is for.
     pub fn root_id(&self) -> RootId {
         self.root_id
     }
@@ -633,18 +588,14 @@ impl std::error::Error for ImageBuildError {}
 ///
 /// Every owned mutation flows through the one admitted, journaled, failure-atomic
 /// transaction surface: [`Self::savepoint`] mints a pre-admission token and
-/// [`Self::begin_transaction`] consumes it into the armed [`DraftTxn`]. The
-/// once-checked generic template pass holds such an armed guard and discards
-/// everything it appended by dropping it.
+/// [`Self::begin_transaction`] consumes it into the armed [`DraftTxn`].
 ///
-/// A draft is deliberately not `Clone`. Every selector, handle, and site operand it mints
-/// carries its identity, so a copied draft would carry a copied identity and a copied stamp
-/// cursor: every capability minted afterwards would authenticate against both copies, and
-/// the row-stamp check that makes a discarded row's reused ordinal detectable would answer
-/// for a row that a different draft appended.
+/// A draft is deliberately not `Clone`: every selector, handle, and site operand it mints
+/// carries its identity, so a copy would authenticate capabilities against both drafts and
+/// the row-stamp check that detects a discarded row's reused ordinal would answer for a row
+/// a different draft appended.
 ///
 /// ```compile_fail,E0599
-/// // A draft is not `Clone`: copying one would copy its identity and its stamp cursor.
 /// let mut draft = marrow_image::ImageDraft::new();
 /// let _copy = draft.clone();
 /// ```
@@ -653,45 +604,35 @@ impl std::error::Error for ImageBuildError {}
 /// a raw ordinal or key.
 ///
 /// ```compile_fail,E0308
-/// // There is no raw ordinal or key binder: `bind_occurrence_site` takes published
-/// // selectors, and neither selector can be spelled as a number.
 /// let mut draft = marrow_image::ImageDraft::new();
 /// let _ = draft.bind_occurrence_site(&0usize, &0usize, marrow_image::SemanticTarget::WholePayload);
 /// ```
 ///
 /// A handle already carries the one target it was bound for, so requesting a site takes no
-/// second target input.
+/// second target input that could disagree with it.
 ///
 /// ```compile_fail,E0061
-/// // A handle carries its target; there is no second target input to disagree with it.
 /// let mut draft = marrow_image::ImageDraft::new();
 /// let handle: marrow_image::OccurrenceSiteHandle = unimplemented!();
 /// let _ = draft.request_site(&handle, marrow_image::SemanticTarget::WholePayload);
 /// ```
 ///
-/// Entering the durable graph requires an [`AdmittedGraphInputPlan`]: no plan, no
-/// construction.
+/// Entering the durable graph requires an [`AdmittedGraphInputPlan`], and a plan has no
+/// literal form: its counts are private, so [`AdmittedGraphInputPlan::admit`] is the only
+/// way one comes into being.
 ///
 /// ```compile_fail,E0061
-/// // There is no planless construction entry point.
 /// let mut draft = marrow_image::ImageDraft::new();
 /// let _ = draft.declare_product(unimplemented!(), unimplemented!(), Vec::new());
 /// ```
-///
-/// A plan has no literal form: its counts are private, so [`AdmittedGraphInputPlan::admit`]
-/// is the only way one comes into being.
-///
 /// ```compile_fail,E0451
-/// // A plan carrying unadmitted counts cannot be spelled.
 /// let _ = marrow_image::AdmittedGraphInputPlan { products: 4096, roots: 4096, commands: 1 << 20 };
 /// ```
 ///
-/// A transaction is a guard over one draft, not a mark a caller holds, so there is
-/// no value to carry from one draft to another. The armed guard borrows its draft
-/// exclusively for its whole lifetime.
+/// A transaction is a guard over one draft, not a mark a caller holds: the armed guard
+/// borrows its draft exclusively for its whole lifetime.
 ///
 /// ```compile_fail,E0505
-/// // A guard cannot be separated from the draft it rolls back.
 /// let mut first = marrow_image::ImageDraft::new();
 /// let sp = first.savepoint();
 /// let txn = first.begin_transaction(sp);
@@ -702,12 +643,9 @@ impl std::error::Error for ImageBuildError {}
 pub struct ImageDraft {
     /// The one durable-graph owner: this draft's strong identity and stamp source, its
     /// application identity, its canonical Product declaration table, its flat
-    /// root-occurrence table, and the one value-shape arena their fields reference.
-    ///
-    /// The draft does not hold a second copy of any of them. It is the same owner the
-    /// independent verifier builds from received bytes, so a Product declared here and one
-    /// reconstructed there are admitted, stamped, and bounded by one implementation rather
-    /// than by two that could drift.
+    /// root-occurrence table, and the one value-shape arena their fields reference. It is
+    /// the same owner the independent verifier builds from received bytes, so both sides
+    /// are admitted, stamped, and bounded by one implementation.
     durable: DurableContractGraph,
     strings: Vec<String>,
     /// Lookup-only interning projection; the vector remains the canonical order.
@@ -723,12 +661,10 @@ pub struct ImageDraft {
     enums_fill: Vec<FillState>,
     colls: Vec<CollectionTypeDef>,
     /// The first divergent repeat of an already-declared Product, if one was appended.
-    /// Two occurrences of one Product identity that claim different graphs are two
-    /// declarations wearing one identity: the draft cannot represent that, and
-    /// the measurement/coherence pass refuses to encode rather than silently
-    /// canonicalizing one of them away.
+    /// The draft cannot represent two declarations wearing one identity, so the
+    /// coherence pass refuses to encode rather than canonicalizing one of them away.
     product_conflict: Option<ProductClaimConflict>,
-    /// The sticky application-identity divergence latch (the set-once-or-same law).
+    /// The sticky application-identity divergence latch: set once, or set to the same.
     application_conflict: Option<ApplicationIdentityConflict>,
     /// The one owner of the operation-site table, its demand map, and its capacity
     /// policy. Every site an image carries is requested through it.
@@ -766,9 +702,8 @@ pub(crate) enum FillState {
     Filled,
 }
 
-/// The sticky application-identity divergence latch: the retained first identity and
-/// the first divergent replacement. A coherence fact beside the Product claim
-/// conflict, reported once at the fence by the owner that refuses artifacts.
+/// The sticky application-identity divergence latch: the retained first identity and the
+/// first divergent replacement, reported once at the encode fence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ApplicationIdentityConflict {
     first: LedgerIdBytes,
@@ -778,27 +713,26 @@ pub(crate) struct ApplicationIdentityConflict {
 /// The allocation-identity anchor of one draft: savepoint validation compares this
 /// allocation by `Rc::ptr_eq`, and a savepoint's strong retention is what makes the
 /// pointer comparison sound — the compared allocation cannot have been freed and
-/// reused, so there is no address, counter, generation, or hash ABA. The numeric
-/// [`DraftIdentity`] survives only where selectors and operands embed it as
-/// predecessor provenance, never as a savepoint-comparison key.
+/// reused, so there is no ABA. The numeric [`DraftIdentity`] is provenance embedded in
+/// selectors and operands, never a savepoint-comparison key.
 #[derive(Debug)]
 struct DraftIdentityCell;
 
 /// The one-shot transaction epoch. Its nested allocation is the draft identity, so one
-/// strong token carries both classifications: a different nested anchor is foreign and a
-/// different epoch allocation over the same anchor is stale. Admission installs a fresh allocation before any
-/// table mutation, staling every sibling savepoint of the consumed epoch. It is
-/// monotone authentication state, not part of the logical inverse: commit and armed
-/// rollback both retain the rotated epoch, so a sibling stays stale even when every
+/// strong token carries both classifications: a different nested anchor is foreign, and a
+/// different epoch allocation over the same anchor is stale. Admission installs a fresh
+/// allocation before any table mutation, staling every sibling savepoint of the consumed
+/// epoch. It is monotone authentication state outside the logical inverse: commit and
+/// armed rollback both retain the rotated epoch, so a sibling stays stale even when every
 /// logical draft byte again equals the pre-transaction state.
 #[derive(Debug)]
 struct TransactionEpoch {
     draft: Rc<DraftIdentityCell>,
 }
 
-/// A hostile-state refusal of the transaction surface: the closed set the mutation
-/// entry points return before any owner changes. Never a policy maximum — crossing a
-/// public image policy is not a returned error anywhere on this surface.
+/// A hostile-state refusal of the transaction surface: the closed set the mutation entry
+/// points return before any owner changes. Never a policy maximum — crossing a public
+/// image policy is not a returned error anywhere on this surface.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DraftStateError {
@@ -810,9 +744,9 @@ pub enum DraftStateError {
     /// disagrees with the state it claims to describe, or the id it names no longer
     /// admits the operation.
     IncoherentToken,
-    /// The argument exceeds the proved carrier/layout domain of the builder surface.
-    /// The production compiler's envelope proof makes this unreachable, so it maps
-    /// the refusal to a compiler invariant — never a policy or source refusal.
+    /// The argument exceeds the proved carrier/layout domain of the builder surface. The
+    /// production compiler maps this to a compiler invariant — never a policy or source
+    /// refusal.
     CarrierDomain,
 }
 
@@ -832,9 +766,8 @@ impl std::fmt::Display for DraftStateError {
 impl std::error::Error for DraftStateError {}
 
 /// A site operation the draft did not answer for is an incoherent token at the builder
-/// surface: the reference names a row that no longer admits the operation. The site
-/// error's own private cases stay private — this crossing carries the classification, not
-/// the cause.
+/// surface. The site error's own private cases stay private: this crossing carries the
+/// classification, not the cause.
 impl From<crate::site_plan::SitePlanStateError> for DraftStateError {
     fn from(_: crate::site_plan::SitePlanStateError) -> Self {
         DraftStateError::IncoherentToken
@@ -885,54 +818,37 @@ struct DraftSnapshot {
     receipt: Option<SitePolicyReceipt>,
 }
 
-/// A pre-admission, affine draft savepoint: it strongly retains the draft's
-/// current one-shot epoch (which owns the draft's allocation-identity anchor) and carries
-/// the exact private restore snapshot. Sibling-mintable; consumed whole by
-/// [`ImageDraft::begin_transaction`], which validates it by allocation identity
-/// before any mutation. Deliberately neither `Clone` nor `Copy`: a savepoint is an
-/// affine admission token, and copying one is how a consumed epoch gets re-presented.
+/// A pre-admission, affine draft savepoint: it strongly retains the draft's current
+/// one-shot epoch (which owns the draft's allocation-identity anchor) and carries the
+/// exact private restore snapshot. Sibling-mintable; consumed whole by
+/// [`ImageDraft::begin_transaction`], which validates it by allocation identity before
+/// any mutation. Deliberately neither `Clone` nor `Copy`, so re-presenting a consumed
+/// savepoint is unrepresentable rather than refused at run time.
 ///
 /// ```compile_fail,E0599
-/// // A savepoint is affine: it cannot be cloned.
 /// let mut draft = marrow_image::ImageDraft::new();
 /// let sp = draft.savepoint();
 /// let _copy = sp.clone();
 /// ```
 /// ```compile_fail,E0382
-/// // A consumed admitted savepoint cannot be re-presented. Admission takes the token by
-/// // value and the type is neither `Clone` nor `Copy`, so a second admission with the
-/// // same token does not reach a staleness check at all — it does not compile. That is
-/// // strictly stronger than refusing it at run time, and it is why no runtime test can
-/// // exercise "the reused admitted savepoint": the reuse is unrepresentable.
 /// let mut draft = marrow_image::ImageDraft::new();
 /// let sp = draft.savepoint();
 /// drop(draft.begin_transaction(sp));
 /// drop(draft.begin_transaction(sp));
 /// ```
 ///
-/// Savepoints and element references occupy separate domains, and the boundary is a
-/// type fact rather than a convention. A savepoint authorizes mutation over a whole
-/// draft for one epoch; it names no element and can neither mint nor validate one, so
-/// holding one grants none of the handle-provenance authority an element reference
-/// carries.
+/// Savepoints and element references occupy separate domains, and the boundary is a type
+/// fact. A savepoint authorizes mutation over a whole draft for one epoch and names no
+/// element; an element reference authenticates against the draft and plan identity it was
+/// minted under and carries no epoch. Neither can be spelled as the other.
 ///
 /// ```compile_fail,E0599
-/// // A savepoint cannot mint, carry, or validate an element reference. The method named
-/// // here is the transaction's real one, so the refusal is that a *savepoint* does not
-/// // have it — not that no type does. A spelling no type carries would fail to compile
-/// // for a reason that pins nothing about this boundary.
 /// let mut draft = marrow_image::ImageDraft::new();
 /// let sp = draft.savepoint();
 /// let handle: marrow_image::OccurrenceSiteHandle = unimplemented!();
 /// let _ = sp.request_site(&handle);
 /// ```
-///
-/// The separation runs both ways: an element reference authenticates against the draft
-/// and plan identity it was minted under, and carries no transaction epoch, so it can
-/// neither open a transaction nor validate one.
-///
 /// ```compile_fail,E0599
-/// // An element reference cannot open or validate a transaction epoch.
 /// let mut draft = marrow_image::ImageDraft::new();
 /// let element: marrow_image::PlannedSiteRef = unimplemented!();
 /// let _ = draft.begin_transaction(element.savepoint());
@@ -970,9 +886,8 @@ enum FillInverse {
 
 /// The pre-reserved inverse journal the armed guard holds from admission: the
 /// admission-time structural image and the one-time-fill inverses. Every element's
-/// storage is reserved in the preflight of the mutation
-/// that needs it, so the armed `Drop` inverse is a closed total operation —
-/// allocation-free, assertion-free, indexing-free, and non-panicking.
+/// storage is reserved in the preflight of the mutation that needs it, so the armed
+/// `Drop` inverse is allocation-free, assertion-free, indexing-free, and non-panicking.
 #[derive(Debug)]
 struct DraftJournal {
     at: DraftSnapshot,
@@ -981,17 +896,18 @@ struct DraftJournal {
 
 /// The sole cross-crate mutation surface over one [`ImageDraft`]: an armed guard
 /// admitted by [`ImageDraft::begin_transaction`] that mutates the borrowed draft
-/// immediately and in place — it never batches, defers, schedules, or reorders a
-/// call, which is what preserves mint-order-is-the-wire — while journaling the
-/// inverses an armed rollback needs. [`DraftTxn::commit`] disarms and retains every
-/// accepted observation; the armed `Drop` performs the total admitted inverse.
+/// immediately and in place — never batching, deferring, or reordering a call, which is
+/// what keeps mint order equal to wire order — while journaling the inverses an armed
+/// rollback needs. [`DraftTxn::commit`] disarms and retains every accepted observation;
+/// the armed `Drop` performs the total admitted inverse.
 ///
 /// Reads pass through [`std::ops::Deref`] to the draft's read surface; the guard
 /// exposes no `&mut ImageDraft`, so no mutation can bypass the journal.
 ///
+/// Only the unarmed draft can mint an admission token, so a mid-transaction savepoint
+/// whose meaning would depend on a later rollback cannot be spelled.
+///
 /// ```compile_fail,E0599
-/// // Only the unarmed draft can mint an admission token. A transaction cannot create a
-/// // mid-transaction savepoint whose meaning would depend on later rollback.
 /// let mut draft = marrow_image::ImageDraft::new();
 /// let savepoint = draft.savepoint();
 /// let mut txn = draft.begin_transaction(savepoint).unwrap();
@@ -1019,11 +935,8 @@ impl<'d> DraftTxn<'d> {
         self.armed = false;
     }
 
-    /// Run the total admitted inverse now.
-    ///
-    /// This is the explicit spelling of the ordinary-refusal path. Dropping the guard
-    /// restores exactly the same owners; a producer-owning aggregate then drops its
-    /// still-private payload with this armed guard on an unwind or early `?` return.
+    /// Run the total admitted inverse now. Dropping the guard restores exactly the same
+    /// owners; this is the explicit spelling of the same path.
     pub fn rollback(mut self) {
         self.rollback_armed();
         self.armed = false;
@@ -1083,10 +996,10 @@ impl<'d> DraftTxn<'d> {
         self.draft.add_collection_type(def)
     }
 
-    /// Fill a live record reservation from this draft, exactly once. The caller owns
-    /// that same-draft precondition: ordinal IDs carry no foreign/stale provenance.
-    /// The setter checks ordinal range and refuses a second fill. A fill of a
-    /// pre-transaction row journals its displaced definition first.
+    /// Fill a live record reservation from this draft, exactly once. The caller owns the
+    /// same-draft precondition: ordinal IDs carry no foreign/stale provenance. The setter
+    /// checks ordinal range and refuses a second fill; a fill of a pre-transaction row
+    /// journals its displaced definition first.
     pub fn set_record_fields(
         &mut self,
         ty: TypeId,
@@ -1221,20 +1134,16 @@ impl<'d> DraftTxn<'d> {
         self.draft.add_test_entry(name, func);
     }
 
-    /// Mint one scalar durable value shape into the draft's one arena — the typed
-    /// appender that replaces the deleted raw `&mut` arena escape.
+    /// Mint one scalar durable value shape into the draft's one arena.
     pub fn value_scalar(&mut self, scalar: Scalar) -> Result<ValueShapeNodeId, DraftStateError> {
         self.draft.value_shapes_mut().scalar(scalar)
     }
 
     /// Mint one dense composite durable value shape into the draft's one arena.
     ///
-    /// Checked at the surface: an arity past [`crate::bounds::MAX_STRUCT_LEAVES`] is the
-    /// typed carrier-domain refusal — a coherence/logical-domain decision, not a policy
-    /// kind. Leaf provenance is the arena's own decision, so a leaf minted by another
-    /// arena is its [`DraftStateError::ForeignDraft`] rather than a second copy of the
-    /// predicate here. Neither refusal mutates the arena, and the fence's whole-arena
-    /// walk keeps the same bounds as defense in depth.
+    /// An arity past [`crate::bounds::MAX_STRUCT_LEAVES`] is the carrier-domain refusal,
+    /// a logical-domain decision rather than a policy kind. Leaf provenance stays the
+    /// arena's own decision. Neither refusal mutates the arena.
     pub fn value_struct(
         &mut self,
         leaves: Vec<ValueShapeNodeId>,
@@ -1264,18 +1173,17 @@ impl<'d> DraftTxn<'d> {
         self.draft.value_shapes_mut().enum_shape(identity, members)
     }
 
-    /// The total admitted inverse, in reverse dependency order. Called only by the
-    /// armed `Drop`: allocation-free, assertion-free, indexing-free, `drain`-free,
-    /// and non-panicking on ordinary exit and during an existing unwind.
+    /// The total admitted inverse, in reverse dependency order: dependents before the
+    /// owner suffixes they reference, and prefix fills before the owners their
+    /// definitions reference. Called only by the armed `Drop`, so it is allocation-free,
+    /// assertion-free, indexing-free, and non-panicking during an existing unwind.
     fn rollback_armed(&mut self) {
         let at = &self.journal.at;
         let draft = &mut *self.draft;
-        // Dependent code is removed before the owner suffixes it references.
         draft.test_entries.truncate(at.test_entries);
         draft.exports.truncate(at.exports);
         draft.functions.truncate(at.functions);
         draft.function_payload_charge = at.function_payload_charge;
-        // Prefix fills revert before removing the owners their definitions reference.
         while let Some(fill) = self.journal.fills.pop() {
             match fill {
                 FillInverse::Function { row } => {
@@ -1305,8 +1213,7 @@ impl<'d> DraftTxn<'d> {
         draft.durable.rewind_total(&at.durable);
         draft.product_conflict = at.product_conflict;
         draft.application_conflict = at.application_conflict;
-        // Table suffixes, with each interned owner's index key removed while the
-        // popped row is still live.
+        // Each interned owner's index key is removed while the popped row is still live.
         draft.colls.truncate(at.colls);
         draft.enums.truncate(at.enums);
         draft.enums_fill.truncate(at.enums);
@@ -1324,8 +1231,8 @@ impl<'d> DraftTxn<'d> {
             }
             draft.strings.pop();
         }
-        // The consumed epoch is deliberately not restored: it is monotone
-        // authentication state outside the logical inverse.
+        // The consumed epoch is deliberately not restored: monotone authentication
+        // state outside the logical inverse.
     }
 }
 
@@ -1339,9 +1246,8 @@ impl Drop for DraftTxn<'_> {
 }
 
 impl Default for ImageDraft {
-    /// A fresh draft with a fresh identity. There is deliberately no derived `Default`:
-    /// every draft mints its own strong identity, and a derived one would hand every
-    /// default-constructed draft the same one.
+    /// A fresh draft with a fresh identity. Deliberately not derived: a derived `Default`
+    /// would hand every default-constructed draft the same identity.
     fn default() -> Self {
         Self::new()
     }
@@ -1377,22 +1283,19 @@ impl ImageDraft {
         self.durable.occurrence_graph()
     }
 
-    /// Intern a string, returning its logical id. Repeated interning of the same
-    /// text returns the same id — the duplicate hit mutates nothing, including at a
-    /// full table, so dedup runs before any policy observation. The mint is checked:
-    /// a table at the `u32` carrier boundary is the closed carrier-domain refusal
-    /// before any owner mutates.
+    /// Intern a string, returning its logical id. Repeated interning of the same text
+    /// returns the same id and mutates nothing, even at a full table, so dedup runs
+    /// before any policy observation.
     pub(crate) fn intern_string(&mut self, text: &str) -> Result<StrId, DraftStateError> {
         let prepared = self.prepare_string(text)?;
         Ok(self.commit_string(prepared))
     }
 
-    /// Derive what interning `text` would append — the row's id, the spelling to append if
-    /// it is new, and every policy kind the append would cross — without touching an owner.
+    /// Derive what interning `text` would append, without touching an owner.
     ///
-    /// This is the read-only half of a string mint, and it is what lets a *compound*
-    /// operation prepare both of its rows before either lands. Every way the mint can fail
-    /// lives here, so the matching commit cannot stop partway.
+    /// The read-only half of a string mint: every way the mint can fail lives here, so the
+    /// matching commit cannot stop partway and a compound operation can prepare both of
+    /// its rows before either lands.
     fn prepare_string(&self, text: &str) -> Result<PreparedString, DraftStateError> {
         if let Some(&id) = self.string_index.get(text) {
             return Ok(PreparedString { id, fresh: None });
@@ -1425,21 +1328,13 @@ impl ImageDraft {
         self.intern_const(ConstValue::Bool(value))
     }
 
-    /// Intern a text constant, interning its backing string as needed: the whole
-    /// compound — string row, constant row, both index entries, and every newly
-    /// crossed policy kind — lands as one unit, and the whole compound's coupled
-    /// preparation (both dedup lookups and both carrier domains) is read-only and
-    /// complete before the first insert, so a refusal can never leave half the
-    /// compound behind.
+    /// Intern a text constant, interning its backing string as needed. The string row,
+    /// the constant row, and both index entries land as one unit: a refusal can never
+    /// leave half the compound behind.
     pub(crate) fn intern_text(&mut self, text: &str) -> Result<ConstId, DraftStateError> {
-        // One read-only delta for the whole compound: the string row, the constant row,
-        // both index entries, and every policy kind either append crosses — all derived
-        // before a single owner is touched. Deriving and mutating one row and then the
-        // other would leave the string appended if the constant's own derivation refused.
-        //
-        // A fresh string implies a fresh `Text` constant: its `StrId` does not exist yet,
-        // so no constant can already hold it. The constant's ordinal does not depend on the
-        // string commit either, so both halves are derivable from the same preimage.
+        // Both halves derive from the same preimage, so both can be prepared before
+        // either lands: a fresh string implies a fresh `Text` constant (its `StrId` does
+        // not exist yet), and the constant's ordinal does not depend on the string commit.
         let string = self.prepare_string(text)?;
         let konst = self.prepare_const(ConstValue::Text(string.id))?;
         // Nothing above mutated an owner, and nothing below can fail.
@@ -1559,16 +1454,14 @@ impl ImageDraft {
         self.colls.len()
     }
 
-    /// Add a collection type (a concrete `List`/`Map` instantiation), returning its
-    /// index. Unlike records and enums a collection type has no forward-reference
-    /// need — its element/key/value types are already-resolved [`ImageType`]s — so
-    /// there is no two-pass reserve/fill; the caller interns the inner types first.
+    /// Add a collection type (a concrete `List`/`Map` instantiation), returning its index.
+    /// Its element/key/value types are already-resolved [`ImageType`]s, so there is no
+    /// two-pass reserve/fill: the caller interns the inner types first.
     ///
-    /// This appends unconditionally rather than deduplicating by image content: the
-    /// compiler's type registry is the single owner of collection instantiation
-    /// identity and dedups by the *source* element/key/value types (so `List[Age]`
-    /// and `List[int]` stay distinct even though a nominal element erases to the same
-    /// image `int`), minting one row here per distinct source instantiation.
+    /// This appends unconditionally rather than deduplicating by image content. The
+    /// compiler's type registry owns collection instantiation identity and dedups by the
+    /// *source* types, so `List[Age]` and `List[int]` stay distinct even though a nominal
+    /// element erases to the same image `int`.
     pub(crate) fn add_collection_type(
         &mut self,
         def: CollectionTypeDef,
@@ -1582,35 +1475,25 @@ impl ImageDraft {
     /// the entry record its roots read and write, returning the declaration's direct
     /// members exactly as [`Self::product_members`] publishes them.
     ///
-    /// This is the one construction path for the durable graph. It is **flat**: a
+    /// This is the one construction path for the durable graph, and it is **flat**: a
     /// Product's members arrive as a command vector whose rows name their parent by an
-    /// earlier command, so a caller cannot hand the draft a recursive tree, and every
-    /// command is validated against the canonical rules before any row is appended.
+    /// earlier command, so a caller cannot hand the draft a recursive tree.
     ///
     /// A Product is a declaration and a root is an occurrence of it, so the graph is held
     /// once however many roots project it. The first declaration of a Product identity
-    /// binds the row; a later one is a reference that must match it exactly.
+    /// binds the row; a later one is a reference that must match it exactly. A later one
+    /// claiming a different graph or entry record is recorded rather than refused here, so
+    /// [`Self::encode`] reports the failure once, in wire order.
     ///
-    /// Two declarations of one Product identity that claim different graphs or different
-    /// entry records are two declarations wearing one identity. That is recorded rather
-    /// than refused here — the later one still resolves to the bound row, and
-    /// [`Self::encode`] refuses the image — so the failure is reported once, in wire
-    /// order, by the owner that refuses artifacts.
+    /// A command vector that is not a well-formed flat declaration is refused as one
+    /// opaque [`SitePlanStateError`] with no row appended. The cause is not projected: it
+    /// is a producer-side fault about a vector the caller built.
     ///
-    /// Refused — as one opaque [`SitePlanStateError`], the single refusal type the durable
-    /// construction entry points carry — when the command vector is not a well-formed flat
-    /// declaration: a member naming a parent that is not an earlier command, a member
-    /// count over the declaration bound, or any other canonical-rule violation. No row is
-    /// appended in that case. The cause is not projected: it is a producer-side fault
-    /// about a vector the caller built, and no caller branches on which rule it broke.
-    ///
-    /// Entering construction requires `plan`, and the command vector is admitted under it:
-    /// a vector wider than the plan's admitted command count, or a declaration past the
-    /// plan's admitted Product count, is refused before any row is appended. The plan
-    /// bounds the intake; the declaration graph's own command validation remains the one
-    /// validator of the vector's structure, and the encoder remains the one owner of the
-    /// member bound — a vector the plan admits one command past that bound still reaches
-    /// [`ImageBuildError::TooManyDurableMembers`] rather than being masked here.
+    /// `plan` bounds the intake — a vector wider than its admitted command count, or a
+    /// declaration past its admitted Product count, is refused before any row is appended
+    /// — while the encoder remains the one owner of the member bound, so a vector the plan
+    /// admits one command past that bound still reaches
+    /// [`ImageBuildError::TooManyDurableMembers`].
     pub(crate) fn declare_product(
         &mut self,
         plan: &AdmittedGraphInputPlan,
@@ -1632,27 +1515,24 @@ impl ImageDraft {
     /// what the completed row publishes.
     ///
     /// The occurrence row retains only the root's own placement, spelling, key tuple, and
-    /// managed indexes and a reference to the one declaration, so nothing is retained per
+    /// managed indexes plus a reference to the one declaration, so nothing is retained per
     /// (root x member). A root over a Product this draft does not hold is refused: an
     /// occurrence with no declaration is not a root.
     ///
-    /// The one opaque [`SitePlanStateError`] the construction entry points carry covers
-    /// the coherence causes here, none of them projected: the named Product is not
-    /// declared here, the completed row's published selectors exceed what a canonical
-    /// path can address, or the occurrence is past the plan's admitted root count —
-    /// each refused before the row is pushed. Crossing the public Roots policy is not
-    /// refused anywhere on this surface: the N+1 occurrence commits with its ledger
-    /// observation and the fence reports [`ImageBuildError::TooManyRoots`].
+    /// The coherence causes — undeclared Product, published selectors past what a
+    /// canonical path can address, or an occurrence past the plan's admitted root count —
+    /// are one opaque [`SitePlanStateError`], each refused before the row is pushed.
+    /// Crossing the public Roots policy is not refused here: the N+1 occurrence commits
+    /// and the fence reports [`ImageBuildError::TooManyRoots`].
     pub(crate) fn add_root_occurrence(
         &mut self,
         plan: &AdmittedGraphInputPlan,
         product: LedgerIdBytes,
         def: RootOccurrenceDef,
     ) -> Result<AdmittedRoot, SitePlanStateError> {
-        // Publication preflight: an occurrence whose managed-index ordinals cannot
-        // all be spelled in the canonical addressable path domain is refused as one
-        // typed error before any row is pushed and before any budget is spent —
-        // admission is failure-atomic, and no refusal path leaves a live row.
+        // An occurrence whose managed-index ordinals cannot all be spelled in the
+        // canonical addressable path domain is refused before any row is pushed and any
+        // budget is spent: no refusal path leaves a live row.
         if def.indexes.len() > usize::from(u16::MAX) + 1 {
             return Err(SitePlanStateError::new(SitePlanState::InvalidDemand));
         }
@@ -1661,8 +1541,8 @@ impl ImageDraft {
             .admit_root_occurrence(plan, product, def)
             .map_err(|_| SitePlanStateError::new(SitePlanState::InvalidDemand))?;
         let root_id = occurrence.wire_root_id();
-        // Preflighted above, so the just-pushed row always publishes; the refusal arm
-        // stays as typed defense in depth, never a panic and never an orphan row.
+        // Preflighted above, so the just-pushed row always publishes; the refusal arm is
+        // defense in depth, never a panic and never an orphan row.
         let (placement, indexes) = self
             .graph()
             .publish(&occurrence)
@@ -1680,14 +1560,11 @@ impl ImageDraft {
     /// if this draft holds no such declaration.
     ///
     /// A member's own members are read the same way, through [`Self::members_of`], so a
-    /// walk of a declaration is navigational and materializes one level at a time. This
-    /// is how a producer obtains a member's canonical path: it is published by the one
-    /// owner of the declaration rows, never recomputed by comparing paths. It is also how
-    /// a second root over one Product reads the declaration the draft already holds
-    /// instead of resolving that resource's anchors again.
+    /// walk of a declaration materializes one level at a time. A member's canonical path
+    /// is published by the one owner of the declaration rows, never recomputed by
+    /// comparing paths.
     ///
-    /// Reading takes no construction budget: it appends nothing, and a draft that was never
-    /// admitted any construction holds no declaration to read.
+    /// Reading takes no construction budget: it appends nothing.
     pub fn product_members(&self, product: LedgerIdBytes) -> Option<Vec<DeclarationMember>> {
         self.graph()
             .product_members(DurableProductIdentity::minted(product))
@@ -1714,13 +1591,10 @@ impl ImageDraft {
     ///
     /// This is the sole binder. It proves that both selectors were published by this
     /// draft and still name live rows, that the path is a canonical path of exactly this
-    /// occurrence's Product or exactly this occurrence's own root-scoped case, and that
-    /// the one supplied target is the target that node admits. No later call accepts a
-    /// second target, and the returned handle borrows nothing: the immutable borrow ends
-    /// here, before [`Self::request_site`] takes the draft mutably.
-    ///
-    /// Binding takes no construction budget: it appends nothing, and the two selectors it
-    /// proves live could only have been published by a construction that was admitted one.
+    /// occurrence's Product or its own root-scoped case, and that the supplied target is
+    /// the one that node admits. No later call accepts a second target, and the returned
+    /// handle borrows nothing: the immutable borrow ends here, before
+    /// [`Self::request_site`] takes the draft mutably.
     pub fn bind_occurrence_site(
         &self,
         root: &RootOccurrenceSelector,
@@ -1731,11 +1605,10 @@ impl ImageDraft {
         Ok(OccurrenceSiteHandle::new(self.durable.identity(), demand))
     }
 
-    /// Record the application's ledger id, set-once-or-same: the first set stores it,
-    /// an equal reset is an idempotent no-op, and a divergent replacement latches the
-    /// sticky [`ApplicationIdentityConflict`] the fence reports — the first identity
-    /// is retained and never silently overwritten. Required exactly when the draft
-    /// has a durable root; a storeless image carries none.
+    /// Record the application's ledger id, set-once-or-same: the first set stores it, an
+    /// equal reset is a no-op, and a divergent replacement latches the sticky
+    /// [`ApplicationIdentityConflict`] the fence reports, retaining the first identity.
+    /// Required exactly when the draft has a durable root.
     pub(crate) fn set_application_identity(&mut self, id: LedgerIdBytes) {
         match self.durable.application() {
             None => self.durable.set_application_identity(id),
@@ -1755,26 +1628,22 @@ impl ImageDraft {
     ///
     /// The first request for a demand appends a row; a later request for the same one
     /// returns the id already minted, so the site table carries a site per *demanded*
-    /// place rather than one per declared graph node. Eagerly preseeded bounded sites
-    /// (whole-payload, group-entry, index) and lazily demanded field leaves share this
-    /// one mint path: they are disjoint by construction — a preseeded demand's path names
-    /// a placement, group, or index node and its target is never `FieldLeaf` — so
-    /// unifying them mints no different row for any production graph, while leaving no
-    /// second path that can append a row the demand map cannot see.
+    /// place rather than one per declared graph node. Preseeded bounded sites
+    /// (whole-payload, group-entry, index) and lazily demanded field leaves share this one
+    /// mint path and are disjoint by construction — a preseeded demand's target is never
+    /// `FieldLeaf` — so there is no second path that can append a row the demand map
+    /// cannot see.
     ///
     /// The plan retains **only** the demand key: three owned typed ordinals. The path the
     /// site encodes to is projected from that key at encode.
     ///
-    /// The returned [`PlannedSiteRef`] is the only way an instruction can name a
-    /// site: it is opaque, has no constructor of its own, and carries either the id the
-    /// plan minted or the plan's refusal. A refusal is not a failure — the crossing is
-    /// nonblocking, and the encoder refuses the image through the Sites bound — but there
-    /// is no id that would not alias a fitting site, so none is carried.
+    /// The returned [`PlannedSiteRef`] is the only way an instruction can name a site: it
+    /// is opaque, has no constructor of its own, and carries either the id the plan minted
+    /// or the plan's refusal. A refusal carries no id, because none would fail to alias a
+    /// fitting site; the crossing is nonblocking and the encoder refuses the image through
+    /// the Sites bound.
     ///
-    /// A request takes no construction budget: the site table is its own bounded owner —
-    /// a construction plan admits graph input, not site capacity — and the handle a
-    /// request spends could only have been bound against rows an admitted construction
-    /// published.
+    /// A request takes no construction budget: the site table is its own bounded owner.
     pub(crate) fn request_site(
         &mut self,
         handle: &OccurrenceSiteHandle,
@@ -1788,7 +1657,7 @@ impl ImageDraft {
         let stamp = self.durable.next_stamp();
         let live = self.graph().revalidate(&demand)?;
         let site = self.sites.request(self.durable.identity(), live, stamp);
-        // The one mint path is the one Sites observation point: a crossing is present
+        // This one mint path is the one Sites observation point: a crossing is present
         // exactly when the plan holds its earliest receipt, recorded at the virtual
         // zero-based N+1 ordinal `MAX_SITES` — never a physical row index or wire id.
         Ok(site)
@@ -1796,12 +1665,10 @@ impl ImageDraft {
 
     /// Append a function body, validating every operation site its code names first.
     ///
-    /// A site operand is evidence that *this* draft answered for a place. Appending code
-    /// is where that evidence is spent, so it is checked here rather than trusted: an
-    /// operand minted by another draft, or one whose site row or policy receipt was
-    /// discarded, is refused and **no** row is appended. The success carrier is unchanged
-    /// — a function is still named by its [`FuncId`] — so the check widens neither
-    /// function identity nor the site-binding state error's authority.
+    /// A site operand is evidence that *this* draft answered for a place, and appending
+    /// code is where that evidence is spent: an operand minted by another draft, or one
+    /// whose site row or policy receipt was discarded, is refused and **no** row is
+    /// appended.
     pub(crate) fn add_function(&mut self, def: FunctionDef) -> Result<FuncId, DraftStateError> {
         self.validate_function(&def)?;
         self.allocate_function(Some(def))
@@ -1817,7 +1684,7 @@ impl ImageDraft {
     }
 
     /// The sole function ordinal mint. A defined row has already passed operand
-    /// validation, so a failed convenience append leaves no reservation behind.
+    /// validation, so a failed append leaves no reservation behind.
     fn allocate_function(&mut self, def: Option<FunctionDef>) -> Result<FuncId, DraftStateError> {
         let id = FuncId(function_ordinal(self.functions.len())?);
         if let Some(def) = &def {
@@ -1835,10 +1702,9 @@ impl ImageDraft {
     }
 
     /// Whether the retained function bodies alone already exceed
-    /// [`bounds::MAX_IMAGE_BYTES`], so no completion of this draft can encode. A
-    /// producer polls this after each settled body to stop retaining work the image
-    /// cannot carry; the encoder's measurement remains the verdict on a draft that
-    /// passes it.
+    /// [`bounds::MAX_IMAGE_BYTES`], so no completion of this draft can encode. A producer
+    /// polls this after each settled body to stop retaining work the image cannot carry;
+    /// the encoder's measurement remains the verdict on a draft that passes it.
     pub fn function_payload_exceeds_image_limit(&self) -> bool {
         self.function_payload_charge > bounds::MAX_IMAGE_BYTES
     }
@@ -1883,11 +1749,9 @@ impl ImageDraft {
     /// This draft's durable contract graph, borrowed in place.
     ///
     /// The graph is not a fifth owner: it is the view spine over the four this draft
-    /// already holds — the application identity, the canonical Product declaration
-    /// table, the flat root-occurrence table, and the one value-shape DAG. Nothing is
-    /// copied and nothing is allocated, so a Product's member graph is stored once
-    /// however many roots occur over it and the contract identity is computed over
-    /// exactly the rows the DURABLE section is written from.
+    /// already holds — the application identity, the Product declaration table, the flat
+    /// root-occurrence table, and the value-shape DAG. Nothing is copied, so the contract
+    /// identity is computed over exactly the rows the DURABLE section is written from.
     pub fn contract_view(&self) -> DurableContractView<'_> {
         self.durable.contract_view()
     }
@@ -1903,14 +1767,12 @@ impl ImageDraft {
         }
     }
 
-    /// Consume and validate `savepoint`, rotate the one-shot epoch, and return the
-    /// armed [`DraftTxn`] — the sole cross-crate mutation surface.
+    /// Consume and validate `savepoint`, rotate the one-shot epoch, and return the armed
+    /// [`DraftTxn`] — the sole cross-crate mutation surface.
     ///
-    /// A foreign, stale, or internally incoherent token is the closed
-    /// [`DraftStateError`] before any mutation, without rotating the epoch or
-    /// changing any owner. On success the fresh epoch is installed before any table
-    /// mutation, staling every sibling savepoint of the consumed epoch; the
-    /// pre-reserved inverse journal arms the guard.
+    /// A foreign, stale, or incoherent token refuses before any mutation, without rotating
+    /// the epoch. On success the fresh epoch is installed before any table mutation,
+    /// staling every sibling savepoint of the consumed epoch.
     #[doc(hidden)]
     pub fn begin_transaction(
         &mut self,
@@ -1938,10 +1800,9 @@ impl ImageDraft {
         })
     }
 
-    /// The private structural image the savepoint carries and the journal restores
-    /// to. The draft is destructured exhaustively, so a new owner stops this
-    /// compiling until it is recorded here or deliberately excluded beside the
-    /// owners whose exclusion [`DraftSnapshot`] states.
+    /// The private structural image the savepoint carries and the journal restores to.
+    /// The draft is destructured exhaustively, so a new owner stops this compiling until
+    /// it is recorded here or deliberately excluded.
     fn snapshot(&self) -> DraftSnapshot {
         let Self {
             durable,
@@ -1986,7 +1847,6 @@ impl ImageDraft {
         self.application_conflict
     }
 
-    // --- accessors used by the encoder ---
     pub(crate) fn strings(&self) -> &[String] {
         &self.strings
     }
@@ -2035,24 +1895,22 @@ impl ImageDraft {
     pub(crate) fn application_identity(&self) -> Option<LedgerIdBytes> {
         self.durable.application()
     }
-    /// Write the site-table rows into `sink`: per retained row, the semantic path of
-    /// the node the demand addresses — `u8(step_count) ‖ [u8(ledger_kind) ‖ 16 id
-    /// bytes]*`, the same frozen ledger `IDREF` kinds a durable node's identity uses —
-    /// then the one-byte operation target. The one site-row codec, driven by the
-    /// measure core's counting run and by emission alike.
+    /// Write the site-table rows into `sink`: per retained row, the semantic path of the
+    /// node the demand addresses — `u8(step_count) ‖ [u8(ledger_kind) ‖ 16 id bytes]*`,
+    /// the same frozen ledger `IDREF` kinds a durable node's identity uses — then the
+    /// one-byte operation target. The one site-row codec, driven by the measure core's
+    /// counting run and by emission alike.
     ///
-    /// Each row's steps are streamed twice through the one projection grammar
-    /// ([`crate::product::OccurrenceGraph::project_steps`]): once to spell the
-    /// count-first prefix, once to spell the steps — so no path is materialized and
-    /// no row retains anything. The projection is the site table's only path source:
-    /// a row retains ordinals into the occurrence and declaration tables, so the path
-    /// a site encodes to is derived from the same rows the DURABLE member graph is
-    /// written from and cannot disagree with them.
+    /// Each row's steps are streamed twice through
+    /// [`crate::product::OccurrenceGraph::project_steps`], once for the count-first prefix
+    /// and once for the steps, so no path is materialized and no row retains anything.
+    /// That projection is the site table's only path source, so a site's path is derived
+    /// from the same rows the DURABLE member graph is written from and cannot disagree
+    /// with them.
     ///
-    /// The step count fits one byte off the bound the projection itself carries: a
-    /// chain is at most `2 + MAX_DURABLE_DEPTH = MAX_SITE_PATH_STEPS` steps, which
-    /// `bounds` const-asserts against one byte; the checked conversion keeps the
-    /// totality tied to that bound rather than to a silent cast.
+    /// A chain is at most `2 + MAX_DURABLE_DEPTH = MAX_SITE_PATH_STEPS` steps, which
+    /// `bounds` const-asserts against one byte; the checked conversion keeps totality tied
+    /// to that bound rather than to a silent cast.
     pub(crate) fn write_site_rows(
         &self,
         sink: &mut impl ImageByteSink,
@@ -2099,9 +1957,8 @@ impl ImageDraft {
         Ok(())
     }
 
-    /// Prove that every retained site row still projects, streaming each row's steps
-    /// through the one projection grammar and retaining nothing — the coherence
-    /// walk's validation-only twin of [`Self::write_site_rows`].
+    /// Prove that every retained site row still projects: the coherence walk's
+    /// validation-only twin of [`Self::write_site_rows`], retaining nothing.
     pub(crate) fn validate_site_projection(&self) -> Result<(), ImageBuildError> {
         if self.sites.rows().is_empty() {
             return Ok(());
@@ -2140,8 +1997,8 @@ impl ImageDraft {
     /// graph's recheck of the occurrence and path row identities inside the ref's bound
     /// demand. The graph half is what makes a rolled-back ref detectable when its rows
     /// re-mint at the same ordinals with fresh stamps while a preexisting receipt stays
-    /// live. An over-policy ref with intact provenance is valid here: it is live
-    /// provenance the Sites policy candidate reports, never a coherence fault.
+    /// live. An over-policy ref with intact provenance is valid here: that crossing is
+    /// the Sites policy candidate's to report, never a coherence fault.
     fn validate_site_ref(&self, site: &PlannedSiteRef) -> Result<(), SitePlanStateError> {
         self.sites
             .validate(self.durable.identity(), site)
@@ -2156,9 +2013,9 @@ impl ImageDraft {
         self.validate_site_ref(site).is_ok()
     }
 
-    /// The exact wire ordinal of one validated fitting site ref — the policy-clean final
-    /// projection. Reached only through the measured wire plan's site projection, so no
-    /// numeric site id exists before fitting policy-clean capped measurement.
+    /// The exact wire ordinal of one validated fitting site ref. Reached only through the
+    /// measured wire plan's site projection, so no numeric site id exists before capped
+    /// measurement finds the draft policy-clean.
     pub(crate) fn site_wire_ordinal(&self, site: &PlannedSiteRef) -> Result<u16, ImageBuildError> {
         if self.graph().revalidate(&site.demand()).is_err() {
             return Err(ImageBuildError::InvalidReference(
@@ -2209,13 +2066,12 @@ impl ImageDraft {
         self.test_entries.len()
     }
 
-    /// The canonical test-entry permutation (row law): the base-row indices ascending
-    /// by remapped name index, computed by the table's one comparator.
+    /// The canonical test-entry permutation: base-row indices ascending by remapped name
+    /// index, computed by the table's one comparator.
     ///
-    /// The raw map reads are owner-safe and deliberately outside the token seal: they
-    /// are the comparator's keys, resolved once per base row in row order — so a name
-    /// reference outside the pool reports exactly where the old sorted copy reported
-    /// it — never a section writer resolving a reference it could branch on.
+    /// The raw map reads are deliberately outside the token seal: they are the
+    /// comparator's keys, resolved once per base row in row order, never a section writer
+    /// resolving a reference it could branch on.
     pub(crate) fn test_entry_permutation(&self, str_map: &[u16]) -> Vec<usize> {
         let keys: Vec<u16> = self
             .test_entries
@@ -2232,14 +2088,13 @@ impl StrId {
     /// The string-pool id at `index`.
     ///
     /// A logical string id is a pool position, not a capability: the independent verifier
-    /// reads one from received bytes and must be able to state it, and every owner that
-    /// resolves one checks it against the pool it indexes.
+    /// reads one from received bytes, and every owner that resolves one checks it against
+    /// the pool it indexes.
     pub const fn from_index(index: u16) -> Self {
         Self(index as u32)
     }
 
-    /// The wide logical ordinal. A logical ordinal, never a wire value: emission
-    /// narrows only through the measure core's policy-clean path.
+    /// The wide logical ordinal. Never a wire value.
     pub const fn index(self) -> u32 {
         self.0
     }
@@ -2250,12 +2105,12 @@ impl StrId {
 }
 
 impl ConstValue {
-    /// A sort key `(tag, payload-bytes)` where the Text payload is the *final*
-    /// string index resolved through `str_map`.
+    /// A sort key `(tag, payload-bytes)` where the Text payload is the *final* string
+    /// index resolved through `str_map`.
     ///
-    /// This raw map read is owner-safe and deliberately outside the token seal: it is
-    /// the canonical-order *comparator* itself, fed by the checked base rows, not a
-    /// section writer resolving a reference it could branch on.
+    /// This raw map read is deliberately outside the token seal: it is the canonical-order
+    /// *comparator* itself, fed by the checked base rows, not a section writer resolving a
+    /// reference it could branch on.
     pub(crate) fn sort_key(self, str_map: &[u16]) -> (u8, Vec<u8>) {
         match self {
             ConstValue::Int(v) => (0x01, v.to_be_bytes().to_vec()),
@@ -2306,9 +2161,8 @@ mod site_binding_tests {
     use crate::site_plan::{SitePlanState, SitePlanStateError};
     use crate::ty::Scalar;
 
-    /// The construction budget these fixtures are admitted under: one Product, two root
-    /// occurrences (the two-draft cases build one each), and the image's own command
-    /// ceiling.
+    /// One Product, two root occurrences (the two-draft cases build one each), and the
+    /// image's own command ceiling.
     fn plan() -> AdmittedGraphInputPlan {
         AdmittedGraphInputPlan::admit(1, 2, crate::bounds::MAX_ADMITTED_DECLARATION_COMMANDS)
     }
@@ -2364,11 +2218,8 @@ mod site_binding_tests {
         (draft, admitted)
     }
 
-    /// The three private refusal cases, each reached through the public binder.
-    ///
-    /// The public type is one opaque invariant, so the discriminant is only ever observed
-    /// here: it is what makes "wrong draft", "the row is gone", and "that is not a place"
-    /// distinguishable to the owner without publishing three of them to every consumer.
+    /// The three private refusal cases, each reached through the public binder. The public
+    /// type is one opaque invariant, so the discriminant is only ever observed here.
     #[test]
     fn the_binder_distinguishes_its_three_refusals() {
         let (first, first_root) = one_root();

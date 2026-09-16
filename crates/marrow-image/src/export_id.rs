@@ -1,19 +1,14 @@
-//! The `ExportId` durable export identity (kernel identity rule).
+//! The `ExportId` durable export identity.
 //!
-//! An [`ExportId`] is the stable 32-byte identity of one public (`pub fn`) export.
-//! It crosses the compiler → image → verifier → VM boundary, so it is a distinct
-//! typed 32-byte domain-separated SHA-256 over a length-delimited canonical payload,
-//! exactly as the kernel identity rule requires: one owning phase (C00), one frozen
-//! `kind`, one canonical payload, one known-answer test, and one independent-decoder
-//! reconstruction test.
+//! An [`ExportId`] is the stable 32-byte identity of one public (`pub fn`) export. It
+//! crosses the compiler → image → verifier → VM boundary, so it is a distinct typed
+//! 32-byte domain-separated SHA-256 over a length-delimited canonical payload.
 //!
 //! The payload is the export's *declaration path* and nothing else — not its body,
-//! parameters, or return type. Editing a body or changing a signature therefore
-//! leaves the id unchanged (the id is *material-stable*), while renaming the
-//! function or moving it to another module changes it (a different declaration
-//! path). Downstream trust comes from verification: anyone can mint a valid id, so
-//! the VM accepts an id only from a verified image, and never dispatches on a
-//! source name.
+//! parameters, or return type. Editing a body or changing a signature therefore leaves the
+//! id unchanged, while renaming the function or moving it to another module changes it.
+//! Anyone can mint a valid id, so the VM accepts one only from a verified image and never
+//! dispatches on a source name.
 //!
 //! ```text
 //! ExportId = SHA-256( KIND ‖ u64_be(len(payload)) ‖ payload )
@@ -29,21 +24,17 @@
 //!   item    = the export's function name, e.g. "add"
 //! ```
 //!
-//! The construction mirrors the image digest ([`crate::digest`]): `KIND`, then the
-//! big-endian length of the whole payload, then the payload. Every module segment
-//! and the item are ASCII identifiers (non-empty, no `.`), so the dotted `module`
-//! join is injective over segments and the id is collision-free across declaration
-//! paths. Three defenses keep that true: the compiler validates every module
-//! segment and the item against the identifier domain immediately before minting
-//! an id (its `valid_export_path` guard); project capture derives each module
-//! name from a unique canonical source path, so no two declarations share a
-//! payload; and the verifier rejects an EXPORTS table whose ids are not strictly
-//! ascending and unique.
+//! Every module segment and the item are ASCII identifiers (non-empty, no `.`), so the
+//! dotted `module` join is injective over segments and the id is collision-free across
+//! declaration paths. Three defenses keep that true: the compiler validates every segment
+//! and the item against the identifier domain immediately before minting (its
+//! `valid_export_path` guard); project capture derives each module name from a unique
+//! canonical source path; and the verifier rejects an EXPORTS table whose ids are not
+//! strictly ascending and unique.
 //!
-//! Identity is not compatibility. Because signatures are excluded, a later
-//! cross-boundary *binding* that stores an `ExportId` must pair it with a separate
-//! typed signature fingerprint (its own identity when built) checked at bind time;
-//! `ExportId` itself is never widened to carry the signature.
+//! Identity is not compatibility: signatures are excluded, so a later cross-boundary
+//! binding that stores an `ExportId` must pair it with a separate typed signature
+//! fingerprint checked at bind time rather than widening `ExportId`.
 
 use sha2::{Digest, Sha256};
 

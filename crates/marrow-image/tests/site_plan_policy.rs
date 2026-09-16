@@ -10,13 +10,11 @@
 //! past `u16::MAX` would hand back a wrapped id and embed it in emitted instruction
 //! operands, leaving two distinct durable nodes sharing one site operand.
 //!
-//! Every demand here is built through the checked construction seam: a Product is
-//! declared once, root occurrences are appended over it, and a site is named by binding
-//! one occurrence, one canonical declaration path published by the draft, and the one
-//! operation target that node admits. The demand key is `(occurrence, path, target)`, so
-//! a distinct occurrence over one declaration path is a distinct demand. That
-//! bind-then-request protocol has exactly one owner in the workspace and is included here
-//! rather than copied.
+//! Every demand here is built through the checked construction seam: a Product is declared
+//! once, root occurrences are appended over it, and a site is named by binding one
+//! occurrence, one canonical declaration path published by the draft, and the one
+//! operation target that node admits. The demand key is `(occurrence, path, target)`, so a
+//! distinct occurrence over one declaration path is a distinct demand.
 
 use std::collections::BTreeSet;
 
@@ -859,10 +857,10 @@ fn a_sites_crossing_beside_a_consts_crossing_yields_the_canonical_minimum() {
 /// logical site demands over an identity census of only 2,114 ledger rows.
 ///
 /// The demand set is eight times the site table's capacity while the *declaration* it
-/// addresses is tiny, which is the shape that made the old length-narrowing mint dangerous:
-/// the demand count, not the declared graph, is what crosses. The plan retains exactly
-/// `MAX_SITES` rows with ids exactly `0..MAX_SITES`, records exactly one receipt at the
-/// earliest crossing, and still answers a demand it already retains with the id it gave.
+/// addresses is tiny: the demand count, not the declared graph, is what crosses. The plan
+/// retains exactly `MAX_SITES` rows with ids exactly `0..MAX_SITES`, records exactly one
+/// receipt at the earliest crossing, and still answers a demand it already retains with
+/// the id it gave.
 #[test]
 fn one_thousand_roots_touching_sixty_four_fields_saturate_exactly_once() {
     const ROOTS: usize = 1_024;
@@ -1068,13 +1066,11 @@ fn four_thousand_roots_over_a_hundred_unoperated_groups_cost_one_site_each() {
 /// retains the same demands. The demand key is `(occurrence, path, target)`, so a
 /// reversed sweep proves the *set* — not the sequence — decides what the draft holds.
 ///
-/// It does not decide the byte order: rows are emitted in request order, so the two
-/// sweeps encode to different bytes of the same length. Stating that plainly is part of
-/// the law — "the same artifact" would be false.
+/// It does not decide the byte order: rows are emitted in request order, so the two sweeps
+/// encode to different bytes of the same length.
 ///
-/// Order independence is what lets a lowering pass visit a declaration's leaves in
-/// whatever order its own traversal produces without changing which program the image
-/// describes.
+/// Order independence is what lets a lowering pass visit a declaration's leaves in whatever
+/// order its own traversal produces without changing which program the image describes.
 ///
 /// What is compared is deliberately not a count, and not a set of ordinals either. Two
 /// sweeps over one `members` vector mint the same number of refs by construction, and —
@@ -1150,12 +1146,10 @@ fn a_reversed_demand_sweep_yields_the_same_artifact() {
 
     /// The bytes a fresh draft encodes to after one sweep in the given order.
     ///
-    /// The width is inside the whole-image byte ceiling on purpose: the point of this arm
-    /// is to compare a real encoded artifact, and a draft that cannot encode has none to
-    /// compare. (A sweep at the full site cap refuses with `ImageTooLarge` long before the
-    /// site cap is the binding constraint — which is precisely why the previous fence,
-    /// spelled as "not `TooManySites`", passed while the sweep produced no image at all.)
-    /// The crossing arm below drives the site cap itself, where a refusal is the artifact.
+    /// The width is inside the whole-image byte ceiling on purpose: this arm compares a
+    /// real encoded artifact, and a sweep at the full site cap refuses with
+    /// `ImageTooLarge` long before the site cap is the binding constraint. The crossing arm
+    /// below drives the site cap itself, where the refusal is the artifact.
     fn swept_bytes(reverse: bool) -> Vec<u8> {
         let (mut owner, root, members) = wide_draft(ORDER_INDEPENDENCE_FIELDS);
         let mut draft = admitted(&mut owner);
@@ -1183,10 +1177,8 @@ fn a_reversed_demand_sweep_yields_the_same_artifact() {
     let forward_bytes = swept_bytes(false);
     let reversed_bytes = swept_bytes(true);
     // The length fence below is only worth stating if the bytes carry the site rows at
-    // all. Two controls establish that they do: an identical sweep reproduces the image
-    // exactly, and the reversed sweep does not — so request order is genuinely visible in
-    // these bytes, and an equal length is a fact about the material rather than about a
-    // constant-width image the sweep never touched.
+    // all: an identical sweep reproduces the image exactly and the reversed sweep does
+    // not, so request order is genuinely visible in these bytes.
     assert!(!forward_bytes.is_empty(), "the sweep encodes an image");
     assert_eq!(
         forward_bytes,

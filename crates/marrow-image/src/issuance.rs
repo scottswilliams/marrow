@@ -5,17 +5,14 @@
 //! supported targets, the losslessness of the widening every owned identity performs, and
 //! the implication that a policy-clean draft can always narrow to its `u16` wire spelling.
 //!
-//! It deliberately does **not** state the population bound. How many rows an owned table
+//! It deliberately does **not** state the population bound: how many rows an owned table
 //! can hold under the admitted `ProjectInput` envelope depends on the source-capture
-//! ceiling and on the compiler's generic-instantiation bound, and `marrow-image` knows
-//! neither — it never imports the compiler, and it does not depend on the capture owner.
-//! That half of the issuance derivation lives with those owners, in
-//! `marrow-compile`'s `issuance` module, and the cross-crate parity test there is what
-//! keeps the two halves describing one proof.
+//! ceiling and the compiler's generic-instantiation bound, which this crate knows nothing
+//! about. That half lives in `marrow-compile`'s `issuance` module, with a cross-crate
+//! parity test keeping the two halves describing one proof.
 //!
-//! The width proof is not a memory-feasibility proof. The hostile
-//! maximum-amplification RSS gate is a separate obligation with its own corpus and
-//! target-authority ceiling.
+//! The width proof is not a memory-feasibility proof: the hostile maximum-amplification
+//! RSS gate is a separate obligation.
 
 /// The widening every owned identity performs is lossless on both supported targets: an
 /// ordinal is held as `u32` and indexed as `usize`, and `usize` is at least as wide as

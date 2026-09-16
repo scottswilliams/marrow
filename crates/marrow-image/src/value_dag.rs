@@ -1,60 +1,46 @@
 //! The canonical durable value-shape DAG: the sole representation of a durable
 //! field's stored value shape.
 //!
-//! A durable field's value is drawn from the closed acyclic durable value set — a
-//! scalar (a nominal erases to its base scalar), a dense `struct` of positional
-//! leaves, or a closed `enum` carrying a sum identity and one member identity per
-//! variant. Those shapes *nest*, and nesting is shared: one struct type reached from
-//! four fields of four enclosing levels is one declaration, not 256 occurrences.
+//! A durable field's value is drawn from the closed acyclic durable value set — a scalar
+//! (a nominal erases to its base scalar), a dense `struct` of positional leaves, or a
+//! closed `enum` carrying a sum identity and one member identity per variant. Those shapes
+//! nest, and nesting is shared: one struct type reached from four fields of four enclosing
+//! levels is one declaration, not 256 occurrences.
 //!
-//! This module is the one place that fact is represented. A [`CanonicalValueShapeDag`]
-//! holds each distinct shape once as a node, and every nested position holds a
-//! [`ValueShapeNodeId`] reference. Two properties follow structurally:
-//!
-//! - **It cannot state a cycle.** A node is minted only from ids that already exist,
-//!   so every reference points strictly backwards in the arena. Acyclicity is not a
-//!   checked property of a submitted graph; it is a property of the only way to build
-//!   one.
-//! - **It cannot state an occurrence tree.** No node owns a nested node. A caller
-//!   holding a `ValueShapeNodeId` has a reference into one arena, and the arena's size
-//!   is the number of distinct shapes the program declares.
-//!
-//! Nodes are interned, so structurally identical shapes share one id. The id carries the
-//! node's arena-local ordinal plus an exact-node stamp, and the arena is the canonical
-//! form.
+//! A [`CanonicalValueShapeDag`] holds each distinct shape once as an interned node, and
+//! every nested position holds a [`ValueShapeNodeId`] carrying the node's arena-local
+//! ordinal plus an exact-node stamp. Two properties follow structurally: a node is minted
+//! only from ids that already exist, so every reference points strictly backwards and the
+//! arena **cannot state a cycle**; and no node owns a nested node, so it **cannot state an
+//! occurrence tree** and the arena's size is the number of distinct shapes declared.
 //!
 //! # Depth
 //!
-//! `MAX_DURABLE_VALUE_DEPTH` bounds how deeply a durable field's value nests. Depth is
-//! a property of a *path*, not of a type: a struct used both as a top-level field
-//! value and nested twenty levels down is one node at two depths. Deciding the bound
-//! from whichever depth a walk happens to see first is wrong in one of two directions —
-//! it either refuses a shallow occurrence that fits or admits a deep one the
-//! independent verifier will reject.
+//! `MAX_DURABLE_VALUE_DEPTH` bounds how deeply a durable field's value nests. Depth is a
+//! property of a *path*, not of a type: a struct used both as a top-level field value and
+//! nested twenty levels down is one node at two depths, and deciding the bound from
+//! whichever depth a walk sees first either refuses a shallow occurrence that fits or
+//! admits a deep one the verifier will reject.
 //!
-//! Each node therefore carries [`CanonicalValueShapeDag::depth`]: the length of the
-//! longest path from that node down to a scalar, counting the node itself as one
-//! level. It is exact and order-independent, because a node's references all point at
-//! already-minted nodes whose depth is already final — the interning order *is* a
-//! topological order, so one forward pass computes it and there is no second pass to
-//! disagree with. A field value rooted at node `n` occupies levels `1..=depth(n)`, so
-//! the whole value fits exactly when `depth(n) <= MAX_DURABLE_VALUE_DEPTH`, whatever
-//! depth any of `n`'s shared descendants reaches through some other field.
+//! Each node therefore carries [`CanonicalValueShapeDag::depth`]: the longest path from
+//! that node down to a scalar, counting the node itself. It is exact and order-independent
+//! because interning order is a topological order, so one forward pass computes it. A
+//! field value rooted at `n` occupies levels `1..=depth(n)` and fits exactly when
+//! `depth(n) <= MAX_DURABLE_VALUE_DEPTH`, whatever depth `n`'s shared descendants reach
+//! through some other field.
 //!
 //! # Expansion
 //!
-//! The v0 wire encodings — the durable contract's identity preimage and the image's
-//! DURABLE section — both spell a value shape as a fully expanded tree. Expanding a
-//! shared graph is exponential in its nesting depth, so [`expand`] never builds one:
-//! it walks an explicit work stack and writes each byte straight into a
-//! [`ImageByteSink`], which may stop accepting bytes at a ceiling. A shape whose
-//! expansion is larger than any image may be is therefore decided in the bytes the
-//! sink admits, not in the bytes the expansion would have produced.
+//! Both v0 wire encodings — the durable contract's identity preimage and the image's
+//! DURABLE section — spell a value shape as a fully expanded tree, and expanding a shared
+//! graph is exponential in its nesting depth. [`expand`] therefore never builds one: it
+//! walks an explicit work stack and writes each byte straight into an [`ImageByteSink`]
+//! that may stop accepting at a ceiling, so a shape too large for any image is decided in
+//! the bytes the sink admits.
 //!
-//! A shape can also be too *wide* to spell rather than too large to hold: both forms
-//! write an arity as a `u16`, so a node stating more positions than that has no byte
-//! image in either. [`expand`] refuses such a shape with [`DurableGraphTooLarge`] before
-//! the count reaches the wire, so an arity is never narrowed onto it — two shapes sharing
+//! A shape can also be too *wide* to spell: both forms write an arity as a `u16`, so
+//! [`expand`] refuses a node stating more positions with [`DurableGraphTooLarge`] before
+//! the count reaches the wire. An arity is never narrowed — which would give two shapes
 //! one identity — and never decided by aborting the caller.
 
 use std::collections::HashMap;
@@ -731,13 +717,11 @@ const VSHAPE_ENUM: u8 = 2;
 
 /// One unit of pending expansion work.
 ///
-/// An enum's variants are written one after another, each with its own header before
-/// its payload, so a variant is its own work item rather than a position inside its
-/// node's header. A variant task carries the variant itself, borrowed from the arena the
-/// expansion walks, so there is no second lookup to get wrong and no arm for a node kind
-/// the task could never name. No "resume after children" continuation is needed.
-/// Pending siblings make worklist length depend on fan-out and scheduling as well as
-/// nesting.
+/// An enum's variants are written one after another, each with its own header before its
+/// payload, so a variant is its own work item rather than a position inside its node's
+/// header. A variant task borrows the variant from the arena the expansion walks, so there
+/// is no second lookup to get wrong and no "resume after children" continuation. Worklist
+/// length depends on fan-out and scheduling as well as nesting.
 enum ExpandTask<'a> {
     Node(ValueShapeNodeId),
     EnumMember(&'a ValueShapeEnumMember),
@@ -751,11 +735,10 @@ enum ExpandTask<'a> {
 /// a scheduling arm can append children before the next check. Expansion otherwise
 /// ends when the worklist is empty or a reference is refused.
 ///
-/// `root` is a caller-supplied id, so the lookup authenticates its exact-node stamp. A
-/// root from independently minted provenance or invalidated by truncation is the same
-/// refusal as an arity the wire cannot spell rather than an abort. Nested references are
-/// the arena's own preserved provenance, and the mint invariant authenticates them, so
-/// that arm answers for a graph the declaration recheck would already have refused.
+/// `root` is a caller-supplied id, so the lookup authenticates its exact-node stamp: a
+/// root from independent provenance or invalidated by truncation refuses rather than
+/// aborts. Nested references carry the arena's own provenance, so that arm answers only
+/// for a graph the declaration recheck would already have refused.
 pub(crate) fn expand(
     dag: &CanonicalValueShapeDag,
     root: ValueShapeNodeId,

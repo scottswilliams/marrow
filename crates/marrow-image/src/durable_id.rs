@@ -1,26 +1,18 @@
-//! The `DurableContractId` durable-graph identity (kernel identity rule).
+//! The `DurableContractId` durable-graph identity.
 //!
-//! A [`DurableContractId`] is the stable 32-byte identity of a program's whole
-//! durable graph — the application, the roots, their key columns, and each root
-//! record's stored field profile — computed over the graph's **ledger ids**, the
-//! entropy-minted identities the committed `.marrow/ids` artifact binds to each
-//! durable declaration. Because the payload carries ids rather than names, a
-//! rename (which moves a ledger anchor while its id stays) preserves the
-//! contract identity, while every semantic graph change — a retyped key, a field
-//! made required, a field added, removed, or re-minted — changes it. It crosses
-//! the compiler → image → verifier boundary and will later cross the
-//! store-admission boundary, so it is a distinct typed 32-byte domain-separated
-//! SHA-256 over a length-delimited canonical payload, exactly as the kernel
-//! identity rule requires: one owning phase (D00), one frozen `kind`, one
-//! canonical payload, one known-answer test, and one independent-decoder
-//! reconstruction test.
+//! A [`DurableContractId`] is the stable 32-byte identity of a program's whole durable
+//! graph — the application, the roots, their key columns, and each root record's stored
+//! field profile — computed over the graph's **ledger ids**, the entropy-minted
+//! identities the committed `.marrow/ids` artifact binds to each durable declaration.
+//! Because the payload carries ids rather than names, a rename preserves the contract
+//! identity while every semantic graph change — a retyped key, a field made required,
+//! added, removed, or re-minted — changes it.
 //!
-//! The ledger ids themselves are the separate entropy-minted identity family;
-//! this id is a deterministic hash *over* them. The compiler mints it and
-//! carries it in the image; the verifier never trusts the carried bytes as
-//! authoritative — it independently rebuilds the graph from the decoded tables,
-//! recomputes the id over its own view of it, and rejects a mismatch. Anyone can mint a valid
-//! id, so trust comes only from that recomputation.
+//! It crosses the compiler → image → verifier boundary, so it is a distinct typed
+//! 32-byte domain-separated SHA-256 over a length-delimited canonical payload. Anyone can
+//! mint a valid id: the verifier rebuilds the graph from the decoded tables, recomputes
+//! the id over its own view, and rejects a mismatch, so trust comes only from that
+//! recomputation.
 //!
 //! ```text
 //! DurableContractId = SHA-256( KIND ‖ u64_be(len(payload)) ‖ payload )
@@ -57,49 +49,39 @@
 //!   IDREF(k, id) = u8(k) ‖ u64_be(16) ‖ id                     (kind-tagged, LP 16 bytes)
 //! ```
 //!
-//! A durable field's stored `value` is drawn from the closed acyclic durable value
-//! set: a nominal scalar (erased to its base scalar), a dense `struct` (its leaves
-//! recorded positionally as shape bytes — a nested product leaf mints no ledger id
-//! of its own, because the containing field is the renamable durable declaration),
-//! a closed `enum` (`Option`/`Result`/a user `enum`, each carrying a sum identity
-//! (kind 5) and one member identity (kind 6) per variant so append-only member
-//! evolution has stable per-member codes), or an `Option`, which is itself a closed
-//! enum (`none`/`some`). Collections and nested sparse/place/function/handle leaves
-//! are not durable value leaves. Only a durable-reachable enum contributes sum and
-//! member ids; a storeless enum stays ledger-free.
+//! A durable field's stored `value` is drawn from the closed acyclic durable value set: a
+//! nominal scalar (erased to its base scalar), a dense `struct` (leaves recorded
+//! positionally — a nested product leaf mints no ledger id, because the containing field
+//! is the renamable declaration), or a closed `enum` carrying a sum identity (kind 5) and
+//! one member identity (kind 6) per variant, so append-only member evolution has stable
+//! per-member codes. Collections and nested sparse/place/function/handle leaves are not
+//! durable value leaves, and only a durable-reachable enum contributes sum and member ids.
 //!
-//! A key tuple is length-prefixed, so a singleton root (`key_count = 0`) and a
-//! composite root (`key_count > 1`) are the same shape as the ordinary
-//! single-column root, and key-column order is part of the identity.
+//! A key tuple is length-prefixed, so a singleton root (`key_count = 0`) and a composite
+//! root are the same shape as the ordinary single-column root; key-column order is part
+//! of the identity.
 //!
-//! A resource's durable shape is a **member tree**: its top-level fields plus any
-//! static `group` field-path namespaces and keyed `branch` placements, each of
-//! which recursively holds its own members. A group is an unkeyed namespace (a
-//! `Group` identity); a branch is a keyed placement (its own `Root`-kind placement
-//! identity and key tuple), so a nested keyed subtree is a distinct graph node
-//! with a complete identity, just like a root. Member order is source declaration
-//! order and is part of the identity. Only the flat single-column-keyed root with
-//! no groups or branches is executable in this preview; the wider shapes complete
-//! their identity and verify but run at E01.
+//! A resource's durable shape is a **member tree**: top-level fields plus static `group`
+//! field-path namespaces and keyed `branch` placements, each recursively holding its own
+//! members. A branch carries its own `Root`-kind placement identity and key tuple, so a
+//! nested keyed subtree is a distinct graph node with a complete identity, just like a
+//! root. Member order is source declaration order and is part of the identity. Only the
+//! flat single-column-keyed root with no groups or branches is executable in this
+//! preview; the wider shapes complete their identity and verify but do not run.
 //!
-//! A root's **managed indexes** follow its member tree: each is a narrow
-//! compiler-maintained ordered projection from the keyed root, contributing its own
-//! `Index` identity (kind 8), its `unique` flag, and its ordered projection of leaf
-//! references — each a top-level stored `field` (kind 2) or an identity `key`
-//! (kind 4) of the same root. An index stores no data of its own; it is derived from
-//! the source leaves it projects, so its identity payload carries only leaf
-//! references, never a value shape. Index order is source declaration order and is
-//! part of the identity.
+//! A root's **managed indexes** follow its member tree: each contributes its `Index`
+//! identity (kind 8), its `unique` flag, and its ordered projection of leaf references —
+//! a top-level stored `field` (kind 2) or an identity `key` (kind 4) of the same root. An
+//! index stores no data of its own, so its identity payload carries only leaf references,
+//! never a value shape. Index order is source declaration order and is part of the
+//! identity.
 //!
-//! The `IDREF` kind tags mirror the ledger's frozen kind space (application 0,
-//! product 1, field 2, root/branch placement 3, key 4, group 7, index 8; 5-6 durable
-//! enum sum/member). An
-//! empty graph (no roots) has no application component: a storeless project needs
-//! no ledger, so its contract commits to nothing. Scalar tags are the frozen
-//! [`Scalar::tag`] bytes. The `member_tag` bytes (field 0, group 1, branch 2) are
-//! internal to this payload and independent of the ledger kind space. Operation
-//! *sites* are deliberately excluded: they are derivable access points over the
-//! graph, not part of its durable identity.
+//! The `IDREF` kind tags mirror the ledger's frozen kind space (application 0, product 1,
+//! field 2, root/branch placement 3, key 4, group 7, index 8; 5-6 durable enum
+//! sum/member). An empty graph has no application component: a storeless project needs no
+//! ledger, so its contract commits to nothing. Scalar tags are the frozen [`Scalar::tag`]
+//! bytes; the `member_tag` bytes are internal to this payload. Operation *sites* are
+//! excluded: they are derivable access points over the graph, not part of its identity.
 
 use sha2::{Digest, Sha256};
 
@@ -174,37 +156,21 @@ const MAX_FITTING_DURABLE_BODY_BYTES: usize = bounds::MAX_IMAGE_BYTES - DurableC
 /// The longest canonical graph payload a DURABLE body an image can carry can produce, and
 /// so the length past which [`DurableContractView::contract_id`] refuses.
 ///
-/// # The implication, term by term
+/// The payload and the DURABLE body are the same walk over the same rows, differing only
+/// in how a ledger reference is spelled: the payload writes `u8(kind) ‖ u64_be(16) ‖ id`
+/// (25 bytes) where the body writes the raw 16, and every other term is byte-for-byte the
+/// same or present only in the body. So `payload ≤ 25/16 × body` term by term, and hence
+/// for the whole walk. The measured plan admits a body only when
+/// `body + DurableContractId::BYTES ≤ MAX_IMAGE_BYTES`, so the amplifiable term is
+/// [`MAX_FITTING_DURABLE_BODY_BYTES`]: the 32 identity bytes are not body bytes and are
+/// not amplified, which is why the subtraction sits **inside** the ratio.
 ///
-/// The payload and the DURABLE body are the **same walk over the same rows**: the same
-/// root occurrences in the same order, each projecting the same retained declaration and
-/// the same value arena. They differ only in how a ledger reference is spelled, so each
-/// payload term has a distinct body counterpart, and every body term the payload has no
-/// term for only adds to the body:
-///
-/// | payload term | payload | body counterpart | body |
-/// |---|---|---|---|
-/// | root count, key count, member count, index count, component count | 2 | the same `u16` | 2 |
-/// | application, root placement, root product, key, field, group, branch placement, index, enum sum, enum member | 25 | the raw id | 16 |
-/// | index component (kind inside the `IDREF`) | 25 | `u8(kind)` and the raw id | 17 |
-/// | member tag, required flag, unique flag, key scalar tag, value tags and scalar tags | 1 | the same byte | 1 |
-/// | — | 0 | root name, root record, branch name, branch record, the site table | ≥ 0 |
-///
-/// Every row has `payload ≤ 25/16 × body`, and the ratio is reached only by a bare
-/// reference; summing the rows gives `payload ≤ 25/16 × body` for the whole walk. The
-/// measured plan admits a body only when `body + DurableContractId::BYTES ≤ MAX_IMAGE_BYTES`, so
-/// the amplifiable term is [`MAX_FITTING_DURABLE_BODY_BYTES`] — the 32 identity bytes are
-/// not body bytes and are not amplified, which is why the subtraction sits **inside** the
-/// ratio rather than outside it.
-///
-/// # What the bound is not
-///
-/// It is far below what a caller holding an arena can *state*. A value shape shared across
-/// nesting levels expands geometrically in its depth and the payload spells the expansion,
-/// so the length of a graph's payload is not bounded by the size of the graph that
-/// describes it. Past this length the identity is refused rather than computed, which is
-/// what makes the cost of asking for an identity a property of this owner instead of a
-/// promise each of its callers must keep.
+/// This is far below what a caller holding an arena can *state*: a value shape shared
+/// across nesting levels expands geometrically in its depth and the payload spells the
+/// expansion, so a graph's payload length is not bounded by the size of the graph
+/// describing it. Past this length the identity is refused rather than computed, which
+/// keeps the cost of asking for an identity a property of this owner rather than a promise
+/// each caller must keep.
 const MAX_FITTING_CONTRACT_PREIMAGE_BYTES: usize =
     (MAX_FITTING_DURABLE_BODY_BYTES * PREIMAGE_IDREF_BYTES).div_ceil(LEDGER_ID_BYTES);
 
@@ -226,12 +192,11 @@ pub struct DurableGraphTooLarge;
 
 /// The length of the canonical payload, counted without writing it.
 ///
-/// This sink writes nothing. It saturates one byte past
-/// [`MAX_FITTING_CONTRACT_PREIMAGE_BYTES`] rather than at it, so "full" and "fits" stay
-/// distinguishable, and every walk writing into it stops at [`ImageByteSink::is_full`] —
-/// the work a graph stating an expansion no image could carry costs is the bytes the bound
-/// admits, not the bytes the expansion would have produced, and no buffer is allocated to
-/// find that out.
+/// It saturates one byte past [`MAX_FITTING_CONTRACT_PREIMAGE_BYTES`] rather than at it,
+/// so "full" and "fits" stay distinguishable, and every walk writing into it stops at
+/// [`ImageByteSink::is_full`]: a graph stating an expansion no image could carry costs the
+/// bytes the bound admits, not the bytes the expansion would have produced, and no buffer
+/// is allocated to find that out.
 #[derive(Default)]
 struct FittingPreimageLength(usize);
 
@@ -303,12 +268,10 @@ const MEMBER_BRANCH: u8 = 2;
 pub struct LedgerIdBytes([u8; 16]);
 
 impl LedgerIdBytes {
-    /// Wrap 16 raw id bytes.
     pub fn from_bytes(bytes: [u8; 16]) -> Self {
         Self(bytes)
     }
 
-    /// The 16 id bytes.
     pub fn bytes(&self) -> &[u8; 16] {
         &self.0
     }
@@ -316,15 +279,12 @@ impl LedgerIdBytes {
 
 /// Declares one durable ledger identity kind as its own type over [`LedgerIdBytes`].
 ///
-/// The ledger mints every durable identity into the same opaque 16-byte space, so a
-/// Product identity, a placement, a key, a field, a group, a branch placement, an
-/// index, an enum sum, and an enum member are structurally indistinguishable once
-/// they are bytes. A declaration identity and an occurrence identity mean different
-/// things at every boundary they cross, and mistaking one for the other is a
-/// soundness fault, not a typo. Each kind is therefore its own type with a private
-/// field. There is deliberately no `From`, `Into`, or shared trait between any two
-/// of them: the only way to obtain one is to mint it where the ledger kind is
-/// already known, and the only way to leave the type is to read its bytes for
+/// The ledger mints every durable identity into the same opaque 16-byte space, so every
+/// kind is structurally indistinguishable once it is bytes, while a declaration identity
+/// and an occurrence identity mean different things at every boundary they cross. Each
+/// kind is therefore its own type with a private field, with deliberately no `From`,
+/// `Into`, or shared trait between any two: the only way to obtain one is to mint it where
+/// the ledger kind is already known, and the only way to leave is to read its bytes for
 /// encoding or hashing.
 macro_rules! durable_identity {
     ($(#[$meta:meta])* $name:ident, $mint:expr) => {
@@ -350,14 +310,10 @@ macro_rules! durable_identity {
 
 durable_identity!(
     /// The ledger identity of one durable Product DECLARATION: the resource type a
-    /// `store` root or a nested keyed branch projects. One Product declaration has
-    /// one canonical member/value graph and one runtime surface however many roots
-    /// occur over it.
-    ///
-    /// It is never a placement, key, field, group, branch, index, sum, or member
-    /// identity, and it is never a package declaration identity: a dependency
-    /// package cannot declare or mint a durable Product, and no part of a package
-    /// identity is reserved by or convertible to this type.
+    /// `store` root or a nested keyed branch projects. One Product declaration has one
+    /// canonical member/value graph and one runtime surface however many roots occur over
+    /// it. It is never a placement, key, field, group, branch, index, sum, member, or
+    /// package declaration identity.
     DurableProductIdentity,
     "Minted where the ledger resolves the `Product` kind (tag 1), anchored at the resource-type spelling."
 );
@@ -381,7 +337,6 @@ pub enum DurableIndexComponent {
 }
 
 impl DurableIndexComponent {
-    /// The referenced leaf's ledger id.
     pub fn id(self) -> LedgerIdBytes {
         match self {
             DurableIndexComponent::Field(id) | DurableIndexComponent::Key(id) => id,
@@ -406,15 +361,14 @@ pub struct DurableIndexShape {
 ///
 /// This is the single owner of the contract's canonical payload and of the graph's
 /// derived path identity. The compiler views the tables its draft already holds and the
-/// independent verifier views the ones it rebuilt from received bytes, so there is
-/// exactly one canonical encoding and agreement between the two sides is a
-/// recomputation rather than a trusted transfer.
+/// verifier views the ones it rebuilt from received bytes, so agreement between the two
+/// sides is a recomputation rather than a trusted transfer.
 ///
-/// It owns nothing and allocates nothing. A root occurrence projects the Product
-/// declaration it names, so one Product's member graph is walked once per occurrence
-/// and stored once however many occurrences project it — the graph is never copied per
-/// root. Every borrowed child view below has private fields and no constructor, so a
-/// caller reads the graph a producer built and can state none of its own.
+/// It owns nothing and allocates nothing: a root occurrence projects the Product
+/// declaration it names, so one Product's member graph is stored once however many
+/// occurrences project it. Every borrowed child view below has private fields and no
+/// constructor, so a caller reads the graph a producer built and can state none of its
+/// own.
 #[derive(Debug, Clone, Copy)]
 pub struct DurableContractView<'a> {
     application: Option<LedgerIdBytes>,
@@ -441,26 +395,20 @@ pub struct DurableMemberView<'a> {
 /// What one member row declares: a stored field, a static `group` namespace, or a
 /// keyed `branch` placement.
 ///
-/// Each variant carries a borrowed view with private fields, so the closed set can be
-/// read and matched outside this crate but stated only by a producer that built the
-/// rows. It carries no member vector of its own: a group's and a branch's members are
-/// reached through [`DurableMemberView::members`], so this type cannot express a tree.
+/// Each variant carries a borrowed view with private fields, so the closed set can be read
+/// and matched outside this crate but stated only by a producer that built the rows. It
+/// carries no member vector of its own: a group's and a branch's members are reached
+/// through [`DurableMemberView::members`], so this type cannot express a tree.
 ///
-/// Those two properties together are what closed the abort this row exists for. The
-/// family this replaced was a public recursive tree with public fields: an external caller
-/// could nest a hundred thousand groups from struct literals alone, and the process died
-/// either while building the chain or in its recursive `Drop` after the entry function had
-/// already refused it. No entry function can bound an argument its caller already built —
-/// only unconstructibility can, and this is where it is enforced.
+/// Together those keep an external caller from building a deeply nested member tree from
+/// struct literals and aborting the process in its recursive `Drop`. No entry function can
+/// bound an argument its caller already built; only unconstructibility can.
 ///
 /// ```compile_fail,E0451
-/// // A caller outside the crate cannot state a member kind: the payload has no public
-/// // field and no constructor, so there is no literal to write.
 /// let forged = marrow_image::DurableGroupView { id: unimplemented!() };
 /// ```
 ///
 /// ```compile_fail,E0609
-/// // Nor can one be taken apart into an owned run to nest by hand.
 /// fn nest(kind: marrow_image::DurableMemberViewKind<'_>) {
 ///     if let marrow_image::DurableMemberViewKind::Group(group) = kind {
 ///         let _members = group.members;
@@ -474,13 +422,13 @@ pub enum DurableMemberViewKind<'a> {
     Branch(DurableBranchView<'a>),
 }
 
-/// One stored field of a durable resource, group, or branch: its ledger id, whether it
-/// is required, and a reference to its stored value shape in the graph's one arena. The
+/// One stored field of a durable resource, group, or branch: its ledger id, whether it is
+/// required, and a reference to its stored value shape in the graph's one arena. The
 /// field's *name* is not part of the identity — a rename preserves it — but its value
 /// shape is.
 ///
-/// Every fact it carries is a small copied value, so it borrows the graph for nothing and
-/// takes no lifetime: a caller may keep one past the walk that produced it.
+/// Every fact it carries is a small copied value, so it takes no lifetime: a caller may
+/// keep one past the walk that produced it.
 #[derive(Debug, Clone, Copy)]
 pub struct DurableFieldView {
     id: LedgerIdBytes,
@@ -508,12 +456,10 @@ pub struct DurableBranchView<'a> {
 }
 
 impl DurableFieldView {
-    /// The field's `Field` ledger id.
     pub fn id(&self) -> LedgerIdBytes {
         self.id
     }
 
-    /// Whether the field is required.
     pub fn required(&self) -> bool {
         self.required
     }
@@ -525,14 +471,12 @@ impl DurableFieldView {
 }
 
 impl DurableGroupView {
-    /// The namespace's `Group` ledger id.
     pub fn id(&self) -> LedgerIdBytes {
         self.id
     }
 }
 
 impl<'a> DurableBranchView<'a> {
-    /// The branch's own `Root`-kind placement id.
     pub fn placement(&self) -> LedgerIdBytes {
         *self.placement
     }
@@ -547,7 +491,6 @@ impl<'a> DurableBranchView<'a> {
         self.record
     }
 
-    /// The branch's ordered key tuple.
     pub fn keys(&self) -> &'a [KeyColumn] {
         self.keys
     }
@@ -595,7 +538,7 @@ impl<'a> DurableRootView<'a> {
         self.occurrence.name()
     }
 
-    /// The root's own occurrence placement identity.
+    /// The occurrence's own placement identity.
     pub fn placement(&self) -> RootPlacementIdentity {
         self.occurrence.placement()
     }
@@ -628,9 +571,8 @@ impl<'a> DurableRootView<'a> {
 }
 
 /// One contiguous run of member rows, borrowed as views over the graph that holds them.
-///
-/// It is one named type rather than two opaque ones because a walk of the graph carries
-/// a run of any level on one stack.
+/// One named type rather than two opaque ones, because a walk of the graph carries a run
+/// of any level on one stack.
 #[derive(Debug, Clone)]
 pub struct DurableMemberViews<'a> {
     graph: &'a ProductDeclarationGraph,
@@ -664,11 +606,9 @@ impl<'a> Iterator for DurableMemberViews<'a> {
 impl ExactSizeIterator for DurableMemberViews<'_> {}
 
 impl<'a> DurableContractView<'a> {
-    /// View the durable contract graph held by these four owners.
-    ///
-    /// Crate-internal: the compiler's draft and the verifier's accepted graph are the
-    /// only owners of a canonical Product/occurrence/value-shape table set, so a view
-    /// exists only over rows one of them built.
+    /// View the durable contract graph held by these four owners. Crate-internal: the
+    /// compiler's draft and the verifier's accepted graph are the only owners of a
+    /// canonical table set, so a view exists only over rows one of them built.
     pub(crate) fn over(
         application: Option<LedgerIdBytes>,
         products: &'a ProductDeclarationTable,
@@ -710,11 +650,9 @@ impl<'a> DurableContractView<'a> {
     /// payload is longer than [`MAX_FITTING_CONTRACT_PREIMAGE_BYTES`], or one stating an
     /// arity wider than the `u16` the payload spells a count with.
     ///
-    /// The refusal is the whole reason asking for an identity is bounded work: a view is
-    /// a view over an arena, and an arena can state a value shape whose expansion —
-    /// which is what the payload spells — is exponential in its declared levels. No
-    /// caller has to establish that before asking, and none has to establish the graph's
-    /// arities either.
+    /// The refusal is what makes asking for an identity bounded work: an arena can state a
+    /// value shape whose expansion — which is what the payload spells — is exponential in
+    /// its declared levels, and no caller has to establish otherwise before asking.
     ///
     /// The payload is never materialized. Its length is counted by one walk and its bytes
     /// are streamed into the hash by a second walk over the same rows, so the cost of an
@@ -730,17 +668,16 @@ impl<'a> DurableContractView<'a> {
         Ok(hash.finish())
     }
 
-    /// Enumerate every durable graph node paired with its derived [`SemanticPath`]:
-    /// each root placement, static `group` namespace, keyed `branch` placement, and
-    /// stored field, in a stable pre-order (a node before its descendants, members in
-    /// declaration order). The path is the chain of kind-tagged ledger ids from the
-    /// application to the node, so a rename that only moves ledger anchors leaves
-    /// every path unchanged while any structural or id change alters exactly the
-    /// paths through it. The empty graph yields no nodes.
+    /// Enumerate every durable graph node paired with its derived [`SemanticPath`]: each
+    /// root placement, static `group` namespace, keyed `branch` placement, and stored
+    /// field, in a stable pre-order (a node before its descendants, members in declaration
+    /// order). The path is the chain of kind-tagged ledger ids from the application to the
+    /// node, so a rename that only moves ledger anchors leaves every path unchanged while
+    /// any structural or id change alters exactly the paths through it.
     ///
-    /// This is the single owner of the derived path identity; the compiler views its
-    /// resolved graph and the verifier views the one it rebuilt from the decoded image
-    /// tables, so both enumerate identical paths.
+    /// This is the single owner of the derived path identity: the compiler views its
+    /// resolved graph and the verifier the one it rebuilt from the decoded image tables,
+    /// so both enumerate identical paths.
     pub fn semantic_nodes(&self) -> Vec<SemanticNode> {
         let Some(application) = self.application else {
             return Vec::new();
@@ -753,9 +690,8 @@ impl<'a> DurableContractView<'a> {
                 path: root_path.clone(),
             });
             collect_member_nodes(&root_path, root.members(), &mut nodes);
-            // A managed index is a graph node too: its path is the root path extended
-            // by the index step, so a rename that only moves the index anchor leaves it
-            // unchanged. Index nodes follow the member nodes, in declaration order.
+            // An index node's path is the root path extended by the index step, so a
+            // rename that only moves the index anchor leaves it unchanged.
             for index in root.indexes() {
                 nodes.push(SemanticNode {
                     kind: SemanticNodeKind::Index,
@@ -768,13 +704,11 @@ impl<'a> DurableContractView<'a> {
 
     /// Write the canonical graph bytes (the `graph` production above) into `out`.
     ///
-    /// One owner writes the payload for both of its readers: the length that only counts
-    /// the bytes, and the hash that consumes them. The identity is therefore computed over
-    /// the payload whose length framed it, because it is the same walk over the same rows.
-    ///
-    /// The walk stops at the first byte past a sink's own bound, so a graph stating an
-    /// expansion no image could carry costs the bytes that bound admits rather than the
-    /// bytes it would have produced.
+    /// One owner writes the payload for both readers — the length that counts the bytes
+    /// and the hash that consumes them — so the identity is computed over the payload
+    /// whose length framed it. The walk stops at the first byte past a sink's own bound,
+    /// so a graph stating an expansion no image could carry costs the bytes that bound
+    /// admits rather than the bytes it would have produced.
     fn write_graph(&self, out: &mut impl ImageByteSink) -> Result<(), DurableGraphTooLarge> {
         push_u16(out, payload_count(self.occurrences.len())?);
         if let Some(application) = &self.application {
@@ -797,18 +731,16 @@ impl<'a> DurableContractView<'a> {
 /// The canonical payload's `u16` count for `count` graph positions, or
 /// [`DurableGraphTooLarge`] for a count the payload cannot spell.
 ///
-/// Every count the payload spells — roots, key columns, members, index components — is
-/// bounded far below `u16::MAX` in [`crate::bounds`], and the encoder rechecks each of
-/// them before a view is taken. A view's public constructor takes the graph
-/// a caller states, though, so a wider one can reach here directly. A wrapping cast would
-/// let it present a narrower graph's count and so share its identity; refusing instead
-/// keeps that answer typed and keeps it this owner's.
+/// Every count the payload spells is bounded far below `u16::MAX` in [`crate::bounds`],
+/// and the encoder rechecks each before a view is taken, but a view's public constructor
+/// takes the graph a caller states, so a wider one can reach here directly. A wrapping
+/// cast would let it present a narrower graph's count and so share its identity.
 ///
 /// [`MAX_FITTING_CONTRACT_PREIMAGE_BYTES`] cannot answer for these graphs: a count is
 /// spelled before the positions it counts are walked, so the bound has seen none of their
-/// bytes when the count is due. The refusal is the same one because the conclusion is the same — the
-/// image's DURABLE section spells the identical arity as a `u16`, so a graph refused here
-/// has no encodable image either.
+/// bytes when the count is due. The refusal is the same because the image's DURABLE
+/// section spells the identical arity as a `u16`, so a graph refused here has no encodable
+/// image either.
 fn payload_count(count: usize) -> Result<u16, DurableGraphTooLarge> {
     u16::try_from(count).map_err(|_| DurableGraphTooLarge)
 }
@@ -845,10 +777,9 @@ fn push_indexes(
 /// property of the rows a producer built, and this walk's own stack use must not be.
 ///
 /// Each node's path is materialized by cloning its container's step chain, so the walk
-/// costs `nodes x depth` steps rather than `nodes`. Both factors are enforced bounds —
-/// `MAX_DURABLE_MEMBERS` rows per declaration, each at most `MAX_DURABLE_DEPTH` deep,
-/// refused at construction — so the product is a fixed ceiling (8192 x 16 steps) and not a
-/// term an input can grow.
+/// costs `nodes x depth` steps. Both factors are enforced bounds — `MAX_DURABLE_MEMBERS`
+/// rows per declaration, each at most `MAX_DURABLE_DEPTH` deep — so the product is a fixed
+/// ceiling (8192 x 16 steps), not a term an input can grow.
 fn collect_member_nodes(
     container: &SemanticPath,
     members: DurableMemberViews<'_>,
@@ -908,12 +839,10 @@ fn push_keys(out: &mut impl ImageByteSink, keys: &[KeyColumn]) -> Result<(), Dur
 ///
 /// This is the walk that can amplify: a field's value is spelled as its expansion, so a
 /// full sink ends the walk rather than expanding the members behind it into bytes nothing
-/// will read. Once a sink is full every remaining member is skipped at every level, which
-/// is what the single early return does.
+/// will read.
 ///
 /// The descent is an explicit stack of member runs, not recursion, for the same reason as
-/// [`collect_member_nodes`]: nesting depth belongs to the rows, never to this walk's own
-/// stack use.
+/// [`collect_member_nodes`].
 fn push_members(
     out: &mut impl ImageByteSink,
     members: DurableMemberViews<'_>,
@@ -967,8 +896,7 @@ pub struct DurableContractId(pub(crate) [u8; 32]);
 
 impl DurableContractId {
     /// The width of the identity on the wire. The measure core's DURABLE counting run
-    /// counts these bytes without computing them, so the width has one owner and the
-    /// value has another.
+    /// counts these bytes without computing them.
     pub(crate) const BYTES: usize = 32;
 
     /// Reconstruct an id from its 32 raw bytes. The verifier decodes the id carried
@@ -1025,11 +953,9 @@ mod tests {
         LedgerIdBytes::from_bytes([byte; 16])
     }
 
-    /// The construction budget these graphs are stated under.
-    ///
-    /// Every graph below is built through the draft's own flat entry points, which is the
-    /// only path there is: a contract graph exists because an admitted plan let one be
-    /// built, so a test states its ids and its member commands and never a member tree.
+    /// The construction budget these graphs are stated under. Every graph below is built
+    /// through the draft's own flat entry points, so a test states ids and member commands
+    /// and never a member tree.
     fn plan() -> AdmittedGraphInputPlan {
         AdmittedGraphInputPlan::admit(
             bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS,
@@ -1038,9 +964,8 @@ mod tests {
         )
     }
 
-    /// The contract identity of a graph these tests state. Every one of them is a handful
-    /// of bytes, far inside the canonical payload ceiling, so the refusal that ceiling
-    /// exists for is not what any of them is about.
+    /// The contract identity of a graph these tests state. Every one is far inside the
+    /// canonical payload ceiling.
     fn cid(view: DurableContractView<'_>) -> DurableContractId {
         view.contract_id()
             .expect("a stated test graph is far inside the payload ceiling")
@@ -1095,10 +1020,9 @@ mod tests {
         }
     }
 
-    /// A materialized entry record for a stated graph.
-    ///
-    /// The record is surface, not identity — it is excluded from the contract preimage —
-    /// so every graph below binds the same empty one and no hex moves with it.
+    /// A materialized entry record for a stated graph. The record is surface, not identity
+    /// — excluded from the contract preimage — so every graph below binds the same empty
+    /// one and no hex moves with it.
     fn entry_record(draft: &mut ImageDraft) -> TypeId {
         let name = draft.intern_string("Entry").expect("a within-domain mint");
         draft
@@ -1220,10 +1144,9 @@ mod tests {
     }
 
     /// Known-answer test for the frozen canonical payload of the tracer's `counters`
-    /// graph over ledger ids. Freezing this hex pins the domain-separation,
-    /// length-delimiting, IDREF kind tags, and member layout so a later reader
-    /// can reconstruct it independently. If this value must change, the durable-contract
-    /// identity has changed and every stored/derived id changes with it.
+    /// graph. Freezing this hex pins the domain-separation, length-delimiting, IDREF kind
+    /// tags, and member layout. If it must change, the durable-contract identity has
+    /// changed and every stored/derived id changes with it.
     #[test]
     fn durable_contract_id_known_answer() {
         let draft = counters_graph();
@@ -1256,13 +1179,11 @@ mod tests {
         assert_ne!(cid(library.contract_view()), cid(counters.contract_view()));
     }
 
-    /// Independent-decoder reconstruction: a second, hand-written implementation of
-    /// the construction reproduces the same 32 bytes. It shares no code with
-    /// [`DurableContractView::write_graph`] and its hashing sink, so a change to the owner
-    /// that silently altered the layout would diverge here.
+    /// Independent-decoder reconstruction: a second, hand-written implementation
+    /// reproduces the same 32 bytes, sharing no code with
+    /// [`DurableContractView::write_graph`], so a silent layout change diverges here.
     fn independent_id(view: DurableContractView<'_>) -> String {
-        // Rebuild the graph bytes by hand from what the view publishes, sharing none of
-        // the encoding code.
+        // Rebuilt by hand from what the view publishes, sharing none of the encoding code.
         fn idref(out: &mut Vec<u8>, kind: u8, id: &LedgerIdBytes) {
             out.push(kind);
             lp(out, id.bytes());
@@ -1377,17 +1298,15 @@ mod tests {
         out.extend_from_slice(bytes);
     }
 
-    /// The load-bearing D00 property: identity follows the ledger ids, not the
-    /// spelling. A graph whose ids are unchanged keeps its contract id (a rename
-    /// moves only the ledger anchor); a re-minted field id, a retyped key, or a
-    /// flipped required flag changes it.
+    /// Identity follows the ledger ids, not the spelling: a graph whose ids are unchanged
+    /// keeps its contract id (a rename moves only the ledger anchor), while a re-minted
+    /// field id, a retyped key, or a flipped required flag changes it.
     #[test]
     fn identity_follows_ledger_ids_not_shape_spelling() {
         let counters = counters_graph();
         let base = cid(counters.contract_view());
 
-        // The same ids and shape: stable (this is what a rename looks like here —
-        // names are simply not part of the payload).
+        // The same ids and shape: stable. This is what a rename looks like here.
         assert_eq!(base, cid(counters_graph().contract_view()));
 
         let two_fields = |first_id: u8, first_required: bool, second: bool| {
@@ -1587,10 +1506,8 @@ mod tests {
     }
 
     /// The widened value shapes one graph's fields reference, minted in one draft's arena.
-    ///
-    /// A value shape is an interned node, so a test states the shape it wants rather than
-    /// editing one in place; the arena belongs to the draft that holds the graph, so no
-    /// shape outlives the graph that references it.
+    /// A value shape is interned, so a test states the shape it wants rather than editing
+    /// one in place.
     struct Shapes {
         int: ValueShapeNodeId,
         /// `struct { text, int }` and the same leaves in the other order.
@@ -1888,16 +1805,11 @@ mod tests {
 
     /// Asking a stated graph for its identity is bounded work, whoever states it.
     ///
-    /// This is the whole amplification path, and it survives unconstructibility: an arena
-    /// is public and interning is what makes it compact, so seventeen minted nodes
-    /// describe a value whose expansion — which is what the canonical payload spells — has
-    /// `4^16` scalar leaves. The bounded flat builder that admits the *member* graph says
-    /// nothing about how wide a value shape expands. The identity owner's own ceiling
-    /// answers, in the bytes it admits rather than the bytes the expansion would have
-    /// produced.
-    ///
-    /// That this test *returns* is the evidence: without the ceiling the same call walks
-    /// the expansion, and no wall-clock budget is needed to tell the two apart.
+    /// An arena is public and interning is what makes it compact, so seventeen minted
+    /// nodes describe a value whose expansion — which is what the canonical payload spells
+    /// — has `4^16` scalar leaves. The bounded flat builder that admits the *member* graph
+    /// says nothing about how wide a value shape expands; the identity owner's own ceiling
+    /// answers. That this test returns at all is the evidence.
     #[test]
     fn a_stated_graph_whose_payload_is_unbounded_is_refused_rather_than_expanded() {
         let forged = one_root(
@@ -1923,16 +1835,13 @@ mod tests {
     }
 
     /// The same refusal for the other count the walk spells: a value shape's own arity.
+    /// A struct node's leaf count is written by the value-shape expansion owner and its
+    /// expansion is small enough that the payload ceiling never answers for it.
     ///
-    /// A struct node's leaf count is written by the value-shape expansion owner rather
-    /// than by this module, and its expansion is small enough that the payload ceiling
-    /// never answers for it. The refusal is the arity's own.
-    ///
-    /// Its sibling — a *member* count the payload's `u16` cannot spell — is no longer
-    /// reachable from any graph a caller can state: a declaration holds at most
-    /// [`bounds::MAX_DURABLE_MEMBERS`] rows and a graph at most [`bounds::MAX_ROOTS`]
-    /// occurrences, both far below `u16::MAX`. The arity check on those counts stays as
-    /// the codec's own defense, and unconstructibility is why nothing can reach it.
+    /// A *member* count the payload's `u16` cannot spell is unreachable from any graph a
+    /// caller can state — [`bounds::MAX_DURABLE_MEMBERS`] and [`bounds::MAX_ROOTS`] are
+    /// both far below `u16::MAX` — so the arity check on those counts stays as the codec's
+    /// own defense.
     #[test]
     fn a_stated_value_shape_whose_arity_the_payload_cannot_spell_is_refused() {
         let forged = one_root(
@@ -1978,8 +1887,8 @@ mod tests {
         );
     }
 
-    /// The fitting-preimage bound is the 25:16 ratio applied to a measurement-admitted body, and
-    /// the subtraction of the closing identity sits **inside** the ratio.
+    /// The fitting-preimage bound is the 25:16 ratio applied to a measurement-admitted
+    /// body, with the closing identity subtracted **inside** the ratio.
     ///
     /// The two are separable: the identity's 32 bytes are ceiling headroom measurement
     /// reserves before the body is allocated, not body bytes, so they are never amplified

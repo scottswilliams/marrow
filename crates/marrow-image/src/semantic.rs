@@ -129,11 +129,11 @@ pub enum SemanticTarget {
     GroupEntry,
     /// The nonunique progressive typed-prefix read of a managed index: an incomplete
     /// prefix yields the next distinct component; the complete projection yields the
-    /// source-root key. Runtime traversal lands at E05.
+    /// source-root key. Not yet executable at runtime.
     IndexScan,
     /// The unique complete-key exact read of a managed index: it yields exactly the
-    /// one matching source-root key or absent, never a sibling or a traversal.
-    /// Runtime lookup lands at E05.
+    /// one matching source-root key or absent, never a sibling or a traversal. Not yet
+    /// executable at runtime.
     IndexLookup,
 }
 

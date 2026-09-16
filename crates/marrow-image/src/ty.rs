@@ -1,7 +1,4 @@
-//! The image-level type reference. It is named `ImageType` rather than
-//! the design's Rust spelling because that spelling is a forbidden identifier the
-//! syntax crate reserves for its deleted string-carrier — this structural tag,
-//! carrying no source text, is a different concept.
+//! The image-level type reference: a structural tag carrying no source text.
 //!
 //! One `u8` tag names the base type, with the high bit `0x80` marking an optional
 //! wrapper. This is the single spelling of a type everywhere the image records one

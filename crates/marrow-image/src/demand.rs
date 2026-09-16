@@ -1,27 +1,21 @@
-//! Verifier-reconstructed durable demand and the `DemandSetId` identity (D04).
+//! Verifier-reconstructed durable demand and the `DemandSetId` identity.
 //!
 //! An export's **demand** is the stable set of durable-access atoms its whole call
-//! closure performs: for every durable operation the export reaches, *which* graph
-//! node it touches (a [`SemanticPath`]) and *what class* of access it makes (a
-//! closed [`OperationClass`]). Demand describes access; it never grants it. The
-//! kernel identity rule (`AGENTS.md`): "The compiler describes access demand; it
-//! never grants what it infers." Runtime authority is `demand ∩ ceiling ∩ grant`
-//! resolved at the path kernel; this owner supplies only the `demand` term.
+//! closure performs: for every durable operation the export reaches, *which* graph node it
+//! touches (a [`SemanticPath`]) and *what class* of access it makes (a closed
+//! [`OperationClass`]). Demand describes access and never grants it: runtime authority is
+//! `demand ∩ ceiling ∩ grant` resolved at the path kernel, and this owner supplies only
+//! the `demand` term.
 //!
-//! Demand is a **compiler fact reconstructed by the verifier**, not a serialized
-//! summary: the image carries operation *sites* (a path + target) and bytecode, and
-//! the verifier rebuilds each export's atom set from the sealed sites its call
-//! closure references. Nothing about demand — no atom, no incidence, no consequence
-//! byte — is written into the image. Two representations stay distinct: an
-//! export's stable [`ExportDemand`] (its atom set, identified by [`DemandSetId`])
-//! and its image-local reachable-site set (site indices, meaningful only within one
-//! [`ImageId`](crate::ImageId)); a body edit that leaves the atom set unchanged
-//! keeps the `DemandSetId` while changing the `ImageId`.
+//! Demand is a compiler fact **reconstructed by the verifier**, not a serialized summary.
+//! The image carries operation sites and bytecode, and the verifier rebuilds each export's
+//! atom set from the sealed sites its call closure references; nothing about demand is
+//! written into the image. An export's stable [`ExportDemand`] and its image-local
+//! reachable-site set stay distinct, so a body edit that leaves the atom set unchanged
+//! keeps the `DemandSetId` while changing the [`ImageId`](crate::ImageId).
 //!
-//! The [`DemandSetId`] is a stable-boundary hash identity exactly as the identity
-//! rule requires — a domain-separated SHA-256 over a length-delimited canonical
-//! payload with one frozen `kind`, one canonical payload, one known-answer test,
-//! and one independent-decoder reconstruction test:
+//! [`DemandSetId`] is a domain-separated SHA-256 over a length-delimited canonical
+//! payload:
 //!
 //! ```text
 //! DemandSetId = SHA-256( KIND ‖ u64_be(len(payload)) ‖ payload )
@@ -328,12 +322,12 @@ impl ExportDemand {
     }
 
     /// Decode a canonical atom-set payload (as [`Self::atom_set_payload`] produces it)
-    /// back into an [`ExportDemand`]. Strict: it validates every length and count
-    /// against the remaining input before allocating (campaign law 9), rejects an
-    /// unknown lineage, an unknown operation-class tag, an unknown path step kind, an
-    /// empty path, a count past its fixed bound, a truncated body, and trailing bytes.
-    /// This decodes a store's persisted accepted deployment ceiling; a hostile or torn
-    /// payload rejects typed rather than yielding a partial or forged demand.
+    /// back into an [`ExportDemand`]. Strict: every length and count is validated against
+    /// the remaining input before allocating, and an unknown lineage, operation-class tag,
+    /// or path step kind, an empty path, a count past its fixed bound, a truncated body,
+    /// and trailing bytes all reject. This decodes a store's persisted accepted deployment
+    /// ceiling, so a hostile or torn payload must reject typed rather than yield a partial
+    /// or forged demand.
     pub fn decode_atom_set(bytes: &[u8]) -> Result<ExportDemand, CeilingDecodeError> {
         let mut cur = AtomCursor::new(bytes);
         let lineage = cur.lp()?;
@@ -393,8 +387,8 @@ fn merged_atoms<'a>(
 }
 
 /// A fixed upper bound on the number of atoms a decoded ceiling payload may carry,
-/// validated before any allocation (campaign law 9). Comfortably above any real
-/// program's whole-demand union and far below memory exhaustion.
+/// validated before any allocation. Comfortably above any real program's whole-demand
+/// union and far below memory exhaustion.
 pub(crate) const MAX_CEILING_ATOMS: usize = 65_536;
 
 /// A fixed upper bound on the step count of one decoded atom's path, validated before

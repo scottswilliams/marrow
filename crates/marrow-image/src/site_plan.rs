@@ -5,11 +5,6 @@
 //! capacity *before* it mints a numeric id. A fitting [`SiteId`] is therefore always
 //! inside `0..MAX_SITES`, and no arithmetic on the table's length ever produces one.
 //!
-//! Before this owner existed the site table was appended to directly and its id was the
-//! table's length narrowed to `u16`, with the bound seen only at `encode()`. A producer
-//! could request past `u16::MAX` distinct durable nodes, receive a wrapped id, and hand
-//! two distinct nodes the same site operand.
-//!
 //! A row retains only its [`OccurrenceSiteDemandKey`] — three owned typed ordinals into
 //! the draft's own canonical tables. It retains no semantic path: the path a site encodes
 //! to is *projected* from the key at encode time by the one path owner, so the plan
@@ -131,9 +126,8 @@ impl std::error::Error for SitePlanStateError {}
 ///
 /// It is opaque and has no public constructor, field, variant, raw-id accessor,
 /// `Default`, or `From`: the bounded [`SiteDemandPlan`] is its sole mint, so an
-/// instruction cannot name a site no plan answered. Before this type the `Dur*`
-/// instructions carried a bare `u16`, which any producer could write by hand and which
-/// forced a refused site to be smuggled through the same numeric channel as a real one.
+/// instruction cannot name a site no plan answered, and a refusal has no numeric channel
+/// to be smuggled through.
 ///
 /// It is `Clone` but deliberately not `Copy`: a site operand is a minted answer, and
 /// copying one implicitly is how a carrier ends up holding a site it never requested.

@@ -633,9 +633,8 @@ fn each_counted_kind_admits_exactly_its_maximum_and_stays_available() {
         /// Mint row `index`, returning the opaque identity it minted.
         mint: fn(&mut DraftTxn<'_>, usize) -> String,
         /// Re-request row `index` through the kind's keyed lookup, where it has one.
-        /// Types, enums, and collections are append-only at this surface — they carry no
-        /// keyed index — so their availability is the identity check below rather than a
-        /// lookup this surface does not offer.
+        /// Types, enums, and collections are append-only here and carry no keyed index, so
+        /// their availability is the identity check below instead.
         lookup: Option<fn(&mut DraftTxn<'_>, usize) -> String>,
         /// The identity carrier's spelling, for the row-at-the-maximum assertion.
         carrier: &'static str,
@@ -839,14 +838,10 @@ fn a_duplicate_constant_hit_returns_the_same_id_and_mutates_nothing() {
 /// *sibling* savepoint is still stale because the epoch stays rotated, and a freshly
 /// minted savepoint captures that rotated epoch and admits normally.
 ///
-/// The law's fourth clause — that the consumed admitted savepoint cannot be re-presented
-/// — is deliberately **not** here, because it cannot be: `begin_transaction` takes the
-/// token by value and `DraftSavepoint` is neither `Clone` nor `Copy`, so re-presenting one
-/// is a move error, not a staleness refusal. Asserting it at run time would require
-/// writing code that does not compile. It is pinned where it actually lives, as the
-/// `compile_fail,E0382` block on [`marrow_image::DraftSavepoint`], and the test's name now
-/// claims only the clause it observes. A static impossibility is a stronger guarantee than
-/// a runtime check, and naming it honestly is what keeps the difference visible.
+/// Re-presenting a consumed admitted savepoint is deliberately not covered here:
+/// `begin_transaction` takes the token by value and `DraftSavepoint` is neither `Clone`
+/// nor `Copy`, so that clause is a move error rather than a staleness refusal, pinned by
+/// the `compile_fail,E0382` block on [`marrow_image::DraftSavepoint`].
 #[test]
 fn after_an_unwind_the_owners_restore_while_the_sibling_savepoint_stays_stale() {
     let mut owner = exporting_owner();
@@ -1011,13 +1006,10 @@ fn every_pair_of_policy_crossings_yields_the_canonical_minimum_in_either_order()
 /// The function-slot mint is checked at its own mutator, like every other id-minting
 /// mutator on this surface.
 ///
-/// Function *width* belongs to a later row; being **unchecked** is a separate property
-/// from being narrow. This surface is `#[doc(hidden)] pub` and is explicitly not treated
-/// as a privacy boundary, so an arbitrary external caller can drive the row count past
-/// what the ordinal spells — and unlike the wide carriers, that boundary is reachable: it
-/// is 65,536 rows, not 2^32. Before the mint was checked the 65,537th function wrapped to
-/// slot zero and two functions shared one image index, with nothing noticing until the
-/// encoder's own bound much later.
+/// This surface is `#[doc(hidden)] pub` and is not a privacy boundary, so an arbitrary
+/// external caller can drive the row count past what the ordinal spells — and unlike the
+/// wide carriers, that boundary is reachable at 65,536 rows. An unchecked mint would wrap
+/// the 65,537th function to slot zero, aliasing two functions onto one image index.
 #[test]
 fn the_function_slot_mint_refuses_past_its_carrier_without_aliasing_slot_zero() {
     let mut owner = ImageDraft::new();

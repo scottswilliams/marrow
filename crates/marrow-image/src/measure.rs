@@ -15,20 +15,11 @@
 //!    a saturated sink is [`ImageBuildError::ImageTooLarge`]. The durable contract
 //!    identity is minted exactly once, closing the DURABLE body.
 //!
-//! # The coherence sequence
-//!
-//! Step 1 walks eleven items: (i) the `invariant_bounds` subsequence — per-record
-//! fields, per-enum definition widths, the Product claim conflict, the
-//! per-declaration graph walk, the whole-arena value-shape walk, per-occurrence
-//! key/index widths, per-function frames; (ii) the application anchor, the streamed
-//! site projection, and operand provenance; then the emission-order reference checks
-//! hoisted from the writers: (iii) per function its name, source, signature types,
-//! and tape operands in tape order; (iv) the DURABLE body's root names, entry
-//! records, and branch names and records in body order; (v) TYPES; (vi) CONSTS;
-//! (vii) EXPORTS with the export relations; (viii) SPANS; (ix) TEST-ENTRY with the
-//! test relations; (x) ENUMS; (xi) COLLTYPES. Every hoisted check is a range check
-//! over a local ordinal (or a locally decidable relation); an in-range id keeps its
-//! local meaning, and the independent verifier remains the only decoder.
+//! Step 1 walks the invariant bounds, the application anchor, the streamed site
+//! projection, and operand provenance, then the emission-order reference checks hoisted
+//! out of the section writers, in emission order. Every hoisted check is a range check
+//! over a local ordinal or a locally decidable relation: an in-range id keeps its local
+//! meaning, and the independent verifier remains the only decoder.
 //!
 //! # Allocation posture
 //!
