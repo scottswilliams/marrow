@@ -1815,7 +1815,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 // A member the compiler refused is declared: it left the record's
                 // accepted set but keeps its name, so the use is steered to the
                 // refusal rather than told the resource has no such field.
-                if !self.steer_refused_member(path.ty().name(), arg_name, argument.value.span()) {
+                if !self.steer_refused_member(path.ty(), arg_name, argument.value.span()) {
                     self.fail(SourceDiagnostic::at(
                         Code::CheckType,
                         self.file,
@@ -2044,7 +2044,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             ));
             return Err(LoweringFailure::Recoverable);
         }
-        let display = format!("{resource}.{group_name}");
+        let anchor = self.bare_type(resource).group_anchor(group_name);
+        let display = anchor.name().to_string();
         let group = self
             .accept_resolution(
                 self.records
@@ -2076,7 +2077,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             if !leaf_plan.iter().any(|(name, _, _)| name == arg_name) {
                 // The group's anchor `Resource.group` is the leaf ledger's owner, so
                 // a refused leaf is steered to its own cause here too.
-                if !self.steer_refused_member(&display, arg_name, argument.value.span()) {
+                if !self.steer_refused_member(&anchor, arg_name, argument.value.span()) {
                     self.fail(SourceDiagnostic::at(
                         Code::CheckType,
                         self.file,

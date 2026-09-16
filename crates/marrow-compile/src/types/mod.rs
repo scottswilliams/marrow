@@ -1130,6 +1130,12 @@ pub(crate) struct RecordInfo {
 }
 
 impl RecordInfo {
+    /// This record's name in the tree that declared it: the member ledger's owner
+    /// key, and the one place the pair is put back together.
+    pub(crate) fn scoped_name(&self) -> ScopedTypeName {
+        ScopedTypeName::new(&self.origin, &self.name)
+    }
+
     pub(crate) fn field(&self, name: &str) -> Option<(u16, &FieldInfo)> {
         field_index(&self.fields, name)
     }
@@ -1262,33 +1268,27 @@ fn field_index<'f>(fields: &'f [FieldInfo], name: &str) -> Option<(u16, &'f Fiel
 /// record projection is cloned to cross a borrow, and a cloned refusal summary
 /// would carry its own report-once flag — one refused member would then steer at
 /// every use instead of once.
+/// The owner is scoped to the tree that declared it: two trees may each declare a
+/// resource of one name, and a bare-name key would merge their members into one
+/// record and steer a refused member to the wrong declaration.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct MemberKey {
-    owner: String,
+    owner: ScopedTypeName,
     member: String,
 }
 
 impl MemberKey {
-    /// A top-level member of the resource record `record`.
-    pub(crate) fn field(record: &str, member: &str) -> Self {
+    /// A member of the resource record `owner`, or a leaf of one of its unkeyed
+    /// groups when `owner` is that group's [anchor](ScopedTypeName::group_anchor).
+    pub(crate) fn new(owner: &ScopedTypeName, member: &str) -> Self {
         Self {
-            owner: record.to_string(),
+            owner: owner.clone(),
             member: member.to_string(),
         }
     }
 
-    /// A leaf of one unkeyed group. The owner is the group's anchor
-    /// `Record.group` — the same spelling the group's image record type carries —
-    /// so a leaf and a top-level member of the same name never share a key.
-    pub(crate) fn leaf(record: &str, group: &str, member: &str) -> Self {
-        Self {
-            owner: format!("{record}.{group}"),
-            member: member.to_string(),
-        }
-    }
-
-    fn owns(&self, owner: &str) -> bool {
-        self.owner == owner
+    fn owns(&self, owner: &ScopedTypeName) -> bool {
+        self.owner == *owner
     }
 
     fn member(&self) -> &str {
@@ -1407,6 +1407,17 @@ impl ScopedTypeName {
     /// The bare name, as the declaring tree's own source spells it.
     pub(crate) fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The `Record.group` anchor an unkeyed group's leaves are owned by, in the tree
+    /// that declared the record. It is the spelling the group's image record type
+    /// carries, and no declaration can take it — a declared type name has no dot —
+    /// so a leaf and a top-level member of one name never share a key.
+    pub(crate) fn group_anchor(&self, group: &str) -> Self {
+        Self {
+            origin: self.origin.clone(),
+            name: format!("{}.{group}", self.name),
+        }
     }
 }
 
@@ -3477,7 +3488,7 @@ impl TypeRegistry {
     /// `owner` is a resource record's name, or the `Record.group` anchor of one of
     /// its unkeyed groups. This is what a record's field list is built from, so
     /// the record and the ledger cannot disagree about which members survived.
-    fn accepted_members(&self, owner: &str) -> Vec<FieldInfo> {
+    fn accepted_members(&self, owner: &ScopedTypeName) -> Vec<FieldInfo> {
         self.members
             .accepted()
             .filter(|(key, _)| key.owns(owner))
@@ -3491,7 +3502,7 @@ impl TypeRegistry {
     /// resource's declared members — the durable identity anchors, above all —
     /// reads this beside `accepted_members` rather than narrowing to the accepted
     /// set alone.
-    pub(crate) fn refused_members(&self, owner: &str) -> Vec<&str> {
+    pub(crate) fn refused_members(&self, owner: &ScopedTypeName) -> Vec<&str> {
         self.members
             .refused()
             .filter(|(key, _)| key.owns(owner))
@@ -3507,10 +3518,10 @@ impl TypeRegistry {
     /// make a false statement about the source.
     pub(crate) fn member(
         &self,
-        owner: &str,
+        owner: &ScopedTypeName,
         member: &str,
     ) -> Result<Binding<'_, FieldInfo>, DeclarationIndexDrift> {
-        self.members.lookup(&MemberKey::field(owner, member))
+        self.members.lookup(&MemberKey::new(owner, member))
     }
 
     /// The same steer for a member a projection already resolved to a refusal

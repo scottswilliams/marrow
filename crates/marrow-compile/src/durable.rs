@@ -37,7 +37,8 @@ use crate::diag::{DiagnosticCollector, IdentityGap, SourceDiagnostic};
 use crate::scalar::ScalarType;
 use crate::types::{
     BuildError, GArg, GenericInvariant, NominalBoundaryKind, NominalBoundaryRoot,
-    NominalBoundaryValue, RecordInfo, ResolveError, TypeMetadataSession, TypeRegistry,
+    NominalBoundaryValue, RecordInfo, ResolveError, ScopedTypeName, TypeMetadataSession,
+    TypeRegistry,
 };
 
 mod rows;
@@ -254,9 +255,9 @@ pub(crate) struct DurableRoot {
     pub(crate) root_id: marrow_image::RootId,
     /// This root's own entry family.
     pub(crate) family: Family,
-    /// The resource (product) name backing this store — the head of a branch's
-    /// qualified constructor path `Resource.branch(…)`.
-    pub(crate) resource: String,
+    /// The resource (product) backing this store, named in the tree that declared it:
+    /// the member ledger's owner for this root's fields.
+    pub(crate) resource: ScopedTypeName,
     /// The root's ordered key columns (one or more), the whole composite root key.
     pub(crate) key: Vec<ScalarType>,
     pub(crate) record: marrow_image::TypeId,
@@ -1622,7 +1623,7 @@ fn build_one(
                 root: root_id,
                 branch: Vec::new(),
             },
-            resource: row.resource.to_string(),
+            resource: record.scoped_name(),
             key: key_scalars.clone(),
             record: record.type_id,
             occurrence: admitted.occurrence().clone(),
@@ -2048,7 +2049,7 @@ impl<'a> IdentityResolver<'a> {
         // value shape and contributes no node. Without it the mint action that consumes
         // these reports would write a ledger missing the anchor the corrected program
         // needs.
-        for member in records.refused_members(product) {
+        for member in records.refused_members(&resource.record.scoped_name()) {
             self.resolve_declared(IdentityKind::Field, &format!("{product}.{member}"));
         }
         self.build_extras(

@@ -1112,3 +1112,65 @@ fn a_refused_dependency_type_steers_to_its_declaration() {
         "the use is steered to the refused declaration",
     );
 }
+
+/// Two trees may each declare a resource of the same name, so the member ledger is
+/// keyed by the declaring origin and not by the bare type name. Each `Point` keeps
+/// exactly the members its own tree wrote, and a member the compiler refused steers
+/// the use to the declaration that wrote it.
+#[test]
+fn a_member_ledger_keys_on_the_declaring_origin() {
+    let project = project_capture::project_with_dependency(
+        "graphtext",
+        &[(
+            "src/main.mw",
+            r#"module main
+
+use graphtext::notes
+
+resource Point {
+    required title: string
+    tag: int
+}
+
+pub fn run(): int {
+    const p = Point(title: "a", tag: 1)
+    return p.tag ?? 0
+}
+"#,
+        )],
+        &[(
+            "src/notes.mw",
+            r#"module notes
+
+resource Point {
+    required label: string
+    tag: Missing
+}
+
+pub fn here(): string {
+    const p = Point(label: "b", tag: 1)
+    return p.label
+}
+"#,
+        )],
+    );
+    let reported = diagnostics(&project);
+    assert_eq!(
+        reported
+            .iter()
+            .map(|row| row.code().as_str())
+            .collect::<Vec<_>>(),
+        vec!["check.unsupported", "check.unsupported"],
+        "{:#?}",
+        codes_and_messages(&project),
+    );
+    // The app's `Point` never demands the library's `label`, and the library's use of
+    // its own refused `tag` is steered to the library's declaration.
+    assert!(
+        reported[1]
+            .message()
+            .contains("its declaration was refused"),
+        "{}",
+        reported[1].message(),
+    );
+}

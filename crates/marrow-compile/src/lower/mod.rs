@@ -1140,10 +1140,15 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// The same steer for a member of a resource record or one of its unkeyed groups.
-    /// `owner` is the record's name, or the `Record.group` anchor of an unkeyed group.
-    /// `false` means the owner never declared the member, which is the one case a "has
-    /// no field" report may describe.
-    fn steer_refused_member(&mut self, owner: &str, member: &str, span: SourceSpan) -> bool {
+    /// `owner` is the record's scoped name, or the `Record.group` anchor of an unkeyed
+    /// group. `false` means the owner never declared the member, which is the one case
+    /// a "has no field" report may describe.
+    fn steer_refused_member(
+        &mut self,
+        owner: &ScopedTypeName,
+        member: &str,
+        span: SourceSpan,
+    ) -> bool {
         let steer = match self.records.member(owner, member) {
             Ok(Binding::Refused(_, summary)) => Ok(Some(self.steer_row(summary, span))),
             Ok(Binding::Accepted(_) | Binding::Absent) => Ok(None),

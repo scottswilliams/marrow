@@ -1552,6 +1552,7 @@ fn fill_record(
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<(), BuildError> {
     let file = declared.file;
+    let owner = ScopedTypeName::declared(&declared);
     let mut groups = Vec::new();
     let mut group_slot_defs = Vec::new();
     // Fields, groups, and branches share the resource's one member layer: a group or
@@ -1572,7 +1573,7 @@ fn fill_record(
         if let Some(row) = names.claim(file, name, name_span) {
             let refusal = refuse_row(diagnostics, at, row);
             registry.members.declare(
-                MemberKey::field(&resource.name, name),
+                MemberKey::new(&owner, name),
                 DeclarationOccurrence::Refused(refusal),
             )?;
             continue;
@@ -1593,17 +1594,11 @@ fn fill_record(
                 };
                 registry
                     .members
-                    .declare(MemberKey::field(&resource.name, &field.name), occurrence)?;
+                    .declare(MemberKey::new(&owner, &field.name), occurrence)?;
             }
             ResourceMember::Group(group) if group.keys.is_empty() => {
-                let (info, slot) = admit_unkeyed_group(
-                    draft,
-                    registry,
-                    &resource.name,
-                    group,
-                    declared,
-                    diagnostics,
-                )?;
+                let (info, slot) =
+                    admit_unkeyed_group(draft, registry, &owner, group, declared, diagnostics)?;
                 groups.push(info);
                 group_slot_defs.push(slot);
             }
@@ -1623,21 +1618,14 @@ fn fill_record(
                 );
                 if let Some(refusal) = refusal {
                     registry.members.declare(
-                        MemberKey::field(&resource.name, &branch.name),
+                        MemberKey::new(&owner, &branch.name),
                         DeclarationOccurrence::Refused(refusal),
                     )?;
                 }
             }
         }
     }
-    seal_record_slots(
-        draft,
-        registry,
-        index,
-        &resource.name,
-        groups,
-        group_slot_defs,
-    )
+    seal_record_slots(draft, registry, index, &owner, groups, group_slot_defs)
 }
 
 /// Build one unkeyed `group` as a nested sub-record value: its scalar and enum leaves
@@ -1647,14 +1635,14 @@ fn fill_record(
 fn admit_unkeyed_group(
     draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
-    owner: &str,
+    owner: &ScopedTypeName,
     group: &GroupDecl,
     declared: DeclarationSite<'_>,
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<(GroupInfo, FieldDef), BuildError> {
     let (leaf_fields, leaf_defs) =
         build_group_leaves(draft, registry, owner, group, declared, diagnostics)?;
-    let group_name_id = draft.intern_string(&format!("{owner}.{}", group.name))?;
+    let group_name_id = draft.intern_string(owner.group_anchor(&group.name).name())?;
     let group_type_id = draft.add_record_type(RecordTypeDef {
         name: group_name_id,
         fields: leaf_defs,
@@ -1688,7 +1676,7 @@ fn seal_record_slots(
     draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
     index: usize,
-    owner: &str,
+    owner: &ScopedTypeName,
     groups: Vec<GroupInfo>,
     group_slot_defs: Vec<FieldDef>,
 ) -> Result<(), BuildError> {
@@ -1823,14 +1811,14 @@ fn resource_member(
 fn build_group_leaves(
     draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
-    record: &str,
+    record: &ScopedTypeName,
     group: &GroupDecl,
     declared: DeclarationSite<'_>,
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<(Vec<FieldInfo>, Vec<FieldDef>), BuildError> {
     let file = declared.file;
-    let anchor = format!("{record}.{}", group.name);
-    let mut names = MemberNamespace::new(anchor.as_str());
+    let anchor = record.group_anchor(&group.name);
+    let mut names = MemberNamespace::new(anchor.name());
     for member in &group.members {
         let field = match member {
             ResourceMember::Field(field) => field,
@@ -1841,7 +1829,7 @@ fn build_group_leaves(
                     at: declared.at,
                     span: inner.span,
                 };
-                let key = MemberKey::leaf(record, &group.name, &inner.name);
+                let key = MemberKey::new(&anchor, &inner.name);
                 // The nested group is refused either way; a repeated name is the
                 // thing the reader has to fix first.
                 let row = names
@@ -1885,10 +1873,9 @@ fn build_group_leaves(
                 unsupported(file, field.span, "a keyed field"),
             ))
         };
-        registry.members.declare(
-            MemberKey::leaf(record, &group.name, &field.name),
-            occurrence,
-        )?;
+        registry
+            .members
+            .declare(MemberKey::new(&anchor, &field.name), occurrence)?;
     }
     let fields = registry.accepted_members(&anchor);
     let field_defs = fields

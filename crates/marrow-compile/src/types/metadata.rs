@@ -1309,18 +1309,20 @@ impl TypeMetadataSession<'_> {
                             ty: group.type_id,
                         });
                     }
-                    Ok(match self.view.registry.member(&info.name, name)? {
-                        Binding::Refused(id, _) => ProductFieldProjection::RefusedMember(id),
-                        Binding::Accepted(_) | Binding::Absent => {
-                            ProductFieldProjection::MissingRecordField
-                        }
-                    })
+                    Ok(
+                        match self.view.registry.member(&info.scoped_name(), name)? {
+                            Binding::Refused(id, _) => ProductFieldProjection::RefusedMember(id),
+                            Binding::Accepted(_) | Binding::Absent => {
+                                ProductFieldProjection::MissingRecordField
+                            }
+                        },
+                    )
                 }
                 RecordMetadataOwner::Group(record, group) => {
                     let owner = &self.view.registry.records[record];
                     let info = &owner.groups[group];
                     let Some((index, field)) = info.field(name) else {
-                        let anchor = format!("{}.{}", owner.name, info.name);
+                        let anchor = owner.scoped_name().group_anchor(&info.name);
                         return Ok(match self.view.registry.member(&anchor, name)? {
                             Binding::Refused(id, _) => ProductFieldProjection::RefusedMember(id),
                             Binding::Accepted(_) | Binding::Absent => {
