@@ -11,14 +11,7 @@ use marrow_image::{
     CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId, FieldDef,
     FunctionDef, ImageDraft, ImageType, Instr, LedgerIdBytes, Scalar, SemanticTarget, VariantDef,
 };
-
-#[path = "common/admitted_plan.rs"]
-mod admitted_plan;
-use admitted_plan::admitted_plan;
-
-#[path = "common/admitted.rs"]
-mod admitted_helper;
-use admitted_helper::admitted;
+use marrow_test_support::{admitted, admitted_plan};
 
 #[path = "common/ledger_ids.rs"]
 mod ledger_ids;

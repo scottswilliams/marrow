@@ -12,10 +12,7 @@
 //! - TEST-ENTRY (0x08): entries ascending by the remapped (byte-sorted) name index.
 
 use marrow_image::{EncodedImage, ExportId, FunctionDef, ImageDraft, ImageType, Instr, StrId};
-
-#[path = "common/admitted.rs"]
-mod admitted_helper;
-use admitted_helper::admitted;
+use marrow_test_support::admitted;
 
 /// The body of section `id` in `image`: the container is `magic(4) ‖ version(1) ‖
 /// image-id(32) ‖ section-count(1)` followed by `id(1) ‖ len(u32) ‖ body` sections.

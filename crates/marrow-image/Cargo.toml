@@ -11,5 +11,10 @@ authors.workspace = true
 [dependencies]
 sha2 = { version = "0.10", default-features = false }
 
+[dev-dependencies]
+# The image fixtures more than one crate's tests build over: the admitted plan, the
+# armed draft transaction, the site seam, and the container byte forger.
+marrow-test-support = { path = "../marrow-test-support" }
+
 [lints]
 workspace = true

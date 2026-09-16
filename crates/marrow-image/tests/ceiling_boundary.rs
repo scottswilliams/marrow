@@ -20,14 +20,7 @@ use marrow_image::{
     ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef,
     Scalar, SpanEntry,
 };
-
-#[path = "common/admitted_plan.rs"]
-mod admitted_plan;
-use admitted_plan::admitted_plan;
-
-#[path = "common/admitted.rs"]
-mod admitted_helper;
-use admitted_helper::admitted;
+use marrow_test_support::{admitted, admitted_plan};
 
 /// A minimal clean storeless draft: one exported `main`, one constant.
 fn storeless_base() -> ImageDraft {

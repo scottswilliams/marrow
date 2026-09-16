@@ -162,6 +162,7 @@ dependencies = [
 name = "marrow-image"
 version = "0.1.0"
 dependencies = [
+ "marrow-test-support",
  "sha2",
 ]
 

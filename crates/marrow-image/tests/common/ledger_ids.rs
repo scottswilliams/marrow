@@ -3,9 +3,7 @@
 //
 // Shared because a ledger id is an identity: two files that spell the same fixture
 // identity differently describe two different durable graphs, and a reader comparing
-// them cannot tell which difference is load-bearing. Written as ordinary comments rather
-// than inner doc comments so the one owner can be reached both as a `#[path]` module
-// and, where a nested module has no directory to point at, by `include!`.
+// them cannot tell which difference is load-bearing.
 #![allow(dead_code)]
 
 use marrow_image::LedgerIdBytes;

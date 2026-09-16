@@ -4,9 +4,7 @@
 // Shared because each step carries an admission contract — a declaration spends the
 // plan's Product term, an occurrence spends its root term, a function append validates
 // every site operand — and a per-file copy is a per-file opportunity to spell one of
-// those contracts differently. Written as ordinary comments rather than inner doc
-// comments so the one owner can be reached both as a `#[path]` module and, where a
-// nested module has no directory to point at, by `include!`.
+// those contracts differently.
 #![allow(dead_code)]
 
 use marrow_image::{
