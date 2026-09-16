@@ -20,6 +20,14 @@ fn diagnostics(project: &ProjectInput) -> Vec<SourceDiagnostic> {
     }
 }
 
+/// The typed code and rendered message of every diagnostic, in compiler order.
+fn codes_and_messages(project: &ProjectInput) -> Vec<(&'static str, String)> {
+    diagnostics(project)
+        .iter()
+        .map(|row| (row.code().as_str(), row.message().to_string()))
+        .collect()
+}
+
 const TEXT_LIBRARY: &str = r#"module text
 
 struct Pair {
@@ -52,11 +60,63 @@ pub fn run(line: string): string {
         )],
         &[("src/text.mw", TEXT_LIBRARY)],
     );
+    assert_eq!(codes_and_messages(&project), Vec::new());
+}
+
+/// A `use` whose first segment is a declared dependency reports against that
+/// dependency, spelling the missing path the way the dependency's own source does.
+#[test]
+fn an_absent_dependency_module_names_the_dependency() {
+    let project = project_capture::project_with_dependency(
+        "graphtext",
+        &[("src/main.mw", "module main\n\nuse graphtext::missing\n")],
+        &[("src/text.mw", TEXT_LIBRARY)],
+    );
     assert_eq!(
-        diagnostics(&project)
-            .iter()
-            .map(|row| (row.code().as_str(), row.message().to_string()))
-            .collect::<Vec<_>>(),
-        Vec::new(),
+        codes_and_messages(&project),
+        vec![(
+            "check.import",
+            "no module `missing` in the dependency `graphtext`".to_string()
+        )],
+    );
+}
+
+/// An alias roots a dependency's modules and names no module of its own.
+#[test]
+fn a_bare_alias_is_not_a_module() {
+    let project = project_capture::project_with_dependency(
+        "graphtext",
+        &[("src/main.mw", "module main\n\nuse graphtext\n")],
+        &[("src/text.mw", TEXT_LIBRARY)],
+    );
+    assert_eq!(
+        codes_and_messages(&project),
+        vec![(
+            "check.import",
+            "`graphtext` is a declared dependency, not a module; name one of its \
+             modules, as in `graphtext::<module>`"
+                .to_string()
+        )],
+    );
+}
+
+/// A dependency file's `module` header is checked against the path its own tree
+/// spells, so the library still checks standalone; a header that spells the
+/// consumer's alias-rooted path is the mismatch.
+#[test]
+fn a_dependency_header_is_checked_unprefixed() {
+    let project = project_capture::project_with_dependency(
+        "graphtext",
+        &[("src/main.mw", "module main\n")],
+        &[("src/text.mw", "module graphtext::text\n")],
+    );
+    assert_eq!(
+        codes_and_messages(&project),
+        vec![(
+            "check.module_path",
+            "module header `graphtext::text` does not match its path; expected \
+             `module text`"
+                .to_string()
+        )],
     );
 }

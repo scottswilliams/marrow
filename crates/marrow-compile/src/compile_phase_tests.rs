@@ -318,6 +318,10 @@ fn signature_registry(functions: &[crate::lower::DeclaredFn<'_>]) -> FunctionReg
                 budget.clone(),
             ),
             imports: BTreeMap::new(),
+            origins: crate::source::CapturedOrigins::of(&crate::test_project::project(&[(
+                "src/main.mw",
+                "module main\n",
+            )])),
             budget,
         },
         &mut diagnostics,

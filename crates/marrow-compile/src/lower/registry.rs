@@ -8,6 +8,7 @@ use crate::decl::{
     DeclarationOccurrence, DeclarationRefusalSummary, DeclarationSite, ModuleScopedName,
     refuse_covered, refuse_first,
 };
+use crate::source::CapturedOrigins;
 use crate::types::{BuildError, NominalBoundaryKind, NominalBoundaryRoot, NominalBoundaryValue};
 
 /// One declared function paired with where it was declared: the file identity its
@@ -43,6 +44,7 @@ pub(crate) struct ModuleScope {
     pub(crate) modules: ModuleLedger,
     /// `module -> [(final-segment binding, dotted target module)]`.
     pub(crate) imports: BTreeMap<String, Vec<(String, String)>>,
+    pub(crate) origins: CapturedOrigins,
     pub(crate) budget: DeclarationBudget,
 }
 
@@ -58,6 +60,9 @@ pub(crate) struct FunctionRegistry {
     modules: ModuleLedger,
     /// `module -> [(final-segment binding, dotted target module)]`.
     imports: BTreeMap<String, Vec<(String, String)>>,
+    /// The trees this compilation captured, so a single-segment prefix that is a
+    /// declared dependency alias is recognized as one.
+    origins: CapturedOrigins,
 }
 
 /// How the signature build resolved one monomorphic function declaration.
@@ -138,6 +143,7 @@ impl FunctionRegistry {
         let ModuleScope {
             modules,
             imports,
+            origins,
             budget,
         } = scope;
         let mut sigs = DeclarationLedger::new(DeclarationNamespace::Function, budget);
@@ -261,6 +267,7 @@ impl FunctionRegistry {
             declarations,
             modules,
             imports,
+            origins,
         })
     }
 
@@ -302,8 +309,9 @@ impl FunctionRegistry {
     }
 
     /// Resolve a `::`-qualified call `prefix::item` from within `current`. A single
-    /// prefix segment binds through a `use` first, then a root-level module of the
-    /// same name; a multi-segment prefix names a fully-qualified module path. The
+    /// prefix segment binds through a `use` first, then a declared dependency alias,
+    /// then a root-level module of the same name; a multi-segment prefix names a
+    /// fully-qualified module path. The
     /// target must be `pub`, except a module qualifying its own function.
     pub(super) fn resolve_qualified(
         &self,
@@ -354,6 +362,10 @@ impl FunctionRegistry {
     /// A failed `use` leaves no binding, so a refused dependency presents as a direct
     /// reference to its own name. One owner for both call resolution and generic-call
     /// resolution, so the two cannot disagree about module scope.
+    ///
+    /// The single-segment fallbacks are ordered: a declared dependency alias roots
+    /// that dependency's modules and names no module of its own, so it is consulted
+    /// before the root-level-module fallback and a root module can never shadow it.
     fn prefix_module(
         &self,
         current: &str,
@@ -366,6 +378,9 @@ impl FunctionRegistry {
                 .and_then(|bindings| bindings.iter().find(|(seg, _)| seg == single.text()))
             {
                 Some((_, target)) => target.clone(),
+                None if self.origins.declared(single.text()).is_some() => {
+                    return Ok(ModuleResolution::Absent);
+                }
                 None => single.text().to_string(),
             }
         } else {

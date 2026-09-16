@@ -8,11 +8,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::source::ProjectFile;
+use crate::source::{CapturedOrigins, ProjectFile};
 use marrow_codes::Code;
 use marrow_image::bounds;
 use marrow_image::{DraftTxn, EncodedImage, ExportId, FuncId, ImageBuildError, ImageDraft, Instr};
-use marrow_project::{CaptureLimits, ProjectInput};
+use marrow_project::{CaptureLimits, ProjectInput, SourceOrigin};
 use marrow_syntax::{
     ConstDecl, Declaration, ResourceDecl, ResourceMember, SourceFile, SourceSpan, TestDecl,
     parse_source,
@@ -1186,11 +1186,29 @@ fn dotted_module_path(segments: &[marrow_syntax::NameSegment]) -> String {
         .join(".")
 }
 
+/// The dotted module path the tree that declares a module spells in its own source.
+///
+/// A dependency's modules join the project's one ledger under the consuming
+/// project's alias, applied at capture; the library's own source carries no alias,
+/// so the header is compared against the path with that first segment dropped.
+fn declaring_module_path(module: &Module) -> &str {
+    match module.file.origin() {
+        SourceOrigin::Root => &module.name,
+        // Every dependency module name is `alias.rest`, so the split is total.
+        SourceOrigin::Dependency(_) => module
+            .name
+            .split_once('.')
+            .map_or(module.name.as_str(), |(_, rest)| rest),
+    }
+}
+
 /// Declare every project module.
 ///
 /// The source-root-relative path is the authority for module identity. A file that
 /// declares a `module` header is an importable module and must spell the path-derived
-/// name (with `::` as the dotted separator). A file with no header is a single-file
+/// name (with `::` as the dotted separator) *as its own tree spells it*: a dependency
+/// keeps its unprefixed header, so the same source checks standalone and under a
+/// consumer that roots it at an alias. A file with no header is a single-file
 /// script: it keeps a path-derived identity for its own scope and its exports, but is
 /// not importable by module path.
 ///
@@ -1222,7 +1240,8 @@ fn declare_modules(
             continue;
         };
         let declared = dotted_module_path(&header.segments);
-        let occurrence = if declared == module.name {
+        let expected = declaring_module_path(module);
+        let occurrence = if declared == expected {
             DeclarationOccurrence::Accepted(ModuleBinding)
         } else {
             DeclarationOccurrence::Refused(refuse(
@@ -1237,7 +1256,7 @@ fn declare_modules(
                 format!(
                     "module header `{}` does not match its path; expected `module {}`",
                     marrow_syntax::name_path_spelling(&header.segments),
-                    module.name.replace('.', "::")
+                    expected.replace('.', "::")
                 ),
             ))
         };
@@ -1254,6 +1273,7 @@ fn declare_modules(
 fn bind_imports(
     parsed: &[Module],
     modules: &ModuleLedger,
+    origins: &CapturedOrigins,
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<BTreeMap<String, Vec<(String, String)>>, SemanticOutcome> {
     let mut imports: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
@@ -1297,7 +1317,7 @@ fn bind_imports(
                         Code::CheckImport,
                         &module.file,
                         use_decl.span,
-                        format!("no module `{spelling}` in this project"),
+                        absent_import_message(origins, &use_decl.segments, &spelling),
                     ));
                     continue;
                 }
@@ -1315,6 +1335,39 @@ fn bind_imports(
         }
     }
     Ok(imports)
+}
+
+/// What a `use` that bound nothing reports.
+///
+/// A path whose first segment is a declared dependency is not a gap in the root
+/// project: the alias resolved and the module behind it did not, so the report names
+/// the dependency and spells the missing path the way that dependency's own source
+/// does. The alias is read from the captured origins, never guessed from the spelling.
+fn absent_import_message(
+    origins: &CapturedOrigins,
+    segments: &[marrow_syntax::NameSegment],
+    spelling: &str,
+) -> String {
+    let Some((first, rest)) = segments.split_first() else {
+        return format!("no module `{spelling}` in this project");
+    };
+    let Some(alias) = origins
+        .declared(first.text())
+        .and_then(SourceOrigin::alias)
+        .map(marrow_project::DependencyAlias::as_str)
+    else {
+        return format!("no module `{spelling}` in this project");
+    };
+    if rest.is_empty() {
+        return format!(
+            "`{alias}` is a declared dependency, not a module; name one of its modules, \
+             as in `{alias}::<module>`"
+        );
+    }
+    format!(
+        "no module `{}` in the dependency `{alias}`",
+        marrow_syntax::name_path_spelling(rest)
+    )
 }
 
 /// Every declaration of one kind across the project, paired with the two
@@ -1461,11 +1514,12 @@ fn run_semantic(
     // retained refusals against it, so the declared ceiling bounds what the pass
     // holds rather than what any single namespace holds.
     let budget = DeclarationBudget::default();
+    let origins = CapturedOrigins::of(project);
     let modules = match declare_modules(parsed, unparsed, &budget, &mut diagnostics) {
         Ok(modules) => modules,
         Err(outcome) => return outcome,
     };
-    let imports = match bind_imports(parsed, &modules, &mut diagnostics) {
+    let imports = match bind_imports(parsed, &modules, &origins, &mut diagnostics) {
         Ok(imports) => imports,
         Err(outcome) => return outcome,
     };
@@ -1531,6 +1585,7 @@ fn run_semantic(
                 ModuleScope {
                     modules,
                     imports,
+                    origins: origins.clone(),
                     budget: budget.clone(),
                 },
                 &mut diagnostics,
