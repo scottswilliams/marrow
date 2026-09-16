@@ -266,3 +266,162 @@ fn a_sparse_option_field_reads_three_distinct_states() {
         other => panic!("present-some is not an enum: {other:?}"),
     }
 }
+
+// The composite fixture's own ledger. A payload-carrying member anchors exactly like a
+// payloadless one: one `sum` per enum and one `member` per variant, with no anchor for
+// what a payload carries.
+const COMPOSITE_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4\n\
+     id product Account d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4\n\
+     id root accounts b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4\n\
+     id key accounts.id c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4\n\
+     id field Account.id f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0\n\
+     id field Account.tier f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1\n\
+     id field Account.backup f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2\n\
+     id sum Tier 70707070707070707070707070707070\n\
+     id member Tier.basic 71717171717171717171717171717171\n\
+     id member Tier.custom 72727272727272727272727272727272\n\
+     id sum Access 74747474747474747474747474747474\n\
+     id member Access.reader 75757575757575757575757575757575\n\
+     id member Access.admin 76767676767676767676767676767676\n\
+     id sum Option[Name] 78787878787878787878787878787878\n\
+     id member Option[Name].none 79797979797979797979797979797979\n\
+     id member Option[Name].some 7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a\n\
+     high-water 0\n\
+     end\n";
+
+// A declared enum whose payload is a struct and another enum, stored beside the
+// generic `Option<Name>` that carries the same struct. Both are sums with a composite
+// payload leaf; the durable field codec frames either one inline in the field cell.
+const COMPOSITE_SOURCE: &str = r#"resource Account {
+    required id: int
+    required tier: Tier
+    required backup: Option<Name>
+}
+
+struct Name {
+    first: string
+    last: string
+}
+
+enum Access {
+    reader
+    admin
+}
+
+enum Tier {
+    basic
+    custom(owner: Name, access: Access)
+}
+
+store ^accounts[id: int]: Account
+
+fn ada(): Name {
+    return Name(first: "Ada", last: "Lovelace")
+}
+
+pub fn createCustom(id: int) {
+    const tier = Tier::custom(owner: ada(), access: Access::admin)
+    transaction {
+        ^accounts[id] = Account(id: id, tier: tier, backup: some(ada()))
+    }
+}
+
+pub fn createBasic(id: int) {
+    transaction {
+        ^accounts[id] = Account(id: id, tier: Tier::basic, backup: none)
+    }
+}
+
+pub fn readTier(id: int): Tier? {
+    return ^accounts[id].tier
+}
+
+pub fn readBackup(id: int): Option<Name>? {
+    return ^accounts[id].backup
+}
+
+pub fn ownerOfAdminTier(id: int): string {
+    if const t = ^accounts[id].tier {
+        match t {
+            basic => {
+                return "basic"
+            }
+            custom(owner, access) => {
+                if access == Access::admin {
+                    return owner.last
+                }
+                return owner.first
+            }
+        }
+    }
+    return "missing"
+}
+"#;
+
+/// A declared enum carrying a struct and another enum round-trips through a durable
+/// field exactly as the generic `Option<Name>` beside it does: the stored value reads
+/// back with its composite leaves, a `match` over the read binds them, and the enum's
+/// sum and per-member identities are anchored like any other durable enum's.
+#[test]
+fn a_declared_enum_with_a_composite_payload_is_a_durable_field_value() {
+    let mut session = Project::single(COMPOSITE_SOURCE)
+        .ids(COMPOSITE_IDS)
+        .session();
+    session.call("createCustom", id(1));
+
+    match present(session.call("readTier", id(1))) {
+        Value::Enum(_, variant, payload) => {
+            assert_eq!(variant, 1, "custom is variant 1");
+            assert_eq!(payload.len(), 2, "the struct and the enum leaf");
+            match &payload[0] {
+                Value::Record(_, slots) => {
+                    assert_eq!(slots[0], Some(text("Ada")));
+                    assert_eq!(slots[1], Some(text("Lovelace")));
+                }
+                other => panic!("the first leaf is not a record: {other:?}"),
+            }
+            match &payload[1] {
+                Value::Enum(_, variant, leaf) => {
+                    assert_eq!(*variant, 1, "admin is variant 1");
+                    assert!(leaf.is_empty());
+                }
+                other => panic!("the second leaf is not an enum: {other:?}"),
+            }
+        }
+        other => panic!("not an enum: {other:?}"),
+    }
+
+    // The generic sibling carries the same struct through the same field codec.
+    match present(session.call("readBackup", id(1))) {
+        Value::Enum(_, variant, payload) => {
+            assert_eq!(variant, 1, "some is variant 1");
+            assert!(matches!(payload.as_ref(), [Value::Record(_, _)]));
+        }
+        other => panic!("not an enum: {other:?}"),
+    }
+
+    // The read value drives a `match` with positional payload binding.
+    assert_eq!(
+        session.call("ownerOfAdminTier", id(1)),
+        Some(text("Lovelace"))
+    );
+
+    session.call("createBasic", id(1));
+    match present(session.call("readTier", id(1))) {
+        Value::Enum(_, variant, payload) => {
+            assert_eq!(variant, 0, "basic is variant 0");
+            assert!(payload.is_empty());
+        }
+        other => panic!("not an enum: {other:?}"),
+    }
+    // `backup` is required, so its `none` is a stored in-band value, not an absent cell.
+    match present(session.call("readBackup", id(1))) {
+        Value::Enum(_, variant, payload) => {
+            assert_eq!(variant, 0, "none is variant 0");
+            assert!(payload.is_empty());
+        }
+        other => panic!("not an enum: {other:?}"),
+    }
+}
