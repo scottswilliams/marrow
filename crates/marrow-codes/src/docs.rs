@@ -30,10 +30,9 @@ fn internal() -> Vec<Code> {
         .collect()
 }
 
-/// Render the full `docs/error-codes.md` page from the registry.
-pub fn generate() -> String {
-    let parts: Vec<String> = vec![
-        r#"# Errors
+/// The page opening: the families a code's first segment names, and where the
+/// language and tool references carry the behavior behind a code.
+const PREAMBLE: &str = r#"# Errors
 
 Every Marrow diagnostic carries a dotted code such as `check.type`. The code is
 the stable part. The message beside it says what happened, where, and what to
@@ -51,51 +50,65 @@ Language-level error behavior is described in
 Tool invocation is described in [`tools/cli.md`](tools/cli.md). This page is
 generated from the code registry and lists every code the current build emits.
 
-## Code reference
+## Code reference"#;
 
+/// One family section of the page: the `### ` heading and prose that open it,
+/// then the codes whose rows fill its table, in page order.
+struct Section {
+    prose: &'static str,
+    codes: &'static [Code],
+}
+
+/// Every family section in page order. A new code joins the family it belongs to
+/// here, and a coverage test fails while one is registered but unlisted.
+const SECTIONS: &[Section] = &[
+    Section {
+        prose: r#"
 ### `parse.*`
 
 Syntax errors from the lexer and parser, reported by every command that reads
 source.
 
 | Code | Meaning |
-|---|---|"#
-            .to_string(),
-        rows(&[Code::ParseSyntax]),
-        r#"
+|---|---|"#,
+        codes: &[Code::ParseSyntax],
+    },
+    Section {
+        prose: r#"
 ### `fmt.*`
 
 Refusals from `marrow fmt`.
 
 | Code | Meaning |
-|---|---|"#
-            .to_string(),
-        rows(&[Code::FmtCommentLoss, Code::FmtDiagnosticLimit]),
-        r#"
+|---|---|"#,
+        codes: &[Code::FmtCommentLoss, Code::FmtDiagnosticLimit],
+    },
+    Section {
+        prose: r#"
 ### `cli.*`
 
 Refusals raised by the `marrow` command itself.
 
 | Code | Meaning |
-|---|---|"#
-            .to_string(),
-        rows(&[
+|---|---|"#,
+        codes: &[
             Code::CliInterfaceUnbuildable,
             Code::CliDurableUnsupported,
             Code::CliInstallationDamaged,
             Code::CliCeilingUnaccepted,
             Code::CliArgumentLimit,
             Code::CliCompilerResourceLimit,
-        ]),
-        r#"
+        ],
+    },
+    Section {
+        prose: r#"
 ### `check.*`
 
 Static errors found while checking source.
 
 | Code | Meaning |
-|---|---|"#
-            .to_string(),
-        rows(&[
+|---|---|"#,
+        codes: &[
             Code::CheckNestingLimit,
             Code::CheckUnsupported,
             Code::CheckType,
@@ -119,8 +132,10 @@ Static errors found while checking source.
             Code::CheckInstantiationLimit,
             Code::CheckResourceLimit,
             Code::CheckDurableIdentity,
-        ]),
-        r#"
+        ],
+    },
+    Section {
+        prose: r#"
 ### `image.*`
 
 Program-image verification failures. An image is verified in phases before it
@@ -128,25 +143,25 @@ runs, and a malformed or altered image is rejected at the first phase that finds
 a fault.
 
 | Code | Meaning |
-|---|---|"#
-            .to_string(),
-        rows(&[
+|---|---|"#,
+        codes: &[
             Code::ImageEnvelope,
             Code::ImageTable,
             Code::ImageFunction,
             Code::ImageClosure,
             Code::ImageFlow,
             Code::ImageTestEntry,
-        ]),
-        r#"
+        ],
+    },
+    Section {
+        prose: r#"
 ### `run.*`
 
 Runtime faults raised while running a verified program.
 
 | Code | Meaning |
-|---|---|"#
-            .to_string(),
-        rows(&[
+|---|---|"#,
+        codes: &[
             Code::RunOverflow,
             Code::RunDivideByZero,
             Code::RunTextLimit,
@@ -163,26 +178,28 @@ Runtime faults raised while running a verified program.
             Code::RunCorruption,
             Code::RunCollectionLimit,
             Code::RunTemporalOverflow,
-        ]),
-        r#"
+        ],
+    },
+    Section {
+        prose: r#"
 ### `value.*`
 
 Faults raised while encoding a value for a durable write.
 
 | Code | Meaning |
-|---|---|"#
-            .to_string(),
-        rows(&[Code::ValueRange]),
-        r#"
+|---|---|"#,
+        codes: &[Code::ValueRange],
+    },
+    Section {
+        prose: r#"
 ### `store.*`
 
 Faults from a store. The message names the store path or operation; only the
 code is stable.
 
 | Code | Meaning |
-|---|---|"#
-            .to_string(),
-        rows(&[
+|---|---|"#,
+        codes: &[
             Code::StoreIo,
             Code::StorePublicationUncertain,
             Code::StoreRestoreCommit,
@@ -211,26 +228,30 @@ code is stable.
             Code::StoreAuditIndexStale,
             Code::StoreAuditIndexMissing,
             Code::StoreAuditWitnessInvalid,
-        ]),
-        r#"
+        ],
+    },
+    Section {
+        prose: r#"
 ### `io.*`
 
 Operational I/O faults from the command line and the runner.
 
 | Code | Meaning |
-|---|---|"#
-            .to_string(),
-        rows(&[Code::IoRead, Code::IoThread, Code::IoWrite]),
-        r#"
+|---|---|"#,
+        codes: &[Code::IoRead, Code::IoThread, Code::IoWrite],
+    },
+    Section {
+        prose: r#"
 ### `config.*`
 
 Configuration faults, including an invalid project manifest.
 
 | Code | Meaning |
-|---|---|"#
-            .to_string(),
-        rows(&[Code::ConfigInvalid]),
-        r#"
+|---|---|"#,
+        codes: &[Code::ConfigInvalid],
+    },
+    Section {
+        prose: r#"
 ### `project.*`
 
 Faults from discovering a project's sources under `src`, resolving the local
@@ -238,9 +259,8 @@ dependencies its manifest declares, and reading its identity ledger
 `.marrow/ids`.
 
 | Code | Meaning |
-|---|---|"#
-            .to_string(),
-        rows(&[
+|---|---|"#,
+        codes: &[
             Code::ProjectSourcePath,
             Code::ProjectModuleCollision,
             Code::ProjectCaptureLimit,
@@ -250,8 +270,10 @@ dependencies its manifest declares, and reading its identity ledger
             Code::ProjectIdsMint,
             Code::ProjectIdsLocation,
             Code::ProjectIdsPublicationPending,
-        ]),
-        r#"
+        ],
+    },
+    Section {
+        prose: r#"
 ### `wire.*`
 
 Rejections of a message between the generated client and the runner. A frame is
@@ -259,42 +281,56 @@ rejected at the first bound or grammar rule it breaks, before its content is
 acted on.
 
 | Code | Meaning |
-|---|---|"#
-            .to_string(),
-        rows(&[
+|---|---|"#,
+        codes: &[
             Code::WireFrameTooLarge,
             Code::WireDepthLimit,
             Code::WireStringLimit,
             Code::WireUnsupportedVersion,
             Code::WireMalformed,
             Code::WireNoncanonical,
-        ]),
-        r#"
+        ],
+    },
+    Section {
+        prose: r#"
 ### `runner.*`
 
 Rejections from the runner that serves a launched program.
 
 | Code | Meaning |
-|---|---|"#
-            .to_string(),
-        rows(&[
+|---|---|"#,
+        codes: &[
             Code::RunnerHandshake,
             Code::RunnerUnknownExport,
             Code::RunnerArgMismatch,
             Code::RunnerDurableUnsupported,
             Code::RunnerSpawn,
             Code::RunnerTerminated,
-        ]),
-        r#""#.to_string(),
-        INTERNAL_HEADING.to_string(),
-        r#"
+        ],
+    },
+];
+
+/// The prose beneath [`INTERNAL_HEADING`]. Its codes come from the registry's
+/// lifecycle, not a list, so a reclassification moves a code by itself.
+const INTERNAL_PROSE: &str = r#"
 These codes guard invariants the surrounding layers already close. An ordinary
 program does not reach them.
 
 | Code | Meaning |
-|---|---|"#
-            .to_string(),
-        rows(&internal()),
-    ];
+|---|---|"#;
+
+/// Render the full `docs/error-codes.md` page from the registry. The parts join with
+/// one newline and the page ends with one, so each section's prose opens with the
+/// blank line that separates it from the table above.
+pub fn generate() -> String {
+    let mut parts = Vec::with_capacity(2 * SECTIONS.len() + 4);
+    parts.push(PREAMBLE.to_string());
+    for section in SECTIONS {
+        parts.push(section.prose.to_string());
+        parts.push(rows(section.codes));
+    }
+    parts.push(format!("\n{INTERNAL_HEADING}"));
+    parts.push(INTERNAL_PROSE.to_string());
+    parts.push(rows(&internal()));
     format!("{}\n", parts.join("\n"))
 }

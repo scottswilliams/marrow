@@ -124,30 +124,43 @@ fn workspace_edges() -> Vec<PackageEdges> {
 #[test]
 fn cargo_dag_respects_the_trust_boundaries() {
     let packages = workspace_edges();
-    let find = |name: &str| {
-        packages
-            .iter()
-            .find(|package| package.name == name)
-            .unwrap_or_else(|| panic!("workspace member {name} missing from metadata"))
-    };
+    the_vm_consumes_only_sealed_images(&packages);
+    analysis_owners_stay_off_runtime_and_store(&packages);
+    the_language_server_reconstructs_no_semantics(&packages);
+    the_wire_is_the_pure_protocol_owner(&packages);
+    the_project_adapter_is_the_sole_filesystem_owner(&packages);
+    the_runner_never_compiles_source(&packages);
+    the_byte_engine_has_one_production_consumer(&packages);
+}
 
-    // marrow-vm consumes only sealed images: no production edge to marrow-image
-    // (a dev-dependency for building test artifacts is permitted).
-    let vm = find("marrow-vm");
+/// The workspace member named `name`, which the metadata always carries.
+fn find<'a>(packages: &'a [PackageEdges], name: &str) -> &'a PackageEdges {
+    packages
+        .iter()
+        .find(|package| package.name == name)
+        .unwrap_or_else(|| panic!("workspace member {name} missing from metadata"))
+}
+
+/// marrow-vm consumes only sealed images: no production edge to marrow-image
+/// (a dev-dependency for building test artifacts is permitted).
+fn the_vm_consumes_only_sealed_images(packages: &[PackageEdges]) {
+    let vm = find(packages, "marrow-vm");
     assert!(
         !vm.edges
             .iter()
             .any(|(dep, is_dev)| dep == "marrow-image" && !is_dev),
         "marrow-vm must not have a production dependency on marrow-image"
     );
+}
 
-    // The editor analysis floor (revisioned `AnalysisSnapshot`, hover/definition
-    // facts, checked formatting) is owned by the compiler, syntax, and pure
-    // project-input crates. None may reach a runtime or store crate: analysis is a
-    // pure function of captured source, and the downstream LSP consumes its facts
-    // without acquiring an execution or storage edge through them. The reciprocal
-    // clause holds too: no analysis owner reaches the LSP transport crate, so the
-    // compiler/syntax/project owners stay upstream of tooling.
+/// The editor analysis floor (revisioned `AnalysisSnapshot`, hover/definition
+/// facts, checked formatting) is owned by the compiler, syntax, and pure
+/// project-input crates. None may reach a runtime or store crate: analysis is a
+/// pure function of captured source, and the downstream LSP consumes its facts
+/// without acquiring an execution or storage edge through them. The reciprocal
+/// clause holds too: no analysis owner reaches the LSP transport crate, so the
+/// compiler/syntax/project owners stay upstream of tooling.
+fn analysis_owners_stay_off_runtime_and_store(packages: &[PackageEdges]) {
     let runtime_and_store = [
         "marrow-verify",
         "marrow-vm",
@@ -157,7 +170,7 @@ fn cargo_dag_respects_the_trust_boundaries() {
         "marrow-lsp",
     ];
     for owner in ["marrow-compile", "marrow-syntax", "marrow-project"] {
-        let package = find(owner);
+        let package = find(packages, owner);
         for forbidden in runtime_and_store {
             assert!(
                 !package.edges.iter().any(|(dep, _)| dep == forbidden),
@@ -165,12 +178,14 @@ fn cargo_dag_respects_the_trust_boundaries() {
             );
         }
     }
+}
 
-    // The language server consumes published facts and the physical project adapter
-    // only. It reconstructs no runtime, storage, image, verification, or wire
-    // semantics, so it has no edge into any of those owners. Its allowed production
-    // edges are the fact-surface consumers plus the code registry.
-    let lsp = find("marrow-lsp");
+/// The language server consumes published facts and the physical project adapter
+/// only. It reconstructs no runtime, storage, image, verification, or wire
+/// semantics, so it has no edge into any of those owners. Its allowed production
+/// edges are the fact-surface consumers plus the code registry.
+fn the_language_server_reconstructs_no_semantics(packages: &[PackageEdges]) {
+    let lsp = find(packages, "marrow-lsp");
     const LSP_FORBIDDEN: &[&str] = &[
         "marrow-kernel",
         "marrow-store",
@@ -207,24 +222,28 @@ fn cargo_dag_respects_the_trust_boundaries() {
             "marrow-lsp has an unexpected production edge to {dep}"
         );
     }
+}
 
-    // marrow-local-wire is the pure protocol owner: framing, limits, the closed
-    // grammar, and canonical JSON with no execution, storage, or process edge. Its
-    // only internal dependency is the diagnostic-code registry.
-    let wire = find("marrow-local-wire");
+/// marrow-local-wire is the pure protocol owner: framing, limits, the closed
+/// grammar, and canonical JSON with no execution, storage, or process edge. Its
+/// only internal dependency is the diagnostic-code registry.
+fn the_wire_is_the_pure_protocol_owner(packages: &[PackageEdges]) {
+    let wire = find(packages, "marrow-local-wire");
     for (dep, _) in &wire.edges {
         assert_eq!(
             dep, "marrow-codes",
             "marrow-local-wire must depend on marrow-codes alone; found an edge to {dep}"
         );
     }
+}
 
-    // The physical project adapter is the sole filesystem owner below the tool
-    // consumers. It depends on the pure project-input owner, the diagnostic-code
-    // registry, and the sole descriptor-rooted publication owner — `.marrow/ids`
-    // is a project-root artifact, so publishing it belongs here rather than to a
-    // store-lifecycle owner or a second rename/sync/recovery model.
-    let project_fs = find("marrow-project-fs");
+/// The physical project adapter is the sole filesystem owner below the tool
+/// consumers. It depends on the pure project-input owner, the diagnostic-code
+/// registry, and the sole descriptor-rooted publication owner — `.marrow/ids`
+/// is a project-root artifact, so publishing it belongs here rather than to a
+/// store-lifecycle owner or a second rename/sync/recovery model.
+fn the_project_adapter_is_the_sole_filesystem_owner(packages: &[PackageEdges]) {
+    let project_fs = find(packages, "marrow-project-fs");
     let mut project_fs_edges: Vec<(String, bool)> = project_fs.edges.clone();
     project_fs_edges.sort();
     assert_eq!(
@@ -237,7 +256,7 @@ fn cargo_dag_respects_the_trust_boundaries() {
         "marrow-project-fs must depend only on marrow-project, marrow-codes, and \
          marrow-fs-journal"
     );
-    let cli = find("marrow");
+    let cli = find(packages, "marrow");
     assert!(
         cli.edges
             .iter()
@@ -247,7 +266,7 @@ fn cargo_dag_respects_the_trust_boundaries() {
     // The CLI and the language server are the two tool consumers of the shared physical
     // adapter; no other crate may reach it.
     const PROJECT_FS_CONSUMERS: &[&str] = &["marrow", "marrow-lsp"];
-    for package in &packages {
+    for package in packages {
         if PROJECT_FS_CONSUMERS.contains(&package.name) {
             continue;
         }
@@ -260,13 +279,15 @@ fn cargo_dag_respects_the_trust_boundaries() {
             package.name
         );
     }
+}
 
-    // The runner executes storeless exports only: it consumes the verifier and VM
-    // but never compiles source, so it has no production edge to the compiler (a
-    // test-only dev edge, to build fixture images, is permitted). The store gate
-    // below independently keeps it off the raw engine. Its production edges stay
-    // within the wire/image/verify/vm/temporal/codes set.
-    let runner = find("marrow-runner");
+/// The runner executes storeless exports only: it consumes the verifier and VM
+/// but never compiles source, so it has no production edge to the compiler (a
+/// test-only dev edge, to build fixture images, is permitted). The store gate
+/// below independently keeps it off the raw engine. Its production edges stay
+/// within the wire/image/verify/vm/temporal/codes set.
+fn the_runner_never_compiles_source(packages: &[PackageEdges]) {
+    let runner = find(packages, "marrow-runner");
     const RUNNER_ALLOWED: &[&str] = &[
         "marrow-local-wire",
         "marrow-image",
@@ -285,11 +306,13 @@ fn cargo_dag_respects_the_trust_boundaries() {
             "marrow-runner has an unexpected production edge to {dep}"
         );
     }
+}
 
-    // The raw byte engine has exactly one production consumer: the path kernel. The VM's
-    // private commit-fault tests implement a fault-injecting engine double against the
-    // engine traits, a dev-only edge that never reaches a production build.
-    for package in &packages {
+/// The raw byte engine has exactly one production consumer: the path kernel. The VM's
+/// private commit-fault tests implement a fault-injecting engine double against the
+/// engine traits, a dev-only edge that never reaches a production build.
+fn the_byte_engine_has_one_production_consumer(packages: &[PackageEdges]) {
+    for package in packages {
         let production_store = package
             .edges
             .iter()
