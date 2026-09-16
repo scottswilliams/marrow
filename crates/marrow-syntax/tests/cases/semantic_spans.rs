@@ -2,8 +2,8 @@
 
 use crate::common::CompletePayload;
 use marrow_syntax::{
-    CheckedBind, Declaration, Expression, SourceSpan, Statement, TypeConstraint, TypeExpr,
-    format_source, parse_source,
+    CheckedBind, ConstDecl, Declaration, Expression, FunctionDecl, ParsedSource, SourceSpan,
+    Statement, StoreDecl, TypeConstraint, TypeExpr, format_source, parse_source,
 };
 
 fn assert_site(source: &str, span: SourceSpan, spelling: &str) {
@@ -94,67 +94,95 @@ fn assert_name_type(source: &str, ty: &TypeExpr, spelling: &str, segments: &[&st
     }
 }
 
-#[test]
-fn parser_retains_every_semantic_site_span() {
-    let source = concat!(
-        "module app::semantic\n",
-        "\n",
-        "use std::bytes\n",
-        "\n",
-        "// 😀 keeps later byte offsets distinct from character offsets\n",
-        "const Limit: int = 7\n",
-        "\n",
-        "resource Item {\n",
-        "    value: int\n",
-        "}\n",
-        "\n",
-        "store ^items[id: int]: Item {\n",
-        "    index byValue[value] unique\n",
-        "    index byCode[value, meta.code]\n",
-        "}\n",
-        "\n",
-        "fn probe(input: Map<string, List<int>>, table[key: bytes]: int, qualified: app::Thing, odd: Foo(bar)) {\n",
-        "    const local: int = 1\n",
-        "    var mutable[slot: int]: bytes\n",
-        "    if const present: int = ^items[1].value {\n",
-        "        print(present)\n",
-        "    }\n",
-        "    if const first = ^items[1].value and const second = ^items[2].value {\n",
-        "        print(first)\n",
-        "    }\n",
-        "    const fallback = ^items[1].value else {\n",
-        "        return\n",
-        "    }\n",
-        "    var fallbackVar = ^items[1].value else {\n",
-        "        return\n",
-        "    }\n",
-        "    const checkedConst: int = checked local + 1\n",
-        "        on out_of_range {\n",
-        "            return\n",
-        "        }\n",
-        "    var checkedVar = checked local / 1\n",
-        "        on zero_divisor {\n",
-        "            return\n",
-        "        }\n",
-        "    call(\"😀\", named: mutable)\n",
-        "}\n",
-    );
-    let parsed = parse_source(source);
+/// One complete parse whose declarations cover every span family the parser owns. The
+/// astral scalar keeps later byte offsets distinct from character offsets.
+const SPAN_CORPUS: &str = concat!(
+    "module app::semantic\n",
+    "\n",
+    "use std::bytes\n",
+    "\n",
+    "// 😀 keeps later byte offsets distinct from character offsets\n",
+    "const Limit: int = 7\n",
+    "\n",
+    "resource Item {\n",
+    "    value: int\n",
+    "}\n",
+    "\n",
+    "store ^items[id: int]: Item {\n",
+    "    index byValue[value] unique\n",
+    "    index byCode[value, meta.code]\n",
+    "}\n",
+    "\n",
+    "fn probe(input: Map<string, List<int>>, table[key: bytes]: int, qualified: app::Thing, odd: Foo(bar)) {\n",
+    "    const local: int = 1\n",
+    "    var mutable[slot: int]: bytes\n",
+    "    if const present: int = ^items[1].value {\n",
+    "        print(present)\n",
+    "    }\n",
+    "    if const first = ^items[1].value and const second = ^items[2].value {\n",
+    "        print(first)\n",
+    "    }\n",
+    "    const fallback = ^items[1].value else {\n",
+    "        return\n",
+    "    }\n",
+    "    var fallbackVar = ^items[1].value else {\n",
+    "        return\n",
+    "    }\n",
+    "    const checkedConst: int = checked local + 1\n",
+    "        on out_of_range {\n",
+    "            return\n",
+    "        }\n",
+    "    var checkedVar = checked local / 1\n",
+    "        on zero_divisor {\n",
+    "            return\n",
+    "        }\n",
+    "    call(\"😀\", named: mutable)\n",
+    "}\n",
+);
+
+/// Parse the corpus, asserting it is complete: every family below reads a clean tree.
+fn parse_corpus() -> ParsedSource {
+    let parsed = parse_source(SPAN_CORPUS);
     assert!(
         parsed.diagnostics.complete().is_empty(),
         "{:#?}",
         parsed.diagnostics
     );
-    assert_eq!(
-        format_source(source).expect("a complete parse formats"),
-        source
-    );
-    assert_eq!(
-        format_source(&format_source(source).expect("a complete parse formats"))
-            .expect("a complete parse formats"),
-        source
-    );
+    parsed
+}
 
+/// The corpus's `const`, `store`, and `fn` declarations, in source order.
+fn corpus_declarations(parsed: &ParsedSource) -> (&ConstDecl, &StoreDecl, &FunctionDecl) {
+    let [
+        Declaration::Const(top_const),
+        Declaration::Resource(_),
+        Declaration::Store(store),
+        Declaration::Function(probe),
+    ] = &parsed.file.declarations[..]
+    else {
+        panic!(
+            "unexpected declaration corpus: {:#?}",
+            parsed.file.declarations
+        );
+    };
+    (top_const, store, probe)
+}
+
+#[test]
+fn the_span_corpus_formats_to_itself() {
+    parse_corpus();
+    let formatted = format_source(SPAN_CORPUS).expect("a complete parse formats");
+    assert_eq!(formatted, SPAN_CORPUS);
+    assert_eq!(
+        format_source(&formatted).expect("a complete parse formats"),
+        SPAN_CORPUS
+    );
+}
+
+#[test]
+fn parser_retains_module_and_import_spans() {
+    let source = SPAN_CORPUS;
+    let parsed = parse_corpus();
     let module = parsed.file.module.as_ref().expect("module");
     assert_path(source, &module.segments, &["app", "semantic"]);
     for segment in &module.segments {
@@ -168,19 +196,13 @@ fn parser_retains_every_semantic_site_span() {
     for segment in &import.segments {
         assert_within(import.span, segment.span(), "import segment");
     }
+}
 
-    let [
-        Declaration::Const(top_const),
-        Declaration::Resource(_),
-        Declaration::Store(store),
-        Declaration::Function(probe),
-    ] = &parsed.file.declarations[..]
-    else {
-        panic!(
-            "unexpected declaration corpus: {:#?}",
-            parsed.file.declarations
-        );
-    };
+#[test]
+fn parser_retains_declaration_header_spans() {
+    let source = SPAN_CORPUS;
+    let parsed = parse_corpus();
+    let (top_const, store, _) = corpus_declarations(&parsed);
     assert_site(source, top_const.name_span, "Limit");
     assert_within(top_const.span, top_const.name_span, "top-level const name");
     assert_name_type(
@@ -229,7 +251,13 @@ fn parser_retains_every_semantic_site_span() {
     for segment in &dotted.segments {
         assert_within(dotted.span, segment.span(), "dotted index-path segment");
     }
+}
 
+#[test]
+fn parser_retains_parameter_type_spans() {
+    let source = SPAN_CORPUS;
+    let parsed = parse_corpus();
+    let (_, _, probe) = corpus_declarations(&parsed);
     let [input, table, qualified, odd] = probe.params.as_slice() else {
         panic!("expected four parameters");
     };
@@ -299,7 +327,13 @@ fn parser_retains_every_semantic_site_span() {
         segment_spans.is_empty(),
         "a non-name-shaped spelling must not fabricate an identifier segment"
     );
+}
 
+#[test]
+fn parser_retains_local_binder_spans() {
+    let source = SPAN_CORPUS;
+    let parsed = parse_corpus();
+    let (_, _, probe) = corpus_declarations(&parsed);
     let statements = &probe.body.statements;
     let Statement::Const {
         name, name_span, ..
@@ -416,7 +450,14 @@ fn parser_retains_every_semantic_site_span() {
     assert_eq!(&**name, "checkedVar");
     assert_site(source, *name_span, "checkedVar");
     assert_within(statements[7].span(), *name_span, "checked var binder");
+}
 
+#[test]
+fn parser_retains_call_argument_spans() {
+    let source = SPAN_CORPUS;
+    let parsed = parse_corpus();
+    let (_, _, probe) = corpus_declarations(&parsed);
+    let statements = &probe.body.statements;
     let Statement::Expr {
         value:
             Expression::Call {
