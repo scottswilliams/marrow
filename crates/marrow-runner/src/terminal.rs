@@ -600,10 +600,16 @@ pub(crate) struct Companion {
     kind: CompanionKind,
 }
 
-/// Time a companion is given to exit on its own.
+/// Time a companion is given to exit on its own before the terminal stops waiting quietly.
 const GRACE: Duration = Duration::from_millis(100);
-/// Further time allowed after the grace period lapses.
-const REAP: Duration = Duration::from_secs(1);
+/// Further time allowed after the grace period lapses: the rest of a native companion's
+/// budget to close its store, and the window to reap an ephemeral one after the kill.
+///
+/// It is the per-call deadline because a native close is the same filesystem work a call
+/// does, under the same machine load. A shorter budget reports a healthy but slow close as a
+/// cleanup failure, and the terminal never kills a native companion to shorten it: a signal
+/// mid-close leaves the engine unclean and the next attach refuses it.
+const REAP: Duration = CALL_DEADLINE;
 
 impl Companion {
     pub(crate) fn settle(mut self) -> Result<(), CompanionCleanupError> {
@@ -619,9 +625,8 @@ impl Companion {
         let Some(mut child) = self.child.take() else {
             return Ok(());
         };
-        // A native companion may still be closing the store, where a signal would leave the
-        // engine unclean, so it waits out both bounds instead of being killed; an ephemeral
-        // companion holds nothing durable and is killed once the grace period lapses.
+        // A native companion waits out both bounds unsignalled; an ephemeral one holds nothing
+        // durable and is killed once the grace period lapses.
         let natural = match self.kind {
             CompanionKind::Native => grace + reap,
             CompanionKind::Ephemeral => grace,
