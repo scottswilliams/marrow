@@ -952,11 +952,11 @@ mod tests {
         let batch = |identity: &ProjectFile| {
             summary.owned_bytes() + summary.count() * identity.retained_owned_bytes()
         };
-        let prefill = MAX_DIAGNOSTIC_BYTES - batch(&short) - file().retained_owned_bytes();
+        let prefill = MAX_DIAGNOSTIC_BYTES - batch(short) - file().retained_owned_bytes();
 
         let mut exact = DiagnosticCollector::new();
         exact.push(row_with_message_len(prefill));
-        exact.absorb_syntax(&short, marrow_syntax::parse_source(source).diagnostics);
+        exact.absorb_syntax(short, marrow_syntax::parse_source(source).diagnostics);
         let at_edge = exact.probe();
         assert_eq!(at_edge.owned_bytes, MAX_DIAGNOSTIC_BYTES);
         assert_eq!(at_edge.limit, None);
@@ -964,7 +964,7 @@ mod tests {
 
         let mut crossing = DiagnosticCollector::new();
         crossing.push(row_with_message_len(prefill));
-        crossing.absorb_syntax(&long, marrow_syntax::parse_source(source).diagnostics);
+        crossing.absorb_syntax(long, marrow_syntax::parse_source(source).diagnostics);
         assert_eq!(
             crossing.probe().limit,
             Some(CompileDiagnosticLimit::OwnedBytes {

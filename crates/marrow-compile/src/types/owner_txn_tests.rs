@@ -8,6 +8,9 @@ use super::*;
 use crate::compile::admitted;
 use marrow_image::ImageDraft;
 
+/// The tree every fixture here declares its templates in.
+const ROOT: SourceOrigin = SourceOrigin::Root;
+
 /// An admitted batch's registry effects are inverted with its draft rows, so a
 /// rolled-back batch leaves the two owners in step. Without the inverse the registry
 /// keeps the collection and instantiation rows the draft rolled back, and the very next
@@ -657,13 +660,7 @@ fn template_proof_savepoint_isolates_a_failed_proof_and_transfers_once() {
         // A collection payload leaf is refused by the shared enum-payload rule; the
         // proof mints its own collection row along the way.
         let (_, refused) = registry
-            .enum_payload_leaf(
-                proof_draft,
-                &marrow_project::SourceOrigin::Root,
-                &list_of("string"),
-                &[],
-                site(29),
-            )
+            .enum_payload_leaf(proof_draft, &ROOT, &list_of("string"), &[], site(29))
             .expect("a collection resolves as a payload leaf");
         assert_eq!(
             registry.collections.borrow().len(),
