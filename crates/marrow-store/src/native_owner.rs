@@ -1,31 +1,27 @@
 //! Opaque ownership of one native engine and its process owner lock.
 //!
-//! The store directory is the unit of ownership, and it is also the node exclusion
-//! rests on: the advisory lock is taken on the canonicalized directory itself
-//! before any name inside it is opened, and the `lock` marker's own lock stands
-//! behind it. A lock resting only on names inside the directory does not survive
-//! their replacement, and the two replaceable nodes a holder locks — the marker
-//! and the engine file — can be replaced together. This module alone derives the
-//! `lock` and `store.redb` paths, acquires the advisory lock before admission or
-//! engine open, and keeps that lock inseparable from the native engine. An
-//! indeterminate commit irreversibly quarantines every node it rests on until
-//! process exit.
+//! The store directory is the unit of ownership and the node exclusion rests on:
+//! the advisory lock is taken on the canonicalized directory itself before any
+//! name inside it is opened, with the `lock` marker's own lock behind it (see
+//! [`OwnerLock::acquire`]). This module alone derives the `lock` and `store.redb`
+//! paths, acquires the advisory lock before admission or engine open, and keeps
+//! that lock inseparable from the native engine. An indeterminate commit
+//! irreversibly quarantines every node it rests on until process exit.
 //!
-//! What that establishes and what it does not: while a holder is live, no second
-//! owner of the same store directory node can be constructed, whatever a writer
-//! inside that directory does to its children. It is not exclusion over a
-//! *path*. A writer that replaces the store directory node itself — moving it
-//! aside and publishing another directory under the same name — leaves two owners
-//! of two different directories that one path reaches in turn, which is the
-//! custody split the storage reference records.
+//! The bound on that guarantee: while a holder is live, no second owner of the
+//! same store directory *node* can be constructed, whatever a writer inside that
+//! directory does to its children. It is not exclusion over a *path*. A writer
+//! that replaces the store directory node itself — moving it aside and publishing
+//! another directory under the same name — leaves two owners of two different
+//! directories that one path reaches in turn, the custody split the storage
+//! reference records.
 //!
 //! Acquisition is separate from binding so nothing above this module has to read
 //! a byte of the store directory to decide exclusion. [`NativeEngineOwner::acquire_existing`]
 //! canonicalizes the directory, takes the lock, and returns an affine
 //! [`PendingNativeEngineOwner`] having made no engine call and without being told
-//! which store instance it is about to hold. The owner above it reads whatever it
-//! needs under that exclusion and names the instance afterwards, which is the only
-//! ordering in which a malformed artifact cannot preempt contention.
+//! which store instance it is about to hold. Naming the instance afterwards is the
+//! only ordering in which a malformed artifact cannot preempt contention.
 
 use std::fs::{File, Metadata, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};

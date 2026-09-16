@@ -206,16 +206,16 @@ fn contain_panic<T>(
 /// format-version verdict the caller was testing for.
 ///
 /// redb guards a store with an OS file lock — `flock` on Unix targets that support it,
-/// and redb proceeds unlocked where the platform reports locking unsupported — acquired on open and
-/// released when the handle drops. A write-capable open issued just after another handle
-/// on the same path was dropped can still observe that lock held and fail with
-/// `DatabaseAlreadyOpen`, and the window widens with machine load.
+/// and redb proceeds unlocked where the platform reports locking unsupported — acquired
+/// on open and released when the handle drops. A write-capable open issued just after
+/// another handle on the same path was dropped can still observe that lock held and fail
+/// with `DatabaseAlreadyOpen`, and the window widens with machine load. Why it is still
+/// held is not established — the kernel's release trailing the close, or a concurrently
+/// spawned child inheriting the descriptor until its exec — and the same wait absorbs
+/// either.
 ///
-/// Why the lock is still held is not established — the kernel's release trailing the
-/// close, or a concurrently spawned child inheriting the descriptor until its exec — and
-/// the same wait absorbs either. A genuine conflicting holder (conflicting rather than
-/// merely concurrent: two read-only handles take compatible shared locks and the second
-/// simply succeeds) keeps the lock for the whole budget and surfaces as
+/// A genuine conflicting holder (two read-only handles take compatible shared locks and
+/// the second simply succeeds) keeps the lock for the whole budget and surfaces as
 /// [`StoreError::Locked`], as does a transient window longer than the budget. Only the
 /// retry sleeps are bounded — 1, 2, 4 and 8 ms; the filesystem and database open being
 /// retried are not.
