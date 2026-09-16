@@ -108,6 +108,19 @@ language fact comes from the server. The package targets macOS on Apple Silicon
 setting. It supports one workspace folder or none, stays inactive in untrusted or
 virtual workspaces, and performs no telemetry, network access, or updates.
 
+Packaging bundles the server from an [install](../install.md#install) directory:
+
+```sh
+cd editors/vscode
+npm ci
+MARROW_LSP=/path/to/install/marrow-lsp npm run package
+code --install-extension marrow-0.1.1.vsix
+```
+
+The installed extension is then checked by hand: open a `.mw` file and confirm
+diagnostics, formatting, hover, definition, and **Marrow: Restart Language
+Server**.
+
 ## Scope
 
 Today, the server serves the eight capabilities above. References, rename,

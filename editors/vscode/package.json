@@ -60,7 +60,8 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
-    "vscode:prepublish": "tsc -p ./"
+    "vscode:prepublish": "tsc -p ./",
+    "package": "[ -x \"$MARROW_LSP\" ] || { echo 'set MARROW_LSP to the marrow-lsp binary to bundle' >&2; exit 1; }; mkdir -p server && cp \"$MARROW_LSP\" server/marrow-lsp && chmod 755 server/marrow-lsp && vsce package"
   },
   "dependencies": {
     "vscode-languageclient": "9.0.1"
