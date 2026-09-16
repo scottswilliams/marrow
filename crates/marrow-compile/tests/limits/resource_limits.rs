@@ -197,8 +197,6 @@ fn sixty_five_thousand_local_requests_are_total_and_fail_stop() {
     );
 }
 
-// ---- Invariant 1: a finite acyclic over-deep durable value has a located refusal.
-
 /// A durable field whose stored value nests structs past `MAX_DURABLE_VALUE_DEPTH`
 /// (32) is finite and acyclic, so the value-cycle pass never fires. The builder must
 /// report `check.resource_limit` at the offending field rather than mark the graph
@@ -323,8 +321,8 @@ fn short_value_cycle_reports_only_recursion() {
 
 /// A finite acyclic value that reaches the depth bound draws only the depth
 /// `check.resource_limit`; the value-cycle pass never fires, so no `check.recursion`
-/// accompanies it. This is the sibling that a global "any cycle exists" suppression
-/// signal would wrongly silence, and the reason the depth report stays stage-local.
+/// accompanies it. This is the sibling a global suppression signal would wrongly
+/// silence.
 #[test]
 fn acyclic_over_deep_value_reports_only_resource_limit() {
     let mut source = String::from("module main\n\n");
@@ -437,8 +435,6 @@ fn a_scalar_leaf_at_the_bound_still_compiles() {
     compile(&struct_chain_to_leaf(31, "int")).expect("a leaf at the depth bound is admitted");
 }
 
-// ---- Invariant 2: a root key tuple over the bound is a resource refusal.
-
 /// A store root with more than `MAX_KEY_COLUMNS` (8) key columns is prechecked as
 /// `check.resource_limit` at the store root, not as `check.unsupported`.
 #[test]
@@ -459,8 +455,6 @@ fn over_wide_root_key_reports_resource_limit_not_unsupported() {
     }
     assert_source_resource_limit(compile(&project(&source, Some(&ledger(&anchors)))));
 }
-
-// ---- Invariant 3: a branch key tuple over the bound has a located refusal.
 
 /// A keyed `branch` with more than `MAX_KEY_COLUMNS` (8) key columns is prechecked at
 /// the branch and reports `check.resource_limit` at a real span, rather than reaching
@@ -500,8 +494,7 @@ fn over_wide_branch_key_reports_resource_limit() {
 ///
 /// Returns the project alongside the innermost field's one-based line: the refusal must
 /// land on that member, not on the resource, the store, or nowhere. A member's span runs
-/// from the start of its line, as every other member diagnostic's does, so the line is
-/// the whole of what identifies it.
+/// from the start of its line, so the line identifies it whole.
 fn nested_branch_project(branches: usize, ids: bool) -> (ProjectInput, u32) {
     let mut source = String::from("module main\n\nresource R {\n    required t: string\n\n");
     let mut anchors = vec![
@@ -603,8 +596,6 @@ fn the_depth_refusal_is_located_before_the_ledger_is_minted() {
     assert_eq!(limit.line(), line);
 }
 
-// ---- Named source-precheck: an index projection past its component bound.
-
 /// A `unique` managed index projecting more than `MAX_INDEX_COMPONENTS` (72) leaves
 /// crosses the projection bound. It must report `check.resource_limit` at the index.
 #[test]
@@ -630,8 +621,6 @@ fn over_wide_index_projection_reports_resource_limit() {
     assert_source_resource_limit(compile(&project(&source, Some(&ledger(&anchors)))));
 }
 
-// ---- Named source-precheck: an overlong interned source string.
-
 /// A string literal longer than `MAX_STRING_BYTES` (4 KiB) is a single source
 /// construct crossing the interned-string bound, so it reports `check.resource_limit`
 /// at that literal rather than the synthetic image-bound diagnostic.
@@ -642,8 +631,6 @@ fn over_long_string_literal_reports_resource_limit() {
         format!("module main\n\npub fn label(): string {{\n    return \"{literal}\"\n}}\n");
     assert_source_resource_limit(compile(&project(&source, None)));
 }
-
-// ---- Per-declaration source-precheck: enum variant count.
 
 /// An enum declaring more than `MAX_VARIANTS` (256) members crosses the per-enum
 /// variant bound at its declaration.
@@ -656,8 +643,6 @@ fn over_wide_enum_reports_resource_limit() {
     );
     assert_source_resource_limit(compile(&project(&source, None)));
 }
-
-// ---- Per-declaration source-precheck: variant payload width.
 
 /// An enum variant carrying more than `MAX_PAYLOAD_FIELDS` (64) payload leaves
 /// crosses the per-variant payload bound.

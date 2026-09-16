@@ -232,8 +232,8 @@ impl<'a, 'c> StmtParser<'a, 'c> {
     }
 
     /// Parse statements until the block closes. `capacity` is the measured number of
-    /// statement starts this block opens; the loop below structures at most one
-    /// statement per start, so the list is allocated once and never grows.
+    /// statement starts this block opens, and at most one statement is structured per
+    /// start, so the list is allocated once and never grows.
     fn statements(&mut self, capacity: usize) -> Box<[Statement]> {
         let mut statements = Vec::with_capacity(capacity);
         while let Some(kind) = self.peek() {
@@ -668,15 +668,13 @@ impl<'a, 'c> StmtParser<'a, 'c> {
     }
 
     /// Parse `match <scrutinee> { <arms> }`. Each arm is `pattern => stmt|{ block }`,
-    /// where the pattern is a member path relative to the scrutinee enum (`bengal`,
-    /// `tiger::bengal`, or a category `tiger`) with optional payload bindings. A
-    /// local enum's `match` has no wildcard arm; exhaustiveness and member validity
-    /// are checker rules, so the parser only structures the arms.
+    /// the pattern a member path relative to the scrutinee enum with optional payload
+    /// bindings. Exhaustiveness and member validity are checker rules.
     fn match_stmt(&mut self) -> Statement {
         let start = self.advance().span; // `match`
         let scrutinee = self.header_expression(start);
-        // A comment trailing the `match` header before its `{` becomes an own-line
-        // comment leading the first arm, the one owner `match` arms share.
+        // A comment trailing the `match` header becomes an own-line comment leading the
+        // first arm, the one owner `match` arms share.
         self.own_header_comment_in_place(start.start_byte);
         let (arms, end) = self.match_body(start);
         Statement::Match {
@@ -689,12 +687,10 @@ impl<'a, 'c> StmtParser<'a, 'c> {
     /// Parse a `match` statement's `{ <arms> }` and return its arms and closing span.
     ///
     /// A match body is a brace-delimited region like any other, so it asks the same two
-    /// questions a block does before it is structured: the measurement decides whether
-    /// the tree holds it and how many arms it can hold, and the frame bound decides
-    /// whether the descent has room for it. Sizing the arm list here is what the
-    /// measurement buys — an arm starts where a statement would, so the count that sizes
-    /// a block's statement list sizes this list too, and it is handed on exactly sized
-    /// rather than grown by pushing.
+    /// questions a block does: the measurement decides whether the tree holds it and how
+    /// many arms it can hold, and the frame bound decides whether the descent has room.
+    /// An arm starts where a statement would, so the count that sizes a block's
+    /// statement list sizes the arm list too, exactly rather than by pushing.
     fn match_body(&mut self, start: SourceSpan) -> (Vec<MatchArm>, SourceSpan) {
         if !matches!(self.peek(), Some(TokenKind::LeftBrace)) {
             self.error_span_reason(
@@ -830,9 +826,8 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         }
     }
 
-    /// Whether the current line is a B6 let-else: a `const`/`var` binding whose
-    /// header line carries a top-level `else` diverging tail. Inspects the line
-    /// without consuming it.
+    /// Whether the current line is a let-else: a `const`/`var` binding whose header line
+    /// carries a top-level `else` diverging tail. Inspects the line without consuming it.
     fn at_let_else(&self) -> bool {
         let line = &self.tokens[self.pos..self.find_line_end()];
         let is_binding = matches!(
@@ -842,9 +837,9 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         is_binding && find_top_level_else(line).is_some()
     }
 
-    /// Parse a B6 let-else: `const`/`var name [: ty] = value else <diverging>`. The
-    /// binding before `else` is parsed by the simple-statement parser; the tail is a
-    /// braced or inline diverging body. Parse-only; the checker rejects it.
+    /// Parse a let-else: `const`/`var name [: ty] = value else <diverging>`. The binding
+    /// before `else` is parsed by the simple-statement parser; the tail is a braced or
+    /// inline diverging body. Parse-only; the checker rejects it.
     fn let_else_stmt(&mut self) -> Statement {
         let start = self.tokens[self.pos].span;
         let line_end = self.find_line_end();
@@ -901,12 +896,10 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         }
     }
 
-    /// Parse `require <condition> else <value>`: the header keyword, a bool
-    /// condition up to the first top-level `else`, and the bare failure value
-    /// running to the end of the line. The value is an expression, never a
-    /// statement — the wrap in `err(...)` and the return are implicit under the
-    /// mark — and the checker types it against the enclosing function's `Result`
-    /// error type.
+    /// Parse `require <condition> else <value>`: a bool condition up to the first
+    /// top-level `else`, then the bare failure value running to the end of the line. The
+    /// value is an expression, never a statement — the `err(...)` wrap and the return
+    /// are implicit — and the checker types it against the function's `Result` error.
     fn require_stmt(&mut self) -> Statement {
         let keyword = self.advance(); // `require`
         let line = self.take_line();
@@ -969,10 +962,9 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         }
     }
 
-    /// Consume the trailing `on <faultkind>` arms of a checked form. Each arm
-    /// cuddles the previous arm's `}` or sits on its own line. Returns the two
-    /// optional arm blocks (by kind, regardless of source order) and the span of
-    /// the last arm consumed. No arm at all is a `CheckedBody` error.
+    /// Consume the trailing `on <faultkind>` arms of a checked form, each cuddling the
+    /// previous arm's `}` or on its own line. Returns the arm blocks by kind, regardless
+    /// of source order, and the last arm's span. No arm at all is a `CheckedBody` error.
     fn checked_arms(
         &mut self,
         header_start: SourceSpan,
@@ -1053,12 +1045,10 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         Some((fault, block))
     }
 
-    /// Parse the expression that ends the current header line, consuming up to
-    /// and including its `NEWLINE`. `keyword` is the header keyword
-    /// (`while`/`if`/`match`) already consumed; an empty header reports the
-    /// missing expression at the gap just past it, never the start of input.
-    /// Returns `None`, after raising a syntax error, when the header does not
-    /// parse as a complete expression.
+    /// Parse the expression that ends the current header line, consuming up to and
+    /// including its `NEWLINE`. `keyword` is the already-consumed header keyword; an
+    /// empty header reports the missing expression at the gap just past it, never at
+    /// the start of input.
     fn header_expression(&mut self, keyword: SourceSpan) -> Expression {
         let line = self.take_line();
         let error_span = line_span_or(line, keyword);
@@ -1078,10 +1068,10 @@ impl<'a, 'c> StmtParser<'a, 'c> {
             line.first().map(|token| token.kind),
             Some(TokenKind::Keyword(Keyword::Const))
         );
-        // A `const` head is an existence binding; a `const … and …` head (B5) is a
-        // chain of bindings and an optional trailing condition; any other head is a
-        // condition expression. Each reports its own failure and falls back to
-        // `Expression::Error`, so the head is always present.
+        // A `const` head is an existence binding; a `const … and …` head is a chain of
+        // bindings and an optional trailing condition; any other head is a condition
+        // expression. Each reports its own failure and falls back to `Expression::Error`,
+        // so the head is always present.
         let head = if starts_const && top_level_and_starts(line).len() > 1 {
             Some(self.parse_if_const_chain(line))
         } else if starts_const {
@@ -1102,17 +1092,17 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         }))
     }
 
-    /// Parse a B5 `if const` chain head: parts split on top-level `and`, where each
-    /// leading `const …` part is an existence binding and the remainder (from the
-    /// first non-`const` part) is the trailing condition. Parse-only; the checker
-    /// rejects the chain until it is adopted.
+    /// Parse an `if const` chain head: parts split on top-level `and`, where each
+    /// leading `const …` part is an existence binding and the remainder (from the first
+    /// non-`const` part) is the trailing condition. Parse-only; the checker rejects the
+    /// chain until it is adopted.
     fn parse_if_const_chain(&mut self, line: &[Token]) -> IfHead {
         let starts = top_level_and_starts(line);
         let mut bindings = Vec::new();
         let mut condition_from = None;
         for (index, &start) in starts.iter().enumerate() {
-            // The part runs to just before the `and` that opens the next part (that
-            // `and` sits one token before the next part's start), or to end of line.
+            // The part runs to just before the `and` opening the next part — which sits
+            // one token before that part's start — or to end of line.
             let part_end = starts.get(index + 1).map_or(line.len(), |next| next - 1);
             let part = &line[start..part_end];
             if part.first().map(|token| token.kind) == Some(TokenKind::Keyword(Keyword::Const)) {
@@ -1127,8 +1117,8 @@ impl<'a, 'c> StmtParser<'a, 'c> {
                     });
                 }
             } else {
-                // The first non-`const` part begins the trailing condition; keep the
-                // slice from here to the end so a multi-part `cond1 and cond2` rejoins.
+                // Keep the slice from the first non-`const` part to the end, so a
+                // multi-part `cond1 and cond2` rejoins as one condition.
                 condition_from = Some(start);
                 break;
             }
@@ -1183,15 +1173,12 @@ impl<'a, 'c> StmtParser<'a, 'c> {
             }
             block
         } else {
-            // An empty body occupies no source. Anchor a zero-width span at the
-            // point a body would start rather than adopting a whole token's span,
-            // so the enclosing statement's span does not extend over a following
-            // sibling comment or statement and mis-claim it — which would drop that
-            // sibling when the block is formatted. The point is the next token's
-            // start, or the end of the last consumed token at end of input. (An
-            // empty token list would fall back to a zero span, but a body is only
-            // parsed after its header keyword was consumed, so tokens is non-empty
-            // whenever this runs.)
+            // An empty body occupies no source, so anchor a zero-width span where a
+            // body would start rather than adopting a whole token's span: otherwise the
+            // enclosing statement's span extends over a following sibling comment or
+            // statement and mis-claims it, dropping that sibling when the block is
+            // formatted. The point is the next token's start, or the end of the last
+            // consumed token at end of input.
             let point = match self.tokens.get(self.pos) {
                 Some(token) => SourceSpan {
                     end_byte: token.span.start_byte,
@@ -1224,10 +1211,9 @@ impl<'a, 'c> StmtParser<'a, 'c> {
     /// so this nested block's comments do not leak into the parent block.
     fn parse_braced_block(&mut self) -> Block {
         // Fail closed on a block the measurement left unmeasured: it nests past the
-        // limit, so descending would grow a statement list it has no count for (the lexer
-        // already reported the located nesting-limit finding). Asking the pass that sized
-        // the block whether it exists is what keeps the two from disagreeing about which
-        // blocks the tree holds.
+        // limit, so descending would grow a statement list it has no count for, and the
+        // lexer already reported the located finding. Asking the pass that sized the
+        // block keeps the two from disagreeing about which blocks the tree holds.
         let Some(capacity) = self.capacities.region(self.pos) else {
             return self.skipped_block();
         };
@@ -1280,8 +1266,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
     /// as a one-statement block (the inline diverging form of `else`, `on more`, a
     /// checked arm, or a match arm). Inline-vs-block enforcement is the formatter's.
     fn parse_clause_body(&mut self) -> Block {
-        // The body may cuddle the clause keyword (`else return -1`, `else {`) or sit
-        // on the next line (`else`\n`{`); skip the separating newlines either way.
+        // The body may cuddle the clause keyword or sit on the next line.
         self.skip_newlines();
         if matches!(self.peek(), Some(TokenKind::LeftBrace)) {
             self.parse_braced_block()
@@ -1290,15 +1275,15 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         }
     }
 
-    /// Parse one inline statement as a one-statement block. A missing statement
-    /// (nothing before the line break) yields an empty block whose span is anchored
-    /// at the cursor, so the enclosing statement does not over-claim a sibling.
+    /// Parse one inline statement as a one-statement block. A missing statement yields
+    /// an empty block anchored at the cursor, so the enclosing statement does not
+    /// over-claim a sibling.
     ///
     /// This is the descent that opens no brace, so the frame bound is the only thing
     /// standing between it and the native stack. Past the limit the clause is left
-    /// unstructured and its tokens are not consumed: the statements that follow are
-    /// structured as siblings of the enclosing body instead of as its descendants, which
-    /// keeps the parse total and terminating while the tree stays bounded.
+    /// unstructured and its tokens are not consumed, so the statements that follow are
+    /// structured as siblings of the enclosing body rather than its descendants: the
+    /// parse stays total and terminating while the tree stays bounded.
     fn inline_statement_block(&mut self) -> Block {
         let anchor = self.tokens.get(self.pos).map(|token| SourceSpan {
             end_byte: token.span.start_byte,
@@ -1500,8 +1485,8 @@ impl<'a, 'c> StmtParser<'a, 'c> {
     }
 }
 
-/// Index of the first top-level `else` keyword (bracket depth 0) in a header line,
-/// the B6 let-else separator, or `None` when none is present.
+/// Index of the first top-level `else` keyword (bracket depth 0) in a header line — the
+/// let-else and `require` separator — or `None` when none is present.
 fn find_top_level_else(tokens: &[Token]) -> Option<usize> {
     let mut depth = 0usize;
     for (index, token) in tokens.iter().enumerate() {
@@ -1551,8 +1536,8 @@ fn parse_checked_bind(source: &str, prefix: &[Token], sink: &mut SyntaxSink<'_>)
                 ty: ty.map(Box::new),
             }
         }
-        // `const`, and the detection-guaranteed-unreachable fallback, both bind a
-        // fresh const so the node is well-formed.
+        // `const`, and the fallback detection makes unreachable, both bind a fresh
+        // const so the node is well-formed.
         _ => {
             let (name, name_span, ty) = parse_checked_binding_name(source, prefix, false, sink);
             CheckedBind::Const {
@@ -1599,8 +1584,8 @@ fn parse_checked_binding_name(
 
     let mut ty = None;
     if prefix.get(2).map(|token| token.kind) == Some(TokenKind::Colon) {
-        // The type spans from after the colon up to the binding `=` that ends the
-        // prefix (types carry no `=`, so the top-level `=` is the binding one).
+        // The type runs from after the colon to the binding `=`: types carry no `=`,
+        // so the top-level one is the binding's.
         let type_start = 3;
         let type_end = find_top_level_equal(prefix).unwrap_or(prefix.len());
         if type_end > type_start {

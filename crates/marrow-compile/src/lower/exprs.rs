@@ -1095,10 +1095,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         span: SourceSpan,
         callee_span: SourceSpan,
     ) -> ConstructResult<CallResult> {
-        // The reserved built-ins are intercepted before any user resolution, so a
-        // colliding declaration (rejected at its declaration site) can never reach
-        // here. Dispatching on the shared classifier keeps interception and
-        // declaration rejection reading the same fact.
+        // Reserved built-ins are intercepted before any user resolution. Dispatching on
+        // the shared classifier keeps interception and declaration rejection reading the
+        // same fact.
         if let Some(builtin) = Builtin::from_name(name) {
             return match builtin {
                 Builtin::Exists => self.lower_exists(args, span).map(CallResult::Value),
@@ -1186,10 +1185,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 }
             };
         }
-        // A scalar-type spelling in call position is a conversion (or, for a
-        // temporal type, a compile-time-validated literal constructor), resolved
-        // before records/functions so it is never shadowed. The admitted set is
-        // closed; an unadmitted pair is a typed `check.unsupported`.
+        // A scalar-type spelling in call position is a conversion (or, for a temporal
+        // type, a compile-time-validated literal constructor), resolved before
+        // records/functions so it is never shadowed. The admitted set is closed.
         if let Some(scalar) = ScalarType::from_spelling(name) {
             if scalar.is_temporal() {
                 return self
@@ -1283,10 +1281,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Resolve `append`/`length` as collection operations, or `None` when `name` is not
-    /// one of them (so the caller reports it as an unknown name). These are non-reserved
-    /// fallbacks: a same-module function of the same name is resolved before this is
-    /// reached. A map is read and written with bracket syntax (`m[k]`, `m[k] = v`), not
-    /// a `get`/`insert` builtin.
+    /// one of them. These are non-reserved fallbacks: a same-module function of the same
+    /// name is resolved before this is reached. A map is read and written with bracket
+    /// syntax (`m[k]`, `m[k] = v`), not a `get`/`insert` builtin.
     fn lower_collection_fallback(
         &mut self,
         name: &str,
@@ -1346,11 +1343,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 Err(LoweringFailure::Recoverable)
             }
             CallResolution::ModuleRefused(summary) => {
-                // A qualified call into a module this project refused is a dependency
-                // gap, not a plain name error: the callee is unavailable because a
-                // required owner is invalid. Record the gap at the callee leaf for
-                // editor queries, and steer the first such call to the module's own
-                // cause rather than reporting a callee of a module that has no scope.
+                // A qualified call into a refused module is a dependency gap, not a plain
+                // name error: record the gap at the callee leaf for editor queries and
+                // steer to the module's own cause.
                 self.facts.gap(callee_span);
                 self.steer_refusal(summary, span);
                 Err(LoweringFailure::Recoverable)
@@ -1462,13 +1457,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Lower a call to a generic function: infer each type argument from the call's
-    /// arguments, revalidate the type-parameter constraints against the inferred
-    /// concrete types, monomorphize one image function for the exact argument list,
-    /// and emit a call to it. A type parameter that no argument determines, an
-    /// argument whose type does not match the parameter shape, or an inferred type
-    /// that violates a constraint is a typed `check.type`. Inference is exact: a
-    /// generic argument matches the parameter type structurally with no implicit
-    /// bare-to-optional widening.
+    /// arguments, revalidate the type-parameter constraints against the inferred concrete
+    /// types, monomorphize one image function for the exact argument list, and emit a call
+    /// to it. Inference is exact: a generic argument matches the parameter type
+    /// structurally with no implicit bare-to-optional widening.
     fn lower_generic_call(
         &mut self,
         template_index: usize,
@@ -1677,10 +1669,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         .map(RetType::Value)
     }
 
-    /// Lower a nominal construction `Age(n)`: coerce the one positional argument
-    /// to the base int, then guard it against the type's inclusive interval. An
-    /// out-of-interval value faults `run.range` at runtime; every path that
-    /// produces a value of the type revalidates the interval this way.
+    /// Lower a nominal construction `Age(n)`: coerce the one positional argument to the
+    /// base int, then guard it against the type's inclusive interval, faulting
+    /// `run.range`. Every path that produces a value of the type revalidates this way.
     fn lower_nominal_construct(
         &mut self,
         id: NominalId,
@@ -1798,8 +1789,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
         // Resolve each named argument against a top-level field or a group before
         // emitting, so evaluation order is the declaration order (fields first, then
-        // groups; f0 pushed first). A group argument is the group's value, built with
-        // the qualified group constructor `Resource.group(…)`.
+        // groups; f0 pushed first).
         for argument in args {
             let Some(arg_name) = &argument.name else {
                 self.fail(SourceDiagnostic::at(
@@ -1858,11 +1848,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 }
             }
         }
-        // Each unkeyed group slot follows the top-level fields, in group order. A
-        // supplied `group: Resource.group(…)` argument carries the group value; an
-        // omitted all-sparse group defaults to present with vacant leaves; an omitted
-        // group with a required leaf cannot be auto-completed, so it is the
-        // required-completeness rejection here rather than a silent incomplete value.
+        // Each unkeyed group slot follows the top-level fields, in group order. An omitted
+        // all-sparse group defaults to present with vacant leaves; an omitted group with a
+        // required leaf cannot be auto-completed, so it is rejected here rather than
+        // silently built incomplete.
         let group_plan: Vec<GroupPlan> = record
             .groups
             .iter()
@@ -1917,12 +1906,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         })
     }
 
-    /// The materialized entry record of the branch reached by the branch-name `path`
-    /// from `resource`, if the Product declares one there — so `Book.notes.tags` resolves
-    /// the nested `tags` branch of `notes`. A constructor builds a record and addresses no
-    /// durable node, so this answers from the Product declaration and names no store root.
-    /// The returned reference borrows the durable registry (lifetime `'a`), not `self`, so
-    /// it stays valid across later mutating calls.
+    /// The materialized entry record of the branch reached by the branch-name `path` from
+    /// `resource` — so `Book.notes.tags` resolves the nested `tags` branch of `notes`. A
+    /// constructor builds a record and addresses no durable node, so this answers from the
+    /// declaration and names no store root. The returned reference borrows the durable
+    /// registry (lifetime `'a`), not `self`.
     fn declared_branch_record(
         &self,
         resource: &str,
@@ -1934,9 +1922,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// Lower a keyed branch entry constructor `Resource.branch(field: value, …)`. The
     /// branch's materialized record is built from its declared scalar fields in
     /// declaration order (f0 pushed first), each required field supplied and each sparse
-    /// field defaulting to vacant — the same shape as the root constructor, one level
-    /// down. The shadowing rule holds: a value binding may not shadow the resource type
-    /// name in dotted-constructor head position.
+    /// field defaulting to vacant — the root constructor's shape, one level down. A value
+    /// binding may not shadow the resource type name in head position.
     fn lower_branch_constructor(
         &mut self,
         resource: &str,
@@ -2022,12 +2009,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         })
     }
 
-    /// Lower a qualified group value constructor `Resource.group(field: value, …)`.
-    /// The group's materialized record is built from its declared leaves in
-    /// declaration order (f0 pushed first), each required leaf supplied and each
-    /// sparse leaf defaulting to vacant — symmetric with the root and branch
-    /// constructors. The shadowing rule holds: a value binding may not shadow the
-    /// resource type name in dotted-constructor head position.
+    /// Lower a qualified group value constructor `Resource.group(field: value, …)`. The
+    /// group's materialized record is built from its declared leaves in declaration order
+    /// (f0 pushed first), each required leaf supplied and each sparse leaf defaulting to
+    /// vacant — symmetric with the root and branch constructors.
     fn lower_group_constructor(
         &mut self,
         resource: &str,
@@ -2123,11 +2108,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         })
     }
 
-    /// Lower a dense struct literal `Point(x: a, y: b)`: named-only arguments, the
-    /// exact field set with none missing, duplicated, or unknown, each coerced to
-    /// its required field scalar in field declaration order (f0 pushed first) so
-    /// the canonical product-leaf order owns evaluation. Emits `RecordNew` over the
-    /// struct's shared image record def.
+    /// Lower a dense struct literal `Point(x: a, y: b)`: named-only arguments, the exact
+    /// field set with none missing, duplicated, or unknown, each coerced to its required
+    /// field scalar in field declaration order (f0 pushed first) so the canonical
+    /// product-leaf order owns evaluation.
     fn lower_struct_literal(
         &mut self,
         name: &str,
@@ -2671,10 +2655,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// Lower a reserved `Option`/`Result` constructor directed by an expected type:
     /// `none`, `some(v)`, `ok(v)`, or `err(e)`. The expected type supplies the exact
-    /// instantiation, so the argument (if any) is coerced to the matching member
-    /// type. A constructor used where its reserved enum is not expected is a typed
-    /// error. `Option`/`Result` are ordinary generic enums; these reserved spellings
-    /// resolve to their variants recovered from the minting template.
+    /// instantiation, so the argument (if any) is coerced to the matching member type.
+    /// `Option`/`Result` are ordinary generic enums; these reserved spellings resolve to
+    /// their variants recovered from the minting template.
     pub(super) fn lower_ctor_as(
         &mut self,
         kind: CtorKind,
@@ -2686,9 +2669,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
         let span = expr.span();
         // A sparse optional enum target (`Option<T>?`/`Result<T, E>?`) takes a bare
-        // constructor wrapped present: lower against the bare enum, then `SomeWrap`.
-        // This makes `= none`/`= some(v)` write a sparse optional-enum field or
-        // local in one line — the present-value analogue of `= absent`.
+        // constructor wrapped present, so `= none`/`= some(v)` writes a sparse
+        // optional-enum field or local in one line.
         if let LTy::Enum { ty, optional: true } = expected {
             self.lower_ctor_as(
                 kind,
@@ -2866,10 +2848,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
     }
 
-    /// Lower prefix `try <expr>`: propagate a `Result<T, E>`'s `err` out of the
-    /// enclosing `Result[U, E]`-returning function (same `E`, no conversion),
-    /// yielding the `ok` value `T`. Dispatches on the tag: on `err` it rebuilds the
-    /// error in the return `Result` and returns; on `ok` it extracts the value.
+    /// Lower prefix `try <expr>`: propagate a `Result<T, E>`'s `err` out of the enclosing
+    /// `Result[U, E]`-returning function (same `E`, no conversion), yielding the `ok`
+    /// value `T`.
     pub(super) fn lower_try(
         &mut self,
         inner: &Expression,
@@ -3002,13 +2983,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Ok(if required { bare } else { bare.to_optional() })
     }
 
-    /// Lower `base?.name`: a member read through an *optional composite value*. The
-    /// base is an optional record/struct value (local, or the value of a durable
-    /// read); an absent base short-circuits the whole read to absent, and a present
-    /// base yields the field wrapped optional. The result is always optional, so
-    /// `?.` is the present-propagating analogue of `.` — its one meaning. This is a
-    /// local-value operator: a durable address propagates absence structurally on
-    /// its own and needs no `?.`.
+    /// Lower `base?.name`: a member read through an *optional composite value*. An absent
+    /// base short-circuits the whole read to absent, and a present base yields the field
+    /// wrapped optional, so the result is always optional. This is a local-value operator:
+    /// a durable address propagates absence structurally and needs no `?.`.
     fn lower_optional_field(
         &mut self,
         base: &Expression,
@@ -3034,10 +3012,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             .ok_or(LoweringFailure::Recoverable)?;
         let result = garg_to_lty(field_ty).to_optional();
 
-        // Present: unwrap the optional composite to its bare record and read the
-        // field; a required field is wrapped present, a sparse field already reads
-        // optional. Absent: short-circuit to a vacant of the result type. Both paths
-        // join at `result`.
+        // A required field is wrapped present; a sparse field already reads optional.
         let to_absent = self.push_branch_present(base.span())?;
         self.push(Instr::FieldGet(index), span)?;
         if required {
@@ -3052,10 +3027,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Ok(result)
     }
 
-    /// Resolve `name` against a bare product (`record` or `struct`) value type to
-    /// its slot index, bare value type, and required flag. The one owner of product
-    /// field resolution, shared by field reads, assignments, and `unset`.
-    /// `base_span` locates a non-product base; `field_span` locates an unknown field.
+    /// Resolve `name` against a bare product (`record` or `struct`) value type to its slot
+    /// index, bare value type, and required flag. The one owner of product field
+    /// resolution, shared by field reads, assignments, and `unset`.
     pub(super) fn resolve_product_field(
         &mut self,
         base_ty: LTy,
@@ -3099,10 +3073,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                             };
                             match backing {
                                 // Whether the resource declares a keyed branch `name` is a
-                                // Product declaration fact, so it is asked of the Product
-                                // and not of any one root: an admitted Product answers it
-                                // identically whether or not a root over it reached the
-                                // executable subset.
+                                // Product declaration fact, asked of the Product and not
+                                // of any one root.
                                 ProductBinding::Declared
                                     if self.durable.declares_branch(&resource, name) =>
                                 {
@@ -3111,12 +3083,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                                     ));
                                     return None;
                                 }
-                                // The store this resource backs was declared and
-                                // refused, so its branch tree was never built and
-                                // whether `name` is one of its branches is not
-                                // knowable here. Reporting the record as having no
-                                // such field would state that as fact; the store's
-                                // own cause is what the reader has to fix first.
+                                // The store this resource backs was refused, so its branch
+                                // tree was never built and whether `name` is one of its
+                                // branches is not knowable here.
                                 ProductBinding::Refused(summary) => {
                                     self.steer_refusal(summary, field_span);
                                     return None;
@@ -3141,9 +3110,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         ));
                         return None;
                     }
-                    // The member is declared and its declaration was refused, so it
-                    // binds nothing here. The first use carries the steer to that
-                    // cause; every later one fails silently against the same key.
+                    // The member is declared and its declaration was refused, so it binds
+                    // nothing here; steer to that cause.
                     ProductFieldProjection::RefusedMember(id) => {
                         self.steer_refused_member_id(id, field_span);
                         return None;
@@ -3226,9 +3194,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 }
 
 /// The canonical hover display of a resolved generic function callee, from its source
-/// template: `fn name<T>(p: Ty): ret` with the declared type parameters and declared
-/// parameter and return spellings. A generic call targets its source template, never a
-/// minted instance.
+/// template: `fn name<T>(p: Ty): ret`. A generic call targets its source template, never
+/// a minted instance.
 fn generic_signature_display(decl: &FunctionDecl) -> String {
     let type_params = if decl.type_params.is_empty() {
         String::new()

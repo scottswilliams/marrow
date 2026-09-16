@@ -34,15 +34,13 @@ enum InterpolationScanError {
     /// No closing `}`/`"` appeared before the line ended, or a bare `{` opened a
     /// hole with no expression — a genuinely unterminated interpolation.
     Unterminated,
-    /// Interpolation nested past [`NESTING_DEPTH_LIMIT`]. Carries the byte offset
-    /// of the over-deep opener so the diagnostic anchors at the offending depth,
-    /// matching the `check.nesting_limit` contract every other construct reports.
+    /// Interpolation nested past [`NESTING_DEPTH_LIMIT`]. Carries the byte offset of the
+    /// over-deep opener so the diagnostic anchors at the offending depth.
     NestingLimit(usize),
 }
 
-/// Whether a range being lexed is an interpolation hole. Inside a hole a nested
-/// string literal may write its quotes escaped (`\"..\"`), the spelling an author
-/// reaches for within the enclosing `$"..."`; at top level that spelling is not a
+/// Whether a range being lexed is an interpolation hole. Inside a hole a nested string
+/// literal writes its quotes escaped (`\"..\"`); at top level that spelling is not a
 /// string.
 #[derive(Clone, Copy)]
 enum HoleContext {
@@ -58,10 +56,9 @@ struct Lexer<'a, 'c> {
     /// Open `(`/`[` depth. A `NEWLINE` is suppressed while this is non-zero, so a
     /// call or bracket group spans several physical lines as one logical line.
     open_delimiters: usize,
-    /// Open `{` block depth, the brace analogue of the removed indent stack. A `{`
-    /// that would open a block deeper than [`NESTING_DEPTH_LIMIT`] reports
-    /// [`crate::NESTING_LIMIT`]; braces do not suppress `NEWLINE` (statements end at the
-    /// line break inside a block).
+    /// Open `{` block depth. A `{` that would open a block deeper than
+    /// [`NESTING_DEPTH_LIMIT`] reports [`crate::NESTING_LIMIT`]. Braces do not suppress
+    /// `NEWLINE`: a statement still ends at the line break inside a block.
     brace_depth: usize,
     /// Set once the brace nesting limit is first crossed, so a run of over-deep
     /// braces reports [`crate::NESTING_LIMIT`] a single time rather than per brace.
@@ -82,8 +79,8 @@ impl<'a, 'c> Lexer<'a, 'c> {
     }
 
     fn lex(mut self) -> Box<[Token]> {
-        // `Line` is `Copy`, so index the line stack rather than holding a borrow
-        // across the mutating body. `self.lines` stays intact for `eof_span`.
+        // `Line` is `Copy`, so index the line stack rather than holding a borrow across
+        // the mutating body; `self.lines` stays intact for `eof_span`.
         for index in 0..self.lines.len() {
             let line = self.lines[index];
             self.reject_line_tabs(line);
@@ -112,19 +109,17 @@ impl<'a, 'c> Lexer<'a, 'c> {
         self.tokens.into_boxed_slice()
     }
 
-    /// Emit the `NEWLINE` that ends a physical line, unless the line is continued.
-    /// A line continues while inside open `(`/`[`, or when its last significant
-    /// token is a header-continuation token (`and`/`or`/`,`/`=`); in either case a
-    /// following physical line is part of the same logical line.
+    /// Emit the `NEWLINE` that ends a physical line, unless the line is continued: inside
+    /// open `(`/`[`, or after a trailing continuation token (`and`/`or`/`,`/`=`). A
+    /// continued line joins the next physical line into one logical line.
     fn push_line_break(&mut self, line: Line<'a>) {
         if self.open_delimiters == 0 && !self.continues_after_last_token() {
             self.push_newline(line);
         }
     }
 
-    /// Whether the last significant token so far ends the line on a
-    /// header-continuation token, so the `NEWLINE` is suppressed. Comments and
-    /// prior newlines are not significant.
+    /// Whether the last significant token is a continuation token, so the `NEWLINE` is
+    /// suppressed. Comments and prior newlines are not significant.
     fn continues_after_last_token(&self) -> bool {
         self.tokens
             .iter()
@@ -146,11 +141,9 @@ impl<'a, 'c> Lexer<'a, 'c> {
             })
     }
 
-    /// Report brace nesting past [`NESTING_DEPTH_LIMIT`] once, at the offending
-    /// `{`. Suppressed while the over-deep region lasts so a run of deeper braces
-    /// yields a single diagnostic. The braces are still tiled as tokens (lossless
-    /// tiling); the recursive-descent parser bounds its own descent so a deep
-    /// brace nest fails closed rather than overflowing the native stack.
+    /// Report brace nesting past [`NESTING_DEPTH_LIMIT`] once, at the offending `{`, and
+    /// stay suppressed for the rest of the over-deep region. The braces are still tiled as
+    /// tokens (tiling stays lossless); bounding the recursive descent is the parser's job.
     fn report_brace_nesting_limit(&mut self, span: SourceSpan) {
         if self.reported_nesting_limit {
             return;
@@ -173,9 +166,9 @@ impl<'a, 'c> Lexer<'a, 'c> {
         );
     }
 
-    /// Lex `[start, end)` as expression tokens. When `context` is a hole, a nested
-    /// string literal may be written with escaped quotes because it sits inside
-    /// the enclosing `$"..."`.
+    /// Lex `[start, end)` as expression tokens. When `context` is a hole, a nested string
+    /// literal may be written with escaped quotes, since it sits inside the enclosing
+    /// `$"..."`.
     fn lex_range(&mut self, line: Line<'a>, start: usize, end: usize, context: HoleContext) {
         let mut index = start;
         while index < end {
@@ -197,11 +190,10 @@ impl<'a, 'c> Lexer<'a, 'c> {
                 } else {
                     TokenKind::Comment
                 };
-                // A comment runs to the end of its lexical range, not the physical
-                // line: at the top level `end` is the line end, but inside an
-                // interpolation hole it is the hole boundary, so the comment stops
-                // before the closing `}` and its tokens rather than overlapping
-                // them and breaking the lossless token tiling.
+                // A comment runs to the end of its lexical range, not the physical line:
+                // inside an interpolation hole `end` is the hole boundary, so the comment
+                // stops before the closing `}` rather than overlapping its tokens and
+                // breaking the lossless tiling.
                 self.push(kind, self.span(line, index, end));
                 break;
             }
@@ -335,10 +327,9 @@ impl<'a, 'c> Lexer<'a, 'c> {
                 index += ch.len_utf8();
                 let rest = self.source.get(index..line.end_byte);
                 if rest.is_some_and(|rest| rest.starts_with("u{")) {
-                    // `\u{...}` is a unicode escape recognized before hole
-                    // detection: consume through its closing `}` so the interior
-                    // `{` opens no interpolation hole. The whole escape stays in
-                    // the text part; `decode_string_escapes` validates the scalar.
+                    // `\u{...}` is recognized before hole detection: consuming through its
+                    // closing `}` keeps the interior `{` from opening a hole. The escape
+                    // stays in the text part, where `decode_string_escapes` validates it.
                     index += "u{".len();
                     while let Some(escaped) = self
                         .source
@@ -415,14 +406,12 @@ impl<'a, 'c> Lexer<'a, 'c> {
         }
     }
 
-    /// Scan a hole for its closing `}`, returning the byte offset of that brace.
-    /// A plain `"..."` string and a nested `$"..."` interpolation are skipped as
-    /// self-contained literals so their braces do not terminate the hole; a bare
-    /// `{` (an interpolation opener with no `$"`) is not a valid expression, so it
-    /// terminates the scan as unterminated. `depth` counts nested interpolation
-    /// strings and bounds the recursion at [`NESTING_DEPTH_LIMIT`], so a
-    /// pathologically deep nest reports the nesting-limit error at the offending
-    /// depth rather than overflowing the stack or masquerading as unterminated.
+    /// Scan a hole for its closing `}`, returning that brace's byte offset. A plain
+    /// `"..."` string and a nested `$"..."` interpolation are skipped as self-contained
+    /// literals so their braces do not terminate the hole; a bare `{` is not a valid
+    /// expression and ends the scan as unterminated. `depth` counts nested interpolation
+    /// strings and bounds the recursion at [`NESTING_DEPTH_LIMIT`], so a deep nest reports
+    /// the nesting limit rather than overflowing the stack.
     fn find_interpolation_expr_end(
         &self,
         line: Line<'a>,
@@ -441,10 +430,9 @@ impl<'a, 'c> Lexer<'a, 'c> {
                 index = self.find_interpolation_string_end(line, index, depth + 1)?;
                 continue;
             }
-            // An escaped quote opens a nested string literal, the spelling used
-            // inside the enclosing `$"..."`. Skip the whole `\"..\"` so its
-            // interior braces, parens, and bare quotes are content, not live
-            // tokens that could prematurely close the hole or shift its span.
+            // An escaped quote opens a nested string literal. Skipping the whole `\"..\"`
+            // keeps its interior braces, parens, and bare quotes as content rather than
+            // live tokens that could close the hole early or shift its span.
             if tail.starts_with("\\\"") {
                 index = self
                     .escaped_hole_string_end(index, line.end_byte)
@@ -473,10 +461,9 @@ impl<'a, 'c> Lexer<'a, 'c> {
         Err(InterpolationScanError::Unterminated)
     }
 
-    /// Skip a nested `$"..."` interpolation literal starting at its `$`, returning
-    /// the offset just past its closing quote. Its own holes are scanned in turn,
-    /// so an interpolation nested inside a hole is treated as one literal rather
-    /// than confusing the outer hole scan.
+    /// Skip a nested `$"..."` interpolation literal starting at its `$`, returning the
+    /// offset just past its closing quote. Its own holes are scanned in turn, so a nested
+    /// interpolation reads as one literal to the outer hole scan.
     fn find_interpolation_string_end(
         &self,
         line: Line<'a>,
@@ -519,8 +506,8 @@ impl<'a, 'c> Lexer<'a, 'c> {
     }
 
     /// Report interpolation nested past [`NESTING_DEPTH_LIMIT`] as the same
-    /// `check.nesting_limit` finding every other over-deep construct reports,
-    /// anchored at the over-deep opener rather than the enclosing hole.
+    /// `check.nesting_limit` finding every other over-deep construct reports, anchored at
+    /// the over-deep opener rather than the enclosing hole.
     fn report_interpolation_nesting_limit(&mut self, line: Line<'a>, offending: usize) {
         self.sink.push(SyntaxError::new(
             DiagnosticReason::Parser(ParseDiagnosticReason::NestingLimit),
@@ -580,9 +567,8 @@ impl<'a, 'c> Lexer<'a, 'c> {
 
         let mut kind = TokenKind::Integer;
 
-        // A dot followed by a known fixed-span unit (`1.day`) is one duration
-        // literal. The unit set is closed, so `1.foo` is not a literal: the dot
-        // and word fall through to ordinary field-access lexing.
+        // A dot followed by a known fixed-span unit (`1.day`) is one duration literal. The
+        // unit set is closed, so `1.foo` falls through to ordinary field-access lexing.
         if self.source[end..line.end_byte].starts_with('.') {
             let unit_start = end + 1;
             let unit_end = self.identifier_word_end(unit_start, line.end_byte);
@@ -634,8 +620,8 @@ impl<'a, 'c> Lexer<'a, 'c> {
             TokenKind::RightBrace => {
                 self.brace_depth = self.brace_depth.saturating_sub(1);
                 if self.brace_depth <= NESTING_DEPTH_LIMIT {
-                    // Left the over-deep region, so a later independent deep nest
-                    // reports its own overflow rather than being silenced.
+                    // Left the over-deep region, so a later independent deep nest reports
+                    // its own overflow rather than being silenced.
                     self.reported_nesting_limit = false;
                 }
             }
@@ -685,13 +671,11 @@ impl<'a, 'c> Lexer<'a, 'c> {
         line.end_byte
     }
 
-    /// Find the byte just past the closing `\"` of an escaped-quote string
-    /// opened at `start` (a `\"`), searching within `limit`. A bare `"` is a
-    /// literal quote and `\x` an interior escape, so only an unescaped `\"`
-    /// closes it; the whole span is one nested string. Returns `None` when no
-    /// close appears before `limit`. This is the single owner of the escaped
-    /// string's extent, shared by the hole scanner and the hole lexer so both
-    /// agree on where the string — and its interior structural characters — end.
+    /// Find the byte just past the closing `\"` of an escaped-quote string opened at
+    /// `start`, within `limit`, or `None` when it does not close. A bare `"` is a literal
+    /// quote and `\x` an interior escape, so only an unescaped `\"` closes it. The single
+    /// owner of the escaped string's extent: the hole scanner and the hole lexer share it
+    /// so both agree on where the string, and its interior structure, ends.
     fn escaped_hole_string_end(&self, start: usize, limit: usize) -> Option<usize> {
         let mut index = start + 2;
         while index < limit {
@@ -710,11 +694,9 @@ impl<'a, 'c> Lexer<'a, 'c> {
         None
     }
 
-    /// Lex a nested string literal written with escaped quotes inside an
-    /// interpolation hole: opened by `\"` and closed by the next `\"`. The
-    /// `String` token spans the whole `\"...\"`, bounded by the hole's `end`, so
-    /// [`crate::decode_string_literal`] recovers the value the same way it does
-    /// for a plainly quoted literal.
+    /// Lex a nested string literal written with escaped quotes inside an interpolation
+    /// hole. The `String` token spans the whole `\"...\"`, bounded by the hole's `end`, so
+    /// [`crate::decode_string_literal`] recovers the value as it does for a plain literal.
     fn lex_escaped_hole_string(&mut self, line: Line<'a>, start: usize, end: usize) -> usize {
         match self.escaped_hole_string_end(start, end) {
             Some(close) => {

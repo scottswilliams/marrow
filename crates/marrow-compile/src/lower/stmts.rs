@@ -60,13 +60,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// Lower one statement.
     ///
-    /// Every arm names every field of its variant. A field this walker does not read is
-    /// bound to `_` rather than covered by `..`, so a field added to an existing
-    /// statement stops the build here instead of being silently dropped. That is the
-    /// case the trailing arm cannot catch: a *new variant* falls through to it and
-    /// carries the typed `check.unsupported` outcome, but a new block-bearing field on
-    /// `if`, `while`, `for`, or `match` would leave its statements never lowered and
-    /// never diagnosed — code the compiler accepted and did not compile.
+    /// Every arm names every field of its variant, binding unread ones to `_` rather than
+    /// covering them with `..`, so a field added to an existing statement stops the build
+    /// here. The trailing arm cannot catch that case: a new block-bearing field on `if`,
+    /// `while`, `for`, or `match` would otherwise leave its statements never lowered and
+    /// never diagnosed.
     pub(super) fn lower_statement(&mut self, statement: &Statement) -> ConstructResult<Flow> {
         match statement {
             Statement::Const {
@@ -249,12 +247,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 if body_flow == Flow::Rejected {
                     return Ok(Flow::Rejected);
                 }
-                // The closing brace is a commit site only for a path that falls out of
-                // the region. When every path returns from inside (each in-region
-                // `return` is its own commit site), the region has no fall-through: no
-                // closing commit is emitted — it would be unreachable — and the region's
-                // divergence propagates so the checker sees the function return on every
-                // path.
+                // The closing brace is a commit site only for a path that falls out of the
+                // region. When every path returns from inside (each in-region `return` is
+                // its own commit site), no closing commit is emitted — it would be
+                // unreachable — and the region's divergence propagates.
                 if body_flow == Flow::Fallthrough {
                     self.push(Instr::TxnCommit, body.span)?;
                 }
@@ -431,12 +427,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Ok(())
     }
 
-    /// Lower `local.…field = value`: read-modify-write a field, possibly nested one
-    /// or more group levels deep. Every container on the path — the local and each
-    /// intervening group sub-record — is loaded, the leaf is coerced to its bare value
-    /// type and stored present, and each container is written back into its parent up
-    /// to the local. A required or a sparse leaf alike becomes present. The path root
-    /// must be a mutable local and every container above the leaf must be present.
+    /// Lower `local.…field = value`: read-modify-write a field, possibly nested one or
+    /// more group levels deep. Every container on the path is loaded, the leaf is coerced
+    /// to its bare value type and stored present, and each container is written back into
+    /// its parent up to the local. The path root must be a mutable local and every
+    /// container above the leaf must be present.
     fn lower_local_field_assign(
         &mut self,
         base: &Expression,
@@ -470,12 +465,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         self.writeback_place_containers(chain.slot, &chain.indices, span)
     }
 
-    /// Push the container stack for a nested field mutation: the local at `slot` and
-    /// each ancestor container reached by descending `indices`, one per depth from the
-    /// local (depth 0) through the leaf's own container (depth `indices.len()`). Every
-    /// descended field is present (a required group slot), so each `FieldGet` yields a
-    /// bare record. Leaves the containers on the stack for the leaf `FieldSet`/
-    /// `FieldUnset` and a matching [`Self::writeback_place_containers`].
+    /// Push the container stack for a nested field mutation: the local at `slot` and each
+    /// ancestor container reached by descending `indices`. Every descended field is
+    /// present (a required group slot), so each `FieldGet` yields a bare record. Leaves
+    /// the containers on the stack for the leaf write and a matching
+    /// [`Self::writeback_place_containers`].
     fn push_place_containers(
         &mut self,
         slot: u16,
@@ -506,10 +500,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         self.push(Instr::LocalSet(slot), span)
     }
 
-    /// Lower `unset local.field` or `unset m[k]`: clear a sparse field of a local
-    /// product to absent, or remove a key from a local map. A required field cannot be
-    /// unset (`check.type`); a durable place uses `delete`, not `unset`; a list has no
-    /// keyed removal; any other place is unsupported.
+    /// Lower `unset local.field` or `unset m[k]`: clear a sparse field of a local product
+    /// to absent, or remove a key from a local map. A required field cannot be unset; a
+    /// durable place uses `delete`; a list has no keyed removal.
     fn lower_unset(&mut self, place: &Expression, span: SourceSpan) -> ConstructResult<()> {
         if Self::durable_shape(place).is_some() {
             self.fail(SourceDiagnostic::at(
@@ -643,11 +636,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Some((local.slot, local.ty, local.mutable, *span, name.to_string()))
     }
 
-    /// Resolve a place expression to its chain of present composite containers rooted
-    /// at a local: a bare local, or a local descended through one or more group
-    /// members. Each intervening member must be a present (required) composite so a
-    /// read-modify-write reaches it; a possibly-absent member is a `check.type`
-    /// rejection. Reports name and non-place errors like [`Self::resolve_place`].
+    /// Resolve a place expression to its chain of present composite containers rooted at
+    /// a local: a bare local, or a local descended through one or more group members.
+    /// Each intervening member must be a present (required) composite so a
+    /// read-modify-write reaches it; a possibly-absent member is a `check.type` rejection.
     fn resolve_place_chain(&mut self, target: &Expression) -> Option<PlaceChain> {
         match target {
             Expression::Name { segments, span, .. } => {
@@ -901,11 +893,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Lower a lone `if not exists(p) { … }` as the absent edge of a let-else: the
-    /// `exists(p)` guard falls through to the continuation on its present edge (the
-    /// shape the verifier's presence lattice recognizes) and jumps to the block when
-    /// the entry is absent. A block that diverges proves `p` present for the rest of
-    /// the enclosing block; a block that falls through joins the continuation and
-    /// proves nothing.
+    /// `exists(p)` guard falls through to the continuation on its present edge (the shape
+    /// the verifier's presence lattice recognizes) and jumps to the block when the entry
+    /// is absent. A block that diverges proves `p` present for the rest of the enclosing
+    /// block; one that falls through proves nothing.
     fn lower_negative_guard(
         &mut self,
         exists: &Expression,

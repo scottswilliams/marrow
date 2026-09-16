@@ -552,8 +552,8 @@ pub(super) fn build_alias_table(
             at: *at,
             span: decl.name_span,
         };
-        // A parse error blocks compilation before this runs, so a missing target
-        // only means the declaration itself was reported; skip it quietly.
+        // A parse error blocks compilation before this runs, so a missing target means
+        // the declaration was already reported; skip it quietly.
         let Some(ty) = &decl.ty else { continue };
         if is_reserved_type_name(&decl.name) {
             let refusal = refuse_row(
@@ -573,8 +573,8 @@ pub(super) fn build_alias_table(
             ));
             continue;
         }
-        // Aliases are resolved first, so every other declaration form is still
-        // only source here and an alias yields its name to all of them.
+        // Aliases resolve first, so every other declaration form is still only source
+        // here and an alias yields its name to all of them.
         if let Some(holder) = pending_name(
             &decl.name,
             resources.iter().map(|(_, _, r)| r.name.as_str()),
@@ -673,21 +673,20 @@ pub(super) fn validate_alias_targets(
         };
         registry.named.declare(decl.name.clone(), occurrence)?;
     }
-    // Uses of a refused alias reach its own ledger cause, preserving the name
-    // the annotation actually wrote rather than blaming the terminal spelling.
+    // Uses of a refused alias reach its own ledger cause, preserving the name the
+    // annotation wrote rather than blaming the terminal spelling.
     for name in refused {
         registry.aliases.remove(&name);
     }
     Ok(())
 }
 
-/// Resolve the nominal type declarations against the aliases already installed
-/// in `registry`. A name collision with an alias, resource, or earlier nominal
-/// is a `check.name_conflict`; a base that does not denote `int` is a
-/// `check.unsupported`; a non-literal, stepped, or empty interval is a
-/// `check.type`; the capability list must draw from the closed set without
-/// repeats. A declaration with a defect is dropped whole rather than admitted
-/// half-checked.
+/// Resolve the nominal type declarations against the aliases already installed in
+/// `registry`. A name collision with an alias, resource, or earlier nominal is a
+/// `check.name_conflict`; a base that does not denote `int` is a `check.unsupported`; a
+/// non-literal, stepped, or empty interval is a `check.type`; the capability list must
+/// draw from the closed set without repeats. A declaration with a defect is dropped
+/// whole rather than admitted half-checked.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_nominals(
     registry: &mut TypeRegistry,
@@ -705,8 +704,8 @@ pub(super) fn build_nominals(
             at: *at,
             span: decl.name_span,
         };
-        // A parse error blocks compilation before this runs; a missing piece
-        // only means the declaration itself was reported, so skip it quietly.
+        // A parse error blocks compilation before this runs, so a missing piece means
+        // the declaration was already reported; skip it quietly.
         let (Some(base), Some(interval)) = (&decl.base, &decl.interval) else {
             continue;
         };
@@ -721,9 +720,8 @@ pub(super) fn build_nominals(
                 .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
             continue;
         }
-        // Nominals yield to every declaration form the later passes bind, and a
-        // nominal this pass already refused holds its name too, so a repeat
-        // conflicts whichever of the two the compiler could admit.
+        // Nominals yield to every declaration form the later passes bind, and a nominal
+        // this pass already refused holds its name too.
         let holder = registry.name_conflict(&decl.name)?.or_else(|| {
             pending_name(
                 &decl.name,
@@ -920,9 +918,9 @@ pub(super) struct ReservedStruct<'a> {
 
 /// Pass one for the dense struct types: reserve each admitted struct's image
 /// [`RecordTypeDef`] index (empty for now) and register its name, so pass two may
-/// resolve a field that names any other struct or enum. A name collision with a
-/// scalar, alias, nominal, resource, or earlier struct is a `check.name_conflict`;
-/// a colliding or reserved-name struct is dropped and never reserved.
+/// resolve a field that names any other struct or enum. A name collision with a scalar,
+/// alias, nominal, resource, or earlier struct is a `check.name_conflict`, and that
+/// struct is dropped and never reserved.
 pub(super) fn declare_structs<'a>(
     draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
@@ -1095,8 +1093,8 @@ fn struct_fields(
     }
     Ok(match (refusal, limited) {
         (Some(refusal), _) => DeclarationOccurrence::Refused(refusal),
-        // The shared instantiation limit reports once, at the monomorphization
-        // owner; this declaration is refused for a cause that pass owns.
+        // The shared instantiation limit reports once, at the monomorphization owner;
+        // this declaration is refused for that cause.
         (None, true) => {
             DeclarationOccurrence::Refused(refuse_covered(declared, Code::CheckInstantiationLimit))
         }
@@ -1114,12 +1112,11 @@ pub(super) struct ReservedEnum<'a> {
 }
 
 /// Pass one for the closed flat enum types: reserve each admitted enum's image
-/// [`EnumTypeDef`] index (empty for now) and register its name. A name collision
-/// with a scalar, alias, nominal, resource, struct, or earlier enum is a
-/// `check.name_conflict`; a colliding or reserved-name enum is dropped and never
-/// reserved. Reserving user enums before pass two resolves any field types keeps
-/// their image indices ahead of the `Option`/`Result` instantiations minted lazily
-/// during field resolution.
+/// [`EnumTypeDef`] index (empty for now) and register its name. A name collision with a
+/// scalar, alias, nominal, resource, struct, or earlier enum is a `check.name_conflict`,
+/// and that enum is dropped and never reserved. Reserving user enums before pass two
+/// resolves any field types keeps their image indices ahead of the `Option`/`Result`
+/// instantiations minted lazily during field resolution.
 pub(super) fn declare_enums<'a>(
     draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
@@ -1376,11 +1373,10 @@ fn enum_payload(
 }
 
 /// Pass one for the admitted record types: reserve each resource's image
-/// [`RecordTypeDef`] index (empty for now, ahead of the structs) and register its
-/// name, returning the surviving resource declarations for pass two in the same
-/// order as [`TypeRegistry::records`]. A reserved resource name, or a name a prior
-/// resource already declared, drops that resource with a precise diagnostic; the
-/// first declaration of a name stands.
+/// [`RecordTypeDef`] index (empty for now, ahead of the structs) and register its name,
+/// returning the surviving resource declarations for pass two in the same order as
+/// [`TypeRegistry::records`]. A reserved name, or one a prior resource already declared,
+/// drops that resource with a precise diagnostic; the first declaration stands.
 pub(super) fn declare_records<'a>(
     draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
@@ -1490,10 +1486,9 @@ pub(super) fn fill_records(
 /// (`Option`/`Result`/a user `enum`). A collection, keyed field, or unknown spelling
 /// is not admitted; an unkeyed group is materialized separately below.
 ///
-/// A refused member is `check.unsupported` at its own span and only that member
-/// leaves the accepted set — the record keeps its other members. The refusal stays
-/// in the ledger, so a later use of that member is steered to the cause rather than
-/// told the record has no such field.
+/// A refused member is `check.unsupported` at its own span and only that member leaves
+/// the accepted set. The refusal stays in the ledger, so a later use of that member is
+/// steered to the cause rather than told the record has no such field.
 fn fill_record(
     draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
@@ -1505,9 +1500,9 @@ fn fill_record(
     let file = declared.file;
     let mut groups = Vec::new();
     let mut group_slot_defs = Vec::new();
-    // Fields, groups, and branches share the resource's one member layer: a group
-    // or branch is declared here as a name even though its value or placement is
-    // built elsewhere, so a repeat across kinds is refused at the repeat.
+    // Fields, groups, and branches share the resource's one member layer: a group or
+    // branch is declared here as a name even though its value or placement is built
+    // elsewhere, so a repeat across kinds is refused at the repeat.
     let mut names = MemberNamespace::new(&resource.name);
     for member in &resource.members {
         let (name, name_span) = match member {
@@ -1534,8 +1529,8 @@ fn fill_record(
                     resource_member(draft, registry, at, field, "this field type", diagnostics)?
                 } else {
                     // A keyed scalar leaf (`tags(pos: int): string`) is a keyed
-                    // positional layer, not yet part of the beta durable graph. It is
-                    // refused so the shape is a precise rejection, not a silent drop.
+                    // positional layer, outside the durable graph. It is refused so
+                    // the shape is a precise rejection, not a silent drop.
                     DeclarationOccurrence::Refused(refuse_row(
                         diagnostics,
                         at,
@@ -1559,10 +1554,10 @@ fn fill_record(
                 group_slot_defs.push(slot);
             }
             ResourceMember::Group(branch) => {
-                // A keyed `branch` (a `group` with key parameters) is a durable-graph
-                // member, resolved by `durable.rs`; it is an addressed collection, not
-                // part of the materialized value. Its layers are claimed here, once
-                // per declaration, whether zero or several stores reach it.
+                // A keyed `branch` is a durable-graph member resolved by `durable.rs`:
+                // an addressed collection, not part of the materialized value. Its
+                // layers are claimed here once per declaration, whatever number of
+                // stores reach it.
                 let mut refusal = None;
                 refuse_branch_layer_repeats(
                     file,
@@ -1633,10 +1628,8 @@ fn admit_unkeyed_group(
 /// The ledger is the authority for which members survived and in what order, so the
 /// record's fields and the image slots are read out of it rather than accumulated
 /// beside it. The record is group-inclusive: its top-level field slots followed by one
-/// group-record slot per unkeyed group, in declaration order. The verifier ties the
-/// field slots to the durable member tree's fields and each trailing group slot to a
-/// `Group` member, so this one record type serves both the durable graph and the
-/// storeless value model.
+/// group-record slot per unkeyed group, in declaration order, so this one record type
+/// serves both the durable graph and the storeless value model.
 fn seal_record_slots(
     draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
@@ -1674,10 +1667,10 @@ fn seal_record_slots(
 /// Claim one branch's layer — its key columns, then its members in declaration
 /// order — and every group's layer below it, refusing each repeat at the repeat.
 ///
-/// A static group nested in a branch claims its own leaves here too: the type
-/// registry materializes only the resource's top-level groups, so this is the one
-/// owner for every layer below a branch, and it runs once per declaration rather
-/// than once per store that binds the resource.
+/// A static group nested in a branch claims its own leaves here too: the type registry
+/// materializes only the resource's top-level groups, so this is the one owner for
+/// every layer below a branch, and it runs once per declaration rather than once per
+/// store that binds the resource.
 fn refuse_branch_layer_repeats(
     file: &FileIdentity,
     anchor: &str,
@@ -1718,9 +1711,8 @@ fn refuse_branch_layer_repeats(
 /// refusal the member ledger retains.
 ///
 /// A resource member is a value drawn from the closed acyclic durable value set: a
-/// scalar, a nominal scalar, a dense struct, or a closed enum (`Option`/`Result`/a
-/// user `enum`). A collection is not a durable member value; an abstract parameter
-/// never reaches a concrete record.
+/// scalar, a nominal scalar, a dense struct, or a closed enum. A collection is not a
+/// durable member value; an abstract parameter never reaches a concrete record.
 fn resource_member(
     draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
@@ -1746,9 +1738,8 @@ fn resource_member(
                     required: field.required,
                 })
             }
-            // A member type that resolves but is outside the durable value set is a
-            // genuine subset gap; one that names a refused declaration is steered to
-            // that declaration's own cause.
+            // A member type outside the durable value set is a genuine subset gap; one
+            // naming a refused declaration is steered to that declaration's own cause.
             Ok(_) => DeclarationOccurrence::Refused(refuse_row(
                 diagnostics,
                 at,
@@ -1758,8 +1749,7 @@ fn resource_member(
                 match registry.member_refusal_row(refused, file, field.ty.span(), subject)? {
                     Some(row) => DeclarationOccurrence::Refused(refuse_row(diagnostics, at, row)),
                     // The shared instantiation limit reports once, at the
-                    // monomorphization owner; this member is refused for a cause that
-                    // pass owns.
+                    // monomorphization owner; this member is refused for that cause.
                     None => DeclarationOccurrence::Refused(refuse_covered(
                         at,
                         Code::CheckInstantiationLimit,
@@ -1771,12 +1761,11 @@ fn resource_member(
     )
 }
 
-/// The direct scalar/enum leaves of an unkeyed group, in declaration order,
-/// returning both the registry field infos and the image field defs. A keyed leaf,
-/// a nested group or keyed branch inside the group, or a non-value leaf type is a
-/// precise `check.unsupported` that refuses only that leaf. Nested groups and
-/// group-scoped branches are deferred; refusing them keeps them from silently
-/// dropping, and keeps the leaf name answerable at its uses.
+/// The direct scalar/enum leaves of an unkeyed group, in declaration order, returning
+/// both the registry field infos and the image field defs. A keyed leaf, a nested group
+/// or keyed branch inside the group, or a non-value leaf type is a precise
+/// `check.unsupported` that refuses only that leaf, so a deferred shape neither drops
+/// silently nor leaves its name unanswerable at a use.
 fn build_group_leaves(
     draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,

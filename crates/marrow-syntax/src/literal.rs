@@ -1,24 +1,21 @@
 //! Canonical decoding of string- and bytes-literal text into their runtime values.
 //!
-//! A Marrow string literal recognizes exactly five escapes: `\\`, `\"`, `\n`,
-//! `\r`, and `\t`. A bytes literal recognizes those same five plus `\xNN` hex.
-//! Any other backslash escape, a trailing backslash with no following character,
-//! and a malformed or truncated `\xNN` are rejected. The layers that interpret
-//! string-literal text — literal lowering, constant folding, and the saved-path
-//! key parser — decode through the string entry points here, so that escape
-//! grammar has one owner. The bytes decoder owns the bytes escape grammar the
-//! same way, but no production layer currently reaches it: the beta lowers a byte
-//! literal to a typed `check.unsupported` rejection rather than decoding it, so
-//! `decode_bytes_literal` is exercised only by this crate's own tests until byte
-//! values are admitted.
+//! A Marrow string literal recognizes exactly five escapes: `\\`, `\"`, `\n`, `\r`, and
+//! `\t`, plus `\u{H}` in text. A bytes literal recognizes those same five plus `\xNN`
+//! hex. Any other backslash escape, a trailing lone backslash, and a malformed or
+//! truncated hex escape are rejected. Every layer that interprets string-literal text —
+//! literal lowering, constant folding, the saved-path key parser — decodes through the
+//! string entry points here, so the escape grammar has one owner. The bytes decoder owns
+//! the bytes escape grammar the same way, though no production layer reaches it yet: a
+//! byte literal lowers to a typed `check.unsupported` rejection instead.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StringLiteralError {
     /// Missing the surrounding double quotes.
     Unquoted,
-    /// An unrecognized escape, or a trailing lone backslash. The offset is the
-    /// byte position of the opening backslash within the decoded text, so a
-    /// diagnostic can point at the escape rather than the whole literal.
+    /// An unrecognized escape, or a trailing lone backslash. The offset is the byte
+    /// position of the opening backslash, so a diagnostic can point at the escape rather
+    /// than the whole literal.
     BadEscape { offset: usize },
 }
 
@@ -26,17 +23,15 @@ pub enum StringLiteralError {
 pub enum BytesLiteralError {
     /// Missing the surrounding `b"` … `"` delimiters.
     Unquoted,
-    /// An unrecognized escape, a trailing lone backslash, or a malformed or
-    /// truncated `\xNN` hex escape. The offset is the byte position of the
-    /// opening backslash within the decoded text.
+    /// An unrecognized escape, a trailing lone backslash, or a malformed or truncated
+    /// `\xNN` hex escape, at the byte position of the opening backslash.
     BadEscape { offset: usize },
 }
 
-/// Decode a full string literal — surrounding quotes included — into its value.
-/// A bad-escape offset is reported relative to the full literal, so it accounts
-/// for the opening quote stripped here. A literal written inside an interpolation
-/// hole delimits its quotes with a backslash (`\"..\"`); that spelling is
-/// recognized here so the same decoder serves both forms.
+/// Decode a full string literal — surrounding quotes included — into its value. A
+/// bad-escape offset is reported relative to the full literal, accounting for the opening
+/// quote stripped here. The backslash-delimited spelling a literal takes inside an
+/// interpolation hole (`\"..\"`) is recognized too, so one decoder serves both forms.
 pub fn decode_string_literal(text: &str) -> Result<String, StringLiteralError> {
     if let Some(inner) = text
         .strip_prefix("\\\"")

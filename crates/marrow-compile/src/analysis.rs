@@ -55,15 +55,15 @@ pub const MAX_SNAPSHOT_FACT_COUNT: u64 = 65_536;
 
 /// The largest total rendered-fact byte footprint a snapshot admits before the
 /// collection is discarded as a [`AnalysisResourceLimit::SnapshotFactBytes`]. A flat
-/// flat allocation guard, evidence-widenable; four times the diagnostic-byte ceiling
-/// gives headroom for nested-generic type displays without unbounded retention.
+/// allocation guard: four times the diagnostic-byte ceiling gives headroom for
+/// nested-generic type displays without unbounded retention.
 pub const MAX_SNAPSHOT_FACT_BYTES: u64 = 4 * 1024 * 1024;
 
 /// The largest number of in-scope completion candidates one query assembles before it is
 /// refused as a query-local [`AnalysisResourceLimit::CompletionCandidateCount`]. The
 /// candidate set is the complete in-scope namespace for the position class — never
-/// prefix-filtered, ranked, or truncated — so an over-cap namespace is a typed refusal,
-/// never a truncated prefix. Query-local; candidate sets are never retained per position.
+/// prefix-filtered, ranked, or truncated — so an over-cap namespace is a typed refusal.
+/// Candidate sets are never retained per position.
 pub const MAX_COMPLETION_CANDIDATES: u64 = 512;
 
 /// The largest total rendered-candidate byte footprint one completion query assembles
@@ -75,8 +75,8 @@ pub const MAX_COMPLETION_RENDER_BYTES: u64 = 256 * 1024;
 /// The largest total rendered byte footprint one active-call query assembles (the callee
 /// signature display plus every parameter piece) before it is refused as a query-local
 /// [`AnalysisResourceLimit::ActiveCallRenderBytes`]. The callee's parameter arity is
-/// already bounded by the compiler's declaration bounds; this is a query-local expansion
-/// guard on the rendered display, not a retained snapshot bound.
+/// already bounded by the compiler's declaration bounds, so this guards the rendered
+/// display alone, not a retained snapshot bound.
 pub const MAX_ACTIVE_CALL_RENDER_BYTES: u64 = 64 * 1024;
 
 /// The largest checked whole-document format output one query returns before it is
@@ -107,11 +107,11 @@ pub const MAX_SYMBOL_DEPTH: u16 = 16;
 /// proof that the project holds at most 4096 modules before the first fact allocates, so
 /// the domain is in range by construction.
 ///
-/// The compaction is load-bearing, not cosmetic: a [`FileIdentity`] is an owned
-/// spelling of up to 4096 bytes, and one clone per retained fact is up to 256 MiB of
-/// retention at the pinned fact-count ceiling. Its *logical* charge is unchanged —
-/// [`AnalysisFactCollector`] still charges a definition target's file spelling and a
-/// document-symbol module's owner spelling exactly as before.
+/// The compaction is load-bearing, not cosmetic: a [`FileIdentity`] is an owned spelling
+/// of up to 4096 bytes, so one clone per retained fact would be up to 256 MiB of
+/// retention at the pinned fact-count ceiling. The *logical* charge is unaffected —
+/// [`AnalysisFactCollector`] charges a definition target's file spelling and a
+/// document-symbol module's owner spelling either way.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub(crate) struct FileRef(u16);
 
@@ -152,13 +152,11 @@ impl FileRef {
 ///
 /// A snapshot's facts only ever span files that passed drive admission, which refuses
 /// any file over `CaptureLimits::DEFAULT`'s 1 MiB per-file ceiling, so every retained
-/// offset is far inside `u32`. The equality of those two domains is pinned by a test,
-/// exactly as the diagnostic owner pins its ceiling against the syntax owner's.
+/// offset is far inside `u32`; a test pins the two domains together.
 ///
-/// Retained spans dominate the snapshot's structural footprint — four of them per hover
-/// fact and its target, four per document-symbol node — so carrying the source owner's
-/// 64-bit offsets in retained state would cost megabytes to represent a megabyte's
-/// worth of positions.
+/// Retained spans dominate the snapshot's structural footprint — four per hover fact and
+/// its target, four per document-symbol node — so carrying the source owner's 64-bit
+/// offsets in retained state would cost megabytes to represent a megabyte of positions.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub(crate) struct FactSpan {
     start: u32,
@@ -170,13 +168,10 @@ pub(crate) struct FactSpan {
 impl FactSpan {
     fn of(span: SourceSpan) -> Self {
         // A saturating offset would collapse a span to `start == end`, making `contains`
-        // always false and every fact at it silently absent. State the domain instead:
-        // the admission ceiling is inside it (`the_admission_ceiling_fits_the_fact_
-        // coordinate_domain`), so a widened ceiling is a failing debug assertion here
-        // rather than facts that quietly stop resolving.
-        // Profiles cannot disagree: no admitted span reaches the saturating branch. The
-        // drive refuses a file past `MAX_PARSED_FILE_BYTES`, which is orders below
-        // `u32::MAX`, so the reachable domain is identical either way.
+        // always false and every fact at it silently absent. Asserting the domain makes
+        // a widened admission ceiling a failing debug assertion here rather than facts
+        // that quietly stop resolving. No admitted span reaches the saturating branch:
+        // the drive refuses a file past `MAX_PARSED_FILE_BYTES`, orders below `u32::MAX`.
         debug_assert!(
             span.end_byte <= u32::MAX as usize,
             "a span leaves the domain"

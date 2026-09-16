@@ -665,9 +665,9 @@ impl Severity {
     }
 }
 
-/// The common error surface the CLI renders uniformly over `&dyn Diagnose`. The
-/// source-span shape stays per source: a parse span, a project line/column, and
-/// a path-located finding are not the same object.
+/// The common error surface the CLI renders uniformly over `&dyn Diagnose`. Span shape
+/// stays per source: a parse span, a project line/column, and a path-located finding are
+/// deliberately not the same object.
 pub trait Diagnose {
     fn code(&self) -> &str;
     fn message(&self) -> &str;
