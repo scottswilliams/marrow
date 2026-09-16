@@ -206,7 +206,6 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// The arms here cover unread fields with `..` rather than binding each to `_` as the
     /// statement walker does: no `Expression` variant carries a block or a statement, so
     /// no field can hold statements this walker would silently skip.
-    /// `no_expression_variant_carries_a_block` fails the moment one does.
     pub(super) fn lower_expr(&mut self, expr: &Expression) -> ConstructResult<LTy> {
         if let Some(ty) = self.lower_index_or_durable(expr)? {
             return Ok(ty);
