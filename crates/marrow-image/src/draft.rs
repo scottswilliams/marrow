@@ -178,7 +178,7 @@ impl TypeId {
 }
 
 /// An enum-type index (also the final container index; enums keep insertion order).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EnumId(pub(crate) u32);
 
 impl EnumId {

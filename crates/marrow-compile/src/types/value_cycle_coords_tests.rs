@@ -95,14 +95,15 @@ fn durable_projection_survives_syntax_poison() {
     );
 }
 
-/// A repeat for one type keeps the first coordinate.
+/// A repeat for one declaration keeps the first coordinate, for a record and for an
+/// enum.
 ///
 /// The declare pass never reserves one image type twice, so no corpus could notice the
 /// table starting to keep the later coordinate instead — and a caller reporting at a
 /// declaration would then be steered to a later homonym. Hence the direct pin.
 #[test]
 fn a_repeated_declaration_keeps_its_first_coordinate() {
-    use marrow_image::TypeId;
+    use marrow_image::{EnumId, TypeId};
     use marrow_syntax::SourceSpan;
 
     let mut coordinates = super::decl_coords::DeclarationCoordinates::default();
@@ -138,6 +139,26 @@ fn a_repeated_declaration_keeps_its_first_coordinate() {
     let (file, span) = coordinates
         .resolve(ty)
         .expect("a declared type has a coordinate");
+    assert_eq!(file, &first_file, "the first module coordinate stands");
+    assert_eq!(span, first_span, "the first name span stands");
+
+    let id = EnumId::from_index(7);
+    coordinates.declare_enum(
+        id,
+        crate::analysis::FileRef::admitted(0),
+        &first_file,
+        first_span,
+    );
+    coordinates.declare_enum(
+        id,
+        crate::analysis::FileRef::admitted(1),
+        &later_file,
+        later_span,
+    );
+
+    let (file, span) = coordinates
+        .resolve_enum(id)
+        .expect("a declared enum has a coordinate");
     assert_eq!(file, &first_file, "the first module coordinate stands");
     assert_eq!(span, first_span, "the first name span stands");
 }

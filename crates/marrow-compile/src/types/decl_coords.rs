@@ -1,10 +1,6 @@
 //! The declaration coordinate tables the declare pass owns: where each declared
-//! `struct` and `resource` was written, so a pass reporting at a declaration reads a
-//! coordinate instead of scanning the syntax tree for a name match.
-//!
-//! Enums have no row: the value-containment cycle check is the only reader, a cyclic
-//! generic instantiation is reported at its template's span, and a declared enum's
-//! payload is a bare scalar, so no cycle passes through one.
+//! `struct`, `resource` and `enum` was written, so a pass reporting at a declaration
+//! reads a coordinate instead of scanning the syntax tree for a name match.
 //!
 //! The tables are owned fields of [`super::TypeRegistry`]. Declaration admission is
 //! one-shot — a pass that fails returns `Err` and the partially built registry is
@@ -13,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::ops::Deref;
 
-use marrow_image::TypeId;
+use marrow_image::{EnumId, TypeId};
 use marrow_project::FileIdentity;
 use marrow_syntax::SourceSpan;
 
@@ -63,7 +59,7 @@ impl Deref for AdmittedRecords {
     }
 }
 
-/// Where one declared `struct` or `resource` was written: its module and name span.
+/// Where one declared value type was written: its module and name span.
 ///
 /// The module is the existing [`FileRef`] coordinate, keeping one owner for "which
 /// module". The span is inline because this is the only row family citing it, so a
@@ -81,11 +77,12 @@ struct DeclarationCoordinate {
 /// closes.
 #[derive(Default)]
 pub(crate) struct DeclarationCoordinates {
-    /// One owned identity per module that declared a `struct` or `resource`, not one
-    /// per declaration. Keyed rather than appended because the declare pass is not
+    /// One owned identity per module that declared a value type, not one per
+    /// declaration. Keyed rather than appended because the declare pass is not
     /// required to finish one module's declarations before starting the next.
     files: BTreeMap<FileRef, FileIdentity>,
     declarations: BTreeMap<TypeId, DeclarationCoordinate>,
+    enums: BTreeMap<EnumId, DeclarationCoordinate>,
 }
 
 impl DeclarationCoordinates {
@@ -114,10 +111,34 @@ impl DeclarationCoordinates {
         Some((coordinate.at, coordinate.span))
     }
 
-    /// Where `type_id` was declared, or `None` for a type this pass minted no coordinate
-    /// for — an enum, or a reserved toolchain template with no source declaration.
+    /// Where `type_id` was declared, or `None` for a type this pass minted no
+    /// coordinate for — a reserved toolchain template has no source declaration.
     pub(super) fn resolve(&self, type_id: TypeId) -> Option<(&FileIdentity, SourceSpan)> {
-        let coordinate = self.declarations.get(&type_id)?;
+        self.locate(self.declarations.get(&type_id)?)
+    }
+
+    /// Record where the declared `enum` `enum_id` was written. A generic enum
+    /// instantiation gets no row: it is reported at its template's span.
+    pub(super) fn declare_enum(
+        &mut self,
+        enum_id: EnumId,
+        at: FileRef,
+        file: &FileIdentity,
+        span: SourceSpan,
+    ) {
+        self.files.entry(at).or_insert_with(|| file.clone());
+        self.enums
+            .entry(enum_id)
+            .or_insert(DeclarationCoordinate { at, span });
+    }
+
+    /// Where the declared `enum` `enum_id` was written, or `None` for a minted
+    /// instantiation.
+    pub(super) fn resolve_enum(&self, enum_id: EnumId) -> Option<(&FileIdentity, SourceSpan)> {
+        self.locate(self.enums.get(&enum_id)?)
+    }
+
+    fn locate(&self, coordinate: &DeclarationCoordinate) -> Option<(&FileIdentity, SourceSpan)> {
         let file = self.files.get(&coordinate.at)?;
         Some((file, coordinate.span))
     }

@@ -510,7 +510,7 @@ pub(crate) enum GenericInvariant {
     DurableBranchFieldUnresolved,
     /// Scalar annotation lookup cannot spend a generic instantiation budget.
     ScalarResolutionLimit,
-    /// A `struct` or `resource` on a containment cycle has no declaration coordinate.
+    /// A declared value type on a containment cycle has no declaration coordinate.
     ///
     /// The declare pass mints the coordinate in the same statement sequence that
     /// pushes the registry row, so a miss is those two owners disagreeing about one
@@ -518,6 +518,8 @@ pub(crate) enum GenericInvariant {
     /// Reporting it as a refusal would charge the user for that disagreement, and
     /// dropping the row would lose a real cycle report with no cause at all.
     DeclarationCoordinateMissing(TypeId),
+    /// The same coherence failure for a declared `enum`.
+    EnumCoordinateMissing(EnumId),
     ReadyEnumVariantMissing {
         id: EnumId,
         template: usize,
@@ -3729,6 +3731,20 @@ pub(crate) fn reject_value_cycles(
                 GenericInvariant::DeclarationCoordinateMissing(record.type_id),
             )?;
             diagnostics.push(value_cycle_diagnostic(file, span, &record.name, &path));
+        }
+    }
+    for info in &registry.enums {
+        // A refused enum has no variants and so lies on no cycle; like a refused
+        // struct, its own cause was already reported at its declaration.
+        if !info.verdict.is_accepted() {
+            continue;
+        }
+        if let Some(path) = graph.cycle_through(ValueNode::Enum(info.enum_id)) {
+            let (file, span) = registry
+                .coordinates
+                .resolve_enum(info.enum_id)
+                .ok_or(GenericInvariant::EnumCoordinateMissing(info.enum_id))?;
+            diagnostics.push(value_cycle_diagnostic(file, span, &info.name, &path));
         }
     }
     // A monomorphized generic type on a cycle (`Tree[int]` containing `Tree[int]`)

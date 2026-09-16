@@ -1164,6 +1164,9 @@ pub(super) fn declare_enums<'a>(
         }
         let name_id = draft.intern_string(&decl.name)?;
         let enum_id = draft.reserve_enum_type(name_id)?;
+        registry
+            .coordinates
+            .declare_enum(enum_id, *at, file, decl.name_span);
         registry.enums.push(EnumInfo {
             enum_id,
             name: decl.name.clone(),
