@@ -10,6 +10,100 @@
 
 use marrow_codes::Code;
 
+/// A field of a persisted store artifact's grammar, named by a decode rejection. The set is
+/// closed: a rejection names a field this build's decoders actually read, and a caller
+/// matches the variant rather than the spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormatField {
+    /// The envelope's writer-toolchain string.
+    WriterToolchain,
+    /// The envelope's engine-kind discriminant.
+    EngineKind,
+    /// The envelope's publication-state discriminant.
+    PublicationState,
+    /// The head's accepted-ceiling payload.
+    AcceptedCeiling,
+    /// The head map's entry count.
+    HeadMapEntries,
+    /// The head map's lifetime numbering, whose high-water bounds every entry.
+    HeadMapLifetimeNumbers,
+    /// A backup's embedded program image.
+    BackupImage,
+    /// A backup's embedded store head.
+    BackupHead,
+    /// A backup record's leading discriminant.
+    BackupRecord,
+    /// A backup cell's key block.
+    BackupKey,
+    /// A backup cell's value block.
+    BackupValue,
+    /// A backup's cell count.
+    BackupCount,
+}
+
+impl FormatField {
+    /// The field's name in the artifact's own vocabulary, for rendering only.
+    fn name(self) -> &'static str {
+        match self {
+            FormatField::WriterToolchain => "writer toolchain",
+            FormatField::EngineKind => "engine kind",
+            FormatField::PublicationState => "publication state",
+            FormatField::AcceptedCeiling => "accepted ceiling",
+            FormatField::HeadMapEntries => "head map entries",
+            FormatField::HeadMapLifetimeNumbers => "head map lifetime numbers",
+            FormatField::BackupImage => "backup image",
+            FormatField::BackupHead => "backup head",
+            FormatField::BackupRecord => "backup record",
+            FormatField::BackupKey => "backup key",
+            FormatField::BackupValue => "backup value",
+            FormatField::BackupCount => "backup count",
+        }
+    }
+}
+
+/// Which structural invariant of a decoded artifact is violated. Every variant is a
+/// coherence rule the grammar alone cannot express, so it is checked after the fields
+/// decode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MalformedReason {
+    /// The head's reserved sequencing and data-digest slots are not zero.
+    ReservedSlotsNotZero,
+    /// The envelope's writer-toolchain bytes are not valid UTF-8.
+    ToolchainNotUtf8,
+    /// A head-map entry numbers at or above the map's lifetime high-water.
+    HeadMapNumberAtOrAboveHighWater,
+    /// Two head-map entries share a store-local number.
+    HeadMapNumberReused,
+    /// Two head-map entries share a ledger id.
+    HeadMapLedgerIdReused,
+    /// A backup's cells are not in strictly increasing key order.
+    BackupCellsUnordered,
+    /// A backup's trailing count disagrees with the cells that preceded it.
+    BackupCountDiffers,
+    /// A backup decoder was resumed after a failure, whose position it cannot recover.
+    BackupInputAlreadyFailed,
+}
+
+impl MalformedReason {
+    /// The violated invariant as a predicate of the artifact, for rendering only.
+    fn text(self) -> &'static str {
+        match self {
+            MalformedReason::ReservedSlotsNotZero => {
+                "the reserved sequencing and data-digest slots must be zero"
+            }
+            MalformedReason::ToolchainNotUtf8 => "writer toolchain is not valid UTF-8",
+            MalformedReason::HeadMapNumberAtOrAboveHighWater => {
+                "head map number at or above the high-water"
+            }
+            MalformedReason::HeadMapNumberReused => "head map reuses a number",
+            MalformedReason::HeadMapLedgerIdReused => "head map reuses a ledger id",
+            MalformedReason::BackupCellsUnordered => "backup cells are not strictly ordered",
+            MalformedReason::BackupCountDiffers => "backup count differs",
+            MalformedReason::BackupInputAlreadyFailed => "backup input previously failed",
+        }
+    }
+}
+
 /// Why a persisted store artifact failed to decode. Callers match the variant; the stable
 /// dotted [`Code`] is for rendering only.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,15 +123,15 @@ pub enum FormatError {
     TrailingBytes,
     /// A length or count field exceeds the fixed bound the grammar allows before any
     /// allocation, so a hostile length can never drive an unbounded reservation.
-    LengthOverflow { field: &'static str },
+    LengthOverflow { field: FormatField },
     /// A discriminant or flag byte is outside the closed set the grammar defines.
-    UnknownDiscriminant { field: &'static str },
+    UnknownDiscriminant { field: FormatField },
     /// The recomputed digest does not match the sealed digest — the artifact's body was
     /// altered or is inconsistent with its seal.
     DigestMismatch,
     /// A structural invariant of the decoded artifact is violated (for example a head map
     /// that reuses a number or a ledger id), so the bytes are not a coherent artifact.
-    Malformed { reason: &'static str },
+    Malformed { reason: MalformedReason },
 }
 
 impl FormatError {
@@ -80,13 +174,17 @@ impl std::fmt::Display for FormatError {
             FormatError::Truncated => write!(f, "is truncated"),
             FormatError::TrailingBytes => write!(f, "has trailing bytes after its last field"),
             FormatError::LengthOverflow { field } => {
-                write!(f, "exceeds the bound its {field} field allows")
+                write!(f, "exceeds the bound its {} field allows", field.name())
             }
             FormatError::UnknownDiscriminant { field } => {
-                write!(f, "has an unknown discriminant in its {field} field")
+                write!(
+                    f,
+                    "has an unknown discriminant in its {} field",
+                    field.name()
+                )
             }
             FormatError::DigestMismatch => write!(f, "does not match its sealing digest"),
-            FormatError::Malformed { reason } => write!(f, "is malformed: {reason}"),
+            FormatError::Malformed { reason } => write!(f, "is malformed: {}", reason.text()),
         }
     }
 }
@@ -233,7 +331,10 @@ mod tests {
             Code::StoreFormatVersion
         );
         assert_eq!(
-            FormatError::LengthOverflow { field: "map" }.code(),
+            FormatError::LengthOverflow {
+                field: FormatField::HeadMapEntries
+            }
+            .code(),
             Code::StoreLimit
         );
         assert_eq!(FormatError::DigestMismatch.code(), Code::StoreCorruption);

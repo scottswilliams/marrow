@@ -301,9 +301,9 @@ fn sparse_apply_preserves_populated_irregular_addresses_and_refuses_exhaustion()
         if high_water == u32::MAX {
             assert!(matches!(
                 result,
-                Err(ApplyError::HeadMap(
-                    crate::FormatError::LengthOverflow { .. }
-                ))
+                Err(ApplyError::HeadMap(crate::FormatError::LengthOverflow {
+                    field: crate::FormatField::HeadMapLifetimeNumbers
+                }))
             ));
             assert_eq!(result.unwrap_err().code(), marrow_codes::Code::StoreLimit);
             assert_eq!(store_bytes(&scratch.store()), bytes);

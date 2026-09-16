@@ -12,6 +12,7 @@ use std::io::{self, Read, Write};
 use marrow_image::{StoreBackupDigest, bounds::MAX_IMAGE_BYTES};
 use marrow_kernel::durable::{Cell, ExportSink, MAX_KEY_LEN, MAX_VALUE_LEN};
 
+use crate::codec::{FormatField, MalformedReason};
 use crate::{FormatError, MAX_HEAD_FILE_BYTES};
 use marrow_codes::Code;
 
@@ -81,7 +82,7 @@ impl Chain {
     }
 }
 
-fn block(bytes: &[u8], maximum: usize, field: &'static str) -> Result<Vec<u8>, FormatError> {
+fn block(bytes: &[u8], maximum: usize, field: FormatField) -> Result<Vec<u8>, FormatError> {
     if bytes.len() > maximum {
         return Err(FormatError::LengthOverflow { field });
     }
@@ -94,8 +95,8 @@ fn block(bytes: &[u8], maximum: usize, field: &'static str) -> Result<Vec<u8>, F
 
 fn cell_record(key: &[u8], value: &[u8]) -> Result<Vec<u8>, FormatError> {
     let mut record = vec![1];
-    record.extend_from_slice(&block(key, MAX_KEY_LEN, "backup key")?);
-    record.extend_from_slice(&block(value, MAX_VALUE_LEN, "backup value")?);
+    record.extend_from_slice(&block(key, MAX_KEY_LEN, FormatField::BackupKey)?);
+    record.extend_from_slice(&block(value, MAX_VALUE_LEN, FormatField::BackupValue)?);
     Ok(record)
 }
 
@@ -105,7 +106,7 @@ fn ordered(previous: &Option<Vec<u8>>, key: &[u8]) -> Result<(), FormatError> {
         .is_some_and(|before| before.as_slice() >= key)
     {
         Err(FormatError::Malformed {
-            reason: "backup cells are not strictly ordered",
+            reason: MalformedReason::BackupCellsUnordered,
         })
     } else {
         Ok(())
@@ -129,8 +130,8 @@ pub(crate) struct Encoder<'a> {
 
 impl<'a> Encoder<'a> {
     pub fn new(output: &'a mut dyn Write, image: &[u8], head: &[u8]) -> Result<Self, StreamError> {
-        let image = block(image, MAX_IMAGE_BYTES, "backup image")?;
-        let head = block(head, MAX_HEAD_FILE_BYTES as usize, "backup head")?;
+        let image = block(image, MAX_IMAGE_BYTES, FormatField::BackupImage)?;
+        let head = block(head, MAX_HEAD_FILE_BYTES as usize, FormatField::BackupHead)?;
         let mut chain = Chain::new();
         output.write_all(PREFIX)?;
         for record in [&image, &head] {
@@ -205,7 +206,7 @@ fn exact<const N: usize>(input: &mut dyn Read) -> Result<[u8; N], StreamError> {
 fn read_block(
     input: &mut dyn Read,
     maximum: usize,
-    field: &'static str,
+    field: FormatField,
 ) -> Result<Vec<u8>, StreamError> {
     let length = u32::from_be_bytes(exact(input)?) as usize;
     if length > maximum {
@@ -233,11 +234,15 @@ impl<'a> Decoder<'a> {
         if prefix[4] != 0 {
             return Err(FormatError::UnknownVersion { found: prefix[4] }.into());
         }
-        let image = read_block(input, MAX_IMAGE_BYTES, "backup image")?;
-        let head = read_block(input, MAX_HEAD_FILE_BYTES as usize, "backup head")?;
+        let image = read_block(input, MAX_IMAGE_BYTES, FormatField::BackupImage)?;
+        let head = read_block(input, MAX_HEAD_FILE_BYTES as usize, FormatField::BackupHead)?;
         let mut chain = Chain::new();
-        chain.step(&block(&image, MAX_IMAGE_BYTES, "backup image")?);
-        chain.step(&block(&head, MAX_HEAD_FILE_BYTES as usize, "backup head")?);
+        chain.step(&block(&image, MAX_IMAGE_BYTES, FormatField::BackupImage)?);
+        chain.step(&block(
+            &head,
+            MAX_HEAD_FILE_BYTES as usize,
+            FormatField::BackupHead,
+        )?);
         Ok((
             Self {
                 input,
@@ -255,7 +260,7 @@ impl<'a> Decoder<'a> {
             State::Finished => return Ok(None),
             State::Failed => {
                 return Err(FormatError::Malformed {
-                    reason: "backup input previously failed",
+                    reason: MalformedReason::BackupInputAlreadyFailed,
                 }
                 .into());
             }
@@ -274,14 +279,14 @@ impl<'a> Decoder<'a> {
     fn read_record(&mut self) -> Result<Option<Cell>, StreamError> {
         match exact::<1>(self.input)?[0] {
             1 => {
-                let key = read_block(self.input, MAX_KEY_LEN, "backup key")?;
-                let value = read_block(self.input, MAX_VALUE_LEN, "backup value")?;
+                let key = read_block(self.input, MAX_KEY_LEN, FormatField::BackupKey)?;
+                let value = read_block(self.input, MAX_VALUE_LEN, FormatField::BackupValue)?;
                 ordered(&self.previous, &key)?;
                 self.count = self
                     .count
                     .checked_add(1)
                     .ok_or(FormatError::LengthOverflow {
-                        field: "backup count",
+                        field: FormatField::BackupCount,
                     })?;
                 self.chain.step(&cell_record(&key, &value)?);
                 self.previous = Some(key.clone());
@@ -291,7 +296,7 @@ impl<'a> Decoder<'a> {
                 let count = u64::from_be_bytes(exact(self.input)?);
                 if count != self.count {
                     return Err(FormatError::Malformed {
-                        reason: "backup count differs",
+                        reason: MalformedReason::BackupCountDiffers,
                     }
                     .into());
                 }
@@ -307,7 +312,7 @@ impl<'a> Decoder<'a> {
                 }
             }
             _ => Err(FormatError::UnknownDiscriminant {
-                field: "backup record",
+                field: FormatField::BackupRecord,
             }
             .into()),
         }
@@ -352,14 +357,14 @@ mod tests {
                 15,
                 2,
                 FormatError::UnknownDiscriminant {
-                    field: "backup record",
+                    field: FormatField::BackupRecord,
                 },
             ),
             (
                 45,
                 3,
                 FormatError::Malformed {
-                    reason: "backup count differs",
+                    reason: MalformedReason::BackupCountDiffers,
                 },
             ),
         ] {
@@ -435,7 +440,7 @@ mod tests {
         assert!(matches!(
             Decoder::new(&mut input),
             Err(StreamError::Format(FormatError::LengthOverflow {
-                field: "backup image"
+                field: FormatField::BackupImage
             }))
         ));
         assert_eq!(input.position(), 9);
@@ -445,7 +450,7 @@ mod tests {
         assert!(matches!(
             Decoder::new(&mut input),
             Err(StreamError::Format(FormatError::LengthOverflow {
-                field: "backup head"
+                field: FormatField::BackupHead
             }))
         ));
         assert_eq!(input.position(), 14);
@@ -457,7 +462,7 @@ mod tests {
         assert!(matches!(
             decoder.next_cell(),
             Err(StreamError::Format(FormatError::LengthOverflow {
-                field: "backup key"
+                field: FormatField::BackupKey
             }))
         ));
         let mut bytes = fixture()[..21].to_vec();
@@ -467,7 +472,7 @@ mod tests {
         assert!(matches!(
             decoder.next_cell(),
             Err(StreamError::Format(FormatError::LengthOverflow {
-                field: "backup value"
+                field: FormatField::BackupValue
             }))
         ));
     }
@@ -482,13 +487,13 @@ mod tests {
         assert!(matches!(
             decoder.next_cell(),
             Err(StreamError::Format(FormatError::Malformed {
-                reason: "backup cells are not strictly ordered"
+                reason: MalformedReason::BackupCellsUnordered
             }))
         ));
         assert!(matches!(
             decoder.next_cell(),
             Err(StreamError::Format(FormatError::Malformed {
-                reason: "backup input previously failed"
+                reason: MalformedReason::BackupInputAlreadyFailed
             }))
         ));
     }
@@ -511,7 +516,7 @@ mod tests {
         assert!(matches!(
             decoder.next_cell(),
             Err(StreamError::Format(FormatError::LengthOverflow {
-                field: "backup count"
+                field: FormatField::BackupCount
             }))
         ));
     }

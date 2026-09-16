@@ -14,7 +14,8 @@
 use marrow_image::StoreHeadDigest;
 
 use crate::codec::{
-    ARTIFACT_PREFIX_BYTES, FormatError, Reader, artifact_version, put_u32, put_u64,
+    ARTIFACT_PREFIX_BYTES, FormatError, FormatField, MalformedReason, Reader, artifact_version,
+    put_u32, put_u64,
 };
 use crate::headmap::{HeadMap, MAX_HEAD_MAP_ENTRIES};
 
@@ -216,7 +217,7 @@ impl LogicalHead {
         // for a validly resealed head so stale metadata cannot read as current.
         if commit_position != 0 || data_digest != [0u8; 32] || data_digest_position != 0 {
             return Err(FormatError::Malformed {
-                reason: "the reserved sequencing and data-digest slots must be zero",
+                reason: MalformedReason::ReservedSlotsNotZero,
             });
         }
         let head_map = HeadMap::decode(&mut reader)?;
@@ -227,7 +228,7 @@ impl LogicalHead {
         let ceiling_len = reader.u32()?;
         if ceiling_len > MAX_ACCEPTED_CEILING_BYTES {
             return Err(FormatError::LengthOverflow {
-                field: "accepted_ceiling",
+                field: FormatField::AcceptedCeiling,
             });
         }
         let accepted_ceiling = reader.take_vec(ceiling_len as usize)?;
@@ -406,7 +407,7 @@ mod tests {
             assert_eq!(
                 LogicalHead::decode(&bytes),
                 Err(FormatError::Malformed {
-                    reason: "the reserved sequencing and data-digest slots must be zero"
+                    reason: MalformedReason::ReservedSlotsNotZero
                 }),
                 "a forged nonzero reserved slot at offset {offset} must reject",
             );
@@ -448,7 +449,7 @@ mod tests {
         assert_eq!(
             LogicalHead::decode(&bytes),
             Err(FormatError::Malformed {
-                reason: "head map number at or above the high-water"
+                reason: MalformedReason::HeadMapNumberAtOrAboveHighWater
             }),
         );
     }

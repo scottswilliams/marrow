@@ -19,7 +19,7 @@ use std::collections::HashSet;
 
 use marrow_image::LedgerIdBytes;
 
-use crate::codec::{FormatError, Reader, put_u32};
+use crate::codec::{FormatError, FormatField, MalformedReason, Reader, put_u32};
 
 /// Maximum entries in one Head map, bounding decode allocation. This count limit matches
 /// the kernel's `MAX_STORE_NODES`, enforced by a drift test. Physical addresses and the
@@ -53,7 +53,7 @@ impl HeadMap {
     pub fn assign(ledger_ids: &[LedgerIdBytes]) -> Result<Self, FormatError> {
         if ledger_ids.len() as u64 > u64::from(MAX_HEAD_MAP_ENTRIES) {
             return Err(FormatError::LengthOverflow {
-                field: "head map entries",
+                field: FormatField::HeadMapEntries,
             });
         }
         let mut entries = Vec::with_capacity(ledger_ids.len());
@@ -114,16 +114,16 @@ impl HeadMap {
             .checked_add(additions.len())
             .filter(|&count| count <= MAX_HEAD_MAP_ENTRIES as usize)
             .ok_or(FormatError::LengthOverflow {
-                field: "head map entries",
+                field: FormatField::HeadMapEntries,
             })?;
         let added = u32::try_from(additions.len()).map_err(|_| FormatError::LengthOverflow {
-            field: "head map lifetime numbers",
+            field: FormatField::HeadMapLifetimeNumbers,
         })?;
         let next_number =
             self.next_number
                 .checked_add(added)
                 .ok_or(FormatError::LengthOverflow {
-                    field: "head map lifetime numbers",
+                    field: FormatField::HeadMapLifetimeNumbers,
                 })?;
         let mut entries = Vec::with_capacity(count);
         entries.extend_from_slice(&self.entries);
@@ -156,17 +156,17 @@ impl HeadMap {
         for entry in &self.entries {
             if entry.number >= self.next_number {
                 return Err(FormatError::Malformed {
-                    reason: "head map number at or above the high-water",
+                    reason: MalformedReason::HeadMapNumberAtOrAboveHighWater,
                 });
             }
             if !seen_numbers.insert(entry.number) {
                 return Err(FormatError::Malformed {
-                    reason: "head map reuses a number",
+                    reason: MalformedReason::HeadMapNumberReused,
                 });
             }
             if !seen_ids.insert(*entry.ledger_id.bytes()) {
                 return Err(FormatError::Malformed {
-                    reason: "head map reuses a ledger id",
+                    reason: MalformedReason::HeadMapLedgerIdReused,
                 });
             }
         }
@@ -194,7 +194,7 @@ impl HeadMap {
         let count = reader.u32()?;
         if count > MAX_HEAD_MAP_ENTRIES {
             return Err(FormatError::LengthOverflow {
-                field: "head map entries",
+                field: FormatField::HeadMapEntries,
             });
         }
         let mut entries = Vec::with_capacity(count as usize);
@@ -300,7 +300,7 @@ mod tests {
         assert_eq!(
             HeadMap::assign(&[id(0x01), id(0x01)]),
             Err(FormatError::Malformed {
-                reason: "head map reuses a ledger id"
+                reason: MalformedReason::HeadMapLedgerIdReused
             }),
         );
     }
@@ -319,7 +319,7 @@ mod tests {
         assert_eq!(
             HeadMap::decode(&mut reader),
             Err(FormatError::Malformed {
-                reason: "head map reuses a number"
+                reason: MalformedReason::HeadMapNumberReused
             }),
         );
     }
@@ -336,7 +336,7 @@ mod tests {
         assert_eq!(
             HeadMap::decode(&mut reader),
             Err(FormatError::Malformed {
-                reason: "head map number at or above the high-water"
+                reason: MalformedReason::HeadMapNumberAtOrAboveHighWater
             }),
         );
     }
@@ -350,7 +350,7 @@ mod tests {
         assert_eq!(
             HeadMap::decode(&mut reader),
             Err(FormatError::LengthOverflow {
-                field: "head map entries"
+                field: FormatField::HeadMapEntries
             }),
         );
     }

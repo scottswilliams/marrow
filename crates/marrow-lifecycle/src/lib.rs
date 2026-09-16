@@ -64,7 +64,7 @@ pub use audit::{AuditError, Finding, StoreAudit, audit};
 pub use authority::{DemandExceedsCeiling, ExceedingDemand};
 pub use backup::{BackupError, BackupFault, StoreBackup, backup};
 pub use backup_stream::StreamError as BackupReadError;
-pub use codec::FormatError;
+pub use codec::{FormatError, FormatField, MalformedReason};
 pub use envelope::{EngineKind, MAX_ENVELOPE_FILE_BYTES, StoreEnvelope};
 pub use head::{ActiveBinding, LogicalHead, MAX_HEAD_FILE_BYTES};
 pub use headmap::{HeadMap, HeadMapEntry, MAX_HEAD_MAP_ENTRIES};

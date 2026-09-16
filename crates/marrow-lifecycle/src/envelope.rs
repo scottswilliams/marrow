@@ -6,7 +6,10 @@
 
 use marrow_image::{StoreEnvelopeDigest, StoreHeadDigest};
 
-use crate::codec::{ARTIFACT_PREFIX_BYTES, FormatError, Reader, artifact_version, put_u32};
+use crate::codec::{
+    ARTIFACT_PREFIX_BYTES, FormatError, FormatField, MalformedReason, Reader, artifact_version,
+    put_u32,
+};
 use crate::instance::StoreInstanceId;
 
 /// The envelope magic: "MWSE" (Marrow Store Envelope).
@@ -52,7 +55,7 @@ impl EngineKind {
         match tag {
             0x01 => Ok(EngineKind::Redb),
             _ => Err(FormatError::UnknownDiscriminant {
-                field: "engine kind",
+                field: FormatField::EngineKind,
             }),
         }
     }
@@ -97,7 +100,7 @@ impl EnvelopeRecord {
         let metadata = &self.metadata;
         if metadata.writer_toolchain.len() > MAX_TOOLCHAIN_BYTES as usize {
             return Err(FormatError::LengthOverflow {
-                field: "writer toolchain",
+                field: FormatField::WriterToolchain,
             });
         }
         let mut out = Vec::with_capacity(MAX_ENVELOPE_FILE_BYTES as usize);
@@ -149,13 +152,13 @@ impl EnvelopeRecord {
         let toolchain_len = reader.u32()?;
         if toolchain_len > MAX_TOOLCHAIN_BYTES {
             return Err(FormatError::LengthOverflow {
-                field: "writer toolchain",
+                field: FormatField::WriterToolchain,
             });
         }
         let toolchain_bytes = reader.take_vec(toolchain_len as usize)?;
         let writer_toolchain =
             String::from_utf8(toolchain_bytes).map_err(|_| FormatError::Malformed {
-                reason: "writer toolchain is not valid UTF-8",
+                reason: MalformedReason::ToolchainNotUtf8,
             })?;
         let engine_kind = EngineKind::from_tag(reader.u8()?)?;
         let engine_format_version = reader.u32()?;
@@ -170,7 +173,7 @@ impl EnvelopeRecord {
             },
             _ => {
                 return Err(FormatError::UnknownDiscriminant {
-                    field: "publication state",
+                    field: FormatField::PublicationState,
                 });
             }
         };
@@ -241,7 +244,7 @@ mod tests {
             assert_eq!(
                 record.encode(),
                 Err(FormatError::LengthOverflow {
-                    field: "writer toolchain"
+                    field: FormatField::WriterToolchain
                 })
             );
         }
@@ -256,7 +259,7 @@ mod tests {
         assert_eq!(
             EnvelopeRecord::decode(&bytes),
             Err(FormatError::UnknownDiscriminant {
-                field: "publication state"
+                field: FormatField::PublicationState
             })
         );
     }
@@ -335,7 +338,7 @@ mod tests {
         assert_eq!(
             EnvelopeRecord::decode(&bytes),
             Err(FormatError::UnknownDiscriminant {
-                field: "engine kind"
+                field: FormatField::EngineKind
             }),
         );
     }
