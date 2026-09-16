@@ -1,12 +1,12 @@
 //! The editor analysis fact floor: one immutable, revisioned [`AnalysisSnapshot`] per
 //! exact project input.
 //!
-//! A caller hands [`analyze`] the exact [`ProjectInput`] it wants analyzed and a
+//! A caller hands [`analyze`] the exact [`ProjectInput`] it wants analyzed and an
 //! [`InputRevision`] it assigns. The revision labels which input a result belongs to;
 //! the floor echoes it and never treats it as content identity or an ordering key. The
 //! snapshot enumerates the complete, resilient diagnostic set — every stage's
 //! diagnostics over every module, so an independent valid component keeps its
-//! diagnostics even when a sibling fails to parse — and holds the caller's same
+//! diagnostics even when a sibling fails to parse — and shares the caller's
 //! `Arc<ProjectInput>` without copying its bytes.
 //!
 //! An outcome that is not a truthful diagnostic set is a typed failure, never a
@@ -92,10 +92,10 @@ pub(crate) const MAX_FORMAT_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
 pub const MAX_DOCUMENT_SYMBOLS_PER_FILE: u64 = 4_096;
 
 /// The largest declaration-hierarchy nesting depth one module file admits before that
-/// file's outline becomes [`Unavailability::Bounded`]. Top-level
-/// declarations sit at depth one; enum members deepen the tree by one level each. The
-/// parser admits far deeper enum-member nesting, so this analysis bound is reachable and
-/// fails a pathological outline closed rather than recursing without limit.
+/// file's outline becomes [`Unavailability::Bounded`]. Top-level declarations sit at
+/// depth one; enum members deepen the tree by one level each. The parser admits far
+/// deeper nesting, so this bound is reachable and fails a pathological outline closed
+/// rather than recursing without limit.
 pub const MAX_SYMBOL_DEPTH: u16 = 16;
 
 /// One retained fact's file, as a position in the snapshot's own
@@ -211,16 +211,13 @@ pub enum AnalysisResourceLimit {
     /// The retained fact byte footprint exceeded [`MAX_SNAPSHOT_FACT_BYTES`].
     SnapshotFactBytes { limit: u64 },
     /// One completion query's in-scope candidate set exceeded
-    /// [`MAX_COMPLETION_CANDIDATES`]. A query-local refusal (never a truncated prefix),
-    /// not a retained snapshot bound.
+    /// [`MAX_COMPLETION_CANDIDATES`]. A query-local refusal, never a truncated prefix.
     CompletionCandidateCount { limit: u64 },
     /// One completion query's rendered candidate byte footprint exceeded
-    /// [`MAX_COMPLETION_RENDER_BYTES`]. A query-local refusal, not a retained snapshot
-    /// bound.
+    /// [`MAX_COMPLETION_RENDER_BYTES`]. A query-local refusal.
     CompletionRenderBytes { limit: u64 },
     /// One active-call query's rendered signature-and-parameter byte footprint exceeded
-    /// [`MAX_ACTIVE_CALL_RENDER_BYTES`]. A query-local refusal, not a retained snapshot
-    /// bound.
+    /// [`MAX_ACTIVE_CALL_RENDER_BYTES`]. A query-local refusal.
     ActiveCallRenderBytes { limit: u64 },
 }
 
@@ -334,10 +331,9 @@ impl AnalysisSnapshot {
     }
 
     /// The one coordinate validator: resolve an input file to its snapshot-local
-    /// [`FileRef`] and its source bytes, or a typed query error when the file is not
-    /// one of the snapshot's analyzed inputs. Every fact query and every retained
-    /// span resolves through here, so a fact can only ever index bytes this snapshot
-    /// holds.
+    /// [`FileRef`] and its source bytes, or a typed query error when the file is not one
+    /// of the snapshot's analyzed inputs. Every fact query resolves through here, so a
+    /// fact can only ever index bytes this snapshot holds.
     fn locate(&self, file: &FileIdentity) -> Result<(FileRef, &[u8]), QueryError> {
         self.input
             .modules()
@@ -473,10 +469,10 @@ impl AnalysisSnapshot {
     /// typed [`QueryError`]; a file that did not parse is [`Unavailability::Syntax`]; a
     /// cleanly-parsed file whose outline crossed [`MAX_DOCUMENT_SYMBOLS_PER_FILE`] or
     /// [`MAX_SYMBOL_DEPTH`] is [`Unavailability::Bounded`], with nothing partial retained
-    /// for it and every other query for that same file unaffected; a cleanly-parsed file
-    /// with no declarations is a truthful `Present` empty outline.
+    /// for it; a cleanly-parsed file with no declarations is a truthful `Present` empty
+    /// outline.
     ///
-    /// This is a pure projection: it reclassifies nothing and reads no resolved semantic
+    /// A pure projection: it reclassifies nothing and reads no resolved semantic
     /// identity. The outline is retained per snapshot and bounded per file at snapshot
     /// admission; the bound refuses that file's outline alone, never the snapshot.
     pub fn document_symbols(&self, file: &FileIdentity) -> Result<Fact<&[DeclSymbol]>, QueryError> {
@@ -493,9 +489,8 @@ impl AnalysisSnapshot {
             .find(|(symbol_file, _)| *symbol_file == file)
         {
             Some((_, symbols)) => Ok(Fact::Present(symbols)),
-            // A validated input that is neither broken nor retained did not parse cleanly;
-            // the honest outcome is the same syntax-unavailable verdict, never a fabricated
-            // empty tree.
+            // A validated input that is neither broken nor retained did not parse
+            // cleanly: syntax-unavailable, never a fabricated empty tree.
             None => Ok(Fact::Unavailable(Unavailability::Syntax)),
         }
     }
@@ -505,16 +500,12 @@ impl AnalysisSnapshot {
     /// The position class is derived purely positionally from the checker's resolution
     /// model over a parse of this file's own retained bytes — never from the trigger
     /// character, document text, or a token scan. The candidate set is the complete
-    /// in-scope namespace for the class: locals and parameters in scope before the
-    /// offset, module functions, consts, built-ins, imported module names, and enum type
-    /// names for an expression name; the base type's declared fields after `.`/`?.`; an
-    /// enum's immediate members after `::`; named types, generic templates, built-in type
-    /// names, and in-scope type parameters in a type annotation.
+    /// in-scope namespace for the class, as [`PositionClass`] enumerates it.
     ///
     /// The set is never prefix-filtered, ranked, or truncated: an over-cap namespace is a
-    /// query-local [`CompletionOutcome::Refused`], never a truncated prefix. The parse
-    /// and the re-resolution over it are per query and transient — no parse tree and no
-    /// per-position candidate set is retained.
+    /// query-local [`CompletionOutcome::Refused`]. The parse and the re-resolution over
+    /// it are per query and transient — no parse tree and no per-position candidate set
+    /// is retained.
     ///
     /// An unknown file or an out-of-range offset is a typed [`QueryError`]. A file that
     /// produced no parse tree (a non-UTF-8 file) is [`Unavailability::Syntax`]. A broken
@@ -524,8 +515,8 @@ impl AnalysisSnapshot {
     /// node) is `Absent`.
     ///
     /// The traversal is strictly read-only: it never drives the compile-path lowerer or
-    /// resolver, so a partial or malformed base yields an `Absent`/empty classification and
-    /// leaks no diagnostic into the snapshot.
+    /// resolver, so a partial or malformed base yields an `Absent`/empty classification
+    /// and leaks no diagnostic into the snapshot.
     pub fn completions(
         &self,
         file: &FileIdentity,
@@ -536,8 +527,8 @@ impl AnalysisSnapshot {
             return Err(QueryError::OffsetOutOfRange);
         }
         let Some(tree) = query_local_parse(source, offset) else {
-            // A validated input file that cannot be decoded never produced a tree. The
-            // honest verdict is syntax-unavailable, never a fabricated empty set.
+            // A validated input file that cannot be decoded never produced a tree:
+            // syntax-unavailable, never a fabricated empty set.
             return Ok(CompletionOutcome::Ready(Fact::Unavailable(
                 Unavailability::Syntax,
             )));
@@ -552,9 +543,8 @@ impl AnalysisSnapshot {
     /// of this file's own retained bytes — never from the trigger character or a
     /// document-text scan. The callee resolves to a same-module function or generic
     /// template declared in the file, and a generic callee presents its source template
-    /// signature. The parameter pieces are separately rendered from the declared
-    /// spellings so no consumer substring-searches the signature display, and each piece
-    /// composes the signature so a consumer can mark the active one.
+    /// signature. Parameter pieces are rendered separately from the declared spellings,
+    /// so a consumer marks the active one without substring-searching the display.
     ///
     /// An unknown file or an out-of-range offset is a typed [`QueryError`]. A file that
     /// produced no parse tree (a non-UTF-8 file) is [`Unavailability::Syntax`]. A broken
@@ -573,8 +563,8 @@ impl AnalysisSnapshot {
             return Err(QueryError::OffsetOutOfRange);
         }
         let Some(tree) = query_local_parse(source, offset) else {
-            // A validated input file that cannot be decoded never produced a tree. The
-            // honest verdict is syntax-unavailable, never a fabricated absence.
+            // A validated input file that cannot be decoded never produced a tree:
+            // syntax-unavailable, never a fabricated absence.
             return Ok(ActiveCallOutcome::Ready(Fact::Unavailable(
                 Unavailability::Syntax,
             )));
@@ -587,19 +577,17 @@ impl AnalysisSnapshot {
 ///
 /// The tree is transient: it is never retained, never enters a collector, and
 /// contributes no diagnostic. `broken_files` stays the independent record of
-/// parseability — no query infers parseability from this parse, and a recovered
-/// broken file still classifies positions over its recovered forms. Syntax retains
-/// every declaration header but materializes statements only in the containing
-/// function/test body. The bound position travels with that partial syntax; no
-/// consumer can select a different body from it.
+/// parseability — no query infers parseability from this parse, and a recovered broken
+/// file still classifies positions over its recovered forms. Syntax retains every
+/// declaration header but materializes statements only in the containing function/test
+/// body, and the bound position travels with that partial syntax.
 ///
-/// Its peak is charged before it is incurred, and by an owner that runs before any file
-/// is parsed: [`crate::MAX_PARSED_FILE_BYTES`] is the longest file drive admission
-/// accepts, and it is derived from [`crate::MAX_QUERY_PARSE_TRANSIENT_BYTES`] and the
-/// rate `marrow-syntax` publishes for the representation it builds. Every file a
-/// snapshot holds therefore has an accounted parse charge under that ceiling, and this
-/// needs no refusal arm of its own — an arm here would be unreachable, and an
-/// unreachable refusal is a claim no test can keep honest.
+/// Its peak is charged before it is incurred, by an owner that runs before any file is
+/// parsed: [`crate::MAX_PARSED_FILE_BYTES`] is the longest file drive admission accepts,
+/// derived from [`crate::MAX_QUERY_PARSE_TRANSIENT_BYTES`] and the rate `marrow-syntax`
+/// publishes for the representation it builds. Every file a snapshot holds therefore has
+/// an accounted parse charge under that ceiling, so a refusal arm here would be
+/// unreachable — a claim no test could keep honest.
 fn query_local_parse(source: &[u8], offset: usize) -> Option<marrow_syntax::QuerySyntax> {
     let source = std::str::from_utf8(source).ok()?;
     Some(marrow_syntax::QuerySyntax::parse(source, offset))
@@ -698,8 +686,7 @@ pub fn analyze(
     };
     // The fact ledger admitted every fact against its ceilings at the push, so the
     // sealed terminal is either the complete retained set or the typed limit that
-    // discarded it. Project the limit through one exhaustive translation, mirroring the
-    // diagnostic owner's failure boundary; no partial fact set is ever published.
+    // discarded it. No partial fact set is ever published.
     let facts = match analysis.facts {
         BoundedAnalysisFacts::Complete(facts) => facts,
         BoundedAnalysisFacts::Limited { limit } => {
@@ -743,9 +730,9 @@ fn fact_limit_failure(limit: AnalysisFactLimit) -> AnalysisResourceLimit {
 ///
 /// Private to this module, not `pub(crate)`: a producer outside the ledger cannot name
 /// the type, so it cannot declare a field or a parameter that carries hover facts in
-/// bulk. That makes the staging defect this row deleted unrepresentable rather than
-/// merely scanned for. Producers reach the ledger through [`FactSink::hover`], which
-/// takes the parts and admits at the push.
+/// bulk — bulk staging is unrepresentable rather than merely scanned for. Producers
+/// reach the ledger through [`FactSink::hover`], which takes the parts and admits at
+/// the push.
 struct HoverFact {
     file: FileRef,
     span: FactSpan,
@@ -753,10 +740,9 @@ struct HoverFact {
     /// The definition target when this fact is a resolved function callee; `None` for a
     /// local or parameter use.
     ///
-    /// Carried inline. Every coordinate in it is compact, so an inlined target costs the
-    /// fact struct less than a second retained table plus a reference into it would cost
-    /// the accounted worst case (`the_accounted_footprint_closes_under_the_exported_term`
-    /// derives both), and the snapshot keeps one retained fact family instead of two.
+    /// Carried inline: every coordinate in it is compact, so inlining costs the accounted
+    /// worst case less than a second retained table plus a reference into it, and the
+    /// snapshot keeps one retained fact family instead of two.
     definition: Option<DefinitionTarget>,
 }
 
@@ -798,10 +784,8 @@ impl DefinitionTarget {
     }
 
     /// The logical byte charge of one retained target: the spelling of the file it names.
-    /// Its spans are fixed-size and charged by the count bound.
-    ///
-    /// The destructure is exhaustive so a new heap-owning field on this retained type is
-    /// a build error here rather than retention the exported term never saw.
+    /// Its spans are fixed-size and charged by the count bound. The destructure is
+    /// exhaustive for the reason given at [`HoverFact::retained_bytes`].
     fn retained_bytes(self, spelling: impl FnOnce(FileRef) -> u64) -> u64 {
         let DefinitionTarget {
             file,
@@ -837,10 +821,10 @@ pub(crate) struct RetainedFacts {
 /// The finished terminal of one fact ledger: the complete retained set, or the typed
 /// ceiling that discarded it.
 ///
-/// A Limited terminal carries the ceiling and nothing else. The ledger's saturated
-/// count and byte totals stay strictly internal: they exist so a ledger that has
-/// already crossed keeps composing later input without unbounded growth, and
-/// publishing one would be exactly the fabricated total the typed limits prevent.
+/// A Limited terminal carries the ceiling and nothing else. The ledger's saturated count
+/// and byte totals stay strictly internal: they exist so a ledger that has already
+/// crossed keeps composing later input without unbounded growth, and publishing one
+/// would be the fabricated total the typed limits prevent.
 pub(crate) enum BoundedAnalysisFacts {
     Complete(RetainedFacts),
     Limited { limit: AnalysisFactLimit },
@@ -980,10 +964,8 @@ impl DeclSymbol {
 
     /// This node's retained byte footprint: its name spelling. Spans and the kind are
     /// fixed-size and charged by the count bound; children are summed separately, each
-    /// charging one count of its own.
-    ///
-    /// The destructure is exhaustive so a new heap-owning field on this retained type is
-    /// a build error here rather than retention the exported term never saw.
+    /// charging one count of its own. The destructure is exhaustive for the reason given
+    /// at [`HoverFact::retained_bytes`].
     fn retained_bytes(&self) -> u64 {
         let DeclSymbol {
             name,
@@ -1012,10 +994,9 @@ fn symbol_bytes(symbols: &[DeclSymbol]) -> u64 {
         .sum()
 }
 
-/// A projection exhausted a per-file declaration-hierarchy bound. Which of the two —
-/// [`MAX_DOCUMENT_SYMBOLS_PER_FILE`] or [`MAX_SYMBOL_DEPTH`] — is not carried: the
-/// consequence is the same either way, that file's outline is unavailable and nothing
-/// partial is retained for it, and no consumer distinguishes them.
+/// A projection exhausted a per-file declaration-hierarchy bound. Which of
+/// [`MAX_DOCUMENT_SYMBOLS_PER_FILE`] and [`MAX_SYMBOL_DEPTH`] is not carried: either way
+/// that file's outline is unavailable and nothing partial is retained for it.
 pub(crate) struct SymbolBoundExceeded;
 
 /// Project one module file's declarations into its declaration-hierarchy outline, or the
@@ -1193,10 +1174,8 @@ pub enum CandidateKind {
 }
 
 /// One completion candidate: the declared spelling to insert, its kind, and a canonical
-/// detail display. `detail` renders the declared type or signature spelling of the
-/// candidate; it is empty when the declaration carries no annotation. The set a query
-/// returns is the complete in-scope namespace — never prefix-filtered, ranked, or
-/// truncated.
+/// detail display. `detail` renders the candidate's declared type or signature spelling,
+/// and is empty when the declaration carries no annotation.
 pub struct Candidate {
     label: String,
     kind: CandidateKind,
@@ -1239,11 +1218,10 @@ impl Completions {
     }
 }
 
-/// The outcome of a completion query. A `Ready` outcome carries the ordinary
-/// [`Fact`] — present classification, legitimate absence, or an unavailable owner. A
-/// `Refused` outcome is a query-local resource refusal (an over-cap candidate set), never
-/// a truncated prefix; it is not retained. An unknown file or an out-of-range offset is a
-/// typed [`QueryError`] distinct from every outcome here.
+/// The outcome of a completion query. A `Ready` outcome carries the ordinary [`Fact`] —
+/// present classification, legitimate absence, or an unavailable owner. A `Refused`
+/// outcome is an unretained query-local resource refusal, never a truncated prefix. An
+/// unknown file or an out-of-range offset is a typed [`QueryError`], distinct from both.
 pub enum CompletionOutcome {
     /// A computed completion fact.
     Ready(Fact<Completions>),
@@ -1254,10 +1232,8 @@ pub enum CompletionOutcome {
 }
 
 /// One parameter piece of an active call's signature: the declared spelling of a single
-/// parameter (`name: Type`). The pieces are rendered separately from the signature display
-/// so a consumer marks the active parameter without substring-searching the display, and
-/// each piece composes the signature so a consumer that does locate pieces in the display
-/// finds an exact match.
+/// parameter (`name: Type`). Each piece composes the signature display exactly, so a
+/// consumer that does locate pieces in the display finds an exact match.
 pub struct ParamPiece {
     label: String,
 }
@@ -1300,9 +1276,8 @@ impl ActiveCall {
 
 /// The outcome of an active-call query. A `Ready` outcome carries the ordinary [`Fact`] —
 /// a present active-call fact, a legitimate absence, or an unavailable owner. A `Refused`
-/// outcome is a query-local resource refusal (an over-cap rendered display), never a
-/// truncated display; it is not retained. An unknown file or an out-of-range offset is a
-/// typed [`QueryError`] distinct from every outcome here.
+/// outcome is an unretained query-local resource refusal, never a truncated display. An
+/// unknown file or an out-of-range offset is a typed [`QueryError`], distinct from both.
 pub enum ActiveCallOutcome {
     /// A computed active-call fact.
     Ready(Fact<ActiveCall>),

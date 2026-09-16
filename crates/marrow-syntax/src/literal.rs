@@ -55,12 +55,10 @@ fn shift_string_offset(error: StringLiteralError, by: usize) -> StringLiteralErr
     }
 }
 
-/// Encode a string into the quoted, escaped spelling that [`decode_string_literal`]
-/// is the exact inverse of: the five recognized escapes for `\`, `"`, newline,
-/// carriage return, and tab; every other scalar — control characters and
-/// non-ASCII alike — emitted literally as `string_text`. This is the canonical
-/// encoder for any tool, such as the saved-path renderer, whose output must
-/// re-parse through the language's string grammar.
+/// Encode a string into the quoted spelling [`decode_string_literal`] is the exact
+/// inverse of: the five recognized escapes, with every other scalar — control characters
+/// and non-ASCII alike — emitted literally. The canonical encoder for any tool, such as
+/// the saved-path renderer, whose output must re-parse through the string grammar.
 pub fn encode_string_literal(value: &str) -> String {
     let mut text = String::with_capacity(value.len() + 2);
     text.push('"');
@@ -83,8 +81,8 @@ pub fn push_string_escapes(text: &mut String, value: &str) {
     }
 }
 
-/// Decode escapes in already-unquoted text (interpolation segments use this
-/// directly, having no quotes to strip).
+/// Decode escapes in already-unquoted text; interpolation segments use this directly,
+/// having no quotes to strip.
 pub fn decode_string_escapes(inner: &str) -> Result<String, StringLiteralError> {
     let mut decoded = String::with_capacity(inner.len());
     let mut chars = inner.char_indices();
@@ -98,11 +96,9 @@ pub fn decode_string_escapes(inner: &str) -> Result<String, StringLiteralError> 
     Ok(decoded)
 }
 
-/// Decode one backslash escape, `chars` positioned just past the backslash at
-/// byte `offset`. Consumes the escaped character (and, for `\u{...}`, through its
-/// closing brace). This is the single per-escape classifier shared by plain
-/// string text and interpolation text; a bad or unterminated escape is a
-/// `BadEscape` at `offset`.
+/// Decode one backslash escape, `chars` positioned just past the backslash at byte
+/// `offset`, consuming the escaped character (and, for `\u{...}`, its closing brace). The
+/// single per-escape classifier shared by plain string text and interpolation text.
 fn decode_backslash_escape(
     chars: &mut std::str::CharIndices,
     offset: usize,
@@ -120,12 +116,10 @@ fn decode_backslash_escape(
     })
 }
 
-/// Decode one literal text segment of an interpolation string. The doubled-brace
-/// escapes `{{` and `}}` collapse to a single `{` or `}`, and the five string
-/// escapes plus `\u{H}` decode exactly as in a plain string literal. A lone
-/// unescaped `{` never reaches here — the lexer opens a hole at it — so only a
-/// doubled `{{` produces a literal brace; a lone `}` decodes to itself. A
-/// bad-escape offset is relative to `inner`.
+/// Decode one literal text segment of an interpolation string. The doubled-brace escapes
+/// `{{` and `}}` collapse to a single brace, and the five string escapes plus `\u{H}`
+/// decode as in a plain literal. A lone unescaped `{` never reaches here — the lexer opens
+/// a hole at it — so only `{{` produces a literal brace; a lone `}` decodes to itself.
 pub fn decode_interpolation_text(inner: &str) -> Result<String, StringLiteralError> {
     let mut decoded = String::with_capacity(inner.len());
     let mut chars = inner.char_indices();
@@ -144,13 +138,11 @@ pub fn decode_interpolation_text(inner: &str) -> Result<String, StringLiteralErr
     Ok(decoded)
 }
 
-/// Decode the tail of a `\u{H}` string escape, positioned just after the `u`. The
-/// braces enclose one to six hexadecimal digits naming a Unicode scalar value; the
-/// scalar must be at most `0x10FFFF` and not a UTF-16 surrogate. An empty group,
-/// more than six digits, a missing brace, an unterminated escape, a non-hex digit,
-/// or a non-scalar value is a bad escape at `escape_offset`, the byte position of
-/// the opening backslash. This escape is text-only: [`decode_bytes_escapes`] does
-/// not admit it, keeping the byte/text boundary typed.
+/// Decode the tail of a `\u{H}` string escape, positioned just after the `u`. The braces
+/// enclose one to six hexadecimal digits naming a Unicode scalar value, at most
+/// `0x10FFFF` and not a UTF-16 surrogate; anything else is a bad escape at
+/// `escape_offset`, the byte position of the opening backslash. Text-only:
+/// [`decode_bytes_escapes`] does not admit it, keeping the byte/text boundary typed.
 fn decode_unicode_escape(
     chars: &mut std::str::CharIndices,
     escape_offset: usize,
@@ -179,13 +171,12 @@ fn decode_unicode_escape(
         return Err(bad);
     }
     // `char::from_u32` rejects both the surrogate range and values above the scalar
-    // ceiling, so it is the single validation of the decoded value.
+    // ceiling, so it is the one validation the decoded value needs.
     char::from_u32(value).ok_or(bad)
 }
 
-/// Decode a full bytes literal — surrounding `b"` … `"` included — into its bytes.
-/// A bad-escape offset is reported relative to the full literal, so it accounts
-/// for the `b"` prefix stripped here.
+/// Decode a full bytes literal — surrounding `b"` … `"` included — into its bytes. A
+/// bad-escape offset is relative to the full literal, accounting for the stripped `b"`.
 pub fn decode_bytes_literal(text: &str) -> Result<Vec<u8>, BytesLiteralError> {
     let inner = text
         .strip_prefix("b\"")
@@ -203,9 +194,8 @@ fn shift_bytes_offset(error: BytesLiteralError, by: usize) -> BytesLiteralError 
     }
 }
 
-/// Decode escapes in already-unquoted bytes-literal text. Ordinary characters
-/// contribute their UTF-8 bytes; the five string escapes plus `\xNN` hex emit
-/// individual byte values.
+/// Decode escapes in already-unquoted bytes-literal text. Ordinary characters contribute
+/// their UTF-8 bytes; the five string escapes plus `\xNN` emit individual byte values.
 pub fn decode_bytes_escapes(inner: &str) -> Result<Vec<u8>, BytesLiteralError> {
     let mut decoded = Vec::with_capacity(inner.len());
     let mut chars = inner.char_indices();
@@ -248,9 +238,8 @@ mod tests {
 
     #[test]
     fn encode_string_literal_inverts_decode() {
-        // A raw control char (ESC) and a non-ASCII scalar are `string_text`, so they
-        // must survive a round trip literally; only the five recognized characters are
-        // escaped. The encoder is the exact inverse the saved-path renderer relies on.
+        // A raw control char (ESC) and a non-ASCII scalar are `string_text`, so they must
+        // survive a round trip literally; only the five recognized characters escape.
         for value in [
             "plain",
             "a\\b\"c\nd\re\tf",
@@ -294,8 +283,6 @@ mod tests {
 
     #[test]
     fn interpolation_text_collapses_braces_and_escapes() {
-        // `{{`/`}}` collapse to single braces; the five escapes and `\u{...}`
-        // decode; a lone `}` and plain text pass through.
         assert_eq!(
             decode_interpolation_text(r#"a {{ b }} c\n} \u{41}"#).unwrap(),
             "a { b } c\n} A"
@@ -309,8 +296,8 @@ mod tests {
 
     #[test]
     fn rejects_unknown_escapes() {
-        // `\u` alone is no longer a rejected escape lead — it opens the `\u{...}`
-        // form — so the malformed `\u` cases are covered by `rejects_malformed_unicode_escapes`.
+        // `\u` leads the `\u{...}` form, so its malformed cases belong to
+        // `rejects_malformed_unicode_escapes` rather than here.
         for bad in [r"\0", r"\x41", r"\a", r"\1"] {
             assert_eq!(
                 decode_string_escapes(bad),
@@ -322,8 +309,6 @@ mod tests {
 
     #[test]
     fn decodes_unicode_escapes() {
-        // One to six hex digits denote one Unicode scalar value; ASCII, an astral
-        // scalar, and NUL all decode.
         assert_eq!(decode_string_escapes(r"\u{41}").unwrap(), "A");
         assert_eq!(decode_string_escapes(r"\u{1F600}").unwrap(), "\u{1F600}");
         assert_eq!(decode_string_escapes(r"\u{0}").unwrap(), "\u{0}");
@@ -331,16 +316,12 @@ mod tests {
             decode_string_escapes(r"pre\u{e9}post").unwrap(),
             "pre\u{e9}post"
         );
-        // The offset shift through the full-literal decoder still points at the
-        // backslash.
         assert_eq!(decode_string_literal(r#""x\u{41}""#).unwrap(), "xA");
     }
 
     #[test]
     fn rejects_malformed_unicode_escapes() {
-        // Empty braces, a value past the scalar ceiling, a surrogate, more than six
-        // digits, a missing brace, an unterminated escape, and a non-hex digit are
-        // each a bad escape at the backslash offset.
+        // Each case is a bad escape reported at the backslash offset, not at the digits.
         for bad in [
             r"\u{}",
             r"\u{110000}",
@@ -361,8 +342,8 @@ mod tests {
 
     #[test]
     fn bytes_reject_unicode_escapes() {
-        // A unicode escape spells a scalar, which is a text concept; bytes spell
-        // bytes with `\xNN`, so `\u{...}` stays rejected in a bytes literal.
+        // A unicode escape spells a scalar, a text concept; bytes spell bytes with
+        // `\xNN`, so `\u{...}` stays rejected in a bytes literal.
         assert_eq!(
             decode_bytes_escapes(r"\u{41}"),
             Err(BytesLiteralError::BadEscape { offset: 0 })
@@ -371,8 +352,8 @@ mod tests {
 
     #[test]
     fn reports_the_offset_of_a_bad_escape() {
-        // The offset points at the backslash, not the start of the text, and the
-        // full-literal decoder shifts it past the opening quote.
+        // The offset points at the backslash, and the full-literal decoder shifts it
+        // past the opening quote.
         assert_eq!(
             decode_string_escapes("ok then \\q"),
             Err(StringLiteralError::BadEscape { offset: 8 })
@@ -401,8 +382,7 @@ mod tests {
 
     #[test]
     fn decode_string_literal_accepts_escaped_hole_quotes() {
-        // The spelling a nested string literal takes inside an interpolation
-        // hole, `\"..\"`, decodes to the same value as its plainly quoted form,
+        // The `\"..\"` spelling decodes to the same value as its plainly quoted form,
         // with interior escapes still honored.
         assert_eq!(decode_string_literal(r#"\"audit\""#).unwrap(), "audit");
         assert_eq!(decode_string_literal(r#"\"\""#).unwrap(), "");

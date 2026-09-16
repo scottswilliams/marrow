@@ -6,9 +6,9 @@ use crate::{SourceSpan, SyntaxDiagnostics};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LexedSource {
-    /// The whole file's tokens, exactly sized. A `Box<[Token]>` has no capacity field,
-    /// so the amortized growth slack a pushed `Vec` would still hold at close — up to
-    /// the vector's own size again, beside a live parse tree — is not representable.
+    /// The whole file's tokens, exactly sized. A `Box<[Token]>` has no capacity field, so
+    /// a `Vec`'s amortized growth slack — up to its own size again, held beside a live
+    /// parse tree — is not representable here.
     pub tokens: Box<[Token]>,
     pub diagnostics: SyntaxDiagnostics,
 }
@@ -25,11 +25,9 @@ impl Token {
     }
 }
 
-/// A token's parser-owned lexical role.
-///
-/// These classes describe only spelling that the lexer can establish without
-/// name resolution. In particular, an identifier remains [`Self::Unscoped`]
-/// until a compiler fact assigns it a semantic role.
+/// A token's parser-owned lexical role. These classes describe only what the lexer can
+/// establish without name resolution: an identifier stays [`Self::Unscoped`] until a
+/// compiler fact assigns it a semantic role.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LexicalClass {
     Unscoped,
@@ -152,8 +150,7 @@ define_keywords! {
     Declassify => { spelling: "declassify", class: Effect },
     Transaction => { spelling: "transaction", class: ControlFlow },
     Lock => { spelling: "lock", class: ControlFlow },
-    // Held for the future effect-signature clause. The spelling is reserved,
-    // while the clause itself is not yet grammar.
+    // Reserved for the future effect-signature clause; the clause is not yet grammar.
     Writes => { spelling: "writes", class: Effect },
     Reads => { spelling: "reads", class: Effect },
     Try => { spelling: "try", class: ControlFlow },
@@ -179,9 +176,9 @@ define_keywords! {
 }
 
 /// A word the grammar reserves only in one slot: it lexes as an ordinary
-/// [`TokenKind::Identifier`] everywhere, and is a keyword only where the construct
-/// that owns it looks for it. One owner for the spellings, so the parser that
-/// recognizes a contextual word and the formatter that renders it cannot drift.
+/// [`TokenKind::Identifier`] everywhere, and is a keyword only where the construct that
+/// owns it looks for it. The one owner of these spellings, so the parser that recognizes a
+/// contextual word and the formatter that renders it cannot drift.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContextualKeyword {
     /// Opens the `on more` clause of a bounded loop and each `on <fault>` arm of a
@@ -207,7 +204,7 @@ pub enum ContextualKeyword {
     ZeroDivisor,
     /// A visibility word from another language, recognized only to reject it.
     Internal,
-    /// A visibility word from another language, recognized only to reject it.
+    /// As [`Self::Internal`].
     Private,
 }
 
@@ -285,8 +282,8 @@ macro_rules! define_token_kinds {
         }
 
         impl TokenKind {
-            /// One representative of every token-kind variant, generated from
-            /// the same construction as the enum and its lexical facts.
+            /// One representative of every token-kind variant, generated from the same
+            /// construction as the enum and its lexical facts.
             pub const INVENTORY: [Self; count_variants!($($variant),+)] = [
                 $(token_kind_inventory!($variant $(, $inventory)?)),+
             ];
@@ -633,9 +630,9 @@ pub fn duration_unit_seconds(unit: &str) -> Option<i64> {
         .map(|facts| facts.seconds)
 }
 
-/// Whether `word` names a calendar unit with no fixed span — a month or a year.
-/// These read like duration units but their length varies, so a duration word
-/// literal spelled with one is refused rather than silently folded.
+/// Whether `word` names a calendar unit with no fixed span — a month or a year. These
+/// read like duration units but vary in length, so a duration word literal spelled with
+/// one is refused rather than silently folded.
 pub fn is_unfixed_duration_unit(word: &str) -> bool {
     matches!(word, "month" | "months" | "year" | "years")
 }

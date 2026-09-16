@@ -147,9 +147,8 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         (statements, std::mem::take(&mut self.comments))
     }
 
-    /// Record an own-line comment token (a leading or standalone comment) for
-    /// the current block and consume its trailing `NEWLINE`. The doc-comment
-    /// decision is owned by `classify_line_comment`.
+    /// Record an own-line comment token for the current block and consume its trailing
+    /// `NEWLINE`. The doc-comment decision is owned by `classify_line_comment`.
     fn take_own_line_comment(&mut self) {
         let token = self.advance();
         self.record_line_comment(token, CommentPlacement::OwnLine);
@@ -181,8 +180,8 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         }
     }
 
-    /// Classify a line-comment token and, when it is ordinary trivia, append it
-    /// to the current block's comments at `placement`.
+    /// Classify a line-comment token and, when it is ordinary trivia, append it to the
+    /// current block's comments at `placement`.
     fn record_line_comment(&mut self, token: Token, placement: CommentPlacement) {
         if let Some(comment) = self.classify_line_comment(token, placement) {
             self.comments.push(comment);
@@ -361,10 +360,9 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         line
     }
 
-    /// If the token just before `line_end` is a trailing comment, record it as
-    /// a `Trailing` comment for the current block and return the index that
-    /// excludes it; otherwise return `line_end` unchanged. `line_end` is the
-    /// index of the `NEWLINE`/`{`/`}`/`EOF` that ends the current line.
+    /// If the token just before `line_end` — the `NEWLINE`/`{`/`}`/`EOF` ending the
+    /// current line — is a trailing comment, record it as block trivia and return the
+    /// index that excludes it; otherwise return `line_end` unchanged.
     fn split_trailing_comment(&mut self, line_end: usize) -> usize {
         if line_end > self.pos && is_line_comment(self.tokens[line_end - 1].kind) {
             self.record_line_comment(self.tokens[line_end - 1], CommentPlacement::Trailing);
@@ -462,10 +460,10 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         }
     }
 
-    /// Consume a trailing `on more` clause, if present: the contextual `on more`
-    /// keywords cuddling the loop body's `}` (or on the next line) followed by a
-    /// braced or inline diverging body. Returns `None` when the next tokens are not
-    /// that phrase, restoring the cursor so a following sibling statement parses.
+    /// Consume a trailing `on more` clause: the contextual keywords cuddling the loop
+    /// body's `}` or on the next line, then a braced or inline diverging body. Returns
+    /// `None` and restores the cursor when the next tokens are not that phrase, so a
+    /// following sibling statement parses.
     fn take_on_more_block(&mut self) -> Option<Block> {
         let save = self.pos;
         self.skip_newlines();
@@ -931,10 +929,9 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         }
     }
 
-    /// Parse a checked-arithmetic form: the binding prefix and single operation on
-    /// the header line, then the trailing `on out_of_range`/`on zero_divisor` arms.
-    /// The parser captures the operation and each arm block; the checker owns which
-    /// arms an operation requires and that each arm diverges.
+    /// Parse a checked-arithmetic form: the binding prefix and single operation on the
+    /// header line, then the trailing `on out_of_range`/`on zero_divisor` arms. The
+    /// checker owns which arms an operation requires and that each arm diverges.
     fn checked_stmt(&mut self) -> Statement {
         let start = self.tokens[self.pos].span;
         let header = self.take_line();
@@ -1008,10 +1005,9 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         (out_of_range, zero_divisor, end)
     }
 
-    /// Parse one checked arm: an `on out_of_range` / `on zero_divisor` header, then
-    /// its braced or inline diverging body. A header that is not one of those two
-    /// forms is a `CheckedArm` parse error, and its body is skipped so it does not
-    /// leak. The cursor is at the `on` identifier.
+    /// Parse one checked arm: an `on out_of_range` / `on zero_divisor` header, then its
+    /// braced or inline diverging body. Any other header is a `CheckedArm` parse error
+    /// whose body is skipped so it does not leak. The cursor is at the `on` identifier.
     fn checked_arm(&mut self) -> Option<(CheckedFault, Block)> {
         let start = self.tokens[self.pos].span;
         let on = self.tokens.get(self.pos);
@@ -1136,10 +1132,9 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         }
     }
 
-    /// Consume the rest of a header line up to and including its `NEWLINE`, or up
-    /// to (but not including) a block-opening `{`. Used for headers with no
-    /// expression (`transaction`), so any stray tokens before the body do not leak
-    /// into the block.
+    /// Consume the rest of a header line up to and including its `NEWLINE`, or up to but
+    /// not including a block-opening `{`. For headers with no expression
+    /// (`transaction`), so stray tokens before the body do not leak into the block.
     fn consume_header_line(&mut self) {
         while let Some(kind) = self.peek() {
             match kind {
@@ -1159,11 +1154,10 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         }
     }
 
-    /// Parse the mandatory `{ … }` block that follows a compound-statement header
-    /// whose keyword starts at `header_start`. A comment trailing the header is moved
-    /// into the block as its first leading comment (see [`detach_header_comment`]). If
-    /// no `{` is present (a malformed empty body), returns an empty block; the missing
-    /// brace is a formatter/checker concern.
+    /// Parse the mandatory `{ … }` block following a compound-statement header whose
+    /// keyword starts at `header_start`. A comment trailing the header moves into the
+    /// block as its first leading comment. A missing `{` yields an empty block; the
+    /// missing brace is a formatter/checker concern.
     fn block_body(&mut self, header_start: usize) -> Block {
         let leading = self.detach_header_comment(header_start);
         if matches!(self.peek(), Some(TokenKind::LeftBrace)) {

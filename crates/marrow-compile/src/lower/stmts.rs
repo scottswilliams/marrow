@@ -940,13 +940,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         )
     }
 
-    /// Lower the general `if const` form: a left-to-right chain of existence
-    /// bindings joined by `and` and an optional trailing bare condition, with the
-    /// then and `else if`/`else` tails. Each binding's value is proven present
-    /// before the next is evaluated (short-circuit), each binding scopes rightward
-    /// into later binding values, the condition, and the then block, and any absent
-    /// binding or false condition takes the else tail. This is the one owner of
-    /// `if const` lowering; the single form is one binding with no condition.
+    /// Lower the general `if const` form: a left-to-right chain of existence bindings
+    /// joined by `and` and an optional trailing bare condition, with the then and
+    /// `else if`/`else` tails. Each binding's value is proven present before the next is
+    /// evaluated (short-circuit), each binding scopes rightward into later binding values,
+    /// the condition, and the then block, and any absent binding or false condition takes
+    /// the else tail. The single form is one binding with no condition.
     pub(super) fn lower_if_const_bindings(
         &mut self,
         bindings: &[(&str, Option<&TypeExpr>, &Expression)],
@@ -964,10 +963,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let mark = self.locals.len();
         let present_mark = self.present_places.len();
 
-        // The present path threads through every binding and the condition into the
-        // then block; every failure edge (an absent binding or a false condition)
-        // jumps to the shared absent tail. Each `BranchPresent`/`JumpIfFalse` pops its
-        // own operand, so all failure edges reach the tail with a balanced stack.
+        // Each `BranchPresent`/`JumpIfFalse` pops its own operand, so every failure edge
+        // reaches the shared absent tail with a balanced stack.
         let fail_jumps = match self.lower_if_const_head(bindings, condition) {
             Ok(jumps) => jumps,
             Err(LoweringFailure::Recoverable) => {
@@ -1014,11 +1011,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
     }
 
-    /// Emit the present-threading head of an `if const` chain: for each binding,
-    /// prove its value present and bind it to a fresh local scoped rightward; then
-    /// evaluate the optional trailing condition. Returns the failure jumps to patch
-    /// to the absent tail, leaving the bindings' locals in scope for the then block;
-    /// A recoverable error reports a hard type failure; the caller restores the local stack.
+    /// Emit the present-threading head of an `if const` chain: for each binding, prove its
+    /// value present and bind it to a fresh local scoped rightward; then evaluate the
+    /// optional trailing condition. Returns the failure jumps to patch to the absent tail,
+    /// leaving the bindings' locals in scope for the then block.
     fn lower_if_const_head(
         &mut self,
         bindings: &[(&str, Option<&TypeExpr>, &Expression)],
@@ -1030,10 +1026,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 self.fail(reserved_builtin_name(self.file, value.span(), name));
                 return Err(LoweringFailure::Recoverable);
             }
-            // A whole durable entry address (`if const book = ^books(id)` or the named
-            // `place` form) reads the entry here and proves it present on the guarded
-            // edge, so a write through the same place in the then block is admitted; a
-            // bare place name is otherwise not a value.
+            // A whole durable entry address reads the entry here and proves it present on
+            // the guarded edge, so a write through the same place in the then block is
+            // admitted; a bare place name is otherwise not a value.
             let mut guard: Option<(&'a Family, Vec<u16>)> = None;
             let access = match self.durable_access(value) {
                 Ok(shape) => shape,
@@ -1122,12 +1117,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Ok(fail_jumps)
     }
 
-    /// Lower the let-else form `const x = e else { … }` / `var x = e else { … }`: bind
-    /// `x` from the present value of the optional `e` and continue with `x` in scope
-    /// for the rest of the enclosing block; when `e` is absent, run the `else` block,
-    /// which must diverge. Reuses the one-binding `if const` head for the present
-    /// path, and the existing `Flow::Terminates` divergence analysis proves the else
-    /// diverges — so let-else adds no new control-flow analysis.
+    /// Lower the let-else form `const x = e else { … }` / `var x = e else { … }`: bind `x`
+    /// from the present value of the optional `e` and continue with `x` in scope for the
+    /// rest of the enclosing block; when `e` is absent, run the `else` block, which must
+    /// diverge. Reuses the one-binding `if const` head and the existing `Flow::Terminates`
+    /// divergence analysis, so let-else adds no new control-flow analysis.
     fn lower_let_else(
         &mut self,
         is_var: bool,
@@ -1158,12 +1152,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 return Err(LoweringFailure::CodeLimitReached);
             }
         };
-        // The head bound `x` (and, for a durable entry read, a presence fact) on the
-        // present edge. They belong to the continuation after the statement, not to
-        // the `else` — the absent edge, where `x` is not established. Lift them out so
-        // the `else` cannot see the binding (a reference there is a scoped unknown
-        // name, not an uninitialized-slot image rejection) and restore them for the
-        // continuation. A `var` let-else binds mutably.
+        // The head's bindings (and, for a durable entry read, a presence fact) belong to
+        // the continuation, not to the `else` — the absent edge, where `x` is not
+        // established. Lift them out so a reference in the `else` is a scoped unknown name
+        // rather than an uninitialized-slot image rejection, then restore them.
         let mut bound_locals = self.locals.split_off(mark);
         let mut bound_present = self.present_places.split_off(present_mark);
         if is_var {
@@ -1207,15 +1199,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Ok(Flow::Fallthrough)
     }
 
-    /// Lower a `match` over a flat enum scrutinee (design §B). The scrutinee is
-    /// evaluated once into a fresh local; the arms dispatch through a branch chain
-    /// over the enum tag (`EnumTag` + `EqInt` + `JumpIfFalse`), the simplest form
-    /// the verifier admits without a tag-switch opcode. The match must cover every
-    /// member exactly once with no wildcard arm; exhaustiveness is a check-time
-    /// rule, not an image invariant. Because the match is exhaustive, the last arm
-    /// in source order runs unconditionally (no test): every other member is caught
-    /// by an earlier arm, so only its own member reaches it, which also makes its
-    /// positional payload reads (`EnumPayloadGet`) sound.
+    /// Lower a `match` over a flat enum scrutinee. The scrutinee is evaluated once into a
+    /// fresh local; the arms dispatch through a branch chain over the enum tag (`EnumTag`
+    /// + `EqInt` + `JumpIfFalse`), the simplest form the verifier admits without a
+    /// tag-switch opcode. The match must cover every member exactly once with no wildcard
+    /// arm; exhaustiveness is a check-time rule, not an image invariant. Because it is
+    /// exhaustive, the last arm in source order runs unconditionally — only its own member
+    /// can reach it, which is what makes its `EnumPayloadGet` reads sound.
     pub(super) fn lower_match(
         &mut self,
         scrutinee: &Expression,
@@ -1241,11 +1231,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             ));
             return Ok(Flow::Fallthrough);
         };
-        // The scrutinee's variants: member name plus payload type list, owned so the
-        // arm loop can borrow `self` mutably while resolving each arm. A concrete
-        // user `enum`, a generic enum instantiation, and the reserved `Option`/
-        // `Result` (themselves generic enums) all supply their variants through the
-        // one enum-shape owner.
+        // The scrutinee's variants: member name plus payload type list, owned so the arm
+        // loop can borrow `self` mutably while resolving each arm.
         let variants = match self.records.enum_variants(enum_id) {
             Ok(Some(variants)) => variants,
             Ok(None) => {
@@ -1431,10 +1418,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
     }
 
-    /// Lower a `for` loop. A durable root/branch traversal place (`^root` or
-    /// `^root(k).branch`) takes the bounded freeze-then-run path; a range or local
-    /// `List`/`Map` iterable takes the collection path. Reversed order and a range
-    /// step apply only to the latter.
+    /// Lower a `for` loop. A durable root/branch traversal place takes the bounded
+    /// freeze-then-run path; a range or local `List`/`Map` iterable takes the collection
+    /// path. Reversed order and a range step apply only to the latter.
     fn lower_for(&mut self, statement: ForLoop<'_>) -> ConstructResult<Flow> {
         let ForLoop {
             binding,
@@ -1544,12 +1530,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Lower `for i in lo..hi` / `for i in lo..=hi [by step]` over an integer range: a
-    /// pure counter loop. Both bounds are `int` expressions evaluated once, `lo` into the
-    /// counter and `hi` into a fixed bound; the counter is bound to the loop variable each
-    /// iteration and advanced by a positive integer-literal `step` (default `1`). A dead or
-    /// empty range (`lo >= hi` exclusive, `lo > hi` inclusive) runs the body zero times.
-    /// The advance uses the checked add, so a range that reaches the integer domain
-    /// boundary ends the loop rather than raising `run.overflow`.
+    /// pure counter loop. Both bounds are `int` expressions evaluated once; the counter is
+    /// bound to the loop variable each iteration and advanced by a positive
+    /// integer-literal `step` (default `1`). An empty range runs the body zero times. The
+    /// advance uses the checked add, so a range that reaches the integer domain boundary
+    /// ends the loop rather than raising `run.overflow`.
     fn lower_for_range(
         &mut self,
         binding: &ForBinding,
@@ -1662,9 +1647,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Evaluate a range `by step`: a positive compile-time integer literal, defaulting to
-    /// `1` when the head carries no `by`. A zero, negative, or computed step is a precise
-    /// diagnostic — the stride must be a literal so a non-progressing loop is refused at
-    /// compile time.
+    /// `1`. The stride must be a literal so a non-progressing loop is refused at compile
+    /// time.
     fn range_step(&mut self, step: Option<&Expression>) -> Option<i64> {
         let Some(expr) = step else {
             return Some(1);
@@ -1692,12 +1676,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Whether `iterable` names a durable traversal place syntactically: a bare store root
-    /// `^root` (the root entry family), an entry address extended by a bare branch-layer
-    /// name `^root(key)….branch` (a keyed branch family under a fixed ancestor key-path, at
-    /// any depth), or a bare branch selection on an in-scope `place`/pin name
-    /// `<place>.branch` (the branch family beneath the entry the place already addresses).
-    /// The resolver rechecks the store, place, and branch names; this only routes the head
-    /// to the durable path.
+    /// `^root`, an entry address extended by a bare branch-layer name
+    /// `^root(key)….branch` at any depth, or a bare branch selection on an in-scope
+    /// `place`/pin name. The resolver rechecks the store, place, and branch names; this
+    /// only routes the head to the durable path.
     fn is_traversal_place(&self, iterable: &Expression) -> bool {
         match iterable {
             Expression::SavedRoot { .. } => true,
@@ -1706,20 +1688,17 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
     }
 
-    /// Whether an `exists` argument names a family (a store root, or a keyed branch family)
-    /// rather than a specific entry or field. A store root is always a family; a `.tail`
-    /// selection on an entry address is a family only when `tail` is a declared keyed
-    /// branch — a scalar-field selection is a specific-cell probe. Non-emitting: it
-    /// classifies the argument before a probe is chosen, since a branch family and a
-    /// scalar field share the `Field`-on-entry-address syntax.
+    /// Whether an `exists` argument names a family (a store root, or a keyed branch
+    /// family) rather than a specific entry or field. A `.tail` selection on an entry
+    /// address is a family only when `tail` is a declared keyed branch, since a branch
+    /// family and a scalar field share that syntax. Non-emitting.
     pub(super) fn arg_is_family(&self, expr: &Expression) -> Result<bool, DeclarationIndexDrift> {
         Ok(match expr {
             Expression::SavedRoot { .. } => true,
-            // A keyed branch family, addressed either from an inline entry address
-            // (`^root(k).branch`) or from a named `place`/pin base (`b.notes`): the tail
-            // names a declared branch beneath the resolved parent node. A place base is
-            // recognized here so `exists(b.notes)` routes to the family-populated probe
-            // rather than misreporting the branch as a missing field.
+            // A keyed branch family, addressed from an inline entry address or a named
+            // `place`/pin base. The place base is recognized here so `exists(b.notes)`
+            // routes to the family-populated probe rather than misreporting the branch as
+            // a missing field.
             Expression::Field { base, name, .. } => self
                 .entry_node(base)?
                 .is_some_and(|parent| parent.branch(name).is_some()),
@@ -1728,10 +1707,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Resolve a durable traversal place into the traversed layer's entry site, its
-    /// immediate key type, and the ancestor key-path locating its parent entry (empty for a
-    /// root family, `[root_key]` for a single-level branch family, deeper for a nested
-    /// branch layer). The iterable is the root itself, or an entry address extended by a
-    /// bare branch-layer name `^root(k)….b(bk).layer`; the branch chain before the layer
+    /// immediate key type, and the ancestor key-path locating its parent entry (empty for
+    /// a root family, deeper for each branch level). The branch chain before the layer
     /// resolves through the recursive entry-address walker, so an inner branch layer
     /// iterates under a full ancestor key-path. Reports a precise diagnostic and returns
     /// `None` on a missing store, a wrong store name, or an unknown branch.
@@ -1768,10 +1745,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         *span,
                     );
                 }
-                // The base is the addressed parent entry `^root(k)….b(bk)`; the final bare
-                // name is the branch family iterated under it. Its ancestor key-path is the
-                // parent entry's whole key-path (root-first). The store is resolved at the
-                // base's `^name` leaf.
+                // The base is the addressed parent entry `^root(k)….b(bk)` and the final
+                // bare name is the branch family iterated under it, so the ancestor
+                // key-path is the parent entry's whole key-path.
                 let root_name = saved_root_name(base)?;
                 let root = self.resolve_root(root_name, iterable.span())?;
                 let (ancestor_keys, parent) =
@@ -1797,15 +1773,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
     }
 
-    /// Resolve `<place>.branch` into the traversed branch layer's entry site, its immediate
-    /// key type, and the ancestor key-path locating its parent entry. The parent is the
-    /// entry the `place`/pin already addresses, so the ancestor key-path is the place's
-    /// pre-evaluated key slots (`bound_keys`), root-first: one slot for a single-key root
-    /// place, several for a composite-key root place or a nested branch place. The branch is
-    /// found beneath the place's recorded durable node — its branch record for a branch
-    /// place, its owning root for a root place — so resolution never re-parses the address.
-    /// Reports a precise diagnostic and returns `None` when the place's node declares no
-    /// keyed branch by that name.
+    /// Resolve `<place>.branch` into the traversed branch layer's entry site, its
+    /// immediate key type, and the ancestor key-path locating its parent entry. The parent
+    /// is the entry the `place`/pin already addresses, so the ancestor key-path is the
+    /// place's pre-evaluated key slots (`bound_keys`), root-first. The branch is found
+    /// beneath the place's recorded durable node, so resolution never re-parses the
+    /// address. Returns `None` when that node declares no keyed branch by that name.
     fn resolve_traversal_through_place<'e>(
         &mut self,
         place_base: &Expression,
@@ -1820,10 +1793,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             return None;
         };
         let place = self.lookup_place(name.text())?;
-        // The place's key-path — evaluated once at its binding, including an entry-identity
-        // operand captured into the root's key columns — is the traversal's ancestor path.
-        // An identity-captured slot carries its root as a typed identity column, which the
-        // bounded-traversal ancestor pop re-proves exactly as every other key-path pop does.
+        // The place's key-path — evaluated once at its binding — is the traversal's
+        // ancestor path. An identity-captured slot carries its root as a typed identity
+        // column, which the bounded-traversal ancestor pop re-proves like any other.
         let ancestor_keys = place.bound_keys();
         // The traversed branch is declared beneath the place's node — the same projection a
         // place field access uses. The node borrows the registry (`'a`), not `&self`, so a
@@ -1849,8 +1821,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// The single key column of a traversable layer, or a typed `check.unsupported` when
     /// the layer is composite-keyed. Bounded traversal binds one immediate key and takes
-    /// one inclusive `from`; the current language spells no composite-key iteration, so a
-    /// composite-keyed layer parks rather than inventing a last-column-under-prefix
+    /// one inclusive `from`; the language spells no composite-key iteration, so a
+    /// composite-keyed layer parks rather than inventing last-column-under-prefix
     /// semantics.
     fn single_traversal_column(
         &mut self,
@@ -1936,9 +1908,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // Evaluate the ancestor key-path (root-first) then the inclusive `from` key, so
         // the opcode pops `from` (top) then the ancestor path. Keys are captured once,
         // before any body runs. A two-binding traversal captures the ancestor keys into
-        // slots first — its per-iteration address pin reads them alongside the loop key —
-        // then pushes the same slots as the opcode operands; a single-binding traversal
-        // pushes the ancestor keys straight.
+        // slots first, because its per-iteration address pin reads them alongside the
+        // loop key.
         let ancestor_slots: Vec<(u16, ScalarType)> = if place_var.is_some() {
             let mut slots = Vec::with_capacity(target.ancestor_keys.len());
             for column in &target.ancestor_keys {
@@ -1959,9 +1930,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     }
                     // An inline `^root[Id(…)].branch` base spreads the one identity operand
                     // into the addressed root's key columns, captured once into a slot per
-                    // column (root-first). Each slot carries its root as a typed identity
-                    // column the traversal ancestor pop re-proves, exactly as the single-emit
-                    // forms do.
+                    // column (root-first).
                     PlaceKey::Identity { expr, root, cols } => {
                         let columns =
                             self.capture_identity_key_columns(expr, root, cols, target.span)?;
@@ -2023,8 +1992,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 lower.push(Instr::ListGet, span)?;
                 // Rebinding the key slot each iteration kills, through the verifier's
                 // LocalSet presence-lattice rule, any presence fact an earlier iteration
-                // established on this key: a fact proven in iteration N cannot survive into
-                // N+1.
+                // established on this key.
                 lower.push(Instr::LocalSet(key_slot), span)?;
                 // Traversal establishes no presence fact for the body: `k` names a
                 // frozen key whose entry an earlier body iteration may already have
@@ -2036,10 +2004,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     slot: key_slot,
                 });
                 // The optional second binding is a per-iteration address pin: a `place`
-                // over the entry at the current key. Its key-path is the captured ancestor
-                // slots followed by this iteration's key slot; it reads nothing and
-                // establishes no presence fact, so a write through it is an ordinary
-                // sparse set unless a dominating `exists` proves the entry present.
+                // over the entry at the current key, keyed by the captured ancestor slots
+                // followed by this iteration's key slot. It reads nothing and establishes
+                // no presence fact, so a write through it is an ordinary sparse set unless
+                // a dominating `exists` proves the entry present.
                 if let Some(place_name) = place_name {
                     let mut key_slots = ancestor_slots;
                     key_slots.push((key_slot, key_ty));
@@ -2072,11 +2040,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// Lower a bounded scan of a nonunique managed index `^root.index[prefix…]`. The scan
     /// holds the index's leading field components as a prefix and yields the trailing
-    /// identity component as the source `Id(^root)`, so the loop variable binds an
-    /// identity: the frozen raw identity keys materialize as one `List[K]`, and each is
-    /// wrapped into an `Id(^root)` at the binding. The scan requires a single-column
-    /// identity root (so the yielded component is a whole identity) and does not admit a
-    /// `from` cursor or a per-iteration address pin on this line.
+    /// identity component as the source `Id(^root)`: the frozen raw identity keys
+    /// materialize as one `List[K]`, each wrapped into an `Id(^root)` at the binding. It
+    /// requires a single-column identity root, so the yielded component is a whole
+    /// identity, and admits no `from` cursor or per-iteration address pin.
     fn lower_index_scan(
         &mut self,
         binding: &ForBinding,
@@ -2298,11 +2265,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Some(value as u32)
     }
 
-    /// Lower `for x in list` / `for k in map` / `for k, v in map`: a forward
-    /// positional walk over a finite collection. A list yields elements in insertion
-    /// order; a map yields keys (and values) in `CollectionKeyOrder`. The collection
-    /// is evaluated once into a local, then indexed `0..length`; `continue` advances
-    /// to the next position, `break` exits.
+    /// Lower `for x in list` / `for k in map` / `for k, v in map`: a forward positional
+    /// walk over a finite collection. A list yields elements in insertion order; a map
+    /// yields keys (and values) in `CollectionKeyOrder`. The collection is evaluated once
+    /// into a local, then indexed `0..length`.
     fn lower_for_collection(
         &mut self,
         binding: &marrow_syntax::ForBinding,
@@ -2449,18 +2415,14 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Lower a forward positional walk over a finite collection already resident in
-    /// `coll_slot`. A `-1` cursor is incremented at the loop top, then an
-    /// `index < len` guard (`len_instr` is the collection kind's length opcode)
-    /// exits the loop; on each live position `bind` binds the loop variable(s) from
-    /// the current index and pushes their [`Local`]s, then the body runs once.
+    /// `coll_slot`. A `-1` cursor is incremented at the loop top, then an `index < len`
+    /// guard (`len_instr` is the collection kind's length opcode) exits the loop; on each
+    /// live position `bind` binds the loop variable(s) and pushes their [`Local`]s.
     ///
-    /// `continue` targets the increment at the loop top; the exhaustion exit is
-    /// patched to fall through immediately after the loop, and the returned break
-    /// jumps are left unpatched so the caller can route them past whatever trailing
-    /// code it emits (a bounded traversal skips them past its `on more` block; a
-    /// plain collection walk patches them to the same fall-through point). A
-    /// terminal generic failure returns `Rejected` only after unwinding the loop and
-    /// scoped bindings.
+    /// `continue` targets the increment at the loop top and the exhaustion exit falls
+    /// through immediately after the loop, but the returned break jumps are left
+    /// unpatched so the caller can route them past whatever trailing code it emits — a
+    /// bounded traversal skips them past its `on more` block.
     fn lower_positional_walk(
         &mut self,
         coll_slot: u16,
@@ -2571,12 +2533,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Lower the adjacent single-operation checked-arithmetic form. It wraps one int
-    /// arithmetic operation; on a fault the diverging `on` arms run instead of the
-    /// runtime raising `run.*`. Lowered to a checked op that branches to the
-    /// out-of-range handler, with the zero divisor tested by an explicit branch
-    /// before a checked `/`/`%`. The operands are evaluated into fresh locals so the
-    /// checked op runs with exactly its two operands on the stack, leaving the fault
-    /// edge at the statement-boundary (empty) stack.
+    /// arithmetic operation; on a fault the diverging `on` arms run instead of the runtime
+    /// raising `run.*`. The zero divisor is tested by an explicit branch before a checked
+    /// `/`/`%`. The operands are evaluated into fresh locals so the checked op runs with
+    /// exactly its two operands on the stack, leaving the fault edge at the
+    /// statement-boundary (empty) stack.
     pub(super) fn lower_checked(
         &mut self,
         bind: &CheckedBind,
@@ -2626,9 +2587,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             Wrapped::Binary(BinaryOp::Divide | BinaryOp::Remainder, _, _)
         );
         // A `/`/`%` whose divisor is a nonzero integer literal cannot fault with a zero
-        // divisor: the fault is provably dead. This is literal-aware only — a non-literal
-        // divisor is still assumed possibly zero. Overflow stays possible regardless (the
-        // `i64::MIN / -1` case), so the `out_of_range` arm is untouched.
+        // divisor. Overflow stays possible regardless (the `i64::MIN / -1` case), so the
+        // `out_of_range` arm is untouched.
         let divisor_provably_nonzero = matches!(
             &wrapped,
             Wrapped::Binary(_, _, right) if divisor_nonzero_literal(right)
@@ -2789,9 +2749,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Emit the store of a checked form's int result into its binding, on the success
-    /// path. Returns the local to bring into scope *after* the handler (for
-    /// `const`/`var`, so the name is not visible inside the arms), or `None` for a
-    /// `return` binding (which stores by returning).
+    /// path. Returns the local to bring into scope *after* the handler, so the name is not
+    /// visible inside the arms, or `None` for a `return` binding.
     fn store_checked_result(
         &mut self,
         bind: &CheckedBind,
@@ -2872,9 +2831,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Coerce the bare-int result already on the stack to `target` (`int` or `int?`),
-    /// emitting a `SomeWrap` for the optional case. A `target` that is not
-    /// int-compatible is a type error reported at `err_span`. One owner for the two
-    /// checked-result binding sites (`const`/`var` annotation and `return`).
+    /// emitting a `SomeWrap` for the optional case. One owner for the two checked-result
+    /// binding sites (`const`/`var` annotation and `return`).
     fn coerce_bare_int_to(
         &mut self,
         target: LTy,
