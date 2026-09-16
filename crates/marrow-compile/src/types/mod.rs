@@ -1,19 +1,17 @@
 //! The project named-type registry: transparent aliases and record types.
 //!
 //! This is the single owner of what a source type name denotes. A transparent
-//! `alias Name = Type` shares one globally bound terminal and optionality; it
-//! mints no identity or constructor. Written type parameters resolve locally. A nominal `type Name: int in lo..hi` mints a
-//! distinct type: the registry owns its identity — name, inclusive interval, and
-//! `supports` capability set — while the image records only its base scalar, so
-//! the interval is carried by the guard instructions the compiler emits, not by
-//! an image type table. Two product kinds lower into image [`RecordTypeDef`]s,
-//! the single canonical product-leaf order owner: `resource` types (records
-//! with required and sparse scalar, nominal, dense-struct, or closed-enum fields plus
-//! materialized unkeyed groups) and dense `struct` value types (every
-//! field required, non-durable, constructible and read by value). Keyed resource
-//! children belong to the durable graph rather than this record. Value types are built
-//! declare-then-fill so a field may name any other value type regardless of order; the
-//! sole nesting restriction is acyclicity.
+//! `alias Name = Type` shares one globally bound terminal and optionality and mints no
+//! identity or constructor. A nominal `type Name: int in lo..hi` mints a distinct type
+//! whose identity — name, inclusive interval, and `supports` capability set — lives
+//! here, while the image records only its base scalar: the interval is carried by the
+//! guard instructions the compiler emits, not by an image type table.
+//!
+//! Two product kinds lower into image [`RecordTypeDef`]s, the single canonical
+//! product-leaf order owner: `resource` types and dense `struct` value types. Keyed
+//! resource children belong to the durable graph rather than this record. Value types
+//! are built declare-then-fill so a field may name any other value type regardless of
+//! order; the sole nesting restriction is acyclicity.
 
 use std::cell::{Ref, RefCell};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -130,9 +128,8 @@ pub(crate) struct NominalBoundaryRoot<'a> {
 /// The domain is proven by the admitted source envelope: a declared parameter costs
 /// at least two source bytes, and the capture ceiling admits at most 64 MiB of
 /// source (`CaptureLimits::DEFAULT`), so a declaration position is bounded well
-/// under 2^25 and the `u32` carrier cannot be exceeded by any admissible input.
-/// Narrowing this carrier back to `u16` is what silently aliased parameter 65,536
-/// onto parameter 0.
+/// under 2^25 and the `u32` carrier cannot be exceeded by any admissible input. A
+/// narrower carrier would silently alias one parameter position onto another.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct TypeParamIndex(u32);
 
@@ -147,14 +144,11 @@ impl TypeParamIndex {
         Self(u32::try_from(position).expect("a type-parameter position fits the proved u32 domain"))
     }
 
-    /// The declaration position, for environment lookups.
     pub(crate) fn position(self) -> usize {
         self.0 as usize
     }
 }
 
-/// Renders the declaration position, so diagnostic and hover spellings read exactly
-/// as the narrow carrier's did.
 impl std::fmt::Display for TypeParamIndex {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
@@ -290,10 +284,9 @@ pub(crate) const RESULT_ERR: u16 = 1;
 
 /// The maximum number of distinct generic instantiations (functions and value
 /// types together) one program may mint. A well-typed program with an acyclic call
-/// and containment graph produces a finite set; this bound (campaign law 9) fails a
-/// divergent monomorphization — a generic that recurses into itself over an
-/// ever-growing type — with a typed `check.instantiation_limit` before the
-/// worklist allocates unboundedly, rather than looping.
+/// and containment graph produces a finite set; this bound fails a divergent
+/// monomorphization — a generic that recurses into itself over an ever-growing type —
+/// with a typed `check.instantiation_limit` before the worklist allocates unboundedly.
 pub(crate) const MAX_INSTANTIATIONS: usize = 4096;
 
 /// The maximum nesting depth of generic type instantiation minting. A member of a
@@ -325,25 +318,17 @@ impl ResolveRefusal {
     /// annotation.
     ///
     /// A terminal shared limit dominates everything regardless of discovery or edge
-    /// order. A genuine absence dominates a refused declaration: a real gap must
-    /// never be hidden behind a refused sibling's steer, which would report the
-    /// project's own refusal in place of the name that is actually missing. Two
-    /// refused declarations survive as one cause only when they are the same
-    /// declaration; otherwise the merge would have to pick a winner, and picking
-    /// either would steer the reader to a cause the other part does not have.
+    /// order. A genuine absence dominates a refused declaration: a real gap must never
+    /// be hidden behind a refused sibling's steer. Two refused declarations survive as
+    /// one cause only when they are the same declaration; otherwise the merge would
+    /// steer the reader to a cause the other part does not have.
     ///
-    /// The collapse loses a steer, never a cause — every refused declaration is
-    /// reported at its own declaration site — and it is bounded to sub-parts of a
-    /// single annotation, because argument and parameter lists reject per element
-    /// at each element's own span rather than folding across them.
+    /// The collapse loses a steer, never a cause — every refused declaration is reported
+    /// at its own declaration site.
     ///
-    /// **Known limit.** A generic *argument list* still folds through one join, so
-    /// `Pair<Bad, AlsoMissing>` reports the first argument and says nothing about
-    /// the second: the reader fixes one, recompiles, and meets the other. The
-    /// collapse loses a steer, never a cause — every refused declaration was already
-    /// reported at its own declaration — and it is strictly narrower than the
-    /// whole-annotation fold it replaced. Splitting the report per argument is a
-    /// separate change to the diagnostic surface.
+    /// **Known limit.** A generic *argument list* folds through one join, so
+    /// `Pair<Bad, AlsoMissing>` reports the first argument and says nothing about the
+    /// second: the reader fixes one, recompiles, and meets the other.
     fn join(self, other: Self) -> Self {
         match (self, other) {
             (Self::Limit, _) | (_, Self::Limit) => Self::Limit,
@@ -1355,10 +1340,10 @@ pub(crate) struct TypeRegistry {
     ///
     /// The kind-specific tables below stay the authority for what an *accepted*
     /// name resolves to and for image order; this ledger is the authority for
-    /// whether a name was declared at all. A refused declaration is dropped from
-    /// its table exactly as before — so no construction or match resolves against
-    /// a broken type — and is retained here, so the use that can no longer resolve
-    /// is steered to the cause instead of being told the name was never written.
+    /// whether a name was declared at all. A refused declaration is dropped from its
+    /// table — so no construction or match resolves against a broken type — and retained
+    /// here, so the use that can no longer resolve is steered to the cause instead of
+    /// being told the name was never written.
     named: DeclarationLedger<String, NamedTypeKind>,
     /// Every member declared by a resource record or one of its unkeyed groups,
     /// accepted or refused, in declaration order.
@@ -1379,10 +1364,9 @@ pub(crate) struct TypeRegistry {
     /// number of `store` declarations may bind one. Names are unique (a duplicate is
     /// rejected at declare), so a name selects at most one.
     ///
-    /// The ordinal travels with the record because the durable build was rebuilding
-    /// that pairing from resource name strings — a fact settled at declaration time,
-    /// thrown away, and re-derived with a weaker key. [`AdmittedRecords`] is what makes
-    /// the two answer for one another; this field cannot be filled any other way.
+    /// The ordinal travels with the record so the durable build reads the pairing
+    /// settled at declaration time rather than re-deriving it from resource name
+    /// strings. [`AdmittedRecords`] is what makes the two answer for one another.
     records: AdmittedRecords,
     /// The generic value-type templates: the reserved toolchain generics
     /// (`Option`/`Result`) followed by the user `struct`/`enum` templates. Fixed
@@ -1620,14 +1604,10 @@ impl TypeRegistry {
         }
     }
 
-    /// A metadata directory for one mint/dedup probe or presentation projection. The
-    /// directory is reused across the pass's probes and extended for the rows appended
-    /// since the previous probe, so minting a deeply nested type — or projecting a field
-    /// over a growing instantiation population — classifies each row once instead of
-    /// rescanning every prior row per probe. A row appended after the previous probe is
-    /// classified now; rows below the watermark were classified before. A metadata session
-    /// borrows this same directory, so an out-of-line projection reuses the pass
-    /// classification rather than rebuilding a fresh one.
+    /// A metadata directory for one mint/dedup probe or presentation projection. It is
+    /// reused across the pass's probes and extended for the rows appended since the
+    /// previous probe, so each row is classified once rather than rescanned per probe.
+    /// A metadata session borrows this same directory.
     fn row_directory(
         &self,
         view: &TypeMetadataView<'_>,
@@ -1642,10 +1622,9 @@ impl TypeRegistry {
             Some(directory) => directory,
             None => RowDirectory::build_full(view)?,
         };
-        // An admitted directory is not lost to a failed probe. `extend` restores it to the
-        // state this scope received it in, so putting it back is the whole inverse of
-        // having taken it: the next probe reuses the classification rather than paying for
-        // a cold rebuild, and the registry never holds a directory some path emptied.
+        // An admitted directory is not lost to a failed probe: `extend` restores it to
+        // the state this scope received it in, so putting it back is the whole inverse of
+        // having taken it.
         if let Err(invariant) = directory.extend(view) {
             *self.row_directory.borrow_mut() = Some(directory);
             return Err(invariant);
@@ -1938,10 +1917,9 @@ impl TypeRegistry {
             Ok(GArg::Enum(info.enum_id))
         } else {
             // A name no table answers is either genuinely undeclared or a declaration
-            // this project refused; the ledger tells them apart. Answering
-            // `Unsupported` for both is what let a member position describe a refused
-            // sibling as a language form the beta line does not admit — the one
-            // statement the subset-gap phrase must never make.
+            // this project refused; the ledger tells them apart. Answering `Unsupported`
+            // for both would let a member position describe a refused sibling as a
+            // language form the beta line does not admit.
             Err(ResolveError::Refusal(self.unresolved_named_type(text)?))
         }
     }
@@ -2403,11 +2381,9 @@ impl TypeRegistry {
                 .into());
             };
             // A handle, not a borrow: resolving a field mints through the exclusively
-            // held registry, which no live read of a template may cross. Resource bound:
-            // zero declaration entries per instantiation, counted where a copy would
-            // happen, because an aggregate resident figure attributes no single term and
-            // the divergent struct corpus stops on the 256-deep mint bound rather than
-            // the 4096-wide count. `a_fill_copies_no_template_body_entries` pins it.
+            // held registry, which no live read of a template may cross. Bound: zero
+            // declaration entries copied per instantiation, pinned by
+            // `a_fill_copies_no_template_body_entries`.
             let fields = Rc::clone(fields);
             (subst, fields)
         };
@@ -3144,12 +3120,11 @@ impl TypeRegistry {
     /// [`Self::unresolved_named_type`], which reads the cause out of the named-type
     /// ledger and steers the use to it.
     ///
-    /// This is the only scan of `structs` keyed on a source spelling. The static
-    /// projections that annotation resolution, signature building, and body lowering
-    /// read delegate here rather than scanning again, because a second scan is a
-    /// second place to forget the verdict — and a name answered by a reserved,
-    /// unfilled row resolves to a *live empty struct*, against which every later
-    /// question fabricates an answer.
+    /// This is the only scan of `structs` keyed on a source spelling; annotation
+    /// resolution, signature building, and body lowering delegate here rather than
+    /// scanning again. A second scan is a second place to forget the verdict, and a name
+    /// answered by a reserved, unfilled row resolves to a live empty struct against
+    /// which every later question fabricates an answer.
     pub(crate) fn struct_by_name(&self, name: &str) -> Option<&StructInfo> {
         self.structs
             .iter()
@@ -3387,10 +3362,8 @@ impl TypeRegistry {
     /// declaration order — a struct field may name a later struct or enum, two
     /// structs may reference each other, and a resource field may name a user enum.
     /// The only nesting restriction is acyclicity: a value type may not contain
-    /// itself directly or transitively, reported at check time (and independently
-    /// re-rejected by the verifier). The resource records reserve their image
-    /// indices before the structs, so a project's durable root and sites keep the
-    /// same record index whether or not dense structs are also declared.
+    /// itself directly or transitively, reported at check time and independently
+    /// re-rejected by the verifier.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn build(
         draft: &mut DraftTxn<'_>,
@@ -3486,13 +3459,12 @@ impl TypeRegistry {
     /// owners, so nothing the proof appended survives and only the diagnostics the caller
     /// takes cross back.
     ///
-    /// A fill batch mutates only `type_insts[start..]` — settlement, staging, and dependency
-    /// edges never touch a settled prefix row (a dependent is recorded only for a `Filling`
-    /// row, and settlement clears and commits only the active suffix). The proof's batches
-    /// all open at or above the length captured here, so the settled prefix is immutable
-    /// across the pass and truncation is its exact inverse. Admission requires that settled
-    /// state: no fill in progress, no provisional or still-referenced row, no recorded build
-    /// fault, and the shared instantiation-limit owner open.
+    /// A fill batch mutates only `type_insts[start..]`: settlement, staging, and dependency
+    /// edges never touch a settled prefix row. The proof's batches all open at or above the
+    /// length captured here, so the settled prefix is immutable across the pass and
+    /// truncation is its exact inverse. Admission requires that settled state: no fill in
+    /// progress, no provisional or still-referenced row, no recorded build fault, and the
+    /// shared instantiation-limit owner open.
     ///
     /// `entry_records`/`entry_enums` are the draft's record/enum id ceilings at entry, used
     /// to roll the reused metadata directory back to the pre-proof image.
@@ -3938,10 +3910,9 @@ impl ValueGraph {
 
     /// Whether the directed graph holds any cycle, decided by one shared iterative
     /// three-colour DFS over every node: a back edge to a node still on the active
-    /// stack (grey) witnesses a cycle. The single shared traversal is O(V + E) total,
-    /// replacing the former per-start reachability walks whose combined cost grew with
-    /// the number of start nodes. Explicit stacks keep the walk iterative, so a deep
-    /// value graph cannot overflow the native call stack.
+    /// stack (grey) witnesses a cycle. One shared traversal costs O(V + E) total.
+    /// Explicit stacks keep the walk iterative, so a deep value graph cannot overflow
+    /// the native call stack.
     fn detect_any_cycle(edges: &[Vec<usize>]) -> bool {
         const WHITE: u8 = 0;
         const GREY: u8 = 1;
@@ -3982,9 +3953,9 @@ impl ValueGraph {
 
     /// The label path of a cycle that passes through `node`, or `None` if `node` is
     /// not on any cycle. The path starts and ends at `node`'s label. An acyclic graph
-    /// answers `None` immediately from the shared build-time verdict; only a graph
-    /// that already holds a cycle (a program that fails to compile) walks to recover
-    /// the exact path, in the same edge order the former recursive walk used.
+    /// answers `None` immediately from the shared build-time verdict; only a graph that
+    /// already holds a cycle — a program that fails to compile — walks to recover the
+    /// exact path.
     fn cycle_through(&self, node: ValueNode) -> Option<Vec<String>> {
         if !self.has_any_cycle {
             return None;

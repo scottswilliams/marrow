@@ -229,8 +229,7 @@ pub enum ResourceLimitKind {
     ImageBytes,
     /// A single interned string over the per-entry byte bound reached through a path a
     /// source precheck does not yet cover (a folded constant or an interpolation
-    /// segment), so it surfaces as a locationless resource limit rather than the
-    /// synthetic diagnostic it once produced.
+    /// segment), so it surfaces as a locationless resource limit.
     StringBytes,
     /// The ordered diagnostic set grew past the count bound, so the incomplete
     /// collection was discarded rather than surfaced as a truncated result.
@@ -578,9 +577,9 @@ enum TestMode {
 /// A parsed module: its file identity (for spans and diagnostics), its dotted
 /// module name (for export identity), the parse tree, and the logical broken
 /// status of its parse. Only the AST and that one bit survive parsing — the
-/// module's syntax diagnostics are absorbed into the drive's parse collector
-/// the moment the file is parsed (A5), so no per-module diagnostic state ever
-/// accumulates with the file count.
+/// module's syntax diagnostics are absorbed into the drive's parse collector the
+/// moment the file is parsed, so no per-module diagnostic state ever accumulates with
+/// the file count.
 /// A project module that never reached the semantic pass, with the stage that
 /// refused it. It is still a module of the project: the module ledger declares it
 /// refused so a `use` or a qualified call into it names that stage's report.
@@ -765,12 +764,10 @@ const OWNED_HEAP_BYTES: usize = 640 * 1024 * 1024;
 /// The heap one parse of one admitted file may allocate.
 ///
 /// **Stated, not derived from a length.** It is two thirds of the owned-heap ceiling,
-/// which keeps a third in reserve for everything a query holds beside the parse. Stating
-/// it independently of any length is what makes the admission below a real gate: were it
-/// defined as what some chosen length costs, comparing a file's charge against it would
-/// reduce to comparing that file's length against the chosen one, for any rate, and a
-/// widened representation would raise both sides equally and admit exactly as much as
-/// before while silently costing more heap.
+/// keeping a third in reserve for everything a query holds beside the parse. Defining it
+/// as what some chosen length costs would reduce the admission below to comparing that
+/// file's length against the chosen one, so a widened representation would admit exactly
+/// as much as before while silently costing more heap.
 pub const MAX_QUERY_PARSE_TRANSIENT_BYTES: usize = OWNED_HEAP_BYTES * 2 / 3;
 
 /// The longest source file this crate parses.
@@ -1068,11 +1065,11 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
     // into one names that stage's report instead of denying the file exists.
     let mut unparsed: Vec<UnparsedModule> = Vec::new();
 
-    // Pass one decodes and classifies UTF-8 only, appending each invalid
-    // file's one typed row immediately, so invalid rows form a canonical-order
-    // prefix (A5). A non-UTF-8 file never enters parsing, but it is still a
-    // project module that did not parse; record it as broken so a qualified
-    // call into it is a dependency gap rather than an absence.
+    // Pass one decodes and classifies UTF-8 only, appending each invalid file's one
+    // typed row immediately, so invalid rows form a canonical-order prefix. A non-UTF-8
+    // file never enters parsing, but it is still a project module that did not parse;
+    // record it as broken so a qualified call into it is a dependency gap rather than
+    // an absence.
     let mut decoded: Vec<(FileIdentity, FileRef, String, &str)> = Vec::new();
     for (at, module) in admitted.coordinates().zip(project.modules()) {
         let file = module.identity().clone();
@@ -1096,14 +1093,12 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
         }
     }
 
-    // Pass two parses one valid module at a time and immediately consumes its
-    // syntax terminal through the one bridge, retaining only the AST and the
-    // logical broken status (A5): no collection of un-absorbed parse results
-    // ever exists, so retained diagnostic state is bounded by the compiler
-    // collector plus the one in-flight file's syntax collector. Absorbing the
-    // complete payload is equivalent to the historical Error-severity filter:
-    // every syntax producer constructs `Severity::Error` (the private syntax
-    // constructor fixes it).
+    // Pass two parses one valid module at a time and immediately consumes its syntax
+    // terminal through the one bridge, retaining only the AST and the logical broken
+    // status: no collection of un-absorbed parse results ever exists, so retained
+    // diagnostic state is bounded by the compiler collector plus the one in-flight
+    // file's syntax collector. Every syntax producer constructs `Severity::Error`, so
+    // absorbing the complete payload admits nothing weaker.
     let mut parsed: Vec<Module> = Vec::new();
     for (file, at, name, source) in decoded {
         let result = parse_source(source);
@@ -1144,11 +1139,9 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
     // consequence is per file; it refuses no other fact and no snapshot.
     //
     // Deliberately no early-out on a crossed global ceiling, unlike the hover family: the
-    // projection must visit every module to record each per-file crossing, charging the
-    // outline it already built is a walk over existing nodes with no allocation, and it is
-    // what lets a Bytes crossing strengthen to Count once the composed count crosses. Each
-    // outline is dropped as it is charged, so the live peak is one module's outline either
-    // way.
+    // projection must visit every module to record each per-file crossing, and charging an
+    // already-built outline allocates nothing. Each outline is dropped as it is charged,
+    // so the live peak is one module's outline either way.
     let mut symbol_bounded_files: Vec<FileRef> = Vec::new();
     for module in &clean {
         match crate::analysis::project_document_symbols(&module.ast.declarations) {
@@ -1549,7 +1542,6 @@ fn run_semantic(
         batch.commit();
         signatures
     };
-    // Read from the ledger, not from a flag the build loop maintained.
     let signatures_complete = signatures.every_signature_accepted();
     if let Err(invariant) = report_nominal_boundary(&mut records, &boundary_roots, &mut diagnostics)
     {
@@ -2241,8 +2233,8 @@ pub(crate) struct ProjectAnalysis {
 /// Drive the analysis pass over a project — test bodies included, per the editor
 /// analysis contract — and resolve its complete diagnostic picture under the shared
 /// precedence `Invariant > Diagnostics > ResourceLimit`. The complete union of every
-/// stage's diagnostics is sealed against the same CRES01 count/byte bounds the
-/// production compile uses, so a diagnostic avalanche transactionally becomes a resource
+/// stage's diagnostics is sealed against the same count/byte bounds the production
+/// compile uses, so a diagnostic avalanche transactionally becomes a resource
 /// limit rather than a retained partial set — no partial or truncated snapshot is
 /// admitted.
 pub(crate) fn analyze_project(
@@ -2903,8 +2895,8 @@ mod tests;
 
 /// The driver's stage-tagged accumulator is one traversal projected two ways: the
 /// production compile takes the first non-empty stage (parse, then structural, then
-/// semantic), byte-identical to the historical staged early-return; the editor
-/// analysis snapshot consumes every stage. This gate proves the projection is faithful
+/// semantic); the editor analysis snapshot consumes every stage. This gate proves the
+/// projection is faithful
 /// over a corpus of clean projects and one intentionally-failing project per stage
 /// stop, and that the traversal is dependency-resilient — a syntax error in one
 /// component does not suppress the analysis of an independent valid component.
@@ -3072,8 +3064,7 @@ mod driver_agreement {
             "the valid module must be analyzed past the sibling parse error: {semantic:?}",
         );
 
-        // The production compile still projects only the parse stage — byte-identical
-        // to the historical parse hard-stop.
+        // The production compile still projects only the parse stage.
         assert_eq!(
             compiled(&compile_with_tests(&input)),
             stage_rows(&driven.parse)
@@ -3084,8 +3075,7 @@ mod driver_agreement {
     /// without a dangling reference: the broken module is absent from the analyzed
     /// set, so the dependent's references reduce to the ordinary missing-module
     /// diagnostic family — never a panic, an invariant, or a fabricated fact — and the
-    /// production compile still projects only the broken module's parse stage. This
-    /// pins the cross-reference case the midpoint review probed by hand.
+    /// production compile still projects only the broken module's parse stage.
     #[test]
     fn a_module_depending_on_a_parse_failed_module_reduces_to_the_missing_module_family() {
         let files = &[
@@ -3149,8 +3139,7 @@ mod driver_agreement {
              callee: {dependent:?}",
         );
 
-        // Byte-identical: the production compile projects only the base module's parse
-        // stage.
+        // The production compile projects only the base module's parse stage.
         assert_eq!(
             compiled(&compile_with_tests(&input)),
             stage_rows(&driven.parse)
