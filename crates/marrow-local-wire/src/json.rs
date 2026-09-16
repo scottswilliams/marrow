@@ -5,23 +5,18 @@
 //! 64-bit integer (Marrow has no floating-point value, so the wire has no
 //! fractional number), a string, an array, and an object. [`encode`] emits the one
 //! canonical byte spelling — object keys sorted ascending by byte with no
-//! whitespace, minimal integer spellings, and the fixed string escapes below.
-//! [`parse_strict`] is the inverse and the gatekeeper: it accepts a value only in
-//! that exact canonical form, so every wire message has exactly one legal encoding.
+//! whitespace, minimal integer spellings, and the escapes [`write_json_string`]
+//! defines. [`parse_strict`] is the inverse and the gatekeeper: it accepts a value
+//! only in that exact canonical form, so every wire message has exactly one legal
+//! encoding.
 //!
 //! Canonicality is enforced by construction: the parser accepts a tolerant JSON
-//! grammar with depth and string-length limits, then requires the re-encoding of
-//! the parsed value to be
-//! byte-identical to the input. Whitespace, unsorted keys, a non-minimal number, or
-//! a non-canonical escape all survive parsing but fail that equality and are
-//! rejected as [`WireError::Noncanonical`]; a structurally invalid body, a
-//! non-integer number, or trailing bytes are [`WireError::Malformed`]; a duplicate
-//! object key is rejected during parsing.
-//!
-//! [`write_json_string`] is the one string escaper: `\"`, `\\`, `\b`, `\t`, `\n`, `\f`,
-//! `\r`, other C0 as lowercase `\u00xx`, and every other character — including `/` and
-//! all non-ASCII — passed through literally. The CLI's JSONL surface spells its strings
-//! through it too.
+//! grammar with depth and string-length limits, then requires the re-encoding of the
+//! parsed value to be byte-identical to the input. Whitespace, unsorted keys, a
+//! non-minimal number, or a non-canonical escape all survive parsing but fail that
+//! equality and are rejected as [`WireError::Noncanonical`]; a structurally invalid
+//! body, a non-integer number, or trailing bytes are [`WireError::Malformed`]; a
+//! duplicate object key is rejected during parsing.
 
 use crate::error::WireError;
 use crate::{MAX_DEPTH, MAX_STRING_BYTES};

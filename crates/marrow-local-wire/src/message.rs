@@ -4,16 +4,15 @@
 //! by the caller (the generated client or a terminal) to the runner; a
 //! [`ServerMessage`] is the runner's reply. Each message is a canonical JSON object
 //! tagged by a `"kind"` field, carried in a versioned length-prefixed frame. The
-//! sets are disjoint, so a message decoded in the wrong direction — a client that
-//! receives a request, a runner that receives a response — is rejected as malformed
-//! rather than silently confused.
+//! sets are disjoint, so a message decoded in the wrong direction is rejected as
+//! malformed rather than silently confused.
 //!
 //! The grammar is closed: there is no free-form envelope, no streaming or partial
 //! reply, and no replay/cancellation message. A mutating call whose reply is lost is
-//! classified through [`crate::loss`], never resent.
-//! Every request and call reply carries one exact u32 turn. A serial client assigns a
-//! turn once and the runner channel echoes it on that request's sole response, so a
-//! delayed response from an earlier turn cannot settle a later call.
+//! classified through [`crate::loss`], never resent. Every request and call reply
+//! carries one exact u32 turn. A serial client assigns a turn once and the runner
+//! channel echoes it on that request's sole response, so a delayed response from an
+//! earlier turn cannot settle a later call.
 
 use marrow_codes::Code;
 

@@ -1,21 +1,15 @@
 //! The pure local-wire protocol: framing, limits, canonical JSON, and the closed
 //! handshake/request/response/fault grammar between a Marrow runner and its client.
 //!
-//! This crate is the **single owner of the local wire**. It defines the one framed
-//! byte protocol both callers speak — a terminal driver and the generated
-//! TypeScript client — with no dependency on execution, storage, process
-//! management, or a language runtime: it consumes only the diagnostic-code registry
-//! ([`marrow_codes`]) for its typed rejections. It touches no socket and spawns no
-//! process; a caller reads and writes bytes and uses this crate to frame, encode,
-//! decode, and bound them.
+//! This crate is the **single owner of the local wire**: the one framed byte
+//! protocol a terminal driver and the generated TypeScript client both speak. It
+//! depends on nothing but the diagnostic-code registry ([`marrow_codes`]), touches
+//! no socket, and spawns no process; a caller reads and writes the bytes itself.
 //!
-//! The protocol is deliberately closed and small: one protocol
-//! version, one canonical JSON encoding, a fixed set of message kinds, and no
-//! streaming, replay, cancellation, or pagination. Every decoder input is bounded
-//! before it allocates: a frame length, a value's nesting depth,
-//! and a string's byte length each have a fixed maximum, and an over-limit or
-//! malformed input is rejected at the single wire owner with a typed
-//! [`WireError`].
+//! The protocol is closed and small: one protocol version, one canonical JSON
+//! encoding, a fixed set of message kinds, and no streaming, replay, cancellation,
+//! or pagination. Every decoder input is bounded before it allocates, and an
+//! over-limit or malformed input is rejected here with a typed [`WireError`].
 //!
 //! - [`frame`] — length-prefixed framing with [`MAX_FRAME`].
 //! - [`json`] — the canonical JSON model and codec (the wire's canonical-JSON owner).
