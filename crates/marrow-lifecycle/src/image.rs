@@ -12,7 +12,7 @@ use marrow_kernel::durable::{
 };
 use marrow_verify::{
     CeilingDescriptor, ImageType, Scalar, SealedIndexComponent, SealedSite, SealedSiteTarget,
-    SemanticNode, SemanticNodeKind, SemanticStep, VerifiedImage, VerifyRejection,
+    SemanticNode, SemanticNodeKind, SemanticStep, VerifiedImage,
 };
 
 use crate::codec::FormatError;
@@ -122,13 +122,6 @@ impl HeadMapPinMismatch {
     pub fn code(&self) -> Code {
         marrow_codes::Code::StoreCorruption
     }
-}
-
-/// The registered code a verifier rejection reports. `marrow-verify` still spells its
-/// `image.*` codes as strings, so they are re-interned at that one crate boundary; the
-/// call disappears when `VerifyRejection::code` returns a [`Code`].
-pub(crate) fn rejection_code(rejection: &VerifyRejection) -> Code {
-    Code::from_code(rejection.code()).expect("the verifier reports a registered image code")
 }
 
 /// The noun a refusal uses for a durable node kind.

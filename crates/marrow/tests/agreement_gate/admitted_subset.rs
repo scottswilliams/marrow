@@ -107,13 +107,10 @@ const NOMINAL_INDEX_IDS: &str = "marrow ids v0\n\
 /// The pipeline verdict for one composition, at the stage it first stops.
 enum Stage {
     /// The checker rejected the source with this typed code.
-    CheckerRejected(&'static str),
+    CheckerRejected(Code),
     /// The checker accepted, but the independent verifier rejected the image
     /// (`image.*`) with this code and detail — a checker/verifier divergence.
-    VerifyRejected {
-        code: &'static str,
-        detail: &'static str,
-    },
+    VerifyRejected { code: Code, detail: &'static str },
     /// The checker accepted and the verifier sealed the image.
     Verified(Box<VerifiedImage>),
 }
@@ -147,8 +144,7 @@ fn pipeline(ops: &str) -> Stage {
                 .as_slice()
                 .first()
                 .expect("a rejection carries at least one diagnostic")
-                .code()
-                .as_str(),
+                .code(),
         ),
         Err(
             marrow_compile::CompileFailure::Invariant(_)
@@ -181,16 +177,13 @@ enum Expect {
     /// future divergence is recorded through, so a regression becomes a failing row
     /// rather than a review finding.
     #[allow(dead_code)]
-    KnownDivergent {
-        code: &'static str,
-        detail: &'static str,
-    },
+    KnownDivergent { code: Code, detail: &'static str },
     /// The checker rejects the composition at check time, so it never reaches the
     /// verifier — checker-accept ⇒ verify holds vacuously and the two agree. The exact
     /// `check.*` code is pinned so a change to the verdict forces this row to move.
     /// A former `KnownDivergent` row lands here once its divergence is promoted to a
     /// source-facing diagnostic.
-    CheckerRejects { code: &'static str },
+    CheckerRejects { code: Code },
 }
 
 struct Row {
@@ -374,7 +367,7 @@ fn matrix() -> Vec<Row> {
             label: "empty transaction — no durable operation (checker-rejected)",
             ops: "pub fn emptyRegion() {\n    transaction {\n    }\n}",
             expect: Expect::CheckerRejects {
-                code: "check.transaction_empty",
+                code: Code::CheckTransactionEmpty,
             },
         },
         // A field write with no presence proof over its entry — the inline form — is
@@ -385,7 +378,7 @@ fn matrix() -> Vec<Row> {
             label: "inline field write without a presence proof (checker-rejected)",
             ops: "pub fn inlineFieldWrite(id: int) {\n    transaction {\n        ^books[id].subtitle = \"x\"\n    }\n}",
             expect: Expect::CheckerRejects {
-                code: "check.requires_presence",
+                code: Code::CheckRequiresPresence,
             },
         },
         // A require failure commits its owner's active region before returning.
@@ -636,12 +629,14 @@ fn checker_acceptance_implies_verification_over_the_composition_matrix() {
             }
             (Expect::RoundTrips { .. }, Stage::VerifyRejected { code, detail }) => panic!(
                 "AGREEMENT BROKEN — `{}` is checker-accepted but the verifier rejected it \
-                 ({code}: {detail}). A round trip regressed into a divergence.",
-                row.label
+                 ({}: {detail}). A round trip regressed into a divergence.",
+                row.label,
+                code.as_str()
             ),
             (Expect::RoundTrips { .. }, Stage::CheckerRejected(code)) => panic!(
-                "`{}` was expected to round-trip but the checker refused it ({code}).",
-                row.label
+                "`{}` was expected to round-trip but the checker refused it ({}).",
+                row.label,
+                code.as_str()
             ),
             (
                 Expect::KnownDivergent { code, detail },
@@ -659,23 +654,26 @@ fn checker_acceptance_implies_verification_over_the_composition_matrix() {
                 known_divergent += 1;
             }
             (Expect::KnownDivergent { code, detail }, Stage::Verified(_)) => panic!(
-                "LEDGER STALE — `{}` now verifies; the {code} divergence (\"{detail}\") is fixed. \
+                "LEDGER STALE — `{}` now verifies; the {} divergence (\"{detail}\") is fixed. \
                  Move this row to Expect::RoundTrips so the gate enforces it.",
-                row.label
+                row.label,
+                code.as_str()
             ),
             (Expect::KnownDivergent { .. }, Stage::CheckerRejected(code)) => panic!(
                 "`{}` was a checker-accept/verify-reject divergence but the checker now refuses it \
-                 ({code}); re-classify the row to Expect::CheckerRejects.",
-                row.label
+                 ({}); re-classify the row to Expect::CheckerRejects.",
+                row.label,
+                code.as_str()
             ),
             (Expect::CheckerRejects { code }, Stage::CheckerRejected(got_code)) => {
                 assert_eq!(*code, got_code, "{}: check-time code drifted", row.label);
                 checker_rejected += 1;
             }
             (Expect::CheckerRejects { code }, Stage::Verified(_)) => panic!(
-                "LEDGER STALE — `{}` now verifies; the checker no longer refuses it ({code}). \
+                "LEDGER STALE — `{}` now verifies; the checker no longer refuses it ({}). \
                  A promoted diagnostic regressed — restore the check or move the row.",
-                row.label
+                row.label,
+                code.as_str()
             ),
             (
                 Expect::CheckerRejects { code },
@@ -684,10 +682,12 @@ fn checker_acceptance_implies_verification_over_the_composition_matrix() {
                     detail,
                 },
             ) => panic!(
-                "`{}` was expected to be refused at check time ({code}) but the checker accepted it \
-                 and the verifier rejected it ({got_code}: {detail}) — the check-time promotion \
+                "`{}` was expected to be refused at check time ({}) but the checker accepted it \
+                 and the verifier rejected it ({}: {detail}) — the check-time promotion \
                  regressed into a divergence.",
-                row.label
+                row.label,
+                code.as_str(),
+                got_code.as_str()
             ),
         }
     }

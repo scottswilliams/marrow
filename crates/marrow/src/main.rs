@@ -189,13 +189,6 @@ pub(crate) fn resource_limit_message(description: &str) -> String {
     format!("the compiler reached a fixed resource limit: {description}")
 }
 
-/// The registered code a verifier rejection reports. `marrow-verify` still spells its
-/// `image.*` codes as strings, so they are re-interned at that one crate boundary; the
-/// call disappears when `VerifyRejection::code` returns a [`Code`].
-pub(crate) fn rejection_code(rejection: &marrow_verify::VerifyRejection) -> Code {
-    Code::from_code(rejection.code()).expect("the verifier reports a registered image code")
-}
-
 pub(crate) fn report_io_error(file: &str, error: &std::io::Error) {
     report_simple_error(Code::IoRead, &format!("failed to read {file}: {error}"));
 }

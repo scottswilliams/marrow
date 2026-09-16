@@ -181,8 +181,8 @@ fn a_self_recursive_call_rejects_as_a_cycle() {
     draft.add_export(ExportId::of_local("", "loops"), func);
     let bytes = draft.encode().expect("encode").bytes;
     assert_eq!(
-        verify(&bytes).err().map(|r| r.code().to_string()),
-        Some("image.closure".to_string())
+        verify(&bytes).err().map(|r| r.code()),
+        Some(Code::ImageClosure)
     );
 }
 

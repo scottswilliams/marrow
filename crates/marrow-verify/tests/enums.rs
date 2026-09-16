@@ -4,6 +4,7 @@
 //! producer's own coherence walk, so those cases assert the producer's refusal; every
 //! defect the producer does emit stays the verifier's own rejection.
 
+use marrow_codes::Code;
 use marrow_image::{
     CollectionTypeDef, DraftTxn, EnumId, EnumTypeDef, ExportId, FunctionDef, ImageBuildError,
     ImageDraft, ImageType, Instr, ReferenceKind, Scalar, SpanEntry, VariantDef,
@@ -58,13 +59,13 @@ fn shape(draft: &mut DraftTxn<'_>) -> EnumId {
 }
 
 /// Encode `draft` (adding `f` as a storeless export over `code` returning `ret`)
-/// and verify, returning the rejection code or `"VERIFIED"`.
+/// and verify, returning the rejection code or `None` when it verifies.
 fn verify_fn(
     mut owner: ImageDraft,
     params: Vec<ImageType>,
     ret: ImageType,
     code: Vec<Instr>,
-) -> String {
+) -> Option<Code> {
     let mut draft = admitted(&mut owner);
     let name = draft.intern_string("f").expect("a within-domain mint");
     let source = draft
@@ -84,10 +85,7 @@ fn verify_fn(
         .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "f"), func);
     let bytes = draft.encode().expect("encode").bytes;
-    verify(&bytes)
-        .err()
-        .map(|r| r.code().to_string())
-        .unwrap_or_else(|| "VERIFIED".to_string())
+    verify(&bytes).err().map(|r| r.code())
 }
 
 /// Add the same storeless export shape as [`verify_fn`] and return the producer's own
@@ -148,7 +146,7 @@ fn a_well_formed_enum_image_verifies() {
             ImageType::scalar(Scalar::Int),
             code
         ),
-        "VERIFIED"
+        None
     );
 }
 
@@ -230,7 +228,7 @@ fn a_duplicate_variant_name_rejects_at_table() {
             ImageType::Unit,
             code
         ),
-        "image.table"
+        Some(Code::ImageTable)
     );
 }
 
@@ -294,7 +292,7 @@ fn an_out_of_range_payload_field_rejects_at_function() {
             ImageType::scalar(Scalar::Int),
             code
         ),
-        "image.function"
+        Some(Code::ImageFunction)
     );
 }
 
@@ -338,7 +336,7 @@ fn a_collection_enum_payload_leaf_rejects_at_table() {
             ImageType::Unit,
             code
         ),
-        "image.table"
+        Some(Code::ImageTable)
     );
 }
 
@@ -369,10 +367,7 @@ fn a_truncated_enum_table_rejects_at_envelope() {
     let mut bytes = draft.encode().expect("encode").bytes;
     bytes.truncate(bytes.len() - 2);
     assert_eq!(
-        verify(&bytes)
-            .err()
-            .map(|r| r.code().to_string())
-            .unwrap_or_default(),
-        "image.envelope"
+        verify(&bytes).err().map(|r| r.code()),
+        Some(Code::ImageEnvelope)
     );
 }

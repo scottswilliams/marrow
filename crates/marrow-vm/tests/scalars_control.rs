@@ -6,6 +6,7 @@
 //! structural rejections (unreachable code, fall-off-end, return-type mismatch) live
 //! here beside the machine that owns them.
 
+use marrow_codes::Code;
 use marrow_image::{
     DraftTxn, ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry,
 };
@@ -47,19 +48,19 @@ fn encode(build: impl FnOnce(&mut DraftTxn<'_>) -> (ImageType, Vec<Instr>)) -> V
 }
 
 /// Seal `f(): ret`, returning the phase code on a verifier rejection.
-fn seal(build: impl FnOnce(&mut DraftTxn<'_>) -> (ImageType, Vec<Instr>)) -> Result<(), String> {
+fn seal(build: impl FnOnce(&mut DraftTxn<'_>) -> (ImageType, Vec<Instr>)) -> Result<(), Code> {
     verify(&encode(build))
         .map(|_| ())
-        .map_err(|rejection| rejection.code().to_string())
+        .map_err(|rejection| rejection.code())
 }
 
 /// Build, verify, and run `f(): ret`, returning either its value or the typed code
 /// of the verifier rejection / runtime fault.
 fn build_and_run(
     build: impl FnOnce(&mut DraftTxn<'_>) -> (ImageType, Vec<Instr>),
-) -> Result<Option<Value>, String> {
+) -> Result<Option<Value>, Code> {
     let bytes = encode(build);
-    let image = verify(&bytes).map_err(|rejection| rejection.code().to_string())?;
+    let image = verify(&bytes).map_err(|rejection| rejection.code())?;
     let index = image
         .export_by_id(ExportId::of_local("", "f"))
         .expect("export present")
@@ -68,7 +69,7 @@ fn build_and_run(
         image.function(index).expect("verified function"),
         Vec::new(),
     )
-    .map_err(|fault| fault.code().as_str().to_string())
+    .map_err(|fault| fault.code())
 }
 
 #[test]
@@ -109,7 +110,7 @@ fn int_min_rem_negative_one_faults_overflow() {
             ],
         )
     });
-    assert_eq!(result, Err("run.overflow".to_string()));
+    assert_eq!(result, Err(Code::RunOverflow));
 }
 
 #[test]
@@ -121,7 +122,7 @@ fn neg_int_min_faults_overflow() {
             vec![Instr::ConstLoad(min), Instr::IntNeg, Instr::Return],
         )
     });
-    assert_eq!(result, Err("run.overflow".to_string()));
+    assert_eq!(result, Err(Code::RunOverflow));
 }
 
 #[test]
@@ -139,7 +140,7 @@ fn rem_by_zero_faults_divide_by_zero() {
             ],
         )
     });
-    assert_eq!(result, Err("run.divide_by_zero".to_string()));
+    assert_eq!(result, Err(Code::RunDivideByZero));
 }
 
 /// `/` truncates toward zero, so it pairs with the truncating `%`:
@@ -179,7 +180,7 @@ fn div_by_zero_faults_divide_by_zero() {
             ],
         )
     });
-    assert_eq!(result, Err("run.divide_by_zero".to_string()));
+    assert_eq!(result, Err(Code::RunDivideByZero));
 }
 
 /// `i64::MIN / -1` has an unrepresentable quotient, so it faults as overflow —
@@ -199,7 +200,7 @@ fn int_min_div_negative_one_faults_overflow() {
             ],
         )
     });
-    assert_eq!(result, Err("run.overflow".to_string()));
+    assert_eq!(result, Err(Code::RunOverflow));
 }
 
 /// `unreachable("...")` faults with `run.unreachable` and never falls through, so
@@ -215,7 +216,7 @@ fn unreachable_faults() {
             vec![Instr::Unreachable(text)],
         )
     });
-    assert_eq!(result, Err("run.unreachable".to_string()));
+    assert_eq!(result, Err(Code::RunUnreachable));
 }
 
 /// The `unreachable` operand must be a text const; an int-const operand is a
@@ -229,7 +230,7 @@ fn unreachable_with_non_text_operand_rejects() {
             vec![Instr::Unreachable(int_const)],
         )
     });
-    assert_eq!(result, Err("image.function".to_string()));
+    assert_eq!(result, Err(Code::ImageFunction));
 }
 
 /// Strings order lexicographically by their UTF-8 bytes.
@@ -420,7 +421,7 @@ fn checked_op_with_non_int_operand_rejects() {
             ],
         )
     });
-    assert_eq!(result, Err("image.function".to_string()));
+    assert_eq!(result, Err(Code::ImageFunction));
 }
 
 #[test]
@@ -441,7 +442,7 @@ fn text_concat_over_the_limit_faults() {
         code.push(Instr::Return);
         (ImageType::scalar(Scalar::Text), code)
     });
-    assert_eq!(result, Err("run.text_limit".to_string()));
+    assert_eq!(result, Err(Code::RunTextLimit));
 }
 
 #[test]
@@ -459,7 +460,7 @@ fn unreachable_instruction_rejects() {
             ],
         )
     });
-    assert_eq!(rejection.err(), Some("image.function".to_string()));
+    assert_eq!(rejection.err(), Some(Code::ImageFunction));
 }
 
 #[test]
@@ -469,7 +470,7 @@ fn falling_off_the_end_rejects() {
         let one = draft.intern_int(1).expect("a within-domain mint");
         (ImageType::scalar(Scalar::Int), vec![Instr::ConstLoad(one)])
     });
-    assert_eq!(rejection.err(), Some("image.function".to_string()));
+    assert_eq!(rejection.err(), Some(Code::ImageFunction));
 }
 
 #[test]
@@ -482,5 +483,5 @@ fn return_type_mismatch_rejects() {
             vec![Instr::ConstLoad(flag), Instr::Return],
         )
     });
-    assert_eq!(rejection.err(), Some("image.function".to_string()));
+    assert_eq!(rejection.err(), Some(Code::ImageFunction));
 }

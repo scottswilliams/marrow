@@ -128,7 +128,7 @@ fn run_inner(args: &RunArgs, image_slot: &mut Option<VerifiedImage>) -> Result<O
     // verified image — only `marrow_verify::verify` can.
     let verified = marrow_verify::verify(&compiled.image.bytes).map_err(|rejection| {
         Outcome::failed(vec![Record::ArtifactRejected {
-            code: crate::rejection_code(&rejection),
+            code: rejection.code(),
         }])
     })?;
     let image: &VerifiedImage = image_slot.insert(verified);

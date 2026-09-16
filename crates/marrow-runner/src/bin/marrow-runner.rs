@@ -146,7 +146,7 @@ fn main() -> ExitCode {
 fn load_image(path: &Path) -> Result<marrow_verify::VerifiedImage, ExitCode> {
     let bytes = read_image_bytes(path)?;
     marrow_verify::verify(&bytes).map_err(|rejection| {
-        let _ = writeln!(std::io::stderr(), "{}", rejection.code());
+        let _ = writeln!(std::io::stderr(), "{}", rejection.code().as_str());
         ExitCode::FAILURE
     })
 }

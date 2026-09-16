@@ -5,6 +5,7 @@
 //! soundness core: the only way to obtain a bare value from an optional is
 //! `BranchPresent`, so an image that feeds `T?` into arithmetic rejects at verify.
 
+use marrow_codes::Code;
 use marrow_image::{
     DraftTxn, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr, RecordTypeDef, Scalar,
     SpanEntry,
@@ -39,7 +40,7 @@ fn note_type(draft: &mut DraftTxn<'_>) -> marrow_image::TypeId {
 
 fn build_and_run(
     build: impl FnOnce(&mut DraftTxn<'_>) -> (ImageType, Vec<Instr>),
-) -> Result<Option<Value>, String> {
+) -> Result<Option<Value>, Code> {
     let mut draft_owner = ImageDraft::new();
     let savepoint = draft_owner.savepoint();
     let mut draft = draft_owner
@@ -70,7 +71,7 @@ fn build_and_run(
         .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "f"), func);
     let bytes = draft.encode().expect("encode").bytes;
-    let image = verify(&bytes).map_err(|rejection| rejection.code().to_string())?;
+    let image = verify(&bytes).map_err(|rejection| rejection.code())?;
     let index = image
         .export_by_id(ExportId::of_local("", "f"))
         .expect("export present")
@@ -79,7 +80,7 @@ fn build_and_run(
         image.function(index).expect("verified function"),
         Vec::new(),
     )
-    .map_err(|fault| fault.code().as_str().to_string())
+    .map_err(|fault| fault.code())
 }
 
 #[test]
@@ -177,7 +178,7 @@ fn optional_into_a_bare_consumer_rejects() {
             ],
         )
     });
-    assert_eq!(result, Err("image.function".to_string()));
+    assert_eq!(result, Err(Code::ImageFunction));
 }
 
 // --- Local product mutation: FieldSet / FieldUnset. ---
@@ -252,7 +253,7 @@ fn field_unset_on_a_required_field_rejects() {
             ],
         )
     });
-    assert_eq!(result, Err("image.function".to_string()));
+    assert_eq!(result, Err(Code::ImageFunction));
 }
 
 #[test]
@@ -274,7 +275,7 @@ fn field_set_with_a_wrong_typed_operand_rejects() {
             ],
         )
     });
-    assert_eq!(result, Err("image.function".to_string()));
+    assert_eq!(result, Err(Code::ImageFunction));
 }
 
 #[test]
@@ -296,5 +297,5 @@ fn field_set_with_an_out_of_range_field_index_rejects() {
             ],
         )
     });
-    assert_eq!(result, Err("image.function".to_string()));
+    assert_eq!(result, Err(Code::ImageFunction));
 }

@@ -25,15 +25,15 @@ pub enum VerifyPhase {
 }
 
 impl VerifyPhase {
-    /// The stable dotted code for a rejection in this phase.
-    pub fn code(self) -> &'static str {
+    /// The stable code for a rejection in this phase.
+    pub fn code(self) -> Code {
         match self {
-            VerifyPhase::Envelope => Code::ImageEnvelope.as_str(),
-            VerifyPhase::Table => Code::ImageTable.as_str(),
-            VerifyPhase::Function => Code::ImageFunction.as_str(),
-            VerifyPhase::Closure => Code::ImageClosure.as_str(),
-            VerifyPhase::Flow => Code::ImageFlow.as_str(),
-            VerifyPhase::TestEntry => Code::ImageTestEntry.as_str(),
+            VerifyPhase::Envelope => Code::ImageEnvelope,
+            VerifyPhase::Table => Code::ImageTable,
+            VerifyPhase::Function => Code::ImageFunction,
+            VerifyPhase::Closure => Code::ImageClosure,
+            VerifyPhase::Flow => Code::ImageFlow,
+            VerifyPhase::TestEntry => Code::ImageTestEntry,
         }
     }
 }
@@ -54,8 +54,8 @@ impl VerifyRejection {
         self.phase
     }
 
-    /// The stable dotted `image.*` code for the rejecting phase.
-    pub fn code(&self) -> &'static str {
+    /// The stable `image.*` code for the rejecting phase.
+    pub fn code(&self) -> Code {
         self.phase.code()
     }
 
@@ -66,7 +66,7 @@ impl VerifyRejection {
 
 impl std::fmt::Display for VerifyRejection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.code(), self.detail)
+        write!(f, "{}: {}", self.code().as_str(), self.detail)
     }
 }
 

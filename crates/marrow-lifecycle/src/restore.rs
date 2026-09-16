@@ -80,7 +80,7 @@ impl RestoreError {
         use marrow_kernel::durable::RestoreError as Body;
         match &self.fault {
             RestoreFault::Input(error) | RestoreFault::Body(Body::Input(error)) => error.code(),
-            RestoreFault::Image(error) => crate::image::rejection_code(error),
+            RestoreFault::Image(error) => error.code(),
             RestoreFault::Admission(error) => error.code(),
             RestoreFault::Entropy(_) => Code::IoRead,
             RestoreFault::Io(_) => Code::StoreIo,

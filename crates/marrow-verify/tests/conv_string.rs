@@ -5,6 +5,7 @@
 //! image can never drive the renderer with a value it would have to reject at runtime.
 //! This guards the interpolation-canon soundness rule directly on the trust boundary.
 
+use marrow_codes::Code;
 use marrow_image::{
     CollectionTypeDef, DraftTxn, EnumId, EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageDraft,
     ImageType, Instr, RecordTypeDef, Scalar, SpanEntry, VariantDef,
@@ -29,7 +30,7 @@ const TEXT: ImageType = ImageType::Scalar {
 /// Build a one-export image whose `main` runs `setup` to push one operand, then applies
 /// `ConvString` and returns the resulting `string`. Returns the verifier's result (the
 /// rejection code on failure).
-fn verify_conv(setup: impl FnOnce(&mut DraftTxn<'_>) -> Vec<Instr>) -> Result<(), String> {
+fn verify_conv(setup: impl FnOnce(&mut DraftTxn<'_>) -> Vec<Instr>) -> Result<(), Code> {
     let mut draft_owner = ImageDraft::new();
     let savepoint = draft_owner.savepoint();
     let mut draft = draft_owner
@@ -56,7 +57,7 @@ fn verify_conv(setup: impl FnOnce(&mut DraftTxn<'_>) -> Vec<Instr>) -> Result<()
         .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), main);
     let bytes = draft.encode().expect("encode").bytes;
-    verify(&bytes).map(|_| ()).map_err(|r| r.code().to_string())
+    verify(&bytes).map(|_| ()).map_err(|r| r.code())
 }
 
 /// Add a bare two-member `Color` enum, returning its ENUMS index.

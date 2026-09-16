@@ -1063,7 +1063,7 @@ mod index_site_partition {
                 Ok(Err(rejection)) => {
                     assert_eq!(
                         rejection.code(),
-                        "image.function",
+                        marrow_codes::Code::ImageFunction,
                         "opcode {sample:?} rejected under the wrong phase",
                     );
                     assert_eq!(

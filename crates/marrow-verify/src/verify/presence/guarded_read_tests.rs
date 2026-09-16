@@ -292,5 +292,5 @@ fn a_guarded_key_pair_verifies_and_an_unguarded_one_is_refused() {
     let negative = image(3, 0, Some([0, 2]));
     let refusal = crate::verify(&negative).expect_err("the unguarded pair is refused");
     assert_eq!(refusal.phase(), VerifyPhase::Flow);
-    assert_eq!(refusal.code(), Code::ImageFlow.as_str());
+    assert_eq!(refusal.code(), Code::ImageFlow);
 }

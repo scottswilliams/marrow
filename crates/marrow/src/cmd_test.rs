@@ -66,7 +66,7 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
             return emit_records(
                 args.format,
                 &[Record::ArtifactRejected {
-                    code: crate::rejection_code(&rejection),
+                    code: rejection.code(),
                 }],
                 ExitCode::FAILURE,
             );

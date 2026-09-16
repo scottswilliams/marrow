@@ -68,7 +68,7 @@ fn a_flipped_digest_slot_rejects_at_the_envelope() {
     // Flip a byte in the digest slot (offsets 5..37) without rehashing.
     bytes[10] ^= 0xFF;
     let rejection = verify(&bytes).expect_err("a stale digest must reject");
-    assert_eq!(rejection.code(), "image.envelope");
+    assert_eq!(rejection.code(), Code::ImageEnvelope);
 }
 
 #[test]
@@ -364,7 +364,7 @@ fn map_remove_is_idempotent_and_type_checked() {
         forged_map_remove_non_map_image(),
     ] {
         let rejection = verify(&forged).expect_err("a mistyped map-remove must reject");
-        assert_eq!(rejection.code(), "image.function");
+        assert_eq!(rejection.code(), Code::ImageFunction);
     }
 }
 

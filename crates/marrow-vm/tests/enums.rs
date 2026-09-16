@@ -5,6 +5,7 @@
 //! core: an image extracting the wrong variant's payload faults rather than
 //! reading a differently-typed leaf.
 
+use marrow_codes::Code;
 use marrow_image::{
     DraftTxn, EnumTypeDef, ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry,
     VariantDef,
@@ -48,7 +49,7 @@ fn shape_enum(draft: &mut DraftTxn<'_>) -> marrow_image::EnumId {
 
 fn build_and_run(
     build: impl FnOnce(&mut DraftTxn<'_>) -> (ImageType, Vec<Instr>),
-) -> Result<Option<Value>, String> {
+) -> Result<Option<Value>, Code> {
     let mut draft_owner = ImageDraft::new();
     let savepoint = draft_owner.savepoint();
     let mut draft = draft_owner
@@ -79,7 +80,7 @@ fn build_and_run(
         .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "f"), func);
     let bytes = draft.encode().expect("encode").bytes;
-    let image = verify(&bytes).map_err(|rejection| rejection.code().to_string())?;
+    let image = verify(&bytes).map_err(|rejection| rejection.code())?;
     let index = image
         .export_by_id(ExportId::of_local("", "f"))
         .expect("export present")
@@ -88,7 +89,7 @@ fn build_and_run(
         image.function(index).expect("verified function"),
         Vec::new(),
     )
-    .map_err(|fault| fault.code().as_str().to_string())
+    .map_err(|fault| fault.code())
 }
 
 #[test]
@@ -215,5 +216,5 @@ fn a_wrong_variant_payload_read_faults() {
             ],
         )
     });
-    assert_eq!(result, Err("run.enum_variant".to_string()));
+    assert_eq!(result, Err(Code::RunEnumVariant));
 }

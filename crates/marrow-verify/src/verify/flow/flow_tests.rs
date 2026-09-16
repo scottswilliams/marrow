@@ -57,7 +57,7 @@ fn a_boolean_tape_that_falls_off_the_end_rejects() {
     let bytes = boolean_tape(32, 32, Instr::BoolNot);
     let refusal = crate::verify(&bytes).expect_err("missing terminal return");
     assert_eq!(refusal.phase(), VerifyPhase::Function);
-    assert_eq!(refusal.code(), marrow_codes::Code::ImageFunction.as_str());
+    assert_eq!(refusal.code(), marrow_codes::Code::ImageFunction);
     assert_eq!(
         refusal.detail(),
         "execution falls off the end without returning"
@@ -124,7 +124,7 @@ fn distinct_forks_seal_one_extra_stack_slot_and_three_instructions() {
 fn function_refusal(bytes: &[u8], detail: &'static str) {
     let refusal = crate::verify(bytes).expect_err("invalid flow");
     assert_eq!(refusal.phase(), VerifyPhase::Function);
-    assert_eq!(refusal.code(), marrow_codes::Code::ImageFunction.as_str());
+    assert_eq!(refusal.code(), marrow_codes::Code::ImageFunction);
     assert_eq!(refusal.detail(), detail);
 }
 

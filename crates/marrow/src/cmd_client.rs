@@ -45,10 +45,7 @@ pub(crate) fn client(rest: &[String]) -> ExitCode {
     let image = match marrow_verify::verify(&compiled.image.bytes) {
         Ok(image) => image,
         Err(rejection) => {
-            crate::report_simple_error(
-                crate::rejection_code(&rejection),
-                "the compiled image failed verification",
-            );
+            crate::report_simple_error(rejection.code(), "the compiled image failed verification");
             return ExitCode::FAILURE;
         }
     };

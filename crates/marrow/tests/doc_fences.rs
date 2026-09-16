@@ -315,7 +315,10 @@ fn check_in_process(fence: &DocFence) -> InProcess {
     let image = match marrow_verify::verify(&compiled.image.bytes) {
         Ok(image) => image,
         Err(rejection) => {
-            return InProcess::Rejected(vec![record("artifact_rejected", Some(rejection.code()))]);
+            return InProcess::Rejected(vec![record(
+                "artifact_rejected",
+                Some(rejection.code().as_str()),
+            )]);
         }
     };
 

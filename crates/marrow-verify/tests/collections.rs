@@ -3,6 +3,7 @@
 //! the violated collection invariant. Built through `ImageDraft` (encoder-computed
 //! digest), so every rejection is a structural/type invariant, not a digest flip.
 
+use marrow_codes::Code;
 use marrow_image::{
     CollectionTypeDef, ExportId, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr,
     ReferenceKind, Scalar, SpanEntry,
@@ -195,7 +196,7 @@ fn a_map_op_on_a_list_type_rejects() {
         ImageType::scalar(Scalar::Int),
     );
     let rejection = verify(&bytes).expect_err("a map op on a list type rejects");
-    assert_eq!(rejection.code(), "image.function");
+    assert_eq!(rejection.code(), Code::ImageFunction);
 }
 
 #[test]
@@ -233,7 +234,7 @@ fn a_list_append_element_type_mismatch_rejects() {
     draft.add_export(ExportId::of_local("", "main"), main);
     let bytes = draft.encode().expect("encode").bytes;
     let rejection = verify(&bytes).expect_err("a list-append type mismatch rejects");
-    assert_eq!(rejection.code(), "image.function");
+    assert_eq!(rejection.code(), Code::ImageFunction);
 }
 
 #[test]
@@ -249,7 +250,7 @@ fn a_map_key_that_is_not_a_scalar_rejects() {
     // Row 0 is a valid list; row 1 is the bad map (its key references row 0).
     let bytes = image_with(&[LIST_INT, bad_map], vec![Instr::Return], ImageType::Unit);
     let rejection = verify(&bytes).expect_err("a non-scalar map key rejects");
-    assert_eq!(rejection.code(), "image.table");
+    assert_eq!(rejection.code(), Code::ImageTable);
 }
 
 const LIST_STR: CollectionTypeDef = CollectionTypeDef::List {
@@ -338,7 +339,7 @@ fn a_text_split_naming_a_non_string_list_rejects() {
     draft.add_export(ExportId::of_local("", "main"), main);
     let bytes = draft.encode().expect("encode").bytes;
     let rejection = verify(&bytes).expect_err("split naming a List[int] rejects");
-    assert_eq!(rejection.code(), "image.function");
+    assert_eq!(rejection.code(), Code::ImageFunction);
 }
 
 #[test]
@@ -375,5 +376,5 @@ fn a_text_join_on_a_non_string_list_rejects() {
     draft.add_export(ExportId::of_local("", "main"), main);
     let bytes = draft.encode().expect("encode").bytes;
     let rejection = verify(&bytes).expect_err("join on a List[int] rejects");
-    assert_eq!(rejection.code(), "image.function");
+    assert_eq!(rejection.code(), Code::ImageFunction);
 }

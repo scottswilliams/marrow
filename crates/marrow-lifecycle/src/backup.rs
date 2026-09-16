@@ -60,7 +60,7 @@ impl From<BackupFault> for BackupError {
 impl BackupError {
     pub fn code(&self) -> Code {
         match &self.fault {
-            BackupFault::Image(error) => crate::image::rejection_code(error),
+            BackupFault::Image(error) => error.code(),
             BackupFault::Audit(error) => error.code(),
             BackupFault::Invalid(_) => Code::StoreCorruption,
             BackupFault::Format(error) => error.code(),
