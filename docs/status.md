@@ -188,8 +188,9 @@ packaged, or downloadable build.
 
 The supply chain has a floor:
 
-- The workspace carries no `unsafe` code; every CI run denies it with
-  `clippy -F unsafe-code` ([checks](../CONTRIBUTING.md#checks)).
+- The workspace carries no `unsafe` code: `unsafe_code = "forbid"` at the
+  workspace root refuses it at compile time, and the CI gate repeats the
+  refusal with `clippy -F unsafe-code` ([checks](../CONTRIBUTING.md#checks)).
 - A weekly advisory workflow runs `cargo audit` over the committed `Cargo.lock`
   and emits a CycloneDX bill of materials. An advisory is triaged as a finding
   and does not block integration.
