@@ -1,0 +1,94 @@
+// Text helpers over the beta text floor: the small vocabulary a line-based
+// encoding needs before it can be parsed. The module carries no durable state and
+// names no other module, so it checks, formats, and tests standalone; a consuming
+// project reaches it through its own `[dependencies]` alias.
+module text
+
+struct Pair {
+    left: string
+    right: string
+}
+
+// Read a map value or a fallback when the key is absent. One helper serves an
+// `int` count map and a `bool` membership map alike.
+pub fn getOr<V>(m: Map<string, V>, key: string, fallback: V): V {
+    return m[key] ?? fallback
+}
+
+// Whether `s` begins with `prefix`. The text floor has no `startsWith`, so this
+// splits on the prefix and checks that the first piece is empty with a separator
+// present.
+pub fn startsWith(s: string, prefix: string): bool {
+    if isEmpty(prefix) {
+        return true
+    }
+    const parts = split(s, prefix)
+    var idx: int = 0
+    var firstEmpty: bool = false
+    var hadSeparator: bool = false
+    for p in parts {
+        if idx == 0 {
+            firstEmpty = isEmpty(p)
+        } else {
+            hadSeparator = true
+        }
+        idx += 1
+    }
+    return firstEmpty and hadSeparator
+}
+
+// Split `s` on the first separator into exactly two trimmed sides. The floor has
+// no positional element access on a `List`, so the two parts are read by counting
+// while iterating. A line with other than two parts yields `none`.
+pub fn parsePair(s: string, sep: string): Option<Pair> {
+    const parts = split(s, sep)
+    var idx: int = 0
+    var left: string = ""
+    var right: string = ""
+    for p in parts {
+        if idx == 0 {
+            left = trim(p)
+        } else if idx == 1 {
+            right = trim(p)
+        }
+        idx += 1
+    }
+    if idx == 2 {
+        return some(Pair(left: left, right: right))
+    }
+    return none
+}
+
+test "getOr falls back for an absent key" {
+    var m: Map<string, int> = Map()
+    m["x"] = 5
+    assert getOr(m, "x", 0) == 5
+    assert getOr(m, "y", -1) == -1
+}
+
+test "startsWith matches a prefix and rejects a non-prefix" {
+    assert startsWith("# comment", "#")
+    assert not startsWith("a -> b", "#")
+    assert startsWith("abc", "")
+    assert startsWith("abc", "abc")
+}
+
+test "parsePair splits exactly two sides or reports none" {
+    match parsePair("a -> b", "->") {
+        some(pr) => {
+            assert pr.left == "a"
+            assert pr.right == "b"
+        }
+        none => {
+            assert false
+        }
+    }
+    match parsePair("a -> b -> c", "->") {
+        some(pr) => {
+            assert false
+        }
+        none => {
+            assert true
+        }
+    }
+}

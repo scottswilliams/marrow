@@ -16,10 +16,7 @@
 // whose ascending key order makes every listing sorted without a sort primitive.
 module graph_report
 
-struct Pair {
-    left: string
-    right: string
-}
+use graphtext::text
 
 struct Edge {
     src: string
@@ -31,56 +28,6 @@ enum Role {
     sink
     internal
     isolated
-}
-
-// Read a map value or a fallback when the key is absent. One helper serves the
-// degree maps (`int`) and the reachability/visited maps (`bool`).
-fn getOr<V>(m: Map<string, V>, key: string, fallback: V): V {
-    return m[key] ?? fallback
-}
-
-// Whether `s` begins with `prefix`. The text floor has no `startsWith`, so this
-// splits on the prefix and checks that the first piece is empty with a separator
-// present.
-fn startsWith(s: string, prefix: string): bool {
-    if isEmpty(prefix) {
-        return true
-    }
-    const parts = split(s, prefix)
-    var idx: int = 0
-    var firstEmpty: bool = false
-    var hadSeparator: bool = false
-    for p in parts {
-        if idx == 0 {
-            firstEmpty = isEmpty(p)
-        } else {
-            hadSeparator = true
-        }
-        idx += 1
-    }
-    return firstEmpty and hadSeparator
-}
-
-// Split `s` on the first separator into exactly two trimmed sides. The floor has
-// no positional element access on a `List`, so the two parts are read by counting
-// while iterating. A line with other than two parts yields `none`.
-fn parsePair(s: string, sep: string): Option<Pair> {
-    const parts = split(s, sep)
-    var idx: int = 0
-    var left: string = ""
-    var right: string = ""
-    for p in parts {
-        if idx == 0 {
-            left = trim(p)
-        } else if idx == 1 {
-            right = trim(p)
-        }
-        idx += 1
-    }
-    if idx == 2 {
-        return some(Pair(left: left, right: right))
-    }
-    return none
 }
 
 fn classifyRole(outDegree: int, inDegree: int): Role {
@@ -125,8 +72,8 @@ fn reachableFrom(edges: List<Edge>, start: string, nodeCount: int): Map<string, 
         changed = false
         passes += 1
         for e in edges {
-            if getOr(reached, e.src, false) {
-                if not getOr(reached, e.dst, false) {
+            if text::getOr(reached, e.src, false) {
+                if not text::getOr(reached, e.dst, false) {
                     reached[e.dst] = true
                     changed = true
                 }
@@ -151,13 +98,13 @@ fn topoOrder(edges: List<Edge>, nodes: Map<string, bool>, nodeCount: int): List<
         passes += 1
         var remaining: Map<string, int> = Map()
         for e in edges {
-            if not getOr(emitted, e.src, false) {
-                remaining[e.dst] = getOr(remaining, e.dst, 0) + 1
+            if not text::getOr(emitted, e.src, false) {
+                remaining[e.dst] = text::getOr(remaining, e.dst, 0) + 1
             }
         }
         var ready: List<string> = List()
         for n in nodes {
-            if not getOr(emitted, n, false) and getOr(remaining, n, 0) == 0 {
+            if not text::getOr(emitted, n, false) and text::getOr(remaining, n, 0) == 0 {
                 ready = append(ready, n)
             }
         }
@@ -197,7 +144,7 @@ fn missingFrom(order: List<string>, nodes: Map<string, bool>): List<string> {
     }
     var missing: List<string> = List()
     for n in nodes {
-        if not getOr(inOrder, n, false) {
+        if not text::getOr(inOrder, n, false) {
             missing = append(missing, n)
         }
     }
@@ -210,8 +157,8 @@ fn renderDegrees(nodes: Map<string, bool>, outDeg: Map<string, int>, inDeg: Map<
     var out: string = ""
     var first: bool = true
     for n in nodes {
-        const o = getOr(outDeg, n, 0)
-        const i = getOr(inDeg, n, 0)
+        const o = text::getOr(outDeg, n, 0)
+        const i = text::getOr(inDeg, n, 0)
         const line = "  " + n + " out=" + string(o) + " in=" + string(i) + " role=" + roleName(classifyRole(o, i))
         if first {
             out = line
@@ -228,14 +175,14 @@ fn renderReachable(edges: List<Edge>, nodes: Map<string, bool>, hasRoot: bool, r
     if not hasRoot {
         return "  (no root)"
     }
-    if not getOr(nodes, root, false) {
+    if not text::getOr(nodes, root, false) {
         return "  root " + root + " is not a node"
     }
     const reached = reachableFrom(edges, root, nodeCount)
     var names: List<string> = List()
     var reachedCount: int = 0
     for n in nodes {
-        if getOr(reached, n, false) {
+        if text::getOr(reached, n, false) {
             names = append(names, n)
             reachedCount += 1
         }
@@ -258,11 +205,11 @@ pub fn report(input: string): string {
         if isEmpty(line) {
             continue
         }
-        if startsWith(line, "#") {
+        if text::startsWith(line, "#") {
             continue
         }
         if contains(line, "->") {
-            match parsePair(line, "->") {
+            match text::parsePair(line, "->") {
                 some(pr) => {
                     const left = pr.left
                     const right = pr.right
@@ -276,13 +223,13 @@ pub fn report(input: string): string {
                         nodes[left] = true
                     } else {
                         const key = left + " -> " + right
-                        if not getOr(seen, key, false) {
+                        if not text::getOr(seen, key, false) {
                             seen[key] = true
                             edges = append(edges, Edge(src: left, dst: right))
                             nodes[left] = true
                             nodes[right] = true
-                            outDeg[left] = getOr(outDeg, left, 0) + 1
-                            inDeg[right] = getOr(inDeg, right, 0) + 1
+                            outDeg[left] = text::getOr(outDeg, left, 0) + 1
+                            inDeg[right] = text::getOr(inDeg, right, 0) + 1
                         }
                     }
                 }
@@ -390,38 +337,4 @@ test "a self loop is a one-node cycle" {
     const input = "a -> a\nb -> a"
     const r = report(input)
     assert r == "Graph Report\n" + "nodes=2 edges=2 root=- malformed=0\n" + "-- degrees --\n" + "  a out=1 in=2 role=internal\n" + "  b out=1 in=0 role=source\n" + "-- reachable --\n" + "  (no root)\n" + "-- order --\n" + "  b\n" + "-- cycle --\n  a"
-}
-
-test "getOr falls back for an absent key" {
-    var m: Map<string, int> = Map()
-    m["x"] = 5
-    assert getOr(m, "x", 0) == 5
-    assert getOr(m, "y", -1) == -1
-}
-
-test "startsWith matches a prefix and rejects a non-prefix" {
-    assert startsWith("# comment", "#")
-    assert not startsWith("a -> b", "#")
-    assert startsWith("abc", "")
-    assert startsWith("abc", "abc")
-}
-
-test "parsePair splits exactly two sides or reports none" {
-    match parsePair("a -> b", "->") {
-        some(pr) => {
-            assert pr.left == "a"
-            assert pr.right == "b"
-        }
-        none => {
-            assert false
-        }
-    }
-    match parsePair("a -> b -> c", "->") {
-        some(pr) => {
-            assert false
-        }
-        none => {
-            assert true
-        }
-    }
 }

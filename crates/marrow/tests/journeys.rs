@@ -1,6 +1,6 @@
 //! Whole-program journeys over frozen on-disk fixtures: the workshop, the graph
-//! reports, the scale corpus, the source-test and formatter runs, and diagnostic
-//! actionability.
+//! reports, the local-dependency pair, the scale corpus, the source-test and formatter
+//! runs, and diagnostic actionability.
 
 mod common;
 
@@ -12,6 +12,8 @@ mod diagnostic_actionability;
 mod durable_graph_report;
 #[path = "journeys/graph_report.rs"]
 mod graph_report;
+#[path = "journeys/local_dependency.rs"]
+mod local_dependency;
 #[path = "journeys/scale_corpus.rs"]
 mod scale_corpus;
 #[path = "journeys/tests_and_formatter.rs"]

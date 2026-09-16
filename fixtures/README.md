@@ -17,6 +17,12 @@ shared parse corpus above.
 A fixture in either root needs a test that names it; an unnamed fixture is
 deleted, not archived.
 
+`conformance/graph_report` and `conformance/graph_report_lib` are one two-tree
+pair: the library is a standalone project that checks, formats, and tests on its
+own, and the application reaches its helpers through a `[dependencies]` alias by
+relative path. A fixture pair relocates together, so the consuming path stays
+relative and either tree may be driven from its own directory.
+
 `.marrow/ids` is committed wherever a fixture declares durable state. The
 compiler never mints identities, and `marrow run`'s entropy mint would rewrite
 the file and make the fixture nondeterministic, so the ledger is frozen source:
