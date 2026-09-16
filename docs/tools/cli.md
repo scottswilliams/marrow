@@ -178,6 +178,13 @@ and `duration` in canonical text. A struct parameter has no command-line
 spelling. A wrong count, a value that does not decode, or an unknown export is a
 usage error.
 
+Each argument's text is limited to 65,536 bytes, the language
+[text bound](../language/execution-limits.md#limits). The terminal measures the
+argument as written — UTF-8 bytes for a `string`, the `0x`-prefixed hexadecimal
+for `bytes` — and refuses a longer one with `cli.argument_limit`, exit `1`,
+before the export runs. The bound does not depend on `--store`: a storeless run
+and a store-backed run admit and refuse the same arguments.
+
 `--stdin` supplies one string from standard input instead of positional
 arguments. The verified export must take exactly one nonoptional `string`
 parameter; its return type is unrestricted. An empty `--` tail is allowed,
@@ -238,7 +245,8 @@ true
 ```
 
 `--stdin` also works with `--store`. Companion discovery retains precedence
-over argument decoding and stdin consumption. Compilation and existing ledger
+over argument admission and stdin consumption, so a damaged installation is
+reported before an oversized argument is. Compilation and existing ledger
 publication can occur before input is read; input refusal is not a guarantee
 that project metadata was untouched.
 

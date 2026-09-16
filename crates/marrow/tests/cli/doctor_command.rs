@@ -12,7 +12,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use crate::common::{MARROW_BIN, TempDir, unaccepted_ceiling_id, write};
+use crate::common::{
+    MARROW_BIN, TempDir, stage_toolchain, staged_marrow_in, unaccepted_ceiling_id, write,
+};
 
 const SOURCE: &str = r#"resource Counter {
     required value: int
@@ -535,33 +537,6 @@ fn backup_restores_absent_ancestor_descendants_without_a_project(toolchain: &Pat
     drop(std::mem::ManuallyDrop::into_inner(temp));
 }
 
-/// Stage the CLI, runner and release manifest once for the command suite.
-fn toolchain() -> TempDir {
-    let runner = Path::new(MARROW_BIN)
-        .parent()
-        .expect("binary dir")
-        .join("marrow-runner");
-    assert!(
-        runner.is_file(),
-        "stock runner not built at {}; run a workspace build first",
-        runner.display()
-    );
-    let dir = TempDir::new("toolchain");
-    fs::copy(MARROW_BIN, dir.join("marrow")).expect("copy marrow");
-    fs::copy(&runner, dir.join("marrow-runner")).expect("copy runner");
-    let bytes = fs::read(&runner).expect("read runner");
-    let id = marrow_image::companion_release_id(&bytes).to_hex();
-    fs::write(
-        dir.join("marrow-companions"),
-        format!(
-            "marrow companions v0\nrelease {}\nrunner marrow-runner {id}\nend\n",
-            env!("CARGO_PKG_VERSION")
-        ),
-    )
-    .expect("write manifest");
-    dir
-}
-
 fn store_files(dir: &Path) -> std::collections::BTreeMap<std::ffi::OsString, Vec<u8>> {
     fs::read_dir(dir)
         .expect("store entries")
@@ -611,12 +586,7 @@ fn project_with_store(toolchain: &Path, temp: &TempDir) -> (PathBuf, PathBuf) {
 }
 
 fn marrow(toolchain: &Path, dir: &Path, args: &[&str]) -> Output {
-    Command::new(toolchain.join("marrow"))
-        .args(args)
-        .current_dir(dir)
-        .env("NO_COLOR", "1")
-        .output()
-        .expect("run the staged marrow binary")
+    staged_marrow_in(toolchain, dir, args).output
 }
 
 fn text(bytes: &[u8]) -> String {
@@ -896,7 +866,7 @@ fn an_invalid_scalar_reports_a_logical_finding(toolchain: &Path) {
 
 #[test]
 fn doctor_reports_and_refusals_share_one_owned_toolchain() {
-    let staged = toolchain();
+    let staged = stage_toolchain();
     let path = staged.to_path_buf();
     populated_apply_preserves_old_values_and_leaves_new_fields_absent(&path);
     a_clean_store_audits_with_a_stable_digest_and_exit_zero(&path);

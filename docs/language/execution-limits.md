@@ -63,6 +63,7 @@ a source position.
 | Runtime | Instruction budget per invocation | 2^26 | `run.budget` |
 | Runtime | Call depth | 64 | `run.call_depth` |
 | Runtime | Constructed text | 64 KiB | `run.text_limit` |
+| Runtime | Argument text admitted per argument | 64 KiB | `cli.argument_limit` |
 | Collections | List elements or Map pairs | 65,536 | [Collection limits](#collection-limits) |
 | Collections | Aggregate structural size | 1 MiB | [Collection limits](#collection-limits) |
 
@@ -86,6 +87,16 @@ bytes of the complete canonical text, including punctuation and hex expansion.
 A conversion that would exceed the limit faults with `run.text_limit` at its
 source expression before appending excess text. This is a result-length limit,
 not a bound on total invocation memory or on aggregate CLI output.
+
+The same 65,536 bytes bound an argument a caller supplies. One text bound holds
+for the whole language, so admission does not depend on how an export is
+invoked: `marrow run` measures each argument's canonical text at the terminal
+and reports `cli.argument_limit` before the export runs, whether the invocation
+is storeless or crosses the wire to a companion under `--store`. The wire's own
+string bound is the same number, so no argument the terminal admits is refused
+later as `wire.string_limit`. `--stdin` supplies one argument and bounds its
+read at the same 65,536 bytes, reporting `io.read` for input it never finishes
+reading ([`marrow run`](../tools/cli.md#marrow-run)).
 
 The compiled program size is checked as function bodies are compiled and again
 when the image is encoded. Once it is crossed, checking stops at that bound and

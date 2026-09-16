@@ -599,3 +599,48 @@ impl Drop for TempDir {
         fs::remove_dir_all(&self.root).ok();
     }
 }
+
+/// Stage a complete companion layout — the `marrow` and `marrow-runner` binaries
+/// beside a `marrow-companions` release manifest — into a fresh directory, and
+/// return it. The terminal locates the runner only beside itself, so every suite
+/// that drives `--store` through the built CLI runs the staged copy rather than
+/// `MARROW_BIN`. The stock runner is built next to the test binary by a workspace
+/// build; its absence is a setup error, not a test failure.
+pub fn stage_toolchain() -> TempDir {
+    let runner = Path::new(MARROW_BIN)
+        .parent()
+        .expect("binary dir")
+        .join("marrow-runner");
+    assert!(
+        runner.is_file(),
+        "stock runner not built at {}; run a workspace build first",
+        runner.display()
+    );
+    let dir = TempDir::new("toolchain");
+    fs::copy(MARROW_BIN, dir.join("marrow")).expect("copy marrow");
+    fs::copy(&runner, dir.join("marrow-runner")).expect("copy runner");
+    let bytes = fs::read(&runner).expect("read runner");
+    let id = marrow_image::companion_release_id(&bytes).to_hex();
+    fs::write(
+        dir.join("marrow-companions"),
+        format!(
+            "marrow companions v0\nrelease {}\nrunner marrow-runner {id}\nend\n",
+            env!("CARGO_PKG_VERSION")
+        ),
+    )
+    .expect("write manifest");
+    dir
+}
+
+/// Invoke the staged `marrow` binary in `dir` with `args`. Pair with
+/// [`stage_toolchain`]; [`marrow_in`] runs the unstaged build, which finds no
+/// companion.
+pub fn staged_marrow_in(toolchain: &Path, dir: &Path, args: &[&str]) -> CliOutcome {
+    let output = Command::new(toolchain.join("marrow"))
+        .args(args)
+        .current_dir(dir)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run the staged marrow binary");
+    CliOutcome { output }
+}

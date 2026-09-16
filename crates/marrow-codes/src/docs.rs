@@ -84,6 +84,7 @@ Refusals raised by the `marrow` command itself.
             Code::CliDurableUnsupported,
             Code::CliInstallationDamaged,
             Code::CliCeilingUnaccepted,
+            Code::CliArgumentLimit,
             Code::CliCompilerResourceLimit,
         ]),
         r#"

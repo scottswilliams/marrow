@@ -55,6 +55,8 @@ enum CallArgs {
 #[derive(Debug)]
 enum ArgumentError {
     Usage(String),
+    /// An argument's text crosses the language text bound, carrying its byte length.
+    Limit(usize),
     Input(io::Error),
 }
 
@@ -490,6 +492,12 @@ fn value_to_wire(value: &Value) -> Option<marrow_runner::Json> {
 fn decode_call_args(params: &[ImageType], args: &CallArgs) -> Result<Vec<Value>, Outcome> {
     materialize_args(params, args, &mut io::stdin().lock()).map_err(|error| match error {
         ArgumentError::Usage(message) => Outcome::reported(crate::command_output::usage(&message)),
+        ArgumentError::Limit(len) => Outcome::operational(
+            marrow_codes::Code::CliArgumentLimit,
+            Some(format!(
+                "an argument carries {len} bytes of text; the limit is {MAX_TEXT_BYTES}"
+            )),
+        ),
         ArgumentError::Input(error) => {
             Outcome::operational(marrow_codes::Code::IoRead, Some(error.to_string()))
         }
@@ -502,7 +510,7 @@ fn materialize_args(
     reader: &mut impl Read,
 ) -> Result<Vec<Value>, ArgumentError> {
     match args {
-        CallArgs::Positional(args) => decode_args(params, args).map_err(ArgumentError::Usage),
+        CallArgs::Positional(args) => decode_args(params, args),
         CallArgs::Stdin => {
             if !matches!(
                 params,
@@ -517,7 +525,7 @@ fn materialize_args(
                 ));
             }
             let text = read_stdin(reader).map_err(ArgumentError::Input)?;
-            decode_args(params, &[text]).map_err(ArgumentError::Usage)
+            decode_args(params, &[text])
         }
     }
 }
@@ -540,23 +548,36 @@ fn read_stdin(reader: &mut impl Read) -> io::Result<String> {
 /// Decode positional CLI arguments against the export's parameter types. A scalar
 /// parameter decodes from its text; a record (`struct`) parameter has no
 /// command-line spelling, so an export taking one cannot be run from the terminal.
-fn decode_args(params: &[ImageType], args: &[String]) -> Result<Vec<Value>, String> {
+///
+/// The terminal is the boundary that admits an argument, so the language text bound
+/// applies here rather than downstream: a storeless invocation runs in this process
+/// with no wire, and a `--store` invocation crosses one, and both must refuse the
+/// same argument. An argument's canonical text is what the bound measures, which is
+/// also exactly what [`value_to_wire`] puts on the wire for every scalar it carries.
+fn decode_args(params: &[ImageType], args: &[String]) -> Result<Vec<Value>, ArgumentError> {
     if params.len() != args.len() {
-        return Err(format!(
+        return Err(ArgumentError::Usage(format!(
             "this export takes {} argument(s), found {}",
             params.len(),
             args.len()
-        ));
+        )));
     }
     params
         .iter()
         .zip(args)
-        .map(|(param, text)| match param {
-            ImageType::Scalar {
-                scalar,
-                optional: false,
-            } => decode_arg(*scalar, text),
-            _ => Err("a struct argument cannot be passed on the command line".to_string()),
+        .map(|(param, text)| {
+            if text.len() > MAX_TEXT_BYTES {
+                return Err(ArgumentError::Limit(text.len()));
+            }
+            match param {
+                ImageType::Scalar {
+                    scalar,
+                    optional: false,
+                } => decode_arg(*scalar, text).map_err(ArgumentError::Usage),
+                _ => Err(ArgumentError::Usage(
+                    "a struct argument cannot be passed on the command line".to_string(),
+                )),
+            }
         })
         .collect()
 }
