@@ -207,8 +207,7 @@ name. Afterwards `books::add(...)` calls `shelf::books::add`. `use` is
 optional: the full path `shelf::books::add(...)` is valid in every module.
 `use` shortens function paths only; types need no import. There are no wildcard
 or explicitly renamed imports. Two imports with the same final segment are a
-`check.import` error, and so is a `use` of a module no captured tree declares.
-A call to a function no module declares is a `check.type` error.
+`check.import` error.
 
 A file without a `module` header is a script. It is checked under its
 path-derived name and cannot be imported.
