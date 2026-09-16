@@ -18,14 +18,14 @@ features are not prerequisites.
 | Area | Today | Page |
 |---|---|---|
 | Language core | Modules, functions, generics, `const` and `var`, `if` and `if const`, `match`, `while`, bounded `for`, let-else, `require`, prefix `try`, checked arithmetic, and `test` blocks. Braces delimit blocks. | [Source and syntax](language/source-and-syntax.md), [Control flow](language/control-flow.md) |
-| Values and types | Scalars, `date`, `instant`, `duration`, optionals `T?`, structs, enums, `Option` and `Result`, lists and maps, global name/optional-name aliases and nominal ints, generic types. Every value copies by value. | [Types and values](language/types-and-values.md) |
+| Values and types | Scalars, `date`, `instant`, `duration`, optionals `T?`, structs, enums whose member payload fields carry a scalar, a nominal int, a struct, another enum, or a generic application of one of those, `Option` and `Result`, lists and maps, global name/optional-name aliases and nominal ints, generic types. Every value copies by value. | [Types and values](language/types-and-values.md) |
 | Resources | Required and sparse fields, groups, keyed branches nested to 16 levels, and local resource values. | [Resources](language/resources.md) |
 | Durable places | Keyed store roots with one or several key components, and several roots per project. Whole-entry creation and replacement, so a present entry is complete; field and group writes through a `place` or pin that a presence proof covers (`check.requires_presence` otherwise), with proofs ended by an erase of the family or a call that erases it; required field and group-leaf reads through a proved place have their declared types; sparse and untested reads are optional; `delete` as the one clearing form; `exists`; entry identity `Id(^root)`; and each export's access demand from `marrow check`. | [Durable places](language/durable-places.md) |
 | Transactions | One `transaction` block per mutating export. Every normal function exit inside it commits, including `try` and `require` failure; a fault before commit rolls the block back. | [Errors and transactions](language/errors-and-transactions.md) |
 | Traversal and indexes | `for ... at most N { } on more { }` over a root, a branch, or an index; root and branch key acquisition uses at most `N + 1` bounded scans, independent of child populations; up to 8 indexes per root; a `unique` index lookup yields `Id(^root)?`. | [Traversal and indexes](language/traversal-and-indexes.md) |
 | Tests | `marrow test` runs `test` blocks through ordinary function calls. Each durable test has a fresh in-memory store; transaction-owning calls commit setup, and private readers can observe it. Direct durable operations and calls to mutating non-owner helpers are refused in test bodies. | [Tests](language/tests.md) |
 | Project dependencies | A `[dependencies]` entry names one local directory of Marrow source by relative path under a consumer-chosen alias, which roots every module it contributes. Both trees are captured together under one set of bounds. A dependency is read, never written: it supplies its own identity ledger, and no command run in the consuming project mints into, formats, or overlays a file under it. | [Projects](tools/projects.md#dependencies) |
-| CLI | `init`, `fmt`, `check`, `run`, `test`, `import`, `doctor`, `apply`, `recover`, `backup`, `restore`, `image`, and `client typescript`. A file a dependency declares is reported under that dependency's alias; a command acts on the project it is invoked on, so a dependency's exports and tests take no slot in its listings. `run --stdin` supplies one bounded UTF-8 string argument; bare-string results are bounded, JSON data construction checks its byte limit before appending, and rendering or result-delivery failures fail the command. | [CLI](tools/cli.md) |
+| CLI | `init`, `fmt`, `check`, `run`, `test`, `import`, `doctor`, `apply`, `recover`, `backup`, `restore`, `image`, and `client typescript`. A file a dependency declares is reported under that dependency's alias; a command acts on the project it is invoked on, so a dependency's exports and tests take no slot in its listings. Every `run` argument's canonical text is admitted against the 64 KiB text bound at the terminal, storeless and under `--store` alike, and `--stdin` supplies one such argument; bare-string results are bounded, JSON data construction checks its byte limit before appending, and rendering or result-delivery failures fail the command. | [CLI](tools/cli.md) |
 | Editor server | `marrow-lsp` serves diagnostics, formatting, hover, definition, completion, signature help, and document symbols over stdio. A dependency's file is read-only: it is published at its own location and is never opened, overlaid, or formatted. Whole-analysis resource stops complete the affected revision with request refusals, an unlocated explanation, and retractions of prior diagnostics. A later edit that permits project capture and analysis can recover. | [Language server](tools/lsp.md) |
 | Store lifecycle | `marrow import` provisions or populates a store under its active program; `marrow run --store` runs through the admitted companion. Explicit `marrow apply` preserves old representations and adds absent sparse scalar fields using verified OLD and NEW images; authority expansion requires the exact standing-ceiling union. Pending activation blocks ordinary access. `marrow recover --store` validates the exact stored image, physical integrity and logical contents, then establishes fresh activation barriers without replaying a missing head update. `marrow doctor --store` remains read-only logical inspection without physical verification. Doctor and backup preserve source artifacts, including ownership-marker bytes and absence. Logical backup carries the exact image, head and complete entry/index families; restore validates a fresh store without compiling current source. | [Operations](operations/README.md) |
 | TypeScript client | A generated strict client and a Node supervision module over a private local channel. The runner checks List/Map length and aggregate structural size before execution, normalizes unique Map argument pairs to ascending typed key order, and bounds outbound frame construction before appending. Provision records retain publication/activation uncertainty or primary failure plus failed cleanup. Authenticated native startup distinguishes activation uncertainty from invocation outcomes. Missing delivery remains uncertain. | [TypeScript client](tools/typescript-client.md) |
@@ -78,8 +78,10 @@ missing or cyclic bodies and their callers; an unfilled function slot cannot enc
 ## Not yet available
 
 - Remote acquisition of source: Git revisions, a registry, a cache, a lock file,
-  and version ranges. Local-path dependencies are current
-  ([packages](future/packages.md)).
+  and version ranges. Local-path dependencies are current, and the graph they
+  form is one edge deep: a dependency that declares `[dependencies]` of its own
+  is `project.dependency_path`
+  ([packages](future/packages.md), [projects](tools/projects.md#dependencies)).
 - Closures ([general-purpose language](future/general-purpose-language.md)).
 - Public aggregate inputs and bound durable values containing nominal integers;
   compilation reports `check.unsupported`. Guarded bare nominal inputs and local
@@ -112,9 +114,6 @@ missing or cyclic bodies and their callers; an unfilled function slot cannot enc
   ([served execution](future/served-execution.md)).
 - Path authority: principals and grants finer than read and write
   ([path effects and authority](future/path-effects-and-authority.md)).
-- Editor completion inside its latency budget for the maximum name-chain
-  fixture; the budget in `crates/marrow-compile/tests/query_local_syntax.rs`
-  records the overrun.
 - Signed releases and a release promise ([compatibility](compatibility.md)).
 
 ## Bounds and platform
@@ -144,8 +143,10 @@ packaged, or downloadable build.
 - The runner bounds image input before verification to the 512 KiB image limit
   plus one excess byte. Oversized images are refused with `image.envelope`
   ([execution limits](language/execution-limits.md#limits)).
-- Verification bounds what each pass retains per instruction, not what a whole
-  image costs: there is no total verifier memory or work budget
+- Verification states the machine stack it needs, 128 KiB, whatever image it
+  is given; `crates/marrow-verify/tests/stack_budget.rs` measures that budget
+  on the deepest image the bounds admit. Heap and work are bounded per pass and
+  per instruction only: there is still no total verifier memory or work budget
   ([execution pipeline](implementation/README.md#pipeline)).
 - The verifier and the store admission fence accept only the supported image and
   logical-head generations, and refuse anything else before the engine opens.
