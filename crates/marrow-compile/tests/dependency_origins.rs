@@ -472,3 +472,101 @@ fn only_root_origin_exports_are_invocable() {
         vec![("main", "run")],
     );
 }
+
+/// One declaration budget covers every captured tree. Each half retains about 600
+/// names of a thousand bytes against the 1 MiB ceiling, so neither crosses alone;
+/// captured together they do, and the pass stops once with the typed limit rather
+/// than charging each tree its own budget.
+#[test]
+fn one_declaration_budget_spans_both_origins() {
+    let wide = "n".repeat(1000);
+    let constants = |module: &str| {
+        let mut source = format!("module {module}\n\n");
+        for index in 0..600 {
+            // `1 + 2` is a non-literal value, refused with `check.unsupported`, so each
+            // constant retains its name in the ledger.
+            source.push_str(&format!("const {wide}{index} = 1 + 2\n"));
+        }
+        source
+    };
+    let root = constants("main");
+    let library = constants("text");
+
+    for half in [
+        project_capture::project(&[("src/main.mw", root.as_str())]),
+        project_capture::project(&[("src/text.mw", library.as_str())]),
+    ] {
+        assert!(
+            matches!(check(&half), Err(CompileFailure::Diagnostics(_))),
+            "neither half crosses the ledger ceiling alone",
+        );
+    }
+
+    let together = project_capture::project_with_dependency(
+        "graphtext",
+        &[("src/main.mw", root.as_str())],
+        &[("src/text.mw", library.as_str())],
+    );
+    match check(&together) {
+        Err(CompileFailure::ResourceLimit(limit)) => assert_eq!(
+            limit.kind(),
+            marrow_compile::ResourceLimitKind::DeclarationLedgerBytes
+        ),
+        other => panic!("expected the one ledger ceiling, got {other:#?}"),
+    }
+}
+
+/// Capturing the same two trees twice yields byte-identical image bytes: nothing in
+/// the compiler's origin handling depends on arrival order or on where a tree sits.
+#[test]
+fn two_captures_of_the_same_trees_compile_to_identical_bytes() {
+    let image = || {
+        let project = project_capture::project_with_dependency(
+            "graphtext",
+            &[(
+                "src/main.mw",
+                "module main\n\nuse graphtext::text\n\npub fn run(n: int): int {\n    return text::twice(n)\n}\n",
+            )],
+            &[("src/text.mw", TESTED_LIBRARY)],
+        );
+        marrow_compile::compile(&project)
+            .unwrap_or_else(|failure| panic!("expected a clean compile, got {failure:#?}"))
+            .image
+    };
+    let first = image();
+    let second = image();
+    assert_eq!(first.bytes, second.bytes);
+    assert_eq!(first.image_id, second.image_id);
+}
+
+/// An alias cannot be shadowed: a root module whose first segment occupies the alias
+/// is refused where the two trees are captured, before the compiler ever sees them,
+/// so the alias-rooted path has one meaning.
+#[test]
+fn a_root_module_may_not_shadow_an_alias() {
+    let manifest = marrow_project::Manifest::parse(
+        "edition = \"2026\"\n\n[dependencies]\ngraphtext = { path = \"../graphtext\" }\n",
+    )
+    .expect("valid manifest");
+    let alias = manifest.dependencies()[0].alias().clone();
+    let files = vec![
+        marrow_project::CapturedFile::new(
+            "src/graphtext.mw".to_string(),
+            b"module graphtext\n".to_vec(),
+        ),
+        marrow_project::CapturedFile::in_dependency(
+            alias.clone(),
+            "src/text.mw".to_string(),
+            TEXT_LIBRARY.as_bytes().to_vec(),
+        ),
+    ];
+    let failure = marrow_project::capture_origins(
+        &manifest,
+        files,
+        None,
+        &[marrow_project::CapturedDependency::new(&alias, None)],
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect_err("an alias-shadowing root module is refused");
+    assert_eq!(failure.code().as_str(), "project.dependency_alias");
+}

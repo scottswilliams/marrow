@@ -223,7 +223,7 @@ same file and in another module. A value type that contains itself, directly or
 through other types, is a `check.recursion` naming the cycle. Two structs have
 no `==`; compare their fields.
 
-A struct name is project-wide and is written bare from any module. A resource
+A struct name is project-wide and is written bare from any module of the project that declares it. A resource
 is the durable counterpart: it adds sparse fields, groups, and keyed branches,
 and a store may declare it as a root. Resource values are described under
 [resources](resources.md#local-values).
@@ -619,8 +619,12 @@ test "a nominal int keeps its interval" {
 }
 ```
 
-Alias, nominal, struct, enum, and resource names share one project-wide
-namespace; a collision is a `check.name_conflict`. A nominal int type is
+Alias, nominal, struct, enum, and resource names share one namespace per
+project; a collision is a `check.name_conflict`. The namespace belongs to the
+tree that declares the name: a bare name is the declaring project's own, and a
+type of a declared dependency is written `alias::Name`
+([dependencies](modules-and-functions.md#dependencies)). A type name is one or
+two segments; a longer path names no type. A nominal int type is
 admitted as a local resource field. Binding a resource containing a nominal
 value to a store reports `check.unsupported`, including nested and sparse
 fields and bindings with no durable operations. Nominal types are not admitted as store-root keys, branch
