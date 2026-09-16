@@ -680,3 +680,246 @@ pub fn run(): string {
     );
     assert_eq!(codes_and_messages(&project), Vec::new());
 }
+
+/// A match over a dependency's enum is exhaustive on that enum's members. The arm
+/// header carries no enum prefix in either tree — the scrutinee supplies the enum —
+/// so the report names the missing member the way the library declares it.
+#[test]
+fn a_match_over_a_dependency_enum_is_exhaustive() {
+    let project = project_capture::project_with_dependency(
+        "graphtext",
+        &[(
+            "src/main.mw",
+            r#"module main
+
+pub fn run(): string {
+    const chosen: graphtext::Color = graphtext::Color::red
+    match chosen {
+        red => {
+            return "red"
+        }
+    }
+}
+"#,
+        )],
+        &[("src/palette.mw", COLOR_LIBRARY)],
+    );
+    assert_eq!(
+        codes_and_messages(&project)
+            .into_iter()
+            .find(|(code, _)| *code == "check.match_nonexhaustive"),
+        Some((
+            "check.match_nonexhaustive",
+            "the `match` on `Color` does not cover `green`. A match covers every member \
+             of an enum exactly once and admits no wildcard arm. Add the missing arm: \
+             `green =>`."
+                .to_string()
+        )),
+    );
+}
+
+/// A payload member crosses the boundary on the same terms: the member is named
+/// through the alias, its payload fields are supplied by name, and an arm in the
+/// consuming tree binds them.
+#[test]
+fn a_dependency_enum_payload_member_is_constructible() {
+    let project = project_capture::project_with_dependency(
+        "graphtext",
+        &[(
+            "src/main.mw",
+            r#"module main
+
+pub fn run(): int {
+    const cell = graphtext::Cell::filled(x: 1, y: 2)
+    match cell {
+        empty => {
+            return 0
+        }
+        filled(x, y) => {
+            return x + y
+        }
+    }
+}
+"#,
+        )],
+        &[(
+            "src/shapes.mw",
+            r#"module shapes
+
+enum Cell {
+    empty
+    filled(x: int, y: int)
+}
+"#,
+        )],
+    );
+    assert_eq!(codes_and_messages(&project), Vec::new());
+}
+
+/// A bare head resolves in the tree that wrote it, so the consumer's own `Color` is
+/// what `Color::red` names even where a dependency declares that name too.
+#[test]
+fn a_bare_enum_path_stays_in_the_tree_that_wrote_it() {
+    let project = project_capture::project_with_dependency(
+        "graphtext",
+        &[(
+            "src/main.mw",
+            r#"module main
+
+enum Color {
+    red
+    blue
+}
+
+pub fn mine(): Color {
+    return Color::red
+}
+
+pub fn theirs(): graphtext::Color {
+    return graphtext::Color::green
+}
+
+pub fn wrong(): Color {
+    return Color::green
+}
+"#,
+        )],
+        &[("src/palette.mw", COLOR_LIBRARY)],
+    );
+    assert_eq!(
+        codes_and_messages(&project),
+        vec![(
+            "check.type",
+            "enum `Color` has no member `green`".to_string()
+        )],
+    );
+}
+
+/// A member the named enum does not declare is the enum's own report, naming the
+/// head the way this site spells it rather than in the library's own terms.
+#[test]
+fn an_absent_dependency_enum_member_is_the_enum_diagnostic() {
+    let project = project_capture::project_with_dependency(
+        "graphtext",
+        &[(
+            "src/main.mw",
+            "module main\n\npub fn run(): graphtext::Color {\n    return graphtext::Color::blue\n}\n",
+        )],
+        &[("src/palette.mw", COLOR_LIBRARY)],
+    );
+    assert_eq!(
+        codes_and_messages(&project),
+        vec![(
+            "check.type",
+            "enum `graphtext::Color` has no member `blue`".to_string()
+        )],
+    );
+}
+
+/// An enum path's head is the same two-segment `type_name` a type annotation takes,
+/// so an undeclared first segment and a longer path both name no enum — the same
+/// answer the type position gives the same head spelling.
+#[test]
+fn an_enum_path_head_is_bounded_and_resolves_through_declared_aliases() {
+    for written in [
+        // No dependency is declared under `nowhere`.
+        "nowhere::Color::red",
+        // Four segments: the head names no type, so this is not an enum path.
+        "graphtext::palette::Color::red",
+    ] {
+        let project = project_capture::project_with_dependency(
+            "graphtext",
+            &[(
+                "src/main.mw",
+                &format!(
+                    "module main\n\npub fn run(): int {{\n    const c = {written}\n    return 1\n}}\n"
+                ),
+            )],
+            &[("src/palette.mw", COLOR_LIBRARY)],
+        );
+        assert_eq!(
+            codes_and_messages(&project),
+            vec![(
+                "check.unsupported",
+                "a qualified name is not yet supported on the beta line".to_string()
+            )],
+            "input {written:?}",
+        );
+    }
+}
+
+const COLOR_ONLY: &str = "module palette\n\nenum Color {\n    red\n    green\n}\n";
+
+/// The source a `NAME::red` fixture shares, so the local and imported programs differ
+/// in exactly one thing: whether the enum is reached through an alias.
+const COLOR_APP: &str = r#"module main
+
+pub fn run(): string {
+    const c: NAME = NAME::red
+    match c {
+        red => {
+            return "red"
+        }
+        green => {
+            return "green"
+        }
+    }
+}
+"#;
+
+/// Where an enum is declared is not part of what it compiles to. The image records an
+/// origin only as a source coordinate — the file spelling a dependency's own code is
+/// reported at — so an enum reached through an alias costs the image no byte, adds no
+/// export, and never spells the alias; the program is otherwise the same program.
+#[test]
+fn an_imported_enum_costs_the_image_nothing() {
+    let local_main = COLOR_APP.replace("NAME", "Color");
+    let local = project_capture::project(&[
+        ("src/palette.mw", COLOR_ONLY),
+        ("src/main.mw", local_main.as_str()),
+    ]);
+    let imported_main = COLOR_APP.replace("NAME", "graphtext::Color");
+    let imported = project_capture::project_with_dependency(
+        "graphtext",
+        &[("src/main.mw", imported_main.as_str())],
+        &[("src/palette.mw", COLOR_ONLY)],
+    );
+    let compiled = |project| {
+        marrow_compile::compile(project)
+            .unwrap_or_else(|failure| panic!("expected a clean compile, got {failure:#?}"))
+    };
+    let (local, imported) = (compiled(&local), compiled(&imported));
+    assert_eq!(local.image.bytes.len(), imported.image.bytes.len());
+    assert_eq!(
+        imported
+            .exports
+            .iter()
+            .map(|entry| (entry.module.as_str(), entry.item.as_str()))
+            .collect::<Vec<_>>(),
+        local
+            .exports
+            .iter()
+            .map(|entry| (entry.module.as_str(), entry.item.as_str()))
+            .collect::<Vec<_>>(),
+    );
+    // The alias is the consumer's private name for a tree. It names no program
+    // element, so no image byte spells it.
+    assert!(
+        !imported
+            .image
+            .bytes
+            .windows("graphtext".len())
+            .any(|window| window == b"graphtext"),
+    );
+    // What is left of the origin is the source coordinate: the consumer writes eleven
+    // more characters, so the two images differ only where spans record that. Renaming
+    // the alias to another spelling of the same length is byte-identical.
+    let renamed_main = COLOR_APP.replace("NAME", "othername::Color");
+    let renamed = compiled(&project_capture::project_with_dependency(
+        "othername",
+        &[("src/main.mw", renamed_main.as_str())],
+        &[("src/palette.mw", COLOR_ONLY)],
+    ));
+    assert_eq!(imported.image.bytes, renamed.image.bytes);
+    assert_eq!(imported.image.image_id, renamed.image.image_id);
+}
