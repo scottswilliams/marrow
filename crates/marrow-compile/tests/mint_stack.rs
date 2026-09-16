@@ -1,25 +1,16 @@
-//! The generic-mint recursion's machine-stack requirement at its own admitted bound.
+//! The generic-mint path's machine-stack requirement at its own admitted bound.
 //!
-//! Monomorphization recurses natively. One nesting level is the cycle
-//! `resolve_template_garg` → `mint_type_instance` → `mint_type_instance_with_requirement`
-//! → `fill_type_body` → `fill_enum_type_body` → `enum_payload_leaf` →
-//! `resolve_garg_annotation` → `resolve_template_garg`, and `MINT_DEPTH_LIMIT` (256)
-//! bounds how many of those cycles a divergent generic can drive. The limit bounds the
-//! *count* of frames; it says nothing about their size, so it does not by itself bound
-//! the stack, and the only stack budget the compiler has ever stated is the 256 MiB the
-//! CLI and the LSP happen to give their worker threads.
+//! `MINT_DEPTH_LIMIT` (256) bounds how many nesting levels a divergent generic can
+//! drive. A bound on the *count* of levels bounds the stack only if a level costs a
+//! bounded number of machine frames, and the compiler states no stack budget of its own:
+//! the 256 MiB the CLI and the LSP give their worker threads is what they happen to
+//! allocate, not a figure the mint path is held to.
 //!
-//! Measured on this corpus (arm64, dev profile, unoptimized): the widest admitted generic
-//! enum needs between 1,848 KiB and 1,860 KiB of stack to reach its depth refusal — about
-//! 7.2 KiB per nesting level, or 90% of the 2 MiB a default Rust thread has. Every
-//! `cargo test` thread is exactly that 2 MiB thread, which is why a frame that grows by a
-//! few hundred bytes anywhere in the cycle turns the refusal into `SIGABRT` on the test
-//! harness rather than a `check.instantiation_limit` diagnostic.
-//!
-//! [`MINT_STACK_BUDGET_BYTES`] is the budget this test asks the mint path to meet: 4 KiB
-//! per admitted nesting level. It is not met today. Making the cycle iterative — an
-//! explicit `Vec` of pending fills driven by the existing `fill_stack`, so a nesting level
-//! costs a heap entry instead of eight machine frames — is what would meet it.
+//! [`MINT_STACK_BUDGET_BYTES`] is that figure — 4 KiB per admitted nesting level, which
+//! a default 2 MiB Rust thread (every `cargo test` thread is one) comfortably holds.
+//! Minting reaches it by filling iteratively: a member needing a nested instantiation
+//! reserves its row and queues the fill, so a nesting level costs one queue entry and
+//! the machine stack carries one fill, whatever the depth.
 
 use marrow_codes::Code;
 use marrow_compile::{CompileFailure, compile};
@@ -71,13 +62,11 @@ fn reaches_the_mint_bound(source: &str) -> bool {
     }
 }
 
-/// The mint path must reach its own depth refusal inside [`MINT_STACK_BUDGET_BYTES`].
+/// The mint path reaches its own depth refusal inside [`MINT_STACK_BUDGET_BYTES`].
 ///
-/// Ignored because it does not: the recursion overflows the budget and aborts the process
-/// rather than failing, which would take the rest of the test binary with it. Run it alone
-/// to observe the abort.
+/// A regression here overflows the worker's stack and aborts the process, taking the rest
+/// of the binary with it, because that is what exceeding a stack budget does.
 #[test]
-#[ignore = "the mint recursion needs ~1.8 MiB at the admitted bound and overflows this budget"]
 fn the_admitted_mint_depth_fits_the_stack_budget() {
     let worker = std::thread::Builder::new()
         .stack_size(MINT_STACK_BUDGET_BYTES)

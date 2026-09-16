@@ -177,7 +177,8 @@ pub(super) struct StableSnapshot {
     pub(super) queue: Vec<(usize, Vec<GArg>, u16)>,
     fill_batch_start: Option<usize>,
     fill_rows: Vec<(TypeInstKey, usize)>,
-    fill_stack: Vec<usize>,
+    filling: Option<PendingFill>,
+    pending_fills: Vec<PendingFill>,
     fill_failures: Vec<(usize, ResolveRefusal)>,
     limit: StableLimit,
     payloads: crate::diag::CollectorProbe,
@@ -252,7 +253,8 @@ pub(super) fn stable_snapshot(registry: &TypeRegistry) -> StableSnapshot {
             .iter()
             .map(|(key, index)| (*key, *index))
             .collect(),
-        fill_stack: generics.fill_stack.clone(),
+        filling: generics.filling,
+        pending_fills: generics.pending_fills.iter().copied().collect(),
         fill_failures: generics.fill_failures.clone(),
         limit,
         payloads: generics.collection_payloads.probe(),

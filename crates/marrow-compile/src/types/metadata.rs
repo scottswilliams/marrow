@@ -475,7 +475,7 @@ impl TypeMetadataView<'_> {
         };
         index >= start
             && index < self.generics.type_insts.len()
-            && !self.generics.fill_stack.is_empty()
+            && self.generics.filling.is_some()
             && self.generics.fill_rows.get(&TypeInstKey::from(id)) == Some(&index)
     }
 

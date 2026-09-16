@@ -296,7 +296,10 @@ fn each_enumerated_generic_owner_failure_point_restores_every_owner() {
                 let key = TypeInstKey::from(generics.type_insts[dirty].id);
                 generics.fill_batch_start = Some(dirty);
                 generics.fill_rows.insert(key, dirty);
-                generics.fill_stack.push(dirty);
+                generics.filling = Some(PendingFill {
+                    index: dirty,
+                    depth: 0,
+                });
                 generics
                     .fill_failures
                     .push((dirty, ResolveRefusal::Unsupported));
@@ -685,7 +688,10 @@ fn template_proof_savepoint_isolates_a_failed_proof_and_transfers_once() {
             let key = TypeInstKey::from(generics.type_insts[dirty_row].id);
             generics.fill_batch_start = Some(dirty_row);
             generics.fill_rows.insert(key, dirty_row);
-            generics.fill_stack.push(dirty_row);
+            generics.filling = Some(PendingFill {
+                index: dirty_row,
+                depth: 0,
+            });
             generics.type_insts[dirty_row].dependents.push(dirty_row);
         }
 

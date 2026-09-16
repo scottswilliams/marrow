@@ -291,10 +291,10 @@ pub(crate) const RESULT_ERR: u16 = 1;
 pub(crate) const MAX_INSTANTIATIONS: usize = 4096;
 
 /// The maximum nesting depth of generic type instantiation minting. A member of a
-/// minted type may itself mint a type, recursing natively; this bound (at the
-/// parser's type-nesting limit, so any finite source-shaped nesting fits) stops a
-/// divergent chain — a generic type whose field grows the argument at every level —
-/// before it can exhaust the native stack, reporting `check.instantiation_limit`.
+/// minted type may itself mint a type; this bound (at the parser's type-nesting
+/// limit, so any finite source-shaped nesting fits) stops a divergent chain — a
+/// generic type whose field grows the argument at every level — with
+/// `check.instantiation_limit` rather than letting it mint until the count bound.
 pub(crate) const MINT_DEPTH_LIMIT: usize = 256;
 
 /// Why resolution of a value type could not produce a usable type.
@@ -859,6 +859,15 @@ impl ReadyRequirement<'_> {
     }
 }
 
+/// One reserved instantiation whose body is not filled yet, carrying the nesting
+/// depth of the row itself: one more than the depth of the fill that reserved it,
+/// and the quantity [`MINT_DEPTH_LIMIT`] bounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingFill {
+    index: usize,
+    depth: usize,
+}
+
 /// A sortable active-batch key for a generic type row. Image IDs are insertion
 /// ordered within their own record/enum tables; the variant keeps those domains
 /// disjoint without searching the stable cache.
@@ -896,7 +905,7 @@ struct TypeInst {
     dependents: Vec<usize>,
 }
 
-/// A reserved type row is visible to recursive filling before its body is
+/// A reserved type row is visible to the rest of its fill batch before its body is
 /// committed, but semantic consumers can observe only `Ready` rows.
 #[derive(Clone)]
 enum TypeInstState {
@@ -1010,9 +1019,14 @@ struct Monomorph {
     /// Direct image-id lookup for rows in that active suffix. Cleared atomically at
     /// settlement, so semantic dependency discovery never scans the stable cache.
     fill_rows: BTreeMap<TypeInstKey, usize>,
-    /// The active fill stack. Its length is the native recursion depth
-    /// bounded by [`MINT_DEPTH_LIMIT`].
-    fill_stack: Vec<usize>,
+    /// The row whose body is being filled. At most one fill runs at a time — the
+    /// `Option` is what makes that unrepresentable otherwise — because a member
+    /// needing a nested instantiation queues it below instead of descending into it.
+    filling: Option<PendingFill>,
+    /// Reserved rows awaiting their bodies, in reservation order. One nesting level
+    /// costs one entry; every entry names a distinct row of the active batch, so
+    /// [`MAX_INSTANTIATIONS`] bounds the queue's length as well as the population.
+    pending_fills: VecDeque<PendingFill>,
     fill_failures: Vec<(usize, ResolveRefusal)>,
     /// One owner for the shared type/function instantiation limit, kept separate
     /// from ordered collection-payload diagnostics.
@@ -1039,7 +1053,8 @@ impl Default for Monomorph {
             fn_queue: VecDeque::new(),
             fill_batch_start: None,
             fill_rows: BTreeMap::new(),
-            fill_stack: Vec::new(),
+            filling: None,
+            pending_fills: VecDeque::new(),
             fill_failures: Vec::new(),
             limit: LimitState::Open,
             collection_payloads: DiagnosticCollector::new(),
@@ -1938,10 +1953,6 @@ impl TypeRegistry {
     /// Table phase. The leaf is returned either way: the generic line still fills
     /// its body so the shared instance cache stays consistent, and each caller
     /// renders the refusal into its own ledger.
-    ///
-    /// This sits on the monomorphization recursion, one frame per nesting level of
-    /// `MINT_DEPTH_LIMIT`, so the refusal text is built by the cold owner below
-    /// rather than in this frame.
     fn enum_payload_leaf(
         &mut self,
         draft: &mut DraftTxn<'_>,
@@ -1958,7 +1969,6 @@ impl TypeRegistry {
     }
 
     /// The refusal a collection payload leaf earns, wherever it was written.
-    #[inline(never)]
     fn collection_payload_refusal(
         &self,
         site: MintSite<'_>,
@@ -2152,8 +2162,8 @@ impl TypeRegistry {
     }
 
     /// Validate one instantiation key and resolve any existing row without keeping
-    /// validation scratch in the recursive mint frame. A missing key returns `None`
-    /// only after its complete metadata preflight succeeds.
+    /// validation scratch in the mint frame. A missing key returns `None` only after
+    /// its complete metadata preflight succeeds.
     fn existing_type_instance(
         &self,
         template: usize,
@@ -2223,7 +2233,7 @@ impl TypeRegistry {
             ))
             .into());
         };
-        let Some(&dependent) = generics.fill_stack.last() else {
+        let Some(dependent) = generics.filling.map(|frame| frame.index) else {
             return Err(GenericInvariant::CacheState(GenericCacheInvariant(
                 "Filling reuse outside batch",
             ))
@@ -2283,13 +2293,42 @@ impl TypeRegistry {
         if let Some(id) = self.existing_type_instance(template, args, requirement)? {
             return Ok(id);
         }
+        let outermost = self.generics.borrow().filling.is_none();
+        let (id, inst_index) = self.reserve_type_instance(draft, template, args, site)?;
+        if !outermost {
+            // A member's mint hands its caller the reserved identity and nothing more:
+            // the queued fill runs later in the outermost drain, and settlement
+            // publishes the body or rejects the row through the dependency graph.
+            return match requirement.allows_provisional() {
+                true => Ok(id),
+                false => Err(GenericInvariant::ReadyBodyMissing(id).into()),
+            };
+        }
+        self.drain_pending_fills(draft, site)?;
+        self.settle_fill_batch()?;
+        self.settled_type_result(inst_index, id, requirement)
+    }
+
+    /// Reserve the image row, the provisional cache row and the queued fill for one
+    /// new instantiation, and record the dependency edges settlement propagates
+    /// refusals along. Crossing the shared instantiation count or the nesting depth
+    /// returns `Err(Limit)` with the one owned `check.instantiation_limit` recorded.
+    fn reserve_type_instance(
+        &mut self,
+        draft: &mut DraftTxn<'_>,
+        template: usize,
+        args: &[GArg],
+        site: MintSite<'_>,
+    ) -> Result<(TypeInstId, usize), ResolveError> {
         let template_info = self.template_for_args(template, args)?;
-        {
+        let depth = {
             let generics = self.generics.borrow();
             let over_count =
                 generics.type_insts.len() + generics.fn_insts.len() >= MAX_INSTANTIATIONS;
-            let over_depth = generics.fill_stack.len() >= MINT_DEPTH_LIMIT;
-            if over_count || over_depth {
+            // One more than the depth of the fill that named this row; an outermost
+            // mint is depth zero.
+            let depth = generics.filling.map_or(0, |frame| frame.depth + 1);
+            if over_count || depth >= MINT_DEPTH_LIMIT {
                 let limit = if over_count {
                     InstantiationLimit::Count
                 } else {
@@ -2299,7 +2338,8 @@ impl TypeRegistry {
                 self.record_limit(site, limit);
                 return Err(ResolveError::Refusal(ResolveRefusal::Limit));
             }
-        }
+            depth
+        };
         // Reserve the image index and a provisional cache row before filling, so a
         // member that names this same instantiation finds its identity and the fill
         // terminates without making an unfinished body semantically readable.
@@ -2314,7 +2354,7 @@ impl TypeRegistry {
         let inst_index = {
             let mut generics = self.generics.borrow_mut();
             let index = generics.type_insts.len();
-            if generics.fill_stack.is_empty() && generics.fill_batch_start.is_none() {
+            if generics.filling.is_none() && generics.fill_batch_start.is_none() {
                 generics.fill_batch_start = Some(index);
             }
             generics.type_insts.push(TypeInst {
@@ -2342,47 +2382,80 @@ impl TypeRegistry {
                 .into());
             }
             generics.fill_rows.insert(id.into(), index);
+            generics
+                .pending_fills
+                .push_back(PendingFill { index, depth });
             index
         };
         self.record_active_dependency(inst_index);
         self.record_semantic_dependencies(inst_index, args.iter().copied());
-        // Fill the reserved members. A member may recursively mint further
-        // instantiations; the fill-stack length bounds that native recursion so a
-        // divergent chain (an ever-growing argument) trips the limit before it can
-        // overflow the stack, while any finite nesting (source nesting is itself
-        // depth-bounded) completes.
-        {
-            let mut generics = self.generics.borrow_mut();
-            generics.fill_stack.push(inst_index);
-        }
-        let filled = self.fill_type_body(draft, template, id, args, site);
-        let outermost = self.finish_fill_stack(inst_index)?;
-        let immediate_refusal = match filled {
-            Ok(body) => {
-                self.record_inst_body_dependencies(inst_index, &body);
-                self.generics.borrow_mut().type_insts[inst_index].state =
-                    TypeInstState::Filling { staged: Some(body) };
-                None
+        Ok((id, inst_index))
+    }
+
+    /// Fill every queued row of the active batch, in reservation order.
+    ///
+    /// This loop is the whole of the monomorphization recursion: a member needing a
+    /// further instantiation reserves it and appends it here instead of descending
+    /// into it, so one nesting level costs one queue entry and no machine frame. A
+    /// member refusal is recorded against its own row and the drain continues, because
+    /// settlement requires every reserved row to carry either a staged body or a
+    /// refusal; the recorded dependency edges then carry that refusal to the rows that
+    /// named it. An instantiation bound is the exception: it ends the batch, because
+    /// filling the rest of the queue could only reserve more rows against a bound that
+    /// is already exhausted.
+    fn drain_pending_fills(
+        &mut self,
+        draft: &mut DraftTxn<'_>,
+        site: MintSite<'_>,
+    ) -> Result<(), ResolveError> {
+        loop {
+            let next = {
+                let mut generics = self.generics.borrow_mut();
+                generics.filling = generics.pending_fills.pop_front();
+                match generics.filling {
+                    Some(pending) => {
+                        let Some(inst) = generics.type_insts.get(pending.index) else {
+                            return Err(GenericInvariant::CacheState(GenericCacheInvariant(
+                                "pending fill row missing",
+                            ))
+                            .into());
+                        };
+                        Some((pending, inst.template, inst.id, inst.args.clone()))
+                    }
+                    None => None,
+                }
+            };
+            let Some((pending, template, id, args)) = next else {
+                return Ok(());
+            };
+            let filled = self.fill_type_body(draft, template, id, &args, site);
+            self.finish_fill(pending.index)?;
+            match filled {
+                Ok(body) => {
+                    self.record_inst_body_dependencies(pending.index, &body);
+                    self.generics.borrow_mut().type_insts[pending.index].state =
+                        TypeInstState::Filling { staged: Some(body) };
+                }
+                Err(ResolveError::Refusal(refusal)) => {
+                    let mut generics = self.generics.borrow_mut();
+                    generics.fill_failures.push((pending.index, refusal));
+                    if matches!(refusal, ResolveRefusal::Limit) {
+                        // Refuse the queue where it stands: these rows are reserved but
+                        // unresolvable, and settlement takes them and their dependents
+                        // down with the same bound.
+                        let abandoned = std::mem::take(&mut generics.pending_fills);
+                        generics.fill_failures.extend(
+                            abandoned
+                                .into_iter()
+                                .map(|pending| (pending.index, ResolveRefusal::Limit)),
+                        );
+                        return Ok(());
+                    }
+                }
+                Err(ResolveError::Invariant(invariant)) => {
+                    return Err(ResolveError::Invariant(invariant));
+                }
             }
-            Err(ResolveError::Refusal(refusal)) => {
-                self.generics
-                    .borrow_mut()
-                    .fill_failures
-                    .push((inst_index, refusal));
-                Some(refusal)
-            }
-            Err(ResolveError::Invariant(invariant)) => {
-                return Err(ResolveError::Invariant(invariant));
-            }
-        };
-        if outermost {
-            self.settle_fill_batch()?;
-            return self.settled_type_result(inst_index, id, requirement);
-        }
-        match immediate_refusal {
-            Some(refusal) => Err(ResolveError::Refusal(refusal)),
-            None if requirement.allows_provisional() => Ok(id),
-            None => Err(GenericInvariant::ReadyBodyMissing(id).into()),
         }
     }
 
@@ -2471,17 +2544,17 @@ impl TypeRegistry {
         })
     }
 
-    /// Close one native fill frame. A mismatch is observed without consuming the
-    /// actual top frame so the first cache invariant preserves all hostile state.
-    fn finish_fill_stack(&self, inst_index: usize) -> Result<bool, ResolveError> {
+    /// Close the active fill. A mismatch is observed without clearing the actual
+    /// frame so the first cache invariant preserves all hostile state.
+    fn finish_fill(&self, inst_index: usize) -> Result<(), ResolveError> {
         let mut generics = self.generics.borrow_mut();
-        if generics.fill_stack.last() != Some(&inst_index) {
+        if generics.filling.map(|frame| frame.index) != Some(inst_index) {
             return Err(ResolveError::Invariant(GenericInvariant::CacheState(
-                GenericCacheInvariant("fill stack mismatch"),
+                GenericCacheInvariant("fill frame mismatch"),
             )));
         }
-        generics.fill_stack.pop();
-        Ok(generics.fill_stack.is_empty())
+        generics.filling = None;
+        Ok(())
     }
 
     /// Resolve a reserved type instantiation's members under its argument
@@ -2543,7 +2616,6 @@ impl TypeRegistry {
             let fields = Rc::clone(fields);
             (subst, fields)
         };
-        // Keep one pending representation across recursive field resolution.
         let mut pending = Vec::with_capacity(fields.len());
         for (fname, fty) in fields.iter() {
             let arg = self.resolve_garg_env(draft, &origin, fty, &subst, site)?;
@@ -2665,7 +2737,7 @@ impl TypeRegistry {
 
     fn record_active_dependency(&self, dependency: usize) {
         let mut generics = self.generics.borrow_mut();
-        let Some(&dependent) = generics.fill_stack.last() else {
+        let Some(dependent) = generics.filling.map(|frame| frame.index) else {
             return;
         };
         let dependency_is_provisional = generics
@@ -2793,9 +2865,9 @@ impl TypeRegistry {
                 GenericCacheInvariant("active batch range"),
             )));
         };
-        if !generics.fill_stack.is_empty() {
+        if generics.filling.is_some() || !generics.pending_fills.is_empty() {
             return Err(ResolveError::Invariant(GenericInvariant::CacheState(
-                GenericCacheInvariant("active fill stack not empty"),
+                GenericCacheInvariant("active fill not finished"),
             )));
         }
         if generics.fill_rows.len() != active_len {
@@ -3661,7 +3733,8 @@ impl TypeRegistry {
         // than nest, keeping the swap a clean save/restore pair.
         if generics.fill_batch_start.is_some()
             || !generics.fill_rows.is_empty()
-            || !generics.fill_stack.is_empty()
+            || generics.filling.is_some()
+            || !generics.pending_fills.is_empty()
             || !generics.fill_failures.is_empty()
             || has_unstable_row
             || generics.build_invariant.is_some()
@@ -3729,7 +3802,8 @@ impl TypeRegistry {
             .map_err(|_| GenericInvariant::TemplateProof(TemplateProofError::UnstableFillState))?;
         if generics.fill_batch_start.is_some()
             || !generics.fill_rows.is_empty()
-            || !generics.fill_stack.is_empty()
+            || generics.filling.is_some()
+            || !generics.pending_fills.is_empty()
             || !generics.fill_failures.is_empty()
         {
             return Err(GenericInvariant::TemplateProof(
@@ -3756,7 +3830,8 @@ impl TypeRegistry {
             fn_queue,
             fill_batch_start: _,
             fill_rows: _,
-            fill_stack: _,
+            filling: _,
+            pending_fills: _,
             fill_failures: _,
             limit: _,
             collection_payloads: _,
@@ -3812,7 +3887,8 @@ impl TypeRegistry {
             generics.fn_queue.truncate(fn_queue);
             generics.fill_batch_start = None;
             generics.fill_rows.clear();
-            generics.fill_stack.clear();
+            generics.filling = None;
+            generics.pending_fills.clear();
             generics.fill_failures.clear();
             generics.build_invariant = build_invariant;
             generics.argument_domain = prior_argument_domain;
