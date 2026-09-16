@@ -12,7 +12,8 @@
 //! attach -> VM — against one persistent ephemeral attachment, so a committed branch
 //! or root write is observable by a later read invocation.
 
-use crate::common::{Diagnostics, Project, Steer};
+use crate::common::{Diagnostics, Project};
+use marrow_compile::Steer;
 use marrow_verify::{SealedInstr, VerifiedImage};
 use marrow_vm::Value;
 

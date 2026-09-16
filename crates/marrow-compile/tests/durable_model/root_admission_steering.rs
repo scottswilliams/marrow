@@ -7,6 +7,7 @@
 //! message.
 
 use marrow_codes::Code;
+use marrow_compile::Steer;
 use marrow_project::ProjectInput;
 
 use super::project_capture::project_with_ids;
@@ -276,32 +277,36 @@ fn a_branch_named_as_a_field_is_steered_whether_or_not_a_root_is_executable() {
         &[("src/main.mw", &keyed_source)],
         Some(KEYED_IDS),
     ));
-    let keyed_message = keyed
+    let keyed_steer = keyed
         .iter()
         .find(|d| d.code() == Code::CheckType)
         .unwrap_or_else(|| panic!("expected a check.type report, got {keyed:#?}"))
-        .message()
-        .to_string();
+        .steer()
+        .cloned();
 
     let keyless_source = format!("module main\n\n{BOOK_DECL}\nstore ^solo: Book\n{field_use}");
     let keyless = diagnostics(&project_with(
         &[("src/main.mw", &keyless_source)],
         Some(KEYLESS_IDS),
     ));
-    let keyless_message = keyless
+    let keyless_steer = keyless
         .iter()
         .find(|d| d.code() == Code::CheckType)
         .unwrap_or_else(|| panic!("expected a check.type report, got {keyless:#?}"))
-        .message()
-        .to_string();
+        .steer()
+        .cloned();
 
     assert_eq!(
-        keyed_message, keyless_message,
+        keyed_steer, keyless_steer,
         "the branch-versus-field answer is a declaration fact: it must not depend on \
          whether some root over the Product reached the executable subset",
     );
-    assert!(
-        !keyless_message.contains("record has no field"),
-        "a declared branch is never reported as a missing field: {keyless_message}",
+    // A steer is present, so neither row fell through to the missing-field report.
+    assert_eq!(
+        keyed_steer,
+        Some(Steer::KeyedBranch {
+            branch: "notes".to_string(),
+            resource: Some("Book".to_string()),
+        }),
     );
 }

@@ -13,7 +13,8 @@
 
 use std::path::PathBuf;
 
-use crate::common::{Diagnostics, NameFamily, Project, Steer};
+use crate::common::{Diagnostics, Project};
+use marrow_compile::{NameFamily, Steer};
 
 /// The frozen fixture corpus root, resolved from the crate manifest so a mutation reads
 /// the same bytes the ensemble suites check.

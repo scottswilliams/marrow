@@ -30,12 +30,6 @@ use marrow_vm::{
     DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
 };
 
-/// The typed steer payload a steering diagnostic carries, re-exported so a suite reads
-/// [`SourceDiagnostic::steer`] instead of the prose one renderer builds from it. A steer
-/// rides the code of the finding it corrects, so `(code, line, column)` cannot say what
-/// it names.
-pub use marrow_compile::{NameFamily, Steer};
-
 /// The built `marrow` binary under test.
 pub const MARROW_BIN: &str = env!("CARGO_BIN_EXE_marrow");
 

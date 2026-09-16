@@ -19,8 +19,8 @@
 
 use marrow_codes::Code;
 use marrow_compile::{
-    CompileFailure, DeclarationNamespace, InputRevision, RefusalReport, RefusedDeclaration,
-    SourceDiagnostic, analyze, compile,
+    CompileFailure, DeclarationNamespace, InputRevision, NameFamily, RefusalReport,
+    RefusedDeclaration, SourceDiagnostic, Steer, analyze, compile,
 };
 use marrow_compile::{ResourceLimitKind, SourceStage};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
@@ -453,11 +453,16 @@ fn a_refused_root_is_offered_as_a_did_you_mean() {
          }\n",
     );
 
-    assert!(
-        diagnostics
-            .iter()
-            .any(|row| row.message().contains("`itmes` is not in scope")
-                && row.message().contains("items")),
+    let steers: Vec<&Steer> = diagnostics
+        .iter()
+        .filter_map(SourceDiagnostic::steer)
+        .collect();
+    assert_eq!(
+        steers,
+        [&Steer::DidYouMean {
+            family: NameFamily::Root,
+            candidate: "items".to_string(),
+        }],
         "a genuinely undeclared root is still an unknown name, corrected against the \
          refused root's retained key: {:#?}",
         messages(&diagnostics),

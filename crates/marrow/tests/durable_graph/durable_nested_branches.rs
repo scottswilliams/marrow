@@ -9,7 +9,8 @@
 //! path — capture -> compile -> verify -> attach -> VM — over one persistent ephemeral
 //! attachment, so a committed write is observable by a later read invocation.
 
-use crate::common::{Diagnostics, Project, Steer};
+use crate::common::{Diagnostics, Project};
+use marrow_compile::Steer;
 use marrow_vm::Value;
 
 // application, product, the top-level `title` field, the root and its key, then the
