@@ -187,6 +187,7 @@ dependencies = [
  "marrow-image",
  "marrow-kernel",
  "marrow-project",
+ "marrow-test-support",
  "marrow-verify",
  "marrow-vm",
 ]

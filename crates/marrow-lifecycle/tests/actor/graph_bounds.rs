@@ -30,11 +30,8 @@ use marrow_image::{
     FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
     RootOccurrenceDef, Scalar, SpanEntry,
 };
+use marrow_test_support::admitted_plan;
 use marrow_verify::verify;
-
-#[path = "../../../marrow-image/tests/common/admitted_plan.rs"]
-mod admitted_plan;
-use admitted_plan::admitted_plan;
 
 /// The worker stack the journey runs on. Small enough that one recursive descent over a
 /// maximum member run, a maximum value shape, or a maximum root set would overflow it, and
