@@ -787,8 +787,8 @@ mod tests {
     }
 
     /// The byte-charge law, per payload variant: file spelling plus owned
-    /// message, syntax help, and identity-gap path bytes; the static
-    /// invalid-UTF-8 message charges nothing beyond the file.
+    /// message, syntax help, identity-gap path, and steer-payload bytes; the
+    /// static invalid-UTF-8 message charges nothing beyond the file.
     #[test]
     fn retained_owned_bytes_charges_each_payload_component_exactly() {
         let file_len = file().retained_owned_bytes();
@@ -809,6 +809,25 @@ mod tests {
             },
         );
         assert_eq!(gap.retained_owned_bytes(), file_len + 7 + "^books".len());
+
+        let steered = SourceDiagnostic::with_steer(
+            Code::CheckType,
+            file(),
+            SourceSpan::default(),
+            "`membrs` is not in scope",
+            Steer::DidYouMean {
+                family: NameFamily::Root,
+                candidate: "members".to_string(),
+            },
+        );
+        assert_eq!(
+            steered.message(),
+            "`membrs` is not in scope. Did you mean the store root `^members`?",
+        );
+        assert_eq!(
+            steered.retained_owned_bytes(),
+            file_len + steered.message().len() + "members".len()
+        );
 
         let utf8 = SourceDiagnostic::invalid_utf8(file(), 3, Some(1));
         assert_eq!(utf8.retained_owned_bytes(), file_len);
