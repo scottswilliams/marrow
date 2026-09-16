@@ -220,11 +220,9 @@ impl Child {
 /// (retained wins), reserves live-only carriers, commits the aggregate work and the
 /// visit count once, and sorts the carriers in native lexical order.
 ///
-/// The settlement is atomic through the `Result` boundary rather than a mutable
-/// typestate: a partially settled batch is unrepresentable because every refusal
-/// returns before any commit, so a refused batch leaves `visited`, `work`, and the
-/// live counter at their baseline and the caller receives either the fully staged
-/// carriers or a pathless refusal.
+/// A partially settled batch is unrepresentable: every refusal returns before any
+/// commit, so a refused batch leaves `visited`, `work`, and the live counter at
+/// their baseline.
 pub(crate) struct DirectoryAdmission;
 
 impl DirectoryAdmission {
@@ -365,12 +363,11 @@ impl Traversal<'_, '_> {
                 )
             })?;
             let file_type = metadata.file_type();
-            // Capture admits exactly the objects it opens, and every other role
-            // refuses a link rather than following it. A link below `src` is the
-            // same alias: following one would admit bytes at a name capture never
-            // opened, and skipping one would delete whatever it names with no
-            // cause a consumer could see. Refusing keeps a traversal cycle and an
-            // escape from the project unrepresentable rather than merely unreached.
+            // Capture admits exactly the objects it opens. Following a link below
+            // `src` would admit bytes at a name capture never opened, and skipping
+            // one would drop whatever it names with no cause a consumer could see.
+            // Refusing keeps a traversal cycle and an escape from the project
+            // unrepresentable rather than merely unreached.
             if file_type.is_symlink() {
                 return Err(physical(
                     PhysicalRole::SourceDirectory,
@@ -425,10 +422,8 @@ impl Traversal<'_, '_> {
         Ok(())
     }
 
-    /// One atomic order-independent directory admission batch: count at most the
-    /// remaining visit allowance plus one, measure the aggregate carrier units
-    /// commutatively, settle the aggregate bounds once (retained wins), commit
-    /// visited/work once, and sort the carriers in native lexical order.
+    /// One atomic order-independent directory admission batch; see
+    /// [`DirectoryAdmission`] for the bounds it settles.
     fn enumerate(
         &mut self,
         relative: PathBuf,
@@ -497,7 +492,7 @@ impl Traversal<'_, '_> {
         // the sealed pathless pure Capture family and materializes no path. Only that
         // case forwards; a syntactically invalid spelling stays deferred to pure
         // capture, which keeps `project.source_path` precedence. The opaque error is
-        // forwarded unmatched — CAP neither inspects the reason nor reclassifies it.
+        // forwarded unmatched: this adapter neither inspects nor reclassifies it.
         CapturedFile::check_identity_bound(&spelling).map_err(CaptureFailure::from_project)?;
 
         let live = reserve_fixed(

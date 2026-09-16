@@ -6,9 +6,9 @@
 //! distinguishes it — a raw I/O error or a charged root-relative path — is
 //! private. The top-level [`CaptureFailure`] is opaque: its family is a private
 //! enum with no public accessor, constructor, destructuring surface, or
-//! family-bearing `Debug`. Producers and the presentation facade that reads this
-//! evidence are introduced in the capture baseline; this module fixes the closed
-//! boundary and its `Send + Sync + 'static` guarantees first.
+//! family-bearing `Debug`. This module owns that closed boundary and its
+//! `Send + Sync + 'static` guarantees; the presentation facade is its only
+//! external reader.
 
 use std::fmt;
 use std::io;

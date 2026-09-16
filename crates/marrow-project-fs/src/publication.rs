@@ -28,25 +28,19 @@
 //! `ids` is the one committed artifact. The lock is machine-local runtime
 //! state, and the four transient names are a publication in flight or the
 //! debris an interrupted one left; the write owner writes the ignore entry
-//! naming all five, so no project carries a hand-written line and no checkout
-//! carries an entry that would make a fresh clone read a ledger this protocol
-//! calls indeterminate.
+//! naming all five, so no checkout carries an entry that would make a fresh
+//! clone read a ledger this protocol calls indeterminate.
 //!
 //! # Which writers the contract admits
 //!
-//! The protocol is designed against ordinary Git operations landing in `.marrow`
-//! while a publication runs. What makes them safe is what they write: a Git
-//! operation writes tracked paths, and every name here except `ids` is an
-//! untracked protocol transient — the write owner writes the ignore entry, and
-//! the repository gate asserts by name and by contents that none is in the index.
-//!
-//! Two writers are outside the contract and the protocol says so rather than
-//! claiming to handle them: one holding a descriptor opened on a transient
-//! before publication began (a descriptor survives every rename and no process
-//! can revoke another's), and one deliberately writing the untracked names.
-//! Against either, the interval between validating an object and unlinking the
-//! name that held it is irreducible on POSIX — `unlinkat` names a path, and
-//! neither qualified platform offers an unlink through a descriptor.
+//! Ordinary Git operations are safe because they write tracked paths, and every
+//! name here except `ids` is an untracked protocol transient. Outside the
+//! contract are a writer holding a descriptor opened on a transient before
+//! publication began (a descriptor survives every rename and no process can
+//! revoke another's) and one deliberately writing the untracked names. Against
+//! either, the interval between validating an object and unlinking the name that
+//! held it is irreducible on POSIX — `unlinkat` names a path, and neither
+//! qualified platform offers an unlink through a descriptor.
 //! [`marrow_fs_journal::FsIdentity`] states the resulting bound.
 //!
 //! # Protocol
@@ -82,8 +76,7 @@
 //! a continuously proven third live inode settles into: the successor is not
 //! installed, the artifact keeps whatever the concurrent writer left, and the
 //! outcome is [`IdsPublication::ConcurrentChange`]. Reaching it takes a writer
-//! the guard does not exclude — one that took no lock, such as a Git operation
-//! over a transient an incomplete ignore entry never covered.
+//! the guard does not exclude.
 //!
 //! Which terminal a mutation reached is read back from the map rather than
 //! decided from the mutation's own outcome, so the driver, the mutations, and
@@ -182,9 +175,8 @@ pub enum IdsPublication {
 /// It does not always retain a live journal or name a marker that still exists:
 /// an interrupted publication resumes through its journal, a claim that never
 /// received one adopts whatever marker is on disk, and a finish that refused
-/// after its own unlink reports the terminal it had already recorded. What every
-/// arm shares is a publication this process claimed and did not conclude, which
-/// is what makes the value affine rather than an ordinary error.
+/// after its own unlink reports the terminal it had already recorded. Every arm
+/// is a publication this process claimed and did not conclude.
 ///
 /// ```compile_fail
 /// fn duplicate(pending: marrow_project_fs::IdsPublicationPending<'_>) {
@@ -200,13 +192,9 @@ pub struct IdsPublicationPending<'a> {
 
 /// What advancing a pending publication has to work with.
 ///
-/// A publication interrupted with its journal intact resumes through it. A
-/// claim that refused at or after its first link attempt left no journal at
-/// all — nothing was handed
-/// back to resume — so the only way forward is the recovery that adopts a
-/// durable marker from disk. Both are durable markers this process is holding
-/// open, which is why both are this one affine value rather than an ordinary
-/// error.
+/// A publication interrupted with its journal intact resumes through it; a
+/// claim that refused at or after its first link attempt was handed none, so
+/// its only way forward is the recovery that adopts a durable marker from disk.
 enum PendingWork<'a> {
     // Boxed: a live session is far larger than a guard reference, and this
     // value is already behind one indirection in the outcome it travels in.
@@ -231,11 +219,9 @@ impl<'a> IdsPublicationPending<'a> {
     }
 
     /// The pending value for a publication with no live journal to resume
-    /// through: a claim that refused at or after its first link attempt and
-    /// never handed one back, or a session whose journal a refused finish
-    /// already consumed. `recorded` carries the terminal such a session had
-    /// reached, which is the only thing that distinguishes a finished
-    /// publication from one that was never claimed once the marker is gone.
+    /// through. `recorded` carries the terminal such a session had reached,
+    /// which is the only thing that distinguishes a finished publication from
+    /// one that was never claimed once the marker is gone.
     fn unclaimed(
         guard: &'a ProjectMetadataWriteGuard,
         cause: IdsPublicationError,
@@ -262,15 +248,14 @@ impl<'a> IdsPublicationPending<'a> {
     /// retained handles go either way, so a fresh process is what settles the
     /// project next.
     ///
-    /// A refusing recovery is not a no-op. It reconciles first, which puts back
-    /// an entry an interrupted removal had moved aside, and it may finish a
-    /// removal the durable record already authorized before a later step
-    /// refuses. What it leaves is a settleable state, not the state it found.
+    /// A refusing recovery is not a no-op: it reconciles first, putting back an
+    /// entry an interrupted removal had moved aside, and it may finish a removal
+    /// the durable record already authorized before a later step refuses. It
+    /// leaves a settleable state, not the state it found.
     pub fn recover(mut self) -> Result<IdsPublication, IdsPublicationError> {
-        // The refusal that produced this value can be a cleanup that had
-        // already moved its object into quarantine, so this retry is a fresh
-        // classification and reconciles exactly as any other entry does. The
-        // driver takes the proof, so this cannot be skipped here or anywhere.
+        // The refusal that produced this value can be a cleanup that had already
+        // moved its object into quarantine, so this retry reconciles exactly as
+        // any other entry does before reclassifying.
         let settled = match &mut self.work {
             PendingWork::Session(session) => session
                 .reconcile()
@@ -351,11 +336,8 @@ pub enum IdsRefusal {
     /// not a state this protocol can have produced.
     ///
     /// No artifact byte is replaced and no cooperating writer's distinguishable
-    /// content is lost. That is not the same as no mutation: reaching
-    /// this reading can require reconciling an interrupted removal first, which
-    /// restores a moved object to the name it came from, and a resumed
-    /// publication can complete a removal its own durable terminal already
-    /// authorized. The state this refusal leaves is settleable, not untouched.
+    /// content is lost, but the state is settleable rather than untouched: see
+    /// [`IdsPublicationPending::recover`].
     Corrupt,
     /// A publication is durably claimed; recovery must settle it first.
     Interrupted,
@@ -538,10 +520,8 @@ impl From<HeaderCorruption> for IdsPublicationError {
 /// Acquiring the guard admits the project root and its `.marrow` directory
 /// through retained descriptors and takes the cooperative `publish.lock`. Every
 /// mutation of a `.marrow` publication artifact happens under one live guard,
-/// which is what makes the protocol's identity witnesses a serialization rather
-/// than a hope. Dropping the guard releases the lock.
-///
-/// Identity publication is the first kind under it; a later kind takes the same
+/// which is what serializes the protocol's identity witnesses. Dropping the
+/// guard releases the lock. A further kind of metadata write takes this same
 /// lock and admitted directory rather than opening a second write owner.
 #[derive(Debug)]
 pub struct ProjectMetadataWriteGuard {
@@ -646,9 +626,8 @@ impl ProjectMetadataWriteGuard {
 /// first publication created.
 ///
 /// The directory is the shared rendezvous rather than one process's property, so
-/// an occupied destination is re-admitted instead of refused: exclusion belongs
-/// to the write lock inside it, and a loser that refused here would report a
-/// filesystem refusal for what is an ordinary contended first publication.
+/// an occupied destination is re-admitted instead of refused; exclusion belongs
+/// to the write lock inside it.
 fn admit_created_meta(
     root: &AdmittedDir,
     name: &EntryName,

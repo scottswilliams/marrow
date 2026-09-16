@@ -6,14 +6,14 @@
 //! through the crate-internal constructors so they observe the values the physical
 //! producer emits.
 //!
-//! The behavior-red group observes the target adapter's laws through the baseline
-//! production seams: the real limit-parameterized capture seam driven with tight
-//! per-field policies, and the overlay constructor. The baseline is deliberately
-//! insufficient — it enforces no visited-entry, depth, spelling, or path-budget
-//! bound, follows links and hardlinks, and refuses every nonempty overlay with one
-//! coarse bound — so those assertions fail against it. They name no final owner,
-//! counter, lease, frame, or index type. The preclassified controls stay green
-//! because their property already holds at the baseline and survives to the target.
+//! The behavior group observes the adapter's laws through the production seams:
+//! the real limit-parameterized capture seam driven with tight per-field policies,
+//! and the overlay constructor. Each assertion contrasts the target adapter with a
+//! deliberately insufficient baseline — one enforcing no visited-entry, depth,
+//! spelling, or path-budget bound, following links and hardlinks, and refusing
+//! every nonempty overlay with one coarse bound — so what the assertion message
+//! names is the bound the target adds. They name no owner, counter, lease, frame,
+//! or index type.
 
 use std::fmt;
 use std::fs;
@@ -686,7 +686,7 @@ fn a_large_manifest_message_is_never_capped() {
     );
 }
 
-// ===== Behavior reds against the baseline production seams =====================
+// ===== Behavior tests against the production seams =============================
 
 /// A temporary directory removed on drop.
 struct TempDir {

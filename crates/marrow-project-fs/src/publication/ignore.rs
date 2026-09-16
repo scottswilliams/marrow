@@ -3,10 +3,9 @@
 //!
 //! Every removal the publication protocol performs rests on these names never
 //! being tracked: a committed transient is recreated by every checkout, and a
-//! checkout writing one while a publication is running can lose it. So this is
-//! not a convenience the owner maintains when it can — an entry that cannot be
-//! shown to keep the names untracked refuses the acquisition, and
-//! [`super::IdsRefusal::UntrackedContract`] is what it refuses with.
+//! checkout writing one while a publication is running can lose it. An entry
+//! that cannot be shown to keep the names untracked therefore refuses the
+//! acquisition with [`super::IdsRefusal::UntrackedContract`].
 
 use marrow_fs_journal::{AdmittedDir, CustodyError};
 use marrow_project::IDS_ENTRY;
@@ -28,11 +27,8 @@ const IGNORE_COMMENT: &str = "\
 /// The opening every comment this owner has written begins with, and the whole
 /// of what tells an entry this owner wrote from a developer's own file.
 ///
-/// The comment's remaining words describe the name set it was written above, so
-/// they change when that set does and a completed entry would stop matching its
-/// own header. This prefix does not, so it stays the mark: an entry that
-/// carries it gains only the names it lacks, and one that does not carries the
-/// comment in full above them.
+/// The comment's remaining words describe the name set they stand above and
+/// change when that set does; this prefix does not, so it stays the mark.
 const IGNORE_COMMENT_MARK: &str = "# Machine-written by Marrow.";
 /// How much of an existing ignore entry is read to decide whether it already
 /// names every entry this owner keeps untracked. A file this owner wrote is
@@ -46,27 +42,17 @@ const IGNORE_READ_CEILING: usize = 4096;
 ///
 /// The entry is completed rather than rewritten: a name is appended only when
 /// the file does not already carry it, so a second acquisition writes nothing,
-/// whatever a developer added survives, an entry that predates a name gains
-/// exactly that name and nothing else, and the empty file a crash between the
-/// create and the fill leaves is finished by the next acquisition. An entry
-/// this owner wrote under an earlier name set is completed under the comment it
-/// already carries, so no entry ends up with a second comment standing over a
-/// stale first block. It runs under the write lock, so one process at a time is
-/// inside it and two first publications cannot both append.
+/// whatever a developer added survives, and the empty file a crash between the
+/// create and the fill leaves is finished by the next acquisition. Completion
+/// happens under the comment the entry already carries, so no entry ends up
+/// with two. It runs under the write lock, so two first publications cannot
+/// both append.
 ///
-/// The block is not a convenience. Every removal this protocol performs rests
-/// on these names never being tracked, so an entry that cannot be shown to keep
-/// them untracked refuses the acquisition with
-/// [`IdsRefusal::UntrackedContract`]. Four states do: an entry that cannot be
-/// read, one past the read bound, one missing names that cannot be written, and
-/// one whose `!` line covers a name this owner would otherwise have kept
-/// ignored. An entry that already names every transient is left exactly as
-/// found and refuses nothing, whatever its mode — nothing needs writing.
-///
-/// An environmental failure of the write — no space left, a read-only
-/// filesystem — refuses as it always did, because it breaks the durable write
-/// this publication depends on anyway. Every other custody refusal here is a
-/// metadata directory this owner did not produce, and stays a typed refusal.
+/// Four states refuse the acquisition with [`IdsRefusal::UntrackedContract`]:
+/// an entry that cannot be read, one past the read bound, one missing names
+/// that cannot be written, and one whose `!` line covers a name this owner
+/// would otherwise have kept ignored. An entry that already names every
+/// transient is left exactly as found, whatever its mode.
 pub(super) fn install_untracked_ignore(meta: &AdmittedDir) -> Result<(), IdsPublicationError> {
     let name = admitted_name(IGNORE_NAME);
     let (created, found) = match meta.create_file_excl(&name) {
@@ -75,16 +61,10 @@ pub(super) fn install_untracked_ignore(meta: &AdmittedDir) -> Result<(), IdsPubl
             // Whether the entry is already complete is a read-only question, so
             // it is asked read-only: a checkout may carry the entry unwritable,
             // and an open that demanded write to decide it would refuse every
-            // publication and recovery of a project that needs no append.
-            //
-            // A mode that withholds even that read is refused, not tolerated.
-            // The entry is not cosmetic: the whole cooperative-writer argument
-            // is that a Git operation writes tracked paths and every transient
-            // here is untracked, and this entry is what keeps them untracked in
-            // a project this repository's own index gate cannot see. An owner
-            // that proceeded without establishing it would publish transients a
-            // later `git add -A` offers and a later checkout writes — the
-            // writer the protocol claims not to have.
+            // publication and recovery of a project that needs no append. A mode
+            // withholding even that read is refused, because proceeding would
+            // publish transients a later `git add -A` offers and a later
+            // checkout writes.
             match meta.open_file_readonly(&name) {
                 Ok(opened) => (None, opened.read_prefix(IGNORE_READ_CEILING + 1)?),
                 Err(error) if access_withheld(&error) => {
@@ -97,18 +77,16 @@ pub(super) fn install_untracked_ignore(meta: &AdmittedDir) -> Result<(), IdsPubl
     };
     // A file larger than the read bound has not been read to the point that
     // decides the question, so whether it names the transients is unknown —
-    // and unknown is refused for the same reason unreadable is. The bound also
-    // catches an entry this owner's own appends pushed past it: past the bound
-    // no acquisition can see the names it already wrote, so an owner that
-    // appended anyway would append them again forever.
+    // and unknown is refused as unreadable is. The bound also catches an entry
+    // this owner's own appends pushed past it: past the bound no acquisition can
+    // see the names it already wrote, so appending would repeat them forever.
     if found.len() > IGNORE_READ_CEILING {
         return Err(IdsPublicationError::bare(IdsRefusal::UntrackedContract));
     }
-    // A negation re-including one of these names leaves it tracked whatever
-    // else the entry says, and appending the name again would not change that:
-    // Git takes the last match. This owner will not rewrite a developer's file
-    // to remove a line they wrote, so the contract is unestablished and the
-    // acquisition refuses, exactly as it does for an entry it cannot read.
+    // A negation re-including one of these names leaves it tracked whatever else
+    // the entry says, and appending the name again would not change that: Git
+    // takes the last match. This owner will not rewrite a line a developer
+    // wrote, so the contract stays unestablished.
     let untracked = untracked_entry_names();
     if untracked
         .iter()
@@ -127,10 +105,8 @@ pub(super) fn install_untracked_ignore(meta: &AdmittedDir) -> Result<(), IdsPubl
     if found.last().is_some_and(|byte| *byte != b'\n') {
         block.push('\n');
     }
-    // An entry that already carries this owner's comment gains only the names,
-    // so an entry written above an earlier name set is completed under the
-    // header it has. A second copy of the comment would leave the entry with
-    // two of them, the first standing over a name set the file no longer has.
+    // An entry that already carries this owner's comment gains only the names; a
+    // second copy would leave the first standing over a stale name set.
     if !ignore_carries_comment(&found) {
         block.push_str(IGNORE_COMMENT);
     }
@@ -140,13 +116,9 @@ pub(super) fn install_untracked_ignore(meta: &AdmittedDir) -> Result<(), IdsPubl
     }
     let mut entry = match created {
         Some(created) => created,
-        // Reaching here means names are missing, so the entry does not yet
-        // keep this project's transients untracked. An entry this process may
-        // not write cannot be completed, so the contract cannot be established
-        // and the acquisition refuses — the same answer an unreadable or
-        // oversized entry gets, for the same reason. An entry that already
-        // names every transient never reaches here: it returned above, and a
-        // read-only complete entry keeps working.
+        // Names are missing, so the entry does not yet keep this project's
+        // transients untracked and must be appended to. An entry this process
+        // may not write cannot be completed, so the acquisition refuses.
         None => match meta.open_file(&name) {
             Ok(opened) => opened,
             Err(error) if access_withheld(&error) => {
@@ -162,18 +134,14 @@ pub(super) fn install_untracked_ignore(meta: &AdmittedDir) -> Result<(), IdsPubl
 }
 
 /// Whether a refused open says this process may not reach the entry's bytes,
-/// rather than that the entry is not one this owner can maintain at all. Both
-/// of the ignore entry's opens read their refusals through here: the mode that
-/// withholds the deciding read and the mode that withholds the append are the
-/// same permission-class condition on the same cosmetic file.
+/// rather than that the entry is not one this owner can maintain at all. Both of
+/// the ignore entry's opens classify through here.
 ///
 /// The custody owner reads a permission refusal over a regular file whose owner
-/// bits fall short as [`CustodyError::ModeDenied`]; a permission refusal it
-/// could not attribute to those bits — another user's entry, a restrictive
-/// security policy — arrives unclassified and is the same withheld access from
-/// this caller's side. An environmental write failure is not in this family: a
-/// read-only mount refuses the lock open long before the ignore entry, and a
-/// full or read-only filesystem carries its own error kind and stays a refusal.
+/// bits fall short as [`CustodyError::ModeDenied`]; one it could not attribute
+/// to those bits — another user's entry, a restrictive security policy — arrives
+/// unclassified and is the same withheld access. An environmental write failure
+/// is not in this family: it carries its own error kind and stays a refusal.
 fn access_withheld(error: &CustodyError) -> bool {
     match error {
         CustodyError::ModeDenied { .. } => true,
@@ -211,11 +179,11 @@ fn ignore_lines(found: &[u8]) -> impl Iterator<Item = &[u8]> {
 
 /// Whether the bytes read from the ignore entry already name `entry`.
 ///
-/// A line matches without the optional leading `/` that anchors a pattern to
-/// the ignore file's own directory, as well as without the carriage return.
-/// Every such spelling names exactly what this owner would append, and a
-/// semantic duplicate is the one thing an entry shared with a developer must
-/// not accumulate. The form this owner writes stays the bare name.
+/// A line matches without the optional leading `/` that anchors a pattern to the
+/// ignore file's own directory, as well as without the carriage return: every
+/// such spelling names what this owner would append, and an entry shared with a
+/// developer must not accumulate semantic duplicates. The form this owner writes
+/// stays the bare name.
 fn ignore_names_entry(found: &[u8], entry: &str) -> bool {
     ignore_lines(found).any(|line| line.strip_prefix(b"/").unwrap_or(line) == entry.as_bytes())
 }
@@ -225,9 +193,7 @@ fn ignore_names_entry(found: &[u8], entry: &str) -> bool {
 ///
 /// A positive line naming a transient does not settle the question on its own:
 /// a later `!` line covering the same name puts it back, and Git takes the last
-/// match. An entry that both names a transient and negates it does not keep it
-/// untracked, so it does not establish the contract every removal here rests
-/// on.
+/// match, so such an entry does not establish the contract.
 ///
 /// A negation need not spell the name to cover it — `!*`, `!*.stage`, and
 /// `!ids.publish.*` each re-include one. So the pattern is matched rather than
@@ -254,12 +220,10 @@ fn ignore_negates_entry(found: &[u8], entry: &str) -> bool {
 /// its ignore file governs.
 ///
 /// A `**` component matches zero or more directories, so it can vanish
-/// entirely: `**/ids.publish.stage` names the entry sitting right here, and
-/// `**/*.stage` names it too. What decides scope is therefore what remains once
-/// those components are dropped. One component can still name a directly
-/// contained entry and is matched against the name. Two or more require a
-/// subdirectory, and these entries never sit in one, so such a pattern reaches
-/// nothing here.
+/// entirely: `**/ids.publish.stage` names the entry sitting right here. Scope is
+/// therefore decided by what remains once those components are dropped. One
+/// component can still name a directly contained entry; two or more require a
+/// subdirectory, and these entries never sit in one.
 fn pattern_reaches(pattern: &[u8], name: &[u8]) -> bool {
     let mut components = pattern
         .split(|byte| *byte == b'/')
@@ -283,18 +247,13 @@ fn pattern_reaches(pattern: &[u8], name: &[u8]) -> bool {
 ///
 /// # Which way this errs
 ///
-/// The two mistakes are not equal, and the matcher is built around that. A
-/// pattern wrongly read as reaching one of these names costs a refusal an
-/// operator can clear by editing one line. A pattern wrongly read as reaching
-/// nothing lets a transient stay tracked, which is the state every removal
-/// bound in this protocol assumes away — a checkout then writes the entry while
-/// a publication is running, and the content it writes can be lost. So every
-/// approximation here is deliberately toward refusing: a POSIX class inside a
-/// set is treated as matching any character rather than having its members
-/// read, and a trailing `/**` — which in Git names a directory's contents
-/// rather than the directory — is read as reaching the name. Both refuse a
-/// negation that would in fact have been harmless, and neither can pass one
-/// that would not.
+/// A pattern wrongly read as reaching one of these names costs a refusal an
+/// operator clears by editing one line; one wrongly read as reaching nothing
+/// lets a transient stay tracked, which every removal bound in this protocol
+/// assumes away. So every approximation is deliberately toward refusing: a POSIX
+/// class inside a set matches any character rather than having its members read,
+/// and a trailing `/**` — which in Git names a directory's contents rather than
+/// the directory — is read as reaching the name.
 ///
 /// Backtracking is bounded by construction: the only branch point is a `*`, and
 /// the greedy retry walks forward through `name` without ever revisiting an
@@ -355,11 +314,9 @@ fn wildcard_covers(pattern: &[u8], name: &[u8]) -> bool {
 /// pattern offset just past the set. `None` when the set never closes, which
 /// Git reads as a literal `[`.
 ///
-/// A set carrying a POSIX class — `[[:alpha:]]` and its family — is answered
-/// as matching, whatever the byte and whatever the negation, rather than having
-/// the class's members read. That is the deliberate over-approximation
-/// [`wildcard_covers`] documents: it can refuse an exotic negation that would
-/// have been harmless, and it cannot pass one that would not.
+/// A set carrying a POSIX class — `[[:alpha:]]` and its family — is answered as
+/// matching, whatever the byte and whatever the negation, rather than having the
+/// class's members read; see the over-approximation [`wildcard_covers`] states.
 fn match_set(pattern: &[u8], byte: u8) -> Option<(bool, usize)> {
     let mut at = 1;
     let negated = matches!(pattern.get(at), Some(b'!' | b'^'));

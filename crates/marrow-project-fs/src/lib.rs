@@ -10,10 +10,8 @@
 //! [`Position`] — so a consumer with only this edge can name the successful
 //! boundary without a direct `marrow-project` edge.
 //!
-//! Physical admission, bounded overlay behavior, and the presentation facade's
-//! rendering are introduced in the capture baseline. This module fixes the closed
-//! public boundary, its `Send + Sync + 'static` guarantees, and the sealed
-//! pure-owner facts it forwards.
+//! This module owns the closed public boundary, its `Send + Sync + 'static`
+//! guarantees, and the sealed pure-owner facts it forwards.
 //!
 //! # Sealed boundaries
 //!
