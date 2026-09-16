@@ -123,9 +123,8 @@ fn out_and_inout_parse_as_ordinary_parameter_names() {
     );
 }
 
-// User-defined generics are written with angle brackets (`fn f<T>` parses clean);
-// the `[T]` spelling is rejected. flip2_bracket_angle.rs covers both the `<T>`
-// acceptance and the rejection of the `[T]` spelling.
+// User-defined generics are written with angle brackets; the `[T]` spelling is
+// rejected. See flip2_bracket_angle.rs.
 
 #[test]
 fn parses_angle_generic_type_parameters() {
@@ -163,9 +162,8 @@ fn parses_angle_generic_type_parameters() {
 
 #[test]
 fn rejects_malformed_type_parameter_lists() {
-    // Malformed angle type-parameter lists (`<>`, `<T supports magic>`,
-    // `<T supports>`) carry the same guidance messages the parser produces for any
-    // generic-parameter list.
+    // Malformed angle type-parameter lists carry the same guidance messages the parser
+    // produces for any generic-parameter list.
     for (source, expected_message) in [
         (
             "module app\nfn f<>(x: int) {\n    return\n}\n",
@@ -213,14 +211,10 @@ fn rejects_malformed_type_parameter_lists() {
 #[test]
 fn unclosed_generic_type_argument_reports_the_missing_close() {
     // An identifier head opening `<` in type position that never reaches a matching
-    // `>` is a targeted `expected `>` to close the type arguments` error, not a name
-    // silently absorbing the open group. Parsing stays total across every position.
+    // `>` is a targeted "expected `>`" error, not a name silently absorbing the group.
     for source in [
-        // Function parameter type.
         "module app\nfn f(x: Map<string, int) {\n    return\n}\n",
-        // Const type annotation.
         "module app\nconst c: List<int\n",
-        // Alias right-hand side.
         "module app\nalias A = Map<string, int\n",
         // Nested: the inner group closes but the outer never does.
         "module app\nconst c: List<Map<int, string>\n",
@@ -328,9 +322,8 @@ fn alias_names_and_targets_are_validated() {
 
 #[test]
 fn rejects_malformed_type_annotations() {
-    // Each malformed-type position carries its own diagnostic, so pairing every
-    // source with its specific message selects the malformed-type error rather
-    // than any diagnostic whose text happens to contain "type".
+    // Pairing every source with its specific message selects the malformed-type error
+    // rather than any diagnostic whose text happens to contain "type".
     for (source, expected) in [
         ("module app\nconst Max: = 1\n", ExpectedSyntax::ConstType),
         (
@@ -358,9 +351,8 @@ fn rejects_malformed_type_annotations() {
 
 #[test]
 fn rejects_trailing_tokens_after_a_complete_type_annotation() {
-    // A complete type ends at its canonical word; a following token (`in`,
-    // `where`, or a second bare word) is not part of the type. The parser must
-    // point at that token rather than gluing it into a fabricated type spelling.
+    // A complete type ends at its canonical word; a following token is not part of the
+    // type, and the parser points at it rather than gluing it into a fabricated type.
     for (source, expected, offender) in [
         (
             "module app\nconst ratio: decimal in 0.0..=1.0 = 0.5\n",
@@ -407,8 +399,7 @@ fn rejects_trailing_tokens_after_a_complete_type_annotation() {
             "diagnostic should point at `{offender}` for {source}: {:#?}",
             diagnostic
         );
-        // No fabricated glued spelling: the offending token must never be folded
-        // into a type-annotation text.
+        // The offending token must never be folded into a type-annotation text.
         assert!(
             parsed.file.function("f").is_none_or(|function| function
                 .params
@@ -421,44 +412,34 @@ fn rejects_trailing_tokens_after_a_complete_type_annotation() {
 
 #[test]
 fn signature_parse_errors_point_at_the_offending_token_not_column_one() {
-    // A missing or misplaced parameter type and a missing return type each report
-    // at the offending signature token, so two signature faults on one line are
-    // distinguishable rather than both collapsing to the declaration column.
-    // The `fn f(a): {` and `fn f(a: int): {` cases abut a `{` where a return type or
-    // parameter type is expected; the ParameterType / FunctionReturnType diagnostic
-    // points at the recorded offender and never collapses to column 1.
+    // Each signature fault reports at its own offending token, so two faults on one
+    // line are distinguishable rather than both collapsing to the declaration column.
     for (source, expected, offender) in [
-        // Bare word where a `: type` annotation is expected: point at the word.
         (
             "module app\nfn f(a int): int {\n    return 1\n}\n",
             ExpectedSyntax::ParameterType,
             "int)",
         ),
-        // Parameter with no annotation at all: point at the parameter name.
         (
             "module app\nfn f(a): {\n    return\n}\n",
             ExpectedSyntax::ParameterType,
             "a)",
         ),
-        // Colon with no return type after it: point at the trailing colon.
         (
             "module app\nfn f(a: int): {\n    return\n}\n",
             ExpectedSyntax::FunctionReturnType,
             ": {",
         ),
-        // A stray word trailing a complete return type: point at the misplaced word.
         (
             "module app\nfn f(a: int): int extra {\n    return 1\n}\n",
             ExpectedSyntax::FunctionReturnType,
             "extra",
         ),
-        // The double-optional return spelling `T??`: point at the `??`.
         (
             "module app\nfn f(a: int): string?? {\n    return\n}\n",
             ExpectedSyntax::FunctionReturnType,
             "??",
         ),
-        // `= default` after a return type: point at the offending `=`.
         (
             "module app\nfn f(a: int): int = 3 {\n    return 1\n}\n",
             ExpectedSyntax::FunctionReturnType,
@@ -507,9 +488,8 @@ fn rejects_structural_equal_inside_type_annotations() {
     for (source, expected) in [
         // A `const x: T = v` binding accepts `=` as its value separator, so the
         // rejected `=` is the one nested inside the type: `List<a = b>` has no valid
-        // completion and the angle type parser reports the expected expression it
-        // could not find (unlike the field/key/return positions below, where the
-        // trailing `= v` shape reports the specific type position).
+        // completion. The field/key/return positions below instead report their own
+        // type position from the trailing `= v` shape.
         (
             "module app\nconst Max: List<a = b> = 1\n",
             ExpectedSyntax::Expression,
@@ -963,8 +943,7 @@ fn nominal_type_declaration_recovers_totally() {
     }
 }
 
-/// The formatter renders a nominal declaration canonically and idempotently,
-/// including the docs, interval spelling, and capability list.
+/// A nominal declaration renders canonically: docs, interval spelling, capabilities.
 #[test]
 fn formats_nominal_type_declarations() {
     use marrow_syntax::format_source;

@@ -9,12 +9,9 @@ use marrow_syntax::{
     LexerDiagnosticReason, NESTING_DEPTH_LIMIT, ParseDiagnosticReason, lex_source, parse_source,
 };
 
-/// An interpolation hole may itself hold another interpolation literal, and that
-/// nesting is unbounded up to the documented depth limit. The lexer scans a
-/// nested `$"..."` as a full interpolation — recursing into its own holes — while
-/// looking for the outer hole-closing brace, so a three-deep nest parses cleanly
-/// and builds nested interpolation parts rather than being rejected as an
-/// unterminated interpolation expression.
+/// An interpolation hole may itself hold another interpolation literal, up to the
+/// depth limit. The lexer scans a nested `$"..."` as a full interpolation — recursing
+/// into its own holes — while looking for the outer hole-closing brace.
 #[test]
 fn deeply_nested_interpolation_parses_and_nests() {
     let source = "const Label = $\"a{$\"b{$\"c{x}d\"}e\"}f\"\n";
@@ -86,12 +83,9 @@ fn interpolation_nesting_admits_the_limit_and_refuses_one_past_it() {
     );
 }
 
-/// Interpolation nesting is bounded by the documented depth limit, and a nest
-/// past it reports the same `check.nesting_limit` finding every other over-deep
-/// construct reports — not a misleading "unterminated interpolation expression".
-/// The nest is well-formed (its braces and quotes all balance); only its depth is
-/// the fault, so the diagnostic must name the limit, not claim the interpolation
-/// never closed.
+/// An over-deep nest reports the same `check.nesting_limit` finding every other
+/// over-deep construct reports. Its braces and quotes all balance — only the depth is
+/// the fault — so the diagnostic must not claim the interpolation never closed.
 #[test]
 fn over_deep_interpolation_reports_the_nesting_limit_not_unterminated() {
     let depth = NESTING_DEPTH_LIMIT + 50;
@@ -127,10 +121,8 @@ fn over_deep_interpolation_reports_the_nesting_limit_not_unterminated() {
     );
 }
 
-/// An interpolation expression with no closing `}` before the string ends is a
-/// lexer error: the lexer scans for the expression terminator, reaches the end
-/// of the line, and reports an unterminated interpolation expression rather than
-/// silently treating the rest as text.
+/// An interpolation expression with no closing `}` before the string ends is a lexer
+/// error, not silently-treated-as-text.
 #[test]
 fn unterminated_interpolation_expression_is_a_lexer_error() {
     let lexed = lex_source("fn main() {\n    print($\"book {id\")\n");
@@ -146,11 +138,9 @@ fn unterminated_interpolation_expression_is_a_lexer_error() {
     );
 }
 
-/// A `{` nested inside an interpolation expression is rejected the same way: the
-/// expression scanner does not recurse into a second `{`, so the inner brace
-/// terminates the scan as unterminated rather than opening a nested
-/// interpolation. Interpolation expressions are ordinary expressions and never
-/// contain another interpolation opener.
+/// Interpolation expressions are ordinary expressions and never contain another
+/// interpolation opener: the scanner does not recurse into a second `{`, so the inner
+/// brace terminates the scan as unterminated.
 #[test]
 fn nested_brace_inside_interpolation_expression_is_a_lexer_error() {
     let lexed = lex_source("fn main() {\n    print($\"book {a{b}}\")\n");
@@ -166,18 +156,14 @@ fn nested_brace_inside_interpolation_expression_is_a_lexer_error() {
     );
 }
 
-/// An empty interpolation `{}` lexes cleanly — the lexer emits an expression
-/// start and end with nothing between — but holds no expression, so the parser
-/// rejects it: an interpolation expression part is an ordinary expression and
-/// must contain one. The lexer raises no interpolation diagnostic for the empty
-/// braces; the failure surfaces as a parser "expected an expression" when the
-/// empty expression part is parsed in value position.
+/// An empty interpolation `{}` lexes cleanly — an expression start and end with
+/// nothing between — so the rejection is the parser's: a hole is an ordinary
+/// expression and must contain one.
 #[test]
 fn empty_interpolation_expression_is_rejected_by_the_parser() {
     let source = "const Made = $\"book {}\"\n";
 
-    // The lexer alone accepts the empty braces: it carries no lexical
-    // interpolation diagnostic, so the rejection is the parser's job.
+    // The lexer alone carries no interpolation diagnostic for the empty braces.
     let lexed = lex_source(source);
     assert!(
         !lexed
@@ -206,10 +192,8 @@ fn empty_interpolation_expression_is_rejected_by_the_parser() {
     );
 }
 
-/// An empty interpolation hole inside a statement reports the missing operand at
-/// the hole, not as a statement-level "expected a statement" anchored on the
-/// enclosing keyword. The interpolation still recovers so the rest of the
-/// statement parses.
+/// An empty hole inside a statement reports the missing operand at the hole, not as a
+/// statement-level "expected a statement" anchored on the enclosing keyword.
 #[test]
 fn empty_interpolation_hole_in_a_statement_reports_expected_expression_at_the_hole() {
     let parsed = parse_source("fn main() {\n    print($\"book {}\")\n}\n");
@@ -246,9 +230,8 @@ fn empty_interpolation_hole_in_a_statement_reports_expected_expression_at_the_ho
     );
 }
 
-/// A hole ending on a dangling binary operator (`{a +}`) has no right operand;
-/// it reports "expected an expression" at the hole rather than the statement
-/// fallback.
+/// A hole ending on a dangling binary operator (`{a +}`) reports "expected an
+/// expression" at the hole rather than the statement fallback.
 #[test]
 fn dangling_operator_interpolation_hole_reports_expected_expression() {
     let parsed = parse_source("fn main() {\n    print($\"book {a +}\")\n}\n");
@@ -271,9 +254,7 @@ fn dangling_operator_interpolation_hole_reports_expected_expression() {
 }
 
 /// A hole holding a complete operand followed by trailing garbage (`{a b}`) is
-/// unclosed at the stray token; it reports "expected the end of the
-/// interpolation hole" there rather than bubbling a silent `None` to the
-/// statement fallback, and the rest of the statement still recovers.
+/// unclosed at the stray token, and reports there rather than at the statement.
 #[test]
 fn trailing_garbage_interpolation_hole_reports_at_the_stray_token() {
     let parsed = parse_source("fn main() {\n    print($\"book {a b}\")\n}\n");
@@ -304,8 +285,7 @@ fn trailing_garbage_interpolation_hole_reports_at_the_stray_token() {
     );
 }
 
-/// A well-formed interpolation with a real operand still parses without any
-/// syntax diagnostic; the missing-operand recovery does not fire on a valid hole.
+/// The missing-operand recovery does not fire on a valid hole.
 #[test]
 fn valid_interpolation_hole_parses_without_diagnostics() {
     let parsed = parse_source("fn main() {\n    print($\"book {id} here\")\n}\n");
@@ -316,11 +296,9 @@ fn valid_interpolation_hole_parses_without_diagnostics() {
     );
 }
 
-/// A nested string literal inside an interpolation hole may be written with
-/// escaped quotes, the spelling an author reaches for inside a `$"..."` string.
-/// The hole is an ordinary expression, so `f(\"x\")` parses as a call whose
-/// argument is the string literal `"x"`, decoding to `x` — no spurious
-/// "unterminated interpolation expression". Plain quotes stay valid too.
+/// A nested string literal inside a hole may be written with escaped quotes, the
+/// spelling an author reaches for inside a `$"..."` string: `f(\"x\")` is a call whose
+/// argument decodes to `x`. Plain quotes stay valid too.
 #[test]
 fn escaped_quotes_in_interpolation_hole_parse_as_a_string_argument() {
     for source in [
@@ -380,12 +358,10 @@ fn escaped_quotes_in_interpolation_hole_parse_as_a_string_argument() {
     }
 }
 
-/// The soundness family behind the escaped-quote fix: a nested escaped string is
-/// one string literal, so its interior `}` `{` `(` `)`, bare `"`, and a nested
-/// `$"..."` are content — never live tokens that close the hole early, corrupt
-/// the trailing text, or emit overlapping token spans. Each escaped body lexes to
-/// non-overlapping tokens and parses to the same interpolation — identical
-/// surrounding text and identical decoded hole value — as its plain-quote twin.
+/// A nested escaped string is one string literal, so its interior `}` `{` `(` `)`,
+/// bare `"`, and a nested `$"..."` are content — never live tokens that close the hole
+/// early, corrupt the trailing text, or emit overlapping token spans. Each escaped
+/// body denotes exactly what its plain-quote twin denotes.
 #[test]
 fn escaped_nested_strings_carry_structural_characters_as_content() {
     fn interpolation(source: &str) -> Vec<InterpolationPart> {
@@ -414,9 +390,8 @@ fn escaped_nested_strings_carry_structural_characters_as_content() {
             .collect()
     }
 
-    // The decoded value of the innermost string literal reached by descending
-    // through call arguments and nested interpolation holes — the value the fix
-    // must make identical for the escaped and plain spellings.
+    // The decoded value of the innermost string literal, reached by descending through
+    // call arguments and nested holes.
     fn hole_value(parts: &[InterpolationPart]) -> String {
         let hole = parts
             .iter()
@@ -486,9 +461,8 @@ fn escaped_nested_strings_carry_structural_characters_as_content() {
             "escaped and plain spellings must denote the same value for {escaped:?}",
         );
 
-        // The specific bug signature: the escaped string mis-scanned as a live
-        // `}`/`"` produced overlapping token spans and corrupted trailing text.
-        // A correct lex yields tokens whose spans never overlap.
+        // An escaped string mis-scanned as a live `}`/`"` yields overlapping token
+        // spans and corrupted trailing text; a correct lex never overlaps.
         let tokens = lex_source(&escaped).tokens;
         for window in tokens.windows(2) {
             assert!(

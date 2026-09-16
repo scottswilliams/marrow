@@ -1,11 +1,9 @@
 //! Render the syntax tree back to canonical Marrow `.mw` source.
 //!
-//! Canonical style: binary operators are spaced (`a + b`), ranges are not
-//! (`1..10`), unary is `-x` / `not x`, calls are `f(a, b)`, and dotted fields
-//! and `::` name paths have no surrounding spaces.
-//!
-//! The syntax tree does not record parentheses, so the formatter re-inserts
-//! the minimum needed to preserve operator precedence and associativity.
+//! Canonical style: binary operators are spaced (`a + b`), ranges are not (`1..10`),
+//! unary is `-x` / `not x`, calls are `f(a, b)`, and dotted fields and `::` name paths
+//! have no surrounding spaces. The syntax tree does not record parentheses, so the
+//! formatter re-inserts the minimum needed to preserve precedence and associativity.
 
 use crate::{
     AliasDecl, Argument, Associativity, BinaryOp, Block, CheckedBind, Comment, CommentMarker,

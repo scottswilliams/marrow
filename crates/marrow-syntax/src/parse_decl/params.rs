@@ -20,8 +20,7 @@ pub(super) fn parse_function_head(source: &str, tokens: &[Token]) -> ParseResult
         tokens.first().map(|token| token.kind),
         Some(TokenKind::Identifier)
     ) {
-        // `internal fn`/`private fn`: the visibility word lexes as an
-        // identifier; reject it with a pointed message.
+        // `internal fn`/`private fn`: the visibility word lexes as an identifier.
         for word in [ContextualKeyword::Internal, ContextualKeyword::Private] {
             if tokens[0].is_contextual(source, word) {
                 return Err(ParseError::new(
@@ -68,9 +67,8 @@ pub(super) fn parse_function_head(source: &str, tokens: &[Token]) -> ParseResult
             "generic type parameters are written `fn name<T>(...)`, not with `[...]`",
         ));
     }
-    // Optional generic type-parameter list, `<T, U supports order>`, before the
-    // value-parameter list. The same angle convention spells a type application
-    // (`List<T>`), so a leading `<` after the name introduces the type parameters.
+    // Optional generic type-parameter list, `<T, U supports order>`: a `<` directly
+    // after the name is always this list, never a comparison.
     let (type_params, rest) =
         if matches!(rest.first().map(|token| token.kind), Some(TokenKind::Less)) {
             let close = match_angle(rest).ok_or(ParseError::new(
@@ -132,11 +130,10 @@ pub(super) fn parse_function_head(source: &str, tokens: &[Token]) -> ParseResult
     })
 }
 
-/// Parse a generic type-parameter list's inner tokens (between `[` and `]`): a
-/// comma-separated list of `Name` items, each optionally carrying one closed
-/// constraint (`Name supports equality` / `Name supports order`). An empty list,
-/// a missing name, a repeated `supports`, or an unknown capability is a pointed
-/// parse error so a malformed header does not silently drop type parameters.
+/// Parse a generic type-parameter list's inner tokens: comma-separated `Name` items,
+/// each optionally carrying one closed constraint (`supports equality`/`supports order`).
+/// An empty list, missing name, repeated `supports`, or unknown capability is a pointed
+/// parse error, so a malformed header never silently drops type parameters.
 pub(super) fn parse_type_params_tokens(
     source: &str,
     inner: &[Token],
@@ -246,9 +243,9 @@ pub(super) fn match_bracket(tokens: &[Token]) -> Option<usize> {
     None
 }
 
-/// Index of the `>` matching the leading `<` of `tokens`, if balanced. Tracks `<`/`>`
-/// depth so a nested generic type argument closes correctly; within a declaration
-/// header a nested close is always a bare `>` (no `>>` token exists).
+/// Index of the `>` matching the leading `<` of `tokens`, if balanced. Depth tracking is
+/// exact because a nested close in a declaration header is always a bare `>`: no `>>`
+/// token exists.
 pub(super) fn match_angle(tokens: &[Token]) -> Option<usize> {
     let mut depth = 0usize;
     for (index, token) in tokens.iter().enumerate() {

@@ -21,26 +21,24 @@ use crate::literal::decode_string_literal;
 use crate::parse_expr::{ExprParser, ParseComplete};
 use crate::token::{Keyword, Token, TokenKind, is_identifier, keyword};
 
-/// Recursive-descent parser for top-level declarations over the file-wide token
-/// stream, the same stream `StmtParser`/`ExprParser` consume. It dispatches on
-/// token shape, frames resource and function bodies with `{`/`}` braces,
-/// and delegates statement and expression parsing to those parsers, reborrowing
-/// its scoped sink so every finding reaches the one live collector. A
-/// declaration spans its whole first physical line at column 1.
+/// Recursive-descent parser for top-level declarations over the file-wide token stream,
+/// the same stream `StmtParser`/`ExprParser` consume. It dispatches on token shape,
+/// frames resource and function bodies with `{`/`}`, and delegates to those parsers
+/// through a reborrow of its scoped sink so every finding reaches the one live collector.
+/// A declaration spans its whole first physical line at column 1.
 pub(crate) struct DeclParser<'a, 'c> {
     pub(super) source: &'a str,
     pub(super) tokens: &'a [Token],
     pub(super) pos: usize,
     /// The file's declarations, pre-reserved at its conservative outer statement-start
-    /// count. Each declaration opens at least one start, including later ones on a line
-    /// after a preceding declaration's `}`, so parsing needs no amortized growth.
-    /// Final boxing may shrink capacity left by starts that are not declarations.
+    /// count. Every declaration opens at least one start, so parsing needs no amortized
+    /// growth; final boxing may shrink capacity left by starts that are not declarations.
     declarations: Vec<Declaration>,
     pub(super) sink: SyntaxSink<'c>,
-    /// Nested member-block depth (resource groups, enum categories). The lexer
-    /// reports the nesting-limit diagnostic; this second layer stops the recursive
-    /// descent at [`crate::NESTING_DEPTH_LIMIT`] so a deep group/category nest skips
-    /// its body rather than overflowing the native stack.
+    /// Nested member-block depth (resource groups, enum categories). The lexer reports the
+    /// nesting-limit diagnostic; this second layer stops the recursive descent at
+    /// [`crate::NESTING_DEPTH_LIMIT`] so a deep nest skips its body rather than
+    /// overflowing the native stack.
     pub(super) depth: usize,
     bodies: BodySelection,
 }
@@ -102,11 +100,9 @@ impl<'a, 'c> DeclParser<'a, 'c> {
         file
     }
 
-    /// Parse one top-level construct at the current header line: a declaration
-    /// keyword, an enum or function header, a stray indented region, or an
-    /// unknown declaration. Each declaration keyword introduces its kind only
-    /// when a space follows it, so a bare or glued keyword (such as `module::x`)
-    /// falls through to the unknown-declaration arm.
+    /// Parse one top-level construct at the current header line. A declaration keyword
+    /// introduces its kind only when a space follows it, so a bare or glued keyword (such
+    /// as `module::x`) falls through to the unknown-declaration arm.
     fn dispatch_top_level(
         &mut self,
         file: &mut SourceFile,
@@ -114,8 +110,6 @@ impl<'a, 'c> DeclParser<'a, 'c> {
         saw_top_level_item: bool,
     ) {
         match self.peek() {
-            // A `{` where a top-level declaration was expected: report the stray
-            // block and skip it.
             Some(TokenKind::LeftBrace) => self.report_stray_indented_lines(),
             Some(TokenKind::Keyword(Keyword::Module)) if self.keyword_introduces_decl() => {
                 self.flush_docs_as_comments(docs, &mut file.comments);
@@ -228,9 +222,8 @@ impl<'a, 'c> DeclParser<'a, 'c> {
                 );
                 self.declarations.push(Declaration::Function(function));
             }
-            // `pub` gates only `fn` and `enum`; a `pub resource`/`pub store` is
-            // reported at the `pub` token, which is then dropped so the rest of the
-            // declaration parses and raises no follow-on cascade.
+            // `pub` gates only `fn` and `enum`. A `pub resource`/`pub store` reports at
+            // the `pub`, which is dropped so the rest of the declaration still parses.
             Some(TokenKind::Keyword(Keyword::Pub)) if self.pub_precedes_ungated_decl() => {
                 let pub_token = self.advance();
                 self.error_span(
@@ -250,11 +243,10 @@ impl<'a, 'c> DeclParser<'a, 'c> {
         }
     }
 
-    /// Route a body-bearing declaration's header-trailing comment to its one owner.
-    /// When the construct has a `{ … }` body the comment belongs to the block — it
-    /// renders as the block's first own-line comment, so the `{`-cuddled, next-line
-    /// and own-line spellings all format alike. A body-less form (only `store`) has no
-    /// block, so the comment stays a header-trailing comment at file scope.
+    /// Route a declaration's header-trailing comment to its one owner. A construct with a
+    /// `{ … }` body gives it to the block as the block's first own-line comment, so the
+    /// `{`-cuddled, next-line and own-line spellings all format alike; a body-less form
+    /// (only `store`) keeps it as a header-trailing comment at file scope.
     fn route_header_comment(
         file_comments: &mut Vec<Comment>,
         body_comments: &mut Vec<Comment>,
@@ -302,11 +294,10 @@ impl<'a, 'c> DeclParser<'a, 'c> {
         Vec::new()
     }
 
-    /// Drain accumulated `///` doc comments that found no following declaration,
-    /// member, or parameter to attach to. A dangling doc comment is a syntax error
-    /// — a swallowed doc comment is one the formatter cannot place, breaking the
-    /// check-run-format round trip — so each is reported and retained as trivia for
-    /// the formatter to surface alongside the diagnostic.
+    /// Drain accumulated `///` doc comments that found no declaration, member, or
+    /// parameter to attach to. Each is reported as a syntax error and retained as trivia:
+    /// a swallowed doc comment is one the formatter cannot place, which breaks the
+    /// check-run-format round trip.
     pub(super) fn flush_docs_as_comments(
         &mut self,
         docs: &mut Vec<Token>,
@@ -391,8 +382,7 @@ impl<'a, 'c> DeclParser<'a, 'c> {
             Some(equal) => {
                 let head = &header[1..equal];
                 let value_tokens = &header[equal + 1..];
-                // A missing value is reported before checking the name and
-                // type, so its diagnostic sorts first on the line.
+                // Reported before the name and type so its diagnostic sorts first.
                 if value_tokens.is_empty() {
                     self.error_span(
                         span,
@@ -436,8 +426,8 @@ impl<'a, 'c> DeclParser<'a, 'c> {
             Some(index) => (&head[..index], Some(&head[index + 1..])),
             None => (head, None),
         };
-        // The name is the verbatim text before any `:`, kept even when invalid so
-        // the declaration still carries a name; only a non-identifier reports.
+        // The verbatim text before any `:`, kept even when invalid so the declaration
+        // still carries a name.
         let name = match name_tokens.first().zip(name_tokens.last()) {
             Some((first, last)) => self.source[first.span.start_byte..last.span.end_byte]
                 .trim()
@@ -445,8 +435,8 @@ impl<'a, 'c> DeclParser<'a, 'c> {
             None => String::new(),
         };
         let name_span = line_span_or(name_tokens, span);
-        // A reserved word is not an identifier (per the grammar), so it cannot name
-        // a const any more than it can name a param, member, or key.
+        // A reserved word is not an identifier, so it cannot name a const any more than
+        // it can name a param, member, or key.
         if keyword(&name).is_some() {
             self.error_span(
                 span,
@@ -460,8 +450,6 @@ impl<'a, 'c> DeclParser<'a, 'c> {
                 "expected const name before type annotation",
             );
         }
-        // No `:` leaves the type absent; a `:` with no tokens after it reports
-        // and yields no type. Semantic type resolution belongs downstream.
         let ty = type_tokens.and_then(|tokens| {
             if !tokens.is_empty() {
                 match parse_type(
@@ -482,10 +470,8 @@ impl<'a, 'c> DeclParser<'a, 'c> {
                 ParseDiagnosticReason::Expected(ExpectedSyntax::ConstType),
                 "expected const type annotation",
             );
-            // `Name: ` with a `:` but no type spelling is the incomplete type
-            // annotation form. Keep an inert leaf at the gap after the `:` so the
-            // annotation site stays addressable for editor position classification;
-            // the diagnostic above already reported it, so the file stays broken.
+            // `Name:` with no type spelling keeps an inert leaf at the gap after the `:`,
+            // so the annotation site stays addressable for editor position classification.
             let gap = colon
                 .and_then(|index| head.get(index))
                 .map_or(span, |token| gap_after(token.span));
@@ -494,11 +480,9 @@ impl<'a, 'c> DeclParser<'a, 'c> {
         (name, name_span, ty)
     }
 
-    /// Parse an `alias Name = Type` header line: a transparent type alias. The
-    /// name is one identifier; the target type runs from `=` to end of line and
-    /// is parsed by the shared type grammar. A missing `=`, keyword name, or
-    /// malformed type reports at the header and keeps the declaration node so
-    /// parsing stays total.
+    /// Parse an `alias Name = Type` header line: one identifier, then a target type
+    /// running from `=` to end of line. A missing `=`, keyword name, or malformed type
+    /// reports at the header and still yields a declaration node so parsing stays total.
     fn parse_alias(&mut self, docs: Vec<String>) -> AliasDecl {
         let span = self.header_span();
         let header = self.take_header_line();
@@ -569,13 +553,10 @@ impl<'a, 'c> DeclParser<'a, 'c> {
         }
     }
 
-    /// Parse a nominal type header line: `type Name: base in lo..hi` with an
-    /// optional `supports cap, ...` tail. The name is one identifier; the base
-    /// type runs from `:` to the `in` keyword; the interval is one range
-    /// expression; the capabilities are comma-separated identifiers. Each missing
-    /// or malformed piece reports once and leaves its slot empty so parsing stays
-    /// total; base admission, the literal-range rule, and the closed capability
-    /// set are checker rules.
+    /// Parse a nominal type header line: `type Name: base in lo..hi` with an optional
+    /// `supports cap, ...` tail. Each missing or malformed piece reports once and leaves
+    /// its slot empty so parsing stays total; base admission, the literal-range rule, and
+    /// the closed capability set are checker rules.
     fn parse_nominal(&mut self, docs: Vec<String>) -> NominalDecl {
         let span = self.header_span();
         let header = self.take_header_line();
@@ -784,10 +765,9 @@ impl<'a, 'c> DeclParser<'a, 'c> {
         }
     }
 
-    /// Parse a `struct Name` declaration and its indented field body. The header
-    /// and body reuse the resource machinery; a struct-specific restriction (no
-    /// groups, keys, or `required` keyword) is a checker rule, so the shared parser
-    /// stays one owner.
+    /// Parse a `struct Name` declaration and its indented field body, reusing the
+    /// resource machinery. Struct-specific restrictions (no groups, keys, or `required`)
+    /// are checker rules, so the shared parser stays one owner.
     fn parse_struct(&mut self, docs: Vec<String>) -> StructDecl {
         let span = self.header_span();
         let header = self.take_header_line();
@@ -938,10 +918,9 @@ impl<'a, 'c> DeclParser<'a, 'c> {
         }
     }
 
-    /// Parse a `test "name"` declaration: the header is the `test` keyword followed
-    /// by exactly one string literal (the report title), then an indented body of
-    /// statements, where the owned `assert` is legal. A missing or non-string title
-    /// reports `parse.syntax` and yields an empty name so parsing stays total.
+    /// Parse a `test "name"` declaration: the `test` keyword, exactly one string literal
+    /// (the report title), then a body of statements where `assert` is legal. A missing
+    /// or non-string title reports and yields an empty name so parsing stays total.
     fn parse_test(&mut self, docs: Vec<String>) -> TestDecl {
         let span = self.header_span();
         let header = self.take_header_line();
@@ -983,23 +962,18 @@ impl<'a, 'c> DeclParser<'a, 'c> {
         }
     }
 
-    /// Parse a function body from its `{ … }` block via the statement parser. The
-    /// cursor is at the opening `{`; the body span runs from that `{` to the
-    /// matching `}`. The statement parser is fed the tokens strictly between the
-    /// braces and frames nested `{ … }` blocks itself.
+    /// Parse a function body from its `{ … }` block via the statement parser. The cursor
+    /// is at the opening `{` and the body span runs to the matching `}`; the statement
+    /// parser receives the tokens strictly between them and frames nested blocks itself.
     pub(super) fn parse_function_body(&mut self) -> Block {
         let open = self.tokens[self.pos]; // `{`
         let start = self.pos;
         let end = self.consume_block(); // index just past the matching `}`
-        // `consume_block` consumed `{` at `start` and the matching `}` at `end - 1`
-        // (or ran to end-of-input). The body is everything strictly between them.
         let closed = end > start + 1 && self.tokens[end - 1].kind == TokenKind::RightBrace;
         if !closed {
-            // A body that ran to end of input has no matching `}`: its opening brace
-            // swallowed every following declaration as body content. Report one
-            // diagnostic at the open brace and skip statement parsing over that leaked
-            // tail, so a single missing `}` names the unclosed block instead of
-            // cascading a parse error onto each following declaration.
+            // An unclosed brace swallowed every following declaration as body content.
+            // Reporting once at the open brace and skipping statement parsing over that
+            // leaked tail keeps one missing `}` from cascading onto each declaration.
             self.report_unclosed_block(open.span);
             return Block {
                 statements: Box::new([]),
@@ -1037,15 +1011,9 @@ impl<'a, 'c> DeclParser<'a, 'c> {
         }
     }
 
-    /// Parse a value-position expression. Returns `None` when the value text
-    /// does not parse as a complete expression. An absent value is already
-    /// reported by the caller, so only a present-but-malformed value raises a
-    /// diagnostic here (a type spelling such as `int` in value position lands
-    /// here, where it is a syntax error rather than a silent acceptance).
-    /// Parse `tokens` as one complete expression. A failure the expression parser
-    /// reports at its own token yields `None` directly; a complete expression
-    /// followed by trailing tokens is reported once against `err` with
-    /// `reason`/`message`, the caller's own account of the failure.
+    /// Parse `tokens` as one complete expression. A failure the expression parser reports
+    /// at its own token yields `None` directly; a complete expression followed by
+    /// trailing tokens is reported once against `err` with the caller's `reason`/`message`.
     pub(super) fn parse_expr_with_fallback(
         &mut self,
         tokens: &[Token],
@@ -1066,13 +1034,15 @@ impl<'a, 'c> DeclParser<'a, 'c> {
         }
     }
 
+    /// Parse a value-position expression. An absent value is already reported by the
+    /// caller, so only a present-but-malformed one raises a diagnostic here — a type
+    /// spelling such as `int` in value position lands here as a syntax error.
     fn value_expression(&mut self, tokens: &[Token]) -> Option<Expression> {
         if tokens.is_empty() {
             return None;
         }
-        // A written-but-malformed value keeps its span as an error node rather than
-        // vanishing, so tooling that locates the initializer (signature help, the
-        // const header boundary) still sees where the value began.
+        // A malformed value keeps its span as an error node rather than vanishing, so
+        // tooling that locates the initializer still sees where the value began.
         let span = line_span_or(tokens, tokens[0].span);
         Some(
             self.parse_expr_with_fallback(

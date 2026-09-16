@@ -111,12 +111,11 @@ pub struct AliasDecl {
     pub span: SourceSpan,
 }
 
-/// A nominal type declaration: `type Name: base in lo..hi supports cap, ...`.
-/// Unlike a transparent `alias`, the name mints a distinct type with its own
-/// constructor; the `in` range constrains every value of the type and the
-/// `supports` list names the capabilities that unlock arithmetic. The parser
-/// captures the spelled parts; base admission, the literal-range rule, and the
-/// closed capability set are checker rules.
+/// A nominal type declaration: `type Name: base in lo..hi supports cap, ...`. Unlike a
+/// transparent `alias`, the name mints a distinct type with its own constructor; the
+/// `in` range constrains every value and `supports` names the capabilities that unlock
+/// arithmetic. The parser captures the spelled parts; base admission, the literal-range
+/// rule, and the closed capability set are checker rules.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NominalDecl {
     pub docs: Vec<String>,
@@ -183,20 +182,20 @@ pub enum Expression {
     /// inert until resolved.
     Absent { span: SourceSpan },
     /// A parenthesized application: invocation or construction. The checker
-    /// resolves a function call, conversion, or constructor from the callee. Keyed
-    /// address is no longer part of this node — it is [`Expression::Keyed`].
+    /// resolves a function call, conversion, or constructor from the callee.
+    /// Keyed address is [`Expression::Keyed`], not this node.
     Call {
         callee: Box<Expression>,
         args: Vec<Argument>,
         multiline: bool,
         span: SourceSpan,
     },
-    /// A keyed address `base[key, ...]`: a durable entry address (`^books[id]`,
-    /// `^patients[pid].visits[vid]`), a keyed field or scalar leaf, or a local
-    /// keyed-collection read (`cells[r, c]`). The bracket group is an ordered key
-    /// tuple selecting an entry; keys are positional (the parser rejects a named
-    /// key), so this carries plain expressions rather than [`Argument`]s. The
-    /// checker resolves `base` and matches the key columns against its key tuple.
+    /// A keyed address `base[key, ...]`: a durable entry address (`^books[id]`), a
+    /// keyed field or scalar leaf, or a local keyed-collection read (`cells[r, c]`).
+    /// The bracket group is an ordered key tuple selecting an entry; keys are
+    /// positional (the parser rejects a named key), so this carries plain expressions
+    /// rather than [`Argument`]s. The checker resolves `base` and matches the key
+    /// columns against its key tuple.
     Keyed {
         base: Box<Expression>,
         keys: Vec<Expression>,
@@ -269,9 +268,9 @@ pub enum Expression {
     ///
     /// `recovery` is `None` for an ordinary dropped operand and `Some` only for the
     /// bounded incomplete surface forms the parser structures for editor analysis
-    /// (`base.`, `base?.`, `base::`). The recovered base is retained so a position
-    /// classifier can type the receiver; the node stays inert in the compile path
-    /// exactly like a bare error, and its diagnostic is unchanged either way.
+    /// (`base.`, `base?.`, `base::`), where the base is retained so a position
+    /// classifier can type the receiver. Either way the node is inert in the compile
+    /// path and its diagnostic is unchanged.
     Error {
         span: SourceSpan,
         recovery: Option<Recovery>,
@@ -285,13 +284,10 @@ pub struct BinaryOperands {
     pub right: Expression,
 }
 
-/// The well-formed left context a recovery node preserves for the incomplete
-/// surface form the parser was structuring when the segment after the operator
-/// was missing. The variant records which operator introduced the gap — mirroring
-/// the surrounding [`Expression::Field`]/[`Expression::OptionalField`] split rather
-/// than carrying a boolean — so a position classifier distinguishes `.`, `?.`, and
-/// `::` without re-reading source. Each variant is inert in the compile path; only
-/// the recovery-aware analysis pass inspects it.
+/// The well-formed left context a recovery node preserves when the segment after an
+/// operator is missing. The variant records which operator introduced the gap, so a
+/// position classifier distinguishes `.`, `?.`, and `::` without re-reading source.
+/// Inert in the compile path; only the recovery-aware analysis pass inspects it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Recovery {
     /// `base.` with no field name yet; `base` is the receiver.
@@ -375,12 +371,8 @@ pub fn range_expr(expr: &Expression) -> Option<RangeExpr<'_>> {
 }
 
 /// One `::`-separated segment of a name path: the segment's spelling and the source
-/// span of that spelling, held as one value.
-///
-/// The spelling and the span used to be two vectors walked in step, which made an
-/// unequal length representable and left the correspondence to whichever construction
-/// site happened to push both. A path is a sequence of these instead, so a segment
-/// without a span — or a span without a segment — cannot be built.
+/// span of that spelling, held as one value, so a segment without a span — or a span
+/// without a segment — cannot be built.
 ///
 /// `text` is a `Box<str>`: a segment is built once from a token and never appended to,
 /// so it carries no spare capacity. No `Expression` retains a growable string.
@@ -391,8 +383,7 @@ pub struct NameSegment {
 }
 
 impl NameSegment {
-    /// A segment cannot be built without the span it was spelled at, which is the
-    /// invariant the two parallel vectors could not state.
+    /// A segment cannot be built without the span it was spelled at.
     pub fn new(text: &str, span: SourceSpan) -> Self {
         Self {
             text: text.into(),
@@ -439,9 +430,8 @@ pub enum InterpolationPart {
 }
 
 /// One argument in a call expression. `name` is set for named arguments
-/// (`title: draft`), and carries the span it was spelled at: a name without a span,
-/// or a span without a name, was representable while the two were separate `Option`s
-/// and is not now.
+/// (`title: draft`) and carries the span it was spelled at, so a name without a span,
+/// or a span without a name, is not representable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Argument {
     pub name: Option<NameSegment>,
@@ -511,10 +501,10 @@ pub enum Associativity {
 impl BinaryOp {
     /// How tightly this operator binds, tighter last.
     ///
-    /// The one owner of the binding order. The expression parser encodes the same
-    /// order structurally, as one function per level, and the formatter reads this
-    /// table to decide where parentheses are required; `operator_precedence_matches_the_parser`
-    /// in `tests/cases` is what keeps the two from drifting.
+    /// The one owner of the binding order. The expression parser encodes the same order
+    /// structurally as one function per level, and the formatter reads this table to
+    /// decide where parentheses are required; `operator_precedence_matches_the_parser`
+    /// in `tests/cases` keeps the two from drifting.
     pub const fn precedence(self) -> u8 {
         match self {
             Self::Or => 1,
@@ -608,12 +598,10 @@ pub enum CompoundAssignOp {
 }
 
 impl CompoundAssignOp {
-    /// The compound-assign operator a single `+=`, `-=`, `*=`, `/=`, or `%=`
-    /// token spells, or `None` for any other token. Each compound operator is
-    /// one lexer token, so this classifies that token directly; it is the single
-    /// owner shared by the statement parser (which builds a compound assignment)
-    /// and the expression parser (which rejects one reached in expression
-    /// position).
+    /// The compound-assign operator a single `+=`, `-=`, `*=`, `/=`, or `%=` token
+    /// spells, or `None` for any other token. The single owner of that classification,
+    /// shared by the statement parser (which builds a compound assignment) and the
+    /// expression parser (which rejects one in expression position).
     pub(crate) fn from_operator_token(kind: TokenKind) -> Option<Self> {
         match kind {
             TokenKind::PlusEqual => Some(Self::Add),
@@ -671,13 +659,11 @@ pub struct ResourceDecl {
     pub span: SourceSpan,
 }
 
-/// A dense product type: `struct Name` with an indented body of `name: Type`
-/// fields. Unlike a `resource`, a struct is a non-durable value type — every
-/// field is required, held inline, and copied by value — and it is constructed
-/// with a named-only literal `Name(field: expr, ...)`. It shares the resource
-/// member syntax, so groups, key parameters, and the `required` keyword parse
-/// here; the checker rejects them, since a struct field is always the bare
-/// `name: Type` form.
+/// A dense product type: `struct Name` with an indented body of `name: Type` fields.
+/// Unlike a `resource`, a struct is a non-durable value type — every field required,
+/// held inline, copied by value — constructed with a named-only literal
+/// `Name(field: expr, ...)`. It shares the resource member syntax, so groups, key
+/// parameters, and `required` parse here and the checker rejects them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructDecl {
     pub docs: Vec<String>,
@@ -759,9 +745,7 @@ pub struct IndexDecl {
 
 /// One argument of an `index` declaration: a dotted field path, with the span of the
 /// whole path, so a per-argument or per-segment diagnostic points at the offending path
-/// rather than the `index` line. The path is a sequence of [`NameSegment`]s for the same
-/// reason a name path is — a segment without its span is not representable — and
-/// [`field_path_spelling`] renders it.
+/// rather than the `index` line. [`field_path_spelling`] renders it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexArg {
     pub segments: Box<[NameSegment]>,
@@ -860,12 +844,12 @@ pub struct EnumPayloadField {
 pub struct Block {
     /// Exactly sized. A block's statement list is the largest allocation a parse
     /// builds — a `Statement` is the widest node the parser stores in a vector — and a
-    /// `Box<[Statement]>` has no capacity field, so the amortized growth slack a list
-    /// built by pushing would still hold at close is not representable.
+    /// `Box<[Statement]>` has no capacity field, so amortized growth slack cannot
+    /// survive the close.
     pub statements: Box<[Statement]>,
-    /// Line comments inside this block, in source order. They are kept as
-    /// block-level trivia (not attached to statement nodes) so the formatter can
-    /// re-emit them and `parse -> format` round-trips comments losslessly.
+    /// Line comments inside this block, in source order. Kept as block-level trivia
+    /// rather than attached to statement nodes so the formatter can re-emit them and
+    /// `parse -> format` round-trips comments losslessly.
     pub comments: Vec<Comment>,
     pub span: SourceSpan,
 }
@@ -897,14 +881,12 @@ pub enum CommentPlacement {
 
 /// One statement of a block.
 ///
-/// A block holds its statements inline, so every variant pays the width of the widest
-/// one for each statement in the file — the dominant term in what a parse of a
-/// maximum-size file costs. Payloads that are both wide and rare are therefore held
-/// behind a `Box`: a type annotation, which most statements do not write, and a `for`
-/// loop's bounded-traversal clause, which almost no statement carries. Widening this
-/// enum is a cost paid per statement in the file, not per statement that uses the field;
-/// `marrow-compile`'s `no_node_family_exceeds_the_declared_source_byte_cap` is where that
-/// cost is bounded.
+/// A block holds its statements inline, so every statement in the file pays the width
+/// of the widest variant — the dominant term in what parsing a maximum-size file costs.
+/// Payloads that are both wide and rare are therefore boxed: a type annotation and a
+/// `for` loop's bounded-traversal clause. Widening this enum is a cost paid per
+/// statement in the file, not per statement that uses the field, and `marrow-compile`'s
+/// `no_node_family_exceeds_the_declared_source_byte_cap` bounds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Statement {
     Const {
@@ -939,12 +921,10 @@ pub enum Statement {
         span: SourceSpan,
     },
     /// `place name = ^root(key...)`: a function-local binding naming one concrete
-    /// durable entry address. The key tuple in `place` is evaluated exactly once at
-    /// the binding; the binding is immutable (a place is not re-assignable) and is
-    /// not a first-class value. Later uses (`name.field`, `name = Record(...)`,
-    /// `exists(name)`, `delete name`, `if const x = name`) resolve the operation
-    /// through the pre-evaluated address. `place` is the durable entry address
-    /// `^root(key...)`; the checker rejects a non-durable or field-projected target.
+    /// durable entry address. The key tuple is evaluated exactly once at the binding;
+    /// the binding is immutable and is not a first-class value, and later uses resolve
+    /// through the pre-evaluated address. The checker rejects a non-durable or
+    /// field-projected target.
     PlaceBinding {
         name: String,
         name_span: SourceSpan,
@@ -1000,10 +980,10 @@ pub enum Statement {
         else_block: Option<Block>,
         span: SourceSpan,
     },
-    /// B5 (parse-only): `if const a = e1 and const b = e2 and cond { … }` — one or
-    /// more chained existence bindings and an optional trailing condition. Parsed so
-    /// the grammar is complete; `marrow-compile` rejects it as `check.unsupported`
-    /// until the form is adopted, so it never reaches the runtime.
+    /// Parse-only: `if const a = e1 and const b = e2 and cond { … }` — one or more
+    /// chained existence bindings and an optional trailing condition. Parsed so the
+    /// grammar is complete; `marrow-compile` rejects it as `check.unsupported` until
+    /// the form is adopted, so it never reaches the runtime.
     IfConstChain {
         bindings: Vec<IfConstBinding>,
         condition: Option<Expression>,
@@ -1012,7 +992,7 @@ pub enum Statement {
         else_block: Option<Block>,
         span: SourceSpan,
     },
-    /// B6 (parse-only): let-else — `const x = e else <diverging>` or
+    /// Parse-only: let-else — `const x = e else <diverging>` or
     /// `var x = e else { … }`. Parsed so the grammar is complete; `marrow-compile`
     /// rejects it as `check.unsupported` until the form is adopted.
     LetElse {
@@ -1062,13 +1042,11 @@ pub enum Statement {
         body: Block,
         span: SourceSpan,
     },
-    /// A `match` over an enum-typed scrutinee: each arm names one member of the
-    /// enum and holds the block to run when the scrutinee selects it. An arm is a
-    /// member path *relative* to the scrutinee enum — a bare leaf (`bengal`), a
-    /// qualified path (`tiger::bengal`), or a category (`tiger`, its whole
-    /// subtree). The scrutinee supplies the enum, so an arm carries no enum prefix;
-    /// a local enum's `match` has no wildcard arm. Exhaustiveness and member
-    /// validity are checker rules.
+    /// A `match` over an enum-typed scrutinee: each arm names one member and holds the
+    /// block to run when the scrutinee selects it. An arm is a member path *relative*
+    /// to the scrutinee enum — a bare leaf, a qualified path, or a category and its
+    /// whole subtree — so it carries no enum prefix, and a local enum's `match` has no
+    /// wildcard arm. Exhaustiveness and member validity are checker rules.
     Match {
         scrutinee: Expression,
         arms: Vec<MatchArm>,
@@ -1125,9 +1103,8 @@ pub struct MatchArm {
     pub span: SourceSpan,
 }
 
-/// One existence binding in a chained `if const` head (B5). Parse-only; the
-/// checker resolves the binding's type from the saved read once the form is
-/// adopted.
+/// One existence binding in a chained `if const` head. Parse-only; the checker
+/// resolves the binding's type from the saved read once the form is adopted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IfConstBinding {
     pub name: String,
@@ -1152,11 +1129,10 @@ pub struct ElseIf {
     pub block: Block,
 }
 
-/// The loop variable(s) of a `for` statement: `for k in ...`,
-/// `for k, v in ...`, or the composite-layer `for c0, c1, .., v in ...`. The
-/// binding is a non-empty name vector; the parser guarantees `names` holds at
-/// least one entry. A single name binds the key; additional names bind the
-/// remaining key columns and the leaf value, per the loop-head arity rules.
+/// The loop variable(s) of a `for` statement: `for k in ...`, `for k, v in ...`, or the
+/// composite-layer `for c0, c1, .., v in ...`. The parser guarantees `names` holds at
+/// least one entry. A single name binds the key; additional names bind the remaining key
+/// columns and the leaf value, per the loop-head arity rules.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForBinding {
     pub names: Vec<ForName>,
@@ -1179,13 +1155,13 @@ pub enum LoopOrder {
     Reversed,
 }
 
-/// The bounded durable-traversal clause of a `for` head: `at most N [from f]`
-/// paired with its `on more` block. `at most N` caps how many immediate keys the
-/// traversal freezes; the optional inclusive `from f` starts the walk at or after a
-/// lower-bound key; the `on more` block runs when a further key existed beyond the
-/// frozen `N` and the frozen bodies all completed normally. The checker enforces that
-/// `N` is a positive compile-time literal within the traversal ceiling, that `on more`
-/// is present, and that the iterable is a durable root or single-level branch place.
+/// The bounded durable-traversal clause of a `for` head: `at most N [from f]` paired
+/// with its `on more` block. `N` caps how many immediate keys the traversal freezes, the
+/// optional inclusive `from f` starts the walk at or after a lower-bound key, and
+/// `on more` runs when a further key existed beyond the frozen `N` and every frozen body
+/// completed normally. The checker enforces that `N` is a positive compile-time literal
+/// within the traversal ceiling, that `on more` is present, and that the iterable is a
+/// durable root or single-level branch place.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TraversalBound {
     /// The `at most N` limit expression.
@@ -1275,11 +1251,10 @@ pub enum TypeExpr {
         inner: Box<TypeExpr>,
         span: SourceSpan,
     },
-    /// A generic type application `Head<Arg, ...>`. The head is any identifier: the
-    /// toolchain generics
-    /// `Option<T>`/`Result<T, E>`/`List<T>`/`Map<K, V>` or a user-declared generic
-    /// `struct`/`enum` template. `head` is the applied name and `args` its type
-    /// arguments in source order; the semantic owner resolves the head.
+    /// A generic type application `Head<Arg, ...>`. The head is any identifier — a
+    /// toolchain generic (`Option`, `Result`, `List`, `Map`) or a user-declared
+    /// `struct`/`enum` template — and `args` are its type arguments in source order.
+    /// The semantic owner resolves the head.
     Apply {
         head: String,
         head_span: SourceSpan,
@@ -1289,9 +1264,7 @@ pub enum TypeExpr {
     /// A type position the parser reached with no type spelling to structure
     /// (`x: ` with nothing after the `:`). The inert leaf keeps the annotation site
     /// addressable for editor position classification; like [`Expression::Error`] it
-    /// always travels with a `parse.syntax` diagnostic at its span, and semantic
-    /// processing is gated on `!ParsedSource::has_errors`, so no resolver ever
-    /// reaches it.
+    /// always travels with a `parse.syntax` diagnostic, so no resolver reaches it.
     Incomplete { span: SourceSpan },
 }
 
@@ -1325,11 +1298,10 @@ impl TypeExpr {
 }
 
 impl fmt::Display for TypeExpr {
-    // The canonical angle-bracket source spelling and the inverse of the type parser:
-    // the formatter re-emits it, and a spelling parsed and re-rendered is byte-identical.
-    // Presentation-only — it feeds no durable identity. `DurableContractId` hashes the
-    // graph's ledger ids, and durable type anchors use the space-free bracket grammar
-    // (`Name[arg,...]`) via `inst_anchor_spelling`, not this angle form.
+    // The canonical angle-bracket spelling and the inverse of the type parser: a
+    // spelling parsed and re-rendered is byte-identical. Presentation-only — it feeds
+    // no durable identity, which uses the space-free bracket grammar (`Name[arg,...]`)
+    // via `inst_anchor_spelling`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TypeExpr::Name { text, .. } => f.write_str(text),
@@ -1348,8 +1320,7 @@ impl fmt::Display for TypeExpr {
                 f.write_str(">")
             }
             // Reachable only in a best-effort render over input that failed to parse
-            // (emission is gated on `!has_errors`). The leaf names no type, so it
-            // renders empty, mirroring `Expression::Error`.
+            // (emission is gated on `!has_errors`); the leaf names no type.
             TypeExpr::Incomplete { .. } => Ok(()),
         }
     }

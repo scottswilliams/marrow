@@ -1,11 +1,11 @@
-//! The Marrow syntax crate: lexing and parsing of `.mw` source into an AST,
-//! plus the shared diagnostic surface the rest of the toolchain renders.
+//! Lexing and parsing of `.mw` source into an AST, plus the diagnostic surface the
+//! rest of the toolchain renders.
 //!
-//! The crate's surface is the AST (`ast`), the diagnostic types (`diagnostic`),
-//! the token model (`token`), the canonical string- and bytes-literal decoders (`literal`),
-//! and the public entry points `lex_source`/`parse_source`/`parse_expression`.
-//! Everything else (the lexer and the expression/declaration parsers) is an
-//! internal carve of one pipeline.
+//! The surface is the AST (`ast`), the diagnostics (`diagnostic`), the token model
+//! (`token`), the literal decoders (`literal`), and the entry points `lex_source`,
+//! `parse_source`, and `parse_expression`; the lexer and parsers are internal.
+//! Parsing is a pure function of the source, fails closed at
+//! [`NESTING_DEPTH_LIMIT`], and allocates at most [`max_parse_bytes`] for a file.
 
 mod ast;
 mod diagnostic;
@@ -62,18 +62,12 @@ pub const PARSE_SYNTAX: &str = Code::ParseSyntax.as_str();
 /// The maximum nesting depth the front end will structure before it stops and
 /// reports [`NESTING_LIMIT`].
 ///
-/// Four layers enforce it. The lexer reports the located finding when the brace
-/// depth first exceeds the limit. The statement parser bounds its own descent by
-/// counting frames, so a nest that opens no brace — a trailing clause takes a
-/// single inline statement in place of a block — is refused at the same depth as
-/// one that does. The declaration parser counts its nested member blocks (resource
-/// groups, enum categories), which have no inline form. The expression parser
-/// enforces it for token-level nesting (parentheses, unary and binary operands) on
-/// a single line.
-///
-/// The AST — and every later walk over it — therefore stays bounded no matter how
-/// deep or how long the source is, and deeper source fails closed with a located
-/// diagnostic rather than overflowing the native stack. 256 follows the
+/// Four layers enforce it: the lexer on brace depth, the statement parser by counting
+/// descent frames (so a brace-free nest through a trailing inline clause is refused at
+/// the same depth), the declaration parser on nested member blocks, and the expression
+/// parser on token-level nesting. The AST — and every later walk over it — therefore
+/// stays bounded however deep or long the source is, and deeper source fails closed
+/// with a located diagnostic rather than overflowing the native stack. 256 follows the
 /// Clang/rustc convention; it is fixed in v0.1, not configurable.
 pub const NESTING_DEPTH_LIMIT: usize = 256;
 
@@ -85,22 +79,17 @@ pub const NESTING_LIMIT: &str = Code::CheckNestingLimit.as_str();
 /// The heap [`parse_source`] allocates for one source byte, at the widest shape the
 /// grammar admits.
 ///
-/// **Declared, not measured.** The figure is a cap over every node family the parser
-/// builds — the widest one decides it, so shrinking that family promotes the next —
-/// plus the file's token slice and the statement capacity pass that sizes each statement
-/// list. `marrow-compile`'s `no_node_family_exceeds_the_declared_source_byte_cap`
-/// re-derives it from the representation and fails if this constant drifts from it or
-/// if any family widens past it.
+/// **Declared, not measured**, and deliberately above the derived maximum so that adding
+/// one field to one node costs a review here rather than a re-derivation of every ceiling
+/// built on it. The figure caps every node family the parser builds — the widest decides
+/// it — plus the token slice and the statement capacity pass.
+/// `marrow-compile`'s `no_node_family_exceeds_the_declared_source_byte_cap` re-derives it
+/// and fails if this constant drifts or a family widens past it.
 ///
-/// The cap sits above the derived maximum on purpose: one field added to one node
-/// costs a review here rather than a re-derivation of every ceiling built on it.
-///
-/// It charges allocated capacity, not resident pages. Two things sit outside it: the
-/// caller's source bytes, which the parser borrows, and per-allocation allocator
-/// overhead. Every container slot is charged at the standard library's minimum non-zero
-/// capacity, which is four elements rather than the two a doubling growth would suggest:
-/// a container holding one element allocates four slots, and one element is the least a
-/// node family's own spelling admits.
+/// It charges allocated capacity, not resident pages, and excludes the borrowed source
+/// bytes and per-allocation allocator overhead. Container slots are charged at the
+/// standard library's minimum non-zero capacity of four elements, not the two a doubling
+/// growth would suggest.
 pub const MAX_PARSE_BYTES_PER_SOURCE_BYTE: usize = 552;
 
 /// The heap [`parse_source`] allocates regardless of the file's length: the diagnostic
@@ -114,17 +103,15 @@ pub const MAX_PARSE_FIXED_BYTES: usize = 2 * SYNTAX_DIAGNOSTIC_COUNT_LIMIT * 256
 
 /// What sizing a body's statement lists holds beyond its per-source-byte charge: an
 /// open-region stack the nesting limit bounds, and the smallest non-zero capacity its
-/// region vector takes. Published because it is part of [`MAX_PARSE_FIXED_BYTES`] and is
-/// derived from a private frame this crate owns, so a caller accounting the fixed charge
-/// consumes it rather than restating it.
+/// region vector takes. Published as part of [`MAX_PARSE_FIXED_BYTES`] so a caller
+/// accounting the fixed charge consumes it rather than restating a private derivation.
 pub const MAX_STATEMENT_CAPACITY_BYTES: usize = parse_decl::STATEMENT_CAPACITY_FIXED_BYTES;
 
 /// The heap [`parse_source`] can allocate for a file of `source_bytes`.
 ///
-/// Computable before the file is parsed, and before it is even read: the rate is a
-/// constant of the representation and the length is known at capture. A caller with a
-/// heap bound of its own can therefore refuse a file rather than materialize it and
-/// discover the cost afterwards.
+/// Computable before the file is read, since the rate is a constant of the representation
+/// and the length is known at capture, so a caller with a heap bound of its own can refuse
+/// a file rather than materialize it and discover the cost afterwards.
 pub const fn max_parse_bytes(source_bytes: usize) -> usize {
     source_bytes * MAX_PARSE_BYTES_PER_SOURCE_BYTE + MAX_PARSE_FIXED_BYTES
 }
@@ -132,10 +119,9 @@ pub const fn max_parse_bytes(source_bytes: usize) -> usize {
 /// The longest file [`max_parse_bytes`] keeps within `heap_bytes`, and zero when the
 /// length-independent charge alone is over it.
 ///
-/// The inverse of [`max_parse_bytes`], for a caller that owns a heap ceiling and wants
-/// the length that fits it rather than the cost of a length it already has. A caller
-/// deriving its admitted length this way narrows what it admits whenever the parsed
-/// representation widens, without editing a length of its own.
+/// The inverse of [`max_parse_bytes`], for a caller that owns a heap ceiling and wants the
+/// length that fits it. Deriving an admitted length this way narrows it automatically
+/// whenever the parsed representation widens.
 pub const fn max_parse_length(heap_bytes: usize) -> usize {
     if heap_bytes < MAX_PARSE_FIXED_BYTES {
         return 0;
@@ -148,9 +134,8 @@ pub fn is_reserved_word(text: &str) -> bool {
 }
 
 pub fn parse_source(source: &str) -> ParsedSource {
-    // One live collector per entry point: a scoped lexer sink borrow ends with
-    // tokenization, then a parser sink borrows the same owner, and the
-    // collector is finished exactly once into the bounded result.
+    // One live collector per entry point: the lexer and parser sinks borrow the same
+    // owner in turn, and it is finished exactly once into the bounded result.
     let mut collector = diagnostic::SyntaxDiagnosticCollector::new();
     let tokens = lexer::lex_tokens(source, collector.lexer_sink());
     let file = DeclParser::new(source, &tokens, collector.parser_sink()).parse();
@@ -268,13 +253,11 @@ mod decl_parser_corpus {
             "type Foo = int\n",
             "wat\n",
             "    indented\n",
-            // `;;` is the pre-brace doc-comment spelling, which now lexes as an
-            // unexpected character. Kept as malformed input: determinism and the
-            // no-panic property are what this corpus asserts, and a retired spelling a
-            // reader may still type is worth holding both against.
+            // `;;` lexes as an unexpected character; held here as malformed input a
+            // reader may still type, against the determinism and no-panic properties.
             "module app\n;; a retired doc-comment spelling\nfn main()\n    return\n",
             ";; a retired doc-comment spelling\nresource Tag\n    name: string\n",
-            // the current comment spelling, in the same positions
+            // the comment spelling, in the same positions
             "module app\n// a comment\nfn main() {\n    return\n}\n",
             "// a leading comment\nresource Tag {\n    name: string\n}\n",
             // statement bodies that exercise StmtParser delegation
@@ -300,9 +283,8 @@ mod decl_parser_corpus {
         }
     }
 
-    /// `const NAME (: type)? = expr` parses its value by reusing the expression
-    /// parser. This pins the value path's AST: a structured expression when the
-    /// grammar covers it, and a syntax error with no value when it does not.
+    /// A const value is parsed by reusing the expression parser: a structured
+    /// expression when the grammar covers it, an error node when it does not.
     #[test]
     fn const_value_reuses_the_expression_parser() {
         let ParsedSource { file, diagnostics } = parse_source("const Total: int = 60 * 60\n");
@@ -327,8 +309,8 @@ mod decl_parser_corpus {
             decl.value
         );
 
-        // A bare type name is not an expression, so it is a syntax error. Total
-        // parsing keeps the written value as an error node rather than dropping it.
+        // A bare type name is not an expression. Total parsing keeps the written
+        // value as an error node rather than dropping it.
         let ParsedSource { file, diagnostics } = parse_source("const Bad = int\n");
         assert!(
             complete(&diagnostics)
@@ -346,17 +328,14 @@ mod decl_parser_corpus {
         );
     }
 
-    /// A statement whose value expression is missing — a trailing `=`, statement
-    /// keyword, or operator inside a function body — reports the missing operand
-    /// at the gap just past the token that introduced it, not the generic
-    /// "expected a statement" anchored at the keyword that legitimately starts
-    /// the statement.
+    /// A statement whose value expression is missing reports the missing operand at
+    /// the gap just past the token that introduced it, not the generic "expected a
+    /// statement" anchored at the keyword that legitimately starts the statement.
     #[test]
     fn missing_operand_reports_an_expression_gap_at_the_token() {
         use super::{DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason};
 
-        // Each case names the byte just past the `=`/operator/keyword that the
-        // operand should have followed.
+        // Each case names the byte just past the token the operand should have followed.
         for (source, gap_byte) in [
             (
                 "fn f() {\n    const x: int =\n}\n",
@@ -506,8 +485,6 @@ mod decl_parser_corpus {
     /// never a line-0/column-0 span.
     #[test]
     fn unclosed_delimiter_with_a_complete_operand_names_the_delimiter() {
-        // Each case names the missing-delimiter substring and the byte the gap
-        // should sit at, just past the complete operand.
         for (source, expected, gap_byte) in [
             (
                 "fn f() {\n    return (1\n}\n",
@@ -574,14 +551,10 @@ mod decl_parser_corpus {
         );
     }
 
-    /// No empty-operand or empty-header statement form may report a diagnostic
-    /// at line 0 or column 0 — those are never valid source positions (lines and
-    /// columns are 1-based). Every expression-taking statement form is
-    /// enumerated: the const/var RHS, return/throw/delete value, assignment RHS
-    /// and LHS, the empty `for` header along with its empty iterable and step,
-    /// and the `if`/`else if`/`while`/`match` header expressions. The empty
-    /// header forms anchor on the consumed keyword span, so an absent operand
-    /// never falls back to the line-0/column-0 default.
+    /// No empty-operand or empty-header statement form may report at line 0 or column
+    /// 0: lines and columns are 1-based, so those are never valid source positions.
+    /// The empty header forms anchor on the consumed keyword span rather than falling
+    /// back to the default. Every expression-taking statement form is enumerated below.
     #[test]
     fn no_empty_operand_form_reports_a_line_or_column_zero_span() {
         for source in [
@@ -643,8 +616,8 @@ mod nesting_limit {
         parse_source,
     };
 
-    /// Borrow the complete payload the test expects; nesting-limit sources
-    /// report once per over-deep region, far below the diagnostic ceilings.
+    /// Borrow the complete payload; nesting-limit sources report once per over-deep
+    /// region, far below the diagnostic ceilings.
     fn complete(diagnostics: &SyntaxDiagnostics) -> &[Diagnostic] {
         diagnostics
             .as_complete()
@@ -675,8 +648,7 @@ mod nesting_limit {
             .collect()
     }
 
-    /// A source with `depth` nested `if` blocks, the deep-statement form. Each
-    /// level opens one more brace and holds the next `if`.
+    /// A source with `depth` nested `if` blocks, the deep-statement form.
     fn nested_ifs(depth: usize) -> String {
         let mut source = String::from("module app\n\npub fn main() {\n");
         for level in 0..depth {
@@ -711,8 +683,7 @@ mod nesting_limit {
         format!("module app\n\npub fn main() {{\n    return {chain}\n}}\n")
     }
 
-    /// `depth` enum members each nested under the previous one as a category via
-    /// braces.
+    /// `depth` enum members each nested under the previous one as a category.
     fn nested_enum_members(depth: usize) -> String {
         let mut source = String::from("module app\n\nenum E {\n");
         for level in 0..depth {
@@ -755,11 +726,9 @@ mod nesting_limit {
             .count()
     }
 
-    /// The recursive-descent parser fails closed at the nesting limit: past it a
-    /// deep brace nest skips its body rather than recursing, so the AST (and every
-    /// later walk over it) stays bounded no matter how deep the braces go. Without
-    /// this bound a deep nest would materialize an AST node and walk frame per
-    /// level. A 12.5x-deeper nest must yield essentially the same node count.
+    /// Past the nesting limit a deep brace nest skips its body rather than recursing,
+    /// so the AST — and every later walk over it — stays bounded however deep the
+    /// braces go. A 12.5x-deeper nest must yield the same node count.
     #[test]
     fn over_deep_braces_yield_a_bounded_ast() {
         fn statement_nodes(block: &super::Block) -> usize {
@@ -937,11 +906,10 @@ mod nesting_limit {
 
 /// What bounds the statement parser's recursion.
 ///
-/// A brace-delimited nest is refused by the pass that measures it. A trailing clause
-/// takes a single inline statement instead of a block, so a nest can recurse through
-/// `else`, a `match` arm, an `on more` arm, or a checked arm without opening a brace
-/// for that pass to refuse. These pin that the typed depth limit — and not the
-/// admitted file length — is what stops every one of those paths.
+/// A trailing clause takes a single inline statement instead of a block, so a nest can
+/// recurse through `else`, a `match` arm, an `on more` arm, or a checked arm without
+/// opening a brace for the brace-counting pass to refuse. These pin that the typed depth
+/// limit — and not the admitted file length — stops every one of those paths.
 #[cfg(test)]
 mod statement_recursion_depth {
     use super::{
@@ -958,9 +926,8 @@ mod statement_recursion_depth {
             .expect("parse worker did not panic")
     }
 
-    /// The longest chain of nested statement blocks the parse built, which is the depth
-    /// the recursive descent reached and the depth every later walk over the tree must
-    /// itself recurse to.
+    /// The longest chain of nested statement blocks the parse built: the depth the
+    /// descent reached, and the depth every later walk must itself recurse to.
     ///
     /// **The enforcement artifact.** The match over `Statement` is exhaustive and names
     /// every field, so a new variant — or a new block on an existing one — fails to
@@ -1129,10 +1096,9 @@ mod statement_recursion_depth {
     }
 
     /// The deepest tree [`NESTING_DEPTH_LIMIT`] frames of descent can build, counted in
-    /// `Block` nodes. Two of them cost no frame: the function body the descent starts
-    /// from, and the empty block the refusal stands in place of the clause it declined to
-    /// structure. The point of the bound is that it is a constant — the count below must
-    /// not move with the length of the file.
+    /// `Block` nodes. Two cost no frame: the function body the descent starts from, and
+    /// the empty block the refusal stands in place of. It is a constant — it must not
+    /// move with the length of the file.
     const DEEPEST_BOUNDED_TREE: usize = NESTING_DEPTH_LIMIT + 2;
 
     /// The deepest statement nest in any function body of `source`.
@@ -1160,8 +1126,7 @@ mod statement_recursion_depth {
     }
 
     /// A body of `levels` `match` statements, each nested inside the previous one's
-    /// single arm. The arm bodies are inline statements, not blocks, so the arm side of
-    /// the nest opens no brace of its own.
+    /// single arm. The arm bodies are inline statements, so that side opens no brace.
     fn inline_match_arms(levels: usize) -> String {
         let mut source = String::from("module app\n\nfn main() {\n");
         for _ in 0..levels {
@@ -1215,12 +1180,11 @@ mod statement_recursion_depth {
         label: &'static str,
         /// Frames of [`NESTING_DEPTH_LIMIT`] one level of this shape holds open at once.
         ///
-        /// A frame is held only while its descent is on the native stack. An `else`
-        /// chain, an `on more` chain, and a `checked` arm chain each hold one open — the
-        /// clause's own inline statement. A `for` body's braced descent returns before
-        /// its `on more` arm is read, so the loop body costs the chain no held frame. An
-        /// inline `match` arm holds two: the `match` body its arms sit in, and the arm's
-        /// inline statement.
+        /// A frame is held only while its descent is on the native stack. `else`,
+        /// `on more`, and `checked` arm chains each hold one — the clause's own inline
+        /// statement — since a `for` body's braced descent returns before its `on more`
+        /// arm is read. An inline `match` arm holds two: the `match` body its arms sit
+        /// in, and the arm's inline statement.
         frames_per_level: usize,
         /// The deepest nest of this shape the limit admits, as a literal. Asserted
         /// against the derivation from `frames_per_level` below, so neither the limit
@@ -1284,9 +1248,9 @@ mod statement_recursion_depth {
         }
     }
 
-    /// The length of the file does not decide the depth. Four lengths, one bound: if the
-    /// admitted file length were what kept the recursion off the native stack, this is
-    /// where that dependency would show up as a depth that tracks the source.
+    /// The length of the file does not decide the depth: four lengths, one bound. A
+    /// depth that tracked the source would show the recursion is bounded by the
+    /// admitted file length rather than by the limit.
     #[test]
     fn the_depth_limit_and_not_the_file_length_stops_the_descent() {
         for multiple in [2usize, 4, 8, 16] {
@@ -1303,11 +1267,10 @@ mod statement_recursion_depth {
         }
     }
 
-    /// The limit admits exactly the levels a shape's frames pay for, structures every
-    /// one of them, and refuses the next. The boundary is pinned per shape rather than
-    /// sampled somewhere below it: a nest at `NESTING_DEPTH_LIMIT / 2` lands on the last
-    /// admitted `match` level only because the limit is even and an arm happens to cost
-    /// two frames, and it lands nowhere near the boundary of a one-frame shape.
+    /// The limit admits exactly the levels a shape's frames pay for, structures every one
+    /// of them, and refuses the next. The boundary is pinned per shape rather than
+    /// sampled below it: a single nest depth lands on one shape's boundary and nowhere
+    /// near another's.
     #[test]
     fn an_inline_clause_nest_is_structured_in_full_up_to_the_level_its_frames_pay_for() {
         for clause in &INLINE_CLAUSES {

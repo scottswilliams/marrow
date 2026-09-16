@@ -132,8 +132,8 @@ fn if_const_accepts_a_type_annotation() {
 
 #[test]
 fn absent_is_a_primary_expression() {
-    // The empty optional `absent` is a first-class primary value, usable wherever
-    // an expression is, such as a `const` initializer.
+    // The empty optional `absent` is a first-class primary value, usable wherever an
+    // expression is.
     let parsed = parse_source("module app\nfn f() {\n    const x = absent\n}\n");
     assert!(
         parsed.diagnostics.complete().is_empty(),
@@ -156,9 +156,8 @@ fn absent_is_a_primary_expression() {
 
 #[test]
 fn parses_a_type_keyword_as_a_path_segment() {
-    // `bytes` is a reserved type word but must stay valid mid-path, so a path
-    // through an imported `module std::bytes` parses. `length` here is an ordinary
-    // path segment, not a shipped function.
+    // `bytes` is a reserved type word but must stay valid mid-path, so a path through
+    // an imported `module std::bytes` parses.
     let parsed = parse_source("module app\nfn main() {\n    return std::bytes::length(data)\n}\n");
     assert!(
         parsed.diagnostics.complete().is_empty(),
@@ -180,10 +179,9 @@ fn parses_a_type_keyword_as_a_path_segment() {
 
 #[test]
 fn parses_a_type_keyword_as_a_leading_path_segment() {
-    // After `use std::bytes`, a path may lead with the reserved type word `bytes`.
-    // The reserved word must begin a path when followed by `::`, exactly as it is
+    // A reserved type word must begin a path when followed by `::`, exactly as it is
     // valid mid-path — otherwise the short-form spelling of an imported
-    // `module std::bytes` is unusable. `length` is an ordinary segment here.
+    // `module std::bytes` is unusable.
     let parsed = parse_source(
         "module app\nuse std::bytes\nfn main() {\n    return bytes::length(data)\n}\n",
     );
@@ -537,8 +535,8 @@ fn statement_spanning_open_delimiters_stays_one_statement() {
 
 #[test]
 fn reports_malformed_body_statements_with_a_diagnostic() {
-    // A statement the body parser cannot structure must surface a parse error
-    // rather than becoming a silent `Statement::Unparsed` no-op.
+    // A statement the body parser cannot structure must surface a parse error rather
+    // than becoming a silent no-op.
     let cases = [
         "module app\nfn main() {\n    foo +\n}\n",
         "module app\nfn main() {\n    const x: int\n}\n",
@@ -562,21 +560,16 @@ fn reports_malformed_body_statements_with_a_diagnostic() {
 
 #[test]
 fn a_doc_comment_in_statement_position_is_a_parse_error() {
-    // A `///` doc comment attaches only to a declaration, member, or parameter.
-    // In a statement position it has no target, so the parser must reject it
-    // rather than silently swallow it — a program that passes check and runs must
-    // be formattable, and a swallowed doc comment breaks that round trip.
-    // (The former layout-only over-indented-block case is deleted: over-indentation
-    // is not representable under the brace grammar.)
+    // A `///` doc comment attaches only to a declaration, member, or parameter. In a
+    // statement position it has no target, so the parser rejects it rather than
+    // swallowing it: a checked program must stay formattable, and a swallowed doc
+    // comment breaks that round trip.
     let cases = [
-        // own line, before a statement
         (
             "module app\nfn main() {\n    /// orphan doc\n    return\n}\n",
             3,
         ),
-        // trailing a statement
         ("module app\nfn main() {\n    return /// orphan doc\n}\n", 3),
-        // end of body
         (
             "module app\nfn main() {\n    return\n    /// orphan doc\n}\n",
             4,
@@ -604,11 +597,9 @@ fn a_doc_comment_in_statement_position_is_a_parse_error() {
 
 #[test]
 fn a_dangling_doc_comment_with_no_following_target_is_a_parse_error() {
-    // A `///` doc comment attaches to the next declaration, member, or parameter.
-    // With nothing to attach to — at end of file, at the end of a resource or
-    // store body, or separated from the next declaration by a blank line — it has
-    // no target and must be rejected everywhere, just like the statement-position
-    // case, so it can never pass check and then brick the formatter.
+    // With nothing to attach to — at end of file, at the end of a resource or store
+    // body, or separated from the next declaration by a blank line — a `///` has no
+    // target and is rejected everywhere, just as in statement position.
     let cases = [
         // top-level, dangling at end of file
         ("module app\n/// just docs\n", 2),
@@ -647,9 +638,6 @@ fn a_dangling_doc_comment_with_no_following_target_is_a_parse_error() {
 
 #[test]
 fn a_doc_comment_that_precedes_a_declaration_or_member_attaches_cleanly() {
-    // The attachment cases must stay clean: a doc comment immediately before a
-    // declaration, a resource member, a store index, or a parameter documents it
-    // and is not a dangling error.
     for source in [
         "module app\n/// documents the const\nconst Limit: int = 10\n",
         "module app\nresource Book {\n    /// the title\n    required title: string\n}\n",
@@ -685,8 +673,7 @@ fn an_ordinary_comment_in_statement_position_parses_cleanly() {
 
 #[test]
 fn a_doc_comment_on_a_declaration_still_attaches() {
-    // The doc-comment rejection is scoped to statement position; a `///` doc
-    // comment on a declaration attaches as before.
+    // The doc-comment rejection is scoped to statement position.
     let parsed =
         parse_source("module app\n/// documents the function\nfn main() {\n    return\n}\n");
     assert!(
@@ -807,9 +794,8 @@ fn parses_compound_assignment_from_single_operator_token() {
 
 #[test]
 fn split_compound_assignment_is_rejected_with_a_recovery_node() {
-    // Each compound operator is a single token, so a space before the `=`
-    // (`i * = 3`) is not a compound assignment: it reports and leaves an error
-    // node so the body still parses.
+    // Each compound operator is a single token, so a space before the `=` (`i * = 3`)
+    // is not a compound assignment: it reports and leaves an error node.
     let parsed = parse_source("module app\nfn f() {\n    i * = 3\n}\n");
     assert!(
         parsed
@@ -947,22 +933,20 @@ fn checked_form_bad_arm_reports_checked_arm() {
     ));
 }
 
-/// The checked form formats idempotently: arms render `on out_of_range` before
-/// `on zero_divisor`, and formatting a formatted form is a fixed point.
+/// Arms render in fixed order: `on out_of_range` before `on zero_divisor`.
 #[test]
 fn checked_form_formats_idempotently() {
     let source = "module app\nfn main(a: int, b: int): int {\n    const q: int = checked a / b\n        on zero_divisor {\n            return 0\n        }\n        on out_of_range {\n            return 1\n        }\n    return q\n}\n";
     let once = format_source(source).expect("a complete parse formats");
     let twice = format_source(&once).expect("a complete parse formats");
     assert_eq!(once, twice, "formatting is a fixed point:\n{once}");
-    // The fixed-order render puts out_of_range first even though source had it second.
+    // Fixed order holds even though the source wrote zero_divisor first.
     let oor = once.find("on out_of_range").expect("out_of_range arm");
     let zd = once.find("on zero_divisor").expect("zero_divisor arm");
     assert!(
         oor < zd,
         "out_of_range renders before zero_divisor:\n{once}"
     );
-    // The formatted output re-parses cleanly.
     assert!(parse_source(&once).diagnostics.complete().is_empty());
 }
 
@@ -1002,7 +986,6 @@ fn a_malformed_place_binding_is_one_parse_error() {
     assert!(!missing_equals.diagnostics.complete().is_empty());
 }
 
-/// A `place` binding formats idempotently and re-parses cleanly.
 #[test]
 fn place_binding_formats_idempotently() {
     let source = "module app\nfn main(id: int) {\n    place book = ^books[id]\n    book.title = \"x\"\n    delete book\n}\n";
@@ -1117,7 +1100,7 @@ fn require_is_reserved_and_rejected_as_an_identifier() {
     assert!(!bare.diagnostics.complete().is_empty(), "bare keyword line");
 }
 
-/// A short `require` formats on one line and is a formatting fixed point.
+/// A short `require` formats on one line.
 #[test]
 fn require_formats_idempotently() {
     let source = "module app\nfn main(n: int): Result<int, string> {\n    require n > 0 else \"not positive\"\n    return ok(n)\n}\n";

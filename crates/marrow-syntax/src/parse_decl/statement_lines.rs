@@ -21,9 +21,9 @@ use crate::diagnostic::{
 use crate::parse_expr::join_spans;
 use crate::token::{ContextualKeyword, Keyword, Token, TokenKind};
 
-/// Report that `line` does not form a statement, at the line span, and yield
-/// `None`. The single owner of the generic statement-shape failure, so every
-/// unstructured line carries one diagnostic without a separate fallback pass.
+/// Report that `line` does not form a statement, at the line span. The single owner of
+/// the generic statement-shape failure, so every unstructured line carries exactly one
+/// diagnostic without a separate fallback pass.
 fn expected_statement(line: &[Token], sink: &mut SyntaxSink<'_>) -> Option<Statement> {
     let span = line_span_or(line, line[0].span);
     let reason = ParseDiagnosticReason::Expected(ExpectedSyntax::Statement);
@@ -36,9 +36,8 @@ fn expected_statement(line: &[Token], sink: &mut SyntaxSink<'_>) -> Option<State
     None
 }
 
-/// Report that `line` is missing the expression it needed, at the line span, and
-/// yield `None`. Used where a malformed header could not be structured as either
-/// its binding form or a condition expression.
+/// Report that `line` is missing the expression it needed, at the line span. Used where a
+/// malformed header parses as neither its binding form nor a condition expression.
 fn expected_expression_line<T>(line: &[Token], sink: &mut SyntaxSink<'_>) -> Option<T> {
     let span = line_span_or(line, line[0].span);
     let reason = ParseDiagnosticReason::Expected(ExpectedSyntax::Expression);
@@ -146,9 +145,7 @@ fn parse_const_or_var(
     }
 
     // The `: TYPE = VALUE` tail splits at the assignment `=`, or a `>=` that glues a
-    // generic close to the assignment (`const m: Map<K, V>= Map()`). Without an
-    // annotation the value follows a plain `=`, and a bare keyed/typed `var` may omit
-    // the value entirely.
+    // generic close to the assignment (`const m: Map<K, V>= Map()`).
     let (ty, value) = if matches!(
         line.get(index).map(|token| token.kind),
         Some(TokenKind::Colon)
@@ -252,10 +249,9 @@ fn parse_var_keys(
     Ok((keys, close + 1))
 }
 
-/// Parse `place name = <durable address>`: the `place` keyword, a fresh binding
-/// name, a required `=`, and the entry-address expression. The name must be an
-/// identifier (a keyword is reported like a `const` name), and the address is
-/// checked by the compiler — the parser only structures the binding.
+/// Parse `place name = <durable address>`: a fresh identifier binding name, a required
+/// `=`, and the entry-address expression. The address itself is a checker concern; the
+/// parser only structures the binding.
 fn parse_place(source: &str, line: &[Token], sink: &mut SyntaxSink<'_>) -> Option<Statement> {
     let keyword = line[0];
     let Some(name_token) = line.get(1) else {
@@ -307,10 +303,10 @@ fn parse_return(source: &str, line: &[Token], sink: &mut SyntaxSink<'_>) -> Opti
     })
 }
 
-/// Parse a statement's right-hand-side value expression, recognizing a leading
-/// prefix `try`. Prefix `try` is a statement-level value form only, so it is
-/// stripped and wrapped here rather than in the general expression grammar; a
-/// `try` nested inside a larger expression stays a parse error.
+/// Parse a statement's right-hand-side value expression, recognizing a leading prefix
+/// `try`. Prefix `try` is a statement-level value form only, so it is stripped and
+/// wrapped here rather than in the general expression grammar; a `try` nested inside a
+/// larger expression stays a parse error.
 fn parse_rhs_value(
     source: &str,
     tokens: &[Token],
@@ -379,9 +375,8 @@ fn parse_assign_or_expr(
     }
     if let Some(equal) = find_top_level_equal(line) {
         let equal_span = line[equal].span;
-        // A compound operator lexes as one token, so an arithmetic operator with
-        // a space before the `=` (`x * = y`) is the split spelling: reject it
-        // rather than silently canonicalize.
+        // A compound operator lexes as one token, so an arithmetic operator spaced before
+        // the `=` (`x * = y`) is the split spelling: reject rather than canonicalize.
         if equal > 0 && is_split_compound_operator(line[equal - 1].kind) {
             let op_span = line[equal - 1].span;
             sink.push(SyntaxError::new(
@@ -400,8 +395,8 @@ fn parse_assign_or_expr(
             value,
         })
     } else {
-        // `line` is non-empty here (the caller extracted its first token), so its
-        // first token anchors any missing-expression diagnostic.
+        // `line` is non-empty (the caller extracted its first token), so its first token
+        // is a valid anchor for a missing-expression diagnostic.
         let value = expr_of(source, line, line[0].span, sink)?;
         Some(Statement::Expr {
             span: value.span(),
@@ -410,9 +405,8 @@ fn parse_assign_or_expr(
     }
 }
 
-/// Whether a bare arithmetic-operator token, sitting directly before a top-level
-/// `=`, spells the split form of a compound assignment (`+ =`, `- =`, `* =`,
-/// `/ =`, `% =`).
+/// Whether a bare arithmetic-operator token directly before a top-level `=` spells the
+/// split form of a compound assignment (`+ =`, `- =`, `* =`, `/ =`, `% =`).
 fn is_split_compound_operator(kind: TokenKind) -> bool {
     matches!(
         kind,
@@ -424,12 +418,10 @@ fn is_split_compound_operator(kind: TokenKind) -> bool {
     )
 }
 
-/// Parse an `if const name [: type] = place` head into the bound name, optional
-/// type annotation, and the place expression. `line` starts at the `const`
-/// keyword. The annotation is validated and stored exactly as `const`/`var` does;
-/// the trailing `=` and value are required. Returns `None` (after reporting a
-/// non-identifier name) when the head is not a binding, so the caller falls back
-/// to treating the line as an ordinary condition expression.
+/// Parse an `if const name [: type] = place` head, starting at the `const` keyword, into
+/// the bound name, optional annotation, and place expression. Returns `None` when the
+/// head is not a binding, so the caller falls back to reading the line as an ordinary
+/// condition expression.
 pub(super) fn parse_if_const_head(
     source: &str,
     line: &[Token],
@@ -499,15 +491,11 @@ pub(super) fn parse_if_const_head(
 
 /// Parse a `for` header `binding in [reversed] iterable [by step]` or the bounded
 /// durable-traversal head `binding in place at most N [from f]` into the loop binding,
-/// traversal order, the iterable expression, the optional range step, and the optional
-/// bound clause `(limit, from?)`. Returns `None` if the `in` keyword or binding is
-/// malformed, or if `reversed` stands in the head slot with no iterable after it.
-/// `reversed` is a reserved head-slot keyword: an identifier spelling `reversed`
-/// immediately after `in` is always the order keyword, never the iterable. `by`, `at
-/// most`, and `from` are contextual: each splits the header only as a bare top-level
-/// phrase, so a name spelling one of them elsewhere is unaffected. The `at most` bound
-/// and the range `by` step are mutually exclusive spellings; `from` is a bound clause
-/// keyword only after `at most N`.
+/// traversal order, iterable, optional range step, and optional bound clause
+/// `(limit, from?)`. An identifier spelling `reversed` immediately after `in` is always
+/// the order keyword, never the iterable; `by`, `at most`, and `from` are contextual and
+/// split the header only as bare top-level phrases. The `at most` bound and the `by` step
+/// are mutually exclusive, and `from` is a clause keyword only after `at most N`.
 #[allow(clippy::type_complexity)]
 pub(super) fn parse_for_header(
     source: &str,
@@ -527,10 +515,9 @@ pub(super) fn parse_for_header(
         _ => (LoopOrder::Forward, after_in),
     };
     // A bounded durable traversal `<place> at most N [from f]` splits at the `at most`
-    // marker; a `from` after it separates the limit from the inclusive lower bound.
+    // marker; a `from` after it separates the limit from the inclusive lower bound. The
+    // marker is always present, so it anchors an empty operand on either side.
     if let Some(at_index) = find_top_level_at_most(source, rest) {
-        // The `at` marker at `rest[at_index]` bounds the iterable and limit slices
-        // and is always present, so it anchors an empty operand on either side.
         let at_span = rest[at_index].span;
         let iterable = expr_of_in_header(source, &rest[..at_index], at_span)?;
         let after_most = &rest[at_index + 2..];
@@ -546,8 +533,6 @@ pub(super) fn parse_for_header(
         let limit = expr_of_in_header(source, limit_tokens, at_span)?;
         return Some((binding, order, iterable, None, Some((limit, from))));
     }
-    // A bare `reversed` in the head slot has no iterable to walk; the empty rest
-    // fails `expr_of_in_header` below, which the caller reports as a for-header error.
     let (iterable_tokens, step) = match find_top_level_word(source, rest, ContextualKeyword::By) {
         Some(by_index) => {
             let by_span = rest[by_index].span;
@@ -556,23 +541,21 @@ pub(super) fn parse_for_header(
         }
         None => (rest, None),
     };
-    // The `in` keyword always precedes the iterable, so it anchors an empty iterable
-    // (a bare `reversed` head with nothing to walk).
+    // The `in` keyword always precedes the iterable, so it anchors an empty one (a bare
+    // `reversed` head with nothing to walk), which the caller reports as a header error.
     let iterable = expr_of_in_header(source, iterable_tokens, header[in_index].span)?;
     Some((binding, order, iterable, step, None))
 }
 
-/// Whether `token` is the head-slot `reversed` keyword: an ordinary identifier
-/// spelling `reversed`. It is reserved only in the loop-head order slot; anywhere
-/// else it is a normal name.
+/// Whether `token` is the head-slot `reversed` keyword. It is reserved only in the
+/// loop-head order slot; anywhere else it is a normal name.
 fn is_reversed_keyword(source: &str, token: &Token) -> bool {
     token.is_contextual(source, ContextualKeyword::Reversed)
 }
 
 /// Index of a top-level contextual `word` in a for header. The clause words (`by`,
-/// `from`) are plain identifiers, not reserved words, so each splits the header only
-/// when it stands at bracket depth 0 — never inside a call's arguments or a name used
-/// as a value.
+/// `from`) are plain identifiers, so each splits the header only at bracket depth 0 —
+/// never inside a call's arguments or a name used as a value.
 fn find_top_level_word(source: &str, tokens: &[Token], word: ContextualKeyword) -> Option<usize> {
     let mut depth = 0usize;
     for (index, token) in tokens.iter().enumerate() {
@@ -588,10 +571,9 @@ fn find_top_level_word(source: &str, tokens: &[Token], word: ContextualKeyword) 
     None
 }
 
-/// Index of the top-level `at` that opens an `at most` bound marker: an `at`
-/// identifier at bracket depth 0 immediately followed by a `most` identifier. Both are
-/// contextual, so an `at` or `most` used elsewhere as a name (or an `at` not followed
-/// by `most`) is unaffected.
+/// Index of the top-level `at` that opens an `at most` bound marker: a depth-0 `at`
+/// immediately followed by `most`. Both are contextual, so either used elsewhere as a
+/// name — or an `at` not followed by `most` — is unaffected.
 fn find_top_level_at_most(source: &str, tokens: &[Token]) -> Option<usize> {
     let mut depth = 0usize;
     for (index, token) in tokens.iter().enumerate() {
@@ -614,9 +596,9 @@ fn find_top_level_at_most(source: &str, tokens: &[Token]) -> Option<usize> {
     None
 }
 
-/// Parse the comma-separated loop-head names `a`, `a, b`, `a, b, c`, ... into a
-/// non-empty name vector, each name carrying its own span. Names alternate with
-/// commas; any other shape (empty, trailing comma, non-identifier) fails the header.
+/// Parse the comma-separated loop-head names into a non-empty vector, each name carrying
+/// its own span. Names alternate with commas; any other shape (empty, trailing comma,
+/// non-identifier) fails the header.
 fn parse_for_binding(source: &str, tokens: &[Token]) -> Option<ForBinding> {
     if tokens.is_empty() {
         return None;
@@ -635,8 +617,7 @@ fn parse_for_binding(source: &str, tokens: &[Token]) -> Option<ForBinding> {
             return None;
         }
     }
-    // A trailing comma leaves the final token at an even index without a following
-    // name, so the loop ends on a comma — reject that dangling separator.
+    // An even length means the slice ends on a comma: a dangling separator.
     if tokens.len().is_multiple_of(2) {
         return None;
     }

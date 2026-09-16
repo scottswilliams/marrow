@@ -1,19 +1,12 @@
-//! The source-bytes fuzz driver: a thin input adapter over the reusable bounded
-//! oracle in `common::oracle`. It carries no invariants of its own — it only feeds
-//! the oracle a bounded, reproducible stream of inputs:
-//!
-//! 1. a deterministic corpus (the tracer-subset constructs, the documented library
-//!    blocks and tracked `.mw` fixtures, pathological inputs, and every
-//!    char-boundary truncation of the reference program), and
-//! 2. a seeded, fixed-iteration random-mutation pass over that corpus.
+//! The source-bytes fuzz driver: a thin input adapter over the bounded oracle in
+//! `common::oracle`. It carries no invariants of its own — it feeds the oracle a
+//! deterministic corpus and a seeded, fixed-iteration mutation pass over it.
 //!
 //! Arbitrary bytes reach the `&str`-typed front end through `String::from_utf8_lossy`,
 //! the total decode the file boundary uses, so invalid UTF-8 and NUL bytes are
-//! exercised as the replacement-bearing text the parser actually sees. The pass is
-//! bounded and reproducible: one fixed seed, a fixed iteration budget, and a small
-//! interesting-byte alphabet, so a failure reproduces exactly and no unbounded
-//! campaign runs in CI. A minimized counterexample becomes a case in
-//! [`regression_corpus`] and then a fix.
+//! exercised as the replacement-bearing text the parser actually sees. Fixed seeds, a
+//! fixed iteration budget, and a small interesting-byte alphabet keep the pass bounded
+//! and exactly reproducible, so no unbounded campaign runs in CI.
 
 use crate::common;
 use crate::common::CompletePayload;
@@ -155,13 +148,11 @@ fn deep_field_access(depth: usize) -> String {
     )
 }
 
-/// Minimized counterexamples whose contract is the lossless token tiling and the
-/// total invariants (not formatter faithfulness). A comment leader inside a string-
+/// Minimized counterexamples whose contract is the lossless token tiling and the total
+/// invariants, not formatter faithfulness. A comment leader inside a string-
 /// interpolation hole must stop at the hole boundary rather than run to the physical
-/// line end, past the hole, overlapping the interpolation-close tokens and breaking
-/// the tiling. `//` is the brace-surface comment leader (`;` is now ordinary
-/// punctuation), so both the `//`-in-hole forms and the bare-punctuation forms feed
-/// the total-invariant lens; the hole comment is not carried through formatting.
+/// line end, past the hole, overlapping the interpolation-close tokens and breaking the
+/// tiling.
 fn tiling_regressions() -> Vec<String> {
     [
         "const X = $\"a{g(1)//}b\"\n",
@@ -176,20 +167,13 @@ fn tiling_regressions() -> Vec<String> {
     .collect()
 }
 
-/// Minimized counterexamples that are valid programs whose formatter faithfulness
-/// (idempotent, comment-preserving, structure-preserving) regressed and is now
-/// fixed. Each is asserted through the faithful lens so the fix stays pinned.
+/// Minimized counterexamples that are valid programs, pinned through the faithful
+/// lens: idempotent, comment-preserving, structure-preserving formatting.
+///
+/// The empty-body shapes are the hard cases — a body-bearing header must join its
+/// empty body through the one empty-body guard, or the dangling newline it leaves
+/// makes the block-level blank accounting grow a source blank 1 -> 2 per format.
 fn formatter_faithful_regressions() -> Vec<String> {
-    // An empty-bodied compound statement or match arm left a dangling newline that
-    // the block-level blank accounting doubled, so a single source blank before the
-    // next statement rendered as two and, on the mixed shapes below, grew 1 -> 2
-    // across formats. Every body-bearing header now joins its body through one
-    // empty-body guard. (The former layout-column and `;`-comment regressions —
-    // an own-line comment misread as outdented, an empty body claiming a following
-    // sibling comment — were defect classes of indentation-as-structure and the `;`
-    // comment leader; braces make the block boundary explicit and comment ownership
-    // over braces is pinned by the `comment_ownership` suite, so those cases are
-    // structurally impossible rather than rewritten.)
     [
         "module app\n\nfn f() {\n    match s {\n        d => {}\n    }\n\n    b\n}\n",
         "module app\n\nfn f() {\n    if x {}\n\n    b\n}\n",
@@ -197,9 +181,8 @@ fn formatter_faithful_regressions() -> Vec<String> {
         "module app\n\nfn f() {\n    for i in xs {}\n\n    b\n}\n",
         "module app\n\nfn f() {\n    transaction {}\n\n    b\n}\n",
         "module app\n\nfn f(o: Option<int>): int {\n    match o {\n        some(v) => return v\n        none => return 0\n    }\n}\n",
-        // A terminal `else if` (no trailing `else`) rendered its diverging
-        // then-branch braceless (`} else if n > 0 return`), which does not re-parse:
-        // a then-branch keeps its braces even inline. Braced-inline (B4) now.
+        // A terminal `else if` (no trailing `else`) must keep the braces around its
+        // diverging then-branch: `} else if n > 0 return` does not re-parse.
         "module app\n\nfn f(n: int) {\n    if n < 0 {\n        return\n    } else if n > 0 {\n        return\n    }\n}\n",
     ]
     .into_iter()
@@ -218,11 +201,10 @@ fn valid_programs() -> Vec<String> {
     programs
 }
 
-/// The parser's nesting limit is calibrated for the 256 MB stack the CLI runs it
-/// on (`WORKER_STACK_BYTES` in the `marrow` binary), where a 256-deep parse fits
-/// but the small default test-thread stack does not. Run each driver body on a
-/// matching worker stack so the oracle exercises the production environment, then
-/// re-raise any panic on the test thread with its message.
+/// The parser's nesting limit is calibrated for the 256 MB stack the CLI runs it on
+/// (`WORKER_STACK_BYTES` in the `marrow` binary), where a 256-deep parse fits but the
+/// small default test-thread stack does not. Each driver body runs on a matching
+/// worker stack so the oracle exercises the production environment.
 fn on_worker_stack(body: impl FnOnce() + Send + 'static) {
     const WORKER_STACK_BYTES: usize = 256 * 1024 * 1024;
     let worker = std::thread::Builder::new()
@@ -243,8 +225,7 @@ fn deterministic_corpus_body() {
     let mut saw_error = false;
     let mut saw_over_deep = false;
 
-    // Valid programs and the fixed formatter-faithfulness regressions: total
-    // invariants plus the faithful-formatter contract.
+    // Valid programs: total invariants plus the faithful-formatter contract.
     for source in valid_programs()
         .into_iter()
         .chain(formatter_faithful_regressions())
@@ -253,9 +234,9 @@ fn deterministic_corpus_body() {
         assert_formatter_faithful(&source);
     }
 
-    // Tracked shared-syntax fixtures: total invariants always; the stronger
-    // faithful lens only over those that parse cleanly (a legacy construct outside
-    // the tracer subset still tiles and bounds, but its rendering is not a contract).
+    // Tracked shared-syntax fixtures: total invariants always; the faithful lens only
+    // over those that parse cleanly, since a legacy construct's rendering is not a
+    // contract.
     for (path, source) in common::tracked_mw_fixtures() {
         assert_total_invariants(&source);
         if !marrow_syntax::parse_source(&source).has_errors() {
@@ -280,8 +261,7 @@ fn deterministic_corpus_body() {
             .any(|diagnostic| diagnostic.code == marrow_syntax::NESTING_LIMIT);
     }
 
-    // Every char-boundary truncation of the reference program is a distinct
-    // partially-written source; each must hold the total invariants.
+    // Every char-boundary truncation is a distinct partially-written source.
     let sample = common::reference_sample();
     for end in char_boundaries(&sample) {
         assert_total_invariants(&sample[..end]);
@@ -297,13 +277,10 @@ fn seeded_random_mutation_pass_holds_the_total_invariants() {
 }
 
 fn seeded_random_mutation_body() {
-    // A fixed panel of diverse seeds runs by default, so CI is not green by the luck
-    // of a single seed: a defect a particular seed reaches (the terminal-`else if`
-    // braceless-then-branch regression surfaced at seed 13) is caught by the standing
-    // suite, not only under an override. The panel is bounded and reproducible — fixed
-    // seeds, a fixed per-seed budget, and a bounded total kept under a couple of
-    // seconds. MARROW_FUZZ_SEED replaces the panel with one seed at a wider budget to
-    // extend a search without editing code; a failure reproduces exactly from its seed.
+    // A fixed panel of diverse seeds runs by default, so CI is not green by the luck of
+    // a single seed. The panel is bounded and reproducible — fixed seeds, a fixed
+    // per-seed budget, a total under a couple of seconds. MARROW_FUZZ_SEED replaces the
+    // panel with one seed at a wider budget to extend a search without editing code.
     const PANEL_SEEDS: [u64; 4] = [
         0x5241_4d5f_4655_5a5a, // "RAM_FUZZ"
         13,                    // minimized the terminal-`else if` braceless then-branch
@@ -337,8 +314,8 @@ fn seeded_random_mutation_body() {
             for _ in 0..rounds {
                 mutate(&mut bytes, &mut rng);
             }
-            // The file boundary decodes bytes to text losslessly-or-lossy; feed the
-            // parser exactly that, so invalid UTF-8 and NUL bytes are covered.
+            // Exactly the decode the file boundary performs, so invalid UTF-8 and NUL
+            // bytes are covered.
             let source = String::from_utf8_lossy(&bytes);
             assert_total_invariants(&source);
             mutated_error |= has_error_diagnostic(&source);
@@ -356,11 +333,9 @@ fn char_boundaries(source: &str) -> Vec<usize> {
         .collect()
 }
 
-/// The brace-grammar fuzz corpus: declarations with `{ … }` bodies —
-/// resource, store, enum, and function — plus `=>` match arms, `//` and `///`
-/// comments, `\u{}` escapes, bracket key groups, and angle generics, including the
-/// unclosed and stray-brace forms that a member loop must survive. It is written
-/// against the live brace grammar.
+/// The brace-grammar fuzz corpus: declarations with `{ … }` bodies, `=>` match arms,
+/// `//` and `///` comments, `\u{}` escapes, bracket key groups, and angle generics,
+/// including the unclosed and stray-brace forms a member loop must survive.
 fn brace_grammar_corpus() -> Vec<String> {
     [
         "module app\nfn run() {\n    return\n}\n",
@@ -373,10 +348,8 @@ fn brace_grammar_corpus() -> Vec<String> {
         "module app\nconst S = \"a\\u{1F600}b\"\n",
         "module app\nfn run() {\n    ^books[1].title = \"x\"\n}\n",
         "module app\nfn run() {\n    if const a = ^c[1].v and const b = ^c[2].v and a < b {\n        return\n    }\n}\n",
-        // Comment-bearing seeds: a header-trailing comment before the `{`, a
-        // cuddled one, an own-line body comment, inter-arm and arm-trailing match
-        // comments, doc comments on members, and a declaration header comment — every
-        // spelling must format to one fixed point that preserves the comment.
+        // Comment-bearing seeds: every admitted comment spelling must format to one
+        // fixed point that preserves the comment.
         "module app\nfn run(n: int) {\n    if n < 0 // note\n    {\n        return\n    }\n}\n",
         "module app\nfn run(n: int) {\n    while n < 0 { // w\n        n = n\n    }\n}\n",
         "module app\nfn run(n: int) {\n    transaction // t\n    {\n        n = n\n    }\n}\n",
@@ -400,13 +373,8 @@ fn brace_grammar_corpus() -> Vec<String> {
     .collect()
 }
 
-/// The full total-invariant oracle under a wall-clock bound: parsing returns
-/// promptly (so a member loop that fails to terminate on a missing `}` is a test
-/// failure, not a hang), is deterministic, tiles the source losslessly, recovers with
-/// a bounded number of well-spanned diagnostics, and — for a clean parse — is a
-/// formatter fixed point that re-parses cleanly. The formatter leg now asserts
-/// idempotence unconditionally over comments, so a comment-bearing clean
-/// parse is held to the same fixed-point contract as a comment-free one. The parse
+/// The full total-invariant oracle under a 10s wall-clock bound, so a member loop that
+/// fails to terminate on a missing `}` is a test failure rather than a hang. The parse
 /// runs on a large stack so a deep mutated input fails closed at the nesting limit
 /// rather than overflowing.
 fn assert_bounded_recovery(source: &str) {
@@ -430,7 +398,7 @@ fn assert_bounded_recovery(source: &str) {
             panic!("parsing did not terminate within 10s for {source:?}");
         }
         // The worker dropped its sender without a result: it panicked inside an
-        // invariant assertion. Re-raise that panic with its message.
+        // invariant assertion, so re-raise that panic with its message.
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => match worker.join() {
             Err(panic) => std::panic::resume_unwind(panic),
             Ok(()) => panic!("brace-grammar fuzz worker exited without a result for {source:?}"),
@@ -438,11 +406,8 @@ fn assert_bounded_recovery(source: &str) {
     }
 }
 
-/// The brace-grammar corpus and a small seeded mutation pass hold the oracle
-/// invariants under a per-iteration wall-clock bound, so a member loop that fails to
-/// terminate on a missing `}` is a test failure rather than a hung suite. Each
-/// cleanly-parsing corpus entry additionally holds the faithful lens (comment- and
-/// structure-preserving), pinning the comment-ownership contract.
+/// Each cleanly-parsing brace-corpus entry additionally holds the faithful lens,
+/// pinning the comment-ownership contract over braces.
 #[test]
 fn brace_grammar_corpus_holds_the_oracle_invariants_without_hanging() {
     for source in brace_grammar_corpus() {
@@ -452,8 +417,8 @@ fn brace_grammar_corpus_holds_the_oracle_invariants_without_hanging() {
         }
     }
 
-    // A seeded, fixed-iteration mutation pass over the brace corpus, bounded to a few
-    // hundred iterations so a failure reproduces exactly and CI stays bounded.
+    // Bounded to a few hundred iterations so CI stays bounded and a failure reproduces
+    // exactly from its seed.
     const SEED: u64 = 0x4252_4143_455f_465a; // "BRACE_FZ"
     const ITERATIONS: usize = 300;
     const MAX_MUTATIONS: usize = 24;
@@ -473,11 +438,10 @@ fn brace_grammar_corpus_holds_the_oracle_invariants_without_hanging() {
     }
 }
 
-/// Bytes chosen to stress the lexer and parser: string and interpolation
-/// delimiters, block and key brackets, the `//`/`///` comment and `=>` arm
-/// leaders, path and generic punctuation, an invalid-UTF-8 lead byte, and NUL.
-/// `/`, `[`, and `]` let the insert path synthesize comment leaders and key
-/// groups from any seed; `;` is retained as ordinary post-brace punctuation.
+/// Bytes chosen to stress the lexer and parser: string and interpolation delimiters,
+/// block and key brackets, the `//`/`///` comment and `=>` arm leaders, path and
+/// generic punctuation, an invalid-UTF-8 lead byte, and NUL. `/`, `[`, and `]` let the
+/// insert path synthesize comment leaders and key groups from any seed.
 const INTERESTING: &[u8] = &[
     0x00, 0xff, b'"', b'\\', b'{', b'}', b'(', b')', b'[', b']', b'\n', b'\t', b' ', b';', b':',
     b'^', b'.', b'=', b'$', b'+', b'-', b'/', b'<', b'>', b'~', b'?', b'a', b'1',
@@ -488,13 +452,13 @@ fn mutate(bytes: &mut Vec<u8>, rng: &mut SplitMix64) {
         bytes.push(INTERESTING[rng.below(INTERESTING.len() as u64) as usize]);
         return;
     }
+    // Flip, insert, delete, truncate, duplicate a bounded slice (so a construct can
+    // nest or repeat), and xor a bit (reaching non-interesting bytes and invalid UTF-8).
     match rng.below(6) {
-        // Flip: replace a byte with an interesting one.
         0 => {
             let at = rng.below(bytes.len() as u64) as usize;
             bytes[at] = INTERESTING[rng.below(INTERESTING.len() as u64) as usize];
         }
-        // Insert an interesting byte.
         1 => {
             let at = rng.below(bytes.len() as u64 + 1) as usize;
             bytes.insert(
@@ -502,17 +466,14 @@ fn mutate(bytes: &mut Vec<u8>, rng: &mut SplitMix64) {
                 INTERESTING[rng.below(INTERESTING.len() as u64) as usize],
             );
         }
-        // Delete a byte.
         2 => {
             let at = rng.below(bytes.len() as u64) as usize;
             bytes.remove(at);
         }
-        // Truncate to a random length.
         3 => {
             let len = rng.below(bytes.len() as u64) as usize;
             bytes.truncate(len);
         }
-        // Duplicate a bounded slice, so a construct can nest or repeat.
         4 => {
             let start = rng.below(bytes.len() as u64) as usize;
             let span = 1 + rng.below((bytes.len() - start).min(32) as u64) as usize;
@@ -522,7 +483,6 @@ fn mutate(bytes: &mut Vec<u8>, rng: &mut SplitMix64) {
                 bytes.insert(at + offset, byte);
             }
         }
-        // Xor a bit, reaching non-interesting bytes and invalid UTF-8.
         _ => {
             let at = rng.below(bytes.len() as u64) as usize;
             bytes[at] ^= 1 << (rng.below(8) as u32);
@@ -558,9 +518,8 @@ impl SplitMix64 {
     }
 }
 
-/// Whether any node in the tree is the parser's error placeholder. Every parse
-/// yields a node: a failure is an `Expression::Error`/`Statement::Error` carrying
-/// its span, so the two properties below can ask whether a placeholder appeared.
+/// Whether any node in the tree is the parser's error placeholder. Every parse yields
+/// a node — a failure is an `Expression::Error`/`Statement::Error` carrying its span.
 fn expr_has_error(expr: &Expression) -> bool {
     match expr {
         Expression::Error { .. } => true,
@@ -760,16 +719,14 @@ fn every_error_node_travels_with_a_diagnostic() {
         }
     };
     for block in common::documented_source_blocks() {
-        // Every byte-boundary truncation is a distinct partially-written program. A
-        // truncation ending inside a block leaves it unclosed, which the parser reports
-        // at the open delimiter with an empty body rather than an error node; the error
-        // nodes this property guards come from malformed-but-balanced statement bodies.
+        // A truncation ending inside a block leaves it unclosed, which the parser
+        // reports at the open delimiter with an empty body rather than an error node.
         for end in char_boundaries(&block.source) {
             check(&block.source[..end], &block.path);
         }
     }
-    // Balanced bodies with a malformed interior statement keep the error-node property
-    // non-vacuous: each yields a `Statement::Error`/`Expression::Error` with a diagnostic.
+    // Balanced bodies with a malformed interior statement: the error nodes this
+    // property guards.
     for program in MALFORMED_BALANCED_PROGRAMS {
         check(program, "malformed-balanced program");
     }
@@ -781,8 +738,7 @@ fn every_error_node_travels_with_a_diagnostic() {
 }
 
 /// Syntactically balanced programs whose interior does not structure: each parses to a
-/// tree carrying an error node beside its diagnostic, exercising the soundness invariant
-/// that a truncated (and now cleanly reported) body no longer does.
+/// tree carrying an error node beside its diagnostic.
 const MALFORMED_BALANCED_PROGRAMS: &[&str] = &[
     "pub fn f(): int {\n    const x = \n}\n",
     "pub fn f() {\n    @ \n}\n",

@@ -1,12 +1,10 @@
-//! The expression parser: a recursive-descent parser for a single Marrow
-//! expression over a token slice, covering primary, postfix, unary, and binary
-//! precedence levels including calls and saved paths.
+//! Recursive-descent parser for a single Marrow expression over a token slice,
+//! covering primary, postfix, unary, and binary precedence levels.
 //!
 //! Parsing is total: every entry yields an [`Expression`], and a failure yields
-//! [`Expression::Error`] carrying the span it could not structure. One diagnostic
-//! is reported at the failure token; a failed sub-expression collapses to that
-//! error node as it unwinds, so no ancestor reports a second, cascading
-//! diagnostic on top of it.
+//! [`Expression::Error`] carrying the span it could not structure. One diagnostic is
+//! reported at the failure token; a failed sub-expression collapses to that error node
+//! as it unwinds, so no ancestor cascades a second diagnostic on top of it.
 
 use crate::diagnostic::{SyntaxError, SyntaxErrorSink};
 use crate::token::{is_trivia, is_unfixed_duration_unit};
@@ -17,10 +15,9 @@ use crate::{
     duration_unit_seconds, is_expression_callable_keyword, is_expression_path_segment_keyword,
 };
 
-/// The remedy shared by the comparison and equality non-associative levels: the
-/// spec directs the author to parenthesize when comparing boolean results. It
-/// rides in the diagnostic message so it survives the checker's parse-diagnostic
-/// lowering and renders in `marrow check`, where `help` is dropped.
+/// The remedy shared by the comparison and equality non-associative levels. It rides in
+/// the diagnostic message, not `help`, so it survives the checker's parse-diagnostic
+/// lowering and still renders in `marrow check`, which drops `help`.
 const COMPARE_NONASSOC_REMEDY: &str = "use parentheses to compare boolean results";
 
 /// The outcome of parsing a token slice as one complete expression.
@@ -52,10 +49,10 @@ enum FieldSegment {
     Reported(Expression),
 }
 
-/// Build a recovery error node that preserves `base` for the incomplete surface
-/// form `make` names, spanning from the base start to the `gap` where the missing
-/// segment was expected. It always follows an already-emitted parse diagnostic, so
-/// the node stays honestly broken while retaining the receiver for classification.
+/// Build a recovery error node preserving `base` for the incomplete surface form `make`
+/// names, spanning the base start to the `gap` where the segment was expected. It always
+/// follows an already-emitted parse diagnostic, so the node stays honestly broken while
+/// retaining the receiver for classification.
 fn recovery_node(
     base: Expression,
     gap: SourceSpan,
@@ -76,25 +73,23 @@ pub(crate) struct ExprParser<'a, 's> {
     /// significant token or past the end.
     tokens: &'a [Token],
     pos: usize,
-    /// How deep the recursive descent currently is. Each parenthesized,
-    /// unary-operand, or interpolated sub-expression descends one level;
-    /// exceeding [`NESTING_DEPTH_LIMIT`] stops the recursion with a located
+    /// How deep the recursive descent currently is. Each parenthesized, unary-operand,
+    /// or interpolated sub-expression descends one level; exceeding
+    /// [`NESTING_DEPTH_LIMIT`] stops the recursion with a located
     /// [`crate::NESTING_LIMIT`] error before the native stack can overflow.
     depth: usize,
-    /// The zero-width position to report a missing operand when nothing has been
-    /// consumed yet — just past the `=`/keyword/operator the caller stripped, or
-    /// just before the `=` of an empty assignment target. An empty slice has no
-    /// consumed token to anchor to; this keeps the diagnostic on a real 1-based
-    /// position rather than the line-0 default.
+    /// The zero-width position to report a missing operand at when nothing has been
+    /// consumed yet — just past the `=`/keyword/operator the caller stripped, or just
+    /// before the `=` of an empty assignment target. It keeps the diagnostic on a real
+    /// 1-based position rather than the line-0 default.
     gap: SourceSpan,
     /// The span of the last significant token consumed, for the zero-width gap a
     /// missing operand or unclosed delimiter is reported at. Recorded on consumption
     /// rather than recovered by stepping back, since the token before the cursor may
     /// be skipped trivia.
     last_consumed: Option<SourceSpan>,
-    /// Where failures report: the caller's live scoped sink, or a discarding
-    /// sink for a silent probe. Every finding is written directly; the parser
-    /// owns no diagnostic batch of its own.
+    /// Where failures report: the caller's live scoped sink, or a discarding sink for a
+    /// silent probe. The parser owns no diagnostic batch of its own.
     sink: &'s mut dyn SyntaxErrorSink,
 }
 
@@ -143,10 +138,10 @@ impl<'a, 's> ExprParser<'a, 's> {
     /// Parse the whole slice as one expression, classifying the outcome.
     pub(crate) fn parse_complete(mut self) -> ParseComplete {
         let expr = self.expression();
-        // A recovery node is a structured incomplete form (`base.`, `Enum::`); it is
-        // kept in the tree so position analysis can classify it, unlike a bare error
-        // for which the caller substitutes its own placeholder. Its diagnostic is
-        // already reported, so the slice still counts as having errors.
+        // A recovery node is a structured incomplete form (`base.`, `Enum::`) kept in
+        // the tree so position analysis can classify it, unlike a bare error for which
+        // the caller substitutes its own placeholder. Its diagnostic is already
+        // reported, so the slice still counts as having errors.
         let has_recovery = matches!(
             &expr,
             Expression::Error {
@@ -157,9 +152,6 @@ impl<'a, 's> ExprParser<'a, 's> {
         if expr.is_error() && !has_recovery {
             ParseComplete::Reported
         } else if self.report_stray_assignment_operator() {
-            // A `=` left where the expression should have ended is the `=`-for-`==`
-            // mistake, and a trailing compound-assign operator is a misplaced
-            // assignment; either way this owns the single diagnostic for it.
             ParseComplete::Reported
         } else if self.pos < self.tokens.len() {
             ParseComplete::Incomplete(self.tokens[self.pos].span)
@@ -168,12 +160,11 @@ impl<'a, 's> ExprParser<'a, 's> {
         }
     }
 
-    /// If the next unconsumed token begins a stray assignment operator in
-    /// expression position, report it at that operator and return `true`. A bare
-    /// `=` is the `=`-vs-`==` mistake, and a compound-assign operator (`+=`, `-=`,
-    /// …) is a chained or misplaced assignment, which does not chain and is not an
-    /// expression. Reporting here lands the diagnostic on the operator rather than
-    /// bubbling to a generic failure at the statement keyword.
+    /// If the next unconsumed token begins a stray assignment operator in expression
+    /// position, report it at that operator and return `true`. A bare `=` is the
+    /// `=`-vs-`==` mistake and a compound-assign operator is a misplaced assignment;
+    /// reporting here lands the diagnostic on the operator rather than bubbling to a
+    /// generic failure at the statement keyword.
     fn report_stray_assignment_operator(&mut self) -> bool {
         let Some(token) = self.tokens.get(self.pos).copied() else {
             return false;
@@ -278,14 +269,12 @@ impl<'a, 's> ExprParser<'a, 's> {
         self.descend(Self::or_expr)
     }
 
-    /// Run one recursive-descent level, bounding nesting depth. The binary
-    /// precedence tower (`or_expr` … `unary_expr`) is a fixed-height chain, so a
-    /// single `expression` call descends one logical level; the recursive entries
-    /// — a parenthesized sub-expression, a unary operand, and an interpolated
-    /// expression — each route through here, so deeply nested source stops with a
-    /// located [`crate::NESTING_LIMIT`] error at the offending token rather than
-    /// overflowing the stack. The counter is decremented on the way back up so a
-    /// wide-but-shallow expression is never penalized.
+    /// Run one recursive-descent level, bounding nesting depth. The binary precedence
+    /// tower is a fixed-height chain, so one `expression` call is one logical level;
+    /// every recursive entry (parenthesized sub-expression, unary operand, interpolated
+    /// expression) routes through here, so deeply nested source stops with a located
+    /// [`crate::NESTING_LIMIT`] error rather than overflowing the stack. The counter is
+    /// decremented on the way back up, so a wide-but-shallow expression is not penalized.
     fn descend(&mut self, parse: impl FnOnce(&mut Self) -> Expression) -> Expression {
         self.depth += 1;
         if self.depth > NESTING_DEPTH_LIMIT {
@@ -297,13 +286,11 @@ impl<'a, 's> ExprParser<'a, 's> {
         result
     }
 
-    /// Account for one more level of left-associated nesting built by a binary
-    /// operator chain or a postfix field/call chain. A flat `1 + 1 + …` line or
-    /// `a.f.f…` chain builds an AST as deep as it is long without recursing here,
-    /// so each accumulation step must count toward the same limit as a
-    /// parenthesis. Returns `false` once the limit is crossed so the chain stops
-    /// growing; the caller unwinds the levels it added with [`Self::leave_chain`]
-    /// and reports the overflow.
+    /// Account for one more level of left-associated nesting built by a binary operator
+    /// chain or a postfix field/call chain. A flat `1 + 1 + …` or `a.f.f…` chain builds
+    /// an AST as deep as it is long without recursing here, so each accumulation step
+    /// must count toward the same limit as a parenthesis. Returns `false` once the limit
+    /// is crossed; the caller unwinds with [`Self::leave_chain`] and reports the overflow.
     fn enter_chain_level(&mut self) -> bool {
         self.depth += 1;
         if self.depth > NESTING_DEPTH_LIMIT {
@@ -321,10 +308,9 @@ impl<'a, 's> ExprParser<'a, 's> {
     /// construct the parser reached), or at end of input when none remains, and
     /// return the error node for it.
     fn nesting_limit_error(&mut self) -> Expression {
-        // Anchor at the next unconsumed token; at end of input fall back to the last
-        // real token (a paren bomb consumes everything before hitting the limit).
-        // A 1-based `(1, 1)` guards the theoretical empty-stream case so the reported
-        // span is never the all-zero default, which violates the 1-based invariant.
+        // At end of input fall back to the last real token (a paren bomb consumes
+        // everything before hitting the limit). The 1-based `(1, 1)` guards the empty
+        // stream, since the all-zero default would violate the 1-based span invariant.
         let span = self
             .tokens
             .get(self.pos)
@@ -400,9 +386,9 @@ impl<'a, 's> ExprParser<'a, 's> {
     }
 
     /// `is` sits one level looser than equality and tighter than `and`, on its own
-    /// non-associative level: a single `is`, never chained (`a is X is Y` is
-    /// rejected). The right operand is parsed as an equality-level expression; any
-    /// narrower member-path restriction is enforced by the checker.
+    /// non-associative level: a single `is`, never chained. The right operand parses as
+    /// an equality-level expression; any narrower member-path restriction is a checker
+    /// rule.
     fn is_expr(&mut self) -> Expression {
         let left = self.equality_expr();
         if left.is_error() || !matches!(self.peek(), Some(TokenKind::Keyword(Keyword::Is))) {
@@ -451,8 +437,7 @@ impl<'a, 's> ExprParser<'a, 's> {
         if left.is_error() {
             return left;
         }
-        // Interval membership `value in range` / `value not in range` sits at this
-        // level and does not chain: its right operand is a range, and a second
+        // Interval membership sits at this level and does not chain: a second
         // membership or comparison after it is a non-associative error.
         if let Some(negated) = self.peek_membership_kind() {
             if negated {
@@ -520,11 +505,9 @@ impl<'a, 's> ExprParser<'a, 's> {
         )
     }
 
-    /// Report a second operator on a non-associative level (`==`/`!=`, a
-    /// comparison, or `is`) at that operator's own token and abort the expression.
-    /// `text` is the operator spelling and `remedy` the spec fix; both ride in the
-    /// message so the remedy survives the checker's parse-diagnostic lowering and
-    /// renders in `marrow check`, where the `help` field is dropped.
+    /// Report a second operator on a non-associative level (`==`/`!=`, a comparison, or
+    /// `is`) at that operator's own token and abort the expression. Both `text` and
+    /// `remedy` ride in the message rather than `help`, which `marrow check` drops.
     fn reject_chained_operator(&mut self, text: &str, remedy: &str) -> Expression {
         let operator = self.tokens[self.pos];
         self.error_expr(
@@ -631,8 +614,7 @@ impl<'a, 's> ExprParser<'a, 's> {
 
     /// `??` sits one level tighter than ranges and looser than addition:
     /// `count ?? 0 < 5` parses as `(count ?? 0) < 5`. It is right-associative, so
-    /// `a ?? b ?? c` parses as `a ?? (b ?? c)`, each `??` defaulting the optional on
-    /// its left and the chain typing under the coalesce rule.
+    /// `a ?? b ?? c` parses as `a ?? (b ?? c)`.
     fn coalesce_expr(&mut self) -> Expression {
         let left = self.additive_expr();
         if left.is_error() || !matches!(self.peek(), Some(TokenKind::QuestionQuestion)) {
@@ -689,10 +671,8 @@ impl<'a, 's> ExprParser<'a, 's> {
         }
         let mut levels = 0;
         loop {
-            // A `.f`, `?.f`, `(…)`, or `[…]` postfix each wraps the current
-            // expression in one more node, so a long `a.f.f…`, `a()()…`, or
-            // `a[i][j]…` chain deepens the AST by its length and counts toward the
-            // nesting limit.
+            // Each postfix wraps the current expression in one more node, so a long
+            // chain deepens the AST by its length and counts toward the nesting limit.
             if matches!(
                 self.peek(),
                 Some(
@@ -719,9 +699,8 @@ impl<'a, 's> ExprParser<'a, 's> {
                         }
                     };
                     let Some(TokenKind::RightBracket) = self.peek() else {
-                        // The key list is unterminated: a token follows the last key
-                        // where a `,` or `]` was expected. Name the missing delimiter
-                        // at the gap and recover the keyed node with the keys parsed so
+                        // The key list is unterminated. Name the missing delimiter at
+                        // the gap and recover the keyed node with the keys parsed so
                         // far, so downstream analysis still sees the access.
                         let (expected, message) = if self.peek().is_some_and(starts_expression) {
                             (ExpectedSyntax::Comma, "expected `,`")
@@ -760,11 +739,10 @@ impl<'a, 's> ExprParser<'a, 's> {
                         }
                     };
                     let Some(TokenKind::RightParen) = self.peek() else {
-                        // The argument list is unterminated: a token follows the last
-                        // argument where a `,` or `)` was expected. Name the missing
-                        // delimiter at the gap, then recover the call node with the
-                        // arguments parsed so far so downstream analysis — callee
-                        // contexts, signature help — still sees an incomplete call.
+                        // The argument list is unterminated. Name the missing delimiter
+                        // at the gap and recover the call node with the arguments parsed
+                        // so far, so callee contexts and signature help still see an
+                        // incomplete call.
                         let (expected, message) = if self.peek().is_some_and(starts_expression) {
                             (ExpectedSyntax::Comma, "expected `,`")
                         } else {
@@ -817,8 +795,7 @@ impl<'a, 's> ExprParser<'a, 's> {
                     }
                 },
                 // `base?.name`: the same field segment as `.`, but the read
-                // short-circuits to absent rather than failing if the base or field
-                // is missing.
+                // short-circuits to absent rather than failing on a missing base.
                 Some(TokenKind::QuestionDot) => match self.field_segment() {
                     FieldSegment::Named {
                         name,
@@ -850,15 +827,13 @@ impl<'a, 's> ExprParser<'a, 's> {
         expr
     }
 
-    /// Parse the identifier segment after `.` or `?.`, consuming both tokens. The
-    /// three outcomes distinguish a well-formed field, the incomplete form the
-    /// caller recovers with its base, and an already-reported malformed segment.
+    /// Parse the identifier segment after `.` or `?.`, consuming both tokens.
     fn field_segment(&mut self) -> FieldSegment {
         let op = self.advance();
         let Some(segment) = self.tokens.get(self.pos).copied() else {
-            // `.`/`?.` with no following token is the incomplete member-access form.
-            // Report the missing name here (the diagnostic is unchanged) and let the
-            // postfix caller wrap the receiver into a recovery node.
+            // `.`/`?.` with no following token is the incomplete member-access form:
+            // report the missing name and let the postfix caller wrap the receiver
+            // into a recovery node.
             let gap = self.gap_span();
             self.error(
                 gap,
@@ -871,10 +846,9 @@ impl<'a, 's> ExprParser<'a, 's> {
         let text = segment.text(self.source);
         let (name, quoted) = match segment.kind {
             TokenKind::Identifier => (text.to_string(), false),
-            // `checked` is a keyword (the checked-arithmetic statement head), but in
-            // field position it is the nominal-type range-test member `Age.checked(n)`.
-            // The parser admits the spelling; which bases have such a member is a
-            // checker rule.
+            // `checked` is a keyword, but in field position it is the nominal-type
+            // range-test member `Age.checked(n)`. The parser admits the spelling;
+            // which bases have such a member is a checker rule.
             TokenKind::Keyword(Keyword::Checked) => (text.to_string(), false),
             TokenKind::String => {
                 return FieldSegment::Reported(self.error_expr(
@@ -921,15 +895,10 @@ impl<'a, 's> ExprParser<'a, 's> {
                 trailing_comma: false,
             });
         }
-        // An argument list opening on a call-list terminator (the end of the enclosing
-        // block, `}`, or end of input) is an incomplete call being typed (`f(` with the
-        // cursor and nothing yet after it). Recover with no arguments so the caller mints a
-        // recovered call node — the enclosing-call context signature help needs — and
-        // reports the missing delimiter at the gap. A token that merely cannot cleanly
-        // start an expression but that expression parsing still consumes and diagnoses
-        // (`[` for a bracket literal) is left to that path. Compile behavior is unchanged:
-        // the node still travels with a `parse.syntax` error, so semantic processing stays
-        // gated off.
+        // An argument list opening on a call-list terminator is an incomplete call being
+        // typed (`f(` with nothing after it). Recover with no arguments so the caller
+        // mints the recovered call node signature help needs. The node still travels
+        // with a `parse.syntax` error, so semantic processing stays gated off.
         if terminates_argument_list(self.peek()) {
             return Ok(ParsedArguments {
                 args,
@@ -940,9 +909,8 @@ impl<'a, 's> ExprParser<'a, 's> {
         let mut trailing_comma = false;
         loop {
             let arg = self.argument()?;
-            // After the first named argument, every remaining argument must be
-            // named: a plain positional one would silently back-fill an earlier
-            // parameter.
+            // After the first named argument every remaining one must be named: a
+            // positional argument would silently back-fill an earlier parameter.
             if seen_named && arg.name.is_none() {
                 let span = arg.value.span();
                 self.error(
@@ -962,11 +930,9 @@ impl<'a, 's> ExprParser<'a, 's> {
                 trailing_comma = true;
                 break;
             }
-            // A comma followed by a call-list terminator is an incomplete call being typed
-            // (`f(a, ` with the cursor after the comma, at the end of the enclosing block).
-            // Stop with the arguments parsed so far so the caller mints a recovered call
-            // node; the caller reports the missing delimiter at the gap. As above, the
-            // recovered node carries a parse error, so compile behavior is unchanged.
+            // A comma followed by a call-list terminator is an incomplete call being
+            // typed (`f(a, `). Stop with the arguments parsed so far, on the same terms
+            // as the empty-list recovery above.
             if terminates_argument_list(self.peek()) {
                 trailing_comma = true;
                 break;
@@ -979,9 +945,8 @@ impl<'a, 's> ExprParser<'a, 's> {
     }
 
     /// Parse a keyed-access key list up to the closing `]`: an ordered tuple of
-    /// positional key expressions. A `name:` key is a parse-level rejection — a
-    /// keyed access selects an entry by an ordered key tuple, never by named
-    /// argument — and an empty group `base[]` names no key column, also rejected.
+    /// positional key expressions. A keyed access selects an entry by key tuple, never
+    /// by named argument, so a `name:` key is rejected here, as is an empty `base[]`.
     fn key_arguments(&mut self) -> Result<ParsedKeys, Expression> {
         if matches!(self.peek(), Some(TokenKind::RightBracket)) {
             return Err(self.error_expr(
@@ -1139,16 +1104,14 @@ impl<'a, 's> ExprParser<'a, 's> {
                 self.advance();
                 let inner = self.expression();
                 if inner.is_error() {
-                    // The failed operand already reported at its own token; the
-                    // missing `)` is a consequence of it, not a second fault.
+                    // The missing `)` is a consequence of the already-reported operand
+                    // failure, not a second fault.
                     return inner;
                 }
                 if matches!(self.peek(), Some(TokenKind::RightParen)) {
                     self.advance();
                     inner
                 } else if self.report_stray_assignment_operator() {
-                    // A stray `=`/compound-assign before the `)` is reported at that
-                    // operator rather than as an unstructured group.
                     Expression::Error {
                         span: self.tokens[self.pos].span,
                         recovery: None,
@@ -1196,11 +1159,11 @@ impl<'a, 's> ExprParser<'a, 's> {
         }
     }
 
-    /// An integer literal, folding a contextual duration word literal when the next
-    /// token is a fixed unit word (`3 days`). The unit word is contextual: it is read
-    /// as a unit only immediately after an integer literal, a position where an
-    /// identifier is otherwise a parse error, so an ordinary name spelling a unit is
-    /// unaffected. A month or year word is refused — those spans are not fixed.
+    /// An integer literal, folding a duration word literal when the next token is a
+    /// fixed unit word (`3 days`). The unit word is read as a unit only immediately
+    /// after an integer literal, a position where an identifier is otherwise a parse
+    /// error, so an ordinary name spelling a unit is unaffected. A month or year word
+    /// is refused — those spans are not fixed.
     fn integer_or_duration_words(&mut self, token: Token) -> Expression {
         let Some(next) = self.peek_token_at(1) else {
             return self.literal(token, LiteralKind::Integer);
@@ -1261,17 +1224,16 @@ impl<'a, 's> ExprParser<'a, 's> {
                     self.advance();
                     let expr = self.expression();
                     if expr.is_error() {
-                        // An empty `{}` or a dangling operator failed at its own
-                        // token; skip to the closing brace so later text and holes
-                        // still parse rather than aborting the whole string.
+                        // The failure already reported at its own token; skip to the
+                        // closing brace so later text and holes still parse rather
+                        // than aborting the whole string.
                         self.recover_to_interpolation_hole_end();
                     } else if matches!(self.peek(), Some(TokenKind::InterpolationExprEnd)) {
                         self.advance();
                         parts.push(InterpolationPart::Expr(expr));
                     } else {
-                        // A complete operand followed by trailing tokens before the
-                        // closing brace (`{a b}`) leaves the hole unclosed. Name the
-                        // stray token and skip to the brace.
+                        // Trailing tokens before the closing brace (`{a b}`) leave the
+                        // hole unclosed: name the stray token and skip to the brace.
                         let span = self
                             .tokens
                             .get(self.pos)
@@ -1325,9 +1287,9 @@ impl<'a, 's> ExprParser<'a, 's> {
         while matches!(self.peek(), Some(TokenKind::DoubleColon)) {
             self.advance();
             let Some(segment) = self.tokens.get(self.pos).copied() else {
-                // `::` with no following token is the incomplete path form. Report
-                // the missing segment (the diagnostic is unchanged) and retain the
-                // name parsed so far as the recovery base for path classification.
+                // `::` with no following token is the incomplete path form: report the
+                // missing segment and retain the name parsed so far as the recovery
+                // base for path classification.
                 let gap = self.gap_span();
                 self.error(
                     gap,
@@ -1366,10 +1328,8 @@ impl<'a, 's> ExprParser<'a, 's> {
         }
     }
 
-    /// Report a missing call/group delimiter at the gap just past the last consumed
-    /// token, when a complete operand sits inside an unterminated `(` or before a
-    /// missing `,`. The span is the zero-width point after the operand, always a
-    /// valid 1-based position.
+    /// Report a missing call/group delimiter at the zero-width gap just past the last
+    /// consumed token, always a valid 1-based position.
     fn expected_delimiter_at_gap(&mut self, expected: ExpectedSyntax, message: &str) {
         let span = self.gap_span();
         self.error(
@@ -1391,10 +1351,9 @@ struct ParsedKeys {
 }
 
 /// Whether the token where an argument was expected terminates the argument list of an
-/// incomplete call being typed: the end of the enclosing block (`}`) or end of input.
-/// Recovery mints a call node with the arguments parsed so far so the enclosing-call
-/// context stays available to editor signature help; a token that ordinary expression
-/// parsing would still consume and diagnose is not a terminator.
+/// incomplete call being typed: the end of the enclosing block (`}`) or end of input. A
+/// token ordinary expression parsing would still consume and diagnose is not a
+/// terminator.
 fn terminates_argument_list(peek: Option<TokenKind>) -> bool {
     matches!(peek, None | Some(TokenKind::RightBrace))
 }

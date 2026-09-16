@@ -38,8 +38,8 @@ pub(super) fn doc_comment_text(text: &str) -> String {
     text.strip_prefix("///").unwrap_or(text).trim().to_string()
 }
 /// The segments of a `::`-qualified path, each carrying the span it was spelled at.
-/// The whole spelling is checked against the path grammar before any segment is built,
-/// so a segment list is only ever produced for a path the grammar admits.
+/// The whole spelling is checked against the path grammar first, so segments are only
+/// ever produced for a path the grammar admits.
 fn qualified_name(source: &str, tokens: &[Token]) -> Option<Box<[NameSegment]>> {
     let first = tokens.first()?;
     let last = tokens.last()?;
@@ -52,9 +52,8 @@ fn qualified_name(source: &str, tokens: &[Token]) -> Option<Box<[NameSegment]>> 
             .collect()
     })
 }
-/// Why a `use`/`module` path failed to parse: a reserved word stands where a
-/// path segment must be (with the offending token), or the tokens do not spell a
-/// dotted/`::`-qualified name at all.
+/// Why a `use`/`module` path failed to parse: a reserved word stands where a path
+/// segment must be, or the tokens do not spell a `::`-qualified name at all.
 pub(super) enum PathNameError {
     ReservedSegment(Token),
     NotQualified,
@@ -74,8 +73,7 @@ pub(super) fn import_name(
 ) -> Result<Box<[NameSegment]>, PathNameError> {
     // A project may declare `module std::bytes`, so the reserved type word `bytes`
     // stays legal as that import's final segment; a reserved segment in any other
-    // position is the path error. This is a path-shape allowance, not a shipped
-    // module.
+    // position is the path error.
     if let Some(reserved) =
         reserved_segment(tokens).filter(|_| !is_std_bytes_import(source, tokens))
     {
@@ -108,12 +106,10 @@ pub(super) fn push_parse_error(sink: &mut SyntaxSink<'_>, fallback: SourceSpan, 
         span,
     ));
 }
-/// Drop comment tokens from a token slice. A `//` or `///` line inside an open
-/// delimiter lexes to a `Comment`/`DocComment` token with no newline; like a
-/// blank line, it does not separate or close anything, so a declaration list
-/// that spans several physical lines reads it as absent. Returns the slice
-/// unchanged when it holds no comments, so the common single-line list keeps its
-/// borrow.
+/// Drop comment tokens from a token slice. A `//` or `///` inside an open delimiter
+/// lexes to a comment token with no newline; like a blank line it separates and closes
+/// nothing, so a multi-line declaration list must read it as absent. The slice is
+/// returned unchanged when it holds no comments, keeping the common case borrowed.
 pub(super) fn strip_comment_tokens(tokens: &[Token]) -> Cow<'_, [Token]> {
     if tokens.iter().any(|token| is_line_comment(token.kind)) {
         Cow::Owned(
@@ -127,10 +123,10 @@ pub(super) fn strip_comment_tokens(tokens: &[Token]) -> Cow<'_, [Token]> {
         Cow::Borrowed(tokens)
     }
 }
-/// Split tokens on top-level commas (depth 0), dropping a trailing empty group
-/// from a trailing comma. Runs over declaration and type slices only, where `<`/`>`
-/// delimit a generic argument list (`Map<K, V>`) rather than comparing values, so a
-/// comma inside a nested generic does not split its enclosing list.
+/// Split tokens on top-level commas (depth 0), dropping a trailing empty group from a
+/// trailing comma. Valid only over declaration and type slices, where `<`/`>` delimit a
+/// generic argument list rather than comparing values, so a comma inside a nested
+/// generic does not split its enclosing list.
 pub(super) fn split_top_level_commas(tokens: &[Token]) -> Vec<&[Token]> {
     let mut parts = Vec::new();
     let mut depth = 0usize;
@@ -153,9 +149,8 @@ pub(super) fn split_top_level_commas(tokens: &[Token]) -> Vec<&[Token]> {
     }
     parts
 }
-/// Index of the first top-level `=` (assignment separator). Equality is `==`, so
-/// a depth-0 `=` is unambiguously the assignment in a statement; the depth-0
-/// restriction still keeps named-argument colons and nested forms from splitting.
+/// Index of the first top-level `=` (assignment separator). Equality is spelled `==`,
+/// so a depth-0 `=` is unambiguously the statement's assignment.
 pub(super) fn find_top_level_equal(tokens: &[Token]) -> Option<usize> {
     find_top_level(tokens, TokenKind::Equal)
 }
@@ -163,9 +158,8 @@ pub(super) fn find_top_level_equal(tokens: &[Token]) -> Option<usize> {
 /// The split of a binding's `: TYPE [= VALUE]` tail into its type-annotation and
 /// optional value token slices.
 pub(super) struct BindingSplit<'t> {
-    /// The type-annotation tokens. Owned only in the unspaced `>=` case, where a
-    /// synthetic closing `>` is appended to terminate the generic the glued `>=`
-    /// left open; borrowed otherwise.
+    /// The type-annotation tokens. Owned only in the glued `>=` case, where a synthetic
+    /// closing `>` is appended; borrowed otherwise.
     pub type_tokens: Cow<'t, [Token]>,
     /// The value tokens after the boundary, or `None` for a value-less binding
     /// (`var x: T`).
@@ -176,12 +170,10 @@ pub(super) struct BindingSplit<'t> {
 }
 
 /// Split the tokens after a binding's `:` into the type annotation and the optional
-/// value. The boundary is the first top-level (paren/bracket depth 0) `=`, or a
-/// `>=` that glues a generic close to the assignment (`const m: Map<string, int>= m`)
-/// — the one token-split the angle grammar needs. A `>=` boundary contributes a
-/// synthetic closing `>` to the type and consumes the assignment. Depth counts
-/// `(`/`[` only: a generic's own `<`/`>` never wrap the top-level assignment, and a
-/// glued `>=` must be seen at depth 0 to be split.
+/// value. The boundary is the first depth-0 `=`, or a `>=` that glues a generic close
+/// to the assignment (`const m: Map<string, int>= m`) — the one token-split the angle
+/// grammar needs, contributing a synthetic `>` to the type. Depth counts `(`/`[` only:
+/// a generic's own `<`/`>` never wrap the top-level assignment.
 pub(super) fn split_type_and_value(after_colon: &[Token]) -> BindingSplit<'_> {
     let mut depth = 0usize;
     for (index, token) in after_colon.iter().enumerate() {
@@ -222,9 +214,9 @@ pub(super) fn split_type_and_value(after_colon: &[Token]) -> BindingSplit<'_> {
         equal_span: None,
     }
 }
-/// Index of the first token satisfying `predicate` at parenthesis/bracket depth 0.
-/// The traversal tracks delimiter depth; the predicate receives each candidate
-/// index and the full slice so it can peek at neighbouring tokens.
+/// Index of the first token satisfying `predicate` at parenthesis/bracket depth 0. The
+/// predicate receives the candidate index and the full slice so it can peek at
+/// neighbouring tokens.
 fn find_at_top_level(
     tokens: &[Token],
     predicate: impl Fn(usize, &[Token]) -> bool,
@@ -244,9 +236,8 @@ fn find_at_top_level(
 pub(super) fn find_top_level(tokens: &[Token], kind: TokenKind) -> Option<usize> {
     find_at_top_level(tokens, |index, tokens| tokens[index].kind == kind)
 }
-/// Index of the first top-level compound-assign operator token (`+=`, `-=`,
-/// `*=`, `/=`, `%=`) at parenthesis/bracket depth 0, so a compound operator
-/// inside a call argument does not split the statement.
+/// Index of the first compound-assign operator (`+=`, `-=`, `*=`, `/=`, `%=`) at
+/// depth 0, so one inside a call argument does not split the statement.
 pub(super) fn find_top_level_compound_assign(tokens: &[Token]) -> Option<usize> {
     find_at_top_level(tokens, |index, tokens| {
         matches!(
@@ -307,10 +298,10 @@ fn expr_slice(
     }
 }
 
-/// Parse `tokens` as one complete expression. An empty slice has no source bytes
-/// to anchor a missing-expression diagnostic at, so the caller supplies a
-/// guaranteed-valid `anchor` (the enclosing keyword, operator, or line) rather than
-/// the invalid line-0/column-0 default span.
+/// Parse `tokens` as one complete expression. An empty slice has no source bytes to
+/// anchor a missing-expression diagnostic at, so the caller supplies a guaranteed-valid
+/// `anchor` (the enclosing keyword, operator, or line); the line-0/column-0 default span
+/// is never a valid source location.
 pub(super) fn expr_of(
     source: &str,
     tokens: &[Token],
@@ -321,10 +312,9 @@ pub(super) fn expr_of(
     expr_slice(source, tokens, gap, sink)
 }
 
-/// Parse the operand text that follows `anchor` — a `=`, statement keyword, or
-/// operator the caller stripped. An absent operand reports the missing expression
-/// at the gap just past `anchor`, so the diagnostic lands there rather than on the
-/// statement keyword.
+/// Parse the operand that follows `anchor` — a `=`, statement keyword, or operator the
+/// caller stripped. An absent operand is reported at the gap just past `anchor` rather
+/// than on the keyword itself.
 pub(super) fn expr_of_after(
     source: &str,
     tokens: &[Token],
@@ -360,21 +350,20 @@ pub(super) fn expr_of_in_header(
         ParseComplete::Reported | ParseComplete::Incomplete(_) => None,
     }
 }
-/// Parse a type annotation from its token slice into the structural [`TypeExpr`],
-/// the one owner of type-spelling grammar. The slice must be exactly one type
-/// production; a malformed or over-long spelling reports the same diagnostic the
-/// caller's `expected`/`message` name. Generic applications `Head<..>`, `Id(^root)`,
-/// and the `?` suffix are classified here so no downstream crate re-reads the spelling.
+/// Parse a type annotation into the structural [`TypeExpr`]. This is the one owner of
+/// type-spelling grammar: generic applications `Head<..>`, `Id(^root)`, and the `?`
+/// suffix are classified here so no downstream crate re-reads the spelling. The slice
+/// must be exactly one type production; a malformed or over-long spelling reports the
+/// diagnostic the caller's `expected`/`message` name.
 pub(super) fn parse_type(
     source: &str,
     tokens: &[Token],
     expected: ExpectedSyntax,
     message: &'static str,
 ) -> ParseResult<TypeExpr> {
-    // A type production nests recursively downstream (generic-argument resolution
-    // and every later type walk), so its bracket nesting must fail closed here
-    // against the same limit expression and layout nesting do, rather than
-    // overflowing the native stack at resolution time.
+    // Every later type walk recurses on this production, so nesting must fail closed
+    // here against the same limit expressions use rather than overflowing the native
+    // stack at resolution time.
     if let Some(span) = type_nesting_overflow(tokens) {
         return Err(ParseError::at(
             span,
@@ -389,19 +378,15 @@ pub(super) fn parse_type(
             message,
         ));
     }
-    // A type annotation is a single type production: one head word, optionally
-    // extended by `::` name segments and an attached `<...>` generic or `Id(...)`
-    // group, then an optional trailing `?`. Any depth-0 token past that end (an `in`, `@`,
-    // `where`, or a second bare word) is not part of the type; reject it where it
-    // begins rather than gluing it into the spelling. A doubled `??` or `?.` in
-    // type position is the double-optional spelling, which optionality forbids.
+    // A type annotation is a single type production, so any depth-0 token past its end
+    // (an `in`, `@`, `where`, or a second bare word) is not part of the type; reject it
+    // where it begins rather than gluing it into the spelling.
     let end = type_token_len(tokens);
     if let Some(trailing) = tokens.get(end) {
-        // A complete type production already precedes this token, so the type is
-        // present; naming the stray token is accurate, where reusing the caller's
-        // "expected <type>" prose would falsely report the type as missing. A
-        // doubled `??`/`?.` is the double-optional spelling, which optionality
-        // forbids, so it keeps its own guidance.
+        // A complete production already precedes this token, so naming the stray token
+        // is accurate where the caller's "expected <type>" prose would falsely report
+        // the type as missing. A doubled `??`/`?.` spells a double optional, which
+        // optionality forbids, so it keeps its own guidance.
         let detail: Cow<str> = if matches!(
             trailing.kind,
             TokenKind::QuestionQuestion | TokenKind::QuestionDot
@@ -423,9 +408,8 @@ pub(super) fn parse_type(
     build_type_expr(source, tokens, expected)
 }
 
-/// The noun for the type position a stray trailing token followed, so a
-/// rejection names the context ("field type", "parameter type", ...) it was
-/// parsing rather than a generic "type".
+/// The noun for the type position a stray trailing token followed, so a rejection names
+/// the context ("field type", "parameter type", ...) rather than a generic "type".
 fn type_context_noun(expected: ExpectedSyntax) -> &'static str {
     match expected {
         ExpectedSyntax::FieldType => "field type",
@@ -435,10 +419,9 @@ fn type_context_noun(expected: ExpectedSyntax) -> &'static str {
     }
 }
 
-/// The number of leading tokens that make up one complete type production: the
-/// head token, then each following `::` name segment, an attached generic group
-/// `<...>` at depth 0, or the `Id(...)` identity `(...)` group, then one optional
-/// trailing `?` suffix. Group contents are spanned whole, so whitespace and nested
+/// The number of leading tokens making up one complete type production: the head token,
+/// then each following `::` name segment, an attached `<...>` generic or `Id(...)`
+/// group, then one optional trailing `?`. Group contents are spanned whole, so nested
 /// types inside them do not end the type.
 fn type_token_len(tokens: &[Token]) -> usize {
     let mut index = if tokens.is_empty() { 0 } else { 1 };
@@ -459,10 +442,9 @@ fn type_token_len(tokens: &[Token]) -> usize {
 }
 
 /// The span of the delimiter that first opens a type nested deeper than
-/// [`NESTING_DEPTH_LIMIT`], or `None` when the type stays within the limit.
-/// Counts generic `<` and identity `(` opens, mirroring the limit the lexer and
-/// expression parser enforce, so a deep type fails closed before any recursive
-/// walk runs.
+/// [`NESTING_DEPTH_LIMIT`], or `None` when the type stays within the limit. Counts
+/// generic `<` and identity `(` opens, mirroring the limit the lexer and expression
+/// parser enforce.
 fn type_nesting_overflow(tokens: &[Token]) -> Option<SourceSpan> {
     let mut depth = 0usize;
     for token in tokens {
@@ -481,11 +463,9 @@ fn type_nesting_overflow(tokens: &[Token]) -> Option<SourceSpan> {
 }
 
 /// Index of the delimiter that closes the group opened at `open`, matching nested
-/// generic `<...>` and identity `(...)` groups. Within a delimited type slice a
-/// nested generic close is always a bare `>` (no `>>` token exists and any
-/// `>=`-glued binding boundary is split off by the statement parser before the
-/// slice is formed), so tracking `<`/`>` and `(`/`)` depth is exact. `None` when
-/// the group never closes.
+/// generic `<...>` and identity `(...)` groups, or `None` when it never closes. Depth
+/// tracking is exact because a nested generic close inside a type slice is always a bare
+/// `>`: no `>>` token exists, and a `>=`-glued binding boundary is split off upstream.
 fn balanced_group_end(tokens: &[Token], open: usize) -> Option<usize> {
     let mut depth = 0usize;
     for (offset, token) in tokens[open..].iter().enumerate() {
@@ -502,20 +482,17 @@ fn balanced_group_end(tokens: &[Token], open: usize) -> Option<usize> {
     }
     None
 }
-/// Classify one validated type production into its structure, mirroring the
-/// language's spelling grammar: a trailing `?` is the optional suffix,
-/// a generic application `Head<..>` recurses on its arguments, `Id(^root)` is a
-/// saved-store identity, and everything else is a name resolved downstream. As the sole owner of type
-/// grammar, it rejects a structurally malformed identity or a `?` with no base
-/// here rather than deferring a misleading semantic error downstream.
+/// Classify one validated type production: a trailing `?` is the optional suffix, a
+/// generic application `Head<..>` recurses on its arguments, `Id(^root)` is a saved-store
+/// identity, and everything else is a name resolved downstream. A malformed identity or
+/// a `?` with no base is rejected here rather than deferred as a semantic error.
 fn build_type_expr(
     source: &str,
     tokens: &[Token],
     expected: ExpectedSyntax,
 ) -> ParseResult<TypeExpr> {
     let span = join_spans(tokens[0].span, tokens[tokens.len() - 1].span);
-    // Strip exactly one trailing `?` and wrap the base as an optional. A `?` with
-    // no base names no type to make optional.
+    // A `?` with no base names no type to make optional.
     if let Some((last, base)) = tokens.split_last()
         && last.kind == TokenKind::Question
     {
@@ -571,12 +548,10 @@ fn type_name_segment_spans(tokens: &[Token]) -> Vec<SourceSpan> {
     tokens.iter().step_by(2).map(|token| token.span).collect()
 }
 
-/// A generic type application `Head<Arg, ...>`: any identifier head whose `<...>`
-/// group spans the whole tail, with comma-separated type arguments. The head is
-/// either a reserved toolchain generic (`Option`/`Result`/`List`/`Map`) or a
-/// user-declared generic `struct`/`enum`; the semantic owner resolves it. The
-/// applied argument arity is a checker concern, so a wrong arity structures and
-/// reports semantically.
+/// A generic type application `Head<Arg, ...>`: any identifier head whose `<...>` group
+/// spans the whole tail, with comma-separated type arguments. The semantic owner resolves
+/// the head (a reserved `Option`/`Result`/`List`/`Map` or a user-declared generic) and
+/// owns argument arity, so an unknown head or wrong arity is a checker diagnostic.
 fn build_apply(
     source: &str,
     tokens: &[Token],
@@ -594,7 +569,6 @@ fn build_apply(
     {
         return Ok(None);
     }
-    // The opened group must close with a matching `>` at the end of the production.
     // An unclosed or short group is a targeted parse error, not a name absorbing the
     // stray `<` — reported at the opening `<` so the missing close is unambiguous.
     if tokens[last].kind != TokenKind::Greater || balanced_group_end(tokens, open) != Some(last) {
@@ -604,10 +578,6 @@ fn build_apply(
             "expected `>` to close the type arguments",
         ));
     }
-    // Any identifier head introduces a generic type application: the reserved
-    // `Option`/`Result`/`List`/`Map` or a user-declared generic `struct`/`enum`.
-    // The semantic owner resolves the head; an unknown one is a checker diagnostic,
-    // not a parse error.
     let head = tokens[0].text(source).to_string();
     let inner = &tokens[open + 1..last];
     let mut args = Vec::new();
@@ -629,10 +599,9 @@ fn build_apply(
     }))
 }
 
-/// Whether a token slice opens as an identity constructor `Id ( ^`. `Id` is a
-/// reserved keyword, so this opening always intends a saved-store identity: the
-/// parser commits to that reading and reports a malformed one rather than folding
-/// it into a name.
+/// Whether a token slice opens as an identity constructor `Id ( ^`. `Id` is reserved, so
+/// this opening always intends a saved-store identity: the parser commits to that reading
+/// and reports a malformed one rather than folding it into a name.
 fn opens_as_identity(tokens: &[Token]) -> bool {
     matches!(
         tokens,
@@ -643,10 +612,10 @@ fn opens_as_identity(tokens: &[Token]) -> bool {
     )
 }
 
-/// Build the saved-store identity a token slice that opens `Id ( ^` names. The
-/// only well-formed spelling is `Id ( ^ root )` with a single saved-root name; a
-/// dotted or empty root, or stray tokens after the close, is a targeted parse
-/// error rather than an unresolvable name the checker would misreport.
+/// Build the saved-store identity named by a slice that opens `Id ( ^`. The only
+/// well-formed spelling is `Id ( ^ root )` with a single saved-root name; a dotted or
+/// empty root, or stray tokens after the close, is a targeted parse error rather than an
+/// unresolvable name the checker would misreport.
 fn build_identity(
     source: &str,
     tokens: &[Token],
@@ -667,8 +636,8 @@ fn build_identity(
     };
     let root_tokens = &tokens[caret + 1..close];
     let [root] = root_tokens else {
-        // An empty root points at the close paren where a name should be; a longer
-        // root points at the first token past the name that breaks it up.
+        // An empty root points at the close paren where a name should be; a longer root
+        // points at the first token past the name that breaks it up.
         let at = root_tokens
             .get(1)
             .map_or(tokens[close].span, |token| token.span);
@@ -693,9 +662,8 @@ fn build_identity(
     })))
 }
 
-/// The whitespace-free source spelling of a type-token slice. The stored spelling
-/// drops whitespace so a wrapped annotation formats as one line and its digest is
-/// stable across reformatting.
+/// The whitespace-free source spelling of a type-token slice, so a wrapped annotation
+/// formats as one line and its digest is stable across reformatting.
 fn type_text(source: &str, tokens: &[Token]) -> String {
     let start = tokens[0].span.start_byte;
     let end = tokens[tokens.len() - 1].span.end_byte;
@@ -704,12 +672,10 @@ fn type_text(source: &str, tokens: &[Token]) -> String {
         .filter(|ch| !ch.is_whitespace())
         .collect()
 }
-/// The span of a token slice, falling back to `empty` when the slice holds no
-/// tokens. An empty slice has no source bytes to point at, so every caller must
-/// supply a guaranteed-valid anchor (the enclosing statement keyword or the
-/// line's first token) to keep a missing-operand diagnostic on a real 1-based
-/// position. There is no zero-argument form: the line-0/column-0 default span is
-/// never a valid source location, so it must be unreachable from any diagnostic.
+/// The span of a token slice, falling back to `empty` when the slice holds no tokens.
+/// There is deliberately no zero-argument form: every caller must supply a
+/// guaranteed-valid anchor (the enclosing statement keyword or the line's first token) so
+/// the line-0/column-0 default span stays unreachable from any diagnostic.
 pub(super) fn line_span_or(tokens: &[Token], empty: SourceSpan) -> SourceSpan {
     match (tokens.first(), tokens.last()) {
         (Some(first), Some(last)) => join_spans(first.span, last.span),
@@ -717,10 +683,9 @@ pub(super) fn line_span_or(tokens: &[Token], empty: SourceSpan) -> SourceSpan {
     }
 }
 /// Index of the token that ends the line or header starting at `pos`
-/// (`NEWLINE`/`{`/`}`/`EOF`), or `tokens.len()` if none follows. A header line
-/// continues across newlines suppressed inside open delimiters and after a
-/// trailing continuation token, so this stops at the first block delimiter or
-/// unsuppressed newline rather than any newline.
+/// (`NEWLINE`/`{`/`}`/`EOF`), or `tokens.len()` if none follows. Newlines suppressed
+/// inside open delimiters or after a continuation token never reach the token stream, so
+/// the first newline seen here really does end the line.
 pub(super) fn line_end(tokens: &[Token], pos: usize) -> usize {
     let mut index = pos;
     while index < tokens.len()

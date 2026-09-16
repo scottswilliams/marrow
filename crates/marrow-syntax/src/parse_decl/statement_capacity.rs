@@ -1,46 +1,27 @@
-//! How many statements each brace-delimited *region* of a token slice can hold —
-//! a `{ … }` block, a `match` body, and the slice itself — measured before parsing to
-//! pre-reserve conservative list capacities. Final boxed slices may shrink spare capacity.
+//! How many statements each brace-delimited *region* of a token slice can hold — a
+//! `{ … }` block, a `match` body, and the slice itself — measured in one pass before
+//! parsing so statement lists are reserved exactly rather than grown by doubling.
 //!
 //! A region holds at most one statement per *statement start* it opens directly: a
-//! significant token at the region's own brace depth that follows a boundary — the
-//! region's own `{`, a `NEWLINE`, or a `}`. A newline is not the only boundary because a
-//! compound statement's body closes on a `}`, which leaves the cursor mid-line and the
-//! parser free to structure another statement from the same line (`if a {} if b {}`);
-//! counting lines would size such a region at one and leave the rest of it to be grown
-//! by doubling, which is what this pass exists to prevent. A `}` that closes no region
-//! is a boundary on the same terms — the parser skips it and structures what follows.
+//! significant token at the region's own brace depth following a boundary — the region's
+//! own `{`, a `NEWLINE`, or any `}`. A `}` is a boundary because a compound statement's
+//! body closes mid-line and the parser may structure another statement from the same line
+//! (`if a {} if b {}`); counting lines would size such a region at one.
 //!
-//! Counting only a region's own starts is what makes the total sound: a nested start
-//! belongs to exactly one region, so summed over every region in a slice the count is
-//! the slice's own start count, where counting each region's whole extent would count a
-//! nested start once per enclosing region and over-reserve by the nesting depth.
+//! Counting only a region's *own* starts is what makes the total sound: a nested start
+//! belongs to exactly one region, so the per-region counts sum to the slice's own start
+//! count instead of over-reserving by the nesting depth. The count is an upper bound — a
+//! continuing clause (`} else {`) follows a boundary without starting a statement — and
+//! every counted start costs at least two source bytes (its token plus its boundary),
+//! which is the floor the per-source-byte parse charge is derived from.
 //!
-//! A start costs at least two source bytes — its own token and the boundary separating
-//! it from the previous one — which is the bound the per-source-byte parse charge is
-//! derived from.
-//!
-//! The count is an upper bound, not an exact one: a clause continuing its statement past
-//! a nested block (`} else {`) begins no new statement but does follow a boundary, so it
-//! is counted. Over-reserving a slot cannot make the list grow, and the two-byte floor
-//! holds for a counted start whether or not the parser spends it.
-//!
-//! One pass with a brace stack measures every region in a slice, so the slice costs a
-//! single walk of its tokens rather than one walk per region.
-//! Declaration allocation needs only the outer count: [`outer_count`] shares the
-//! frame's token classification without allocating or measuring nested regions.
-//!
-//! This pass owns which brace-delimited regions the statement parser structures. Its
-//! stack is bounded by [`NESTING_DEPTH_LIMIT`] rather than by the source, so a `{` nested
-//! past the limit is left unmeasured, and the parser structures exactly the regions that
-//! carry a measurement — a block, and a `match` body. A region whose statement count is
-//! unknown is therefore never built, and no second counter disagrees with this one about
-//! which regions the tree holds.
-//!
-//! It does not own how deep the descent goes, and cannot: this pass is keyed on a `{`, so
-//! it has nothing to say about a trailing clause that takes a single inline statement in
-//! place of a block. Bounding the native stack is a separate question with a separate
-//! owner, the frame counter in `stmt`.
+//! This pass also owns which regions the statement parser structures: its stack is
+//! bounded by [`NESTING_DEPTH_LIMIT`] rather than by the source, a `{` past the limit is
+//! left unmeasured, and the parser builds exactly the regions that carry a measurement.
+//! It does not own how deep the descent goes — it is keyed on `{`, so it says nothing
+//! about a clause taking a single inline statement; the frame counter in `stmt` bounds
+//! the native stack. [`outer_count`] answers the declaration parser's question, the outer
+//! count alone, without allocating or measuring nested regions.
 
 use crate::NESTING_DEPTH_LIMIT;
 use crate::token::{Token, TokenKind};
@@ -98,11 +79,10 @@ impl StatementCapacity {
         let mut body = Frame::new(0);
         let mut open_regions: Vec<Frame> = Vec::with_capacity(NESTING_DEPTH_LIMIT);
         let mut regions: Vec<(u32, u32)> = Vec::new();
-        // Open `{`s this pass left unmeasured. Measuring stops at the limit, so every
-        // unmeasured `{` sits inside the innermost measured region and a plain count
-        // keeps the stack aligned: their `}` closes one of them and never pops a
-        // measured frame. Popping for one would credit the rest of that measured
-        // region's starts to its parent and leave the region itself to grow from nothing.
+        // Open `{`s this pass left unmeasured. Every one sits inside the innermost
+        // measured region, so counting them keeps the stack aligned: their `}` closes one
+        // of them and must never pop a measured frame, which would credit the rest of
+        // that region's starts to its parent.
         let mut unmeasured = 0usize;
         for (index, token) in tokens.iter().enumerate() {
             match token.kind {
@@ -112,11 +92,10 @@ impl StatementCapacity {
                         continue;
                     }
                     current(&mut body, &mut open_regions).count_token(token.kind);
-                    // Past the limit the parser skips the block rather than structuring
-                    // it, so measuring deeper would size lists that are never built —
-                    // and would make this stack grow with the source rather than with a
-                    // fixed bound. The whole skipped extent is one statement of the
-                    // block that holds it: the one begun above, and nothing within.
+                    // Past the limit the parser skips the block, so measuring deeper would
+                    // size lists that are never built and would let this stack grow with
+                    // the source. The whole skipped extent counts as the one statement
+                    // begun above.
                     match u32::try_from(index) {
                         Ok(open) if open_regions.len() < NESTING_DEPTH_LIMIT => {
                             open_regions.push(Frame::new(open));
@@ -135,10 +114,8 @@ impl StatementCapacity {
                     }
                     // A closed nested block ends the statement that held it, so the next
                     // significant token on the same line begins another one. A `}` that
-                    // closes no frame is a boundary on the same terms: the parser skips
-                    // it and structures what follows it on the same line, so letting the
-                    // statement in progress run past it would leave every one of those
-                    // uncounted.
+                    // closes no frame is a boundary on the same terms, since the parser
+                    // skips it and structures what follows on the same line.
                     current(&mut body, &mut open_regions).count_token(token.kind);
                 }
                 TokenKind::Newline => {
@@ -153,9 +130,8 @@ impl StatementCapacity {
                 }
             }
         }
-        // A region left open at the end of the slice still gets its measurement: an
-        // unclosed `{` holding a body's worth of statements would otherwise be the one
-        // shape whose statement list is allocated by growing.
+        // A region left open at the end of the slice still gets its measurement, so an
+        // unclosed `{` is not the one shape whose statement list grows by doubling.
         while let Some(frame) = open_regions.pop() {
             regions.push((frame.open, frame.statements));
         }
@@ -215,10 +191,8 @@ mod tests {
     use super::*;
     use crate::lex_source;
 
-    /// A nested block inside a declaration body parses to the same spans and
-    /// statements as a flat one. `StatementCapacity::measure` runs from the single
-    /// `StmtParser::new` site over the declaration's own body tokens, so a nested
-    /// region is never measured a second time.
+    /// A nested block inside a declaration body parses to the same spans and statements
+    /// as a flat one, and its region is never measured a second time.
     #[test]
     fn a_nested_region_parses_to_the_same_spans_and_statements() {
         use crate::{Declaration, Expression, LiteralKind, Statement};
@@ -278,9 +252,8 @@ mod tests {
         ));
     }
 
-    /// A source's tokens, and the indices of its `{`s within the one function body it
-    /// holds — the slice `DeclParser` hands the statement parser, which is what
-    /// [`StatementCapacity::measure`] runs over.
+    /// A source's tokens, and the indices of its `{`s, within the one function body it
+    /// holds — the same slice `DeclParser` hands the statement parser.
     struct Body {
         tokens: Box<[Token]>,
         opens: Vec<usize>,
@@ -341,13 +314,9 @@ mod tests {
         source
     }
 
-    /// A `{` past the limit opens no frame, so its `}` closes none either.
-    ///
-    /// It closed the innermost measured block's frame instead, which credited that
-    /// block's remaining lines to its parent: the parent was then sized at a line count
-    /// it never fills — a phantom held for the whole parse — and the block itself was
-    /// sized at its first two lines and grew by doubling to hold the rest. That is the
-    /// amortized growth this pass exists to remove, reintroduced by one unbalanced pop.
+    /// A `{` past the limit opens no frame, so its `}` closes none either. An unbalanced
+    /// pop would credit the innermost measured block's remaining lines to its parent,
+    /// leaving the parent oversized and the block itself to grow by doubling.
     #[test]
     fn a_block_past_the_limit_closes_no_measured_frame() {
         let statements = 64;
@@ -394,8 +363,7 @@ mod tests {
 
     /// A `match` opens a brace of its own before its arms open theirs, and both count
     /// against the one limit. Counting only the arms would let a nested `match` reach
-    /// twice the limit's brace depth, and the blocks past that point would be built from
-    /// a measurement that never recorded them — sized at nothing, grown by doubling.
+    /// twice the limit's brace depth and build blocks the measurement never recorded.
     #[test]
     fn a_match_body_counts_toward_the_limit_like_any_other_block() {
         let levels = NESTING_DEPTH_LIMIT / 2 + 1;
@@ -421,10 +389,8 @@ mod tests {
             "a `match` brace and an arm brace each take one level of the limit"
         );
 
-        // What the parser builds agrees, because the measurement is what it asks about
-        // its own brace as well as about its arms' braces. A `match` that structured its
-        // body without asking would build one more level than was measured, and grow an
-        // arm list sized at nothing.
+        // What the parser builds must agree: a `match` that structured its body without
+        // asking the measurement about its own brace would build one level too many.
         let parsed = crate::parse_source(&source);
         let Some(crate::Declaration::Function(function)) = parsed.file.declarations.first() else {
             panic!("the fixture declares one function");
@@ -453,11 +419,9 @@ mod tests {
         );
     }
 
-    /// A compound statement's body closes on a `}`, which leaves the cursor mid-line and
-    /// the parser's loop free to structure another statement from the same line. A block
-    /// therefore holds as many statements as it has *starts*, not as many as it has
-    /// lines, and sizing it by lines is what let the one list this pass exists to size
-    /// exactly be grown by doubling instead.
+    /// A compound statement's body closes mid-line, leaving the parser free to structure
+    /// another statement from the same line. A block therefore holds as many statements
+    /// as it has *starts*, not as many as it has lines.
     #[test]
     fn statements_that_share_a_line_are_each_measured() {
         let units = 64;
@@ -504,10 +468,9 @@ mod tests {
         );
     }
 
-    /// A `}` that closes nothing is still a boundary. The declaration parser skips it and
-    /// structures whatever follows it on the same line, so a measurement that let the
-    /// statement in progress run past it counts one declaration for a whole file of them
-    /// and hands the parser a list that grows by doubling for the rest of the file.
+    /// A `}` that closes nothing is still a boundary: the declaration parser skips it and
+    /// structures whatever follows on the same line, so letting the statement in progress
+    /// run past it would count one declaration for a whole file of them.
     #[test]
     fn declarations_after_an_unmatched_brace_are_each_measured() {
         let units = 64;
@@ -569,7 +532,7 @@ mod tests {
             .sum::<usize>()
             + capacity.body();
         // One `if a {` per level, the over-limit `if a {}` inside the innermost, and the
-        // trailing statement lines. Each opens exactly one statement, in one block.
+        // trailing statement lines — each one statement, in exactly one block.
         let starts = NESTING_DEPTH_LIMIT + 1 + statements;
         assert_eq!(
             total, starts,
