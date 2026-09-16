@@ -1,11 +1,9 @@
-//! Formatter goldens over the brace grammar. These exercise the public
-//! `format_source`/`format_expression` path and own the exact canonical rendering of
-//! each construct: `{ … }` blocks, cuddled clauses, `=>` match arms, bracket keys,
-//! angle generics, `//`/`///` comments, and the empty-body rule. Every braced
-//! statement block renders multiline — the header on its own line, one statement per
-//! indented line, the closing `}` on its own line — and only an empty body renders
-//! `{}` inline. The comment-ownership invariants are pinned in
-//! `comment_ownership.rs`; here the rendered text is the contract.
+//! Formatter goldens over the brace grammar: the exact canonical rendering of each
+//! construct, through the public `format_source`/`format_expression` path. Every
+//! braced statement block renders multiline — header on its own line, one statement
+//! per indented line, closing `}` on its own line — and only an empty body renders
+//! `{}` inline. Comment-ownership invariants live in `comment_ownership.rs`; here the
+//! rendered text is the contract.
 
 use crate::common;
 use crate::common::CompletePayload;
@@ -14,10 +12,9 @@ use marrow_syntax::{
     format_preserves_comments, format_source, parse_source,
 };
 
-/// Format a single-declaration `module app` source and return just that
-/// declaration's canonical text. `format_source` frames the file as
-/// `module app\n\n<decl>\n`, so stripping that frame exercises the same declaration
-/// path the public entry point uses.
+/// Format a single-declaration `module app` source and return just that declaration's
+/// canonical text. `format_source` frames the file as `module app\n\n<decl>\n`, so
+/// stripping that frame keeps the assertions on the public entry point's output.
 fn format_decl(source: &str) -> String {
     let formatted = format_source(source).expect("a complete parse formats");
     formatted
@@ -31,8 +28,7 @@ fn format_decl(source: &str) -> String {
 /// the indented statements between the `fn … {` header and its closing `}`.
 fn format_function_body(source: &str) -> String {
     let decl = format_decl(source);
-    // `format_decl` yields `fn run(...) {\n<body>\n}`; drop the header line and the
-    // closing brace line to leave the body block the test asserts on.
+    // `format_decl` yields `fn run(...) {\n<body>\n}`.
     let inner = decl
         .split_once('\n')
         .map(|(_, rest)| rest)
@@ -44,8 +40,7 @@ fn format_function_body(source: &str) -> String {
 }
 
 /// Re-parse the formatter's output and hand back the `run` function's body block, so
-/// comment round-trips assert on the typed `Block.comments` (text, placement, marker)
-/// rather than substrings of the rendered text.
+/// comment round-trips assert on the typed `Block.comments` rather than substrings.
 fn reparsed_run_body(source: &str) -> Block {
     let formatted = format_source(source).expect("a complete parse formats");
     let parsed = parse_source(&formatted);
@@ -85,8 +80,7 @@ fn format_const_value(source: &str) -> String {
 }
 
 /// A span-independent structural fingerprint of a parsed file: its `Debug` rendering
-/// with every `SourceSpan { ... }` region removed, so two files compare equal exactly
-/// when their declarations, statements, nesting, and retained comments match.
+/// with every `SourceSpan { ... }` region removed. See `common::oracle`.
 fn structural_fingerprint(source: &str) -> String {
     let debug = format!("{:#?}", parse_source(source).file);
     let mut out = String::with_capacity(debug.len());
@@ -230,9 +224,8 @@ fn formats_compound_assignment_canonically() {
 }
 
 /// A left-anchored `x = x <op> e` over a plain local name folds to the canonical
-/// compound form `x <op>= e` for each of the five arithmetic operators. The fold
-/// is a pure surface rewrite of an equivalent statement; the right operand is
-/// re-rendered unchanged.
+/// compound form `x <op>= e` for each of the five arithmetic operators, with the
+/// right operand re-rendered unchanged.
 #[test]
 fn folds_left_anchored_self_update_to_compound_assign() {
     let cases = [
@@ -251,9 +244,6 @@ fn folds_left_anchored_self_update_to_compound_assign() {
 
 /// The fold is conservative: it fires only when the target and the binary's left
 /// operand are the same plain local name and the operator has a compound form.
-/// A right-anchored form, a different name, a nested left operand
-/// (`x = x + a + b` parses as `(x + a) + b`), a field or index target, and a
-/// non-arithmetic operator all keep the explicit `=` assignment.
 #[test]
 fn leaves_non_self_update_assignments_as_explicit() {
     let unchanged = [
@@ -274,9 +264,6 @@ fn leaves_non_self_update_assignments_as_explicit() {
     }
 }
 
-/// Folding is idempotent and its output re-parses to a compound-assign statement:
-/// formatting the folded form again is a fixed point, and the canonical text is
-/// itself a valid compound assignment (span-erased reparse equality).
 #[test]
 fn compound_assign_fold_is_idempotent_and_reparses() {
     let source = "module app\nfn run() {\n    s = s + i\n}\n";
@@ -299,7 +286,7 @@ fn compound_assign_fold_is_idempotent_and_reparses() {
 }
 
 /// The `use` block is formatter-owned: imports render sorted by module path,
-/// deduplicated, and one per line, regardless of their source order or repetition.
+/// deduplicated, one per line.
 #[test]
 fn sorts_and_deduplicates_the_use_block() {
     let source = "module app\n\nuse shelf::books\nuse catalog::isbn\nuse shelf::books\n\nfn f(): int {\n    return 0\n}\n";
@@ -311,8 +298,6 @@ fn sorts_and_deduplicates_the_use_block() {
     );
 }
 
-/// Sorting and collapsing the `use` block is a fixed point: formatting the
-/// canonical block again leaves it unchanged.
 #[test]
 fn use_block_formatting_is_idempotent() {
     let source = "module app\n\nuse shelf::b\nuse shelf::a\nuse shelf::a\n\nfn f(): int {\n    return 0\n}\n";
@@ -324,9 +309,7 @@ fn use_block_formatting_is_idempotent() {
     );
 }
 
-/// The formatter owns only the `use` block; it never reorders declarations. With
-/// the imports written out of order and the functions written second-then-first,
-/// the imports sort but the functions keep their source order.
+/// The formatter owns only the `use` block; it never reorders declarations.
 #[test]
 fn use_block_sort_never_reorders_declarations() {
     let source = "module app\n\nuse z::mod\nuse a::mod\n\nfn second(): int {\n    return 2\n}\n\nfn first(): int {\n    return 1\n}\n";
@@ -392,8 +375,7 @@ fn formats_a_match_with_braced_arms() {
 }
 
 /// A single blank line between sibling match arms groups them exactly as it groups
-/// statements and members: one blank is preserved, arms with no blank stay tight, and
-/// the result is idempotent.
+/// statements and members: one blank is preserved, arms with no blank stay tight.
 #[test]
 fn preserves_grouping_blank_between_match_arms() {
     let source = "module app\nfn label(s: Status) {\n    match s {\n        active => print(\"a\")\n\n        archived => print(\"b\")\n        deleted => print(\"c\")\n    }\n}\n";
@@ -410,9 +392,8 @@ fn preserves_grouping_blank_between_match_arms() {
 // ---- multiline cuddle integrity ----
 
 /// An `if`/`else if` chain renders every branch as a braced multiline block, and each
-/// trailing clause cuddles the preceding block's closing `}` (`} else if c {`). Because
-/// every branch ends with a `}`, a following keyword always has a brace to cuddle and
-/// the chain re-parses.
+/// trailing clause cuddles the preceding block's closing `}` (`} else if c {`). Since
+/// every branch ends with a `}`, a following keyword always has a brace to cuddle.
 #[test]
 fn an_else_if_chain_renders_multiline() {
     let source = "module app\nfn run(a: int): int {\n    if a > 0 {\n        return 1\n    } else if a == 0 {\n        return 0\n    } else if a == 1 {\n        return 2\n    }\n}\n";
@@ -436,9 +417,8 @@ fn an_else_if_chain_renders_multiline() {
     );
 }
 
-/// A `checked` form renders each present arm as a braced multiline block. The second
-/// arm cuddles the first arm's closing `}` (`} on zero_divisor {`), so the render
-/// re-parses.
+/// A `checked` form renders each present arm as a braced multiline block; the second
+/// arm cuddles the first arm's closing `}` (`} on zero_divisor {`).
 #[test]
 fn checked_arms_render_multiline() {
     let source = "module app\nfn run(a: int, b: int): int {\n    return checked a / b\n    on out_of_range {\n        return 0\n    }\n    on zero_divisor {\n        return -1\n    }\n}\n";
@@ -506,10 +486,8 @@ fn empty_bodies_follow_the_mandatory_block_rule() {
     );
 }
 
-/// A resource group mandates a `{ … }` body, so an empty group renders `{}` and
-/// re-parses. Regression for the formatter fuzz oracle counterexample minimized
-/// from seed 999, where an empty group had rendered header-alone and the output
-/// no longer parsed. Both the plain and the keyed group form are pinned.
+/// A resource group mandates a `{ … }` body, so an empty group renders `{}` rather
+/// than header-alone — header-alone does not re-parse. Plain and keyed forms alike.
 #[test]
 fn empty_resource_group_renders_braces_and_reparses() {
     let cases = [
@@ -546,7 +524,7 @@ fn formats_const_declaration_with_docs() {
 #[test]
 fn formats_empty_doc_comment_lines_without_trailing_whitespace() {
     // A blank line between doc paragraphs renders as a bare `///` with no trailing
-    // space; the structural checks pin the two facts behind the golden.
+    // space.
     let source =
         "module app\n/// First paragraph.\n///\n/// Second paragraph.\nconst MaxLoans: int = 5\n";
     let expected = "/// First paragraph.\n///\n/// Second paragraph.\nconst MaxLoans: int = 5";
@@ -575,8 +553,7 @@ fn formats_resource_declaration_with_members() {
     );
 }
 
-/// A resource and the store that follows it each brace their own body; formatting is
-/// a fixed point across the pair.
+/// A resource and the store that follows it each brace their own body.
 #[test]
 fn formats_a_resource_then_store_pair() {
     let source = "module app\nresource Book {\n    required title: string\n}\nstore ^books[id: int]: Book {\n    index byTitle[title, id]\n}\n";
@@ -617,10 +594,10 @@ fn formats_whole_file_with_blank_line_policy() {
     );
 }
 
-// ---- B5/B6 canonical rendering ----
+// ---- if-const chains and let-else ----
 
-/// A B5 chained `if const` head renders its bindings joined by `and`, with the
-/// optional trailing condition last, and is a fixed point.
+/// A chained `if const` head renders its bindings joined by `and`, with the optional
+/// trailing condition last.
 #[test]
 fn formats_if_const_chain_canonically() {
     let source = "module app\nfn run(): int {\n    if const a = ^c[1].v and const b = ^c[2].v and a < b {\n        return 1\n    }\n    return 0\n}\n";
@@ -631,15 +608,15 @@ fn formats_if_const_chain_canonically() {
         format_source(&once).expect("a complete parse formats"),
         once
     );
-    // No longer a verbatim echo: the render is regenerated from the AST.
+    // The render is regenerated from the AST, not echoed from the source text.
     let Statement::IfConstChain { bindings, .. } = &reparsed_run_body(source).statements[0] else {
         panic!("expected an if-const chain");
     };
     assert_eq!(bindings.len(), 2);
 }
 
-/// A B6 let-else renders its `else` body as a braced multiline block, whether it holds
-/// one statement or several; both are fixed points.
+/// A let-else renders its `else` body as a braced multiline block, whether it holds
+/// one statement or several.
 #[test]
 fn formats_let_else_canonically() {
     let single =
@@ -740,8 +717,7 @@ fn preserves_single_intra_body_blank_line() {
     );
 }
 
-/// A `///` doc comment attached to a member carries the member's grouping blank line,
-/// and the result is idempotent.
+/// A `///` doc comment attached to a member carries the member's grouping blank line.
 #[test]
 fn preserves_blank_above_doc_commented_member() {
     let source = "module app\nresource Book {\n    required title: string\n\n    /// Who currently holds the book.\n    loanedTo: string\n}\n";
@@ -899,8 +875,8 @@ fn rejects_body_doc_comments_at_parse() {
 
 #[test]
 fn round_trips_comments_attached_inside_nested_blocks() {
-    // An own-line and a trailing comment inside the `if` belong to the then-block; the
-    // comment after the `if` belongs to the outer body.
+    // Comments inside the `if` belong to the then-block; the comment after the `if`
+    // belongs to the outer body.
     let source = "module app\nfn run(n: int) {\n    if n < 0 {\n        // negative branch\n        print(\"neg\") // report\n    }\n    // after the if\n    return\n}\n";
     let then_expected = [
         (
@@ -996,8 +972,8 @@ fn preserves_top_level_and_member_line_comments() {
     );
 }
 
-/// An indented top-level own-line comment re-renders at column 1, round-trips
-/// without comment loss, and is a fixed point; both `//` and `///` are covered.
+/// An indented top-level own-line comment re-renders at column 1 without comment
+/// loss, for both `//` and `///`.
 #[test]
 fn preserves_indented_top_level_own_line_comments() {
     let source = "module app\n    // indented before first decl\nconst Max:int=5\n    /// indented between decls\nconst Min:int=0\n    // indented at end of file\n";
@@ -1130,7 +1106,7 @@ fn preserves_trailing_comments_on_prefix_try_statements() {
 }
 
 /// A comment trailing a match-arm body statement stays on that statement inside the
-/// arm's braced multiline block, and it is a fixed point.
+/// arm's braced multiline block.
 #[test]
 fn preserves_trailing_comments_on_match_arm_bodies() {
     let source = "module app\nfn run() {\n    match status {\n        active => return // active rationale\n        inactive => return\n    }\n}\n";
@@ -1159,8 +1135,7 @@ fn comment_preservation_guard_rejects_unstable_rewrites() {
 
 // ---- corpus-dependent goldens ----
 
-/// The canonical runnable sample is the conformance oracle; the documented
-/// `sample.md` is in fmt-canonical form and formatting it is a fixed point.
+/// The documented `sample.md` is committed in fmt-canonical form.
 #[test]
 fn canonical_sample_is_already_fmt_canonical() {
     let source = common::reference_sample();
@@ -1171,9 +1146,8 @@ fn canonical_sample_is_already_fmt_canonical() {
     );
 }
 
-/// Corpus contract for the whole formatter over every documented source file:
-/// `format_source` is a fixed point, re-parses cleanly, and preserves the
-/// declaration tree.
+/// Corpus contract over every documented source file: `format_source` is a fixed
+/// point, re-parses cleanly, and preserves the declaration tree.
 #[test]
 fn format_source_preserves_structure_and_reparses_cleanly() {
     let blocks = common::documented_source_blocks();
@@ -1202,10 +1176,8 @@ fn format_source_preserves_structure_and_reparses_cleanly() {
 fn check_format_is_the_one_owned_format_policy() {
     use marrow_syntax::{FormatRefusal, check_format};
 
-    // Valid source formats to its canonical form.
     let formatted = check_format("pub fn f():int{\nreturn 1\n}\n").expect("valid source formats");
     assert!(formatted.contains("pub fn f(): int"), "got: {formatted:?}");
-    // Idempotent: the formatted output re-formats to itself.
     assert_eq!(check_format(&formatted).expect("re-formats"), formatted);
 
     // Unparsed source is refused with its parse diagnostics carried.
@@ -1222,10 +1194,9 @@ fn check_format_refuses_sources_carrying_recovery_nodes() {
     use marrow_syntax::{FormatRefusal, check_format};
 
     // A parser-owned recovery node (`base.`, `Enum::`) or an incomplete type
-    // annotation always travels with its parse diagnostic, so `has_errors` is true
-    // and the one format policy refuses before any node reaches the formatter's node
-    // dispatch. No recovery-aware refusal logic lives in the formatter itself; the
-    // existing `has_errors` gate is the sole guard.
+    // annotation always travels with its parse diagnostic, so the `has_errors` gate is
+    // the sole guard: no node reaches the formatter's dispatch and the formatter needs
+    // no recovery-aware refusal logic of its own.
     for source in [
         "pub fn f() {\n    return book.\n}\n",  // Recovery::Member
         "pub fn f() {\n    return book?.\n}\n", // Recovery::OptionalMember
@@ -1248,8 +1219,7 @@ fn check_format_refuses_sources_carrying_recovery_nodes() {
 
 // ---- the require guard ----
 
-/// A `require` renders on one line — `require <condition> else <value>` — and the
-/// spelling is a formatting fixed point. The `require`/`else` head never breaks.
+/// A short `require` renders on one line: `require <condition> else <value>`.
 #[test]
 fn a_short_require_renders_on_one_line() {
     let source = "module app\nfn check(n: int): Result<int, string> {\n    require n > 0 else \"not positive\"\n    return ok(n)\n}\n";
@@ -1265,11 +1235,10 @@ fn a_short_require_renders_on_one_line() {
     );
 }
 
-/// A long failure value breaks inside its constructor's parentheses — the
-/// multiline argument layout the constructor already has, one argument per line
-/// with a trailing comma — while the `require … else Ctor(` head stays on the
-/// statement's first line. This is the recorded REQ01 layout rule: the wrap
-/// point is the value's own parentheses, never after `else`.
+/// A long failure value breaks inside its constructor's parentheses — one argument
+/// per line with a trailing comma — while the `require … else Ctor(` head stays on
+/// the statement's first line. The wrap point is the value's own parentheses, never
+/// after `else`.
 #[test]
 fn a_long_require_value_breaks_inside_its_constructor() {
     let source = "module app\nenum Rejection {\n    staleRevision(kind: string, id: int, expected: int, actual: int)\n}\nfn check(kind: string, id: int, actual: int, expected: int): Result<bool, Rejection> {\n    require actual == expected else Rejection::staleRevision(\n        kind: kind,\n        id: id,\n        expected: expected,\n        actual: actual,\n    )\n    return ok(true)\n}\n";
@@ -1293,9 +1262,8 @@ fn a_long_require_value_breaks_inside_its_constructor() {
     );
 }
 
-/// The inline spelling of the same multiline constructor normalizes to itself
-/// (the multiline flag is the author's layout choice and round-trips), and both
-/// spellings parse to equivalent guards.
+/// The inline spelling of the same constructor normalizes to itself: the multiline
+/// flag is the author's layout choice and round-trips.
 #[test]
 fn require_inline_constructor_value_is_a_fixed_point() {
     let source = "module app\nenum Rejection {\n    tooSmall(id: int)\n}\nfn check(id: int): Result<bool, Rejection> {\n    require id > 0 else Rejection::tooSmall(id: id)\n    return ok(true)\n}\n";

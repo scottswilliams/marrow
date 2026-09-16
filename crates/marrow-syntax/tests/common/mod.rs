@@ -32,19 +32,16 @@ pub fn parse_reason(reason: ParseDiagnosticReason) -> DiagnosticReason {
     DiagnosticReason::Parser(reason)
 }
 
-/// Wrap a lexer-stage reason in the unified diagnostic-reason enum.
 pub fn lexer_reason(reason: LexerDiagnosticReason) -> DiagnosticReason {
     DiagnosticReason::Lexer(reason)
 }
 
-/// Whether any diagnostic carries the given typed reason.
 pub fn has_reason(diagnostics: &[Diagnostic], reason: DiagnosticReason) -> bool {
     diagnostics
         .iter()
         .any(|diagnostic| diagnostic.reason == reason)
 }
 
-/// How many diagnostics carry the given typed reason.
 pub fn reason_count(diagnostics: &[Diagnostic], reason: DiagnosticReason) -> usize {
     diagnostics
         .iter()

@@ -2,10 +2,9 @@
 //! grammar allows. Resource constructors, conversion calls, std-qualified calls,
 //! and dotted construction calls each parse their argument list through one shared
 //! rule, so the typed reason and the diagnostic count must not vary by call
-//! shape. The bare-identifier-call form is already covered elsewhere; this pins
-//! the *other* parsed callee shapes to that same rule so they cannot diverge.
-//! (Keyed access is the bracket form `^books[k]`, whose named-key rejection is a
-//! separate rule; a paren argument list is what this consistency law covers.)
+//! shape. The bare-identifier-call form is covered elsewhere; this pins the *other*
+//! parsed callee shapes to that same rule. Keyed access is the bracket form
+//! `^books[k]`, whose named-key rejection is a separate rule.
 
 use crate::common;
 use crate::common::CompletePayload;
@@ -16,8 +15,8 @@ use marrow_syntax::{ParseDiagnosticReason, parse_source};
 /// `arguments()` rule through the shared postfix-call path. `reject` puts a
 /// positional argument after a named one; `accept` is the mirror image with the
 /// allowed ordering. Both tests drive from this one set so the rejected and
-/// accepted halves provably cover the same callee shapes. The label names the
-/// grammar position so a failure says which call shape diverged.
+/// accepted halves cover the same callee shapes. The label names the grammar position
+/// so a failure says which call shape diverged.
 const CALL_SHAPES: &[CallShape] = &[
     // Resource constructor: `Error(...)` is parsed as a resource literal.
     CallShape {

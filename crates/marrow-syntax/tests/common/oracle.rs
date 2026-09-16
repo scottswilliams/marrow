@@ -1,23 +1,12 @@
-//! The reusable bounded syntax oracle: the shared property checker every
-//! source-bytes driver (the deterministic corpus and the seeded random-mutation
-//! pass in `cases/fuzz.rs`) is an input adapter over.
+//! The reusable bounded syntax oracle every source-bytes driver adapts to.
 //!
-//! The oracle is defined purely over the crate's public surface — `lex_source`,
-//! `parse_source`, `format_source`, `format_preserves_comments` — so it holds the
-//! same contract an external consumer sees. Two lenses:
+//! Defined purely over the crate's public surface — `lex_source`, `parse_source`,
+//! `format_source`, `format_preserves_comments` — so it holds the same contract an
+//! external consumer sees. Two lenses:
 //!
-//! - [`assert_total_invariants`] holds for **any** source bytes, valid or not:
-//!   parsing never panics, is deterministic, tiles the source losslessly into its
-//!   token stream, and recovers with a bounded number of diagnostics carrying
-//!   well-formed spans. For an input that parses without error nodes it adds the
-//!   formatter's total contract — a fixed point whose output re-parses without new
-//!   errors.
+//! - [`assert_total_invariants`] holds for **any** source bytes, valid or not.
 //! - [`assert_formatter_faithful`] holds for a **valid program** and adds the
-//!   stronger formatter contract: the canonical output preserves every comment and
-//!   the whole declaration tree (span-stripped AST equality).
-//!
-//! A minimized counterexample from either lens becomes a deterministic fixture in
-//! `cases/fuzz.rs`, then a fix.
+//!   stronger formatter contract.
 
 use crate::common::CompletePayload;
 use marrow_syntax::{
@@ -25,14 +14,10 @@ use marrow_syntax::{
     lex_source, parse_source,
 };
 
-/// Recovery is bounded to at most one diagnostic per source byte, plus one. Every
-/// diagnostic follows forward progress over a distinct byte — the lexer emits one
-/// finding per rejected character and no token for it, and the declaration and
-/// expression parsers emit at most one finding per header line or consumed token —
-/// so a well-formed front end reports linearly in the input. A regression that
-/// re-introduced a cascading second diagnostic (the deleted recovery zoo) or an
-/// unbounded recovery loop overruns this cap. It is a coarse blast-radius bound,
-/// not a replacement for the exact "exactly one diagnostic" recovery tests.
+/// Recovery is bounded to at most one diagnostic per source byte, plus one: every
+/// diagnostic follows forward progress over a distinct byte, so the front end reports
+/// linearly in the input. A coarse blast-radius bound on cascading or unbounded
+/// recovery, not a replacement for the exact "exactly one diagnostic" recovery tests.
 fn diagnostic_cap(source: &str) -> usize {
     source.len() + 1
 }
@@ -48,7 +33,7 @@ pub const OVER_DEEP: usize = NESTING_DEPTH_LIMIT + 50;
 /// parse — the formatter's total (idempotent, re-parseable) contract.
 pub fn assert_total_invariants(source: &str) {
     // Parsing is a pure function of the source: a second parse yields the identical
-    // tree and diagnostics. This also exercises the no-panic property twice.
+    // tree and diagnostics.
     let first = parse_source(source);
     let second = parse_source(source);
     assert_eq!(
@@ -89,16 +74,14 @@ pub fn assert_total_invariants(source: &str) {
     assert_formatter_total(&first, source);
 }
 
-/// The formatter's total contract that holds for any input that parses without error
-/// nodes, comment-bearing or not: a single pass is already a fixed point, and its
-/// output is itself valid Marrow. A malformed parse carries error nodes whose
-/// rendering is not a contract, so the formatter is only exercised over a clean parse.
+/// The formatter's total contract for any input that parses without error nodes: a
+/// single pass is already a fixed point, and its output is itself valid Marrow. A
+/// malformed parse carries error nodes whose rendering is not a contract, so the
+/// formatter is only exercised over a clean parse.
 ///
 /// Idempotence is asserted unconditionally over comments: a comment trailing a
 /// body-bearing header attaches to one deterministic owner — the block — so every
-/// admitted spelling formats to one fixed point. A regression that re-introduced a
-/// byte-span-attributed comment with no stable home, or the earlier blank-line and
-/// empty-body non-idempotencies, is caught here over arbitrary bytes.
+/// admitted spelling formats to one fixed point.
 fn assert_formatter_total(parsed: &ParsedSource, source: &str) {
     if parsed.has_errors() {
         return;
@@ -118,12 +101,11 @@ fn assert_formatter_total(parsed: &ParsedSource, source: &str) {
 }
 
 /// The stronger formatter contract for a valid program: the canonical output
-/// preserves every comment (marker and normalized text compared directly;
-/// placement guarded by the structural fingerprint plus idempotence) and the
-/// whole declaration tree. Structure is compared as span-stripped AST equality, since formatting
-/// necessarily shifts byte positions. The caller guarantees `source` parses
-/// cleanly; a clean parse is asserted here so a silent regression to a malformed
-/// corpus entry cannot make this vacuous.
+/// preserves every comment (marker and normalized text compared directly; placement
+/// guarded by the structural fingerprint plus idempotence) and the whole declaration
+/// tree, compared as span-stripped AST equality since formatting shifts byte
+/// positions. The clean parse is asserted here so a malformed corpus entry cannot
+/// make this vacuous.
 pub fn assert_formatter_faithful(source: &str) {
     let parsed = parse_source(source);
     assert!(

@@ -345,10 +345,8 @@ fn parses_while_and_for_loops() {
     assert_eq!(names, ["shelf", "id"]);
 }
 
-/// The head-slot keyword discipline for `reversed`, pinned as parser-law tests: an
-/// identifier `reversed` immediately after `in` is always the order keyword, never
-/// the iterable. This suite is the executable definition; a future head keyword
-/// (`distinct`) is added against the same baseline.
+/// The head-slot keyword discipline for `reversed`: an identifier `reversed`
+/// immediately after `in` is always the order keyword, never the iterable.
 #[test]
 fn reversed_is_a_head_slot_keyword() {
     use marrow_syntax::LoopOrder;
@@ -382,8 +380,7 @@ fn reversed_is_a_head_slot_keyword() {
         "{iterable:?}"
     );
 
-    // `reversed(<path>)` — the pinned reinterpretation: order keyword then a
-    // parenthesized path, parsing identically to the old wrapper spelling.
+    // `reversed(<path>)` — the order keyword followed by a parenthesized path.
     let parsed = head("reversed(^books)");
     assert!(
         parsed.diagnostics.complete().is_empty(),
@@ -654,10 +651,9 @@ fn stray_catch_is_rejected_as_removed_syntax() {
 }
 
 /// Panic guard for the block-close-out-of-slice edge: a body that ends in nested
-/// compound blocks closes every trailing `}` past the body's token slice. The
-/// structure asserted below is the minimum that proves no recovery swallowed the
-/// nesting, not a fresh contract for `for`/`if` nesting (the focused tests above own
-/// that).
+/// compound blocks closes every trailing `}` past the body's token slice. The assertions
+/// are the minimum that proves no recovery swallowed the nesting; the focused tests
+/// above own the `for`/`if` nesting contract.
 #[test]
 fn nested_compound_at_end_of_body_parses_without_panic() {
     let parsed = parse_source(

@@ -20,8 +20,6 @@ fn run(body: &str) -> String {
     format!("module app\nfn run(n: int) {{\n{body}}}\n")
 }
 
-// ---- header-trailing comment, every admitted spelling, converges ----
-
 /// The three admitted spellings of a comment on a compound header — cuddled to the
 /// `{`, before a next-line `{`, and opening the block on its own line — all format to
 /// the same fixed point with the comment owned by the block.
@@ -97,8 +95,6 @@ fn empty_and_comment_only_bodies_keep_the_comment() {
     }
 }
 
-// ---- match arms: inter-arm own-line and arm-trailing comments ----
-
 #[test]
 fn match_arm_comments_round_trip() {
     let source = run(
@@ -114,15 +110,11 @@ fn match_arm_comments_round_trip() {
     );
 }
 
-// ---- doc comments on members survive ----
-
 #[test]
 fn member_doc_comments_round_trip() {
     faithful("module app\nresource B {\n    /// the title\n    t: string\n}\n");
     faithful("module app\nenum E {\n    /// first\n    a\n    b\n}\n");
 }
-
-// ---- empty-body adjudication: mandatory blocks render `{}` ----
 
 /// A construct whose grammar mandates a block renders `{}` when empty, and that form
 /// re-parses and re-formats to itself.

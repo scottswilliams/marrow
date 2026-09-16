@@ -8,12 +8,9 @@
 //! separate side table: comments, doc comments, braces, and newlines are already
 //! tokens, and the remaining whitespace is exactly the gaps.
 //!
-//! The reconstruction slices from the source, so equality alone would be
-//! satisfied by any tiling; the load-bearing guard is the span well-formedness
-//! this asserts alongside it — spans in bounds, sorted by start, and
-//! non-overlapping. A regression that made the interpolation lexer emit
-//! overlapping or out-of-order spans, or that dropped a byte from a token
-//! boundary, breaks this property.
+//! The reconstruction slices from the source, so equality alone would be satisfied by
+//! any tiling; the load-bearing guard is the span well-formedness asserted alongside it
+//! — spans in bounds, sorted by start, and non-overlapping.
 
 use marrow_syntax::lex_source;
 

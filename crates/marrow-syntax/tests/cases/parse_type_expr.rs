@@ -1,9 +1,8 @@
-//! The structural type node the parser owns. Every type spelling is classified
-//! once here — a generic application `Head<..>`, `Id(^root)`, the `?` suffix, and
-//! otherwise a name —
-//! and downstream crates match on the node rather than re-reading the spelling.
-//! These tests pin the node shape and the canonical render that the formatter and
-//! the durable digest depend on.
+//! The structural type node the parser owns. Every type spelling is classified once
+//! here — a generic application `Head<..>`, `Id(^root)`, the `?` suffix, and otherwise
+//! a name — and downstream crates match on the node rather than re-reading the
+//! spelling. These tests pin the node shape and the canonical render that the formatter
+//! and the durable digest depend on.
 
 use crate::common::CompletePayload;
 use marrow_syntax::{Declaration, IdentityTypeExpr, TypeExpr, parse_source};
@@ -139,11 +138,10 @@ fn display_round_trips_the_canonical_spelling() {
     assert_eq!(field_type("List< int >").to_string(), "List<int>");
 }
 
-/// The structurally malformed spellings the parser now rejects, each paired with
-/// the exact parse-level message it yields. The string carrier used to slice these
-/// into an `Identity`/`Optional` or fold them to a `Name` that the checker then
-/// misreported as "not a declared enum"; as the sole owner of type grammar the
-/// parser names the real problem here.
+/// The structurally malformed spellings the parser rejects, each paired with the exact
+/// parse-level message it yields. The parser is the sole owner of type grammar, so it
+/// names the real problem rather than folding a malformed spelling into a `Name` the
+/// checker would misreport.
 const MALFORMED: &[(&str, &str)] = &[
     (
         "Id(^a.b)",

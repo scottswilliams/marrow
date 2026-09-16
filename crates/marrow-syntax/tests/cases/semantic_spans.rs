@@ -56,8 +56,7 @@ fn assert_segments(source: &str, spans: &[SourceSpan], spellings: &[&str]) {
 }
 
 /// A path holds its segments and their spans as one value, so this asserts the
-/// spellings and their sites together — the length equality `assert_segments` has to
-/// state for two parallel vectors is what the type now carries.
+/// spellings and their sites together.
 fn assert_path(source: &str, segments: &[marrow_syntax::NameSegment], spellings: &[&str]) {
     assert_eq!(
         crate::common::segment_texts(segments),
@@ -200,8 +199,6 @@ fn parser_retains_every_semantic_site_span() {
     assert_within(store.span, root_key.name_span, "store root key");
     assert_name_type(source, &root_key.ty, "int", &["int"]);
     assert_eq!(store.indexes.len(), 2);
-    // An argument carries its own span and its own segment spans, so the suite no
-    // longer asserts three vectors are the same length — the type says so.
     assert_eq!(
         crate::common::index_arg_paths(&store.indexes[0].args),
         ["value"]
@@ -435,8 +432,6 @@ fn parser_retains_every_semantic_site_span() {
     let [positional, named] = args.as_slice() else {
         panic!("expected one positional and one named argument");
     };
-    // A name and its span are one value, so there is no parallel-length invariant left
-    // for this suite to assert.
     assert_eq!(positional.name, None);
     let named_name = named.name.as_ref().expect("named argument");
     assert_eq!(named_name.text(), "named");
