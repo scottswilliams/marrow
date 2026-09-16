@@ -14,8 +14,8 @@ use marrow_image::bounds;
 use marrow_image::{DraftTxn, EncodedImage, ExportId, FuncId, ImageBuildError, ImageDraft, Instr};
 use marrow_project::{CaptureLimits, ProjectInput, SourceOrigin};
 use marrow_syntax::{
-    ConstDecl, Declaration, ResourceDecl, ResourceMember, SourceFile, SourceSpan, TestDecl,
-    parse_source,
+    ConstDecl, Declaration, FunctionDecl, ResourceDecl, ResourceMember, SourceFile, SourceSpan,
+    TestDecl, parse_source,
 };
 
 use crate::analysis::{
@@ -2157,7 +2157,7 @@ fn lower_declared_functions(
                     name: function.name.clone(),
                     span: function.span,
                     callees: result.callees,
-                    is_export: function.public,
+                    is_export: is_compilation_export(function, &module.file),
                     is_test: false,
                     unwrapped_mutations: result.unwrapped_mutations,
                     unwrapped_calls: result.unwrapped_calls,
@@ -2176,7 +2176,7 @@ fn lower_declared_functions(
                 });
             }
             settle_image_capacity(draft)?;
-            let export = if function.public {
+            let export = if is_compilation_export(function, &module.file) {
                 // Export validation and minting ran before the lowering transaction
                 // committed; the driver sees the accepted id only after settlement.
                 let Some(id) = export else {
@@ -2765,18 +2765,33 @@ fn reject_transaction_ownership(
         }
 
         // Every other function is a helper or a `test` body; neither owns a region, so a
-        // `transaction` marker in one is misplaced.
+        // `transaction` marker in one is misplaced. A dependency's `pub fn` is a helper
+        // here whatever its own tree makes of it, so it is named for what it is.
         if has_begin[i] || has_commit[i] {
             if let Some(span) = first_marker_span(body) {
+                let message = match function.file.origin().alias() {
+                    Some(alias) => format!(
+                        "`{}` owns a `transaction` block, but a dependency's `pub fn` is not an \
+                         export of this project: only this project's own exports take an export \
+                         slot, so no export here owns the block. Offer the durable work as a \
+                         helper — a function with no `transaction` block — that this project's \
+                         own export calls inside its region, and keep the owning export in the \
+                         `{}` project, where `marrow run` and `marrow test` drive it.",
+                        function.name,
+                        alias.as_str(),
+                    ),
+                    None => "a `transaction` block belongs only in the export that owns it. A \
+                             helper runs inside its caller's region and carries no `transaction` \
+                             block of its own, and a `test` body drives owning exports rather \
+                             than owning a region. Move the `transaction` block to the owning \
+                             export."
+                        .to_string(),
+                };
                 diagnostics.push(SourceDiagnostic::at(
                     Code::CheckTransactionMisplaced,
                     &function.file,
                     span,
-                    "a `transaction` block belongs only in the export that owns it. A helper \
-                     runs inside its caller's region and carries no `transaction` block of its \
-                     own, and a `test` body drives owning exports rather than owning a region. \
-                     Move the `transaction` block to the owning export."
-                        .to_string(),
+                    message,
                 ));
             }
             continue;
@@ -2969,6 +2984,18 @@ fn check_record_field_width(
             ),
         ));
     }
+}
+
+/// Whether a declared function is an export *of this compilation*.
+///
+/// Only the root project's `pub fn`s take a slot in the image's export table, so only
+/// they are named on the command line, in the wire interface, and by the verifier's
+/// transaction-owner rule. A dependency's `pub fn` stays callable from source across the
+/// boundary, but it is an ordinary function here: a helper that runs inside the region
+/// of the consuming export that calls it. This one predicate keeps the checker's
+/// transaction rules and the minted export table saying the same thing.
+pub(crate) fn is_compilation_export(function: &FunctionDecl, file: &ProjectFile) -> bool {
+    function.public && *file.origin() == SourceOrigin::Root
 }
 
 /// Whether an export declaration path is valid to mint an [`ExportId`] over:

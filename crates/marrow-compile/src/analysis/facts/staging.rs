@@ -13,7 +13,7 @@ use marrow_syntax::{Block, FunctionDecl};
 use super::{
     AnalysisFactCollector, DiagnosticCollector, FactSink, FileRef, ReleasedBody, StagedFacts,
 };
-use crate::compile::valid_export_path;
+use crate::compile::{is_compilation_export, valid_export_path};
 use crate::diag::SourceDiagnostic;
 use crate::lower::{BodyOutcome, FnLowerer, GenericTemplate, LowerCtx, Resolution};
 use crate::types::{GArg, GenericDiagnostics, GenericInvariant, GenericOwnerTxn, TypeRegistry};
@@ -91,13 +91,7 @@ impl<'r, 'd> StagedBodyTxn<'r, 'd> {
             )?
         };
         let export = match &outcome {
-            // Only the root project's exports are invocable. A dependency's `pub fn` is
-            // callable from source across the boundary but is not a command-line entry
-            // of the consuming project: a library's exports are run where the library
-            // is, so none enters this image's export table.
-            BodyOutcome::Lowered(lowered)
-                if function.public && *file.origin() == marrow_project::SourceOrigin::Root =>
-            {
+            BodyOutcome::Lowered(lowered) if is_compilation_export(function, file) => {
                 if valid_export_path(module, &function.name) {
                     let id = ExportId::of_local(module, &function.name);
                     owner.parts().1.add_export(id, lowered.func);

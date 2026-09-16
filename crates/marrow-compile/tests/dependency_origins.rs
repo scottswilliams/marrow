@@ -1174,3 +1174,123 @@ pub fn here(): string {
         reported[1].message(),
     );
 }
+
+/// A library that owns its own store and drives its writer where it lives.
+const SHELF_LIBRARY: &str = r#"module shelf
+
+resource Book {
+    required title: string
+}
+
+store ^shelf[id: int]: Book
+
+pub fn add(id: int, title: string) {
+    transaction {
+        ^shelf[id] = Book(title: title)
+    }
+}
+
+pub fn title(id: int): string? {
+    return ^shelf[id].title
+}
+
+test "the library drives its own writer" {
+    add(1, "Small Gods")
+    assert title(1) ?? "" == "Small Gods"
+}
+"#;
+
+/// The same library offering a mutating helper that carries no block of its own, so a
+/// consuming export supplies the region the write commits in.
+const SHELF_HELPER_LIBRARY: &str = r#"module shelf
+
+resource Book {
+    required title: string
+}
+
+store ^shelf[id: int]: Book
+
+pub fn stage(id: int, title: string) {
+    ^shelf[id] = Book(title: title)
+}
+
+pub fn title(id: int): string? {
+    return ^shelf[id].title
+}
+
+test "the library checks its reader standalone" {
+    assert title(1) ?? "(none)" == "(none)"
+}
+"#;
+
+/// The library's committed ledger for both shelf fixtures.
+fn shelf_library_ids() -> Vec<u8> {
+    ledger::ledger(&[
+        "root shelf",
+        "product Book",
+        "key shelf.id",
+        "field Book.title",
+    ])
+}
+
+/// A dependency's `pub fn` is not an export of the consuming compilation — it takes no
+/// export slot and the command line cannot name it — so a `transaction` block in one
+/// sits outside its owning export. The consuming `check` refuses it in source terms
+/// rather than handing the verifier an image whose transaction marker has no owner.
+#[test]
+fn a_dependency_transaction_owner_is_refused_in_the_consumer() {
+    let project = project_capture::dependency_project(
+        "library",
+        &[(
+            "src/main.mw",
+            "module main\n\npub fn f(): int {\n    return 1\n}\n",
+        )],
+        Some(&ledger::ledger(&["application ."])),
+        &[("src/shelf.mw", SHELF_LIBRARY)],
+        Some(&shelf_library_ids()),
+    );
+    let reported = diagnostics(&project);
+    assert_eq!(
+        reported
+            .iter()
+            .map(|row| (row.code().as_str(), row.line(), row.column()))
+            .collect::<Vec<_>>(),
+        vec![("check.transaction_misplaced", 10, 17)],
+    );
+    assert!(
+        reported[0].message().contains("`library`"),
+        "the refusal names the dependency: {}",
+        reported[0].message(),
+    );
+}
+
+/// The siblings a consumer holds without owning: a library `test`, a library export
+/// with durable demand, and a library helper that mutates inside the consuming export's
+/// own region. None owns a block in this compilation, so all three check.
+#[test]
+fn a_dependency_reader_helper_and_test_check_in_the_consumer() {
+    let project = project_capture::dependency_project(
+        "library",
+        &[(
+            "src/main.mw",
+            r#"module main
+
+use library::shelf
+
+pub fn label(id: int): string {
+    return shelf::title(id) ?? "(none)"
+}
+
+pub fn put(id: int, title: string) {
+    transaction {
+        shelf::stage(id, title)
+    }
+}
+"#,
+        )],
+        Some(&ledger::ledger(&["application ."])),
+        &[("src/shelf.mw", SHELF_HELPER_LIBRARY)],
+        Some(&shelf_library_ids()),
+    );
+    assert_eq!(codes_and_messages(&project), Vec::new());
+}
