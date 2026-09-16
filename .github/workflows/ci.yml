@@ -41,13 +41,10 @@ jobs:
       - name: Test
         run: cargo test --workspace --all-targets --all-features --locked
 
-      # `--force-warn` keeps the two structural budgets in `[workspace.lints.clippy]`
-      # visible without `-D warnings` promoting their existing hits to errors.
       - name: Clippy and unsafe check
         run: |
           cargo clippy --workspace --all-targets --all-features --locked -- \
-            -D warnings -F unsafe-code \
-            --force-warn clippy::too_many_lines --force-warn clippy::cognitive_complexity
+            -D warnings -F unsafe-code
 
   release-perf:
     name: Rust (release perf)

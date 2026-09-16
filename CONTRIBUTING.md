@@ -48,13 +48,10 @@ CARGO_TARGET_DIR=/absolute/path/to/marrow-target cargo build --workspace --all-t
 CARGO_TARGET_DIR=/absolute/path/to/marrow-target cargo test --workspace --all-targets --all-features --locked
 CARGO_TARGET_DIR=/absolute/path/to/marrow-target cargo fmt --all -- --check
 CARGO_TARGET_DIR=/absolute/path/to/marrow-target cargo clippy --workspace --all-targets --all-features --locked -- \
-  -D warnings -F unsafe-code \
-  --force-warn clippy::too_many_lines --force-warn clippy::cognitive_complexity
+  -D warnings -F unsafe-code
 ```
 
-That clippy line is the one CI runs. The two `--force-warn` flags keep the
-structural budgets in `[workspace.lints.clippy]` reporting without `-D warnings`
-promoting their existing hits to errors; they come out when the hits do.
+That clippy line is the one CI runs.
 
 Run focused suites first, then the broad ones. Documentation changes check
 inventory, links, anchors and terminology, generated diagnostic drift, and

@@ -34,8 +34,7 @@ jobs:
       - name: Clippy (stable)
         run: |
           cargo clippy --workspace --all-targets --all-features --locked -- \
-            -D warnings -F unsafe-code \
-            --force-warn clippy::too_many_lines --force-warn clippy::cognitive_complexity
+            -D warnings -F unsafe-code
 
   supply-chain:
     name: Supply chain
