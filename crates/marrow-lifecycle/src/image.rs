@@ -26,10 +26,8 @@ use marrow_codes::Code;
 /// the image's export declaration identities (see [`interface_fingerprint`]) — blind to
 /// signatures, so a resignatured export is not a binding-fact delta today; the durable
 /// contract independently catches every durable-graph change. Authority is *not* a binding
-/// fact — the accepted deployment ceiling is a separately owned standing maximum recorded
-/// once at provision (see [`accepted_ceiling`])
-/// and enforced atom-granularly at attach, so a demand change within the ceiling is not a
-/// rebind delta and a demand change beyond it is a distinct, more actionable refusal.
+/// fact; the accepted deployment ceiling is separately owned (see [`accepted_ceiling`] and
+/// [`ActiveBinding`]).
 pub fn active_binding(image: &VerifiedImage) -> ActiveBinding {
     let export_ids: Vec<[u8; 32]> = image
         .exports()
@@ -215,10 +213,7 @@ pub(crate) fn derive_projection_nodes(
         if by_path.insert(&node.path, index).is_some() {
             // Two image nodes under one spelling: the name join is ambiguous, so no pairing
             // is trustworthy. The compiler rejects duplicate member names, so this is reachable
-            // only through correspondence drift — refused, never guessed. Payload precision,
-            // not the refusal: without this the second node stays unpaired and the coverage
-            // check below refuses the same store as `Uncovered`, so removing it changes only
-            // which typed disagreement is reported.
+            // only through correspondence drift — refused, never guessed.
             return Err(unnamed(&node.path));
         }
     }
@@ -247,11 +242,10 @@ pub(crate) fn derive_projection_nodes(
     // walk above. Checked over the image's own node list rather than the named join, so a
     // node the join could not name is uncovered too, never silently absent.
     //
-    // Coverage is keyed on occurrence identity — the node's index into `semantic_nodes`,
-    // standing for its whole kind-tagged semantic path — never on its ledger id. A ledger
-    // id names a declaration, so two roots of one resource give their like-named members
-    // one id; keying on the id would let a projection that covers `^a.v` silently cover
-    // `^b.v` as well.
+    // Keyed on occurrence identity — the index into `semantic_nodes`, standing for the
+    // whole kind-tagged semantic path — never on the ledger id: an id names a declaration,
+    // so two roots of one resource share their like-named members' id, and keying on it
+    // would let a projection covering `^a.v` silently cover `^b.v` too.
     let mut covered = vec![false; image.semantic_nodes().len()];
     for (index, &claimed) in pairing.consumed.iter().enumerate() {
         if claimed {
@@ -454,11 +448,9 @@ fn split_order(image: &VerifiedImage) -> (&[SemanticNode], Vec<usize>) {
     (nodes, order)
 }
 
-/// Append `index`, then — in the kernel's split order — its field children, its group
-/// children (each recursively, so a group node precedes its own members), and its branch
-/// children (each recursively). A field is a cell-key leaf, so it is appended without
-/// recursion. Because the shared counter that later consumes this sequence starts at zero and
-/// advances one per node, node `i` is assigned number `i`, matching `number_store`.
+/// Append `index` and its subtree in the split order [`split_order`] defines. The sequence
+/// is consumed by a counter starting at zero and advancing one per node, so node `i` is
+/// assigned number `i`, matching `number_store`.
 fn walk_split_order(
     index: usize,
     nodes: &[SemanticNode],
@@ -491,11 +483,10 @@ fn walk_split_order(
 /// verified image, or `None` when the image's durable shape is not executable by the flat
 /// kernel (a storeless image, a singleton root, a nested group, or a nominal-typed field).
 /// Every declared root must be flat-executable; if any one parks, the whole image parks,
-/// since a partial store — some roots served, others silently absent — is never minted. The
-/// image is the sole source of a valid schema: a forged image cannot be verified, so it can
-/// never reach this derivation. Derived once per [`crate::PreparedImage`]; the in-memory
-/// attachment, the persistent provision, attach, and import all open their engine under this
-/// one table, so a store is served under exactly the shape the running program expects.
+/// since a partial store — some roots served, others silently absent — is never minted.
+/// Derived once per [`crate::PreparedImage`]; the in-memory attachment, the persistent
+/// provision, attach, and import all open their engine under this one table, so a store is
+/// served under exactly the shape the running program expects.
 pub(crate) fn derive_projection(image: &VerifiedImage) -> Option<StoreProjection> {
     // A durable image declares at least one root; a storeless image never reaches attach.
     if image.roots().is_empty() {
@@ -535,10 +526,8 @@ pub(crate) fn derive_projection(image: &VerifiedImage) -> Option<StoreProjection
 /// flat-executable (a singleton keyless root, or a group nested below its direct members).
 ///
 /// The projection is a flat command stream into the kernel's schema builder over an
-/// explicit stack — it never assembles a recursive kernel value and then hands it over,
-/// because there is no longer any such value to assemble. A hostile or divergent branch
-/// tree therefore costs the walk's own heap, not the machine stack, and the builder returns
-/// a typed refusal that parks the root.
+/// explicit stack, so a hostile or divergent branch tree costs the walk's own heap, not the
+/// machine stack, and the builder returns a typed refusal that parks the root.
 fn derive_root_schema(
     image: &VerifiedImage,
     root_index: u16,
@@ -561,10 +550,9 @@ fn derive_root_schema(
     // below.
     let split = RecordSplit::of(image.record_type(root.record()), root.groups().len())?;
     emit_fields(image, &mut builder, split.value_fields)?;
-    // A trailing group slot contributes no kernel field, but its shape still has to be one
-    // the durable codec stores: the pre-projection derivation shaped every slot of the one
-    // record and parked the root when any of them was not storable. Deriving and discarding
-    // keeps that parking condition exactly.
+    // A trailing group slot contributes no kernel field, but the root still parks unless
+    // every slot of the unified record is a shape the durable codec stores, so each one is
+    // derived and discarded.
     for slot in split.group_slots {
         value_shape(image, slot.ty())?;
     }
@@ -583,9 +571,8 @@ fn derive_root_schema(
     }
 
     // The sealed branch tree is in declaration order, so a `BranchEntry` branch path indexes
-    // it level by level. The walk is an explicit stack over that tree: a branch's own fields
-    // are emitted, then its sub-branches, then its close — the same pre-order the recursive
-    // projection produced, without the recursion.
+    // it level by level. The walk is an explicit stack over that tree, keeping a divergent
+    // branch depth off the machine stack.
     let mut pending: Vec<BranchStep<'_>> = Vec::new();
     push_branches(&mut pending, root.branches());
     while let Some(step) = pending.pop() {
@@ -762,9 +749,8 @@ fn value_shape(image: &VerifiedImage, ty: ImageType) -> Option<ValueShape> {
         Close,
     }
 
-    /// The sealed wire-domain `u16` of a verified typed table reference: every value
-    /// here was decoded from a `u16` wire read, so the narrowing is total; it is
-    /// spelled checked so the wire domain is stated.
+    /// The sealed wire-domain `u16` of a verified typed table reference. Every value here
+    /// was decoded from a `u16` wire read, so the narrowing is total.
     fn sealed_ordinal(index: u32) -> u16 {
         u16::try_from(index).expect("a verified table reference was decoded from a u16 wire read")
     }

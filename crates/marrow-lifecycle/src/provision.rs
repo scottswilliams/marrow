@@ -1,27 +1,24 @@
 //! The persistent provision and open flow.
 //!
-//! Provision builds the whole store in a
-//! private sibling temporary directory and atomically renames it into place. A rename onto
-//! any existing destination fails, so exactly one provisioner wins a race and a
-//! crash before the rename leaves only a temporary directory — the destination is never a
-//! partially-formed store. Failed parent-directory sync after rename reports publication
-//! uncertainty and retains the destination; namespace completeness does not confirm durability.
-//! Preflight is strictly
-//! non-creating, so probing a destination never leaves a file behind.
+//! Provision builds the whole store in a private sibling temporary directory and atomically
+//! renames it into place. A rename onto any existing destination fails, so exactly one
+//! provisioner wins a race and a crash before the rename leaves only a temporary directory —
+//! the destination is never a partially-formed store. A failed parent-directory sync after
+//! rename reports publication uncertainty and retains the destination; namespace completeness
+//! does not confirm durability. Preflight is strictly non-creating.
 //!
-//! Open takes the single-owner lock first (including any recorded identity on contention), and only
-//! then reads the store directory at all: completeness, the envelope, and the head are one
-//! admission snapshot taken under that owner, each artifact admitted from the retained
-//! directory within its own byte ceiling. Deciding exclusion ahead of every read is what
-//! keeps a contender's verdict independent of the holder's bytes — a malformed, truncated,
-//! or deleted artifact cannot turn "the store is locked" into a decode or completeness
-//! error. The engine opens last, through the path kernel. A read-write open after an
-//! unclean shutdown (a stale owner descriptor in the lock) runs a full integrity audit.
+//! Open takes the single-owner lock first, and only then reads the store directory at all:
+//! completeness, the envelope, and the head are one admission snapshot taken under that
+//! owner, each artifact admitted within its own byte ceiling. Deciding exclusion ahead of
+//! every read keeps a contender's verdict independent of the holder's bytes — a malformed,
+//! truncated, or deleted artifact cannot turn "the store is locked" into a decode or
+//! completeness error. The engine opens last, through the path kernel. A read-write open
+//! after an unclean shutdown runs a full integrity audit.
 //!
-//! The unclean-open audit covers crash-path corruption only: the fast open path does not
-//! re-verify page checksums, so an externally flipped bit in a cleanly-closed store is not
-//! detected at open. The read-only store audit (`crate::audit`) checks logical contents;
-//! it performs no repairing integrity call and preserves an inherited unclean obligation.
+//! That audit covers crash-path corruption only: the fast open path does not re-verify page
+//! checksums, so an externally flipped bit in a cleanly-closed store is not detected at open.
+//! The read-only store audit (`crate::audit`) checks logical contents; it performs no
+//! repairing integrity call and preserves an inherited unclean obligation.
 
 use std::path::{Path, PathBuf};
 
@@ -581,9 +578,8 @@ pub enum OpenError {
     /// No store exists at the path.
     NotProvisioned,
     /// The store directory could not be examined at all, so nothing about the store it may
-    /// hold was established. Kept apart from [`OpenError::NotProvisioned`] and
-    /// [`OpenError::Incomplete`] on purpose: those two state what the directory holds, and
-    /// this one states that it could not be seen.
+    /// hold was established — distinct from [`OpenError::NotProvisioned`] and
+    /// [`OpenError::Incomplete`], which state what the directory holds.
     Access(StoreAccessError),
     /// The store directory exists but is missing a durable artifact.
     Incomplete,
@@ -866,16 +862,13 @@ pub(crate) mod admission_substitution {
 ///
 /// Acquiring the lock creates the `lock` entry and writes a marker into it, so the two
 /// questions decided here are exactly the two whose answers would make that write wrong: a
-/// platform where no store could be admitted at all, and a directory that is not a store —
-/// where the entry would be left behind in an ordinary directory. Neither reads a store
-/// artifact's bytes, so neither can preempt the exclusion verdict a contender is owed: a
-/// store with a live holder always has the lock entry, because a holder creates it before it
-/// locks, so the completeness condition is unreachable while a holder is live.
+/// platform where no store could be admitted at all, and a directory that is not a store.
+/// Neither reads a store artifact's bytes, so neither can preempt the exclusion verdict a
+/// contender is owed: a holder creates the lock entry before it locks, so the completeness
+/// condition is unreachable while a holder is live.
 ///
-/// Nothing here resolves a failure to look into an observation. A directory this process
-/// cannot examine reaches [`OpenError::Access`] rather than a claim about what it holds.
-/// What the directory *contains* — whether its artifacts are the artifacts, whether they
-/// decode — is read under the owner.
+/// A directory this process cannot examine reaches [`OpenError::Access`] rather than a claim
+/// about what it holds. What the directory *contains* is read under the owner.
 fn decide_before_locking(dir: &Path) -> Result<(), OpenError> {
     store_dir::qualified_platform().map_err(OpenError::Admission)?;
     match preflight(dir)? {
@@ -915,10 +908,10 @@ pub(crate) fn decode_head(
 }
 
 /// A private sibling temporary directory for building a store before its atomic claim: the
-/// bounded ASCII component contains only a marker, process id and monotonic counter,
-/// with no destination spelling embedded. Exclusive directory creation claims the candidate;
-/// the name alone
-/// grants no ownership because a prior process with the same pid may have left it behind.
+/// bounded ASCII component contains only a marker, process id and monotonic counter, with no
+/// destination spelling embedded. Exclusive directory creation claims the candidate; the name
+/// alone grants no ownership, because a prior process with the same pid may have left it
+/// behind.
 pub(crate) fn temp_sibling(dest: &Path) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);

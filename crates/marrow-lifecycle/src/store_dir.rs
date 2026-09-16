@@ -13,25 +13,15 @@
 //! and `head` as regular files. The lock is not one of them and says nothing about
 //! completeness: provision and inspection do not write it, mutable opening creates it, and it
 //! persists — empty after a clean close, carrying the crashed holder's descriptor after an
-//! unclean one.
-//!
-//! Completeness is asked twice, and the two questions are different. Before an owner is
-//! held, [`artifacts_present`] asks only whether the directory maps the three names to
-//! entries at all — enough to keep an open from creating a lock entry in a directory that is
-//! not a store, and no more. Under the owner, [`AdmittedStoreDir::is_complete`] decides what
-//! those names map to.
-//!
-//! Neither question resolves a failure to look into an observation. Only "no such entry" is
-//! an observation of the directory's contents; a directory this process cannot traverse
-//! yields [`StoreAccessError`], never a missing artifact.
+//! unclean one. Completeness is asked twice with different questions:
+//! [`artifacts_present`] before an owner is held, [`AdmittedStoreDir::is_complete`] under it.
 //!
 //! Once the physical owner is held, [`AdmittedStoreDir`] is how the `envelope` and the
 //! `head` are read. It retains the directory as a descriptor and reads each of those two
 //! children from it: the child is opened without following a link, must be a regular file
 //! reachable under exactly one name, and the exact ceiling its own recorded version selects
 //! is applied before its bytes are allocated for. The descriptor-rooted operations
-//! themselves belong to `marrow-fs-journal`, the workspace's sole owner of them; what lives
-//! here is the admission protocol laid over them.
+//! themselves belong to `marrow-fs-journal`, the workspace's sole owner of them.
 //!
 //! Two paths into the same directory are outside that protocol and are resolved by path
 //! instead: `store.redb`, which `marrow-store` opens as part of holding the engine, and the

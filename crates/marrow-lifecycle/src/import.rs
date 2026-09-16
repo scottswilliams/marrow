@@ -1,39 +1,25 @@
 //! The trusted bulk importer: a closed private lifecycle-maintenance mode that populates a
-//! provisioned store from external flat-scalar JSONL rows, every write passing the typed path
-//! kernel.
+//! provisioned store from external flat-scalar JSONL rows.
 //!
-//! # Why this is not raw seeding
+//! External untyped rows have no valid cell form until the kernel places them, so every row
+//! is created through [`create_entry`](marrow_kernel::durable::Durable::create_entry) — the
+//! full write algebra, not a byte copy. The importer never opens the byte engine, mints a raw
+//! cell key, or holds a transaction handle, and no bytecode opcode, host import, or
+//! client-wire request reaches this mode.
 //!
-//! The importer maps each external row to a typed durable place and creates it through the
-//! kernel's [`create_entry`](marrow_kernel::durable::Durable::create_entry) — so authority is
-//! resolved (`demand ∩ ceiling ∩ grant`), the site is resolved from the store schema, the
-//! consequence planner writes the entry marker and field leaves, and managed indexes are
-//! maintained. It never opens the byte engine, mints a raw cell key, or holds a transaction
-//! handle. External, untyped rows have no valid cell form until the kernel places them, so
-//! import goes through the full write algebra, not a byte copy.
-//!
-//! # The closed lifecycle boundary
-//!
-//! [`import_jsonl`] consumes a [`PreparedImage`] and opens the persistent store through the
-//! crate's admitted open, which retains the non-cloneable, non-serializable single-owner lock
-//! for the store's entire open lifetime. The open admits the image under the exact active
-//! binding: the head must bind exactly this image, the accepted ceiling must admit its
-//! demand, and the persisted head-map pin must equal the derived numbering — all before the
-//! engine opens, so a stale or foreign image performs no engine call, opens no session, and
-//! writes no data. Import never rebinds; `marrow run --store` owns the explicit compatible
-//! rebind. The import site is a private reprojection of the admitted roots that never
-//! becomes an execution attachment. No bytecode opcode, host import, or client-wire request
-//! reaches this mode; the engine-generic core is crate-private and adds no privilege a
-//! caller with direct kernel access would not already have.
+//! [`import_jsonl`] admits the [`PreparedImage`] under the store's exact active binding —
+//! head binding, accepted ceiling, and head-map pin — before the engine opens, so a stale,
+//! foreign, or over-demanding image performs no engine call and writes nothing. Import never
+//! rebinds; `marrow run --store` owns the explicit compatible rebind. The import site is a
+//! private reprojection of the admitted roots and never becomes an execution attachment.
 //!
 //! # Bounds
 //!
-//! Every input is bounded before allocation: each JSONL line, the field count of a row, and
-//! each string value are capped by [`ImportLimits`], and the store is populated in bounded
-//! batches (one engine transaction per [`ImportLimits::batch_rows`] rows), so a whole-corpus
-//! import never materializes the corpus — memory is bounded by one line plus one batch. Batches
-//! are individually atomic; the import is *not* one transaction, so a mid-import failure leaves
-//! the committed prefix and reports its size, letting the caller discard and re-provision.
+//! Each JSONL line, row field count, and string value is capped by [`ImportLimits`] before
+//! allocation, and rows commit in batches of [`ImportLimits::batch_rows`], so memory is
+//! bounded by one line plus one batch however large the corpus. Batches are individually
+//! atomic; the import is *not* one transaction, so a mid-import failure leaves the committed
+//! prefix and reports its size, letting the caller discard and re-provision.
 
 use std::io::BufRead;
 use std::path::Path;
@@ -677,10 +663,9 @@ impl RowPlan {
 }
 
 /// The import core: stream `source`, mapping each line through `plan` and creating it through
-/// the path kernel in bounded batches. Crate-private, with one caller ([`import_jsonl`]); the
-/// split keeps `import_jsonl` a thin lock-guarded open plus site setup and isolates the bounded
-/// streaming loop here. Every write is a kernel [`create_entry`](Durable::create_entry) —
-/// authority resolved, site resolved, planner-mediated, indexes maintained.
+/// the path kernel in bounded batches. Every write is a kernel
+/// [`create_entry`](Durable::create_entry) — authority resolved, site resolved,
+/// planner-mediated, indexes maintained.
 fn import_rows_into<H: SessionHost>(
     store: &mut H,
     plan: &RowPlan,

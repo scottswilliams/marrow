@@ -105,9 +105,7 @@ impl ActiveBinding {
     /// Whether `self` and `other` agree on every binding fact — the exact-equality test the
     /// binding-only rebind classification performs. The image id is deliberately excluded:
     /// a body-only edit changes it while preserving the durable contract, and that is
-    /// exactly the rebind case. Authority (the accepted ceiling) is not a binding fact —
-    /// it is a separately owned standing maximum enforced by the atom-granular admission
-    /// check at attach, not by binding equality.
+    /// exactly the rebind case.
     pub fn facts_equal(&self, other: &ActiveBinding) -> bool {
         self.durable_contract == other.durable_contract && self.interface == other.interface
     }
