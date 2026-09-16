@@ -8,14 +8,11 @@
 //! capture/analyze work behind the single worker credit. One writer accepts immutable
 //! framed bytes and returns a delivery receipt that frees the outbound credit it consumed.
 //!
-//! The coordinator is a *pure event machine*: [`Coordinator`] consumes typed events
-//! (`on_frame`, `on_worker_result`, `on_receipt`, `on_terminal`) and produces outbound
-//! frames into an [`Coordinator::outbox`] and at most one analysis job into
-//! [`Coordinator::job_out`], which the thread driver drains. It touches no channel, so
-//! the whole law matrix — request-ledger delivery states and terminal arbitration, the
-//! shared live-entry budget, the capture-episode latch, publication exclusivity, and
-//! `ContentModified` reauthorization — is driven deterministically in-crate without a
-//! test-only production entry point or any timing dependence.
+//! [`Coordinator`] is a pure event machine: it consumes typed events (`on_frame`,
+//! `on_worker_result`, `on_receipt`, `on_terminal`) and produces outbound frames into
+//! [`Coordinator::outbox`] and at most one analysis job into [`Coordinator::job_out`],
+//! which the thread driver drains. It touches no channel, so its whole state machine is
+//! exercised deterministically with no timing dependence.
 
 use std::collections::VecDeque;
 use std::io::{BufReader, Write};
@@ -247,6 +244,9 @@ fn writer_loop(frames: &Receiver<Vec<u8>>, receipts: &SyncSender<Receipt>, wake:
 // ---- request ledger ----
 
 /// The delivery state of one live request-ledger entry.
+///
+/// An entry retires on its delivery receipt, never at handoff, so no id can be reused
+/// and answered twice inside the handoff-to-delivery window.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ReqState {
     /// Admitted and routed; no response frame handed off yet (a held query, or a
@@ -273,10 +273,9 @@ enum FrameOwner {
     Anonymous,
     Publication,
     /// The `initialize` response: a known-id frame that also advances the lifecycle on
-    /// delivery. Its entry is retired on its receipt, like an ordinary request, so the
-    /// initialize id cannot be reused in the handoff-to-delivery window.
+    /// delivery.
     Initialize(RequestId),
-    /// The `shutdown` response, the same known-id / receipt-retired discipline.
+    /// The `shutdown` response.
     Shutdown(RequestId),
     ShowMessage,
 }
@@ -592,10 +591,9 @@ impl Coordinator {
             }
         };
         self.root = root;
-        // Receipt-gated delivery: hand off the response but do not advance the lifecycle
-        // until the delivery receipt for this frame arrives. The entry retires on that
-        // receipt (not at handoff), so the initialize id cannot be reused in the window.
-        // The initialize response is a fixed small frame; a serialization failure fail-stops.
+        // Receipt-gated: the lifecycle advances on the delivery receipt, not at handoff.
+        // The initialize response is a fixed small frame, so a serialization failure is a
+        // defect and fail-stops.
         if !self.hand_off(
             &Outbound::Initialize {
                 id: id.clone(),
@@ -661,17 +659,15 @@ impl Coordinator {
         };
         // Every semantic reply is deferred as a held query and served only against an
         // available outbound credit, so a burst of requests cannot materialize a burst of
-        // (possibly large) reply frames. When current analysis has completed and a credit
-        // is free, the query is answered synchronously here; otherwise it waits.
+        // possibly large reply frames.
         self.held_queries.push(held);
         self.serve_ready_queries();
     }
 
     /// Answer a held query, reauthorizing its revision and document version. A changed
     /// revision or document state is `-32801 ContentModified`; the success encoder is
-    /// never invoked in that case. The ledger entry rides as `AwaitingDelivery` and is
-    /// retired only by its delivery receipt (never at handoff), so no duplicate-id or
-    /// double-response window opens.
+    /// never invoked in that case, so no reply can carry facts for text the client has
+    /// already replaced.
     fn answer_held(&mut self, held: HeldQuery) {
         let current = self.current_revision;
         let doc_ok = matches!(
@@ -896,9 +892,8 @@ impl Coordinator {
         self.current_revision = revision;
         self.analysis = CurrentAnalysis::Pending;
         self.ledger.remove(&key);
-        // Closing commits the removal and revision, but disk recapture waits until every
-        // remaining open entry is available (design: no recompute while an entry is
-        // unavailable).
+        // Closing commits the removal and revision, but recapture waits until every
+        // remaining open entry is available.
         if self.ledger.all_available() {
             self.maybe_recompute(&root);
         }
@@ -1020,10 +1015,9 @@ impl Coordinator {
     }
 
     /// Answer held queries while analysis for the current revision is complete and an
-    /// outbound credit is available. A potentially large reply (a whole-document format) is
-    /// thus only ever materialized against an available credit, so replies never enter the
-    /// pending-frame queue; the unanswered remainder stays held — bounded by the request
-    /// ledger, at fixed-size cost — and is served as credits free on later receipts.
+    /// outbound credit is available. A potentially large reply is only ever materialized
+    /// against a free credit, so replies never enter the pending-frame queue; the
+    /// unanswered remainder stays held at fixed-size cost, bounded by the request ledger.
     fn serve_ready_queries(&mut self) {
         while !matches!(self.analysis, CurrentAnalysis::Pending)
             && self.outbound_credits.available() > 0
@@ -1089,10 +1083,9 @@ impl Coordinator {
             }
         };
         // Pre-encode the whole set fallibly before committing anything. A serialization
-        // failure or a plan whose retained bytes exceed the publication-plan bound is a
-        // fixed `PublicationPlanFailed`: the credit is released, the delivered ledger and
-        // capture episode are unchanged, and the server fail-stops. This is why a single
-        // oversized diagnostic frame can never strand the exclusive credit.
+        // failure, or a plan whose retained bytes exceed the publication-plan bound,
+        // releases the credit and fail-stops with the delivered ledger and capture episode
+        // unchanged, so an oversized frame cannot strand the exclusive credit.
         let mut encoded = VecDeque::new();
         let mut retained: u64 = 0;
         for outbound in &frames {
@@ -1132,8 +1125,7 @@ impl Coordinator {
     /// Compute the complete publication set without committing it: every current file's
     /// diagnostic list (including empties) plus an empty tombstone for every previously
     /// published file absent from the snapshot, and the new delivered-ledger key set. The
-    /// delivered ledger is read but not mutated; `begin_publication` commits it only after
-    /// the whole set encodes.
+    /// delivered ledger is read but not mutated.
     fn plan_publication(&self, snapshot: &AnalysisSnapshot) -> (Vec<Outbound>, Vec<DocumentKey>) {
         let Some(root) = self.root.clone() else {
             return (Vec::new(), Vec::new());
@@ -1231,7 +1223,6 @@ impl Coordinator {
         if let Some(state) = self.publication.as_mut() {
             state.in_flight_count = state.in_flight_count.saturating_sub(1);
         }
-        // The freed credit lets the next pre-encoded frame proceed.
         self.feed_publication();
         let done = self
             .publication
@@ -1243,8 +1234,6 @@ impl Coordinator {
             let state = self.publication.take().expect("publication present");
             self.publication_credit = Some(state.credit);
             self.reset_episode_if_observed(state.observed_episode);
-            // A newer result that waited may now build its plan and derive tombstones from
-            // the final ledger.
             if self
                 .pending_publication
                 .take()
@@ -1267,9 +1256,9 @@ impl Coordinator {
 
     /// Encode and hand off one frame, acquiring an outbound credit. Returns whether the
     /// frame was handed off. A pre-handoff encode failure emits zero bytes and returns
-    /// `false`, so the caller reconciles its own bookkeeping rather than stranding it. A
-    /// request-owned handoff moves its ledger entry to `AwaitingDelivery`; the credit is
-    /// held until the delivery receipt whether the frame is written immediately or queued.
+    /// `false`, so the caller reconciles its own bookkeeping rather than stranding it. The
+    /// credit is held until the delivery receipt, whether the frame is written immediately
+    /// or queued.
     #[must_use]
     fn hand_off(&mut self, outbound: &Outbound, owner: FrameOwner) -> bool {
         let Ok(bytes) = encode(outbound) else {
@@ -1288,11 +1277,10 @@ impl Coordinator {
         true
     }
 
-    /// Hand off a known-id response. On a pre-handoff encode failure (an oversized success,
-    /// or a serialization defect) the entry gets exactly one fixed same-id `-32603`
-    /// fallback — already internal-error class, so it takes no further fallback — and
-    /// fail-stops if even that cannot encode. The entry stays owned and retires on its
-    /// delivery receipt, so a dropped response is never a silent no-reply.
+    /// Hand off a known-id response. On a pre-handoff encode failure the entry gets exactly
+    /// one fixed same-id `-32603` fallback — already internal-error class, so it takes no
+    /// further fallback — and fail-stops if even that cannot encode. A dropped response is
+    /// therefore never a silent no-reply.
     fn respond(&mut self, id: RequestId, outbound: Outbound) {
         if self.hand_off(&outbound, FrameOwner::Request(id.clone())) {
             return;
@@ -1360,7 +1348,6 @@ impl Coordinator {
         let Some((owner, credit)) = self.in_flight.pop_front() else {
             return;
         };
-        // Return the affine credit for the delivered frame.
         self.outbound_credits.release(credit);
         match owner {
             FrameOwner::Request(id) => self.requests.retire(&id),
@@ -1378,10 +1365,8 @@ impl Coordinator {
             }
             FrameOwner::ShowMessage => {}
         }
-        // The freed credit makes progress on outstanding work, in priority order: the
-        // in-flight publication set, then a ready held query (its potentially large reply
-        // is only ever materialized against an available credit, so it never enters the
-        // pending-frame queue), then a queued small frame.
+        // The freed credit is offered in priority order: the in-flight publication set,
+        // then a ready held query, then a queued small frame.
         self.feed_publication();
         self.serve_ready_queries();
         if let Some((bytes, owner)) = self.pending_frames.pop_front() {
@@ -1398,10 +1383,7 @@ impl Coordinator {
     // ---- terminal ----
 
     fn on_terminal(&mut self) {
-        // First-wins terminal. Classify every unretired request: a request whose frame was
-        // handed off (in flight or queued behind a credit) is DeliveryUnknown; a request
-        // with no handed-off frame (a held query, or a still-Live entry) is
-        // AbandonedByTerminal.
+        // First-wins terminal: every unretired request is classified exactly once.
         let mut awaiting: Vec<RequestId> = Vec::new();
         for (owner, _credit) in &self.in_flight {
             if let Some(id) = owner.owned_id() {
@@ -1497,7 +1479,8 @@ fn parse_semantic(
 }
 
 /// The fallback unavailable-evidence when even the bounded operational message overflows
-/// its sink (defensive: overlay refusal messages are short and cannot reach the cap).
+/// its sink. Overlay refusal messages are short and cannot reach the cap, so this is a
+/// defensive floor rather than a reachable path.
 fn unrenderable_overlay_evidence() -> UnavailableEvidence {
     UnavailableEvidence {
         code: marrow_codes::Code::ProjectSourcePath.as_str(),
@@ -1574,9 +1557,8 @@ fn initialize_result() -> InitializeResult {
             definition_provider: Some(OneOf::Left(true)),
             document_formatting_provider: Some(OneOf::Left(true)),
             // Trigger characters are editor ergonomics only: the checker classifies the
-            // position purely, never from the trigger character. No `resolveProvider`,
-            // no `allCommitCharacters` — the completion surface is a complete list the
-            // client filters.
+            // position from the source, never from the trigger character. The completion
+            // surface is a complete list the client filters, so no `resolveProvider`.
             completion_provider: Some(CompletionOptions {
                 trigger_characters: Some(vec![
                     ".".to_owned(),
@@ -1607,10 +1589,8 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    /// The advertised server capabilities, pinned exactly. A change to the advertised
-    /// surface — a new provider, a trigger character, or an unearned `resolveProvider`,
-    /// commit-character, or work-done option — must update this pinned JSON, making the
-    /// wire contract a reviewed decision rather than an incidental serialization.
+    /// The advertised capabilities are pinned exactly, so any change to the wire contract
+    /// is a reviewed decision rather than an incidental serialization.
     #[test]
     fn capabilities_advertisement_is_pinned() {
         let capabilities = initialize_result().capabilities;
@@ -1851,8 +1831,6 @@ mod tests {
         let mut coordinator = Coordinator::new();
         coordinator.on_frame(br#"{"jsonrpc":"2.0","id":7,"method":"noSuchMethod"}"#);
         assert_eq!(coordinator.requests.entries.len(), 1);
-        // A second request with the same live id consumes no new entry and is a null-id
-        // -32600 through the anonymous slot.
         coordinator.on_frame(br#"{"jsonrpc":"2.0","id":7,"method":"noSuchMethod"}"#);
         assert_eq!(
             coordinator.requests.entries.len(),
@@ -1868,8 +1846,6 @@ mod tests {
 
     #[test]
     fn anonymous_slot_exhaustion_is_terminal() {
-        // Undelivered null-id protocol errors hold their slots; the one past the shipped
-        // bound is a fixed terminal.
         let mut coordinator = Coordinator::new();
         for _ in 0..MAX_ANONYMOUS_ERROR_SLOTS {
             coordinator.on_frame(b"{ not json");
@@ -1903,9 +1879,7 @@ mod tests {
         );
         coordinator.job_out = None; // ignore the recompute job; no snapshot arrives
 
-        // A hover with no ready snapshot is held (Live, no frame).
         coordinator.on_frame(hover_body(&dir, 10, 3, 12).as_bytes());
-        // An unknown request is answered immediately (frame handed off, awaiting delivery).
         coordinator.on_frame(br#"{"jsonrpc":"2.0","id":11,"method":"noSuchMethod"}"#);
 
         coordinator.on_terminal();
@@ -1940,13 +1914,12 @@ mod tests {
         coordinator.on_frame(hover_body(&dir, 20, 3, 12).as_bytes());
         assert_eq!(coordinator.held_queries.len(), 1);
 
-        // Edit advances the revision.
         coordinator.on_frame(change_body(&dir, 2, main2).as_bytes());
         assert_ne!(coordinator.current_revision, rev_open);
         coordinator.job_out = None;
 
-        // The snapshot for the new revision arrives; the held hover reauthorizes against
-        // the stale revision and is replaced with -32801 ContentModified.
+        // The snapshot lands for the new revision, so the hover held at the stale one
+        // reauthorizes and fails.
         let snapshot = snapshot_at(&dir, main2, coordinator.current_revision);
         coordinator.on_worker_result(AnalysisOutcome::Snapshot(snapshot));
         assert!(
@@ -1973,13 +1946,12 @@ mod tests {
         coordinator.on_frame(completion_body(&dir, 21, 3, 12).as_bytes());
         assert_eq!(coordinator.held_queries.len(), 1);
 
-        // An edit advances the revision before the snapshot lands.
         coordinator.on_frame(change_body(&dir, 2, main2).as_bytes());
         assert_ne!(coordinator.current_revision, rev_open);
         coordinator.job_out = None;
 
-        // The new revision's snapshot arrives; the held completion reauthorizes against the
-        // stale revision and is replaced with -32801, never a fact for the wrong text.
+        // The snapshot lands for the new revision, so the completion held at the stale one
+        // reauthorizes and fails rather than answering with facts for the wrong text.
         let snapshot = snapshot_at(&dir, main2, coordinator.current_revision);
         coordinator.on_worker_result(AnalysisOutcome::Snapshot(snapshot));
         assert!(
