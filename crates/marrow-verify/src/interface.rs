@@ -6,11 +6,11 @@
 //! and the generated client — reconstructs the interface through this one function.
 
 use marrow_image::{
-    CollectionShape, EnumShape, ExportSignature, FieldShape, ImageType, Interface, InterfaceError,
+    CollectionShape, EnumShape, ExportSignature, FieldShape, Interface, InterfaceError,
     RecordShape, RootShape, VariantShape,
 };
 
-use crate::sealed::{RetShape, SealedCollectionType, VerifiedImage};
+use crate::sealed::{SealedCollectionType, VerifiedImage};
 
 /// Reconstruct the wire interface from a verified image using only its sealed tables.
 pub fn interface_of(image: &VerifiedImage) -> Result<Interface, InterfaceError> {
@@ -22,9 +22,9 @@ pub fn interface_of(image: &VerifiedImage) -> Result<Interface, InterfaceError> 
                 .fields()
                 .iter()
                 .map(|field| FieldShape {
-                    name: field.name.to_string(),
-                    ty: field.ty,
-                    required: field.required,
+                    name: field.name().to_string(),
+                    ty: field.ty(),
+                    required: field.required(),
                 })
                 .collect(),
         })
@@ -37,9 +37,9 @@ pub fn interface_of(image: &VerifiedImage) -> Result<Interface, InterfaceError> 
                 .variants()
                 .iter()
                 .map(|variant| VariantShape {
-                    name: variant.name.to_string(),
-                    category: variant.category,
-                    payload: variant.payload.clone(),
+                    name: variant.name().to_string(),
+                    category: variant.category(),
+                    payload: variant.payload().to_vec(),
                 })
                 .collect(),
         })
@@ -71,37 +71,10 @@ pub fn interface_of(image: &VerifiedImage) -> Result<Interface, InterfaceError> 
             ExportSignature {
                 id: export.id(),
                 params: function.params().to_vec(),
-                ret: function.ret().image_type(),
+                ret: function.ret(),
                 demand_id: export.demand_id(),
             }
         })
         .collect();
     Interface::build(exports, &records, &enums, &collections, &roots)
-}
-
-impl RetShape {
-    /// The bare-or-optional [`ImageType`] this return shape denotes, as the interface
-    /// builder and the reply decoder consume it.
-    pub fn image_type(self) -> ImageType {
-        match self {
-            RetShape::Unit => ImageType::Unit,
-            RetShape::Scalar { scalar, optional } => ImageType::Scalar { scalar, optional },
-            RetShape::Record { idx, optional } => ImageType::Record {
-                idx: marrow_image::TypeId::from_index(idx),
-                optional,
-            },
-            RetShape::Enum { idx, optional } => ImageType::Enum {
-                idx: marrow_image::EnumId::from_index(idx),
-                optional,
-            },
-            RetShape::Collection { idx, optional } => ImageType::Collection {
-                idx: marrow_image::CollTypeId::from_index(idx),
-                optional,
-            },
-            RetShape::Identity { root, optional } => ImageType::Identity {
-                root: marrow_image::RootId::from_index(root),
-                optional,
-            },
-        }
-    }
 }
