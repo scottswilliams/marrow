@@ -148,17 +148,10 @@ mod tests {
 
     #[test]
     fn native_late_input_failure_keeps_exact_confirmed_prefix_under_same_owner() {
+        use crate::test_common::Scratch;
         use marrow_store::{NativeEngineOwner, NativeOpenAccess};
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let directory = std::env::temp_dir().join(format!(
-            "marrow-transfer-prefix-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&directory).unwrap();
-        eprintln!("preserved native transfer prefix: {}", directory.display());
+        let scratch = Scratch::new("transfer-prefix");
+        let directory = scratch.store();
         NativeEngineOwner::provision(&directory).unwrap();
         let mut owner = NativeEngineOwner::acquire_existing(&directory)
             .unwrap()

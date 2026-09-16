@@ -1,9 +1,9 @@
 //! Field tokens: resolution, authority, and the engine calls a token costs.
 
 use super::super::super::{AuthTarget, AuthorizedSite, ResolvedField};
-use super::engine_call_support::{Counters, CountingEngine};
 use super::*;
 use crate::codec::value::{ValueShape, ValueShapeBuilder, ValueShapeRef};
+use crate::test_common::{Counters, CountingEngine};
 use std::collections::BTreeSet;
 
 #[derive(Clone, Copy, Debug)]

@@ -12,9 +12,7 @@ use super::{Durable, DurableStore};
 use crate::codec::key::KeyScalar;
 use crate::codec::value::{RuntimeScalar, ScalarKind};
 use crate::equality::ValueDomain;
-
-#[path = "../../../tests/common/mod.rs"]
-mod engine_call_support;
+use crate::test_common::Scratch;
 
 mod bounded_acquisition;
 mod branch_fields;
@@ -27,7 +25,7 @@ mod key_domains;
 mod navigation_work;
 mod nested_branches;
 
-fn native_fixture(temp: &TempDir) -> NativeEngineOwner {
+fn native_fixture(temp: &Scratch) -> NativeEngineOwner {
     NativeEngineOwner::provision(&temp.store()).expect("provision native fixture");
     NativeEngineOwner::acquire_existing(&temp.store())
         .expect("hold native fixture")
@@ -532,8 +530,8 @@ fn label_cell(name: &str, label: &str) -> (Vec<u8>, Vec<u8>) {
 
 /// A fresh redb-backed store over the indexed schema, in a temp dir kept alive by the
 /// returned guard.
-fn native_indexed() -> (DurableStore<NativeEngineOwner>, TempDir) {
-    let temp = TempDir::new("index-maint");
+fn native_indexed() -> (DurableStore<NativeEngineOwner>, Scratch) {
+    let temp = Scratch::new("index-maint");
     NativeEngineOwner::provision(&temp.store()).expect("provision native");
     let engine = NativeEngineOwner::acquire_existing(&temp.store())
         .expect("acquire the owner lock")
@@ -552,10 +550,6 @@ fn native_indexed() -> (DurableStore<NativeEngineOwner>, TempDir) {
 fn sorted(mut cells: Vec<(Vec<u8>, Vec<u8>)>) -> Vec<(Vec<u8>, Vec<u8>)> {
     cells.sort();
     cells
-}
-
-struct TempDir {
-    root: std::path::PathBuf,
 }
 
 /// The expected unique `byValue` cell for entry `name` with value `value`: keyed by
@@ -581,27 +575,4 @@ fn vi(n: i64) -> Option<ValueDomain> {
 
 fn vs(s: &str) -> Option<ValueDomain> {
     Some(ValueDomain::Scalar(RuntimeScalar::Str(s.into())))
-}
-
-impl TempDir {
-    fn new(name: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
-        std::fs::create_dir_all(&root).expect("create temp dir");
-        std::fs::create_dir(root.join("store")).expect("create store dir");
-        TempDir { root }
-    }
-    fn store(&self) -> std::path::PathBuf {
-        self.root.join("store")
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.root).ok();
-    }
 }

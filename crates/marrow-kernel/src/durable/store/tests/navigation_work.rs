@@ -1,9 +1,9 @@
 //! Navigation work on both engine implementations. Counts include actual scan
 //! page copies; they do not measure native cache, allocation peaks or seek time.
 
-use super::engine_call_support::{Counters, CountingEngine};
 use super::*;
 use crate::durable::{ContentDigest, CreateOutcome};
+use crate::test_common::{Counters, CountingEngine};
 use marrow_store::{StoreError, StoreLimit};
 
 #[derive(Debug)]
@@ -289,7 +289,7 @@ fn root_and_branch_navigation_work_is_independent_of_child_population_and_payloa
     ];
     for case in cases {
         navigation(MemoryEngine::new(), "memory", case);
-        let temp = TempDir::new("navigation-work");
+        let temp = Scratch::new("navigation-work");
         navigation(native_fixture(&temp), "native", case);
     }
 }
@@ -333,7 +333,7 @@ fn page_limits<E: ByteEngine>(engine: E) {
 #[test]
 fn actual_scan_pages_observe_the_cell_cap_and_oversized_first_cell_exception() {
     page_limits(MemoryEngine::new());
-    let temp = TempDir::new("navigation-pages");
+    let temp = Scratch::new("navigation-pages");
     page_limits(native_fixture(&temp));
 }
 
@@ -451,7 +451,7 @@ fn full_key_paths_preserve_arity_and_the_exact_engine_key_limit() {
     for columns in [8, 9] {
         for depth in [15, 16] {
             wide_path(MemoryEngine::new(), columns, depth);
-            let temp = TempDir::new("navigation-wide-path");
+            let temp = Scratch::new("navigation-wide-path");
             wide_path(native_fixture(&temp), columns, depth);
         }
     }
@@ -593,7 +593,7 @@ fn encountered_orphans_fault_but_a_successful_more_marker_stops_inspection() {
     for depth in [0, 1] {
         for present in 0..=2 {
             orphan_boundary(MemoryEngine::new(), depth, present);
-            let temp = TempDir::new("navigation-orphans");
+            let temp = Scratch::new("navigation-orphans");
             orphan_boundary(native_fixture(&temp), depth, present);
         }
     }

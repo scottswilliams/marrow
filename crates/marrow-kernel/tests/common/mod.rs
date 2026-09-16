@@ -1,5 +1,5 @@
 // Each test executable uses a different subset of these shared helpers.
-#![allow(dead_code)]
+#![allow(dead_code, unused_imports)]
 
 //! The kernel suites' shared fixtures: one scratch-directory owner, and operation
 //! counters over either production byte-engine implementation.
@@ -8,60 +8,16 @@
 //! and bytes measure the scan API's copies, not engine cache or allocation costs.
 
 use std::cell::Cell;
-use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
+
+mod scratch;
+
+pub use scratch::Scratch;
 
 use marrow_store::{
     ByteEngine, Cell as StoreCell, CommitOutcome, MemoryEngine, ReadView, StoreError, StoreOp,
     WriteTxn,
 };
-
-static NEXT: AtomicU64 = AtomicU64::new(0);
-
-/// One private scratch directory, removed on drop.
-///
-/// The base directory and a `store` child under it both exist; the store child is the
-/// directory a native engine owner is provisioned into, so a case can assert about the
-/// engine file the owner would create without the owner having run.
-pub struct Scratch {
-    base: PathBuf,
-}
-
-impl Scratch {
-    /// A fresh base directory tagged for the case that owns it. The tag, the process id,
-    /// a clock nonce and a process-local counter together keep concurrent cases — in this
-    /// binary and in a sibling one — off each other's paths.
-    pub fn new(tag: &str) -> Self {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_nanos())
-            .unwrap_or(0);
-        let base = std::env::temp_dir().join(format!(
-            "marrow-kernel-{tag}-{}-{nonce}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed),
-        ));
-        std::fs::create_dir_all(base.join("store")).expect("create the scratch store directory");
-        Self { base }
-    }
-
-    /// The base directory itself.
-    pub fn path(&self) -> &Path {
-        &self.base
-    }
-
-    /// The store directory under this base.
-    pub fn store(&self) -> PathBuf {
-        self.base.join("store")
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.base);
-    }
-}
 
 #[derive(Clone, Default)]
 pub struct Counters {

@@ -261,30 +261,8 @@ mod tests {
         CommitResult, Durable, EntryValue, SiteTarget, StoreProjection, StoreSchemaBuilder,
     };
     use crate::equality::ValueDomain;
+    use crate::test_common::Scratch;
     use marrow_store::NativeLockError;
-
-    struct Scratch(PathBuf);
-
-    impl Scratch {
-        fn new(tag: &str) -> Self {
-            let nonce = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|elapsed| elapsed.as_nanos())
-                .unwrap_or(0);
-            let path = std::env::temp_dir().join(format!(
-                "marrow-native-store-owner-{tag}-{}-{nonce}",
-                std::process::id(),
-            ));
-            std::fs::create_dir_all(&path).expect("scratch directory");
-            Self(path)
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
 
     fn witness(generation: u128) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(1 + std::mem::size_of::<u128>());
@@ -306,8 +284,8 @@ mod tests {
             70_001,
         )
         .expect("accepted sparse addresses");
-        NativeStoreOwner::provision(&scratch.0).expect("provision");
-        NativeStoreOwner::acquire_existing(&scratch.0)
+        NativeStoreOwner::provision(scratch.path()).expect("provision");
+        NativeStoreOwner::acquire_existing(scratch.path())
             .expect("acquire the owner lock")
             .bind_and_open_existing(NativeOpenAccess::ReadWrite, instance, || {
                 Ok::<_, std::convert::Infallible>(layout)
@@ -330,9 +308,9 @@ mod tests {
         impl ContentDigest for Digest {
             fn absorb(&mut self, _: &[u8], _: &[u8]) {}
         }
-        let scratch = Scratch::new("restore-complete");
-        NativeStoreOwner::provision(&scratch.0).unwrap();
-        let result = NativeStoreOwner::acquire_existing(&scratch.0)
+        let scratch = Scratch::new("native-store-owner-restore-complete");
+        NativeStoreOwner::provision(scratch.path()).unwrap();
+        let result = NativeStoreOwner::acquire_existing(scratch.path())
             .unwrap()
             .restore(
                 [0x51; 16],
@@ -349,13 +327,13 @@ mod tests {
             Err(error) => panic!("restore failed: {error:?}"),
         };
         assert!(report.is_clean());
-        assert_excluded(&scratch.0);
+        assert_excluded(scratch.path());
         drop(owner);
         let mut cell = Some((
             super::super::physical::meta_key(super::super::store::WITNESS),
             witness(0),
         ));
-        let result = NativeStoreOwner::acquire_existing(&scratch.0)
+        let result = NativeStoreOwner::acquire_existing(scratch.path())
             .unwrap()
             .restore(
                 [0x51; 16],
@@ -418,7 +396,7 @@ mod tests {
                 assert!(matches!(txn.commit(), CommitResult::Committed));
             }
 
-            let directory = std::fs::canonicalize(&scratch.0).expect("canonical scratch");
+            let directory = std::fs::canonicalize(scratch.path()).expect("canonical scratch");
             let fact = CommitRecovery {
                 scope: Some(CommitRecoveryScope::persistent(instance, &directory)),
                 before: Some(witness(0)),
@@ -442,15 +420,15 @@ mod tests {
                     Ok(Some(ValueDomain::Scalar(RuntimeScalar::Int(42))))
                 );
             }
-            assert_excluded(&scratch.0);
+            assert_excluded(scratch.path());
             drop(owner);
-            assert_excluded(&scratch.0);
+            assert_excluded(scratch.path());
         }
     }
 
     #[test]
     fn unknown_recovery_retires_the_owner_without_releasing_quarantine() {
-        let scratch = Scratch::new("unknown");
+        let scratch = Scratch::new("native-store-owner-unknown");
         let instance = [0x45; 16];
         let owner = open_owner(&scratch, instance);
         let fact = CommitRecovery {
@@ -461,14 +439,14 @@ mod tests {
         let (state, owner) = owner.resolve_recovery(fact);
         assert_eq!(state, DurableCommitState::Unknown);
         assert!(owner.is_none());
-        assert_excluded(&scratch.0);
+        assert_excluded(scratch.path());
     }
 
     #[test]
     fn generic_unscoped_store_drop_cannot_disarm_a_quarantined_lower_owner() {
-        let scratch = Scratch::new("generic-drop");
-        NativeEngineOwner::provision(&scratch.0).expect("provision");
-        let owner = NativeEngineOwner::acquire_existing(&scratch.0)
+        let scratch = Scratch::new("native-store-owner-generic-drop");
+        NativeEngineOwner::provision(scratch.path()).expect("provision");
+        let owner = NativeEngineOwner::acquire_existing(scratch.path())
             .expect("acquire the owner lock")
             .bind_and_open_existing(NativeOpenAccess::ReadWrite, [0x47; 16], || {
                 Ok::<_, std::convert::Infallible>(())
@@ -487,6 +465,6 @@ mod tests {
             },
         );
         drop(store);
-        assert_excluded(&scratch.0);
+        assert_excluded(scratch.path());
     }
 }

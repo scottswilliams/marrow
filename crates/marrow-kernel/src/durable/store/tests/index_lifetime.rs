@@ -1,9 +1,9 @@
 //! Entry absence and sparse payload absence have different index consequences.
 
-use super::engine_call_support::{Counters, CountingEngine};
 use super::*;
 use crate::codec::value::encode_domain;
 use crate::durable::ContentDigest;
+use crate::test_common::{Counters, CountingEngine};
 use marrow_store::Cell as StoreCell;
 
 const UNIQUE: [u8; 16] = [0x91; 16];
@@ -154,7 +154,7 @@ fn indexed_entry<E: ByteEngine>(
     );
 }
 
-fn reopen(temp: &TempDir) -> NativeEngineOwner {
+fn reopen(temp: &Scratch) -> NativeEngineOwner {
     NativeEngineOwner::acquire_existing(&temp.store())
         .expect("reacquire native owner")
         .bind_and_open_existing(
@@ -245,7 +245,7 @@ fn key_only_lifetime_covers_empty_and_sparse_scalar_and_composite_entries_in_mem
 
 #[test]
 fn key_only_lifetime_covers_empty_and_sparse_scalar_and_composite_entries_natively() {
-    let temp = TempDir::new("index-lifetime");
+    let temp = Scratch::new("index-lifetime");
     drop(lifetime(native_fixture(&temp)));
     let schema = key_schema(&[ScalarKind::Str, ScalarKind::Int], 2);
     let mut store = DurableStore::from_engine(reopen(&temp), key_projection(&schema));
@@ -291,7 +291,7 @@ fn independently_valid_key_only_indexes_are_erased_in_memory() {
 
 #[test]
 fn independently_valid_key_only_indexes_are_erased_natively() {
-    let temp = TempDir::new("index-seeded-erase");
+    let temp = Scratch::new("index-seeded-erase");
     drop(erase_seeded(native_fixture(&temp)));
     let schema = key_schema(&[ScalarKind::Str, ScalarKind::Int], 2);
     let mut store = DurableStore::from_engine(reopen(&temp), key_projection(&schema));
@@ -359,7 +359,7 @@ fn mixed_sparse_membership_preserves_key_only_indexes_in_memory() {
 
 #[test]
 fn mixed_sparse_membership_preserves_key_only_indexes_natively() {
-    let temp = TempDir::new("index-mixed");
+    let temp = Scratch::new("index-mixed");
     mixed_fields(native_fixture(&temp));
     let schema = key_schema(&[ScalarKind::Int], 2);
     let mut store = DurableStore::from_engine(reopen(&temp), key_projection(&schema));
@@ -489,7 +489,7 @@ fn absent_and_orphan_erasure_preserve_the_unique_owner_in_memory() {
 
 #[test]
 fn absent_and_orphan_erasure_preserve_the_unique_owner_natively() {
-    let temp = TempDir::new("index-orphan");
+    let temp = Scratch::new("index-orphan");
     absent_orphans(native_fixture(&temp));
     let schema = subset_schema();
     let mut store = DurableStore::from_engine(reopen(&temp), subset_projection(&schema));
@@ -570,7 +570,7 @@ fn a_committed_subset_owner_rejects_collision_and_rolls_back_in_memory() {
 
 #[test]
 fn a_committed_subset_owner_rejects_collision_and_rolls_back_natively() {
-    let temp = TempDir::new("index-committed-collision");
+    let temp = Scratch::new("index-committed-collision");
     collision(native_fixture(&temp), ExistingOwner::Committed);
     let schema = subset_schema();
     let mut store = DurableStore::from_engine(reopen(&temp), subset_projection(&schema));
@@ -585,7 +585,7 @@ fn a_staged_subset_owner_rejects_collision_and_rolls_back_in_memory() {
 
 #[test]
 fn a_staged_subset_owner_rejects_collision_and_rolls_back_natively() {
-    let temp = TempDir::new("index-staged-collision");
+    let temp = Scratch::new("index-staged-collision");
     collision(native_fixture(&temp), ExistingOwner::Staged);
     let schema = subset_schema();
     let mut store = DurableStore::from_engine(reopen(&temp), subset_projection(&schema));
@@ -719,20 +719,20 @@ fn mutation_work<E: ByteEngine>(engine: E, mutation: Mutation) {
 #[test]
 fn create_work_uses_presence_and_unique_ownership_without_old_projected_reads() {
     mutation_work(MemoryEngine::new(), Mutation::Create);
-    let temp = TempDir::new("index-create-work");
+    let temp = Scratch::new("index-create-work");
     mutation_work(native_fixture(&temp), Mutation::Create);
 }
 
 #[test]
 fn unchanged_replace_work_does_not_rewrite_indexes() {
     mutation_work(MemoryEngine::new(), Mutation::Replace);
-    let temp = TempDir::new("index-replace-work");
+    let temp = Scratch::new("index-replace-work");
     mutation_work(native_fixture(&temp), Mutation::Replace);
 }
 
 #[test]
 fn erase_work_removes_key_only_and_mixed_indexes() {
     mutation_work(MemoryEngine::new(), Mutation::Erase);
-    let temp = TempDir::new("index-erase-work");
+    let temp = Scratch::new("index-erase-work");
     mutation_work(native_fixture(&temp), Mutation::Erase);
 }

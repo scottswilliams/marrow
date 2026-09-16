@@ -1,8 +1,8 @@
 //! Stored and supplied keys cross the real session boundary at their declared domain.
 
-use super::engine_call_support::{Counters, CountingEngine};
 use super::*;
 use crate::durable::{AuditFault, AuditSite, ContentDigest};
+use crate::test_common::{Counters, CountingEngine};
 use marrow_store::Cell;
 use marrow_temporal::{
     SUPPORTED_DATE_MAX_DAYS, SUPPORTED_DATE_MIN_DAYS, SUPPORTED_INSTANT_MAX_NANOS,
@@ -279,7 +279,7 @@ fn bad_layers<E: ByteEngine>(mut engine: E, failures: &mut Vec<String>) {
 fn stored_layer_keys_refuse_wrong_kinds_and_domains_on_both_engines() {
     let mut failures = Vec::new();
     bad_layers(MemoryEngine::new(), &mut failures);
-    let temp = TempDir::new("key-domains-layer");
+    let temp = Scratch::new("key-domains-layer");
     bad_layers(native_fixture(&temp), &mut failures);
     assert!(
         failures.is_empty(),
@@ -394,7 +394,7 @@ fn good_layers<E: ByteEngine>(mut engine: E) {
 #[test]
 fn valid_layer_key_domains_keep_order_boundaries_and_descendant_independence() {
     good_layers(MemoryEngine::new());
-    let temp = TempDir::new("key-domains-valid");
+    let temp = Scratch::new("key-domains-valid");
     good_layers(native_fixture(&temp));
 }
 
@@ -509,7 +509,7 @@ fn bad_indexes<E: ByteEngine>(mut engine: E, failures: &mut Vec<String>) {
 fn stored_index_components_and_composite_sources_refuse_invalid_domains() {
     let mut failures = Vec::new();
     bad_indexes(MemoryEngine::new(), &mut failures);
-    let temp = TempDir::new("key-domains-index");
+    let temp = Scratch::new("key-domains-index");
     bad_indexes(native_fixture(&temp), &mut failures);
     assert!(
         failures.is_empty(),
@@ -580,7 +580,7 @@ fn good_indexes<E: ByteEngine>(mut engine: E) {
 #[test]
 fn valid_index_domains_keep_composite_identity_and_inclusive_exact_hits() {
     good_indexes(MemoryEngine::new());
-    let temp = TempDir::new("key-domains-index-valid");
+    let temp = Scratch::new("key-domains-index-valid");
     good_indexes(native_fixture(&temp));
 }
 
