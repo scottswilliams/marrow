@@ -1,7 +1,8 @@
 //! The Marrow language server.
 //!
 //! `marrow-lsp` consumes the compiler's published editor-analysis facts —
-//! diagnostics, checked formatting, hover, and definition over one exact
+//! diagnostics, checked formatting, hover, definition, completion, signature help,
+//! and document symbols over one exact
 //! [`marrow_compile::AnalysisSnapshot`] — and serves them over the Language Server
 //! Protocol. The server reconstructs no language semantics: types, paths, facts,
 //! diagnostics, and formatting come only from the compiler fact surface and the
