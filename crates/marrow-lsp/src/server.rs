@@ -1593,8 +1593,9 @@ fn initialize_result() -> InitializeResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scratch::{self, TempDir};
     use std::fs;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
     /// The advertised capabilities are pinned exactly, so any change to the wire contract
     /// is a reviewed decision rather than an incidental serialization.
@@ -1610,31 +1611,12 @@ mod tests {
 
     // ---- test scaffolding: drive the pure coordinator with deterministic events ----
 
-    fn temp_project(tag: &str, main: &str) -> PathBuf {
-        let base = std::env::temp_dir().join(format!(
-            "marrow-lsp-server-{}-{}-{}",
-            tag,
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(base.join("src")).unwrap();
-        fs::write(base.join("marrow.toml"), "edition = \"2026\"\n").unwrap();
-        fs::write(base.join("src/main.mw"), main).unwrap();
-        base
+    fn temp_project(tag: &str, main: &str) -> TempDir {
+        TempDir::project(&format!("server-{tag}"), main)
     }
 
     fn root_uri(dir: &Path) -> String {
-        let mut uri = String::from("file://");
-        for component in dir.components() {
-            if let std::path::Component::Normal(part) = component {
-                uri.push('/');
-                uri.push_str(part.to_str().unwrap());
-            }
-        }
-        uri
+        scratch::uri_of(dir)
     }
 
     fn selected_root(dir: &Path) -> SelectedRoot {
@@ -1731,7 +1713,7 @@ mod tests {
     fn initialize_response_delivery_gates_lifecycle_and_first_analysis() {
         let dir = temp_project("init", "module main\n");
         let mut coordinator = Coordinator::new();
-        coordinator.on_frame(initialize_body(&root_uri(dir.as_path())).as_bytes());
+        coordinator.on_frame(initialize_body(&root_uri(&dir)).as_bytes());
         // The response is handed off, but the lifecycle has NOT advanced and no analysis
         // job is enqueued yet.
         assert!(matches!(
@@ -2871,7 +2853,7 @@ mod tests {
     fn initialize_id_reuse_in_delivery_window_is_rejected() {
         let dir = temp_project("initreuse", "module main\n");
         let mut coordinator = Coordinator::new();
-        coordinator.on_frame(initialize_body(&root_uri(dir.as_path())).as_bytes());
+        coordinator.on_frame(initialize_body(&root_uri(&dir)).as_bytes());
         // The initialize id rides AwaitingDelivery until its receipt (not retired at handoff).
         assert!(coordinator.requests.is_live(&RequestId::Integer(1)));
 

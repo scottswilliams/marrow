@@ -4,10 +4,15 @@
 //! fact tests; the queries kept here are the ones those tests cannot reach.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde_json::Value;
+
+#[path = "support/scratch.rs"]
+mod scratch;
+
+use scratch::TempDir;
 
 /// A framed JSON-RPC connection to a spawned `marrow-lsp`.
 struct Connection {
@@ -186,47 +191,25 @@ fn after(source: &str, needle: &str) -> usize {
 }
 
 fn root_uri(dir: &Path) -> String {
-    let mut uri = String::from("file://");
-    for component in dir.components() {
-        if let std::path::Component::Normal(part) = component {
-            uri.push('/');
-            uri.push_str(part.to_str().unwrap());
-        }
-    }
-    uri
+    scratch::uri_of(dir)
 }
 
 /// A workspace whose project declares one local dependency nested inside it, so both
 /// trees sit under the one selected root and the server must tell them apart by origin
 /// rather than by containment.
-fn temp_dependency_project(tag: &str, main: &str) -> PathBuf {
+fn temp_dependency_project(tag: &str, main: &str) -> TempDir {
     let base = temp_project(tag, main);
-    let lib = base.join("lib/graphtext");
-    std::fs::create_dir_all(lib.join("src")).unwrap();
-    std::fs::write(lib.join("marrow.toml"), "edition = \"2026\"\n").unwrap();
-    std::fs::write(lib.join("src/text.mw"), GRAPH_TEXT).unwrap();
-    std::fs::write(
-        base.join("marrow.toml"),
+    base.write("lib/graphtext/marrow.toml", "edition = \"2026\"\n");
+    base.write("lib/graphtext/src/text.mw", GRAPH_TEXT);
+    base.write(
+        "marrow.toml",
         "edition = \"2026\"\n\n[dependencies]\ngraphtext = { path = \"lib/graphtext\" }\n",
-    )
-    .unwrap();
+    );
     base
 }
 
-fn temp_project(tag: &str, main: &str) -> PathBuf {
-    let base = std::env::temp_dir().join(format!(
-        "marrow-lsp-stdio-{}-{}-{}",
-        tag,
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(base.join("src")).unwrap();
-    std::fs::write(base.join("marrow.toml"), "edition = \"2026\"\n").unwrap();
-    std::fs::write(base.join("src/main.mw"), main).unwrap();
-    base
+fn temp_project(tag: &str, main: &str) -> TempDir {
+    TempDir::project(&format!("stdio-{tag}"), main)
 }
 
 fn initialize(conn: &mut Connection, dir: &Path) {
@@ -277,7 +260,6 @@ fn handshake_and_clean_shutdown() {
     assert!(reply.get("result").is_some());
     conn.notify("exit", Value::Null);
     assert_eq!(conn.wait(), 0, "clean shutdown then exit is zero");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -287,7 +269,6 @@ fn eof_without_exit_is_nonzero() {
     initialize(&mut conn, &dir);
     // Close stdin without sending exit: the server must terminate promptly, nonzero.
     assert_eq!(conn.wait(), 1, "EOF without exit is nonzero");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -310,7 +291,6 @@ fn request_before_initialize_is_server_not_initialized() {
     conn.recv_response(9);
     conn.notify("exit", Value::Null);
     assert_eq!(conn.wait(), 0);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Open the Graph Report fixture as the project's `main.mw` and drain its initial
@@ -360,7 +340,6 @@ fn completion_at_enum_path_returns_members() {
     conn.recv_response(9);
     conn.notify("exit", Value::Null);
     assert_eq!(conn.wait(), 0);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -400,7 +379,6 @@ fn signature_help_inside_call_marks_active_parameter() {
     conn.recv_response(9);
     conn.notify("exit", Value::Null);
     assert_eq!(conn.wait(), 0);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -446,7 +424,6 @@ fn document_symbol_returns_declaration_outline() {
     conn.recv_response(9);
     conn.notify("exit", Value::Null);
     assert_eq!(conn.wait(), 0);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A dependency's file is reported at its own location. The library sits at
@@ -472,7 +449,6 @@ fn a_dependency_file_publishes_under_its_own_root() {
     conn.recv_response(9);
     conn.notify("exit", Value::Null);
     assert_eq!(conn.wait(), 0);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A dependency file is read-only: opening one never places its body in the capture
@@ -518,7 +494,6 @@ fn opening_a_dependency_file_leaves_the_workspace_analysing() {
     conn.recv_response(9);
     conn.notify("exit", Value::Null);
     assert_eq!(conn.wait(), 0);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Definition from the application into a library function returns the library's own
@@ -551,5 +526,4 @@ fn definition_across_a_dependency_boundary_names_the_library_file() {
     conn.recv_response(9);
     conn.notify("exit", Value::Null);
     assert_eq!(conn.wait(), 0);
-    std::fs::remove_dir_all(&dir).ok();
 }

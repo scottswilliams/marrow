@@ -371,6 +371,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::analysis::{AnalysisOutcome, OverlayInput, run_analysis};
+    use crate::scratch::{self, TempDir};
     use crate::uri::{DocumentKey, OriginRoots, SelectedRoot, document_uri};
     use marrow_compile::InputRevision;
     use marrow_project_fs::FileIdentity;
@@ -385,20 +386,8 @@ mod tests {
         ProjectFile::root(identity("src/main.mw"))
     }
 
-    fn temp_project(tag: &str, main: &str) -> (std::path::PathBuf, SelectedRoot) {
-        use std::fs;
-        let base = std::env::temp_dir().join(format!(
-            "marrow-lsp-facts-{}-{}-{}",
-            tag,
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(base.join("src")).unwrap();
-        fs::write(base.join("marrow.toml"), "edition = \"2026\"\n").unwrap();
-        fs::write(base.join("src/main.mw"), main).unwrap();
+    fn temp_project(tag: &str, main: &str) -> (TempDir, SelectedRoot) {
+        let base = TempDir::project(&format!("facts-{tag}"), main);
         let root = root_for(&base);
         (base, root)
     }
@@ -410,21 +399,10 @@ mod tests {
     }
 
     fn root_for(dir: &Path) -> SelectedRoot {
-        let mut uri = String::from("file://");
-        for component in dir.components() {
-            use std::path::Component;
-            if let Component::Normal(part) = component {
-                uri.push('/');
-                uri.push_str(part.to_str().unwrap());
-            }
-        }
-        SelectedRoot::from_uri(&uri).unwrap()
+        SelectedRoot::from_uri(&scratch::uri_of(dir)).unwrap()
     }
 
-    fn analyze_source(
-        tag: &str,
-        main: &str,
-    ) -> (Arc<AnalysisSnapshot>, SelectedRoot, std::path::PathBuf) {
+    fn analyze_source(tag: &str, main: &str) -> (Arc<AnalysisSnapshot>, SelectedRoot, TempDir) {
         let (base, root) = temp_project(tag, main);
         let overlay = vec![OverlayInput {
             key: "src/main.mw",
@@ -441,7 +419,7 @@ mod tests {
     #[test]
     fn diagnostics_project_span_to_utf16_range() {
         let main = "module main\n\npub fn f(): int {\n    return \n}\n";
-        let (snapshot, root, base) = analyze_source("diag", main);
+        let (snapshot, root, _dir) = analyze_source("diag", main);
         let uri = main_uri(&root);
         let params = diagnostics_for_file(
             &snapshot,
@@ -459,13 +437,12 @@ mod tests {
             assert!(matches!(diagnostic.code, Some(NumberOrString::String(_))));
             assert_eq!(diagnostic.source.as_deref(), Some("marrow"));
         }
-        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]
     fn clean_project_has_empty_diagnostic_list() {
         let main = "module main\n\npub fn f(): int {\n    return 1\n}\n";
-        let (snapshot, root, base) = analyze_source("clean", main);
+        let (snapshot, root, _dir) = analyze_source("clean", main);
         let params = diagnostics_for_file(
             &snapshot,
             main_uri(&root),
@@ -475,13 +452,12 @@ mod tests {
         )
         .unwrap();
         assert!(params.diagnostics.is_empty());
-        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]
     fn hover_returns_type_display_at_call_site() {
         let main = "module main\n\nfn g(): int {\n    return 2\n}\n\npub fn f(): int {\n    return g()\n}\n";
-        let (snapshot, _root, base) = analyze_source("hover", main);
+        let (snapshot, _root, _dir) = analyze_source("hover", main);
         // Find the byte offset of the `g` in `g()` on the return line.
         let call = main.rfind("g()").unwrap();
         let map = LineMap::new(main);
@@ -496,24 +472,21 @@ mod tests {
             };
             assert!(!markup.value.is_empty());
         }
-        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]
     fn formatting_returns_whole_document_edit_for_unformatted() {
         let main = "module main\n\npub fn f():int{\n return 1\n}\n";
-        let (snapshot, _root, base) = analyze_source("fmt", main);
+        let (snapshot, _root, _dir) = analyze_source("fmt", main);
         let edits = formatting(&snapshot, &main_file(), main).unwrap();
         assert_eq!(edits.len(), 1, "one whole-document replacement");
         assert_eq!(edits[0].range.start, LspPosition::new(0, 0));
-        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]
     fn formatting_refuses_unparseable_with_none() {
         let main = "module main\n\npub fn f(: {\n";
-        let (snapshot, _root, base) = analyze_source("fmtbad", main);
+        let (snapshot, _root, _dir) = analyze_source("fmtbad", main);
         assert!(formatting(&snapshot, &main_file(), main).is_none());
-        std::fs::remove_dir_all(&base).ok();
     }
 }

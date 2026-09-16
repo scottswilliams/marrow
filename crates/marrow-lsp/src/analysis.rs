@@ -198,6 +198,7 @@ impl std::fmt::Write for BoundedSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scratch::{self, TempDir};
     use std::fs;
 
     /// Build a real on-disk project and return its root URI spelling.
@@ -214,29 +215,11 @@ mod tests {
     }
 
     fn root_for(dir: &Path) -> SelectedRoot {
-        let mut uri = String::from("file://");
-        for component in dir.components() {
-            use std::path::Component;
-            if let Component::Normal(part) = component {
-                uri.push('/');
-                uri.push_str(part.to_str().unwrap());
-            }
-        }
-        SelectedRoot::from_uri(&uri).unwrap()
+        SelectedRoot::from_uri(&scratch::uri_of(dir)).unwrap()
     }
 
-    fn temp_dir(tag: &str) -> PathBuf {
-        let base = std::env::temp_dir().join(format!(
-            "marrow-lsp-analysis-{}-{}-{}",
-            tag,
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&base).unwrap();
-        base
+    fn temp_dir(tag: &str) -> TempDir {
+        TempDir::new(&format!("analysis-{tag}"))
     }
 
     #[test]
@@ -261,7 +244,6 @@ mod tests {
             }
             _ => panic!("expected a snapshot"),
         }
-        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -291,7 +273,6 @@ mod tests {
             }
             other => panic!("expected snapshot, got {}", label(&other)),
         }
-        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -321,7 +302,6 @@ mod tests {
             limit.limit(),
             marrow_syntax::SYNTAX_DIAGNOSTIC_COUNT_LIMIT as u64
         );
-        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -339,7 +319,6 @@ mod tests {
             }
             other => panic!("expected capture rejection, got {}", label(&other)),
         }
-        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -353,7 +332,6 @@ mod tests {
         }];
         let outcome = run_analysis(&root, &overlay, InputRevision::new(1));
         assert!(matches!(outcome, AnalysisOutcome::Capture(_)));
-        fs::remove_dir_all(&dir).ok();
     }
 
     /// The editor door passes through the same publication gate every other
@@ -375,7 +353,6 @@ mod tests {
             }
             other => panic!("expected capture rejection, got {}", label(&other)),
         }
-        fs::remove_dir_all(&dir).ok();
     }
 
     fn label(outcome: &AnalysisOutcome) -> &'static str {
