@@ -196,6 +196,8 @@ The library keeps its own unprefixed `module text` header, so it still checks st
 
 A type name carries the alias the same way: `graphtext::Pair` names the library's `Pair`, and a bare `Pair` in the consuming project names the consuming project's own. A type name is one or two segments; a longer path names no type.
 
+An enum member is named by that same type name followed by the member: `graphtext::Color::red` constructs a member of the library's `Color`, and a bare `Color::red` constructs one of the consuming project's own. The head is resolved exactly as the same spelling in a type annotation is, so a member of a dependency's enum is written wherever a value of that enum is written, and a path longer than the head plus one member names no member. A `match` arm carries no enum prefix in either tree — the scrutinee supplies the enum — so a match over a dependency's enum is written and checked for exhaustiveness exactly as one over a local enum.
+
 Commands act on the project they are invoked on: `marrow run` invokes only the consuming project's own exports and `marrow test` runs only its own tests, so a dependency's exports and tests are run in that dependency's directory even though its functions are callable from source across the boundary.
 
 ## Visibility

@@ -267,7 +267,9 @@ A value is written `Shape::dot` for a bare member and
 `Shape::circle(radius: 3)` for a payload member, with the payload fields named.
 `==` and `!=` compare the member and its payload. A `match` names every member
 once and binds a payload positionally; it is described under
-[control flow](control-flow.md#match).
+[control flow](control-flow.md#match). A dependency's enum is written through its
+alias, `graphtext::Shape::dot`
+([dependencies](modules-and-functions.md#dependencies)).
 
 A payload field carries a bare value: a scalar, a nominal int, a struct, another
 enum, or an application of a [generic type](#generic-types) that resolves to one
