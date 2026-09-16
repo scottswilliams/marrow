@@ -51,10 +51,12 @@ fn project_with_ids(files: &[(&str, String)], ids: Option<&[u8]>) -> ProjectInpu
     common_project::project_with_ids(&borrowed, ids)
 }
 
-fn main_file() -> FileIdentity {
-    FileIdentity::validate("src/main.mw")
-        .expect("canonical test path")
-        .0
+fn main_file() -> marrow_compile::ProjectFile {
+    marrow_compile::ProjectFile::root(
+        FileIdentity::validate("src/main.mw")
+            .expect("canonical test path")
+            .0,
+    )
 }
 
 /// The probe declarations every over-bound fixture ends with, and the offsets the query

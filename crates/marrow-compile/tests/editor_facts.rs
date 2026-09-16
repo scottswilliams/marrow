@@ -40,8 +40,8 @@ fn snap_app(source: &str) -> Arc<AnalysisSnapshot> {
     snap(&[("src/app.mw", source)])
 }
 
-fn identity(path: &str) -> FileIdentity {
-    FileIdentity::validate(path).expect("canonical identity").0
+fn identity(path: &str) -> marrow_compile::ProjectFile {
+    marrow_compile::ProjectFile::root(FileIdentity::validate(path).expect("canonical identity").0)
 }
 
 /// The byte offset of the first occurrence of `needle` in `source`, advanced by `extra`

@@ -3028,12 +3028,12 @@ mod driver_agreement {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].invalid_utf8_facts(), Some((2, Some(1))));
         assert_eq!(rows[1].invalid_utf8_facts(), Some((3, None)));
-        let broken: Vec<&str> = driven
+        let broken: Vec<String> = driven
             .facts
             .expect_complete()
             .broken_files
             .iter()
-            .map(|at| at.of(&input).as_str())
+            .map(|at| at.of(&input).spelling())
             .collect();
         assert_eq!(broken, vec!["src/mid.mw", "src/tail.mw"]);
     }

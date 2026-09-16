@@ -21,6 +21,6 @@ mod snapshot_agreement;
 #[path = "analysis_snapshot/snapshot_retention.rs"]
 mod snapshot_retention;
 
-fn identity(path: &str) -> FileIdentity {
-    FileIdentity::validate(path).expect("canonical identity").0
+fn identity(path: &str) -> marrow_compile::ProjectFile {
+    marrow_compile::ProjectFile::root(FileIdentity::validate(path).expect("canonical identity").0)
 }

@@ -364,3 +364,39 @@ fn each_origin_resolves_against_its_own_ledger() {
         vec!["notes", "Note", "notes.id", "Note.body"],
     );
 }
+
+/// Two trees may hold the same file identity, so every snapshot query and every
+/// diagnostic is addressed by the whole `(origin, identity)` pair.
+#[test]
+fn a_snapshot_query_keys_on_the_origin_too() {
+    let project = std::sync::Arc::new(project_capture::project_with_dependency(
+        "graphtext",
+        &[(
+            "src/text.mw",
+            "module text\n\npub fn here(): int {\n    return 1\n}\n",
+        )],
+        &[(
+            "src/text.mw",
+            "module text\n\npub fn here(): int {\n    return 22222\n}\n",
+        )],
+    ));
+    let Ok(snapshot) = marrow_compile::analyze(
+        std::sync::Arc::clone(&project),
+        marrow_compile::InputRevision::new(1),
+    ) else {
+        panic!("the two-origin fixture analyzes");
+    };
+    let identity = marrow_project::FileIdentity::validate("src/text.mw")
+        .expect("canonical identity")
+        .0;
+    let root = marrow_compile::ProjectFile::root(identity.clone());
+    let dependency = marrow_compile::ProjectFile::new(project.origins()[1].clone(), identity);
+    // The two addresses reach different bytes; an identity-only key would answer one
+    // query with the other file's source.
+    let formatted = |file: &marrow_compile::ProjectFile| match snapshot.format(file) {
+        Ok(marrow_compile::FormatOutcome::Formatted(text)) => text,
+        _ => panic!("expected formatted source for {:?}", file.spelling()),
+    };
+    assert!(!formatted(&root).contains("22222"));
+    assert!(formatted(&dependency).contains("22222"));
+}

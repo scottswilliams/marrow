@@ -605,10 +605,12 @@ fn snapshot(files: Vec<(&str, Vec<u8>)>) -> Arc<AnalysisSnapshot> {
     }
 }
 
-fn identity(path: &str) -> FileIdentity {
-    FileIdentity::validate(path)
-        .expect("the fixture path is a canonical identity")
-        .0
+fn identity(path: &str) -> marrow_compile::ProjectFile {
+    marrow_compile::ProjectFile::root(
+        FileIdentity::validate(path)
+            .expect("the fixture path is a canonical identity")
+            .0,
+    )
 }
 
 /// A stable rendering of one completion outcome, so an agreement assertion compares

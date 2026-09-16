@@ -974,7 +974,7 @@ mod fact_ledger_tests {
         let extent = |at: FileRef| {
             snapshot
                 .identity_of(at)
-                .and_then(|identity| snapshot.locate(identity).ok())
+                .and_then(|file| snapshot.locate(&file).ok())
                 .map(|(_, bytes)| bytes.len())
                 .unwrap_or_else(|| panic!("a retained coordinate names an input module"))
         };

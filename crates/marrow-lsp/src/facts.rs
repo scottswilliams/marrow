@@ -16,6 +16,7 @@ use lsp_types::{
     PublishDiagnosticsParams, Range as LspRange, SignatureHelp, SignatureInformation, SymbolKind,
     TextEdit, Uri,
 };
+use marrow_compile::ProjectFile;
 use marrow_compile::{
     ActiveCall, ActiveCallOutcome, AnalysisSnapshot, Candidate, CandidateKind, CompletionOutcome,
     Completions, DeclKind, DeclSymbol, Fact, FormatOutcome,
@@ -71,7 +72,7 @@ pub(crate) fn diagnostics_for_file(
     let source = std::str::from_utf8(source).map_err(|_| ProjectionRefusal::NotUtf8)?;
     let map = LineMap::new(source);
     let diagnostics = snapshot
-        .diagnostics_for(file)
+        .diagnostics_for(&ProjectFile::root(file.clone()))
         .map(|diagnostic| {
             let span = diagnostic.span();
             let range = to_lsp_range(map.range_of(span.start_byte, span.end_byte));
@@ -110,7 +111,7 @@ pub(crate) fn hover(
         line: position.line,
         character: position.character,
     });
-    match snapshot.hover(file, offset) {
+    match snapshot.hover(&ProjectFile::root(file.clone()), offset) {
         Ok(Fact::Present(hover)) => Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::PlainText,
@@ -137,7 +138,7 @@ pub(crate) fn definition(
         line: position.line,
         character: position.character,
     });
-    let target = match snapshot.definition(file, offset) {
+    let target = match snapshot.definition(&ProjectFile::root(file.clone()), offset) {
         Ok(Fact::Present(definition)) => definition,
         Ok(Fact::Absent | Fact::Unavailable(_)) | Err(_) => return Ok(None),
     };
@@ -165,7 +166,7 @@ pub(crate) fn formatting(
     file: &FileIdentity,
     source: &str,
 ) -> Option<Vec<TextEdit>> {
-    match snapshot.format(file) {
+    match snapshot.format(&ProjectFile::root(file.clone())) {
         Ok(FormatOutcome::Formatted(formatted)) => {
             if formatted == source {
                 // Already formatted: no edit.
@@ -202,7 +203,7 @@ pub(crate) fn completion(
         line: position.line,
         character: position.character,
     });
-    match snapshot.completions(file, offset) {
+    match snapshot.completions(&ProjectFile::root(file.clone()), offset) {
         Ok(CompletionOutcome::Ready(Fact::Present(completions))) => {
             Ok(Some(to_completion_response(&completions)))
         }
@@ -262,7 +263,7 @@ pub(crate) fn signature_help(
         line: position.line,
         character: position.character,
     });
-    match snapshot.active_call(file, offset) {
+    match snapshot.active_call(&ProjectFile::root(file.clone()), offset) {
         Ok(ActiveCallOutcome::Ready(Fact::Present(active))) => Ok(Some(to_signature_help(&active))),
         Ok(ActiveCallOutcome::Ready(Fact::Absent | Fact::Unavailable(_))) | Err(_) => Ok(None),
         Ok(ActiveCallOutcome::Refused(_)) => Err(ResourceLimited),
@@ -303,7 +304,7 @@ pub(crate) fn document_symbols(
     source: &str,
 ) -> Option<DocumentSymbolResponse> {
     let map = LineMap::new(source);
-    match snapshot.document_symbols(file) {
+    match snapshot.document_symbols(&ProjectFile::root(file.clone())) {
         Ok(Fact::Present(symbols)) => Some(DocumentSymbolResponse::Nested(
             symbols
                 .iter()

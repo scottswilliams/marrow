@@ -16,7 +16,8 @@
 
 use std::sync::Arc;
 
-use marrow_project::{CaptureLimits, FileIdentity, ProjectInput};
+use crate::source::ProjectFile;
+use marrow_project::{CaptureLimits, FileIdentity, ProjectInput, SourceOrigin};
 use marrow_syntax::{Declaration, EnumMember, FormatRefusal, SourceSpan};
 
 use crate::compile::{Analyzed, analyze_project};
@@ -143,8 +144,8 @@ impl FileRef {
     /// Resolve this coordinate against the project whose module order minted it.
     #[cfg(test)]
     #[track_caller]
-    pub(crate) fn of(self, project: &ProjectInput) -> &FileIdentity {
-        project.modules()[self.index()].identity()
+    pub(crate) fn of(self, project: &ProjectInput) -> ProjectFile {
+        ProjectFile::from(&project.modules()[self.index()])
     }
 }
 
@@ -320,23 +321,29 @@ impl AnalysisSnapshot {
     /// clean — a truthful empty list, not an absent one.
     pub fn diagnostics_for<'a>(
         &'a self,
-        file: &'a FileIdentity,
+        file: &'a ProjectFile,
     ) -> impl Iterator<Item = &'a SourceDiagnostic> + 'a {
-        self.diagnostics
-            .iter()
-            .filter(move |diagnostic| diagnostic.file() == file)
+        self.diagnostics.iter().filter(move |diagnostic| {
+            diagnostic.file() == file.identity() && diagnostic.origin() == file.origin()
+        })
     }
 
     /// The one coordinate validator: resolve an input file to its snapshot-local
     /// [`FileRef`] and its source bytes, or a typed query error when the file is not one
     /// of the snapshot's analyzed inputs. Every fact query resolves through here, so a
     /// fact can only ever index bytes this snapshot holds.
-    fn locate(&self, file: &FileIdentity) -> Result<(FileRef, &[u8]), QueryError> {
+    ///
+    /// The key is the whole address, origin included: a file identity is relative to
+    /// its own tree's root, so two captured trees may hold `src/x.mw` and an
+    /// identity-only match would answer one query with the other file's bytes.
+    fn locate(&self, file: &ProjectFile) -> Result<(FileRef, &[u8]), QueryError> {
         self.input
             .modules()
             .iter()
             .enumerate()
-            .find(|(_, module)| module.identity() == file)
+            .find(|(_, module)| {
+                module.identity() == file.identity() && module.origin() == file.origin()
+            })
             .and_then(|(index, module)| FileRef::at(index).map(|at| (at, module.source())))
             .ok_or(QueryError::UnknownFile)
     }
@@ -344,11 +351,11 @@ impl AnalysisSnapshot {
     /// Resolve a coordinate this snapshot minted back to the file it names. Drive
     /// admission bounds the module count below the coordinate domain, so every
     /// retained coordinate names a module of this snapshot's own input.
-    fn identity_of(&self, file: FileRef) -> Option<&FileIdentity> {
+    fn identity_of(&self, file: FileRef) -> Option<ProjectFile> {
         self.input
             .modules()
             .get(file.index())
-            .map(|module| module.identity())
+            .map(ProjectFile::from)
     }
 
     /// Whether an offset falls in a dependency-gap span for `file` — a qualified call
@@ -369,7 +376,7 @@ impl AnalysisSnapshot {
     /// A position inside a generic function's template body carries facts too: they are
     /// collected once at the template (never per instance), and a template-parameter use
     /// renders by its declared spelling.
-    pub fn hover(&self, file: &FileIdentity, offset: usize) -> Result<Fact<Hover>, QueryError> {
+    pub fn hover(&self, file: &ProjectFile, offset: usize) -> Result<Fact<Hover>, QueryError> {
         let (file, source) = self.locate(file)?;
         if offset > source.len() {
             return Err(QueryError::OffsetOutOfRange);
@@ -407,7 +414,7 @@ impl AnalysisSnapshot {
     /// its source template. Local, type, import, and field definitions are not covered.
     pub fn definition(
         &self,
-        file: &FileIdentity,
+        file: &ProjectFile,
         offset: usize,
     ) -> Result<Fact<Definition>, QueryError> {
         let (file, source) = self.locate(file)?;
@@ -441,7 +448,7 @@ impl AnalysisSnapshot {
     /// the refusal decision is classified once. The output is bounded by
     /// [`MAX_FORMAT_OUTPUT_BYTES`] as an unretained query-local refusal. An unknown file
     /// is a typed [`QueryError`].
-    pub fn format(&self, file: &FileIdentity) -> Result<FormatOutcome, QueryError> {
+    pub fn format(&self, file: &ProjectFile) -> Result<FormatOutcome, QueryError> {
         let (_, source) = self.locate(file)?;
         let Ok(source) = std::str::from_utf8(source) else {
             // A non-UTF-8 file cannot be lexed. A parse-invalid refusal carries nonempty
@@ -472,7 +479,7 @@ impl AnalysisSnapshot {
     /// A pure projection: it reclassifies nothing and reads no resolved semantic
     /// identity. The outline is retained per snapshot and bounded per file at snapshot
     /// admission; the bound refuses that file's outline alone, never the snapshot.
-    pub fn document_symbols(&self, file: &FileIdentity) -> Result<Fact<&[DeclSymbol]>, QueryError> {
+    pub fn document_symbols(&self, file: &ProjectFile) -> Result<Fact<&[DeclSymbol]>, QueryError> {
         let (file, _) = self.locate(file)?;
         if self.broken_files.contains(&file) {
             return Ok(Fact::Unavailable(Unavailability::Syntax));
@@ -512,7 +519,7 @@ impl AnalysisSnapshot {
     /// comment, whitespace outside any recovered node) is `Absent`.
     pub fn completions(
         &self,
-        file: &FileIdentity,
+        file: &ProjectFile,
         offset: usize,
     ) -> Result<CompletionOutcome, QueryError> {
         let (_, source) = self.locate(file)?;
@@ -547,7 +554,7 @@ impl AnalysisSnapshot {
     /// [`ActiveCallOutcome::Refused`], never a truncated display.
     pub fn active_call(
         &self,
-        file: &FileIdentity,
+        file: &ProjectFile,
         offset: usize,
     ) -> Result<ActiveCallOutcome, QueryError> {
         let (_, source) = self.locate(file)?;
@@ -624,15 +631,22 @@ pub enum FormatOutcome {
 /// in, the span of its declared name (the selection range), and the full
 /// header-through-body declaration range. A generic call targets its source template.
 pub struct Definition {
-    file: FileIdentity,
+    file: ProjectFile,
     name_span: marrow_syntax::SourceSpan,
     declaration_range: marrow_syntax::SourceSpan,
 }
 
 impl Definition {
-    /// The file the target is declared in.
+    /// The file the target is declared in, relative to the root of [`Self::origin`]'s
+    /// tree.
     pub fn file(&self) -> &FileIdentity {
-        &self.file
+        self.file.identity()
+    }
+
+    /// The tree the target is declared in: the root project, or the dependency the
+    /// root declares under an alias.
+    pub fn origin(&self) -> &SourceOrigin {
+        self.file.origin()
     }
 
     /// The span of the target's declared name — the selection range.
