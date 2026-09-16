@@ -79,18 +79,15 @@ fn borrowed_bodies_require_the_actual_function_and_every_instruction_span() {
     );
 }
 
-/// The minting guard rejects every input class whose dotted join would break
-/// the ExportId payload's injectivity, even though the current capture path
-/// cannot produce them.
+/// The minting guard rejects every input class whose dotted join would break the
+/// ExportId payload's injectivity, even though no current capture path produces them.
 #[test]
 fn export_path_validation_guards_the_id_payload() {
-    // Ordinary declaration paths mint.
     assert!(valid_export_path("main", "run"));
     assert!(valid_export_path("shelf.books", "add"));
     assert!(valid_export_path("a_b", "_x1"));
 
-    // Empty or dotted components would let two distinct declaration paths
-    // collide on one payload.
+    // Empty or dotted components would collide two declaration paths on one payload.
     assert!(!valid_export_path("", "run"));
     assert!(!valid_export_path("a", ""));
     assert!(!valid_export_path("a..b", "run"));
@@ -98,8 +95,7 @@ fn export_path_validation_guards_the_id_payload() {
     assert!(!valid_export_path(".a", "run"));
     assert!(!valid_export_path("a", "b.c"));
 
-    // Non-ASCII and non-identifier characters are outside the frozen payload
-    // domain.
+    // Non-ASCII and non-identifier characters are outside the frozen payload domain.
     assert!(!valid_export_path("caf\u{e9}", "run"));
     assert!(!valid_export_path("a", "r\u{e9}sum\u{e9}"));
     assert!(!valid_export_path("a-b", "run"));
@@ -136,9 +132,8 @@ fn stage_label(stage: CompileStage) -> &'static str {
     }
 }
 
-/// A driven pass whose stage terminals are exactly `parse`, `structural`,
-/// and `semantic`, with no orthogonal analysis facts. The projection under
-/// test reads only these.
+/// A driven pass whose stage terminals are exactly `parse`, `structural`, and
+/// `semantic`, with no orthogonal analysis facts; the projection reads only these.
 fn driven(
     parse: BoundedDiagnostics,
     structural: BoundedDiagnostics,
@@ -167,8 +162,7 @@ fn finished(rows: Vec<SourceDiagnostic>) -> BoundedDiagnostics {
     collector.finish()
 }
 
-/// A semantic invariant reaches the public boundary opaque: no partial
-/// image, a private cause, and the fixed rendering.
+/// No partial image, a private cause, and the fixed rendering.
 #[test]
 fn a_semantic_invariant_is_opaque_at_the_public_boundary() {
     let outcome: Result<Built, CompileFailure> = driven(
@@ -197,9 +191,8 @@ fn a_semantic_invariant_is_opaque_at_the_public_boundary() {
     assert!(std::error::Error::source(&invariant).is_none());
 }
 
-/// An earlier stage's complete diagnostics dominate a later semantic
-/// resource limit or diagnostic set: the projection reports the first
-/// logically non-empty stage and never mixes stages.
+/// An earlier stage's complete diagnostics dominate a later semantic resource limit or
+/// diagnostic set: the projection reports the first non-empty stage and mixes none.
 #[test]
 fn an_earlier_stage_dominates_a_later_semantic_failure() {
     let parse_row = diagnostic(Code::CheckType, 3);
@@ -225,10 +218,9 @@ fn an_earlier_stage_dominates_a_later_semantic_failure() {
     }
 }
 
-/// Diagnostics preserve their collector order and allocation behind a
-/// statically nonempty owner. Every borrowed and owned iteration surface
-/// observes that order; recovering the vector recovers the collector's
-/// allocation without a copy.
+/// Diagnostics preserve their collector order and allocation behind a statically
+/// nonempty owner. Every iteration surface observes that order, and recovering the
+/// vector recovers the collector's allocation without a copy.
 #[test]
 fn diagnostic_failure_preserves_order_allocation_and_iteration_views() {
     let expected = vec![
@@ -269,12 +261,10 @@ fn diagnostic_failure_preserves_order_allocation_and_iteration_views() {
     assert_eq!(recovered, expected);
 }
 
-/// A completeness artifact is minted for a declaration set only when every
-/// declaration in it took the index reserved for it. A stop on the shared
-/// instantiation limit leaves the loop's unvisited suffix unlowered, so it mints
-/// nothing — the artifact's documented claim would otherwise be false for every
-/// declaration after the stop, leaving the truncated set's honesty resting entirely
-/// on the caller's separate limit return.
+/// A completeness artifact is minted for a declaration set only when every declaration
+/// in it took the index reserved for it. A stop on the shared instantiation limit leaves
+/// the unvisited suffix unlowered, so it mints nothing: the artifact's claim would
+/// otherwise be false for every declaration after the stop.
 #[test]
 fn only_an_exhausted_declaration_set_is_complete() {
     assert!(DeclarationExit::Exhausted.complete());
@@ -285,11 +275,9 @@ fn only_an_exhausted_declaration_set_is_complete() {
 /// A refused signature standing behind an accepted duplicate of its name still
 /// leaves the signature table incomplete.
 ///
-/// Completeness reads the ledger's refused set. A set that answered only for the
-/// keys a lookup resolves to a refusal would skip this one, and the semantic fence
-/// would call the pass complete over a table the compiler refused a declaration in.
-/// Resolve the signatures through the production registry owners, over a project
-/// that declares nothing else.
+/// Completeness reads the ledger's refused set. A set that answered only for the keys a
+/// lookup resolves to a refusal would skip this one, and the semantic fence would call
+/// the pass complete over a table the compiler refused a declaration in.
 fn signature_registry(functions: &[crate::lower::DeclaredFn<'_>]) -> FunctionRegistry {
     let budget = crate::decl::DeclarationBudget::default();
     let mut draft_owner = marrow_image::ImageDraft::new();
@@ -369,11 +357,10 @@ fn a_refusal_behind_an_accepted_duplicate_leaves_the_signature_table_incomplete(
     );
 }
 
-/// A complete-but-empty semantic diagnostics terminal is a private
-/// invariant carrying the exact stage that attempted to cross the
-/// boundary; a logically empty parse or structural terminal instead
-/// passes over. The matcher intentionally has no wildcard, so adding a
-/// stage requires updating this contract.
+/// A complete-but-empty semantic diagnostics terminal is a private invariant carrying
+/// the exact stage that attempted to cross the boundary, while a logically empty parse
+/// or structural terminal passes over. The matcher has no wildcard, so adding a stage
+/// requires updating this contract.
 #[test]
 fn an_empty_semantic_terminal_is_an_exact_invariant_at_every_stage() {
     for stage in [
@@ -401,13 +388,8 @@ fn an_empty_semantic_terminal_is_an_exact_invariant_at_every_stage() {
     }
 }
 
-/// The analysis union reads the same terminals the production projection
-/// does, row by row: a semantic invariant passes through whether or not
-/// prechecks reported; with prechecks present a semantic resource limit
-/// is suppressed for the precheck union; a semantic empty terminal is the
-/// same empty-boundary invariant production reports above, never an empty
-/// clean result; and the union of stages may cross a ceiling no single
-/// stage crossed.
+/// The analysis union reads the same terminals the production projection does, row by
+/// row, and the union of stages may cross a ceiling no single stage crossed.
 #[test]
 fn the_analysis_union_follows_the_stage_table() {
     let row = |line| diagnostic(Code::CheckType, line);
@@ -432,8 +414,6 @@ fn the_analysis_union_follows_the_stage_table() {
         Analyzed::Invariant(_)
     ));
 
-    // A semantic empty terminal with empty prechecks is the empty-boundary invariant,
-    // with its stage.
     let Analyzed::Invariant(invariant) = analyze_outcome(
         empty_terminal(),
         empty_terminal(),
@@ -456,9 +436,8 @@ fn the_analysis_union_follows_the_stage_table() {
     };
     assert_eq!(rows.as_slice(), &[row(1), row(2), row(3)]);
 
-    // Analysis alone strengthens an OwnedBytes limit to Count across
-    // stages: a byte-limited parse terminal plus enough semantic rows to
-    // cross the count ceiling resolves as the count limit.
+    // Analysis alone strengthens an OwnedBytes limit to Count across stages: a
+    // byte-limited parse terminal plus enough semantic rows to cross the count ceiling.
     let byte_limited = BoundedDiagnostics::Limited {
         count: MAX_DIAGNOSTIC_COUNT - 5,
         owned_bytes: crate::diag::MAX_DIAGNOSTIC_BYTES + 1,
@@ -485,8 +464,7 @@ fn public_invariant_is_worker_transferable_without_exposing_its_cause() {
 }
 
 /// The frozen kind-detail surface: each aggregate bound names itself with a stable
-/// identifier the CLI resource-limit record carries verbatim. A drift here is a
-/// deliberate change to that published surface.
+/// identifier the CLI resource-limit record carries verbatim.
 #[test]
 fn resource_limit_kind_detail_is_frozen() {
     use super::ResourceLimitKind::*;
@@ -612,11 +590,9 @@ fn a_hostile_image_draft_retains_the_direct_too_many_locals_error() {
 /// the `sub` branch's entry record type to the draft before the completeness gate
 /// runs, so the `StoreBuild::Refused` settlement is reached with a real staged draft
 /// mutation behind it, not on the early admission exits that stage nothing. The
-/// rollback's observable effect is byte-exact: the encoded image of a build whose
-/// last store staged and then refused equals the encoded image of a build that
-/// never declared that store, while the refusal's own diagnostic still settles.
-/// A regression that committed — or only partially restored — the refused store's
-/// staged rows moves the encoded bytes and fails here.
+/// rollback's observable effect is byte-exact: the encoded image of a build whose last
+/// store staged and then refused equals the encoded image of a build that never declared
+/// that store, while the refusal's own diagnostic still settles.
 #[test]
 fn a_store_refused_after_real_staging_rolls_back_to_the_unstaged_image() {
     const DECLARATIONS: &str = "module main\n\n\
@@ -730,15 +706,13 @@ fn a_store_refused_after_real_staging_rolls_back_to_the_unstaged_image() {
     );
 }
 
-/// A drift between the type registry and the declaration slice is the typed
-/// invariant it was on the base line, raised at the directory join — never a
-/// user-facing diagnostic.
+/// A drift between the type registry and the declaration slice is a typed invariant
+/// raised at the directory join, never a user-facing diagnostic.
 ///
-/// The registry drives the join: an admitted resource whose declaration is missing
-/// from the received slice cannot produce a row, so the drift is caught at the one
-/// place the two inputs meet, before any store is built. Reporting it as
-/// `check.type` would charge the user for a compiler inconsistency, which is
-/// exactly what the pre-fix build did.
+/// The registry drives the join: an admitted resource whose declaration is missing from
+/// the received slice cannot produce a row, so the drift is caught at the one place the
+/// two inputs meet, before any store is built. Reporting it as `check.type` would charge
+/// the user for a compiler inconsistency.
 #[test]
 fn a_registry_slice_drift_is_a_typed_invariant_not_a_user_error() {
     let source = "module main\n\nresource R {\n    required title: string\n}\n\n\
@@ -832,9 +806,8 @@ fn branch_field_project(source: &str) -> marrow_project::ProjectInput {
     .expect("capture the branch-field fixture")
 }
 
-/// Source classification belongs to the Product, even when several roots use its
-/// branch entry. Both complete compiler journeys establish their shared
-/// declaration and encoded image before the actual resolver count is asserted.
+/// Source classification belongs to the Product, even when several roots use its branch
+/// entry, so a second root over the same product shares its branch records.
 #[test]
 fn branch_field_annotation_is_resolved_once_per_product() {
     use marrow_image::{DurableMemberViewKind, LedgerIdBytes, Scalar, ValueShapeView};
@@ -1043,8 +1016,6 @@ pub fn readWeight(id: int, noteId: int, tagId: int): int? {
     assert!(!built.image.bytes.is_empty());
 }
 
-// ---- Image capacity: the semantic drive stops once retained bodies cannot fit.
-
 /// One ordinary body, one generic instance shared by production and a test, and one
 /// test body: the smallest shape where a check that skipped a settled population, or
 /// visited one twice, encodes a different image than `compile_with_tests`.
@@ -1068,8 +1039,6 @@ fn check_settles_the_test_inclusive_population() {
 
 /// The check projection reads no editor fact: the same checked program projects to the
 /// same image whether its facts were retained complete or discarded at a fact ceiling.
-/// The analysis projection over the discarded terminal still refuses, as its consumer
-/// contract requires.
 #[test]
 fn check_encodes_the_same_image_over_complete_and_limited_editor_facts() {
     use crate::analysis::{AnalysisFactLimit, BoundedAnalysisFacts, MAX_SNAPSHOT_FACT_COUNT};
@@ -1183,9 +1152,8 @@ fn a_refused_shape_reports_the_image_bytes_limit_from_every_entry() {
 
 /// The stop is what keeps a far-over-ceiling program bounded: the drive stops at the
 /// first settled body whose charge proves the ceiling rather than lowering the whole
-/// program first. Sixteen modules of wide bodies are an order of magnitude past the
-/// ceiling, and refuse in the work the twenty settled bodies of the shape just past it
-/// cost — a drive that lowered them all would be sixteen times that.
+/// program. Sixteen modules of wide bodies are an order of magnitude past the ceiling and
+/// refuse in the work the twenty settled bodies of the shape just past it cost.
 #[test]
 fn a_shape_far_past_the_ceiling_refuses_without_lowering_it_whole() {
     let mut files = vec![("src/main.mw".to_string(), wide_module(32, 512))];
@@ -1227,7 +1195,6 @@ fn test_bodies_settle_under_the_same_stop() {
     image_bytes_limit(crate::check(&input));
 }
 
-/// A later module's bodies settle under the same stop.
 #[test]
 fn a_later_module_settles_under_the_same_stop() {
     let input = capacity_project(&[
@@ -1298,12 +1265,11 @@ fn growing_chain(statements: usize) -> String {
     )
 }
 
-/// The stop precedes a later instantiation limit: wide instance bodies cross the
-/// charge before the chain exhausts the instantiation budget, while narrow ones let
-/// the located instantiation limit report first. A body that trips the limit itself is
-/// refused by the lowerer's terminal check and never appended, so no single body can
-/// both settle and trip the limit; the drain's poll is nevertheless guarded like the
-/// declared-body sites so the located row would win if that ever changed.
+/// The stop precedes a later instantiation limit: wide instance bodies cross the charge
+/// before the chain exhausts the instantiation budget, while narrow ones let the located
+/// instantiation limit report first. A body that trips the limit itself is refused by the
+/// lowerer's terminal check and never appended, so no single body can both settle and
+/// trip the limit.
 #[test]
 fn the_stop_precedes_a_later_instantiation_limit() {
     let input = capacity_project(&[("src/main.mw", growing_chain(40))]);

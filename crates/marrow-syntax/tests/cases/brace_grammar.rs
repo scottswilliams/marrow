@@ -1,7 +1,6 @@
-//! The brace block grammar: `{ … }` blocks, `NEWLINE`-or-`}` statement
-//! termination, cuddled and inline trailing clauses, `=>` match arms, newline enum
-//! members, and header continuation. These are the load-bearing behavioral
-//! invariants of the block grammar.
+//! The brace block grammar: `{ … }` blocks, `NEWLINE`-or-`}` statement termination,
+//! cuddled and inline trailing clauses, `=>` match arms, newline enum members, and
+//! header continuation.
 
 use crate::common::CompletePayload;
 use std::sync::mpsc;
@@ -12,10 +11,8 @@ use marrow_syntax::{
     ParsedSource, ResourceMember, Statement, parse_source,
 };
 
-/// Parse `source` on a worker thread and fail if it does not return promptly. A
-/// parser that loops on a declaration body missing its `}` would otherwise hang the
-/// whole suite; the bounded wait turns such a regression into a test failure rather
-/// than a stuck run.
+/// Parse `source` on a worker thread and fail if it does not return promptly: a parser
+/// that loops on a body missing its `}` becomes a test failure, not a stuck suite.
 fn parse_bounded(source: &str) -> ParsedSource {
     let owned = source.to_string();
     let (tx, rx) = mpsc::channel();
@@ -352,7 +349,7 @@ fn a_bare_block_in_statement_position_is_rejected() {
     );
 }
 
-// ---- B5/B6 parse-only forms ----
+// ---- if-const chain and let-else parse-only forms ----
 
 #[test]
 fn an_if_const_chain_parses_to_the_chain_node() {
@@ -411,7 +408,7 @@ fn slash_slash_is_a_line_comment() {
 
 #[test]
 fn a_match_arm_body_expression_uses_expected_syntax() {
-    // Guard the ExpectedSyntax import stays meaningful: an empty match body reports.
+    // A `match` with no body reports the missing body, not zero arms.
     let parsed = parse_source("module app\nfn run(s: Shape) {\n    match s\n}\n");
     assert!(
         parsed.diagnostics.complete().iter().any(|d| d.reason
@@ -444,9 +441,8 @@ fn a_store_body_missing_its_close_brace_reports_and_terminates() {
 
 #[test]
 fn a_nested_group_stealing_the_outer_brace_reports_and_terminates() {
-    // The inner group `a { ... }` consumes the only `}`, so the outer resource is
-    // left unclosed; parsing still terminates with bounded, well-spanned diagnostics
-    // and reports the outer block as unclosed.
+    // The inner group `a { ... }` consumes the only `}`, leaving the outer resource
+    // unclosed: parsing still terminates and reports the outer block.
     let parsed = parse_bounded("module app\nresource B {\n    a{b\n}\n");
     assert!(
         parsed.diagnostics.complete().len() < 16,

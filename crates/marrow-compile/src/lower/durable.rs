@@ -22,11 +22,9 @@ pub(super) enum PlaceKey<'e> {
     /// binding no matter how many operations flow through the place.
     Bound(u16),
     /// The whole root key-path supplied by one entry-identity operand (`^root[id]`):
-    /// the identity is lowered against the addressed root's identity type (`root`), then
     /// `IdentityKeyPath` spreads it into the root's `cols` key columns. One `Identity`
     /// key stands for every root key column, so it is only the root whole-key form and
-    /// never mixes with per-column keys; an identity minted over a different root is a
-    /// type mismatch here.
+    /// never mixes with per-column keys.
     Identity {
         expr: &'e Expression,
         root: RootId,
@@ -60,8 +58,7 @@ pub(super) struct DurablePlace<'a, 'e> {
 impl DurablePlace<'_, '_> {
     /// This place's whole key-path as pre-evaluated slots (root-first) when *every*
     /// column is a `Bound` slot — the shape a present-form operation and a place-entry
-    /// presence guard require, for a root or a branch place. `None` if any column is an
-    /// inline key expression (a present-form operation needs pre-evaluated slots).
+    /// presence guard require. `None` if any column is an inline key expression.
     pub(super) fn bound_key_path(&self) -> Option<Vec<u16>> {
         self.keys
             .iter()
@@ -131,9 +128,8 @@ impl<'a> PlaceLocal<'a> {
 #[derive(Clone)]
 enum DurTarget<'a> {
     /// A whole durable entry, addressed through the exact durable node the resolver
-    /// walked to — a store root or a keyed branch. The node carries the occurrence and the
-    /// materialized record, and `handle` the whole-payload site bound over it, so neither
-    /// has to be resolved back into a node later.
+    /// walked to. The node carries the occurrence and the materialized record, `handle`
+    /// the whole-payload site bound over it, so neither is resolved back later.
     Entry {
         node: DurNode<'a>,
         handle: OccurrenceSiteHandle,
@@ -156,8 +152,7 @@ enum DurTarget<'a> {
     },
     /// One leaf of a root-level group (`^root(k).group.leaf`). A read materializes the
     /// whole group through the group's `GroupEntry` site and projects `slot`; a write or
-    /// clear is a whole-group read-modify-write that rewrites `slot` on the read-back group
-    /// record and replaces the group, so a leaf never has a durable site of its own.
+    /// clear is a whole-group read-modify-write, so a leaf never has a site of its own.
     GroupLeaf {
         handle: OccurrenceSiteHandle,
         slot: u16,
@@ -167,13 +162,12 @@ enum DurTarget<'a> {
 }
 
 /// A node reached along a resolved durable entry address: the root, or a keyed branch on
-/// the address's branch chain. Both expose the same navigation — a nested branch by name,
-/// a stored field, a canonical declaration path, and a materialized record — so the
-/// recursive address resolver walks them uniformly at any depth.
+/// the address's branch chain. Both expose the same navigation, so the recursive address
+/// resolver walks them uniformly at any depth.
 ///
 /// A branch carries the root occurrence it was reached through as well as the branch
-/// itself: a site is occurrence-qualified, and a branch belongs to a Product declaration
-/// that several roots may project, so the branch alone cannot name one.
+/// itself: a site is occurrence-qualified, and a branch belongs to a declaration several
+/// roots may project, so the branch alone cannot name one.
 #[derive(Clone, Copy)]
 pub(super) enum DurNode<'a> {
     Root(&'a crate::durable::DurableRoot),
@@ -240,9 +234,8 @@ impl<'a> DurNode<'a> {
     }
 
     /// This node's field `name`, whether the node is the root entry or a keyed branch
-    /// entry. The caller binds the field's canonical declaration path against the
-    /// addressed occurrence and allocates (and deduplicates) its operation site when it
-    /// builds the field target, so an untouched field mints no site.
+    /// entry. The caller binds and deduplicates the field's operation site when it builds
+    /// the field target, so an untouched field mints no site.
     fn field(&self, name: &str) -> Option<&'a crate::durable::DurableField> {
         match self {
             DurNode::Root(root) => root.field(name),
@@ -258,9 +251,8 @@ impl<'a> DurNode<'a> {
     }
 
     /// The member-ledger owner whose declared members back this node's fields: the
-    /// resource record a root materializes. A keyed branch's fields are the durable
-    /// graph's own keyed layer, where a refused member refuses the whole root, so a
-    /// branch owns no member ledger.
+    /// resource record a root materializes. A branch owns no member ledger — its fields
+    /// are the keyed layer, where a refused member refuses the whole root.
     fn member_owner(&self) -> Option<&str> {
         match self {
             DurNode::Root(root) => Some(&root.resource),
@@ -283,16 +275,15 @@ impl<'a> DurNode<'a> {
 }
 
 /// A resolved durable traversal place: the traversed layer's whole-entry site, the
-/// immediate key type it enumerates, and the ancestor key-path locating its parent
-/// entry (empty for a root family, `[root_key]` for a single-level branch family). The
-/// bounded traversal opcode pushes the ancestor path root-first, then the optional
-/// inclusive `from` key, and freezes the traversed layer's immediate keys.
+/// immediate key type it enumerates, and the ancestor key-path locating its parent entry
+/// (empty for a root family, `[root_key]` for a single-level branch family). The bounded
+/// traversal opcode pushes the ancestor path root-first, then the optional inclusive
+/// `from` key, and freezes the traversed layer's immediate keys.
 pub(super) struct TraversalTarget<'a, 'e> {
     /// The exact durable node of the traversed layer — a store root or a keyed branch.
     /// It carries the layer's whole-entry site and the materialized record a two-binding
     /// traversal's per-iteration address pin (`for k, p in …`) binds `p` over, and it is
-    /// the node that pin retains, so an iteration over one occurrence of a shared Product
-    /// declaration never resolves into another occurrence.
+    /// the node that pin retains.
     pub(super) node: DurNode<'a>,
     pub(super) key_ty: ScalarType,
     pub(super) ancestor_keys: Vec<DurKey<'e>>,
@@ -319,9 +310,9 @@ pub(crate) fn is_mutation_instr(instr: &Instr) -> bool {
 /// Where a durable address is rooted.
 ///
 /// The two spellings differ only at the base: an inline address names its store at the
-/// `^name` leaf, while a place-rooted one starts at an in-scope `place`/pin binding whose
-/// key columns were evaluated once, when the binding was taken. Every selector below the
-/// base resolves the same way, so this is the only thing the shared resolvers branch on.
+/// `^name` leaf, a place-rooted one starts at an in-scope `place`/pin binding whose key
+/// columns were evaluated once. Every selector below the base resolves the same way, so
+/// this is the only thing the shared resolvers branch on.
 #[derive(Clone, Copy)]
 pub(super) enum EntryBase<'a> {
     Inline(&'a crate::durable::DurableRoot),
@@ -332,9 +323,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     // --- Durable places ---
 
     /// Detect the inline durable shape of a place expression: a whole-entry address
-    /// `^root(key)….b(bkey)` at any depth, or a field-exact address `<entry-address>.field`.
-    /// No diagnostics. Does not see source-local `place` bindings, which need instance
-    /// state; use [`Self::durable_access`] for the full detection.
+    /// `^root(key)….b(bkey)` at any depth, or a field-exact address
+    /// `<entry-address>.field`. No diagnostics, and it does not see source-local `place`
+    /// bindings; use [`Self::durable_access`] for the full detection.
     pub(super) fn durable_shape(expr: &Expression) -> Option<DurShape> {
         if is_entry_address(expr) {
             Some(DurShape::Entry)
@@ -349,11 +340,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// The inline durable ^-address shape of `expr`, confirming a group-leaf address
-    /// against the resolved durable model. [`Self::durable_shape`] recognizes a group-leaf
-    /// address `<entry>.mid.leaf` syntactically; here `mid` must actually name a root-level
-    /// group. A `mid` that is a stored field (or an unknown name) leaves the expression an
-    /// ordinary field projection on a durable field value, lowered and diagnosed by the
-    /// ordinary field path rather than compiling to a codeless durable body.
+    /// against the resolved durable model: [`Self::durable_shape`] recognizes
+    /// `<entry>.mid.leaf` syntactically, but `mid` must actually name a root-level group.
+    /// A `mid` that is a stored field (or an unknown name) leaves the expression an
+    /// ordinary field projection, diagnosed by the ordinary field path rather than
+    /// compiling to a codeless durable body.
     pub(super) fn durable_shape_here(
         &self,
         expr: &Expression,
@@ -372,8 +363,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// One walker for both spellings: an inline `^root[k].b[bk]…` chain resolved against
     /// the named store root, and a place-rooted `p.b[bk]…` chain resolved against the node
     /// the `place`/pin binding already addresses. `None` when `expr` is not a resolvable
-    /// entry address — a wrong or parked root name, an unknown branch, or a non-address
-    /// shape. The emitting resolvers own the diagnostics; this only classifies.
+    /// entry address. The emitting resolvers own the diagnostics; this only classifies.
     ///
     /// Borrows the registry (`'a`), not `&self`.
     pub(super) fn entry_node(
@@ -404,11 +394,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
     }
 
-    /// Whether `expr` is the group address `<entry>.group` of a group-leaf address. It
-    /// distinguishes a group leaf `<entry>.group.leaf` (a durable cell) from a projection
-    /// on a durable struct field value `<entry>.field.sub` (ordinary projection), so the
-    /// classifier routes the inline and place-rooted spellings the same way. Only a root
-    /// node offers groups; a nested branch has none.
+    /// Whether `expr` is the group address `<entry>.group` of a group-leaf address —
+    /// distinguishing a group leaf `<entry>.group.leaf` (a durable cell) from a projection
+    /// on a durable struct field value `<entry>.field.sub`. Only a root node offers
+    /// groups; a nested branch has none.
     fn names_a_group(&self, expr: &Expression) -> Result<bool, DeclarationIndexDrift> {
         let Expression::Field { base, name, .. } = expr else {
             return Ok(false);
@@ -432,10 +421,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         )
     }
 
-    /// Resolve `^root.index[keys]` or bare `^root.index` through the declared index
-    /// owner. A bare read borrows an empty operand slice; each consumer checks its
-    /// required arity and index kind. The index reference lives as long as the durable
-    /// registry, so it may be held across a mutable lowering call.
+    /// Resolve `^root.index[keys]` or bare `^root.index` through the declared index owner.
+    /// A bare read borrows an empty operand slice; each consumer checks its own arity and
+    /// index kind. The index reference lives as long as the durable registry, so it may be
+    /// held across a mutable lowering call.
     pub(super) fn resolve_index_read<'e>(
         &self,
         expr: &'e Expression,
@@ -505,10 +494,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         })
     }
 
-    /// Lower a unique index's presence probe `exists(^root.index[keys])`: check the operands
-    /// against the whole projection, then emit `DurIndexExists` over the same lookup site.
-    /// The result is a bare `bool` — the presence half of [`lower_index_lookup`], without
-    /// materializing the found identity.
+    /// Lower a unique index's presence probe `exists(^root.index[keys])`: the presence half
+    /// of [`lower_index_lookup`], over the same lookup site, without materializing the
+    /// found identity.
     pub(super) fn lower_index_exists(
         &mut self,
         root: &'a crate::durable::DurableRoot,
@@ -550,27 +538,19 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             return Ok(Some(shape));
         }
         // A place-rooted composed address extends a named `place`/pin with the same field,
-        // group, and branch selectors an inline `^root` address takes. Classification is
-        // non-emitting and mirrors the inline `durable_shape_here` split from
-        // `resolve_durable`: a whole entry (a bare place, or a place extended by branch
-        // hops), or a field cell (a stored field, a whole root-level group, a group leaf,
-        // or a branch field). A projection on a durable field *value* (`p.field.sub`) is not
-        // a durable cell and falls through to ordinary projection, exactly as the inline
-        // form does.
+        // group, and branch selectors an inline `^root` address takes, and classifies the
+        // same way: a whole entry, or a field cell. A projection on a durable field
+        // *value* (`p.field.sub`) is not a durable cell and falls through to ordinary
+        // projection, exactly as the inline form does.
         Ok(match expr {
             Expression::Name { .. } => self.is_place_name(expr).then_some(DurShape::Entry),
-            // A place-rooted keyed selection `<place>(.branch[bk])+` is a branch entry. It is
-            // classified by place-rootedness, not by resolving the branch, so an unknown
-            // branch reaches the resolver and reports "no keyed branch" — the same message
-            // the inline `^root(k).branch[bk]` form gives — rather than falling through.
+            // A place-rooted keyed selection `<place>(.branch[bk])+` is a branch entry.
             Expression::Keyed { .. } => self.is_place_rooted(expr).then_some(DurShape::Entry),
-            // A field cell off a place: a stored field or a whole root-level group off a
-            // place-rooted entry base (a bare place, or a branch-hop chain), or a group leaf.
-            // The entry-base case is classified syntactically — by place-rootedness of an
-            // entry-shaped base — not by resolving it, so an unknown branch in the base
-            // reaches the resolver and reports "no keyed branch" rather than falling through
-            // to a confusing projection error. A group leaf is confirmed against the model so
-            // a projection on a durable field value (`p.field.sub`) still falls through.
+            // A field cell off a place: a stored field, a whole root-level group, or a
+            // group leaf. The entry base is classified syntactically, not by resolving it,
+            // so an unknown branch there reaches the resolver and reports "no keyed
+            // branch" rather than a confusing projection error. A group leaf is confirmed
+            // against the model so `p.field.sub` still falls through.
             Expression::Field { base, .. } => (self.names_a_group(base)?
                 || (matches!(&**base, Expression::Name { .. } | Expression::Keyed { .. })
                     && self.is_place_rooted(base)))
@@ -581,8 +561,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// Whether the leftmost base of a durable path expression is an in-scope named
     /// `place`/pin — a bare place name, or a place extended by `.field`, `.group[.leaf]`,
-    /// or `.branch[bk]` hops. Routes such an expression to [`Self::resolve_place_composed`],
-    /// which sources the place's pre-evaluated key columns as the address prefix.
+    /// or `.branch[bk]` hops.
     fn is_place_rooted(&self, expr: &Expression) -> bool {
         match expr {
             Expression::Name { .. } => self.is_place_name(expr),
@@ -596,9 +575,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// Report a selector that names no leaf of `group`, steering to the leaf's own
     /// refusal when the group declared it and the compiler refused it.
     ///
-    /// The group's anchor `Resource.group` is the leaf ledger's owner. Both the
-    /// inline `^root(k).group.leaf` address and its place-rooted twin land here, so
-    /// the two spellings cannot disagree about which leaves the group declares.
+    /// The group's anchor `Resource.group` is the leaf ledger's owner. Both the inline
+    /// `^root(k).group.leaf` address and its place-rooted twin land here.
     fn report_missing_group_leaf(
         &mut self,
         root: &crate::durable::DurableRoot,
@@ -620,10 +598,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// Report a selector that names no member of `node`.
     ///
-    /// A member the compiler refused is declared: it left the record's accepted set
-    /// but keeps its name, so the address is steered to the refusal rather than told
-    /// the node has no such field. Both the inline entry address and its place-rooted
-    /// twin land here.
+    /// A member the compiler refused is declared: it left the record's accepted set but
+    /// keeps its name, so the address is steered to the refusal rather than told the node
+    /// has no such field.
     fn report_missing_member(
         &mut self,
         node: &DurNode<'a>,
@@ -665,10 +642,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     ///
     /// Site ids are assigned in request order, and a key operand lowered between the
     /// resolution and the instruction may itself address a field — `^r[^r2[1].x].f` lowers
-    /// `^r2[1].x` after `^r…f` is resolved and before it is emitted — so moving the mint to
-    /// the emission boundary would reorder the site table. It stays at resolution. The
-    /// operand is deliberately not retained: the target holds the handle, and the emission
-    /// re-requests the very id minted here.
+    /// `^r2[1].x` after `^r…f` is resolved and before it is emitted — so minting at the
+    /// emission boundary would reorder the site table. The operand is deliberately not
+    /// retained: the target holds the handle and the emission re-requests this id.
     fn bind_field_site(
         &mut self,
         node: DurNode<'a>,
@@ -719,10 +695,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 self.push(Instr::LocalGet(slot), span)?;
                 Ok(())
             }
-            // Lower the identity against the addressed root's identity type, then spread it
-            // into that root's key columns. The one `Identity` key supplies the whole root
-            // key-path, so this pushes every root key column, matching the entry site's key
-            // arity. An identity minted over a different root is a type mismatch here.
+            // The one `Identity` key supplies the whole root key-path, so this pushes
+            // every root key column, matching the entry site's key arity.
             PlaceKey::Identity { expr, root, cols } => {
                 self.lower_as(
                     expr,
@@ -737,10 +711,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
     }
 
-    /// Emit a durable operation's whole key-path, root column first, so the innermost
-    /// key is left on top — the order the kernel's `pop_key_path` reads back to a
-    /// root-first path. Path length does not name the node kind: a single-key root is
-    /// one column and a single-level branch two, but a composite-key root is itself
+    /// Emit a durable operation's whole key-path, root column first, so the innermost key
+    /// is left on top — the order the kernel's `pop_key_path` reads back to a root-first
+    /// path. Path length does not name the node kind: a composite-key root is itself
     /// multi-column.
     pub(super) fn emit_key_path(
         &mut self,
@@ -753,12 +726,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Ok(())
     }
 
-    /// Capture the root key-path an entry identity supplies into one pre-evaluated
-    /// slot per root key column (root-first). The identity stands for the whole root
-    /// key tuple, so a whole-entry write through it — which reads (`DurExists`) and
-    /// writes off the same columns several times — evaluates the identity once here
-    /// and reuses the slots, exactly as an inline key tuple is captured. Returns the
-    /// slots in root-column order.
+    /// Capture the root key-path an entry identity supplies into one pre-evaluated slot
+    /// per root key column (root-first). A whole-entry write through it reads and writes
+    /// off the same columns several times, so the identity is evaluated once here and the
+    /// slots reused, exactly as an inline key tuple is captured.
     pub(super) fn capture_identity_key_slots(
         &mut self,
         expr: &Expression,
@@ -788,9 +759,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Ok(slots)
     }
 
-    /// Capture an entry identity into one pre-evaluated `(slot, scalar)` column per root key
-    /// column (root-first): the slots from [`capture_identity_key_slots`] paired with the
-    /// addressed root's key scalars. The single owner for recording an identity operand as a
+    /// Capture an entry identity into one pre-evaluated `(slot, scalar)` column per root
+    /// key column (root-first). The single owner for recording an identity operand as a
     /// place/traversal key-path, so a place binding and a traversal ancestor spread it
     /// identically.
     pub(super) fn capture_identity_key_columns(
@@ -820,9 +790,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// physical key column (root-first) — the capture a read-modify-write or an upsert
     /// needs so its several ops key off one evaluation. A `Bound` column reuses the place
     /// slot it already holds; an `Expr` column is evaluated once into a fresh slot; an
-    /// entry-identity column spreads into the addressed root's columns through
-    /// [`capture_identity_key_slots`], so a single identity operand yields one slot per
-    /// root key column. The returned slots are the physical key-path in column order.
+    /// entry-identity column spreads into one slot per root key column.
     fn capture_key_slots(
         &mut self,
         keys: &[DurKey],
@@ -848,12 +816,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Ok(slots)
     }
 
-    /// Lower `place name = ^root(key)`: evaluate the entry address's key tuple
-    /// exactly once into a fresh local slot and record the binding. The binding is
-    /// immutable and does not shadow an existing name; the target must be a whole
-    /// durable entry address (not a field, another place, or a non-durable value).
-    /// A place over a not-yet-executable root reports the same trough diagnostic as
-    /// an inline operation over it.
+    /// Lower `place name = ^root(key)`: evaluate the entry address's key tuple exactly
+    /// once into a fresh local slot and record the binding. The binding is immutable and
+    /// does not shadow an existing name; the target must be a whole durable entry address
+    /// (not a field, another place, or a non-durable value).
     pub(super) fn lower_place_binding(
         &mut self,
         name: &str,
@@ -924,9 +890,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         // Evaluate each key column of the address exactly once into a fresh slot, root
         // column first, so every later operation through the place reads the slots rather
-        // than re-running the key operands. A branch place binds its whole key-path, and an
-        // identity operand at the root position spreads into the root's key columns — a
-        // composite-key root binds one slot per column from the single identity value.
+        // than re-running the key operands. A branch place binds its whole key-path.
         let mut key_slots = Vec::with_capacity(place.keys.len());
         for column in place.keys {
             match column.key {
@@ -967,18 +931,14 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// Resolve a durable place, reporting a diagnostic on a bad root name, key arity, or
     /// field name. The returned place holds no borrow of the registry.
     ///
-    /// One resolver for both spellings. A place-rooted address sources the `place`
-    /// binding's once-evaluated key columns as its address prefix; an inline address
-    /// resolves its `^name` leaf against the store root. Every selector below the base
-    /// resolves identically either way, so a composed operation seals the identical
+    /// One resolver for both spellings, so a composed operation seals the identical
     /// operation site an inline one does.
     pub(super) fn resolve_durable<'e>(
         &mut self,
         expr: &'e Expression,
     ) -> Option<DurablePlace<'a, 'e>> {
-        // A durable access names its store at the `^name` leaf. Resolving it here (rather
-        // than assuming one store) selects the addressed root and reports a bad name or a
-        // parked shape precisely; a non-address expression is cleanly `None`.
+        // A durable access names its store at the `^name` leaf; resolving it here reports
+        // a bad name or a parked shape precisely, and a non-address expression is `None`.
         let base = if self.is_place_rooted(expr) {
             EntryBase::Place
         } else {
@@ -1066,10 +1026,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Resolve a group address `<entry>.group` to its key-path, the addressed root, and
-    /// the addressed root-level group, or `None` when `expr` is not one. For the inline
-    /// spelling only a syntactic entry-address base is followed, and only a root node
+    /// the addressed root-level group, or `None` when `expr` is not one. Only a root node
     /// offers groups, so a field or branch selector resolves cleanly to `None` without a
-    /// diagnostic — the caller falls through to the entry-address forms.
+    /// diagnostic and the caller falls through to the entry-address forms.
     fn resolve_group_address<'e>(
         &mut self,
         base: EntryBase<'a>,
@@ -1098,12 +1057,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// Resolve a whole-entry address into its key-path (root-first, one column per hop)
     /// and the addressed node, walking the nested branch chain level by level. Returns
-    /// `None` on a shape that is not an entry address, and reports a diagnostic then `None`
-    /// on a bad root or branch name. The key-path columns are pushed root-first so the
-    /// innermost key is on top, the order the kernel's `pop_key_path` expects.
+    /// `None` on a shape that is not an entry address, and reports a diagnostic then
+    /// `None` on a bad root or branch name.
     ///
-    /// The place base stands in for the `^root` leaf, so a branch beneath a place addresses
-    /// the same node — and seals the same operation site — an inline
+    /// The place base stands in for the `^root` leaf, so a branch beneath a place
+    /// addresses the same node — and seals the same operation site — an inline
     /// `^root[k].branch[bk]` does.
     pub(super) fn resolve_entry_node<'e>(
         &mut self,
@@ -1140,21 +1098,18 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     };
                     self.check_root_name(root, name, *root_span)?;
                     // `^root[id]`: one entry-identity operand supplies the whole root key
-                    // tuple. The identity is spread into the root's key columns at emit, so
-                    // a single `Identity` key stands for every root column (including a
-                    // composite key). Any entry-identity operand takes this path; whether it
-                    // names *this* root is decided by the identity type check at emit (the
-                    // addressed root's RootId is the expected identity root). A per-column
-                    // key list keeps the ordinary scalar path.
+                    // tuple, spread into the root's key columns at emit. Any entry-identity
+                    // operand takes this path; whether it names *this* root is decided by
+                    // the identity type check at emit. A per-column key list keeps the
+                    // ordinary scalar path.
                     if let [only] = keys.as_slice()
                         && self.identity_operand_root(only).is_some()
                     {
                         let columns = vec![DurKey {
                             // The identity is lowered against its own root type, not a
-                            // scalar, so the wrapper `key_ty` is unused for this column (both
-                            // emit and capture recover the per-column scalars from the spread
-                            // instead); it carries the first key column only to satisfy the
-                            // shared `DurKey` shape.
+                            // scalar, so `key_ty` is unused here (emit and capture recover
+                            // the per-column scalars from the spread); it carries the first
+                            // key column only to satisfy the shared `DurKey` shape.
                             key: PlaceKey::Identity {
                                 expr: only,
                                 root: root.root_id,
@@ -1196,10 +1151,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Match the positional key operands of one node against its ordered key columns,
-    /// pushing one [`DurKey`] per column onto `columns` in declaration order (so the whole
-    /// key-path is assembled root-first, column order, the order the kernel expects).
-    /// Reports a diagnostic and returns `None` on a wrong operand count. The keyed-access
-    /// grammar already forbids a named key, so only arity is checked here.
+    /// pushing one [`DurKey`] per column onto `columns` in declaration order. Reports a
+    /// diagnostic and returns `None` on a wrong operand count. The keyed-access grammar
+    /// already forbids a named key, so only arity is checked here.
     fn push_key_columns<'e>(
         &mut self,
         columns: &mut Vec<DurKey<'e>>,
@@ -1352,12 +1306,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         })
     }
 
-    /// Lower `exists(place)`: the presence of the cell the place addresses, or — when the
-    /// argument is a store root or a keyed branch family rather than one addressed cell —
-    /// whether that family has at least one payload-bearing child. A specific entry or
-    /// field address (`^root(key)`, `^root(key).field`, a named `place`) is a keyed
-    /// presence probe; a store root (`^root`) or a keyed branch family (`^root(key).notes`)
-    /// is the family-populated probe.
+    /// Lower `exists(place)`. A specific entry or field address (`^root(key)`,
+    /// `^root(key).field`, a named `place`) is a keyed presence probe; a store root
+    /// (`^root`) or a keyed branch family (`^root(key).notes`) instead asks whether that
+    /// family has at least one payload-bearing child.
     pub(super) fn lower_exists(
         &mut self,
         args: &[Argument],
@@ -1398,10 +1350,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             ));
             return Err(LoweringFailure::Recoverable);
         }
-        // A family argument (a store root, or a keyed branch family whose tail names a
-        // declared branch) is the family-populated probe: it names no immediate child key,
-        // so it reuses the traversal place resolver and emits only the ancestor key-path.
-        // A scalar-field tail is not a family — it falls through to the keyed cell probe.
+        // A family argument names no immediate child key, so it reuses the traversal place
+        // resolver and emits only the ancestor key-path. A scalar-field tail is not a
+        // family and falls through to the keyed cell probe.
         let is_family = match self.arg_is_family(&arg.value) {
             Ok(family) => family,
             Err(drift) => {
@@ -1476,12 +1427,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Err(LoweringFailure::Recoverable)
     }
 
-    /// Lower `Id(^root, keys…)`: construct the entry identity of the declared store
-    /// root from its explicit key columns, without reading the store. The first
-    /// argument is the saved-root reference `^root`; the rest are one value per key
-    /// column in declaration order, each checked against that column's scalar type. The
-    /// key operands are pushed root-first, then `MakeIdentity` wraps them into the
-    /// `Id(^root)` value.
+    /// Lower `Id(^root, keys…)`: construct the entry identity of the declared store root
+    /// from its explicit key columns, without reading the store. The first argument is the
+    /// saved-root reference `^root`; the rest are one value per key column in declaration
+    /// order, each checked against that column's scalar type.
     pub(super) fn lower_identity_ctor(
         &mut self,
         args: &[Argument],

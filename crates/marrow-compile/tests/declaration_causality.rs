@@ -15,7 +15,7 @@
 //! *declaring* code rather than minting one of its own.
 //!
 //! The one prose assertion is negative — that a refused name is never called out of
-//! scope — which is the fabrication these fixtures exist to rule out.
+//! scope — the fabrication these fixtures exist to rule out.
 
 use marrow_codes::Code;
 use marrow_compile::{
@@ -110,9 +110,7 @@ fn rows(diagnostics: &[SourceDiagnostic]) -> Vec<(&str, Code, u32, u32)> {
 /// A steer and a row about a name that was never declared are
 /// `(code, line, column)`-identical — the steer reuses the *declaring* code rather
 /// than minting one of its own — so the discriminator has to be the typed payload.
-/// Asserting on prose instead ("no row says `is not yet supported`") tested the
-/// sentence, not the contract: it passed for any wording change and failed for none
-/// of the fabrications that keep the wording.
+/// Asserting on prose instead would test the sentence, not the contract.
 fn assert_steers_to(
     diagnostics: &[SourceDiagnostic],
     namespace: DeclarationNamespace,
@@ -249,7 +247,7 @@ fn a_refused_constant_occupies_its_name_when_declared_first() {
     );
 }
 
-/// The sibling direction, which already held: the refused occurrence comes second.
+/// The sibling direction: the refused occurrence comes second.
 #[test]
 fn a_refused_constant_occupies_its_name_when_declared_second() {
     let diagnostics = diagnostics(
@@ -303,11 +301,10 @@ fn crossing_the_ledger_ceiling_is_a_typed_resource_limit() {
     }
 }
 
-/// The ceiling is one budget for the whole pass, not one per namespace. Six
-/// production ledgers each holding the declared ceiling would retain six times the
-/// bound the reference states, and the retention this term exists to bound is what
-/// the pass holds while the diagnostic collector is live — a property of the pass,
-/// not of any one namespace.
+/// The ceiling is one budget for the whole pass, not one per namespace: six production
+/// ledgers each holding the declared ceiling would retain six times the stated bound.
+/// The retention this term bounds is what the pass holds while the diagnostic collector
+/// is live.
 #[test]
 fn the_ledger_ceiling_is_one_budget_across_namespaces() {
     // Neither half crosses the ceiling alone: each retains about 600 names of a
@@ -364,9 +361,9 @@ fn assert_not_steered_to_identity(diagnostics: &[SourceDiagnostic]) {
 }
 
 /// a store root refused because its resource is undeclared is reported at its
-/// declaration, and a write through it is steered to that report. Today the root is
-/// dropped whole, so the write says `items` is not in scope — of a root declared
-/// two lines above.
+/// declaration, and a write through it is steered to that report. Dropping the root
+/// whole would make the write say `items` is not in scope, of a root declared two
+/// lines above.
 #[test]
 fn a_root_refused_for_its_resource_is_not_out_of_scope_at_a_write() {
     let diagnostics = diagnostics(
@@ -467,11 +464,11 @@ fn a_refused_root_is_offered_as_a_did_you_mean() {
     );
 }
 
-/// a resource-keyed durable lookup answers the store's refusal, not an
-/// absence. The branch constructor `Resource.branch(…)` resolves through the store
-/// backing `Resource`; scanning the executable roots for it answered `None` for a
-/// refused store, so the call fell through to the method-shaped-call report and
-/// blamed the language for the store's own reported defect.
+/// a resource-keyed durable lookup answers the store's refusal, not an absence. The
+/// branch constructor `Resource.branch(…)` resolves through the store backing
+/// `Resource`; a scan of the executable roots answers `None` for a refused store, so
+/// without the steer the call falls through to the method-shaped-call report and blames
+/// the language for the store's own reported defect.
 #[test]
 fn a_branch_constructor_of_a_refused_store_names_the_stores_cause() {
     let diagnostics = diagnostics(
@@ -616,10 +613,10 @@ const CYCLE_SOURCES: [(&str, &str); 1] = [(
      }\n",
 )];
 
-/// `ValueCycle` — the one refusal site that pushes no diagnostic of its own.
-/// Its cause is the `check.recursion` report from the value-cycle pass, which runs
-/// after lowering, so this class asserts set membership and that the steer carries
-/// that cause — never an identity admission claim.
+/// `ValueCycle` — the one refusal site that pushes no diagnostic of its own. Its cause
+/// is the `check.recursion` report from the value-cycle pass, which runs after lowering,
+/// so this asserts set membership and that the steer carries that cause, never an
+/// identity admission claim.
 #[test]
 fn a_root_refused_for_a_value_cycle_names_the_recursion_cause() {
     let sources: Vec<(&str, String)> = CYCLE_SOURCES
@@ -692,10 +689,9 @@ fn a_genuinely_absent_field_is_still_reported_as_absent() {
     );
 }
 
-/// a resource member the compiler refused, then named. The member is dropped
-/// from the record and the record survives, so the constructor reports that the
-/// resource has no such field — four lines after the compiler diagnosed that field's
-/// type.
+/// a resource member the compiler refused, then named. The member is dropped from the
+/// record while the record survives, so without the steer the constructor reports that
+/// the resource has no such field — four lines after the compiler diagnosed it.
 #[test]
 fn a_refused_resource_member_is_not_absent_at_its_use() {
     let diagnostics = diagnostics(
@@ -767,9 +763,8 @@ fn a_refused_member_does_not_narrow_the_identity_gap_set() {
 // ---------------------------------------------------------------------------
 
 /// A struct refused for a bad field. The construction resolves through the struct
-/// table, not through annotation resolution, so without the steer it reaches its own
-/// not-in-scope report: `Point` is not in scope, of a struct declared six lines
-/// above whose field the compiler had just diagnosed.
+/// table, not through annotation resolution, so without the steer it reports `Point`
+/// out of scope — of a struct declared six lines above and already diagnosed.
 #[test]
 fn a_refused_struct_is_not_out_of_scope_at_its_construction() {
     let diagnostics = diagnostics(
@@ -795,9 +790,9 @@ fn a_refused_struct_is_not_out_of_scope_at_its_construction() {
     );
 }
 
-/// an enum refused for a bad payload. A qualified `Enum::member` is a third
-/// resolution path again, and it reported the *spelling* as unsupported rather than
-/// the enum this project declared and the compiler refused.
+/// an enum refused for a bad payload. A qualified `Enum::member` is a third resolution
+/// path, which without the steer reports the *spelling* as unsupported rather than the
+/// enum this project declared and the compiler refused.
 #[test]
 fn a_refused_enum_steers_its_qualified_use_to_the_payload_report() {
     let diagnostics = diagnostics(
@@ -1013,9 +1008,9 @@ fn a_refused_template_is_reported_even_with_no_use() {
     );
 }
 
-/// the same template named in an annotation. The generic application resolves
-/// its head through the template table, so it reported a subset gap for a template
-/// this project declared.
+/// the same template named in an annotation. The generic application resolves its head
+/// through the template table, which without the steer reports a subset gap for a
+/// template this project declared.
 #[test]
 fn a_refused_template_steers_its_annotation_to_the_member_report() {
     let diagnostics = diagnostics(
@@ -1094,11 +1089,10 @@ fn a_refused_root_occupies_its_placement_name() {
     );
 }
 
-/// members — a resource member occupies its name against a repeat. Two
-/// members of one name have no unambiguous slot in the record, and a ledger that
-/// retains every occurrence is what lets the repeat be seen at all: accumulating
-/// the members in a plain vector let both through, and the first silently won every
-/// later lookup.
+/// members — a resource member occupies its name against a repeat. Two members of one
+/// name have no unambiguous slot in the record, and only a ledger that retains every
+/// occurrence can see the repeat at all: a plain vector admits both and lets the first
+/// silently win every later lookup.
 #[test]
 fn a_resource_member_occupies_its_name() {
     let diagnostics = diagnostics(
@@ -1130,13 +1124,9 @@ fn a_resource_member_occupies_its_name() {
 // past a signature that was never built.
 // ---------------------------------------------------------------------------
 
-/// A function whose parameter type was refused is refused whole: no signature
-/// with a short parameter list may enter the table, and the image index must not
-/// advance past a signature that was never built.
-///
-/// With a short list admitted, a call carrying the written number of arguments is
-/// reported as an arity mismatch — a fabricated statement about the call, derived
-/// from the compiler's own truncation of the declaration.
+/// A function whose parameter type was refused is refused whole. With a short list
+/// admitted, a call carrying the written number of arguments is reported as an arity
+/// mismatch — a fabrication derived from the compiler's own truncation.
 #[test]
 fn a_refused_parameter_type_never_truncates_its_signature() {
     let diagnostics = diagnostics(
@@ -1239,11 +1229,9 @@ fn a_return_type_refused_behind_an_accepted_duplicate_reports_its_cause_once() {
 // false statements about a file the reader can see.
 // ---------------------------------------------------------------------------
 
-/// a module whose header disagrees with its path is refused, not absent.
-///
-/// The import names the refusal instead of denying the module exists, and the
-/// qualified call is steered to the header report rather than told its callee is
-/// out of scope.
+/// a module whose header disagrees with its path is refused, not absent: the import
+/// names the refusal, and the qualified call is steered to the header report rather
+/// than told its callee is out of scope.
 #[test]
 fn a_module_refused_for_its_header_is_not_absent_at_its_import() {
     let diagnostics = diagnostics_of(&files(&[
@@ -1428,13 +1416,10 @@ fn a_refused_signature_does_not_silence_an_unrelated_body() {
     );
 }
 
-/// Reusing a cause never lets a body through.
-///
-/// A `Binding::Refused` lookup fails its body exactly as a `Binding::Absent` one
-/// does. If it ever did not, an unavailable artifact would become available and a
-/// fabricated image would reach `encode`, so the outcome is asserted to be the
-/// diagnostic refusal — never a compiled program and never the empty-terminal
-/// invariant.
+/// Reusing a cause never lets a body through: a `Binding::Refused` lookup fails its
+/// body exactly as a `Binding::Absent` one does. Otherwise an unavailable artifact
+/// becomes available and a fabricated image reaches `encode`, so the asserted outcome
+/// is the diagnostic refusal — never a compiled program, never the empty terminal.
 #[test]
 fn a_reused_cause_never_admits_the_body_that_reused_it() {
     let source = "module main\n\n\
@@ -1493,8 +1478,8 @@ fn a_refused_parameter_is_not_out_of_scope_in_its_own_body() {
     );
 }
 
-/// the generic path, which bypasses the signature registry and so amplified
-/// per use today. Two uses of the refused parameter add no further row.
+/// the generic path, which bypasses the signature registry and so can amplify per use.
+/// Two uses of the refused parameter add no further row.
 #[test]
 fn a_refused_generic_parameter_is_reported_once_not_once_per_use() {
     let diagnostics = diagnostics(
@@ -1601,13 +1586,12 @@ fn a_binding_refused_for_its_annotation_is_not_out_of_scope_at_its_uses() {
 // that later pass refuses the declaration, the earlier reference must still address
 // a refused declaration — never a dropped one. A dropped target leaves the reference
 // dangling, and a dangling reference raises a `GenericInvariant`, which outranks
-// diagnostics: the `check.unsupported` row reported at the declaration would never
-// reach the reader, who would see a spanless `cli.compiler_invariant` instead.
+// diagnostics: the reader would see a spanless `cli.compiler_invariant` instead of
+// the `check.unsupported` row reported at the declaration.
 //
-// The fixtures below cover both fill-ordering directions that can bind a nominal
-// leaf: `fill_records` running before `fill_structs`/`fill_enums`, and `fill_structs`
-// filling one struct before a later sibling it names. Each asserts the declaration's
-// own row survives to the reader.
+// Both fill-ordering directions that can bind a nominal leaf are covered:
+// `fill_records` before `fill_structs`/`fill_enums`, and `fill_structs` filling one
+// struct before a later sibling it names.
 // ---------------------------------------------------------------------------
 
 /// One member position naming a value type a later declaration pass refuses, and the
@@ -1848,10 +1832,8 @@ struct StructUseCase {
 }
 
 /// The three resolution entries into the same projection: a signature parameter, a
-/// signature return, and a local annotation. An unfiltered projection answers each of
-/// them with the refused struct's reserved-but-unfilled row — a live empty type — and
-/// then reasons against that empty shape, so a use position must instead be steered to
-/// the declaration's own cause.
+/// signature return, and a local annotation. Each must be steered to the declaration's
+/// own cause rather than reasoning against the reserved-but-unfilled row.
 const REFUSED_STRUCT_USES: &[StructUseCase] = &[
     StructUseCase {
         position: "a signature parameter type",
@@ -1915,9 +1897,9 @@ fn a_refused_struct_named_in_any_use_position_steers_to_its_cause() {
     }
 }
 
-/// a field read through a parameter of the refused struct. The reserved row
-/// carries no fields, so the read reported that `Point` has no field `x` — of a
-/// field declared four lines above and never diagnosed.
+/// a field read through a parameter of the refused struct. The reserved row carries no
+/// fields, so an unfiltered projection makes the read report that `Point` has no field
+/// `x` — of a field declared four lines above and never diagnosed.
 #[test]
 fn a_field_read_on_a_refused_struct_is_not_a_missing_field() {
     let diagnostics = diagnostics(&format!(
@@ -1950,10 +1932,10 @@ fn a_field_read_on_a_refused_struct_is_not_a_missing_field() {
     );
 }
 
-/// the enum sibling: a `match` over a parameter of a refused enum. The reserved
-/// row carries no members, so every arm was reported as naming a member the enum
-/// does not have, and the function was additionally reported as not returning on
-/// all paths — two fabrications from one unfilled row.
+/// the enum sibling: a `match` over a parameter of a refused enum. The reserved row
+/// carries no members, so an unfiltered projection reports every arm as naming a member
+/// the enum does not have and the function as not returning on all paths — two
+/// fabrications from one unfilled row.
 #[test]
 fn a_match_on_a_refused_enum_is_not_a_set_of_unknown_members() {
     let diagnostics = diagnostics(
@@ -2171,10 +2153,10 @@ fn a_payload_construction_on_a_refused_enum_steers_to_its_cause() {
 // class — the namespace it was declared into, the code the reader must act on, and
 // where that report sits.
 //
-// The rendered sentence is not the contract and is not asserted here. What is
-// asserted is the relation between a row's own code and the code it steers to: they
-// agree for every class that reuses its declaring row, and differ for exactly the
-// identity class, whose cause is a family rather than a single row.
+// The rendered sentence is not the contract. What is asserted is the relation between
+// a row's own code and the code it steers to: they agree for every class that reuses
+// its declaring row, and differ for exactly the identity class, whose cause is a family
+// rather than a single row.
 // ---------------------------------------------------------------------------
 
 /// The steer facts of the last row, with the row's own code beside them.

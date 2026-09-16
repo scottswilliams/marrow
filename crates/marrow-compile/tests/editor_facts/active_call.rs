@@ -1,11 +1,9 @@
 //! The analysis snapshot answers active-call at a source position with the innermost
 //! enclosing call's callee signature, its typed parameter pieces, and the active argument
-//! index — derived purely positionally over a query-local parse of the named file's own
-//! retained bytes. The query runs on a broken file over recovered incomplete-call nodes
-//! (the just-opened and just-typed-comma trigger moments), presents a generic callee's
-//! template signature, refuses an over-cap rendered display as a query-local resource
-//! limit rather than truncating, and distinguishes an invalid coordinate from a
-//! legitimate absence.
+//! index, derived purely positionally over a query-local parse of the named file's own
+//! retained bytes. It answers over recovered incomplete-call nodes in a broken file,
+//! refuses an over-cap rendered display as a query-local resource limit rather than
+//! truncating, and distinguishes an invalid coordinate from a legitimate absence.
 
 use std::sync::Arc;
 
@@ -68,8 +66,7 @@ fn active_call_inside_a_complete_call_marks_the_argument() {
 
 #[test]
 fn active_call_at_the_open_paren_marks_the_first_parameter() {
-    // The just-opened `f(` moment: a recovered incomplete call with no arguments yet still
-    // resolves and marks the first parameter.
+    // The just-opened `f(` moment: no arguments yet, first parameter marked.
     let source = "module app\n\n\
         fn getOr(m: int, key: int): int {\n    return m\n}\n\n\
         fn caller(): int {\n    return getOr(\n}\n";
@@ -82,8 +79,7 @@ fn active_call_at_the_open_paren_marks_the_first_parameter() {
 
 #[test]
 fn active_call_after_a_trailing_comma_marks_the_next_parameter() {
-    // The just-typed-comma moment `getOr(reached, `: a recovered incomplete call marks
-    // the second parameter even across the trailing space.
+    // The just-typed-comma moment marks the second parameter even across the trailing space.
     let source = "module app\n\n\
         fn getOr(m: int, key: int, fallback: int): int {\n    return fallback\n}\n\n\
         fn caller(): int {\n    const reached = 1\n    return getOr(reached, \n}\n";
@@ -99,16 +95,15 @@ fn active_call_after_a_trailing_comma_marks_the_next_parameter() {
 
 #[test]
 fn active_call_broken_file_still_resolves() {
-    // A recovered incomplete call (a second argument typed, no closing paren) makes the
-    // file broken (a parse.syntax error), yet the active-call fact resolves — the point of
-    // parser-owned recovery for signature help.
+    // The recovery node carries a parse.syntax error, yet the active-call fact resolves:
+    // parser-owned recovery is what makes signature help work on a file being typed.
     let source = "module app\n\n\
         fn getOr(m: int, key: int): int {\n    return m\n}\n\n\
         fn caller(): int {\n    return getOr(1, key\n}\n";
     let snapshot = snap_app(source);
     let file = identity("src/app.mw");
     let offset = at(source, "getOr(1, key\n}", "getOr(1, k".len());
-    // The file is genuinely broken: a hover in it is syntax-unavailable.
+    // The file is genuinely broken, not merely incomplete.
     assert!(
         matches!(
             snapshot.hover(&file, offset),
@@ -165,8 +160,8 @@ fn active_call_zero_parameter_callee_has_no_active_parameter() {
 
 #[test]
 fn active_call_on_a_builtin_callee_is_absent() {
-    // A built-in callee resolves to no local declaration on this floor: a legitimate
-    // absence, not a fabricated fact.
+    // A built-in callee resolves to no local declaration: a legitimate absence, not a
+    // fabricated fact.
     let source = "module app\n\n\
         fn caller(): int {\n    return length(1, 2)\n}\n";
     let snapshot = snap_app(source);
@@ -194,9 +189,8 @@ fn active_call_outside_any_call_is_absent() {
 
 #[test]
 fn active_call_render_bytes_refuses_a_pathological_display() {
-    // A callee whose rendered signature and parameter pieces exceed the per-query render
-    // budget refuses as a query-local resource limit, never a truncated display. Many
-    // parameters with a long declared type-alias spelling overshoot the budget.
+    // Exceeding the per-query render budget refuses as a query-local resource limit, never
+    // a truncated display.
     let param_type = "a".repeat(64);
     let mut source = String::from("module app\n\n");
     source.push_str(&format!("alias {param_type} = int\n\n"));
@@ -222,9 +216,8 @@ fn active_call_render_bytes_refuses_a_pathological_display() {
 
 #[test]
 fn active_call_render_bytes_boundary_admits_max_and_refuses_one_more() {
-    // The rendered-byte cap is a strict `>`: a display of exactly MAX bytes is admitted,
-    // one byte more refuses — pinning the boundary so an off-by-one to `>=` cannot pass
-    // unnoticed. For a callee `fn NAME(p: ALIAS): int`, the charged bytes are the signature
+    // The rendered-byte cap is a strict `>`: exactly MAX bytes is admitted, one byte more
+    // refuses. For a callee `fn NAME(p: ALIAS): int` the charged bytes are the signature
     // plus the one parameter label:
     //   signature = "fn " + NAME + "(" + "p: " + ALIAS + ")" + ": " + "int"
     //             = 13 + NAME.len() + ALIAS.len()

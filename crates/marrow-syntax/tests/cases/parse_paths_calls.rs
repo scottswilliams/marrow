@@ -9,9 +9,8 @@ use marrow_syntax::{
     LexerDiagnosticReason, ParseDiagnosticReason, Recovery, UnsupportedSyntax, parse_source,
 };
 
-/// The value expression of a single top-level `const Name = <value>` source, for
-/// exercising the incomplete-form recovery nodes the parser structures for editor
-/// analysis. The source is expected to carry a parse error.
+/// The value expression of a single top-level `const Name = <value>` source. The
+/// source is expected to carry a parse error.
 fn const_value(source: &str) -> Expression {
     let parsed = parse_source(source);
     assert!(
@@ -27,13 +26,9 @@ fn const_value(source: &str) -> Expression {
 
 #[test]
 fn recovery_slot_is_populated_only_by_incomplete_forms() {
-    // Agreement gate for the recovery widening: a well-formed program never
-    // populates the recovery slot or the incomplete-type leaf, so its parsed shape
-    // — and therefore its compiled image and diagnostics — is byte-identical to
-    // before the widening. Every recovery node and every `TypeExpr::Incomplete`
-    // travels with a parse diagnostic, so `has_errors` is the sound proxy: the whole
-    // documented corpus parses clean, hence carries neither. The non-vacuous half
-    // below shows the incomplete forms do produce them.
+    // A well-formed program never populates the recovery slot or the incomplete-type
+    // leaf. Every recovery node and every `TypeExpr::Incomplete` travels with a parse
+    // diagnostic, so `has_errors` is the sound proxy for their absence.
     for block in common::documented_source_blocks() {
         let parsed = parse_source(&block.source);
         assert!(
@@ -70,9 +65,8 @@ fn recovery_slot_is_populated_only_by_incomplete_forms() {
 
 #[test]
 fn member_dot_eof_recovers_base() {
-    // `book.` with no field name is the incomplete member-access form. The parser
-    // structures a recovery node that preserves the receiver `book` so a position
-    // classifier can type it, rather than collapsing the whole read to a bare error.
+    // `book.` with no field name: the recovery node preserves the receiver `book` so a
+    // position classifier can type it, rather than collapsing the read to a bare error.
     let value = const_value("const X = book.\n");
     let Expression::Error {
         recovery: Some(Recovery::Member { base }),
@@ -107,9 +101,8 @@ fn member_optional_dot_eof_recovers_base() {
 
 #[test]
 fn path_colon_colon_eof_retains_segments() {
-    // `Role::` with no member is the incomplete path form. The recovery node retains
-    // the name parsed so far (`Role`) as its base so the classifier can resolve the
-    // enum path, rather than dropping every segment.
+    // `Role::` with no member: the recovery node retains the name parsed so far as its
+    // base so the classifier can resolve the enum path, rather than dropping segments.
     let value = const_value("const X = Role::\n");
     let Expression::Error {
         recovery: Some(Recovery::Path { base }),
@@ -126,10 +119,8 @@ fn path_colon_colon_eof_retains_segments() {
 
 #[test]
 fn incomplete_call_empty_arg_list_recovers_call() {
-    // `f(` with the cursor and nothing yet after it is the just-opened call form. The
-    // parser structures a recovered `Call` node with no arguments — the enclosing-call
-    // context editor signature help needs — rather than collapsing the whole read to a
-    // bare error. The node stays honestly broken (a missing-delimiter diagnostic).
+    // `f(` with nothing after it: a recovered `Call` node with no arguments carries the
+    // enclosing-call context editor signature help needs.
     let value = const_value("const X = getOr(\n");
     let Expression::Call { callee, args, .. } = &value else {
         panic!("expected a recovered Call node, got {value:?}");
@@ -143,9 +134,8 @@ fn incomplete_call_empty_arg_list_recovers_call() {
 
 #[test]
 fn incomplete_call_trailing_comma_recovers_call() {
-    // `f(a, ` with the cursor after the comma is the just-typed-comma call form. The
-    // parser structures a recovered `Call` node retaining the arguments parsed so far, so
-    // the active-argument position stays available to editor signature help.
+    // `f(a, ` with the cursor after the comma: the recovered `Call` retains the
+    // arguments parsed so far, so the active-argument position stays available.
     let value = const_value("const X = getOr(reached, \n");
     let Expression::Call { callee, args, .. } = &value else {
         panic!("expected a recovered Call node, got {value:?}");
@@ -374,9 +364,8 @@ fn unterminated_quoted_field_segment_does_not_panic() {
 
 #[test]
 fn keyword_field_name_reports_a_parse_error() {
-    // `if` is a reserved word. Used as a bare field
-    // name it violates `field_name = identifier`, so the parser
-    // must report it rather than silently dropping the statement.
+    // A reserved word as a bare field name violates `field_name = identifier`, and is
+    // reported rather than silently dropping the statement.
     let source = "fn touch(id: int) {\n    ^events[id].if = now\n}\n";
     let parsed = parse_source(source);
     let diagnostic = parsed
@@ -399,9 +388,8 @@ fn keyword_field_name_reports_a_parse_error() {
 
 #[test]
 fn keyword_field_name_reports_once_not_also_expected_a_statement() {
-    // A line that fails because of a keyword field name carries the specific
-    // diagnostic only: the generic "expected a statement" fallback must not also
-    // fire on the same line.
+    // The specific diagnostic only: the generic "expected a statement" fallback must
+    // not also fire on the same line.
     let source = "fn touch(id: int) {\n    ^events[id].if = now\n}\n";
     let parsed = parse_source(source);
     let on_offending_line: Vec<_> = parsed
@@ -439,9 +427,8 @@ fn quoted_keyword_field_name_reports_a_parse_error() {
 
 #[test]
 fn const_value_keyword_field_reports_once_not_also_expected_an_expression() {
-    // `a.if` fails because `if` is a keyword used as a field name. The const
-    // value path drains that specific diagnostic, so the generic "expected an
-    // expression" fallback must not also fire: the line reports exactly once.
+    // The const value path drains the keyword-field-name diagnostic, so the generic
+    // "expected an expression" fallback must not also fire: the line reports once.
     let parsed = parse_source("const Bad = a.if\n");
     assert_eq!(
         parsed.diagnostics.complete().len(),
@@ -578,8 +565,6 @@ fn out_and_inout_can_head_ordinary_call_argument_expressions() {
 #[test]
 fn positional_argument_after_named_is_rejected() {
     // After the first named argument, every remaining argument must be named.
-    // A plain positional argument after a named one is a parse error that points
-    // at the offending argument.
     let source = "const Made = sub(b: 1, 2)\n";
     let parsed = parse_source(source);
     let diagnostic = parsed
@@ -600,8 +585,8 @@ fn positional_argument_after_named_is_rejected() {
         &source[diagnostic.span.start_byte..diagnostic.span.end_byte],
         "2"
     );
-    // The rule is non-fatal: the call still parses with both arguments so later
-    // checks see the whole tree, and the violation reports exactly once.
+    // The rule is non-fatal: the call still parses with both arguments, so later checks
+    // see the whole tree.
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
@@ -645,9 +630,8 @@ fn all_named_arguments_are_accepted() {
 
 #[test]
 fn positional_after_named_is_rejected_inside_function_bodies() {
-    // A call statement in a function body reaches the parser through a different
-    // path than a `const` value, so it confirms the rule is checked over the
-    // whole tree, not just top-level values.
+    // A call statement in a body reaches the parser through a different path than a
+    // `const` value, so the rule is checked over the whole tree.
     let parsed = parse_source("fn run() {\n    log(level: 1, 2)\n}\n");
     assert!(
         has_reason(
@@ -733,10 +717,9 @@ fn parses_conversion_and_constructor_calls() {
 
 #[test]
 fn keyword_head_and_keyword_path_segment_are_rejected() {
-    // The parser has no dedicated qualified-`Id` rule; these strings are rejected
-    // because `Id` is a reserved keyword. A keyword head (`Id::fromKey`) cannot
+    // There is no dedicated qualified-`Id` rule: a keyword head (`Id::fromKey`) cannot
     // begin an expression, and a keyword path segment (`Author::Id`) breaks the
-    // qualified-name continuation and falls back to the expected-expression error.
+    // qualified-name continuation.
     let parsed = parse_source("const Bad = Author::Id(7)\n");
     assert!(
         has_reason(

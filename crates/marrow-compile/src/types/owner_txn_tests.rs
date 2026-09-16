@@ -8,13 +8,11 @@ use super::*;
 use crate::compile::admitted;
 use marrow_image::ImageDraft;
 
-/// The generic-owner custody law: an admitted batch's registry effects are inverted
-/// with its draft rows, so a rolled-back batch leaves the two owners in step.
-///
-/// Without the inverse the registry keeps the collection and instantiation rows the
-/// draft rolled back, and the very next mint refuses as `CollectionIndexMismatch` —
-/// a legitimate later compilation step turned into an invariant by an earlier
-/// abandoned one.
+/// An admitted batch's registry effects are inverted with its draft rows, so a
+/// rolled-back batch leaves the two owners in step. Without the inverse the registry
+/// keeps the collection and instantiation rows the draft rolled back, and the very next
+/// mint refuses as `CollectionIndexMismatch` — a legitimate later compilation step
+/// turned into an invariant by an earlier abandoned one.
 #[test]
 fn a_rolled_back_generic_batch_leaves_the_registry_in_step_with_its_draft() {
     let mut owner = ImageDraft::new();
@@ -241,21 +239,18 @@ fn a_template_proof_preserves_prepopulated_function_owners_on_exit_error_and_unw
     }
 }
 
-/// The enumerated generic-owner failure points, one per owner the phase names: a batch
-/// that reaches the owner is aborted at that point and every owner — not only the one
-/// touched — comes back to the state admission captured.
-///
-/// Each case asserts the owner really did change inside the batch before the abort, so
-/// no case can pass by never reaching its owner. The transient fill owners and the
-/// recorded build fault are planted directly: production leaves them dirty only when a
-/// fill fails partway, and planting that state is how the inverse is proved total over
-/// it rather than only over the settled shapes a clean batch produces.
+/// One case per owner the phase names: a batch that reaches the owner is aborted there
+/// and every owner — not only the one touched — comes back to the state admission
+/// captured. Each case asserts the owner really did change before the abort, so no case
+/// can pass by never reaching its owner. The transient fill owners and the recorded
+/// build fault are planted directly, since production leaves them dirty only when a fill
+/// fails partway; that proves the inverse total over dirty state, not just settled.
 #[test]
 fn each_enumerated_generic_owner_failure_point_restores_every_owner() {
     struct Failure {
         owner: &'static str,
-        /// Reach the owner inside the armed batch. Returns nothing: the snapshot
-        /// comparison below is the whole assertion.
+        /// Reach the owner inside the armed batch; the snapshot comparison below is
+        /// the whole assertion.
         touch: fn(&mut GenericOwnerTxn<'_, '_>),
     }
     let failures = [
@@ -463,15 +458,13 @@ fn an_abandoned_batch_restores_the_metadata_cache_and_the_queue_front() {
     }
 }
 
-/// The two owners the inverse deliberately does not restore, pinned as a decision rather
-/// than left as an omission.
+/// The two owners the inverse does not restore, pinned as a decision rather than left
+/// as an omission.
 ///
-/// `limit` and `collection_payloads` are diagnostic payload. The phase places diagnostics
-/// exclusively in the predecessor substrate's custody — the draft guard never owns,
-/// copies, journals, or exposes them — and this inverse mirrors that boundary rather than
-/// opening a second custody over the same rows. What decides whether a batch's
-/// diagnostics become visible is the settlement capability a committed or rolled-back
-/// guard produces, not a registry rollback.
+/// `limit` and `collection_payloads` are diagnostic payload, which stays in the
+/// predecessor substrate's sole custody. What decides whether a batch's diagnostics
+/// become visible is the settlement capability a committed or rolled-back guard
+/// produces, not a registry rollback.
 #[test]
 fn an_abandoned_batch_leaves_the_diagnostic_owners_to_their_own_custody() {
     let mut records = test_registry(vec![template("Leaf", vec![("value", name("T"))])]);

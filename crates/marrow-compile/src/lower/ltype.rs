@@ -19,10 +19,9 @@ pub(super) enum LTy {
         ty: TypeId,
         optional: bool,
     },
-    /// A dense `struct` value. Like [`LTy::Record`] it is image-`Record`-shaped and
-    /// runtime-`Value::Record`-shaped (the one product representation owner), but
-    /// it is a distinct value type: constructible and returnable, every field
-    /// present. The `TypeId` names its image record def.
+    /// A dense `struct` value: image-`Record`- and runtime-`Value::Record`-shaped like
+    /// [`LTy::Record`], but a distinct value type — constructible, returnable, every
+    /// field present. The `TypeId` names its image record def.
     Struct {
         ty: TypeId,
         optional: bool,
@@ -139,7 +138,6 @@ impl LTy {
         }
     }
 
-    /// The abstract type-parameter index, if this is a bare one.
     pub(super) fn bare_param(self) -> Option<TypeParamIndex> {
         match self {
             LTy::Param {
@@ -221,7 +219,6 @@ impl LTy {
         if optional { format!("{base}?") } else { base }
     }
 
-    /// The bare nominal identity, if this is one.
     pub(super) fn bare_nominal(self) -> Option<NominalId> {
         match self {
             LTy::Nominal {
@@ -232,7 +229,6 @@ impl LTy {
         }
     }
 
-    /// The bare enum identity, if this is one.
     pub(super) fn bare_enum(self) -> Option<EnumId> {
         match self {
             LTy::Enum {
@@ -243,7 +239,6 @@ impl LTy {
         }
     }
 
-    /// The bare entry-identity root, if this is one.
     pub(super) fn bare_identity(self) -> Option<RootId> {
         match self {
             LTy::Identity {

@@ -263,19 +263,17 @@ pub(super) fn match_angle(tokens: &[Token]) -> Option<usize> {
     None
 }
 
-/// Parse a `name: type` parameter list. Parameters are separated by
-/// commas, and in a multi-line list a line break separates one from the next just
-/// as a comma does, so the list reads cleanly written with commas, without them,
-/// or mixed. A run of `///` doc lines directly above a parameter is its
-/// documentation, captured in source order.
+/// Parse a `name: type` parameter list. Commas separate parameters, and in a multi-line
+/// list a line break does the same, so a list reads cleanly with commas, without them, or
+/// mixed. A run of `///` lines directly above a parameter is its documentation.
 fn parse_params_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<ParamDecl>> {
     if inner.is_empty() {
         return Ok(Vec::new());
     }
     let mut params = Vec::new();
     for group in split_param_groups(inner) {
-        // A doc run with no parameter after it documents nothing; report the
-        // misplaced doc rather than dropping it.
+        // A doc run with no parameter after it documents nothing; report the misplaced
+        // doc rather than dropping it.
         if group.body.is_empty() {
             return Err(ParseError::new(
                 ParseDiagnosticReason::DocCommentBeforeParameter,
@@ -300,16 +298,13 @@ fn parse_params_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<ParamDe
                 ));
             }
         };
-        // A keyed-collection parameter spells its key columns like the local
-        // declaration head — `scores[player: string]: int` — reusing the same
-        // key-parameter parse as a keyed `var`, field, or store root.
+        // A keyed-collection parameter spells its key columns like the local declaration
+        // head (`scores[player: string]: int`), reusing the keyed-`var` parse.
         let (keys, after_keys) = parse_param_keys(source, rest)?;
         if rest.get(after_keys).map(|token| token.kind) != Some(TokenKind::Colon)
             || rest.len() < after_keys + 2
         {
-            // Point at where the `: type` annotation should begin — the first
-            // token past the name and any key list, or the final body token when
-            // the annotation is missing entirely — not the declaration header.
+            // Point at where the `: type` annotation should begin, not the header.
             let span = rest.get(after_keys).unwrap_or(&rest[rest.len() - 1]).span;
             return Err(ParseError::at(
                 span,
@@ -355,10 +350,9 @@ fn parse_params_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<ParamDe
     Ok(params)
 }
 
-/// Parse an optional `[key: type, ...]` key-parameter list that follows a
-/// parameter name, marking it a local keyed collection. Returns the parsed keys
-/// (empty when no `[` follows the name) and the index in `rest` of the first
-/// token past the key list, where the `: value-type` annotation begins.
+/// Parse an optional `[key: type, ...]` list after a parameter name, marking it a local
+/// keyed collection. Returns the keys (empty when no `[` follows) and the index in `rest`
+/// where the `: value-type` annotation begins.
 fn parse_param_keys(source: &str, rest: &[Token]) -> ParseResult<(Vec<KeyParam>, usize)> {
     if rest.get(1).map(|token| token.kind) != Some(TokenKind::LeftBracket) {
         return Ok((Vec::new(), 1));
@@ -400,15 +394,11 @@ struct ParamGroup<'a> {
     body: &'a [Token],
 }
 
-/// Split a parameter list's inner tokens into per-parameter groups. A top-level
-/// comma ends a parameter, and so does a line break in a multi-line list: a body
-/// token that opens on a later source line than the parameter in progress starts
-/// the next one. Newlines are suppressed inside the parentheses, so the line
+/// Split a parameter list's inner tokens into per-parameter groups. A top-level comma
+/// ends a parameter, and so does a line break: a body token opening on a later source
+/// line starts the next one. Newlines are suppressed inside the parentheses, so the line
 /// boundary is read from token spans rather than a separator token. Depth counts
-/// `(`/`[`/`<` opens so a comma or wrap inside a nested type — a `(...)` identity,
-/// a `[...]` key list, or a `<...>` generic argument list — stays with its
-/// parameter. A leading run of `///` doc comments attaches to the parameter it
-/// precedes.
+/// `(`/`[`/`<` opens so a comma or wrap inside a nested type stays with its parameter.
 fn split_param_groups(inner: &[Token]) -> Vec<ParamGroup<'_>> {
     let mut groups = Vec::new();
     let mut docs: Vec<&Token> = Vec::new();
@@ -418,15 +408,13 @@ fn split_param_groups(inner: &[Token]) -> Vec<ParamGroup<'_>> {
     let mut index = 0;
     while index < inner.len() {
         let token = &inner[index];
-        // The depth before this token's own bracket is what places the token: a
-        // closing `]` or `)` still belongs to the type it closes, so it reads at
-        // the deeper level even though it drops the depth back afterwards.
+        // The depth before this token's own bracket places the token: a closing `]` or
+        // `)` belongs to the type it closes, so it reads at the deeper level.
         let depth_before = depth;
         match token.kind {
-            // A generic argument list (`Map<int, string>`) carries an internal
-            // comma; its `<`/`>` count toward depth exactly like `(`/`[` so that
-            // comma does not end the parameter. A parameter body is a type slice
-            // (defaults are rejected), so `<`/`>` here are never comparison.
+            // A parameter body is a type slice (defaults are rejected), so `<`/`>` are
+            // never comparison and count toward depth like `(`/`[` — keeping the comma
+            // in `Map<int, string>` from ending the parameter.
             TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::Less => depth += 1,
             TokenKind::RightParen | TokenKind::RightBracket | TokenKind::Greater => {
                 depth = depth.saturating_sub(1)
@@ -443,8 +431,8 @@ fn split_param_groups(inner: &[Token]) -> Vec<ParamGroup<'_>> {
         }
 
         if token.kind == TokenKind::DocComment {
-            // A doc comment that opens a new parameter's documentation follows a
-            // completed parameter body, so close that body before collecting it.
+            // A doc comment opening a new parameter's documentation follows a completed
+            // body, so close that body before collecting it.
             if let Some(start) = body_start.take() {
                 push_param_group(&mut groups, &mut docs, &inner[start..index]);
             }
@@ -454,21 +442,17 @@ fn split_param_groups(inner: &[Token]) -> Vec<ParamGroup<'_>> {
         }
 
         if token.kind == TokenKind::Comment {
-            // A `//` comment inside the parentheses documents nothing and, like a
-            // blank line, neither separates nor closes a parameter; the line break
-            // to the next parameter is read from the following token's span.
+            // A `//` comment inside the parentheses documents nothing and, like a blank
+            // line, neither separates nor closes a parameter.
             index += 1;
             continue;
         }
 
         match body_start {
             None => body_start = Some(index),
-            // A body token on a later source line than the parameter in progress
-            // begins the next parameter, so a line break separates parameters the
-            // same way a comma does. Only a top-level line break ends a parameter;
-            // a parameter occupies one logical line, and its type may still wrap
-            // across physical lines inside `(` or `[`, where the deeper depth keeps
-            // the wrap from splitting the parameter.
+            // Only a top-level line break ends a parameter: a parameter occupies one
+            // logical line, and its type may still wrap inside `(` or `[`, where the
+            // deeper depth keeps the wrap from splitting it.
             Some(start) if depth_before == 0 && token.span.line > inner[start].span.line => {
                 push_param_group(&mut groups, &mut docs, &inner[start..index]);
                 body_start = Some(index);
@@ -480,17 +464,16 @@ fn split_param_groups(inner: &[Token]) -> Vec<ParamGroup<'_>> {
 
     match body_start {
         Some(start) => push_param_group(&mut groups, &mut docs, &inner[start..]),
-        // A `///` run with no parameter after it documents nothing. Report it as a
-        // body-less group so the caller can report the misplaced doc rather than
-        // drop it.
+        // A trailing `///` run becomes a body-less group so the caller reports the
+        // misplaced doc rather than dropping it.
         None if !docs.is_empty() => push_param_group(&mut groups, &mut docs, &inner[inner.len()..]),
         None => {}
     }
     groups
 }
 
-/// Close one parameter group, pairing `body` with the doc run accumulated so far
-/// and clearing the doc buffer so the next parameter starts with an empty run.
+/// Close one parameter group, pairing `body` with the doc run accumulated so far and
+/// clearing the buffer so the next parameter starts with an empty run.
 fn push_param_group<'a>(
     groups: &mut Vec<ParamGroup<'a>>,
     docs: &mut Vec<&'a Token>,

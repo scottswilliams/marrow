@@ -11,8 +11,7 @@
 //! **The parse-transient term.** `MAX_QUERY_PARSE_TRANSIENT_BYTES` is a declared fraction
 //! of the owned-heap ceiling, and `MAX_PARSED_FILE_BYTES` is the longest file whose
 //! accounted charge fits it. The direction matters: a term defined as what some chosen
-//! length costs cannot gate that length, because comparing a file's charge against it
-//! reduces to comparing lengths for any rate, and widening the representation would raise
+//! length costs cannot gate that length, since widening the representation would raise
 //! both sides equally. Declaring the heap and deriving the length is what makes a widened
 //! representation narrow what is admitted.
 //!
@@ -1386,7 +1385,7 @@ fn container_growth_stays_within_the_accounted_factor() {
 ///
 /// `reserve` on an empty vector takes the same amortized-growth path `push` does, so this
 /// exercises the floor without needing a value of every node type. `with_capacity(1)`
-/// would allocate exactly one slot, which is the opposite of what is being observed.
+/// would allocate exactly one slot, which is the opposite of what is observed here.
 #[allow(clippy::reserve_after_initialization)]
 #[track_caller]
 fn assert_minimum_capacity_is_accounted<T>(label: &str) {
@@ -1879,11 +1878,10 @@ const _: fn() = || {
     };
 };
 
-/// The lexer emits at most one token per source byte, which is the half of
-/// [`TOKEN_CHARGE`] that a type cannot carry: `Box<[Token]>` makes growth slack
-/// unrepresentable, but nothing in the type stops the lexer from emitting two tokens for
-/// one byte. Every token but the zero-width `Eof` sentinel covers at least one byte of
-/// source, so the count is bounded by the file's length plus that sentinel.
+/// The lexer emits at most one token per source byte — the half of [`TOKEN_CHARGE`] no
+/// type can carry: `Box<[Token]>` makes growth slack unrepresentable, but nothing stops
+/// the lexer from emitting two tokens for one byte. Every token but the zero-width `Eof`
+/// sentinel covers at least one source byte, so the count is the file's length plus one.
 #[test]
 fn the_token_vector_holds_at_most_one_token_per_source_byte() {
     for (label, bytes) in maximum_admitted_shapes() {

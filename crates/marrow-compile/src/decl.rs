@@ -121,7 +121,7 @@ pub enum DeclarationNamespace {
     /// of reading the project's whole call table as withheld.
     Function,
     /// The project's importable modules, keyed by dotted path. A module is refused
-    /// when its header disagrees with its path, and when the stage that produced its
+    /// when its header disagrees with its path, or when the stage that produced its
     /// source refused it outright.
     Module,
     NamedType,
@@ -182,10 +182,9 @@ impl DeclarationRefusalId {
 /// Why one declared key is refused: the first refusal's cause, plus a bounded
 /// count of the further occurrences merged into it.
 ///
-/// The declared name is retained because no consumer can render it otherwise —
+/// The declared name is retained because no consumer can render it otherwise:
 /// `reject_resolution` takes a subject *phrase* ("this parameter type"), never the
-/// name, and on the rejected-instantiation replay path the name is structurally
-/// gone. The retention is charged, not denied.
+/// name. The retention is charged, not denied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DeclarationRefusalSummary {
     name: String,
@@ -289,9 +288,8 @@ pub(crate) fn refuse_row(
 /// Push a refusal row, keeping the first one as the declaration's retained cause.
 ///
 /// A declaration is refused whole for a defect in any member, and every offending
-/// member still gets its own report. The summary carries the first, so the use
-/// site is steered to the first thing the reader has to fix rather than to an
-/// arbitrary later one.
+/// member still gets its own report. The summary carries the first, so the use site
+/// is steered to the first thing the reader has to fix.
 pub(crate) fn refuse_first(
     refusal: &mut Option<DeclarationRefusalSummary>,
     diagnostics: &mut DiagnosticCollector,
@@ -602,26 +600,21 @@ enum Selected {
 #[derive(Debug, Clone, Copy)]
 struct KeyOccurrences {
     /// The key's first occurrence — what [`DeclarationLedger::lookup`] answers with.
-    /// A refused declaration occupies its name from where it is written, so a later
-    /// accepted duplicate does not displace it, exactly as a later accepted
-    /// duplicate of an accepted declaration does not.
     first: Selected,
     /// The merged refusal every refused occurrence of this key folds into, which is
-    /// `first`'s own when the first occurrence was refused.
-    ///
-    /// Recorded even when an accepted occurrence answers the lookup: a refusal
-    /// standing behind an accepted duplicate is still a refusal the source wrote,
-    /// and a completeness predicate that could not see it would call a project
-    /// holding a refused declaration whole.
+    /// `first`'s own when the first occurrence was refused. Recorded even when an
+    /// accepted occurrence answers the lookup: a refusal standing behind an accepted
+    /// duplicate is still a refusal the source wrote, and a completeness predicate
+    /// that could not see it would call the project whole.
     refused: Option<DeclarationRefusalId>,
 }
 
 /// Every occurrence of every declared key in one namespace, in declaration order.
 ///
 /// Layer 1 (`occurrences`) is the sole authority for source order and identity;
-/// `index` is lookup-only, appended in lockstep, and never iterated to select a
-/// cause or to emit bytes — the discipline `Monomorph` already holds. A divergence
-/// between the two is [`DeclarationIndexDrift`], not a silent wrong answer.
+/// `index` is lookup-only, appended in lockstep, and never iterated to select a cause
+/// or to emit bytes. A divergence between the two is [`DeclarationIndexDrift`], not a
+/// silent wrong answer.
 pub(crate) struct DeclarationLedger<K, T> {
     namespace: DeclarationNamespace,
     occurrences: Vec<(K, DeclarationOccurrence<T>)>,
@@ -656,11 +649,9 @@ impl<K, T> DeclarationLedger<K, T> {
 impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
     /// Record one occurrence of `key`.
     ///
-    /// The key's *first* occurrence wins the lookup, accepted or refused. A refused
-    /// declaration occupies its name from where it is written, so a later duplicate
-    /// of a refused key is a name conflict exactly as a duplicate of an accepted one
-    /// is, and a later accepted duplicate does not displace the refusal any more than
-    /// it would displace an earlier acceptance. Every such shape is separately
+    /// The key's *first* occurrence wins the lookup, accepted or refused: a refused
+    /// declaration occupies its name from where it is written, so a later duplicate is
+    /// a name conflict and never displaces the refusal. Every such shape is separately
     /// reported by its namespace's own duplicate check.
     pub(crate) fn declare(
         &mut self,
@@ -676,9 +667,8 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
                 });
                 DeclarationOccurrence::Accepted(value)
             }
-            // A further refusal of a key already refused merges into the first: the
-            // count rises, no second name is retained, no bytes are charged, and no
-            // second occurrence is recorded.
+            // A further refusal of an already-refused key merges into the first: the
+            // count rises, nothing is retained or charged a second time.
             DeclarationOccurrence::Refused(summary) => {
                 match self.index.get(&key).and_then(|entry| entry.refused) {
                     Some(id) => return self.merge_refusal(id, summary),
@@ -710,10 +700,9 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
     /// Fold a further refusal of an already-refused key into the summary `id`
     /// addresses.
     ///
-    /// An id the index holds that addresses no refusal is layer 1 and the index
-    /// disagreeing, reported here exactly as [`Self::lookup`] and [`Self::refusal`]
-    /// report it. Returning quietly instead would leave the occurrence count and the
-    /// retained cause disagreeing with what the source wrote, with nothing said.
+    /// An id the index holds that addresses no refusal is layer-1/index drift,
+    /// reported here as [`Self::lookup`] reports it. Returning quietly would leave the
+    /// occurrence count and the retained cause disagreeing with the source, silently.
     fn merge_refusal(
         &mut self,
         id: DeclarationRefusalId,
@@ -734,11 +723,10 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
     /// What `key` resolves to: its first occurrence — the accepted value, or the
     /// merged refusal — else a genuine absence.
     ///
-    /// Drift between layer 1 and the index is reported, never answered: `Absent` is
-    /// a statement about the source — that nothing declared this key — and a ledger
-    /// that answered it for its own incoherence would put a fabricated absence back
-    /// at the use site, which is the defect this module exists to remove. An
-    /// invariant is not a binding, so it does not become a `Binding` variant.
+    /// Drift between layer 1 and the index is reported, never answered: `Absent` is a
+    /// statement about the source — that nothing declared this key — and a ledger that
+    /// answered it for its own incoherence would put a fabricated absence back at the
+    /// use site. An invariant is not a binding, so it is not a `Binding` variant.
     pub(crate) fn lookup<Q>(&self, key: &Q) -> Result<Binding<'_, T>, DeclarationIndexDrift>
     where
         K: Borrow<Q>,
@@ -767,9 +755,9 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
 
     /// The merged refusal `id` addresses.
     ///
-    /// An id minted by another namespace's ledger is drift, not a neighbouring
-    /// row: the tag is checked before the index is used, so the only way to read a
-    /// summary is through the ledger that wrote it.
+    /// An id minted by another namespace's ledger is drift, not a neighbouring row:
+    /// the tag is checked before the index is used, so a summary is only ever read
+    /// through the ledger that wrote it.
     pub(crate) fn refusal(
         &self,
         id: DeclarationRefusalId,
@@ -793,14 +781,12 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
         self.index.keys()
     }
 
-    /// The refused declarations in source order, one per refused key — the merged
-    /// summary each refused key answers with, whether or not an accepted duplicate
-    /// of the same name answers the lookup.
+    /// The refused declarations in source order, one per refused key, whether or not
+    /// an accepted duplicate of the same name answers the lookup.
     ///
-    /// A namespace whose *declared* set is observed independently of its accepted
-    /// set reads it from here and `accepted()` together: a refused declaration is
-    /// still a declaration the source wrote, and a derivation that walks only the
-    /// accepted set silently narrows what it derives.
+    /// A namespace whose *declared* set is observed reads it from here and
+    /// `accepted()` together: a derivation that walks only the accepted set silently
+    /// narrows what it derives.
     pub(crate) fn refused(&self) -> impl Iterator<Item = (&K, &DeclarationRefusalSummary)> {
         self.refusals
             .iter()
@@ -815,11 +801,9 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
     /// [`Self::lookup`] answers with, so what a namespace builds from this iterator
     /// and what a use site resolves against cannot disagree.
     ///
-    /// A namespace whose order is observed — image slot order, field order — reads
-    /// its accepted set from here rather than accumulating a parallel vector beside
-    /// the ledger, which is what keeps the ledger the single authority for which
-    /// declarations survived.
-    ///
+    /// A namespace whose order is observed — image slot order, field order — reads its
+    /// accepted set from here rather than accumulating a parallel vector, which keeps
+    /// the ledger the single authority for which declarations survived.
     pub(crate) fn accepted(&self) -> impl Iterator<Item = (&K, &T)> {
         self.occurrences
             .iter()
@@ -855,8 +839,8 @@ mod tests {
         FileRef::admitted(0)
     }
 
-    /// Every summary in these tests is minted through the one production
-    /// constructor, so the pushed row and the retained cause stay coupled here too.
+    /// Minted through the one production constructor, so the pushed row and the
+    /// retained cause stay coupled in tests too.
     fn refusal(name: &str) -> DeclarationRefusalSummary {
         refused(name, &mut DiagnosticCollector::new())
     }
@@ -952,10 +936,8 @@ mod tests {
         ));
     }
 
-    /// A refusal standing behind an accepted duplicate of its key is still a
-    /// refusal the source wrote. The refused set is what a completeness predicate
-    /// reads, so a set answering only for the keys a lookup resolves to a refusal
-    /// would call a project holding a refused declaration whole.
+    /// A refusal standing behind an accepted duplicate is still a refusal the source
+    /// wrote, and the refused set is what a completeness predicate reads.
     #[test]
     fn an_accepted_duplicate_does_not_hide_a_later_refusal() {
         let mut ledger = ledger();
@@ -972,9 +954,7 @@ mod tests {
     }
 
     /// A refused declaration occupies its name from where it is written, so a later
-    /// accepted duplicate does not displace it — the same first-occurrence-wins rule
-    /// an accepted duplicate meets. Every such shape is separately reported as a
-    /// name conflict by the namespace's own duplicate check.
+    /// accepted duplicate does not displace it.
     #[test]
     fn a_refused_occurrence_occupies_its_name_against_a_later_acceptance() {
         let mut ledger = ledger();
@@ -1011,8 +991,8 @@ mod tests {
             .expect("within budget");
         assert_eq!(ledger.budget.spent(), after_first);
         match ledger.lookup(&"a".to_string()) {
-            // The second refusal folds into the first: one retained summary, one
-            // reportable cause, and a bounded count of the occurrences behind it.
+            // One retained summary and one reportable cause, with a bounded count
+            // of the occurrences behind it.
             Ok(Binding::Refused(_, summary)) => assert_eq!(summary.further, 1),
             other => panic!("expected a refusal, got {other:?}"),
         }
@@ -1098,10 +1078,9 @@ mod tests {
         assert!(ledger.budget.spent() <= MAX_DECLARATION_LEDGER_BYTES);
     }
 
-    /// The adopted path is a retention the merged summary did not previously hold,
-    /// and the ceiling bounds what the pass retains, not what it first charged. A
-    /// merge that adopted it for free would let the declared ceiling be crossed by
-    /// exactly the bytes §4's term exists to account for.
+    /// The ceiling bounds what the pass retains, not what it first charged, so a
+    /// merge that adopted the path for free would let the ceiling be crossed by
+    /// exactly those bytes.
     #[test]
     fn adopting_a_gap_on_merge_charges_its_path() {
         let mut ledger = ledger();
@@ -1136,9 +1115,7 @@ mod tests {
     }
 
     /// A merge whose index entry addresses no refusal is the same layer-1/index
-    /// incoherence `lookup` and `refusal` report. Returning quietly would leave the
-    /// occurrence count and the retained cause disagreeing with what the source
-    /// wrote, with nothing said.
+    /// incoherence `lookup` and `refusal` report, never a quiet return.
     #[test]
     fn a_merge_into_a_drifted_refusal_is_reported_not_swallowed() {
         let mut ledger = ledger();
@@ -1172,9 +1149,9 @@ mod tests {
         );
     }
 
-    /// An id is valid only in the ledger that minted it. Two namespaces mint
-    /// index 0, and reading one's id out of the other is drift rather than the
-    /// neighbouring summary, which is what keeps `join`'s same-id rule sound.
+    /// An id is valid only in the ledger that minted it: two namespaces both mint
+    /// index 0, and reading one's id out of the other is drift, never a neighbouring
+    /// summary.
     #[test]
     fn an_id_from_another_namespace_is_drift_not_a_neighbouring_summary() {
         let mut constants = ledger();

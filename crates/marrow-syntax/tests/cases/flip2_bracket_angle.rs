@@ -29,8 +29,7 @@ fn has_reason(source: &str, reason: ParseDiagnosticReason) -> bool {
         .any(|d| d.reason == target)
 }
 
-/// Parse `body` as the statements of `fn run(...) { … }`, asserting a clean parse,
-/// and return the first statement.
+/// The first statement of `fn run(...) { <body> }`, asserting a clean parse.
 fn first_statement(header: &str, body: &str) -> Statement {
     let source = format!("module app\n{header} {{\n{body}\n}}\n");
     let parsed = parse_source(&source);
@@ -42,7 +41,7 @@ fn first_statement(header: &str, body: &str) -> Statement {
     parsed.file.function("run").expect("run").body.statements[0].clone()
 }
 
-// ---- T3: keyed access in every access position ----
+// ---- keyed access in every access position ----
 
 #[test]
 fn a_root_key_access_parses_to_a_keyed_node() {
@@ -72,8 +71,6 @@ fn a_composite_key_carries_each_column() {
 
 #[test]
 fn a_branch_chain_nests_keyed_and_field_nodes() {
-    // `^patients[pid].visits[vid].obs[oid]` — a keyed root, keyed branch, keyed
-    // branch, alternating `Keyed`/`Field`.
     let Statement::Assign { target, .. } =
         first_statement("fn run()", "^patients[pid].visits[vid].obs[oid] = o")
     else {
@@ -141,8 +138,7 @@ fn a_named_key_argument_is_a_parse_level_rejection() {
 
 #[test]
 fn an_empty_keyed_group_is_rejected() {
-    // `base[]` names no key column; the keyed-access parser reports a missing key
-    // expression rather than merely producing some error.
+    // `base[]` names no key column: a missing key expression, not just some error.
     assert!(
         has_reason(
             "module app\nfn run() {\n    ^books[] = b\n}\n",
@@ -163,7 +159,7 @@ fn an_unclosed_keyed_group_recovers_at_the_close_bracket() {
     );
 }
 
-// ---- T3: declaration-mirrors-access ----
+// ---- declaration mirrors access ----
 
 #[test]
 fn a_keyed_store_root_declares_its_columns_in_brackets() {
@@ -251,8 +247,7 @@ fn index_declarations_are_bracketed() {
 
 #[test]
 fn an_index_still_written_with_parens_is_rejected() {
-    // The `[` argument list is mandatory; a paren-spelled index reports the
-    // expected argument list rather than merely producing some error.
+    // The `[` argument list is mandatory, and a paren spelling reports exactly that.
     assert!(
         has_reason(
             "module app\nresource Book {\n    required shelf: int\n}\nstore ^books[id: int]: Book {\n    index byShelf(shelf)\n}\n",
@@ -262,11 +257,9 @@ fn an_index_still_written_with_parens_is_rejected() {
     );
 }
 
-// ---- Multi-argument generics in every comma-delimited declaration position ----
-// A `<A, B>` type carries an internal comma. Every splitter that separates a
-// comma-delimited declaration list must track angle depth so the internal comma
-// does not split the enclosing list. `split_top_level_commas` does; the
-// parameter-group splitter must too.
+// ---- multi-argument generics in every comma-delimited declaration position ----
+// A `<A, B>` type carries an internal comma, so every splitter over a comma-delimited
+// declaration list must track angle depth or the internal comma splits the list.
 
 #[test]
 fn a_multi_argument_generic_parameter_is_one_parameter() {
@@ -368,9 +361,8 @@ fn a_multi_argument_generic_enum_payload_field_does_not_split_the_payload() {
 
 #[test]
 fn an_unterminated_generic_parameter_does_not_split_into_a_clean_extra_parameter() {
-    // With the angle-tracking splitter, the comma inside an unterminated
-    // `Map<int, …` stays inside the one parameter rather than splitting off a
-    // second clean `x: int`. The unterminated generic is reported, not absorbed.
+    // The comma inside an unterminated `Map<int, …` stays in the one parameter rather
+    // than splitting off a second clean `x: int`, and the generic is reported.
     let source = "module app\nfn f(r: Map<int, x: int): int {\n    return x\n}\n";
     let parsed = parse_source(source);
     assert!(
@@ -407,7 +399,7 @@ fn a_doubled_generic_close_in_a_parameter_is_rejected() {
     );
 }
 
-// ---- T2: angle-bracket generics in every type position ----
+// ---- angle-bracket generics in every type position ----
 
 fn const_type(source_type: &str) -> TypeExpr {
     let source =
@@ -521,7 +513,7 @@ fn a_generic_type_parameter_list_still_in_brackets_is_rejected() {
     );
 }
 
-// ---- T2: the disambiguation rule (expression `<`/`>` are always comparison) ----
+// ---- the disambiguation rule (expression `<`/`>` are always comparison) ----
 
 #[test]
 fn a_comparison_key_expression_parses() {

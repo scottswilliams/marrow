@@ -1,9 +1,7 @@
-//! Production-path coverage for the bounded syntax diagnostic substrate: one
-//! live collector per entry point, typed Count/OwnedBytes ceilings with exact
-//! edges, Count precedence and Bytes-to-Count strengthening, destructive
-//! discard, stable lexer-first tie order, discarding-probe isolation,
-//! finalize-before-submit help, the nonempty wrapper, and the
-//! formatting refusals over the bounded result.
+//! Production-path coverage for the bounded syntax diagnostic substrate: one live
+//! collector per entry point, typed Count/OwnedBytes ceilings with exact edges, Count
+//! precedence, destructive discard, stable lexer-first tie order, probe isolation, the
+//! nonempty wrapper, and the formatting refusals over the bounded result.
 
 use crate::common::{lexer_reason, parse_reason};
 use marrow_syntax::{
@@ -16,8 +14,7 @@ use marrow_syntax::{
 const COUNT: usize = SYNTAX_DIAGNOSTIC_COUNT_LIMIT;
 const BYTES: usize = SYNTAX_DIAGNOSTIC_OWNED_BYTES_LIMIT;
 
-/// Borrow the complete payload the test expects, panicking with the limit
-/// otherwise.
+/// Borrow the complete payload, panicking with the limit otherwise.
 fn complete(diagnostics: &SyntaxDiagnostics) -> &[Diagnostic] {
     diagnostics
         .as_complete()
@@ -219,8 +216,7 @@ fn a_bytes_limit_strengthens_to_count_and_payload_never_returns() {
 
 #[test]
 fn one_owner_orders_rows_by_position_with_lexer_first_ties() {
-    // A tab at the line start and the unparseable line report at the same
-    // (line, start byte); the lexer row sorts first on the tie.
+    // Both rows report at the same (line, start byte); the lexer row sorts first.
     let parsed = parse_source("\twat\n");
     let rows = complete(&parsed.diagnostics);
     assert_eq!(rows.len(), 2, "{rows:#?}");
@@ -364,8 +360,7 @@ fn nonempty_wrapper_construction_and_consumption() {
     assert_eq!(nonempty.as_slice()[0].code, PARSE_SYNTAX);
 }
 
-/// `into_boxed_slice` consumes the complete payload into the same rows
-/// `as_slice` exposes, in the same order.
+/// `into_boxed_slice` yields the same rows `as_slice` exposes, in the same order.
 #[test]
 fn into_boxed_slice_yields_the_borrowed_rows() {
     let complete = parse_source("wat\n@\n")

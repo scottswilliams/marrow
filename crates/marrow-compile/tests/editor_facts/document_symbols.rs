@@ -1,7 +1,7 @@
-//! The analysis snapshot projects each module file's declaration hierarchy — a pure
-//! projection of the parsed AST's existing name spans and declaration ranges — and
-//! distinguishes a truthful empty outline, a syntax-unavailable file, and an invalid
-//! coordinate, honoring the per-file symbol count and nesting-depth bounds.
+//! The analysis snapshot projects each module file's declaration hierarchy from the parsed
+//! AST's existing name spans and declaration ranges, distinguishing a truthful empty outline,
+//! a syntax-unavailable file, and an invalid coordinate, under the per-file symbol count and
+//! nesting-depth bounds.
 
 use std::sync::Arc;
 
@@ -98,8 +98,8 @@ fn projects_every_top_level_declaration_kind_in_source_order() {
 
 #[test]
 fn enum_members_nest_as_children() {
-    // `category` and nested members parse (the checker rejects them as
-    // `check.unsupported`), so the file is still parseable and its symbols are present.
+    // `category` and nested members parse (the checker rejects them as `check.unsupported`),
+    // so the file is still parseable and its symbols are present.
     let source = "module app\n\n\
         enum Tree {\n\
         \x20   category live {\n\
@@ -215,9 +215,9 @@ fn many_symbols_source() -> String {
     source
 }
 
-/// A per-file symbol bound makes that file's outline unavailable — it does not refuse
-/// the snapshot. Nothing partial is retained for the crossing file, every other file's
-/// outline is present, and the project's diagnostics are complete.
+/// A per-file symbol bound makes that file's outline unavailable rather than refusing the
+/// snapshot: nothing partial is retained for it, every other file's outline is present, and
+/// the project's diagnostics are complete.
 #[test]
 fn per_file_symbol_count_overflow_bounds_only_that_files_outline() {
     let source = many_symbols_source();
@@ -260,8 +260,8 @@ pub fn h(): int {
 
 #[test]
 fn a_symbol_count_overflow_does_not_affect_compilation() {
-    // The declaration-hierarchy fact is analysis-path only: a file that overflows the
-    // symbol count still compiles to an image, since compilation collects no symbols.
+    // The fact is analysis-path only: compilation collects no symbols, so a file over the
+    // symbol count still compiles to an image.
     let source = many_symbols_source();
     assert!(
         compile_with_tests(&project(&[("src/app.mw", &source)])).is_ok(),

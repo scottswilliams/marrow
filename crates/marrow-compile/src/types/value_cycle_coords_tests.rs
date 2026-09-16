@@ -2,11 +2,11 @@
 //! the syntax tree, and the durable declaration projection is the one reader of the
 //! declarations it projects.
 //!
-//! The behavioral half here pins the report's artifact through the production
-//! `compile` path; the structural half — the reject pass's declaration-free
-//! signature and the projection-owned syntax reads — is enforced by
+//! These pin the report's artifact through the production `compile` path. The
+//! structural half — the reject pass's declaration-free signature and the
+//! projection-owned syntax reads — is enforced by
 //! `reporting_a_value_cycle_reads_no_syntax_declaration` in `absence_gates` and the
-//! row-table gates beside the identity contract in `durable_identity_stability`.
+//! row-table gates in `durable_identity_stability`.
 
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
@@ -46,11 +46,9 @@ store ^nowhere[id: int]: Missing\n\
 fn main() {\n\
 }\n";
 
-/// The complete ordered artifact the projection corpus reported before any
-/// declaration became a typed row, captured from the pre-conversion tree. The
-/// conversion must not move a byte of it: the cycle report keeps its coordinates,
-/// the durable build keeps its anchor demand, and the index and key rows keep
-/// their admission rows.
+/// The complete ordered artifact the projection corpus must report: the cycle report
+/// keeps its coordinates, the durable build keeps its anchor demand, and the index and
+/// key rows keep their admission rows. Not a byte of it may move.
 const PROJECTION_ARTIFACT: &str = "src/main.mw:11:7 check.durable_identity durable identity for application `.` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
      src/main.mw:11:7 check.durable_identity durable identity for root `books` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
      src/main.mw:11:7 check.durable_identity durable identity for product `Book` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
@@ -64,13 +62,11 @@ const PROJECTION_ARTIFACT: &str = "src/main.mw:11:7 check.durable_identity durab
      src/main.mw:14:1 check.type `Missing` is not a resource in this project\n\
      src/main.mw:1:8 check.recursion value type `Knot` contains itself through the cycle Knot -> Knot";
 
-/// The opening production-path check of this row, behavioral half: the complete
-/// value-cycle/store/index/key corpus reports cycle diagnostics and a `.marrow/ids`
-/// anchor demand byte-identical to the pre-conversion artifact. The other half —
-/// that the retained declaration lists are unreadable after row construction — is
-/// structural, and lives in the signature and row-table gates this file's header
-/// names: a lexical counter cannot pin an absence, as the round-1 reviews proved by
-/// reintroducing the scan under a green battery.
+/// The complete value-cycle/store/index/key corpus reports cycle diagnostics and a
+/// `.marrow/ids` anchor demand byte-identical to [`PROJECTION_ARTIFACT`]. That the
+/// retained declaration lists are unreadable after row construction is structural and
+/// belongs to the gates this file's header names: a lexical counter cannot pin an
+/// absence.
 #[test]
 fn durable_projection_survives_syntax_poison() {
     let result = compile(&project(PROJECTION_CORPUS.to_string()));
@@ -99,14 +95,11 @@ fn durable_projection_survives_syntax_poison() {
     );
 }
 
-/// A repeat for one type keeps the first coordinate, exactly as the table's
-/// contract states.
+/// A repeat for one type keeps the first coordinate.
 ///
-/// The declare pass never reserves one image type twice, so this arm is
-/// unreachable through any compile — which is precisely why it is pinned
-/// directly: were the table to start keeping the later coordinate instead, no
-/// corpus could notice, and a caller reporting at a declaration could one day be
-/// steered to a later homonym with nothing standing in the way.
+/// The declare pass never reserves one image type twice, so no corpus could notice the
+/// table starting to keep the later coordinate instead — and a caller reporting at a
+/// declaration would then be steered to a later homonym. Hence the direct pin.
 #[test]
 fn a_repeated_declaration_keeps_its_first_coordinate() {
     use marrow_image::TypeId;

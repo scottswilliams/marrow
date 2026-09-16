@@ -9,10 +9,9 @@ use marrow_syntax::{
     ResourceMember, TypeExpr, parse_source,
 };
 
-/// Corpus smoke test (one owner): every fenced `mw` block is a complete source
-/// file and must parse without diagnostics. It guards the documented examples
-/// as a whole; the per-construct parse contracts are owned by the focused
-/// `parse_*` suites. Contextual fragments use non-`mw` fences.
+/// Corpus smoke test: every fenced `mw` block is a complete source file and must parse
+/// without diagnostics. The per-construct parse contracts are owned by the focused
+/// `parse_*` suites.
 #[test]
 fn parses_all_documented_source_files() {
     let blocks = common::documented_source_blocks();
@@ -34,10 +33,9 @@ fn parses_all_documented_source_files() {
     }
 }
 
-/// The repository front door is in the gated corpus: the root `README.md` durable-
-/// model tour (its `enum Status` example) is a documented source block, so it
-/// parses cleanly like the reference pages and cannot regress to a stale surface
-/// unnoticed. Distinguished from `docs/language/README.md` by the enum it carries.
+/// The repository front door is in the gated corpus: the root `README.md` durable-model
+/// tour parses cleanly like the reference pages. Its `enum Status` example distinguishes
+/// it from `docs/language/README.md`.
 #[test]
 fn the_repo_readme_example_is_gated_by_the_corpus() {
     let gated = common::documented_source_blocks()
@@ -49,11 +47,9 @@ fn the_repo_readme_example_is_gated_by_the_corpus() {
     );
 }
 
-/// Structure smoke over the canonical `sample.md` library: it spot-checks that
-/// the documented end-to-end example still parses to the expected resource,
-/// store, index, and function shape. The construct-level parse contracts are
-/// owned by the focused `parse_*` suites; this only guards that the reference
-/// sample keeps its overall shape.
+/// Structure smoke over the canonical `sample.md` library: the documented end-to-end
+/// example keeps its resource, store, index, and function shape. Construct-level parse
+/// contracts are owned by the focused `parse_*` suites.
 #[test]
 fn parses_reference_sample_structure() {
     let parsed = parse_source(&common::reference_sample());
@@ -175,8 +171,7 @@ fn retains_the_function_name_span_for_definition() {
 
 #[test]
 fn parses_optional_parameter_type() {
-    // `T?` is a first-class parameter type; the trailing `?` rides in the type
-    // spelling exactly as a return or local annotation does.
+    // `T?` is a first-class parameter type, spelled as in a return or local annotation.
     let parsed = parse_source(
         "module app\n\
          fn f(value: int?): int {\n\
@@ -323,10 +318,9 @@ fn rejects_internal_and_private_visibility() {
 
 #[test]
 fn rejects_pub_on_resource_and_store_without_cascade() {
-    // `pub` gates only `fn` and `enum`; a `pub resource`/`pub store` is reported
-    // once at the `pub` token with the remove-`pub` remedy in the message, then
-    // recovered by parsing the rest of the declaration so its members do not raise
-    // a cascade of follow-on errors.
+    // `pub` gates only `fn` and `enum`. A `pub resource`/`pub store` reports once at the
+    // `pub` token, then recovers by parsing the rest of the declaration, so its members
+    // raise no cascade.
     for (keyword, decl) in [
         ("resource", "resource Book {\n    title: string\n}"),
         ("store", "store ^books[id: int]: Book"),
@@ -355,16 +349,14 @@ fn rejects_pub_on_resource_and_store_without_cascade() {
             "{:#?}",
             visibility[0]
         );
-        // The remedy rides in the message, not `help`: the checker drops `help`
-        // when it lowers parse diagnostics, so only an in-message remedy reaches
-        // `marrow check`.
+        // The remedy rides in the message, not `help`: the checker drops `help` when it
+        // lowers parse diagnostics.
         assert!(
             visibility[0].message.contains("remove `pub`"),
             "expected a remove-`pub` remedy in the message: {:#?}",
             visibility[0]
         );
-        // Recovery parses the declaration, so there is no field-line cascade: the
-        // visibility error is the only diagnostic.
+        // No field-line cascade: the visibility error is the only diagnostic.
         assert_eq!(
             parsed.diagnostics.complete().len(),
             1,
@@ -544,9 +536,8 @@ fn reserved_words_as_import_segments_are_rejected() {
         );
     }
 
-    // `bytes` is a reserved type word, but a project may declare `module std::bytes`,
-    // so this one import spelling keeps a reserved final segment legal. It is a
-    // path-shape allowance, not a shipped standard-library module.
+    // `bytes` is a reserved type word, but a project may declare `module std::bytes`, so
+    // an import keeps a reserved final segment legal. A path-shape allowance only.
     let std_bytes = parse_source("module app\nuse std::bytes\n");
     assert!(
         std_bytes.diagnostics.complete().is_empty(),
@@ -693,12 +684,10 @@ fn normalize(title: string): string {
     assert_eq!(names, ["Title", "MaxLoans", "Book", "books", "normalize"]);
 }
 
-/// `evolve` was the prototype's in-source schema-change declaration. That
-/// surface is removed on the beta line: the word is an ordinary identifier and
-/// carries no dedicated grammar, so a top-level `evolve` block is rejected as an
-/// unknown declaration rather than parsed into a node. This is the EVX01
-/// enforcement artifact — it fails while any `EvolveDecl` grammar is
-/// representable, because that grammar parses the block cleanly.
+/// `evolve` is an ordinary identifier with no dedicated grammar, so a top-level
+/// `evolve` block is rejected as an unknown declaration rather than parsed into a node.
+/// This fails while any `EvolveDecl` grammar is representable, since such a grammar
+/// parses the block cleanly.
 #[test]
 fn evolve_is_not_a_representable_declaration() {
     let parsed = parse_source(
@@ -745,10 +734,8 @@ fn rejects_tabs_because_marrow_blocks_are_space_indented() {
 
 #[test]
 fn const_colon_with_no_type_recovers_incomplete_annotation() {
-    // `const Bad: = 5` has a `:` introducing a type annotation but no type spelling
-    // after it. The parser keeps an inert `TypeExpr::Incomplete` leaf so the
-    // annotation site stays addressable, rather than dropping the annotation, and
-    // still reports the missing-type diagnostic so the file stays honestly broken.
+    // A `:` with no type spelling after it keeps an inert `TypeExpr::Incomplete` leaf so
+    // the annotation site stays addressable, alongside the missing-type diagnostic.
     let parsed = parse_source("const Bad: = 5\n");
     assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
     assert!(

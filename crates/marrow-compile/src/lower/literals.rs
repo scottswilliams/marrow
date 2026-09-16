@@ -63,9 +63,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 }
                 (ScalarType::Text, self.draft.intern_text(&decoded))
             }
-            // The prototype's `1.second` duration-suffix literal is not in the beta
-            // floor: a duration is constructed from a canonical text literal. Point
-            // at the constructor rather than reporting a generic unsupported literal.
+            // A duration-suffix literal (`1.second`) is not a language form: a duration
+            // is constructed from canonical text. Point at the constructor rather than
+            // reporting a generic unsupported literal.
             LiteralKind::Duration => {
                 self.fail(SourceDiagnostic::at(
                     Code::CheckUnsupported,
@@ -105,11 +105,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Lower an interpolated string `$"...{expr}..."` to a left-folded
-    /// [`Instr::TextConcat`] over its parts. A literal text segment loads its
-    /// decoded text; a hole admits any nonoptional scalar, enum, or identity accepted
-    /// by [`is_interpolable`] and renders it through the canonical value-text owner.
-    /// The whole expression is a `string`, and an empty interpolation is the empty
-    /// string.
+    /// [`Instr::TextConcat`] over its parts. A hole admits any nonoptional scalar, enum,
+    /// or identity accepted by [`is_interpolable`] and renders through the canonical
+    /// value-text owner. The whole expression is a `string`; an empty interpolation is
+    /// the empty string.
     pub(super) fn lower_interpolation(
         &mut self,
         parts: &[InterpolationPart],

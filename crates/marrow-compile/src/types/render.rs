@@ -312,10 +312,10 @@ pub(super) fn garg_spelling_validated(
 /// How a validated spelling walker renders a generic instantiation and what it
 /// does with an unsubstituted type parameter.
 ///
-/// Diagnostics spell `Name<a, b>`; the durable anchor ledger spells `Name[a,b]`
-/// and admits no type parameter at all, because an identity byte may not depend on
-/// a parameter that was never bound. A ledger byte stays stable because [`ANCHOR`]
-/// is fixed, not because the walk exists twice.
+/// Diagnostics spell `Name<a, b>`; the durable anchor ledger spells `Name[a,b]` and
+/// admits no type parameter at all, because an identity byte may not depend on a
+/// parameter that was never bound. One walk serves both forms, so a ledger byte stays
+/// stable by [`ANCHOR`] being fixed.
 #[derive(Clone, Copy)]
 pub(super) struct Spelling {
     open: char,

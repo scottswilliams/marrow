@@ -8,22 +8,20 @@
 //!
 //! The exception is `ImageBytes`. The image draft charges every settled body with the
 //! bytes it alone commits the image to, and once that charge proves no completion can
-//! fit, both the compile and the analysis drive stop retaining bodies and report the
-//! byte ceiling — the same kind and limit the encoder reports late. A program that
-//! crosses the ceiling through anything else (its string pool, say) is still refused by
-//! the encoder alone, and its snapshot still answers.
+//! fit, both drives stop retaining bodies and report the byte ceiling — the same kind and
+//! limit the encoder reports late. A program that crosses the ceiling through anything
+//! else (its string pool, say) is still refused by the encoder alone, and its snapshot
+//! still answers.
 //!
 //! The suite proves that three ways. Behaviourally, the three reachable whole-program
 //! ceilings (`Exports`, `Consts`, `Functions`) each refuse `compile` and
 //! `compile_with_tests` while their snapshot answers every query, and the settled-body
 //! charge refuses both entries. Structurally, every [`ResourceLimitKind`] is classified
-//! without a wildcard into the drive-input, the projection-only, the image-policy, and
-//! the image-capacity set, and the enum's declared variant count is
-//! read from the owner's source so a new variant cannot slip past the classification.
-//! And over a frozen corpus, the six things `compile` reports about an accepted or
-//! refused image — kind, accepted bytes, `ImageId`, exports, tests, and naming — are
-//! pinned against current-generation known answers, keeping the image projection
-//! and its semantic facts explicit.
+//! without a wildcard into the drive-input, projection-only, image-policy, and
+//! image-capacity sets, so a new variant cannot slip past the classification. And over a
+//! frozen corpus, the six things `compile` reports about an accepted or refused image —
+//! kind, accepted bytes, `ImageId`, exports, tests, and naming — are pinned against
+//! current-generation known answers.
 
 use std::sync::Arc;
 
@@ -59,12 +57,9 @@ fn main_file() -> FileIdentity {
         .0
 }
 
-// ---- Reds 1 and 2: an image-policy bound refuses the projection and nothing else.
-
 /// The probe declarations every over-bound fixture ends with, and the offsets the query
 /// assertions read. They are private so they do not perturb the export count the fixture
-/// is built to cross, and each offset is captured while the source is assembled rather
-/// than searched for afterwards.
+/// is built to cross, and each offset is captured while the source is assembled.
 struct Probes {
     source: String,
     /// Inside the `value` use in `return value` — a local's type is a hover fact.
@@ -135,11 +130,11 @@ fn over_functions() -> (Probes, String) {
     (probes(main), extra)
 }
 
-/// Both production entries and `check` refuse with exactly `kind`, and the analysis
-/// path over the same project yields an ordinary snapshot: no diagnostic, and every
-/// query answers without an unavailability. The queries are the whole point — an
-/// image-policy bound must be invisible to an editor, because the editor never asked for
-/// an image; `check` asks for one and is refused like the production entries.
+/// Both production entries and `check` refuse with exactly `kind`, while the analysis
+/// path over the same project yields an ordinary snapshot: no diagnostic, and every query
+/// answers without an unavailability. An image-policy bound must be invisible to an
+/// editor, because the editor never asked for an image; `check` asks for one and is
+/// refused like the production entries.
 fn assert_projection_only(
     kind: ResourceLimitKind,
     probes: &Probes,
@@ -199,7 +194,6 @@ fn assert_projection_only(
     };
 }
 
-/// Red 1. The export ceiling refuses the image and nothing else.
 #[test]
 fn an_export_ceiling_refuses_the_projection_only() {
     let probes = over_exports();
@@ -212,7 +206,6 @@ fn an_export_ceiling_refuses_the_projection_only() {
     );
 }
 
-/// Red 2. The constant ceiling refuses the image and nothing else.
 #[test]
 fn a_constant_ceiling_refuses_the_projection_only() {
     let probes = over_consts();
@@ -225,7 +218,6 @@ fn a_constant_ceiling_refuses_the_projection_only() {
     );
 }
 
-/// Red 2. The function ceiling refuses the image and nothing else.
 #[test]
 fn a_function_ceiling_refuses_the_projection_only() {
     let (probes, extra) = over_functions();
@@ -256,9 +248,8 @@ fn over_image_bytes_through_bodies() -> String {
     source
 }
 
-/// The documented exception. Bodies that alone cannot fit the image stop the compile
-/// projection and the analysis drive alike, with the same kind and limit the encoder
-/// reports late; no snapshot is minted.
+/// The documented exception: bodies that alone cannot fit the image stop both drives with
+/// the same kind and limit the encoder reports late, and no snapshot is minted.
 #[test]
 fn a_body_payload_past_the_byte_ceiling_refuses_analysis_too() {
     let files = [("src/main.mw", over_image_bytes_through_bodies())];
@@ -289,11 +280,9 @@ fn a_body_payload_past_the_byte_ceiling_refuses_analysis_too() {
     }
 }
 
-// ---- Red 3: the wildcard-free partition.
-
-/// Where a resource limit is decided. The three sets are disjoint by construction: a kind
-/// belongs to exactly one, and the classification below is a wildcard-free match, so a new
-/// variant is a build error here until someone states which owner decides it.
+/// Where a resource limit is decided. The sets are disjoint by construction: a kind
+/// belongs to exactly one, and the classification below is a wildcard-free match, so a
+/// new variant is a build error here until someone states which owner decides it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Owner {
     /// Decided by drive-input admission, before any stage runs. Reachable from `analyze`.
@@ -360,9 +349,8 @@ const ALL_KINDS: &[ResourceLimitKind] = &[
     ResourceLimitKind::DeclarationLedgerBytes,
 ];
 
-/// Red 3. Each kind is classified exactly once, the analysis path can reach exactly the
-/// drive-input, projection, semantic, and image-capacity kinds, and no image-policy
-/// kind is among them.
+/// The analysis path can reach exactly the drive-input, projection, semantic, and
+/// image-capacity kinds; no image-policy kind is among them.
 #[test]
 fn every_resource_limit_kind_has_exactly_one_owner() {
     let analysis_reachable: Vec<ResourceLimitKind> = ALL_KINDS
@@ -399,8 +387,6 @@ fn every_resource_limit_kind_has_exactly_one_owner() {
     );
 }
 
-// ---- Red 4: the frozen corpus.
-
 /// One generic instance shared by an ordinary caller and a test. Including the test
 /// reserves a function slot ahead of the instance, so the test-inclusive image differs
 /// from the production image beyond its test tables; `check` encodes the former.
@@ -419,9 +405,8 @@ fn over_test_entries() -> String {
     source
 }
 
-/// The durable identity ledger the `Wide` resource and its `^wide` root need: the
-/// application, the product, one identity per declared field, the root, and its key
-/// column.
+/// The durable identity ledger the `Wide` resource and its `^wide` root need:
+/// application, product, one identity per declared field, the root, and its key column.
 fn item_ids() -> Vec<u8> {
     ids::ledger(&[
         "application .",
@@ -522,10 +507,9 @@ fn corpus() -> Vec<Corpus> {
 /// deliberately absent — phase continuation changes diagnostic sets by design, while none
 /// of these six may move.
 ///
-/// A `Debug` derive is not part of this contract. Pinning rendered `{:?}` text made every
-/// derive on `ExportEntry`, `TestEntry`, `ExportId`, or `LedgerIdBytes` a golden change,
-/// so a formatting edit read as an image-projection regression and a real regression read
-/// as formatting. Each fact is compared as itself instead.
+/// A `Debug` derive is not part of this contract: pinning rendered `{:?}` text would make
+/// any derive on `ExportEntry`, `TestEntry`, `ExportId`, or `LedgerIdBytes` a golden
+/// change, so each fact is compared as itself.
 #[derive(Debug, PartialEq, Eq)]
 enum ImageDigest {
     /// `(kind name, bound)`. The kind is rendered by name only so the frozen table stays
@@ -540,9 +524,8 @@ enum ImageDigest {
         /// `(title, module, file, line, column)`.
         tests: Vec<(String, String, String, u32, u32)>,
         /// The compiler-owned ledger-id-to-spelling join. It publishes no typed
-        /// enumeration — `demand_sentence` is its whole public surface, and it needs a
-        /// demand set no caller of `compile_with_tests` holds — so this one field is
-        /// still its rendering. It is the only golden a derive can churn.
+        /// enumeration — `demand_sentence` is its whole public surface — so this one
+        /// field is still a rendering, and the only golden a derive can churn.
         naming: String,
     },
     /// No corpus entry may report a diagnostic or an invariant; both are named so a
@@ -642,15 +625,11 @@ const NOOP_ID: &str = "acc0e4892dc9149eef25a215d6fd6304ea6382d717452ed67a7662bb7
 /// The empty durable join, as the one field with no typed public projection renders it.
 ///
 /// `DurableNaming` publishes the two demand renderings and nothing that enumerates the
-/// join itself, so a derived `Debug` is what a golden can read here. It is not a stable
-/// surface, and it is pinned knowing that: this string also carries `LedgerIdBytes`'s own
-/// derived `Debug` and the crate-private `PathSigil`'s variant names, so a representation
-/// change to either rewrites these goldens without any change to what `compile` reports
-/// about an image — a diff to read as churn and regenerate, not as a contract change.
-///
-/// Adding a typed projection to spell the join would settle that, and the only caller it
-/// would ever have is this file. The crate does not carry a public entry point for a test
-/// to read, so the churn is the cheaper of the two.
+/// join, so a derived `Debug` is what a golden can read here — an unstable surface,
+/// pinned knowingly. The string also carries `LedgerIdBytes`'s derived `Debug` and the
+/// crate-private `PathSigil`'s variant names, so a representation change to either
+/// rewrites these goldens with no change to what `compile` reports about an image: churn
+/// to regenerate, not a contract change.
 const NO_NAMING: &str = "DurableNaming { by_id: {} }";
 
 /// Current-generation image identities and semantic projections. A change to these
@@ -712,11 +691,10 @@ const FROZEN_REFUSED: &[(&str, &str, u64)] = &[
     ("over-functions", "Functions", 4096),
 ];
 
-/// The full-image digest of each accepted corpus entry: marrow-image's domain-separated
-/// `image_id` construction, applied by this test to EVERY emitted byte — magic, version,
-/// the embedded `ImageId` slot, and all sections. [`FROZEN_ACCEPTED`] freezes only the
-/// total length and the embedded id, which a header rewrite or a digest-slot forgery of
-/// equal length could survive; a whole-byte digest cannot.
+/// The full-image digest of each accepted corpus entry: `image_id` applied to EVERY
+/// emitted byte — magic, version, the embedded `ImageId` slot, and all sections.
+/// [`FROZEN_ACCEPTED`] freezes only the total length and the embedded id, which a header
+/// rewrite or a digest-slot forgery of equal length could survive; this cannot.
 const FROZEN_FULL_IMAGE_DIGESTS: &[(&str, &str)] = &[
     (
         "unit",
@@ -740,11 +718,10 @@ const FROZEN_FULL_IMAGE_DIGESTS: &[(&str, &str)] = &[
     ),
 ];
 
-/// The production `compile` image of the two entries whose test-inclusive image
-/// diverges from it: the shared generic, whose instance index moves when a test slot is
-/// reserved ahead of it, and the over-test-entries project, which `compile` accepts
-/// while the test-inclusive projection refuses. Both pin current-generation bytes;
-/// `check` encoding the test-inclusive image moves neither.
+/// The production `compile` image of the two entries whose test-inclusive image diverges
+/// from it: the shared generic, whose instance index moves when a test slot is reserved
+/// ahead of it, and the over-test-entries project, which `compile` accepts while the
+/// test-inclusive projection refuses.
 const FROZEN_PRODUCTION_IMAGE_DIGESTS: &[(&str, usize, &str)] = &[
     (
         "shared-generic",
@@ -779,8 +756,7 @@ fn hex(bytes: &[u8]) -> String {
     out
 }
 
-/// Red 4b. Every accepted corpus entry's full image bytes are frozen: digest-by-digest
-/// over all bytes, and byte-for-byte for the smallest entry.
+/// Digest-by-digest over all bytes, and byte-for-byte for the smallest entry.
 #[test]
 fn the_full_image_bytes_are_frozen() {
     let mut pinned = FROZEN_FULL_IMAGE_DIGESTS.iter();
@@ -813,8 +789,6 @@ fn the_full_image_bytes_are_frozen() {
     );
 }
 
-/// Over the frozen corpus, all six image projections match their current-generation
-/// known answers, fact by fact.
 #[test]
 fn the_image_projection_matches_current_generation_known_answers() {
     let expected: Vec<(String, ImageDigest)> = FROZEN_ACCEPTED
@@ -852,10 +826,10 @@ fn the_image_projection_matches_current_generation_known_answers() {
     }
 }
 
-/// Red 5. `check` encodes exactly the image `compile_with_tests` encodes: over the whole
-/// corpus the two digests agree, accepted and refused alike. The production `compile`
-/// image of the two entries whose test-inclusive image diverges is frozen separately, so
-/// the check projection provably moved nothing `run` and `image` ship.
+/// `check` encodes exactly the image `compile_with_tests` encodes: over the whole corpus
+/// the two digests agree, accepted and refused alike. The production `compile` image of
+/// the two diverging entries is frozen separately, so the check projection provably moves
+/// nothing `run` and `image` ship.
 #[test]
 fn check_encodes_the_test_inclusive_image_and_moves_no_production_byte() {
     let mut production = FROZEN_PRODUCTION_IMAGE_DIGESTS.iter();
@@ -902,8 +876,6 @@ fn check_encodes_the_test_inclusive_image_and_moves_no_production_byte() {
     );
 }
 
-/// The 257-test case, stated on its own: the production image fits and is the frozen
-/// one, while `check` and `compile_with_tests` refuse with the test entry bound.
 #[test]
 fn a_project_of_257_tests_checks_as_a_test_entry_refusal_while_its_production_image_fits() {
     let input = project(&[("src/main.mw", over_test_entries())]);

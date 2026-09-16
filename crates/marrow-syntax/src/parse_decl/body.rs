@@ -1,10 +1,7 @@
-//! The shared declaration-body frame: the one `{ … }` trivia skeleton that the
-//! resource, store, and enum bodies drive their member loops from. Each body
-//! advances its opening `{`, then repeatedly asks for the next line: the frame
-//! consumes blank lines, own-line comments, and stray nested blocks, and reports a
-//! member header for the caller to parse. The caller supplies the doc-comment
-//! accumulator every member attaches to and the diagnostic a stray nested block
-//! reports.
+//! The shared declaration-body frame: the one `{ … }` trivia skeleton that the resource,
+//! store, and enum bodies drive their member loops from. The frame consumes blank lines,
+//! own-line comments, and stray nested blocks, and reports a member header for the caller
+//! to parse.
 
 use super::tokens::{comment_from_token, is_line_comment};
 use super::{DeclParser, ParseError};
@@ -12,9 +9,8 @@ use crate::ast::{Comment, CommentMarker, CommentPlacement};
 use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, SourceSpan};
 use crate::token::{Token, TokenKind};
 
-/// The classification of the next line of a `{ … }` declaration body, after the
-/// shared trivia (closing brace, blank lines, comments, stray nested blocks) has
-/// been handled.
+/// The classification of the next line of a `{ … }` declaration body, after the shared
+/// trivia (closing brace, blank lines, comments, stray nested blocks) has been handled.
 pub(super) enum BodyLine {
     /// The block closed on its `}` (or end of input); stop the loop.
     End,
@@ -25,16 +21,14 @@ pub(super) enum BodyLine {
 }
 
 impl DeclParser<'_, '_> {
-    /// Classify and consume the next line of a `{ … }` declaration body. The
-    /// caller supplies the opening `{` span (to anchor an unclosed-block diagnostic),
-    /// its own-line comment accumulator (`docs` collects `///` doc comments to attach
-    /// to the next member), and the diagnostic to report for a stray nested block; an
-    /// `Item` result leaves the member header in place.
+    /// Classify and consume the next line of a `{ … }` declaration body. The caller
+    /// supplies the opening `{` span (anchoring an unclosed-block diagnostic), the `docs`
+    /// accumulator `///` comments attach to, and the diagnostic for a stray nested block;
+    /// an `Item` result leaves the member header in place.
     ///
-    /// The token stream carries the lexer's `Eof` sentinel after the last content
-    /// token, so end of input reaches here as `Eof` rather than `None`; both close
-    /// the loop, but only a real `}` is consumed, and reaching the sentinel reports
-    /// the block as unclosed.
+    /// End of input arrives as the lexer's `Eof` sentinel rather than `None`. Both close
+    /// the loop, but only a real `}` is consumed, and the sentinel reports the block as
+    /// unclosed.
     pub(super) fn next_body_line(
         &mut self,
         open: SourceSpan,
@@ -67,10 +61,10 @@ impl DeclParser<'_, '_> {
         }
     }
 
-    /// Report a `{ … }` body that reached end of input without its matching `}`,
-    /// anchored at the opening brace. Shared by the declaration-body frame and the
-    /// function/test body parser so a truncated block reports one diagnostic at the
-    /// open site rather than recovering silently or cascading over the leaked tail.
+    /// Report a `{ … }` body that reached end of input without its matching `}`, anchored
+    /// at the opening brace. Shared by the declaration-body frame and the function/test
+    /// body parser so a truncated block reports once at the open site rather than
+    /// cascading over the leaked tail.
     pub(super) fn report_unclosed_block(&mut self, open: SourceSpan) {
         self.error_span(
             open,
@@ -79,9 +73,8 @@ impl DeclParser<'_, '_> {
         );
     }
 
-    /// Consume one own-line comment token and its trailing `NEWLINE`. A `///` doc
-    /// comment accumulates into `docs` to attach to the next member; an ordinary
-    /// `//` line comment is retained as own-line trivia.
+    /// Consume one own-line comment token and its trailing `NEWLINE`. A `///` accumulates
+    /// into `docs` for the next member; a `//` is retained as own-line trivia.
     fn take_body_comment(&mut self, docs: &mut Vec<Token>, comments: &mut Vec<Comment>) {
         if matches!(self.peek(), Some(TokenKind::DocComment)) {
             self.push_pending_doc(docs, comments);
@@ -104,10 +97,10 @@ impl DeclParser<'_, '_> {
         }
     }
 
-    /// Consume a stray nested block opening at the current `{`, reporting `error`
-    /// at the first content line when the block is non-empty. A member with a body
-    /// of its own (a resource group) opens it right after its header, before the
-    /// frame sees the next line, so a block reaching here is stray.
+    /// Consume a stray nested block opening at the current `{`, reporting `error` at the
+    /// first content line when the block is non-empty. A member with a body of its own (a
+    /// resource group) opens it right after its header, so any block reaching here is
+    /// stray.
     fn consume_stray_block(&mut self, error: &ParseError) {
         self.advance(); // `{`
         self.skip_newlines();

@@ -1,10 +1,9 @@
 use super::*;
 
 impl<'a, 'd> FnLowerer<'a, 'd> {
-    /// Lower `p.group.leaf = value` on an entry a presence proof covers: evaluate the
-    /// leaf value once, read the whole group through the place's key slots (a bare
-    /// record — the entry is present), rewrite the leaf slot, and replace the whole
-    /// group so a sibling leaf is preserved.
+    /// Lower `p.group.leaf = value` on an entry a presence proof covers. The whole group
+    /// is read (as a bare record, since the entry is present) and replaced, so a sibling
+    /// leaf is preserved; the leaf value is evaluated once, before the read.
     pub(super) fn lower_group_leaf_set(
         &mut self,
         (family, key_slots): (&'a Family, Option<Vec<u16>>),
@@ -73,13 +72,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let entry_site = self
             .site_operand(handle)
             .ok_or(LoweringFailure::Recoverable)?;
-        // A bound (place) column already holds its key in a pre-evaluated slot; reuse it
-        // so the create/replace ops key off it (the verifier's presence lattice
-        // recognizes a root create as establishing that slot's entry). An inline column
-        // is evaluated once into a fresh slot. An entry-identity root column spreads into
-        // the root's key columns, so the exists/replace/create ops key off the same
-        // evaluation whether the whole-entry address is a root (identity or per-column) or
-        // a branch below an identity-keyed root.
+        // Every column lands in a slot evaluated exactly once — a bound (place) column
+        // reuses the slot it already holds, so the verifier's presence lattice recognizes
+        // a root create as establishing that slot's entry; an inline column gets a fresh
+        // slot; an entry-identity root column spreads into the root's key columns. The
+        // exists/replace/create ops therefore key off one evaluation whether the address
+        // is a root (identity or per-column) or a branch below an identity-keyed root.
         let key_slots: Vec<u16> = self.capture_key_slots(keys, span)?;
         let rec_slot = self.alloc_slot(span).ok_or(LoweringFailure::Recoverable)?;
         self.lower_as(

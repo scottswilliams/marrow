@@ -1,20 +1,14 @@
 //! Lowering reports every source-level problem as a typed diagnostic and never
 //! aborts.
 //!
-//! The compiler crate denies the explicit-abort families (`expect`/`unwrap`,
-//! `panic!`, `unreachable!`, `todo!`, `unimplemented!`) in non-test builds
-//! (`crates/marrow-compile/src/lib.rs`); each surviving invariant guard carries a
-//! narrow `#[allow(clippy::..., reason = "...")]` naming the earlier stage that
-//! establishes it. That compiler-native enforcement makes an added or moved explicit
-//! abort fail Clippy at its own site, so no source-text scan is needed here.
+//! The crate denies the explicit-abort families in non-test builds
+//! (`crates/marrow-compile/src/lib.rs`), so an added or moved abort fails Clippy at its own
+//! site and no source-text scan belongs here.
 //!
-//! What this file owns is behavioral: one adversarial source shape per invariant class
-//! is driven through the production `compile` path and must come back as a typed
-//! diagnostic. A `compile` that returned `Err` proves lowering did not abort, and
-//! the asserted code proves the checker intercepted the shape before a lowering
-//! invariant could be violated. A regression that turned any sampled source into
-//! a panic would abort this test process instead of returning `Err`, making the
-//! failure conspicuous.
+//! What this file owns is behavioral: one adversarial source shape per invariant class is
+//! driven through the production `compile` path. `Err` proves lowering did not abort, and
+//! the asserted code proves the checker intercepted the shape before a lowering invariant
+//! could be violated; a regression into a panic aborts the test process instead.
 
 use marrow_codes::Code;
 use marrow_compile::{SourceDiagnostic, compile};
@@ -24,10 +18,9 @@ use super::project_capture;
 
 const EXPRS_FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/lower/exprs.rs");
 
-/// The generic-enum call guard and constructor share an immutable registry
-/// borrow, so the successful template lookup is bound once rather than repeated
-/// behind an expectation. Reading the single owning source file keeps this
-/// source-shape invariant conspicuous without reintroducing a source scanner.
+/// The generic-enum call guard and constructor share an immutable registry borrow, so the
+/// successful template lookup is bound once rather than repeated behind an expectation.
+/// Reading the single owning file keeps that conspicuous without a source scanner.
 #[test]
 fn generic_enum_dispatch_binds_one_template_lookup() {
     let source = std::fs::read_to_string(EXPRS_FILE).expect("lower/exprs.rs is readable");
@@ -69,8 +62,8 @@ fn rejects_with(source: &str, code: Code) {
     }
 }
 
-/// Loop-bookkeeping class: `break`/`continue` reach lowering only inside a loop, where
-/// the loop context is present. Outside a loop the checker rejects them first.
+/// Loop bookkeeping: `break`/`continue` reach lowering only inside a loop, where the loop
+/// context is present.
 #[test]
 fn break_and_continue_outside_a_loop_are_diagnostics_not_panics() {
     rejects_with(
@@ -83,8 +76,7 @@ fn break_and_continue_outside_a_loop_are_diagnostics_not_panics() {
     );
 }
 
-/// Checker-classified-type class: a `match` scrutinee lowers only after it resolves to
-/// an enum. A scrutinee that is not an enum is rejected before lowering.
+/// Checker-classified types: a `match` scrutinee lowers only after it resolves to an enum.
 #[test]
 fn a_match_on_a_non_enum_is_a_diagnostic_not_a_panic() {
     rejects_with(
@@ -93,8 +85,8 @@ fn a_match_on_a_non_enum_is_a_diagnostic_not_a_panic() {
     );
 }
 
-/// Match-arm-narrowing class: a builtin dispatch reaches its op only after the caller
-/// matched its name and arity. A mis-arity call is rejected before that point.
+/// Match-arm narrowing: a builtin dispatch reaches its op only after the caller matched its
+/// name and arity.
 #[test]
 fn a_mis_arity_builtin_call_is_a_diagnostic_not_a_panic() {
     rejects_with(
@@ -103,8 +95,8 @@ fn a_mis_arity_builtin_call_is_a_diagnostic_not_a_panic() {
     );
 }
 
-/// Op-classification class: an arithmetic/comparison op lowers only after its operands
-/// type-check. An ill-typed operator is rejected before op classification.
+/// Op classification: an arithmetic or comparison op lowers only after its operands
+/// type-check.
 #[test]
 fn an_ill_typed_operator_is_a_diagnostic_not_a_panic() {
     rejects_with(
@@ -113,8 +105,8 @@ fn an_ill_typed_operator_is_a_diagnostic_not_a_panic() {
     );
 }
 
-/// Enum-classification class: a bare enum member lowers only after it resolves to its
-/// enum's variants. An unresolved member is rejected before lowering reaches it.
+/// Enum classification: a bare enum member lowers only after it resolves to its enum's
+/// variants.
 #[test]
 fn an_unresolved_enum_member_is_a_diagnostic_not_a_panic() {
     rejects_with(
@@ -123,8 +115,7 @@ fn an_unresolved_enum_member_is_a_diagnostic_not_a_panic() {
     );
 }
 
-/// List-literal class: the inferred-element path runs only for a non-empty list. An
-/// empty `List()` with no element or annotation type is rejected before that path.
+/// List literals: the inferred-element path runs only for a non-empty list.
 #[test]
 fn an_empty_inferred_list_is_a_diagnostic_not_a_panic() {
     rejects_with(

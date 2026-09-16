@@ -1,16 +1,14 @@
-//! Wide-resource scale floor: a resource may declare thousands of sparse fields (the
-//! M-shaped workload) and still compile to a canonical image. The width bound is a
-//! decode-allocation guard, not a durable-format byte, so admitting a wider declaration
-//! costs no stored-format change. The independent verifier re-check of the same width
-//! lives in `marrow-verify`.
+//! Wide-resource scale floor: a resource may declare thousands of sparse fields and still
+//! compile to a canonical image. The width bound is a decode-allocation guard, not a
+//! durable-format byte, so admitting a wider declaration costs no stored-format change.
+//! The independent verifier re-check of the same width lives in `marrow-verify`.
 
 use marrow_compile::{Compiled, compile};
 
 use super::{ledger, project};
 
-/// The durable identity ledger a `Wide` resource with `sparse` optional fields
-/// needs: the application, the product, one identity per field (the required
-/// `tag` plus `f0..f{sparse}`), the root, and its key column.
+/// The ledger a `Wide` resource with `sparse` optional fields needs: application, product,
+/// one identity per field, root, and key column.
 fn wide_ids(sparse: usize) -> Vec<u8> {
     let mut anchors = vec![
         "application .".to_string(),
@@ -23,9 +21,8 @@ fn wide_ids(sparse: usize) -> Vec<u8> {
     ledger(&anchors)
 }
 
-/// A resource declaring one required key-bearing field and `sparse` optional
-/// fields, stored under an int key — the M-shaped workload: a wide, mostly-sparse
-/// resource.
+/// A wide, mostly-sparse resource: one required field plus `sparse` optional ones, stored
+/// under an int key.
 fn wide_source(sparse: usize) -> String {
     let mut src = String::from("module main\n\nresource Wide {\n    required tag: int\n");
     for i in 0..sparse {
@@ -44,9 +41,8 @@ fn compile_ok(sparse: usize) -> Compiled {
     })
 }
 
-/// The M-shaped declared width — two thousand sparse fields — compiles to a canonical
-/// image. The width cap is a decode-allocation guard, so admitting this declaration
-/// costs no durable-format change.
+/// Two thousand sparse fields compile to a canonical image; the width cap is a
+/// decode-allocation guard, so admitting this costs no durable-format change.
 #[test]
 fn a_wide_resource_compiles() {
     let compiled = compile_ok(2000);
@@ -56,18 +52,16 @@ fn a_wide_resource_compiles() {
     );
 }
 
-/// A modest declared width compiles, so the wide case is a scale property, not a
-/// shape change.
+/// The control for the wide case: width is a scale property, not a shape change.
 #[test]
 fn a_narrow_resource_compiles() {
     compile_ok(10);
 }
 
-/// Monotone-widen byte-identity law: an image representational *bound* is a decode-time
-/// allocation guard, never a stored-format byte, so widening a bound must never change the
-/// encoded image of a program already inside the narrower bound. This pins, by content
-/// hash, the encoded bytes of a small durable resource; an edit that serializes a bound
-/// constant, or otherwise perturbs an in-bounds program's bytes, fails here.
+/// An image bound is a decode-time allocation guard, never a stored-format byte, so widening
+/// one must never change the encoded image of a program already inside the narrower bound.
+/// An edit that serializes a bound constant, or otherwise perturbs an in-bounds program's
+/// bytes, fails this content hash.
 #[test]
 fn an_in_bounds_program_has_frozen_image_bytes() {
     let bytes = compile_ok(10).image.bytes;
@@ -85,12 +79,9 @@ fn an_in_bounds_program_has_frozen_image_bytes() {
     );
 }
 
-/// The full field guard is reachable: a durable resource declaring the complete
-/// [`marrow_image::bounds::MAX_RECORD_FIELDS`] width (4096 fields — the required `tag`
-/// plus 4095 sparse fields) compiles cleanly. This width anchors ~4100 durable-identity
-/// ledger rows (one `Field` per field plus application/product/root/key overhead), which
-/// `MAX_IDS_ROWS` must admit for a single wide resource. The binder at this width is the
-/// field-count guard, not the ledger row cap.
+/// The full [`marrow_image::bounds::MAX_RECORD_FIELDS`] width compiles cleanly. It anchors
+/// ~4100 ledger rows, which `MAX_IDS_ROWS` must admit for one resource: the binder at this
+/// width is the field-count guard, not the row cap.
 #[test]
 fn the_full_field_guard_width_durable_resource_compiles() {
     // 4095 sparse + the required `tag` = MAX_RECORD_FIELDS (4096) declared fields.
@@ -101,14 +92,11 @@ fn the_full_field_guard_width_durable_resource_compiles() {
     );
 }
 
-/// Durable width is decoupled from image bytes: a resource near the full record-field
-/// width (4090 sparse fields) whose code addresses no field encodes far below the eager
-/// per-field cost. Eager per-field site emission costs ~84 B/field (~343 KB here, past a
-/// 256 KiB ceiling); lazy field-leaf sites emit no field site at all — only the member
-/// tree, record type, and interned names — so the same resource fits under 256 KiB
-/// (~126 KB). A wide resource's image therefore does not scale with its declared width
-/// when its code does not touch every field (the sparse-at-scale shape), which is why
-/// [`marrow_image::bounds::MAX_IMAGE_BYTES`] is not the durable-width binder.
+/// A wide resource's image does not scale with its declared width when its code does not
+/// touch every field, which is why [`marrow_image::bounds::MAX_IMAGE_BYTES`] is not the
+/// durable-width binder. Emitting a site per field would cost ~84 B/field (~343 KB at this
+/// width, past a 256 KiB ceiling); lazy field-leaf sites emit only the member tree, record
+/// type, and interned names, so the same resource lands near 126 KB.
 #[test]
 fn a_wide_resource_image_is_decoupled_from_declared_width() {
     let bytes = compile_ok(4090).image.bytes.len();

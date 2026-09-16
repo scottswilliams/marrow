@@ -5,15 +5,11 @@
 use super::*;
 
 impl<'a, 'd> FnLowerer<'a, 'd> {
-    /// Lower an empty-collection constructor `List()`/`Map()` against the expected
-    /// type: the expected `Collection` supplies the exact instantiation, so the
-    /// constructor emits the `ListNew`/`MapNew` for that COLLTYPES index. A `List()`
-    /// against a `Map` type (or the reverse), or against a non-collection type, is a
-    /// typed diagnostic.
-    /// Lower a collection constructor directed by an expected `List`/`Map` type. An
-    /// empty `List()`/`Map()` mints the fresh collection; a variadic `List(a, b, c)`
-    /// mints the list and then writes each element in order as a visible append. The
-    /// map literal is deferred, so `Map(...)` with arguments is refused.
+    /// Lower a collection constructor directed by an expected `List`/`Map` type, which
+    /// supplies the exact instantiation. An empty `List()`/`Map()` mints the fresh
+    /// collection for that COLLTYPES index; a variadic `List(a, b, c)` mints the list
+    /// and writes each element in order as a visible append. `Map(...)` with arguments
+    /// is refused, as is a head that does not match the expected type.
     pub(super) fn lower_collection_ctor(
         &mut self,
         head: &str,
@@ -226,7 +222,6 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
     }
 
-    /// Lower `length(x): int` over a finite collection: the element or entry count.
     /// Lower a local bracket read `xs[i]` / `m[k]`: the base is a local collection and
     /// the read yields the presence-typed optional (`T?` for a list element, `V?` for a
     /// map value), joining the same presence family as sparse durable reads. A list
@@ -302,11 +297,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// Lower a local keyed write `m[k] = value`: on a `var` map binding, create or
     /// replace the value at the key (total, except the `run.collection_limit` growth
-    /// fault), lowered as a read-modify-write with value semantics — the same shape as
-    /// a durable keyed write, differing only by the absent `^`. A `const` binding gets
-    /// the ordinary assignment-to-const rejection. A list has no keyed write: `xs[i] =
-    /// value` is refused with a teaching diagnostic naming `append` and `Map<int, T>`.
-    /// One bracket group on a bare local binding; a nested or compound base is deferred.
+    /// fault), as a read-modify-write with value semantics — the same shape as a durable
+    /// keyed write, differing only by the absent `^`. A list has no keyed write: `xs[i]
+    /// = value` is refused with a teaching diagnostic naming `append` and `Map<int, T>`.
+    /// The base must be a bare local binding carrying one bracket group.
     pub(super) fn lower_local_bracket_write(
         &mut self,
         base: &Expression,
@@ -486,6 +480,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Ok(())
     }
 
+    /// Lower `length(x): int` over a finite collection: the element or entry count.
     pub(super) fn lower_length(
         &mut self,
         args: &[Argument],

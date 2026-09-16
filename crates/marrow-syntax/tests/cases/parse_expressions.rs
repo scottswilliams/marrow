@@ -278,14 +278,11 @@ fn bare_type_keyword_is_not_a_value() {
 
 #[test]
 fn const_chained_equality_is_not_associative() {
-    // Equality, inequality, comparison, and `is` each sit on their own
-    // non-associative level: a second same-class operator is a grammar error
-    // spanned at that operator, mirroring the `??` diagnostic, rather than a
-    // generic "expected a statement" at the line start.
-    // Each remedy must name a rewrite that actually compiles: comparisons of
-    // boolean results can be parenthesized, but a chained `is` cannot — `(a is X)`
-    // is a bool, so a second `is` over it fails the enum-operand check. The `is`
-    // remedy instead points at joining the subtree tests with `and`/`or`.
+    // Equality, inequality, comparison, and `is` each sit on their own non-associative
+    // level: a second same-class operator is a grammar error spanned at that operator.
+    // Each remedy must name a rewrite that actually compiles — comparisons of boolean
+    // results can be parenthesized, but `(a is X)` is a bool, so a second `is` over it
+    // fails the enum-operand check and the remedy is `and`/`or` instead.
     for (source, operator, remedy) in [
         ("const Bad: bool = a == b == c\n", "==", "parentheses"),
         ("const Bad: bool = a != b != c\n", "!=", "parentheses"),
@@ -312,8 +309,7 @@ fn const_chained_equality_is_not_associative() {
             operator,
             "span should cover the second `{operator}`: {diagnostic:#?}"
         );
-        // The remedy rides in the message so it survives the checker's
-        // parse-diagnostic lowering and renders in `marrow check`.
+        // The remedy rides in the message so it survives the checker's lowering.
         assert!(
             diagnostic.message.contains("does not chain") && diagnostic.message.contains(remedy),
             "expected the `{remedy}` remedy in the message: {diagnostic:#?}"
@@ -362,9 +358,7 @@ fn const_expression_span_points_into_source() {
 
 #[test]
 fn empty_const_value_reports_the_single_generic_diagnostic() {
-    // With no inner diagnostic drained (the value is truly empty), the generic
-    // fallback is the only diagnostic: a const with `=` and nothing after it
-    // reports once that it requires a value.
+    // With no inner diagnostic drained, the generic fallback is the only diagnostic.
     let parsed = parse_source("const Bad = \n");
     assert_eq!(
         parsed.diagnostics.complete().len(),
@@ -410,8 +404,7 @@ fn equality_and_inequality_parse_in_expression_position() {
 
 #[test]
 fn absence_operators_parse_in_expression_position() {
-    // `??` parses as the coalesce binary operator; `?.` parses as an optional
-    // field read whose base is the preceding path.
+    // `??` is the coalesce binary operator; `?.` is an optional field read.
     let value = parsed_return_expr("fn f(a: int): int {\n    return ^books[a]?.pages ?? 0\n}\n");
     // `??` binds looser than `?.`, so the whole `^books(a)?.pages` is the left
     // operand of one `??`.
@@ -495,9 +488,7 @@ fn coalesce_binds_tighter_than_comparison_and_range_but_looser_than_additive() {
 
 #[test]
 fn chained_coalesce_is_right_associative() {
-    // `??` is right-associative, so `a ?? b ?? c` parses as `a ?? (b ?? c)`: the
-    // top `??` keeps the inner chain as its right operand, and the chain types
-    // under the coalesce rule.
+    // `??` is right-associative, so `a ?? b ?? c` parses as `a ?? (b ?? c)`.
     let value =
         parsed_return_expr("fn f(a: int): int {\n    return ^books[a]?.pages ?? 0 ?? 1\n}\n");
     let Expression::Binary {
@@ -548,8 +539,8 @@ fn underscore_no_longer_parses_as_string_concatenation() {
 
 #[test]
 fn bare_equals_in_expression_position_is_a_parse_error() {
-    // `=` is assignment only; a `=` left over in expression position is reported
-    // as the `=`-vs-`==` mistake at the `=` token, with a hint to use `==`.
+    // `=` is assignment only; in expression position it is reported at the `=` token
+    // as the `=`-vs-`==` mistake.
     let source = "fn f(a: int, b: int) {\n    if a = 2 {\n        return\n    }\n}\n";
     let parsed = parse_source(source);
     let diagnostic = parsed
@@ -571,8 +562,7 @@ fn bare_equals_in_expression_position_is_a_parse_error() {
         &source[diagnostic.span.start_byte..diagnostic.span.end_byte],
         "="
     );
-    // The `==` hint rides in the message so it survives the checker's
-    // parse-diagnostic lowering and renders in `marrow check`.
+    // The hint rides in the message so it survives the checker's lowering.
     assert!(
         diagnostic.message.contains("`==` for equality"),
         "expected an `==` hint in the message: {diagnostic:#?}"
@@ -582,9 +572,8 @@ fn bare_equals_in_expression_position_is_a_parse_error() {
 #[test]
 fn chained_compound_assignment_is_reported_at_the_second_operator() {
     // Assignment does not chain and is not an expression: a second compound-assign
-    // operator reached in expression position is reported at that operator, the
-    // same class of located parse error as the stray `=` recovery, rather than a
-    // generic "expected a statement" mislocated at the statement keyword.
+    // operator in expression position is reported at that operator, not as a generic
+    // "expected a statement" mislocated at the statement keyword.
     for (line, second_operator) in [
         ("    a += b += c\n", "+="),
         ("    a += b -= c\n", "-="),
@@ -684,17 +673,12 @@ fn a_three_segment_member_path_parses_as_one_name() {
     );
 }
 
-/// The parser encodes binding order structurally, one function per level; the
-/// formatter reads [`BinaryOp::precedence`] to decide where parentheses are
-/// required. Nothing else ties them, so a new operator placed at one level in the
-/// tower and another in the table would silently move where the formatter
-/// parenthesizes.
-///
-/// For every ordered pair of operators the grammar admits together, this parses
-/// `x <a> y <b> z` and asserts the tighter operator is the inner node. A pair the
-/// parser rejects — a non-associative level, or an operand shape one of the two
-/// restricts — reports diagnostics and proves nothing about binding, so it is
-/// skipped rather than asserted.
+/// The parser encodes binding order structurally, one function per level, while the
+/// formatter reads [`BinaryOp::precedence`] to decide where parentheses are required.
+/// Nothing else ties the two, so an operator placed at one level in the tower and
+/// another in the table would silently move where the formatter parenthesizes. Every
+/// ordered pair the grammar admits together is checked here; a pair the parser rejects
+/// proves nothing about binding and is skipped.
 #[test]
 fn operator_precedence_matches_the_parser() {
     let mut compared = 0usize;

@@ -1,10 +1,9 @@
 //! The analysis fact ledger: the one live private owner of the editor facts a snapshot
 //! publishes, and the body-local owner a lowering stages its facts in.
 //!
-//! Split from the analysis module because it is a self-contained substrate with one
-//! entry (`absorb`, against a settled body) and one exit (`finish`). The projection that
-//! reads it, the queries that answer from it, and the fact shapes it holds stay with
-//! their own owners.
+//! A self-contained substrate with one entry (`absorb`, against a settled body) and one
+//! exit (`finish`). The projection that reads it, the queries that answer from it, and
+//! the fact shapes it holds stay with their own owners.
 
 use marrow_syntax::SourceSpan;
 
@@ -23,19 +22,18 @@ pub(crate) use staging::{BodySite, StagedBodyTxn};
 
 /// The one live private analysis-fact owner.
 ///
-/// It is the structural sibling of the diagnostic collector: every fact is admitted
-/// against the typed count and byte ceilings **at the push**, so no fact set larger
-/// than a public snapshot bound is ever materialized. Crossing a ceiling discards the
-/// whole payload — the incoming fact and every already-admitted one — because a
-/// crossing refuses the whole snapshot; there is no partial publication to unwind and
-/// therefore no transaction, epoch, or receipt protocol.
+/// The structural sibling of the diagnostic collector: every fact is admitted against
+/// the typed count and byte ceilings **at the push**, so no fact set larger than a
+/// public snapshot bound is ever materialized. Crossing a ceiling discards the whole
+/// payload — the incoming fact and every already-admitted one — because a crossing
+/// refuses the whole snapshot, leaving no partial publication to unwind.
 ///
 /// Count retains precedence over bytes, and a `Bytes` limit strengthens to `Count`
 /// once the composed count crosses; `Count` never weakens.
 pub(crate) struct AnalysisFactCollector {
-    /// The spelling length of each admitted module, by [`FileRef`]. The ledger owns
-    /// the logical byte charges, which are stated over file *spellings* and stay
-    /// exact even though the compact representation no longer stores one per fact.
+    /// The spelling length of each admitted module, by [`FileRef`]. The ledger owns the
+    /// logical byte charges, which are stated over file *spellings* even though no
+    /// spelling is stored per fact.
     file_bytes: Vec<u32>,
     state: Bounded<FactCeiling>,
 }
@@ -77,9 +75,8 @@ pub(crate) struct RetainingFacts {
 }
 
 impl RetainingFacts {
-    /// Append one settled body's rows, preserving the order they were produced in: the
-    /// body's own rows follow every row already retained, exactly as they would have
-    /// landed had the body written straight through.
+    /// Append one settled body's rows after every row already retained, preserving the
+    /// order they were produced in.
     fn absorb(&mut self, other: RetainingFacts) {
         let RetainingFacts {
             hover_facts,
@@ -118,8 +115,8 @@ impl AnalysisFactCollector {
     }
 
     /// Whether a ceiling has already been crossed. The drive stops rendering fact
-    /// displays once this is true: the whole snapshot is already refused, so every
-    /// further render is waste. This is an allocation bound, not a protocol.
+    /// displays once this is true — the whole snapshot is already refused, so every
+    /// further render is waste. An allocation bound, not a protocol.
     pub(crate) fn is_limited(&self) -> bool {
         self.state.is_limited()
     }
@@ -127,9 +124,9 @@ impl AnalysisFactCollector {
     /// Release one settled body's staged facts into this ledger.
     ///
     /// The staged charge composed over exactly these totals while the body ran, so
-    /// re-composing it here reaches the same verdict the body already observed: a body
-    /// that crossed the ceiling live limits the ledger the moment it settles, and one
-    /// that did not cannot.
+    /// re-composing here reaches the verdict the body already observed: a body that
+    /// crossed the ceiling live limits the ledger as it settles, and one that did not
+    /// cannot.
     fn absorb(&mut self, released: ReleasedFacts) {
         let ReleasedFacts {
             count,
@@ -144,9 +141,9 @@ impl AnalysisFactCollector {
     /// names a module of the project this ledger was built over, so the lookup is total;
     /// an absent one would under-charge silently rather than refuse.
     fn spelling_bytes(&self, file: FileRef) -> u64 {
-        // Profiles cannot disagree: `file_bytes` is sized at this ledger's own project
-        // and every `FileRef` the drive mints indexes that project, so the `unwrap_or`
-        // is unreachable and neither profile ever reads its zero.
+        // `file_bytes` is sized at this ledger's own project and every `FileRef` the
+        // drive mints indexes that project, so the `unwrap_or` is unreachable and no
+        // build profile ever reads its zero.
         debug_assert!(
             file.index() < self.file_bytes.len(),
             "a coordinate names a module of this ledger's own project"
@@ -186,26 +183,18 @@ impl AnalysisFactCollector {
 /// One lowered body's editor facts, held outside every ledger a consumer can reach until
 /// the transaction that produced them has committed or run its inverse.
 ///
-/// The split this carries is three-part, and each part is load-bearing.
-///
 /// The **charge** is live: every fact composes over the ledger's settled totals at the
-/// push that produced it and classifies through the ledger's own ceiling comparison, so a
-/// body whose facts cross the snapshot ceiling stops rendering displays inside itself
-/// rather than after it. This value borrows the ledger shared for the body's whole
-/// extent, so the totals a push composes over are the totals release composes over.
+/// push that produced it, so a body whose facts cross the snapshot ceiling stops
+/// rendering displays inside itself rather than after it. The ledger is borrowed shared
+/// for the body's whole extent, so a push and release compose over the same totals.
 ///
 /// The **retain** is body-local: the rows and the charge they made live here, and the
 /// private [`Self::finish`] is reachable only through the producer-owning aggregate.
 ///
-/// The **inverse** is this value's drop, and it is total because it is structural rather
-/// than arithmetic: the ledger was never touched, so undoing the charge cannot fail.
+/// The **inverse** is this value's drop, total because it is structural rather than
+/// arithmetic: the ledger was never touched, so undoing the charge cannot fail.
 /// Subtracting a charge back out could not be total — a crossing discards the ledger's
 /// whole retained payload, and no subtraction re-materializes it.
-///
-/// This body's own contribution is what the owner holds, over and above the ledger's
-/// settled totals. A crossing discards this body's staged rows at once — the same
-/// whole-payload discard the ledger performs — and stops further rendering, while
-/// latching nothing on the ledger until release.
 struct StagedFacts(Bounded<FactCeiling>);
 
 /// One settled body's facts on their way into the ledger. Produced only by the private
@@ -276,8 +265,7 @@ impl StagedFacts {
     /// Charge one contribution live against the composed total, then stage its payload.
     ///
     /// Crossing discards this body's whole staged payload for the same reason the ledger
-    /// discards its own: a crossing refuses the whole snapshot, so there is no partial
-    /// population to keep.
+    /// discards its own: a crossing refuses the whole snapshot.
     fn admit(
         &mut self,
         ledger: &AnalysisFactCollector,
@@ -321,8 +309,7 @@ impl StagedFacts {
 ///
 /// A producer never holds a fact vector of its own: every fact reaches the composed
 /// ceilings at the push that produced it, so no single body can stage more facts than a
-/// whole snapshot admits. A body whose facts duplicate an already-collected template's is
-/// given the `Discarding` state rather than a scratch vector nobody reads.
+/// whole snapshot admits.
 pub(crate) struct FactSink<'a> {
     state: FactSinkState<'a>,
 }
@@ -348,9 +335,9 @@ impl FactSink<'_> {
         }
     }
 
-    /// Admit one editor hover fact in this sink's file, at the push that produced it.
-    /// The composed ceilings charge it before it is staged, so the count a single body
-    /// can hold live is bounded by the snapshot ceiling rather than by the body's length.
+    /// Admit one editor hover fact in this sink's file. The composed ceilings charge it
+    /// before it is staged, so what one body holds live is bounded by the snapshot
+    /// ceiling rather than by the body's length.
     pub(crate) fn hover(
         &mut self,
         span: SourceSpan,
@@ -394,8 +381,8 @@ impl FactSink<'_> {
 #[cfg(test)]
 mod fact_ledger_tests {
     use super::*;
-    // The parent module's own items: the fixtures reach the snapshot shapes and the
-    // per-file bounds the ledger is sized against, which live with the projection.
+    // The parent module's snapshot shapes and per-file bounds the ledger is sized
+    // against, which live with the projection.
     use super::super::*;
     use crate::SourceDiagnostic;
     use crate::diag::{MAX_DIAGNOSTIC_BYTES, MAX_DIAGNOSTIC_COUNT};
@@ -403,19 +390,17 @@ mod fact_ledger_tests {
     use std::mem::size_of;
     use std::sync::Arc;
 
-    /// The accounted physical footprint of one live [`AnalysisSnapshot`], **excluding**
-    /// the caller-shared `Arc<ProjectInput>`: its up-to-64 MiB of source bytes are the
-    /// caller's charge, shared not copied, and are named separately for the editor
-    /// session that holds it.
+    /// The exported term the accounted physical footprint of one live
+    /// [`AnalysisSnapshot`] must not exceed — an arithmetic property of the pinned
+    /// ceilings and the retained representation, not a runtime check.
     ///
-    /// The exported term this must not exceed. It is an arithmetic property of the
-    /// pinned ceilings and the retained representation, not a runtime check.
+    /// It **excludes** the caller-shared `Arc<ProjectInput>`: its up-to-64 MiB of source
+    /// bytes are the caller's charge, shared not copied.
     const MAX_ANALYSIS_SNAPSHOT_RETAINED_BYTES: u64 = 12 * 1024 * 1024;
 
-    /// The admitted per-file byte ceiling is inside the retained span coordinate
-    /// domain, so every span a snapshot retains round-trips exactly. A widened
-    /// admission ceiling must widen [`FactSpan`] with it; this pins the two together
-    /// exactly as the diagnostic owner pins its ceilings against the syntax owner's.
+    /// The admitted per-file byte ceiling is inside the retained span coordinate domain,
+    /// so every span a snapshot retains round-trips exactly. A widened admission ceiling
+    /// must widen [`FactSpan`] with it; this pins the two together.
     #[test]
     fn the_admission_ceiling_fits_the_fact_coordinate_domain() {
         assert!(CaptureLimits::DEFAULT.max_file_bytes() as u64 <= u32::MAX as u64);
@@ -441,11 +426,9 @@ mod fact_ledger_tests {
     /// unit sizes bounds every mixture of them.
     ///
     /// The two per-file `FileRef` lists — `broken_files` and `symbol_bounded_files` —
-    /// share the single `max_files()` term at the end. That closes because they are
-    /// disjoint by construction, not by coincidence: `broken_files` holds files that did
-    /// not parse, and only cleanly-parsed modules are offered to the outline projection
-    /// (`compile.rs` filters `!module.broken` before it runs), so no file can appear in
-    /// both and their lengths sum to at most one file count.
+    /// share the single `max_files()` term at the end. That closes only because they are
+    /// disjoint by construction: only cleanly-parsed modules are offered to the outline
+    /// projection, so their lengths sum to at most one file count.
     fn worst_case_retained_bytes(fact_unit: u64, symbol_outline_unit: u64) -> u64 {
         MAX_SNAPSHOT_FACT_COUNT * fact_unit
             + MAX_SNAPSHOT_FACT_BYTES
@@ -474,15 +457,13 @@ mod fact_ledger_tests {
     /// only bounded.
     const ACCOUNTED_WORST_CASE_RETAINED_BYTES: u64 = 11_116_544;
 
-    /// The accounted footprint closes under the exported term with the compact
-    /// representation.
+    /// The accounted footprint closes under the exported term.
     ///
-    /// Two drift gates keep the accounting honest between them. Here, the snapshot
-    /// destructure is exhaustive, so a new retained *field* is a build error rather than
-    /// a silent term violation. At each retained fact type, `retained_bytes` destructures
-    /// its own fields exhaustively, so a new heap-owning field on `HoverFact`,
-    /// `DefinitionTarget`, or `DeclSymbol` is a build error there rather than retention
-    /// no ceiling and no term ever sees.
+    /// Two drift gates keep the accounting honest. The snapshot destructure here is
+    /// exhaustive, so a new retained *field* is a build error rather than a silent term
+    /// violation; at each retained fact type, `retained_bytes` destructures its own
+    /// fields exhaustively, so a new heap-owning field is a build error there rather
+    /// than retention no ceiling and no term ever sees.
     #[test]
     fn the_accounted_footprint_closes_under_the_exported_term() {
         let AnalysisSnapshot {
@@ -495,11 +476,9 @@ mod fact_ledger_tests {
             document_symbols: _,
             symbol_bounded_files,
         } = empty_snapshot();
-        // Named rather than discarded: this list is the one retained field with no term
-        // of its own. It shares `broken_files`' single per-file term, which closes only
-        // because the two are disjoint by construction — a file that did not parse is
-        // never offered to the outline projection — so a reader checking the term against
-        // the field set must see the sharing rather than assume a missing term.
+        // Named rather than discarded: this is the one retained field with no term of
+        // its own, sharing `broken_files`' per-file term, so a reader checking the terms
+        // against the field set sees the sharing rather than a missing term.
         assert!(
             symbol_bounded_files.is_empty(),
             "the accounting fixture retains nothing",
@@ -525,10 +504,8 @@ mod fact_ledger_tests {
     const MAX_ANALYSIS_FACT_TRANSIENT_BYTES: u64 = 25 * 1024 * 1024;
 
     /// Amortized growth plus the one buffer a `Vec` still holds while it copies into its
-    /// successor: a growing collection is live at three times its admitted length.
-    ///
-    /// It is the charge the image crate publishes, not a second copy of the same number:
-    /// the factor is a property of how a `Vec` grows, so one owner states it and every
+    /// successor: a growing collection is live at three times its admitted length. The
+    /// factor is a property of how a `Vec` grows, so one owner states it and every
     /// accounting that charges growth reads it there.
     use marrow_image::bounds::GROWTH_AND_COPY;
 

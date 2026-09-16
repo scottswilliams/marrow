@@ -1672,11 +1672,11 @@ pub(super) struct RowDirectory {
     pub(super) built_collections: usize,
 }
 
-/// The declared populations a directory classified. These counts detect new records,
-/// structs and enums in O(1). Resource filling also publishes group identities without
-/// changing the record count, so that phase invalidates the directory once if it
-/// publishes any groups. After filling, generic rows and collections extend the
-/// directory incrementally. Reuse never scans every resource's groups per probe.
+/// The declared populations a directory classified, so new records, structs and enums
+/// are detected in O(1) rather than by scanning every resource's groups per probe.
+/// Resource filling publishes group identities without changing the record count, so
+/// that phase invalidates the directory once if it publishes any groups; afterwards
+/// generic rows and collections extend the directory incrementally.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct DeclaredCounts {
     records: usize,
@@ -1713,12 +1713,11 @@ impl RowDirectory {
     /// checks only image-identity placement; the full `try_new` semantic-key scan still
     /// runs on every cold or invalidated build and on every unrouted projection path.
     pub(super) fn extend(&mut self, view: &TypeMetadataView<'_>) -> Result<(), GenericInvariant> {
-        // Atomic. A placement can fail on an identity collision, and it resizes the owner
-        // before it does, so a failed extension would otherwise leave scratch rows the
+        // Atomic. A placement resizes the owner before it can fail on an identity
+        // collision, so a failed extension would otherwise leave scratch rows the
         // watermark does not account for — a directory claiming a classification it does
-        // not hold. The captured lengths are the inverse of exactly the appends below, and
-        // running it here is what lets an admitted cache survive a failed probe instead of
-        // being dropped with the classification it already paid for.
+        // not hold. These captured lengths are the exact inverse of the appends below,
+        // which is what lets an admitted cache survive a failed probe.
         let placed_records = self.scratch.records.len();
         let placed_enums = self.scratch.enums.len();
         let prior_type_insts = self.built_type_insts;
@@ -1764,12 +1763,12 @@ impl RowDirectory {
     }
 
     /// Discard the classification of every row and collection appended during a
-    /// generic-template proof pass, restoring the directory to the pre-proof image so the
-    /// cache stays reusable without a full rebuild and holds no truncated-row identity a
-    /// later real mint would collide with. The image record/enum id ceilings shrink to the
-    /// pre-proof draft counts (`records`/`enums`) — every proof row reserved an id at or
-    /// above them — and the watermarks return to the pre-proof instantiation and collection
-    /// counts. The per-walk marks are re-sized on the next probe by `reset_marks`.
+    /// generic-template proof pass, so the cache stays reusable without a full rebuild
+    /// and holds no truncated-row identity a later real mint would collide with. The
+    /// image record/enum id ceilings shrink to the pre-proof draft counts
+    /// (`records`/`enums`) — every proof row reserved an id at or above them — and the
+    /// watermarks return to the pre-proof counts. `reset_marks` re-sizes the per-walk
+    /// marks on the next probe.
     pub(super) fn rewind_to(
         &mut self,
         records: usize,
@@ -1787,8 +1786,7 @@ impl RowDirectory {
     }
 
     /// Reset the per-walk visitation marks to cover every current row and collection.
-    /// The directory content persists; only the traversal state is cleared for the next
-    /// probe.
+    /// The directory content persists; only traversal state is cleared.
     pub(super) fn reset_marks(&mut self, view: &TypeMetadataView<'_>) {
         let type_insts = view.generics.type_insts.len();
         let collections = view.collections.len();
@@ -1808,8 +1806,8 @@ pub(super) struct RowDirectoryGuard<'r> {
 }
 
 impl<'r> RowDirectoryGuard<'r> {
-    /// Seat a classified directory in its guard. The fields stay private to this owner, so
-    /// the only way to hold a directory outside the registry's cell is through the guard
+    /// Seat a classified directory in its guard. The fields stay private here, so the
+    /// only way to hold a directory outside the registry's cell is through the guard
     /// that puts it back.
     pub(super) fn seat(registry: &'r TypeRegistry, directory: RowDirectory) -> Self {
         Self {

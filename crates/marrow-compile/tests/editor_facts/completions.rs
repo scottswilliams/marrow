@@ -151,8 +151,8 @@ fn completions_type_annotation_offers_generic_type_parameters() {
 
 #[test]
 fn completions_broken_file_still_classifies() {
-    // The recovery node itself makes the file broken (it carries a parse.syntax error),
-    // yet the position over it classifies — the whole point of parser-owned recovery.
+    // The recovery node carries a parse.syntax error, yet the position over it classifies:
+    // parser-owned recovery is what makes completion work on a file being typed.
     let source = "module app\n\n\
         struct Point {\n    x: int\n    y: int\n}\n\n\
         fn f(p: Point): int {\n    return p.\n}\n";
@@ -160,7 +160,7 @@ fn completions_broken_file_still_classifies() {
     let offset = at(source, "return p.\n", "return p.".len());
     let file = identity("src/app.mw");
 
-    // The file is genuinely broken: a hover at the same offset is syntax-unavailable.
+    // The file is genuinely broken, not merely incomplete.
     assert!(
         matches!(
             snapshot.hover(&file, offset),
@@ -168,15 +168,14 @@ fn completions_broken_file_still_classifies() {
         ),
         "the file must be broken for this to prove the law",
     );
-    // Completion nonetheless classifies over the recovered node.
     let (class, _) = labels(&snapshot, offset);
     assert_eq!(class, PositionClass::Member);
 }
 
 #[test]
 fn completions_unresolvable_base_is_absent_fields_not_panic() {
-    // A hostile broken base: a name that resolves to nothing. The fail-soft type probe
-    // yields an empty field set, never a resolver failure or panic.
+    // A base that resolves to nothing: the fail-soft type probe yields an empty field set,
+    // never a resolver failure or panic.
     let source = "module app\n\n\
         fn f(): int {\n    return mystery.\n}\n";
     let snapshot = snap_app(source);
@@ -211,9 +210,8 @@ fn completions_over_cap_refuses() {
     }
 }
 
-/// A struct with `field_count` fields (each named `f<index>` zero-padded to
-/// `name_width` characters, typed `int`) and a `fn f(p: Big): int { return p. }` whose
-/// trailing `p.` member position offers exactly one candidate per field.
+/// A struct of `field_count` `int` fields named `f<index>` zero-padded to `name_width`,
+/// plus a body whose trailing `p.` member position offers one candidate per field.
 fn member_source(field_count: usize, name_width: usize) -> String {
     let mut source = String::from("module app\n\nstruct Big {\n");
     for index in 0..field_count {
@@ -231,10 +229,9 @@ fn member_outcome(source: &str) -> Result<CompletionOutcome, QueryError> {
 
 #[test]
 fn completions_candidate_count_boundary_admits_max_and_refuses_one_more() {
-    // Exactly the cap is admitted; one past it refuses. A struct member position offers
-    // exactly one candidate per field with no builtins folded in, so the count is the
-    // field count precisely — pinning the `> MAX` boundary so an off-by-one to `>=`
-    // cannot pass unnoticed.
+    // The count cap is a strict `>`: exactly MAX is admitted, one past it refuses. A struct
+    // member position folds in no builtins, so the candidate count is exactly the field
+    // count.
     let cap = MAX_COMPLETION_CANDIDATES as usize;
 
     match member_outcome(&member_source(cap, 3)) {
@@ -262,9 +259,7 @@ fn completions_candidate_count_boundary_admits_max_and_refuses_one_more() {
 #[test]
 fn completions_render_bytes_refuses_when_labels_exceed_the_budget() {
     // A candidate set within the count cap whose rendered label+detail bytes exceed the
-    // render budget refuses on the byte arm, not the count arm. MAX field names of a
-    // length that overshoots the budget exercise the otherwise-uncovered
-    // `CompletionRenderBytes` refusal.
+    // render budget refuses on the byte arm, not the count arm.
     let cap = MAX_COMPLETION_CANDIDATES as usize;
     let name_width = (MAX_COMPLETION_RENDER_BYTES as usize / cap) + 4;
     match member_outcome(&member_source(cap, name_width)) {
@@ -312,8 +307,8 @@ fn completions_offset_out_of_range() {
 
 #[test]
 fn completions_non_utf8_file_is_unavailable() {
-    // A non-UTF-8 file never produced a parse tree, so it has no retained module and a
-    // completion query in it is syntax-unavailable, never a fabricated empty set.
+    // A non-UTF-8 file has no retained module, so the query is syntax-unavailable, never a
+    // fabricated empty set.
     let files = [("src/app.mw", vec![0x66, 0x6e, 0xff, 0xfe])];
     let Ok(snapshot) = analyze(Arc::new(project_bytes(&files)), InputRevision::new(1)) else {
         panic!("expected a snapshot");

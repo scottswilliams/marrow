@@ -12,9 +12,8 @@ use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, SourceSpan};
 use crate::parse_expr::join_spans;
 use crate::token::{ContextualKeyword, Keyword, Token, TokenKind};
 
-/// Parse an enum header line: `[pub] enum Name`. Returns the visibility flag and
-/// the enum name. `pub` is recorded for consistency with `pub fn`; the body of
-/// the enum is parsed separately from its indented block.
+/// Parse an enum header line: `[pub] enum Name`, yielding the visibility flag and name.
+/// The enum's members are parsed separately from its block.
 pub(super) fn parse_enum_head(
     source: &str,
     tokens: &[Token],
@@ -58,11 +57,9 @@ pub(super) fn parse_enum_head(
     Ok((public, name, name_span, type_params))
 }
 
-/// Parse a struct header's tokens after the `struct` keyword: `Name` or
-/// `Name<T, ...>`. The generic type-parameter list uses the same angle
-/// convention as a type application (`List<T>`); a leading `<` after the name
-/// introduces the parameters. A struct field's `name: Type` body is parsed
-/// separately from the indented block, reusing the resource-member machinery.
+/// Parse a struct header's tokens after the `struct` keyword: `Name` or `Name<T, ...>`,
+/// where a `<` directly after the name always opens the type-parameter list. The fields
+/// are parsed separately from the block, reusing the resource-member machinery.
 pub(super) fn parse_struct_head(
     source: &str,
     tokens: &[Token],
@@ -118,11 +115,10 @@ pub(super) struct EnumMemberHead {
     pub payload: Vec<EnumPayloadField>,
 }
 
-/// The name, category flag, and payload of an enum member from its header tokens:
-/// a bare identifier optionally led by a contextual `category` word, optionally
-/// followed by a parenthesized `name: Type` payload list. `category` is recognized
-/// positionally as the header lead, so it never collides with `category` used as
-/// an ordinary identifier elsewhere.
+/// The name, category flag, and payload of an enum member from its header tokens: an
+/// identifier optionally led by a contextual `category` word and optionally followed by a
+/// parenthesized `name: Type` payload list. `category` is recognized positionally as the
+/// header lead, so it never collides with `category` used as an ordinary identifier.
 pub(super) fn enum_member_name(source: &str, tokens: &[Token]) -> ParseResult<EnumMemberHead> {
     let (category, rest) = match tokens.first() {
         Some(token)
@@ -144,8 +140,6 @@ pub(super) fn enum_member_name(source: &str, tokens: &[Token]) -> ParseResult<En
         }
     };
     let rest = &rest[1..];
-    // A bare member ends at its name; a payload member follows the name with a
-    // parenthesized `name: Type` list and nothing else.
     if rest.is_empty() {
         return Ok(EnumMemberHead {
             name,
@@ -182,9 +176,9 @@ pub(super) fn enum_member_name(source: &str, tokens: &[Token]) -> ParseResult<En
     })
 }
 
-/// Parse the inside of an enum member payload list: a comma-separated run of
-/// `name: Type` fields. An empty payload (`circle()`) is rejected — a payload
-/// member declares at least one field.
+/// Parse the inside of an enum member payload list: a comma-separated run of `name: Type`
+/// fields. An empty payload (`circle()`) is rejected — a payload member declares at least
+/// one field.
 fn parse_enum_payload_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<EnumPayloadField>> {
     if inner.is_empty() {
         return Err(ParseError::new(
@@ -241,10 +235,9 @@ fn parse_enum_payload_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<E
     Ok(fields)
 }
 
-/// The `::`-separated identifier segments of a match-arm header, or `None` when
-/// the header is not a member path (`identifier ("::" identifier)*`). The
-/// scrutinee supplies the enum, so an arm header carries no enum prefix — it is a
-/// relative path the checker walks against the scrutinee enum's member tree.
+/// The `::`-separated identifier segments of a match-arm header, or `None` when the
+/// header is not a member path. The scrutinee supplies the enum, so an arm header carries
+/// no enum prefix: it is a relative path the checker walks against the member tree.
 pub(super) fn arm_member_path(source: &str, tokens: &[Token]) -> Option<Vec<NameSegment>> {
     if tokens.is_empty() {
         return None;
@@ -261,7 +254,7 @@ pub(super) fn arm_member_path(source: &str, tokens: &[Token]) -> Option<Vec<Name
             return None;
         }
     }
-    // A trailing `::` (an even count of tokens) leaves a separator with no segment.
+    // An even token count ends on a `::` separator with no segment after it.
     if tokens.len().is_multiple_of(2) {
         return None;
     }
@@ -279,8 +272,6 @@ pub(super) struct ArmPattern {
 /// binding list `(a, b, ...)`. Returns `None` when the header is not a member
 /// path or the binding list is malformed, so the caller reports one arm error.
 pub(super) fn arm_pattern(source: &str, tokens: &[Token]) -> Option<ArmPattern> {
-    // Split off a trailing `(...)` binding list, if any. The path is everything
-    // before the first top-level `(`.
     let paren = tokens
         .iter()
         .position(|token| token.kind == TokenKind::LeftParen);

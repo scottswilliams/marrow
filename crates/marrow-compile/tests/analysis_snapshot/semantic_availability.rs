@@ -287,9 +287,8 @@ fn identity<T>(x: T): T {
 }
 "#;
 
-/// A refused body withholds `CompleteDeclaredFunctionBodies` even when its queued
-/// instance completes. Both production entries report the body diagnostic without
-/// building an image or reaching an invariant.
+/// A refused body withholds `CompleteDeclaredFunctionBodies` even when its queued instance
+/// completes; neither production entry builds an image or reaches an invariant.
 #[test]
 fn a_refused_body_with_a_queued_instance_reports_diagnostics() {
     assert_eq!(
@@ -315,9 +314,9 @@ fn a_refused_body_with_a_queued_instance_reports_diagnostics() {
     );
 }
 
-/// Duplicate test titles leave one reserved test slot vacant and withhold
-/// `CompleteDeclaredTestBodies`. The queued instance still drains; the outcome remains
-/// the title conflict alone, with no image or invariant.
+/// Duplicate test titles leave a reserved slot vacant and withhold
+/// `CompleteDeclaredTestBodies`; the queued instance still drains and the outcome is the
+/// title conflict alone.
 #[test]
 fn duplicate_test_titles_with_a_queued_instance_report_the_conflict_alone() {
     let source = r#"module main
@@ -438,11 +437,10 @@ fn a_limited_terminal_reports_its_own_bound_over_an_image_ceiling() {
     }
 }
 
-/// The settled-body byte ceiling is the one image-policy verdict taken inside the
-/// semantic pass, and it is reported through the no-snapshot resource-limit arm: a body
-/// refused before the stop is not carried with it. Thirty-two wide bodies whose first
-/// carries a type error stop at the twenty-first retained body and report the byte
-/// ceiling; the same program with sixteen wide bodies reports the type error.
+/// The settled-body byte ceiling is the one image-policy verdict taken inside the semantic
+/// pass, reported through the no-snapshot resource-limit arm: a body refused before the stop
+/// is not carried with it. Thirty-two wide bodies stop at the twenty-first retained body and
+/// report the ceiling; sixteen report the first body's type error instead.
 #[test]
 fn the_settled_body_byte_ceiling_stops_before_a_settled_refusal_is_reported() {
     fn wide(bodies: usize) -> String {

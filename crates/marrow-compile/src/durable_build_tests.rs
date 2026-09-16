@@ -17,9 +17,8 @@ mod generic_enum_shape_tests {
     use crate::types::{MintSite, TypeInstId, TypeInstKind};
     use marrow_syntax::{Declaration, parse_source};
 
-    /// The store declaration these resolvers refuse against. The resolver retains its
-    /// refusal under the declared placement name, so it needs the declaration's
-    /// coordinates even when the test drives only one value-shape walk.
+    /// The store declaration these resolvers refuse against. A refusal is retained under
+    /// the declared placement name, so the declaration's coordinates are always needed.
     fn test_declared() -> DeclarationSite<'static> {
         DeclarationSite {
             name: "probe",
@@ -29,10 +28,9 @@ mod generic_enum_shape_tests {
         }
     }
 
-    /// A committed reserved enum reaches the durable-shape owner
-    /// with its exact member and payload layout. Missing ledger rows may make the
-    /// enclosing graph incomplete, but do not turn a Ready enum into an unavailable
-    /// generic row.
+    /// A committed reserved enum reaches the durable-shape owner with its exact member and
+    /// payload layout. Missing ledger rows may make the enclosing graph incomplete, but do
+    /// not turn a Ready enum into an unavailable generic row.
     #[test]
     fn ready_option_reaches_the_durable_enum_shape_owner() {
         let mut draft = fresh_draft();
@@ -113,8 +111,8 @@ mod generic_enum_shape_tests {
         );
     }
 
-    /// An image enum with no Ready semantic row is refused before
-    /// durable identity spelling or member resolution can observe it.
+    /// An image enum with no Ready semantic row is refused before identity spelling or
+    /// member resolution can observe it.
     #[test]
     fn unavailable_enum_stops_before_durable_identity_resolution() {
         let mut draft = fresh_draft();
@@ -293,11 +291,9 @@ store ^holders[id: int]: Holder
         assert_eq!(after.image_id, before.image_id);
     }
 
-    /// The projection is appended in the same statement as the ledger entry, so a
-    /// resource naming a placement the ledger does not know is the two having drifted.
-    /// Answering `Absent` there would put a fabricated absence back at the use site — the
-    /// defect this projection exists to remove — reached through the projection instead of
-    /// through the executable list.
+    /// The projection is appended in the same statement as the ledger entry, so a resource
+    /// naming a placement the ledger does not know is the two having drifted. Answering
+    /// `Absent` there would put a fabricated absence back at the use site.
     #[test]
     fn a_projection_naming_an_unknown_placement_is_drift_not_absence() {
         let mut registry = DurableRegistry::empty(DeclarationBudget::default());
@@ -361,11 +357,10 @@ mod declaration_command_bound_tests {
     fn encode_product(
         commands: impl FnOnce(&mut DraftTxn<'_>) -> Vec<DeclarationMemberDef>,
     ) -> Result<(), ImageBuildError> {
-        /// The construction budget these producer-seam fixtures are admitted under.
-        ///
-        /// The command term is the image's own [`bounds::MAX_ADMITTED_DECLARATION_COMMANDS`],
-        /// which sits exactly one past the member bound, so the over-wide declaration below
-        /// is admitted into the draft and refused where that refusal lives — at the encoder.
+        /// The construction budget these producer-seam fixtures are admitted under. The
+        /// command term sits exactly one past the member bound, so the over-wide declaration
+        /// below is admitted into the draft and refused where that refusal lives, at the
+        /// encoder.
         fn admitted_plan() -> AdmittedGraphInputPlan {
             AdmittedGraphInputPlan::admit(1, 1, bounds::MAX_ADMITTED_DECLARATION_COMMANDS)
         }
@@ -433,21 +428,19 @@ mod declaration_command_bound_tests {
     }
 
     /// The declaration member bound is admitted, emitted, and refused by three owners that
-    /// agree by exactly one command.
-    /// This module stops emitting at [`bounds::MAX_ADMITTED_DECLARATION_COMMANDS`] — the same count an
-    /// [`AdmittedGraphInputPlan`] admits for one declaration; `marrow-image` records
-    /// a declaration as over-bound only at *more* than `MAX_DURABLE_MEMBERS` rows and the
-    /// encoder then refuses the image with
-    /// [`ImageBuildError::TooManyDurableMembers`] — which the compiler classifies as a
-    /// producer contradiction. Truncating one command lower would hand the image
-    /// owner a full-width declaration it accepts, and the over-wide resource would encode
-    /// silently short instead of being refused. This drives the real emitter with an
-    /// over-wide node buffer and carries its output to a real encode, so moving either
-    /// bound without the other fails here.
+    /// agree by exactly one command: this module stops emitting at
+    /// [`bounds::MAX_ADMITTED_DECLARATION_COMMANDS`], the same count an
+    /// [`AdmittedGraphInputPlan`] admits for one declaration, while `marrow-image` records a
+    /// declaration as over-bound only at *more* than `MAX_DURABLE_MEMBERS` rows and the
+    /// encoder refuses the image with [`ImageBuildError::TooManyDurableMembers`]. Truncating
+    /// one command lower would hand the image owner a full-width declaration it accepts, and
+    /// the over-wide resource would encode silently short instead of being refused. This
+    /// drives the real emitter with an over-wide node buffer and carries its output to a
+    /// real encode, so moving either bound without the other fails here.
     ///
-    /// It is a producer-seam fixture rather than a `compile()`-tier one because the width
-    /// is not reachable from source today: every member anchors one identity ledger row,
-    /// and `marrow-project`'s `MAX_IDS_ROWS` (8192) admits no ledger that also carries the
+    /// It is a producer-seam fixture rather than a `compile()`-tier one because the width is
+    /// not reachable from source: every member anchors one identity ledger row, and
+    /// `marrow-project`'s `MAX_IDS_ROWS` (8192) admits no ledger that also carries the
     /// application, product, placement, and key rows a resource of this width needs.
     #[test]
     fn one_member_past_the_member_bound_encodes_as_too_many_durable_members() {
@@ -515,27 +508,22 @@ mod declaration_command_bound_tests {
 ///
 /// The trigger is the construction budget, and it is the only one this compiler has:
 /// every image bound the durable build can cross — roots, sites, string bytes,
-/// declaration members — is *nonblocking* by construction, observed into the policy
-/// ledger and refused later by the encoder over a complete graph. What still refuses
-/// inside `build_one` is the budget the census froze, and it is reachable from source:
-/// the budget saturates root occurrences at [`bounds::MAX_ADMITTED_ROOT_OCCURRENCES`], so
-/// a project declaring one more admissible store than that drives the last store's
-/// `add_root_occurrence` into a refusal after that store has already staged into the
-/// draft.
-///
-/// Two consequences of that trigger shape the assertions below.
+/// declaration members — is *nonblocking* by construction, observed into the policy ledger
+/// and refused later by the encoder over a complete graph. The budget saturates root
+/// occurrences at [`bounds::MAX_ADMITTED_ROOT_OCCURRENCES`], so a project declaring one
+/// more admissible store than that drives the last store's `add_root_occurrence` into a
+/// refusal after that store has already staged into the draft.
 ///
 /// A graph with that many live occurrences is past [`bounds::MAX_ROOTS`], so the encoder
-/// refuses it and encoded bytes are not available as the restoration artifact here.
+/// refuses it and encoded bytes are not available as the restoration artifact.
 /// [`marrow_image::DurableContractView::contract_id`] is: the byte-exact 32-byte identity
-/// of the canonical durable graph, written from the same rows the encoder would write and
-/// defined whatever the policy ledger holds.
+/// of the canonical durable graph, defined whatever the policy ledger holds.
 ///
-/// And a last store that occurs a Product the draft already declares stages exactly one
-/// row before the refusal — its interned placement spelling — which no public read of a
-/// draft the encoder refuses can observe. That arm therefore carries the outcome and the
-/// settlement laws; the restoration law is carried by the arms whose last store declares
-/// its own Product, one member wide and many, whose staging the draft does publish.
+/// A last store that occurs a Product the draft already declares stages exactly one row
+/// before the refusal — its interned placement spelling — which no public read of a
+/// refused draft can observe. That arm therefore carries the outcome and settlement laws,
+/// while the restoration law is carried by the arms whose last store declares its own
+/// Product, one member wide and many, whose staging the draft does publish.
 #[cfg(test)]
 mod post_staging_custody_tests {
     use super::super::*;
@@ -571,7 +559,6 @@ mod post_staging_custody_tests {
     }
 
     impl LastStore {
-        /// The resource the arm's last store occurs, if it declares one.
         fn resource(self) -> Option<&'static str> {
             match self {
                 Self::Absent => None,
@@ -651,10 +638,9 @@ mod post_staging_custody_tests {
     }
 
     /// Everything a store's staging can change that a draft the encoder refuses still
-    /// publishes, in one comparable value. `contract` is the canonical durable graph's
-    /// byte-exact identity; the declaration flags and arena counts cover what a Product
-    /// declaration appends outside the occurrence table, which a graph identity derived
-    /// from root occurrences alone would not observe.
+    /// publishes, in one comparable value. The declaration flags and arena counts cover what
+    /// a Product declaration appends outside the occurrence table, which a graph identity
+    /// derived from root occurrences alone would not observe.
     #[derive(PartialEq, Eq, Debug)]
     struct DraftState {
         contract: Option<DurableContractId>,
@@ -754,11 +740,9 @@ mod post_staging_custody_tests {
         }
     }
 
-    /// What each last store stages, measured where the construction budget still admits
-    /// its occurrence: what the same store contributes to a corpus that commits it.
-    /// Without this, the restoration assertions below would hold just as well over a last
-    /// store that staged nothing at all — the zero arm, which every checked refusal
-    /// already takes before staging begins.
+    /// What each last store stages, measured where the construction budget still admits its
+    /// occurrence. Without this, the restoration assertions below would hold just as well
+    /// over a last store that staged nothing at all.
     #[test]
     fn each_last_store_stages_strictly_more_than_the_one_before_it() {
         let built = |last| {

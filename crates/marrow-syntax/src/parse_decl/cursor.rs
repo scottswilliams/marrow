@@ -14,12 +14,10 @@ use crate::token::{ContextualKeyword, Keyword, Token, TokenKind};
 impl<'a> DeclParser<'a, '_> {
     /// Collect the tokens of the current header line (up to the next
     /// `NEWLINE`/`{`/`}`/`EOF`) and advance past a closing `NEWLINE`. A body-bearing
-    /// header ends at its opening `{`, which is left in place for the caller to
-    /// open the block; a bodyless declaration ends at its `NEWLINE`, which is
-    /// consumed. A header line continues across newlines suppressed inside open
-    /// delimiters, so a multi-line const value stays one header line. A trailing
-    /// comment is excluded from the returned slice so the caller sees only header
-    /// content.
+    /// header ends at its opening `{`, left in place for the caller to open the block; a
+    /// bodyless one ends at its consumed `NEWLINE`. Newlines suppressed inside open
+    /// delimiters do not end the line, so a multi-line const value stays one header line.
+    /// A trailing comment is excluded from the returned slice.
     pub(super) fn take_header_line(&mut self) -> &'a [Token] {
         let (line, _) = self.take_header_line_with_trailing_comment();
         line
@@ -71,10 +69,9 @@ impl<'a> DeclParser<'a, '_> {
         line_end(self.tokens, self.pos)
     }
 
-    /// The span of the current declaration's first physical line at column 1.
-    /// The line starts before any indentation, which a token's `column` recovers
-    /// as the byte offset from the line start. This is the span stored on
-    /// declaration and resource-member nodes.
+    /// The span of the current declaration's first physical line at column 1, the span
+    /// stored on declaration and resource-member nodes. The line starts before any
+    /// indentation, recovered from the token's `column` as a byte offset.
     pub(super) fn header_span(&self) -> SourceSpan {
         let token = self.tokens[self.pos];
         let start_byte = token.span.start_byte - (token.span.column as usize - 1);
@@ -87,15 +84,13 @@ impl<'a> DeclParser<'a, '_> {
     }
 
     /// The span of the current line's content, starting after its indentation.
-    /// Declaration and member error diagnostics point here, at the first
-    /// non-space column.
+    /// Declaration and member error diagnostics point here.
     pub(super) fn content_span(&self) -> SourceSpan {
         self.content_span_of(self.tokens[self.pos])
     }
 
-    /// The span from `token`'s position to the end of its physical line. `token`
-    /// is the first content token of the line, so the span starts at the first
-    /// non-space column.
+    /// The span from `token`'s position to the end of its physical line. `token` must be
+    /// the line's first content token, so the span starts at the first non-space column.
     pub(super) fn content_span_of(&self, token: Token) -> SourceSpan {
         SourceSpan {
             start_byte: token.span.start_byte,
@@ -117,11 +112,10 @@ impl<'a> DeclParser<'a, '_> {
         self.consume_balanced_block(1);
     }
 
-    /// Consume tokens until the `{`/`}` depth returns to zero, seeded at
-    /// `open_depth` (zero when the opening `{` is still ahead, one when it was
-    /// already advanced). Returns the exclusive index just past the matching `}`,
-    /// tolerating end-of-file before the block closes. `}` is the hard recovery
-    /// sync anchor.
+    /// Consume tokens until the `{`/`}` depth returns to zero, seeded at `open_depth`
+    /// (zero when the opening `{` is still ahead, one when it was already advanced).
+    /// Returns the exclusive index just past the matching `}`, tolerating end-of-file
+    /// before the block closes. `}` is the hard recovery sync anchor.
     fn consume_balanced_block(&mut self, open_depth: usize) -> usize {
         let mut depth = open_depth;
         while let Some(kind) = self.peek() {
@@ -164,11 +158,9 @@ impl<'a> DeclParser<'a, '_> {
         matches!(self.peek(), Some(TokenKind::LeftBrace))
     }
 
-    /// Whether a `{ … }` body follows the current header line: the token after the
-    /// header content — either the cuddled `{` itself, or the `{` after the single
-    /// terminating `NEWLINE` that [`take_header_line_with_trailing_comment`] would
-    /// consume — is a `LeftBrace`. Used to decide whether a header-trailing comment
-    /// belongs to the construct's body (present) or to file scope (bodyless).
+    /// Whether a `{ … }` body follows the current header line, counting both the cuddled
+    /// `{` and one after the single terminating `NEWLINE`. This decides whether a
+    /// header-trailing comment belongs to the construct's body or to file scope.
     pub(super) fn body_follows_header(&self) -> bool {
         let mut index = self.header_end();
         if matches!(
@@ -183,10 +175,8 @@ impl<'a> DeclParser<'a, '_> {
         )
     }
 
-    /// Advance past a block-opening `{` and the `NEWLINE`s that follow the header
-    /// line, leaving the cursor at the first body line. Returns the span of the `{`,
-    /// which anchors the diagnostic reported when the block reaches end of input
-    /// without its matching `}`.
+    /// Advance past a block-opening `{` and the `NEWLINE`s after it, leaving the cursor at
+    /// the first body line. The returned `{` span anchors the unclosed-block diagnostic.
     pub(super) fn open_brace_block(&mut self) -> SourceSpan {
         let open = self.advance(); // `{`
         self.skip_newlines();
@@ -209,9 +199,9 @@ impl<'a> DeclParser<'a, '_> {
         token
     }
 
-    /// Whether the source byte immediately after `token` is a space. A keyword
-    /// introduces a declaration only when a space follows it, so `module x` is a
-    /// module declaration but `module::x` is a name path.
+    /// Whether the source byte immediately after `token` is a space. A keyword introduces
+    /// a declaration only when a space follows it, so `module x` is a module declaration
+    /// but `module::x` is a name path.
     fn space_after(&self, token: Token) -> bool {
         self.source.as_bytes().get(token.span.end_byte) == Some(&b' ')
     }
@@ -220,9 +210,8 @@ impl<'a> DeclParser<'a, '_> {
         self.space_after(self.tokens[self.pos])
     }
 
-    /// Whether the current line is a function header: `fn `, `pub fn `,
-    /// `internal fn `, or `private fn ` (the visibility words being plain
-    /// identifiers). The trailing-space rule applies to each word.
+    /// Whether the current line is a function header: `fn `, `pub fn `, `internal fn `, or
+    /// `private fn `. The trailing-space rule applies to each word.
     pub(super) fn starts_function_header(&self) -> bool {
         let lead = self.tokens[self.pos];
         match lead.kind {
@@ -240,8 +229,8 @@ impl<'a> DeclParser<'a, '_> {
         }
     }
 
-    /// Whether the current line is an enum header: `enum ` or `pub enum `. The
-    /// trailing-space rule applies to each word, matching `pub fn`.
+    /// Whether the current line is an enum header: `enum ` or `pub enum `, under the same
+    /// trailing-space rule as `pub fn`.
     pub(super) fn starts_enum_header(&self) -> bool {
         let lead = self.tokens[self.pos];
         match lead.kind {
@@ -253,18 +242,17 @@ impl<'a> DeclParser<'a, '_> {
         }
     }
 
-    /// Whether the token after the current one is `keyword` immediately followed
-    /// by a space.
+    /// Whether the token after the current one is `keyword` immediately followed by a
+    /// space.
     fn followed_by_keyword_space(&self, keyword: Keyword) -> bool {
         self.tokens.get(self.pos + 1).is_some_and(|token| {
             token.kind == TokenKind::Keyword(keyword) && self.space_after(*token)
         })
     }
 
-    /// Whether the current line is `pub resource `/`pub store ` — a `pub` applied
-    /// to a declaration kind that is not visibility-gated. The trailing-space rule
-    /// applies to each word, so `pub` here introduces the (rejected) declaration
-    /// rather than a name path.
+    /// Whether the current line is `pub resource `/`pub store ` — a `pub` applied to a
+    /// declaration kind that is not visibility-gated. The trailing-space rule applies to
+    /// each word, so `pub` here introduces the (rejected) declaration, not a name path.
     pub(super) fn pub_precedes_ungated_decl(&self) -> bool {
         let lead = self.tokens[self.pos];
         lead.kind == TokenKind::Keyword(Keyword::Pub)

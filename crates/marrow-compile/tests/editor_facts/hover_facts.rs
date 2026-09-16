@@ -67,7 +67,7 @@ fn hover_at_an_out_of_range_offset_is_a_query_error_not_absence() {
 
 #[test]
 fn hover_in_a_parse_failed_module_is_syntax_unavailable() {
-    // The broken module still parses to an identity; a hover in it is Unavailable(Syntax).
+    // The broken module still parses to an identity.
     let broken = "module broken\n\npub fn g(: int {\n    return 1\n}\n";
     let snapshot = snap(&[("src/broken.mw", broken)]);
     assert!(matches!(
@@ -91,14 +91,9 @@ fn a_valid_module_keeps_hover_facts_past_a_sibling_parse_error() {
     }
 }
 
-/// A fact is admitted where it is derived, and a later failure of the pass that derived
-/// it does not retract it. A body that fails to type-check still answers hover for the
-/// uses that resolved before the failure — the resilience an editor needs most while a
-/// file is being written.
-///
-/// This is the ordinary monomorphic body. The once-checked template pass is the second
-/// half of the same law and is covered by
-/// `a_failed_template_proof_keeps_the_facts_it_already_derived`.
+/// A fact is admitted where it is derived, and a later failure of the pass that derived it
+/// does not retract it: a body that fails to type-check still answers hover for the uses
+/// that resolved before the failure.
 #[test]
 fn a_body_that_fails_to_check_keeps_the_facts_it_already_derived() {
     let source = "module main
@@ -123,16 +118,12 @@ pub fn f(x: int): int {
     }
 }
 
-/// The template half of the same law. A generic function's body is proved once, against
-/// its type parameters' constraints, before any instantiation; that pass admits its
-/// facts through the same sink at the push that produced each one, and then rewinds its
-/// proof-appended draft and registry suffixes. The rewind restores those owners and
-/// nothing else, so the facts the proof already admitted survive its failure and reach
-/// the published snapshot.
+/// The same for the once-checked template pass: it admits facts through the same sink at
+/// each push, then rewinds its proof-appended draft and registry suffixes. The rewind
+/// restores those owners and nothing else, so already-admitted facts survive its failure.
 ///
-/// The fixture's `==` over an unconstrained parameter is a constraint violation the
-/// proof reports without ever instantiating the template, so the hover asserted here is
-/// one the proof derived and no instantiation could have re-derived.
+/// The fixture's `==` over an unconstrained parameter is a constraint violation the proof
+/// reports without instantiating, so no instantiation could have re-derived the hover.
 #[test]
 fn a_failed_template_proof_keeps_the_facts_it_already_derived() {
     let source = "module main
@@ -188,9 +179,8 @@ fn hover_on_a_cross_module_call_shows_the_resolved_signature() {
 
 #[test]
 fn hover_inside_a_generic_body_shows_the_template_parameter_spelling() {
-    // A position inside a generic function's template body carries a hover fact, collected
-    // once at the template. A template-parameter use renders by its declared spelling
-    // (`T`), not the positional `type parameter #0` form.
+    // A template-parameter use renders by its declared spelling (`T`), not the positional
+    // `type parameter #0` form.
     let source = "pub fn id<T>(x: T): T {\n    return x\n}\n\n\
                   pub fn f(): int {\n    return id(1)\n}\n";
     let snapshot = snap(&[("src/main.mw", source)]);
@@ -206,8 +196,7 @@ fn hover_inside_a_generic_body_shows_the_template_parameter_spelling() {
 
 #[test]
 fn definition_inside_a_generic_body_targets_a_called_helper() {
-    // A call inside a generic template body resolves to its callee's declaration, collected
-    // once at the template.
+    // A call inside a template body resolves to its callee's declaration.
     let source = "pub fn helper(n: int): int {\n    return n\n}\n\n\
                   pub fn wrap<T>(x: T): int {\n    return helper(1)\n}\n\n\
                   pub fn f(): int {\n    return wrap(1)\n}\n";
@@ -377,8 +366,8 @@ fn an_unrelated_valid_position_is_absent_not_dependency_unavailable() {
 
 #[test]
 fn a_call_to_a_non_utf8_module_is_dependency_unavailable() {
-    // A non-UTF-8 source never enters parsing, but it is still a project module that
-    // did not parse: a qualified call into it is a dependency gap, not an absence.
+    // A non-UTF-8 source never enters parsing, but it is still a module that did not parse:
+    // a qualified call into it is a dependency gap, not an absence.
     let main = "module main\nuse broken\n\n\
                 pub fn f(): int {\n    return broken::helper()\n}\n\n\
                 pub fn g(): int {\n    return 5\n}\n";
@@ -399,8 +388,7 @@ fn a_call_to_a_non_utf8_module_is_dependency_unavailable() {
         snapshot.definition(&main_id, call_offset),
         Ok(Fact::Unavailable(Unavailability::Dependency))
     ));
-    // The unrelated-position control extends: a valid literal in the same file with a
-    // non-UTF-8 sibling stays Absent, not Dependency.
+    // A valid literal in the same file with a non-UTF-8 sibling stays Absent, not Dependency.
     let literal = at(main, "return 5", 0) + "return ".len();
     assert!(matches!(
         snapshot.hover(&main_id, literal),
@@ -410,9 +398,8 @@ fn a_call_to_a_non_utf8_module_is_dependency_unavailable() {
 
 #[test]
 fn analysis_floor_boundary_comments_are_gone() {
-    // Hover and definition cover positions inside a generic template body, so no
-    // "Floor boundary" comment may claim that deferral: a stale comment would
-    // contradict the behavior the fixtures above pin.
+    // Hover and definition cover positions inside a generic template body, so no comment
+    // may claim that deferral.
     let analysis = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/analysis.rs"))
         .expect("analysis.rs is readable");
     assert!(
