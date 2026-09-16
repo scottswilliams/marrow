@@ -222,6 +222,7 @@ Rejections from the runner that serves a launched program.
 | `runner.arg_mismatch` | A request's arguments do not match the export's signature: the count differs, or a value does not decode as the parameter type. Nothing runs. |
 | `runner.durable_unsupported` | A request named a durable export the runner cannot serve: the storeless serve mode has no store, or the program's durable shape is one the runner does not execute today. A storeless export, and a durable export over a provisioned store, are unaffected. |
 | `runner.spawn` | The `marrow` process could not start the companion runner. The store is untouched. |
+| `runner.terminated` | The companion runner was terminated by a signal before it reported, so the command has no result of its own. Whatever the interrupted operation had already committed stands; `marrow doctor` reports the store's actual state. |
 
 ### Internal codes
 

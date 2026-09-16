@@ -257,6 +257,7 @@ codes! {
     RunnerDurableUnsupported => r#"runner.durable_unsupported"#, Runner, Active, r#"A request named a durable export the runner cannot serve: the storeless serve mode has no store, or the program's durable shape is one the runner does not execute today. A storeless export, and a durable export over a provisioned store, are unaffected."#;
     RunnerReplyEncode => r#"runner.reply_encode"#, Runner, Internal, r#"A served export's return value failed to encode for the wire. Interface build excludes an export whose return shape is not transferable, so a served program does not reach this; the request fails closed."#;
     RunnerSpawn => r#"runner.spawn"#, Runner, Active, r#"The `marrow` process could not start the companion runner. The store is untouched."#;
+    RunnerTerminated => r#"runner.terminated"#, Runner, Active, r#"The companion runner was terminated by a signal before it reported, so the command has no result of its own. Whatever the interrupted operation had already committed stands; `marrow doctor` reports the store's actual state."#;
 }
 
 impl Code {

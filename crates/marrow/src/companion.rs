@@ -225,16 +225,39 @@ pub(crate) fn stage_image(image: &[u8]) -> Result<StagedImage, ExitCode> {
 }
 
 /// Run the companion to completion and adopt its verdict. A failure to start it is
-/// `runner.spawn`; every other outcome the companion reports itself.
+/// `runner.spawn`; a companion that ran and exited reports every other outcome itself,
+/// except the one it cannot report — see [`unreported_termination`].
 pub(crate) fn run_companion(mut command: Command) -> ExitCode {
     match command.status() {
         Ok(status) if status.success() => ExitCode::SUCCESS,
-        Ok(_) => ExitCode::FAILURE,
+        Ok(status) => {
+            if let Some(message) = unreported_termination(status) {
+                crate::report_simple_error(Code::RunnerTerminated, &message);
+            }
+            ExitCode::FAILURE
+        }
         Err(error) => {
             crate::report_simple_error(Code::RunnerSpawn, &error.to_string());
             ExitCode::FAILURE
         }
     }
+}
+
+/// The record the terminal owes for a companion that ended without writing one.
+///
+/// A companion that reaches its own exit has already written a typed record, and the
+/// terminal adds nothing to it. A companion killed by a signal — the machine reclaiming
+/// memory, an operator, a supervisor — never reached that code, so the terminal is the only
+/// party left that can say what happened. Without this the command exits non-zero with both
+/// streams empty, which is indistinguishable from a silent refusal.
+fn unreported_termination(status: std::process::ExitStatus) -> Option<String> {
+    if status.code().is_some() {
+        return None;
+    }
+    Some(format!(
+        "the store operation ended without a report ({status}); run `marrow doctor --store \
+         <dir>` to read the store's actual state"
+    ))
 }
 
 #[cfg(test)]
@@ -260,6 +283,28 @@ mod tests {
             "marrow-companion-{tag}-{}-{nonce}",
             std::process::id()
         ))
+    }
+
+    /// A companion that exits on its own has written its typed record and the terminal
+    /// stays silent; one killed by a signal wrote nothing, so the terminal owes the record.
+    /// Without it the command exits non-zero with an empty stdout and stderr.
+    #[cfg(unix)]
+    #[test]
+    fn only_a_signalled_companion_needs_the_terminals_own_record() {
+        let signalled = Command::new("/bin/sh")
+            .args(["-c", "kill -9 $$"])
+            .status()
+            .expect("run the signalled control");
+        assert!(signalled.code().is_none());
+        let message = super::unreported_termination(signalled).expect("a record for a signal");
+        assert!(message.contains("marrow doctor"), "{message}");
+
+        let refused = Command::new("/bin/sh")
+            .args(["-c", "exit 1"])
+            .status()
+            .expect("run the ordinary-refusal control");
+        assert!(!refused.success());
+        assert_eq!(super::unreported_termination(refused), None);
     }
 
     #[test]

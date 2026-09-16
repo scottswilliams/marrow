@@ -282,6 +282,7 @@ Rejections from the runner that serves a launched program.
             Code::RunnerArgMismatch,
             Code::RunnerDurableUnsupported,
             Code::RunnerSpawn,
+            Code::RunnerTerminated,
         ]),
         r#""#.to_string(),
         INTERNAL_HEADING.to_string(),
