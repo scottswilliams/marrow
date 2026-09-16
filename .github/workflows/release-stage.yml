@@ -1,0 +1,51 @@
+name: Release staging
+
+# Non-gating. This job proves the install directory still stages on a clean
+# machine; it may not red a push, and it is not a release: nothing here signs,
+# notarizes, packages, tags, or publishes anything, and the uploaded directory
+# is a build artifact with a retention period, not a distribution channel.
+on:
+  schedule:
+    - cron: "43 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stage:
+    name: Stage an install directory (macOS)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: rustup toolchain install --profile minimal
+
+      - name: Cache build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-stage
+
+      # An absolute build directory outside the checkout, as every cargo
+      # invocation in this repository takes (CONTRIBUTING.md).
+      - name: Stage the release directory
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/marrow-target
+        run: ./scripts/stage-release.sh
+
+      # Beside the staged directory, not inside it: the install layout is
+      # exactly the four files the terminal verifies.
+      - name: Hash the staged files
+        working-directory: dist
+        run: |
+          shasum -a 256 */* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload the staged directory
+        uses: actions/upload-artifact@v4
+        with:
+          name: marrow-dist-macos
+          path: dist/
+          if-no-files-found: error
