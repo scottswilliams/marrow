@@ -296,6 +296,12 @@ pub fn value(): int {
         assert_eq!(codes, [expected_code], "{name}: {stdout}");
     }
 
+    the_reference_states_the_same_key_domain();
+}
+
+/// The two reference sections that publish the Map key domain state it in the same
+/// words the compiler enforces, and neither has regrown the retired spellings.
+fn the_reference_states_the_same_key_domain() {
     let reference = include_str!("../../../../docs/language/types-and-values.md");
     let (_, lists_and_maps) = reference
         .split_once("## Lists and maps")

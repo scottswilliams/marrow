@@ -83,6 +83,62 @@ pub fn lookup(): string {
 }
 "#;
 
+/// Keep one command's streams and status beside the retained fixture, so a failure can
+/// be read back without rerunning the journey.
+fn record(temp: &Path, name: &str, output: Output) -> Output {
+    fs::write(temp.join(format!("{name}.stdout")), &output.stdout).expect("stdout");
+    fs::write(temp.join(format!("{name}.stderr")), &output.stderr).expect("stderr");
+    fs::write(
+        temp.join(format!("{name}.status")),
+        format!("{:?}\n", output.status),
+    )
+    .expect("status");
+    output
+}
+
+/// Run one command that the journey requires to succeed, recording it either way.
+fn run_ok(cx: Journey<'_>, name: &str, dir: &Path, args: &[&str]) -> Output {
+    let output = record(cx.temp, name, marrow(cx.toolchain, dir, args));
+    assert!(
+        output.status.success(),
+        "{name}: status={:?}\nstdout={}\nstderr={}",
+        output.status,
+        text(&output.stdout),
+        text(&output.stderr)
+    );
+    output
+}
+
+/// Write the deployment image at `name`, proving the ceiling refusal first: `marrow
+/// image` publishes the id only on that refusal, so the accepted write must follow it.
+fn build_image(cx: Journey<'_>, name: &str) -> (PathBuf, String) {
+    let output = record(
+        cx.temp,
+        &format!("{name}-preview"),
+        marrow(cx.toolchain, cx.project, &["image", "--out", name]),
+    );
+    assert!(!output.status.success());
+    let stderr = text(&output.stderr);
+    assert!(stderr.contains("cli.ceiling_unaccepted"), "{stderr}");
+    let ceiling = unaccepted_ceiling_id(&stderr);
+    run_ok(
+        cx,
+        name,
+        cx.project,
+        &["image", "--out", name, "--accept-ceiling", &ceiling],
+    );
+    (cx.project.join(name).join("program.image"), ceiling)
+}
+
+/// The three paths every step of the apply journey needs: the staged toolchain, the
+/// retained fixture directory, and the project the commands run in.
+#[derive(Clone, Copy)]
+struct Journey<'a> {
+    toolchain: &'a Path,
+    temp: &'a Path,
+    project: &'a Path,
+}
+
 // Inserting before a populated field exercises accepted physical numbering through
 // the compiler, explicit image operation and ordinary companion-backed reads.
 fn populated_apply_preserves_old_values_and_leaves_new_fields_absent(toolchain: &Path) {
@@ -92,6 +148,11 @@ fn populated_apply_preserves_old_values_and_leaves_new_fields_absent(toolchain: 
         temp.display()
     );
     let project = temp.join("app");
+    let cx = Journey {
+        toolchain,
+        temp: &temp,
+        project: &project,
+    };
     let source = r#"resource Counter {
     required value: int
     details { tag: int }
@@ -112,47 +173,10 @@ pub fn note(): int { return ^counters[0].notes[1].note ?? -1 }
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(&project.join("src/main.mw"), source);
     write(&temp.join("old.mw"), source);
-    let record = |name: &str, output: Output| {
-        fs::write(temp.join(format!("{name}.stdout")), &output.stdout).expect("stdout");
-        fs::write(temp.join(format!("{name}.stderr")), &output.stderr).expect("stderr");
-        fs::write(
-            temp.join(format!("{name}.status")),
-            format!("{:?}\n", output.status),
-        )
-        .expect("status");
-        output
-    };
-    let run = |name: &str, dir: &Path, args: &[&str]| {
-        let output = record(name, marrow(toolchain, dir, args));
-        assert!(
-            output.status.success(),
-            "{name}: status={:?}\nstdout={}\nstderr={}",
-            output.status,
-            text(&output.stdout),
-            text(&output.stderr)
-        );
-        output
-    };
-    let image = |name: &str| {
-        let output = record(
-            &format!("{name}-preview"),
-            marrow(toolchain, &project, &["image", "--out", name]),
-        );
-        assert!(!output.status.success());
-        let stderr = text(&output.stderr);
-        assert!(stderr.contains("cli.ceiling_unaccepted"), "{stderr}");
-        let ceiling = unaccepted_ceiling_id(&stderr);
-        run(
-            name,
-            &project,
-            &["image", "--out", name, "--accept-ceiling", &ceiling],
-        );
-        (project.join(name).join("program.image"), ceiling)
-    };
-    run("old-bootstrap", &project, &["run", "main.bootstrap"]);
+    run_ok(cx, "old-bootstrap", &project, &["run", "main.bootstrap"]);
     let old_ids = fs::read_to_string(project.join(".marrow/ids")).expect("old identities");
     write(&temp.join("old.ids"), &old_ids);
-    let (old_image, old_ceiling) = image("old-deployment");
+    let (old_image, old_ceiling) = build_image(cx, "old-deployment");
     let old_bytes = fs::read(&old_image).expect("old image");
     let old_image_id = marrow_verify::verify(&old_bytes)
         .expect("verified old artifact")
@@ -161,6 +185,7 @@ pub fn note(): int { return ^counters[0].notes[1].note ?? -1 }
     let store = temp.join("store");
     let store_arg = store.to_str().expect("store path");
     let provision = record(
+        temp.as_ref(),
         "provision",
         Command::new(toolchain.join("marrow-runner"))
             .args(["provision", "--image"])
@@ -172,18 +197,21 @@ pub fn note(): int { return ^counters[0].notes[1].note ?? -1 }
             .expect("provision"),
     );
     assert!(provision.status.success(), "{}", text(&provision.stderr));
-    run(
+    run_ok(
+        cx,
         "seed",
         &project,
         &["run", "main.seed", "--store", store_arg],
     );
-    let old_value = run(
+    let old_value = run_ok(
+        cx,
         "old-value-before",
         &project,
         &["run", "main.oldValue", "--store", store_arg],
     );
     assert_eq!(text(&old_value.stdout).trim(), "42");
-    let before = run(
+    let before = run_ok(
+        cx,
         "before",
         &project,
         &["doctor", "--store", store_arg, "--format", "jsonl"],
@@ -209,7 +237,7 @@ pub fn noteExtra(): int { return ^counters[0].notes[1].noteExtra ?? -1 }
 "#;
     write(&project.join("src/main.mw"), &new_source);
     write(&temp.join("new.mw"), &new_source);
-    run("new-bootstrap", &project, &["run", "main.bootstrap"]);
+    run_ok(cx, "new-bootstrap", &project, &["run", "main.bootstrap"]);
     let new_ids = fs::read_to_string(project.join(".marrow/ids")).expect("new identities");
     write(&temp.join("new.ids"), &new_ids);
     for line in old_ids.lines().filter(|line| line.starts_with("id ")) {
@@ -218,7 +246,7 @@ pub fn noteExtra(): int { return ^counters[0].notes[1].noteExtra ?? -1 }
             "changed identity: {line}"
         );
     }
-    let (new_image, new_ceiling) = image("new-deployment");
+    let (new_image, new_ceiling) = build_image(cx, "new-deployment");
     assert_eq!(
         fs::read(&old_image).expect("preserved old image"),
         old_bytes
@@ -229,7 +257,8 @@ pub fn noteExtra(): int { return ^counters[0].notes[1].noteExtra ?? -1 }
         .expect("verified new artifact")
         .image_id()
         .to_hex();
-    let applied = run(
+    let applied = run_ok(
+        cx,
         "apply",
         &temp,
         &[
@@ -255,17 +284,33 @@ pub fn noteExtra(): int { return ^counters[0].notes[1].noteExtra ?? -1 }
     assert_eq!(receipt["old_ceiling"], old_ceiling);
     assert_eq!(receipt["ceiling"], new_ceiling);
     assert_eq!(receipt["new_image"], new_image_id);
+    the_inserted_field_reads_absent_then_written(cx, store_arg);
+    the_applied_store_backs_up_restores_and_recovers(
+        cx,
+        &store,
+        &new_image,
+        &new_source,
+        &new_image_id,
+        &receipt,
+    );
+}
+
+/// After the apply every old value still reads back, the inserted field reads absent
+/// until it is written, and writing it leaves every sibling untouched.
+fn the_inserted_field_reads_absent_then_written(cx: Journey<'_>, store_arg: &str) {
+    let project = cx.project;
     for (name, export, expected) in [
         ("old-value-after", "main.oldValue", "42"),
         ("extra-absent", "main.extraPresent", "false"),
         ("nested-extra-absent", "main.noteExtra", "-1"),
     ] {
-        let result = run(name, &project, &["run", export, "--store", store_arg]);
+        let result = run_ok(cx, name, project, &["run", export, "--store", store_arg]);
         assert_eq!(text(&result.stdout).trim(), expected);
     }
-    run(
+    run_ok(
+        cx,
         "write-extra",
-        &project,
+        project,
         &["run", "main.writeExtra", "--store", store_arg],
     );
     for (name, export, expected) in [
@@ -275,14 +320,32 @@ pub fn noteExtra(): int { return ^counters[0].notes[1].noteExtra ?? -1 }
         ("old-note-final", "main.note", "9"),
         ("new-note-final", "main.noteExtra", "99"),
     ] {
-        let result = run(name, &project, &["run", export, "--store", store_arg]);
+        let result = run_ok(cx, name, project, &["run", export, "--store", store_arg]);
         assert_eq!(text(&result.stdout).trim(), expected);
     }
+}
+
+/// The applied store backs up and restores byte-identically: the receipt names the new
+/// image and the same instance, the restored copy is a distinct instance with the same
+/// content digest, its interrupted recovery preserves exactly one artifact, and every
+/// preserved value still reads back through the restored store.
+fn the_applied_store_backs_up_restores_and_recovers(
+    cx: Journey<'_>,
+    store: &Path,
+    new_image: &Path,
+    new_source: &str,
+    new_image_id: &str,
+    receipt: &serde_json::Value,
+) {
+    let temp = cx.temp;
+    let project = cx.project;
+    let store_arg = store.to_str().expect("store path");
     let applied_head = fs::read(store.join("head")).expect("applied head");
     let backup = temp.join("applied.backup");
-    let backed = run(
+    let backed = run_ok(
+        cx,
         "backup-applied",
-        &project,
+        project,
         &[
             "backup",
             "--store",
@@ -306,9 +369,10 @@ pub fn noteExtra(): int { return ^counters[0].notes[1].noteExtra ?? -1 }
     );
     let restored = temp.join("restored");
     let restored_arg = restored.to_str().expect("restored path");
-    let restored_receipt = run(
+    let restored_receipt = run_ok(
+        cx,
         "restore-applied",
-        &temp,
+        temp,
         &[
             "restore",
             "--from",
@@ -345,9 +409,10 @@ pub fn noteExtra(): int { return ^counters[0].notes[1].noteExtra ?? -1 }
         applied_head
     );
     fs::write(restored.join("envelope.replacing"), b"partial envelope").expect("debris");
-    let recovered = run(
+    let recovered = run_ok(
+        cx,
         "recover-applied-image",
-        &temp,
+        temp,
         &[
             "recover",
             "--store",
@@ -376,7 +441,7 @@ pub fn noteExtra(): int { return ^counters[0].notes[1].noteExtra ?? -1 }
         fs::read(restored.join("head")).expect("recovered head"),
         applied_head
     );
-    write(&project.join("src/main.mw"), &new_source);
+    write(&project.join("src/main.mw"), new_source);
     for (name, export, expected) in [
         ("restored-old", "main.oldValue", "42"),
         ("restored-extra", "main.extraValue", "77"),
@@ -384,7 +449,7 @@ pub fn noteExtra(): int { return ^counters[0].notes[1].noteExtra ?? -1 }
         ("restored-note", "main.note", "9"),
         ("restored-note-extra", "main.noteExtra", "99"),
     ] {
-        let result = run(name, &project, &["run", export, "--store", restored_arg]);
+        let result = run_ok(cx, name, project, &["run", export, "--store", restored_arg]);
         assert_eq!(text(&result.stdout).trim(), expected);
     }
 }

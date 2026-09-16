@@ -189,8 +189,20 @@ struct Row {
 /// a mutating region, through test seed and observer calls, via an export call from a
 /// test body).
 fn matrix() -> Vec<Row> {
+    let mut rows = admitted_subset_rows();
+    rows.extend(resource_value_rows());
+    rows.extend(owned_region_rows());
+    rows.extend(entry_identity_rows());
+    rows.extend(place_base_rows());
+    rows.extend(place_composition_rows());
+    rows.extend(identity_parent_rows());
+    rows.extend(shared_enum_rows());
+    rows
+}
+
+/// The positive controls: every durable op form in every admitted context.
+fn admitted_subset_rows() -> Vec<Row> {
     vec![
-        // ---- Positive controls: the admitted executable subset. ----
         Row {
             label: "whole-entry read / outside a transaction",
             ops: "pub fn weReadOut(id: int): string? {\n    if const b = ^books[id] {\n        return b.title\n    }\n    return absent\n}",
@@ -272,7 +284,12 @@ fn matrix() -> Vec<Row> {
             ops: "pub fn crSeed(student: string, course: string, score: int) {\n    transaction {\n        ^grades[student, course] = Grade(score: score)\n    }\n}\n\npub fn crWriteVia(student: string, course: string, score: int) {\n    transaction {\n        place g = ^grades[student, course]\n        if exists(g) {\n            g.score = score\n        }\n    }\n}\n\npub fn crReadVia(student: string, course: string): int? {\n    place g = ^grades[student, course]\n    return g.score\n}\n\ntest \"composite-root place writes then reads a score back\" {\n    crSeed(\"amy\", \"cs\", 90)\n    crWriteVia(\"amy\", \"cs\", 75)\n    assert crReadVia(\"amy\", \"cs\") ?? 0 == 75\n}",
             expect: Expect::RoundTrips { run: true },
         },
-        // ---- Resource values at function boundaries. ----
+    ]
+}
+
+/// Resource values crossing function boundaries.
+fn resource_value_rows() -> Vec<Row> {
+    vec![
         // The verifier reconstructs boundary types from the image, so a sealed image
         // proves the resource value crosses the call by value.
         Row {
@@ -305,7 +322,12 @@ fn matrix() -> Vec<Row> {
             ops: "pub fn d3IdentityWrite(isbn: string, title: string) {\n    transaction {\n        if const found = ^books.byIsbn[isbn] {\n            ^books[found] = Book(title: title, isbn: isbn)\n        }\n    }\n}",
             expect: Expect::RoundTrips { run: false },
         },
-        // ---- A return inside an owned region commits, then returns. ----
+    ]
+}
+
+/// A return inside an owned transaction region commits, then returns.
+fn owned_region_rows() -> Vec<Row> {
+    vec![
         // The return value is evaluated pre-commit and the lowering places `TxnCommit`
         // before the `Return`; the verifier proves that ordering.
         Row {
@@ -370,7 +392,12 @@ fn matrix() -> Vec<Row> {
             ops: "pub fn hasIsbn(isbn: string): bool {\n    return exists(^books.byIsbn[isbn])\n}\n\npub fn addBook(id: int, isbn: string) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: isbn)\n    }\n}\n\ntest \"exists over a unique index sees a present and an absent isbn\" {\n    addBook(30, \"i30\")\n    assert hasIsbn(\"i30\")\n    assert not hasIsbn(\"absent-isbn\")\n}",
             expect: Expect::RoundTrips { run: true },
         },
-        // ---- Entry-identity operands in every key-path-capturing position. ----
+    ]
+}
+
+/// Entry-identity operands in every key-path-capturing position.
+fn entry_identity_rows() -> Vec<Row> {
+    vec![
         // An identity operand spreads into the addressed root's key columns at the one
         // capture point a read-modify-write, an upsert, or a `place` binding evaluates its
         // key-path into slots — the same `IdentityKeyPath` spread the single-emit forms
@@ -408,7 +435,12 @@ fn matrix() -> Vec<Row> {
             ops: "pub fn crIdSeed(s: string, c: string, score: int) {\n    transaction {\n        ^grades[s, c] = Grade(score: score)\n    }\n}\n\npub fn crIdPlaceWrite(s: string, c: string, score: int) {\n    transaction {\n        place g = ^grades[Id(^grades, s, c)]\n        if exists(g) {\n            g.score = score\n        }\n    }\n}\n\npub fn crIdRead(s: string, c: string): int? {\n    return ^grades[s, c].score\n}\n\ntest \"composite-root place over a single identity operand round trips\" {\n    crIdSeed(\"amy\", \"cs\", 90)\n    crIdPlaceWrite(\"amy\", \"cs\", 75)\n    assert crIdRead(\"amy\", \"cs\") ?? 0 == 75\n}",
             expect: Expect::RoundTrips { run: true },
         },
-        // ---- A named place or per-iteration pin as a bounded-traversal base. ----
+    ]
+}
+
+/// A named place or per-iteration pin as a bounded-traversal base.
+fn place_base_rows() -> Vec<Row> {
+    vec![
         // A place already addresses an entry; `for k in <place>.branch` traverses the branch
         // family beneath it, feeding the place's captured key slots as the traversal's
         // ancestor key-path.
@@ -432,7 +464,12 @@ fn matrix() -> Vec<Row> {
             ops: "pub fn cAddBook(id: int, isbn: string) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: isbn)\n    }\n}\n\npub fn cAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn cCountViaPin(): int {\n    var c = 0\n    for id, book in ^books at most 100 {\n        for noteId in book.notes at most 100 {\n            c += 1\n        } on more {\n            c = -1\n        }\n    } on more {\n        c = -1\n    }\n    return c\n}\n\ntest \"a per-iteration pin is an inner traversal base\" {\n    cAddBook(70, \"i70\")\n    cAddNote(70, \"a\")\n    cAddBook(71, \"i71\")\n    cAddNote(71, \"b\")\n    assert cCountViaPin() == 2\n}",
             expect: Expect::RoundTrips { run: true },
         },
-        // ---- A named place composes as a base for branch-entry and group-leaf ops. ----
+    ]
+}
+
+/// A named place composing as a base for branch-entry and group-leaf ops.
+fn place_composition_rows() -> Vec<Row> {
+    vec![
         // Extending a bound place with `.branch[bk]` or `.group.leaf` composes the same
         // operation the inline `^root(k).branch(bk)` / `^root(k).group.leaf` form does,
         // keying off the place's pre-evaluated slots.
@@ -452,7 +489,12 @@ fn matrix() -> Vec<Row> {
             ops: "pub fn fAddBook(id: int, isbn: string) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: isbn)\n    }\n}\n\npub fn fAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn fHasNotesVia(id: int): bool {\n    place b = ^books[id]\n    return exists(b.notes)\n}\n\ntest \"exists over a branch family named through a place\" {\n    fAddBook(102, \"i102\")\n    fAddBook(103, \"i103\")\n    fAddNote(102, \"a\")\n    assert fHasNotesVia(102)\n    assert not fHasNotesVia(103)\n}",
             expect: Expect::RoundTrips { run: true },
         },
-        // ---- An entry-identity parent as a bounded-traversal / family-probe base. ----
+    ]
+}
+
+/// An entry-identity parent as a bounded-traversal or family-probe base.
+fn identity_parent_rows() -> Vec<Row> {
+    vec![
         // A traversal or family probe whose fixed parent is addressed through an entry
         // identity feeds an identity column as the ancestor key-path. The verifier's
         // ancestor pop re-proves that column's root and scalar exactly as every other
@@ -490,7 +532,12 @@ fn matrix() -> Vec<Row> {
             ops: "pub fn spSeed(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn spSetVia(id: int, s: string): bool {\n    transaction {\n        place b = ^books[Id(^books, id)]\n        if exists(b) {\n            b.subtitle = s\n            return true\n        }\n    }\n    return false\n}\n\npub fn spSubtitle(id: int): string? {\n    return ^books[id].subtitle\n}\n\ntest \"strict present sparse set through an identity place round trips\" {\n    spSeed(90)\n    assert spSetVia(90, \"x\")\n    assert spSubtitle(90) ?? \"none\" == \"x\"\n}",
             expect: Expect::RoundTrips { run: true },
         },
-        // ---- Two durable fields of one enum type. ----
+    ]
+}
+
+/// Two durable fields that share one enum type, and so one durable identity.
+fn shared_enum_rows() -> Vec<Row> {
+    vec![
         // `glucose` and `lactate` are both `Option<int>`, so they share one enum durable
         // identity; the verifier reads the reuse as one per-declaration claim rather than
         // a duplicate ledger id.
