@@ -152,11 +152,8 @@ impl<H: SessionHost + ?Sized> DriverDispatch for TestDriver<'_, H> {
         }
         let grant = InvocationGrant::full_store();
         let cover = coverage(demand);
-        // A mutating call drives a transaction session (which also reads and, on its
-        // own `TxnCommit`, commits to the store); a read-only call drives a read
-        // session, so a read-only demand never opens a writer. Either session closes
-        // when this invocation returns — a committed writer persists, a dropped one
-        // rolls back — before the next call opens its own.
+        // Either session closes when this invocation returns — a committed writer
+        // persists, a dropped one rolls back — before the next call opens its own.
         if cover.write {
             match self.host.txn_session(grant, cover) {
                 Ok(mut session) => run_in_session(func, args, depth, budget, Some(&mut session)),

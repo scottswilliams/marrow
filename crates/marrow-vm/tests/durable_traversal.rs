@@ -10,8 +10,7 @@
 //! parent entry, and the frozen list obeys the single collection aggregate ceiling.
 //!
 //! Every site named here is minted through the construction seam's bind-then-request
-//! protocol. That protocol has exactly one owner in the workspace and is included here
-//! rather than copied.
+//! protocol, included from its single owner rather than copied.
 
 use marrow_image::{
     CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId, FieldDef,

@@ -1,7 +1,7 @@
-//! Exit-gate evidence: the VM runs an image built with `ImageDraft → encode →
-//! verify`, with no compiler dependency. The image is minted here, encoded to
-//! canonical bytes, and sealed by the independent verifier before the VM sees it —
-//! so the executable trust path is exercised end to end without the compiler.
+//! The VM runs an image built with `ImageDraft → encode → verify`, with no compiler
+//! dependency. The image is minted here, encoded to canonical bytes, and sealed by
+//! the independent verifier before the VM sees it, so the executable trust path is
+//! exercised end to end without the compiler.
 
 use marrow_image::{
     CollectionTypeDef, ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry,
@@ -200,9 +200,8 @@ fn forged_map_positional_image(read: Instr) -> Vec<u8> {
 /// A forged image whose internal positional read (`ListGet`/`MapKeyAt`/`MapValueAt`)
 /// addresses a position past an empty collection passes verification — the verifier
 /// bounds operand types, not index values — and fails closed at runtime with the typed
-/// `run.corruption` fault rather than panicking or reading past the collection. This
-/// restores the totality the deleted `run.collection_range` guard provided while
-/// keeping the source law that no out-of-bounds fault is named.
+/// `run.corruption` fault rather than panicking or reading past the collection. The
+/// read stays total without the source naming an out-of-bounds fault.
 #[test]
 fn a_forged_out_of_range_positional_read_faults_run_corruption() {
     let images = [

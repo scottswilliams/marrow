@@ -3,10 +3,9 @@
 //!
 //! The VM's `Eq*` opcodes compute equality as `Value == Value` (a structural
 //! comparison over contents; a collection's cached size never participates). The
-//! kernel `value_equality` over [`ValueDomain`] is the specification. Rather than
-//! convert on every comparison (the crate DAG allows delegation, but it would only
-//! add cost to a structural comparison), this test pins that the two agree
-//! over the value domain: for every pair of representative values, the kernel
+//! kernel `value_equality` over [`ValueDomain`] is the specification, and the VM
+//! reimplements rather than delegates so a comparison pays no conversion. This test
+//! pins that the two agree: for every pair of representative values, the kernel
 //! relation and the runtime `==` return the same verdict.
 
 use std::rc::Rc;

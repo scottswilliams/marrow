@@ -1,5 +1,5 @@
-//! GR01 exit-gate evidence: the VM stores and reads a group-bearing entry and drives
-//! whole-group read/replace/erase over a real ephemeral store, built with
+//! The VM stores and reads a group-bearing entry and drives whole-group
+//! read/replace/erase over a real ephemeral store, built with
 //! `ImageDraft → encode → verify` and no compiler dependency.
 //!
 //! The graph is `^books(id:int): Book { title:string required; details { pages:int } }`,
@@ -11,8 +11,7 @@
 //! leaving the entry and its top-level field present.
 //!
 //! Every site named here is minted through the construction seam's bind-then-request
-//! protocol. That protocol has exactly one owner in the workspace and is included here
-//! rather than copied.
+//! protocol, included from its single owner rather than copied.
 
 use marrow_image::{
     DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId, FieldDef, FunctionDef,

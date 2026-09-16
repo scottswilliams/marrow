@@ -1,8 +1,4 @@
-//! The runtime value model.
-//!
-//! The vacant state of an optional is the typed `Optional(None)`; there is no
-//! dedicated absent value variant. Records and optionals arrive with their
-//! slices; the current subset uses the scalar values.
+//! The runtime value model. [`Value`] owns the representation invariants.
 
 use std::rc::Rc;
 
@@ -36,14 +32,14 @@ pub fn collection_within_limits(len: usize, aggregate_bytes: usize) -> bool {
 /// a binary search. Both are ordinary copied values; the shared `Rc` backing gives
 /// copy-on-write growth (`Rc::make_mut`) rather than a copy per read.
 ///
-/// The cached size is the aggregate structural byte size of the elements (a `List`) or
-/// the key/value pairs (a `Map`), the quantity the collection-limit law bounds. It is
-/// a deterministic function of the contents. Constructors, typed transfer decoding
-/// and batch-list construction measure it once; incremental `append`/`insert`
-/// updates account for the changed contents without remeasuring the existing
-/// population. This does not remove sorted Map insertion or copy-on-write costs.
-/// Equality ignores it (see the manual [`PartialEq`]); it is a memoized measurement,
-/// not part of a value's identity.
+/// The cached size is the aggregate structural byte size of the elements (a `List`)
+/// or the key/value pairs (a `Map`), the quantity the collection limit bounds, and a
+/// deterministic function of the contents. Constructors, typed transfer decoding and
+/// batch-list construction measure it once; incremental `append`/`insert` account for
+/// the changed contents without remeasuring the existing population, which leaves
+/// sorted-Map insertion and copy-on-write costs untouched. Equality ignores it (see
+/// the manual [`PartialEq`]): it is a memoized measurement, not part of a value's
+/// identity.
 #[derive(Debug, Clone, Eq)]
 pub enum Value {
     Int(i64),
