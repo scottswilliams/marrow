@@ -2100,7 +2100,7 @@ mod tests {
         );
     }
 
-    // --- Derived semantic paths (D02): every graph node's stable ledger-id chain. ---
+    // --- Derived semantic paths: every graph node's stable ledger-id chain. ---
 
     use crate::semantic::{SemanticNodeKind, SemanticStepKind};
 

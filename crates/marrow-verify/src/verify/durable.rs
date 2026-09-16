@@ -219,8 +219,8 @@ fn decode_root(
     }
     // The key tuple: a count, then each column's scalar type and distinct
     // ledger id. Zero columns is a singleton root; the closed orderable
-    // durable-key scalar set (frozen at C04) admits int, string, bool, bytes,
-    // date, and instant per column (`duration` is a span, not an identity).
+    // durable-key scalar set admits int, string, bool, bytes, date, and
+    // instant per column (`duration` is a span, not an identity).
     let key_count = reader
         .u16()
         .ok_or(reject(VerifyPhase::Table, "short root key count"))? as usize;
@@ -583,10 +583,8 @@ fn resolve_site(
 ///
 /// It is derived in one pass from the same [`SemanticNode`] set the contract id is
 /// computed over — this verifier's own reconstruction — so it introduces no second graph,
-/// path, or identity owner. Resolving a site is then one keyed lookup: previously each
-/// site scanned the whole node set for its path and then re-walked the root's member tree
-/// to recover its branch/field/group ordinals, so the cost of sealing a table grew with
-/// the product of its site count and its graph size.
+/// path, or identity owner. Resolving a site is then one keyed lookup, so sealing a table
+/// costs its site count plus its graph size rather than their product.
 struct GraphProjection<'a> {
     nodes: HashMap<&'a [SemanticStep], ProjectedNode>,
     /// Whether the root occurrence at each DURABLE-table position is the flat keyed root
