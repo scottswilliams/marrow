@@ -17,11 +17,9 @@ const REQUIRED_RW: u32 = 0o600;
 const REQUIRED_READ: u32 = 0o400;
 /// The owner bits a directory this owner works in requires: read to list it,
 /// write to create and remove entries in it, execute to resolve names inside
-/// it. Admission itself needs only read and execute, but every use this owner
-/// admits a directory for needs write too, and a mode short of the full set is
-/// one operator repair either way — so admission names the whole requirement
-/// rather than letting the missing-write half surface later as a generic
-/// permission error from whichever call happens to reach it first.
+/// it. Admission itself needs only read and execute, but every use it admits a
+/// directory for needs write too, so admission names the whole requirement and
+/// the missing-write half cannot surface later as a generic permission error.
 const REQUIRED_DIR: u32 = 0o700;
 
 /// A lossless filesystem identity: the platform's `st_dev` and `st_ino`
@@ -32,47 +30,37 @@ const REQUIRED_DIR: u32 = 0o700;
 /// The projection loses nothing, but the value it projects distinguishes two
 /// objects only while both are live. `unlink` frees an inode number with the
 /// last link, and ext4 and XFS hand it to the next create in the same block
-/// group; APFS draws from a counter that never repeats. This is the one place
-/// that fact is stated; the publication owner's resolution types refer back to
-/// it rather than restating it.
+/// group; APFS draws from a counter that never repeats.
 ///
 /// An open descriptor holds a number out of circulation for as long as it
-/// lives. So a comparison made against a descriptor this process still holds is
+/// lives, so a comparison against a descriptor this process still holds is
 /// exact, and is the strongest form available. A comparison against a number
 /// that outlived its descriptor — one decoded from a durable record after a
-/// crash — is not: the number may since have been recycled. Such a comparison
-/// needs evidence beyond the number, and the durable record must carry it.
+/// crash — is not: the number may since have been recycled, so the durable
+/// record must carry evidence beyond the number.
 ///
-/// The strongest evidence a durable record can carry is content. That
-/// establishes equivalence, not provenance: a foreign object that has been
-/// handed a recycled number *and* carries byte-identical content is not
-/// distinguishable from the original, and no comparison available after a crash
-/// can separate them. Provenance beyond content is unknowable across a crash,
-/// and a caller that needs it must keep a descriptor rather than a number.
+/// The strongest such evidence is content, and it establishes equivalence, not
+/// provenance: a foreign object handed a recycled number *and* carrying
+/// byte-identical content is indistinguishable from the original. Provenance
+/// beyond content is unknowable across a crash; a caller that needs it must
+/// keep a descriptor rather than a number.
 ///
 /// # The removal bound
 ///
-/// One gap is irreducible rather than merely unmeasured. Removal names a path:
-/// neither qualified platform offers an unlink through a descriptor, so on
-/// every POSIX design some interval separates the validation of an object from
-/// the unlink of the name that held it, and the name can be repointed inside
-/// it. No amount of evidence about the object closes an interval about the
-/// name.
+/// Removal names a path: neither qualified platform offers an unlink through a
+/// descriptor, so some interval separates the validation of an object from the
+/// unlink of the name that held it, and the name can be repointed inside it. No
+/// evidence about the object closes an interval about the name. What a caller
+/// can do is put the object under a name no writer it must tolerate ever
+/// touches; the publication owner does that, and the writers it admits —
+/// ordinary Git operations, which write tracked paths — touch none of its
+/// untracked transients.
 ///
-/// What a caller can do is put the object under a name no writer it must
-/// tolerate ever touches. The publication owner does that, and documents why
-/// the writers it admits — ordinary Git operations, which write tracked paths —
-/// touch none of its untracked transients at all.
-///
-/// So the bound has two halves, and neither may be overstated. Against a
-/// cooperating writer, no distinguishable content is lost. Against a writer
-/// outside the contract — one holding a descriptor opened on the object before
-/// the operation began, or one deliberately writing untracked protocol names —
-/// the interval is open and this design does not close it. Do not state
-/// anything stronger anywhere, and in particular do not say that a removal
-/// proves an object is its own: bytes at a number establish equivalence to what
-/// was bound, never provenance.
-///
+/// So: against a cooperating writer, no distinguishable content is lost.
+/// Against a writer outside the contract — one holding a descriptor opened
+/// before the operation began, or one deliberately writing untracked protocol
+/// names — the interval is open and this design does not close it. A removal
+/// never proves an object is its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FsIdentity {
     dev: u64,
