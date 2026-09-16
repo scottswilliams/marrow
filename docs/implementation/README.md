@@ -74,8 +74,8 @@ process; `marrow-lsp` projects compiler snapshot facts and adds no semantics.
 | `marrow-store` | The ordered-byte engine contract, the in-memory and redb engines, and the conformance suite both must pass | [Storage](storage.md) |
 | `marrow-lifecycle` | The verified image's store projection and its pairing with a native or in-memory store; provision, attach, import, audit, explicit sparse-field apply, recovery, and logical backup/restore. The envelope gates ordinary service on Active | [Operations](../operations/README.md) |
 | `marrow-fs-journal` | Descriptor-rooted file publication: entry-name admission, the cooperative lock, and the pending-journal frame with replay and crash-debris classification | [Storage](storage.md) |
-| `marrow-project` | Manifest schema, module discovery, file identities, and the `.marrow/ids` ledger, all over caller-supplied bytes | [Projects](../tools/projects.md) |
-| `marrow-project-fs` | Bounded reads of the project root, manifest, source tree, and ledger, and the sole publisher of `.marrow/ids` | [Projects](../tools/projects.md) |
+| `marrow-project` | Manifest schema including the `[dependencies]` alias and relative-path vocabulary, module discovery, file identities, and the `.marrow/ids` ledger, all over caller-supplied bytes | [Projects](../tools/projects.md) |
+| `marrow-project-fs` | Bounded reads of the project root, manifest, source tree, and ledger; locating each declared dependency and capturing its tree beside the root's under one limit accumulator, read-only; and the sole publisher of `.marrow/ids` | [Projects](../tools/projects.md) |
 | `marrow-local-wire` | The framed protocol between a runner and its client: framing, limits, one canonical JSON writer, completed bounded frames, and the closed request, response, fault, and incomplete grammar | [TypeScript client](../tools/typescript-client.md) |
 | `marrow-runner` | The runner binary and library: the supervised Unix-domain channel, export dispatch over a verified image, and the one-shot provision, import, audit, apply, recovery, backup and restore commands over the lifecycle owners | [Operations](../operations/README.md) |
 | `marrow-lsp` | The standalone `marrow-lsp` executable: JSON-RPC over stdio, document sync, and diagnostics, formatting, hover, definition, completion, signature help, and document symbols projected from the compiler's `AnalysisSnapshot` | [Language server](../tools/lsp.md) |
@@ -111,8 +111,10 @@ provision, attach, or import. The language server reaches `marrow-compile` and
 ## Tracing a command
 
 `marrow test` shows the whole stack in one invocation. The CLI asks
-`marrow-project-fs` to capture the project; `marrow-project` turns the captured
-bytes into a `ProjectInput`. `marrow-compile` checks every module and lowers a
+`marrow-project-fs` to capture the project, reading the root tree and every
+declared dependency's tree against one set of limits; `marrow-project` turns the
+captured bytes into a `ProjectInput` whose every file carries its origin.
+`marrow-compile` checks every module and lowers a
 test image, which `marrow-image` encodes and `marrow-verify` seals.
 `marrow-lifecycle` prepares the sealed image once and selects each `test` block
 from it; `marrow-vm` runs the body. A body that touches a `^` place runs against
@@ -134,11 +136,10 @@ does not undo or retry it.
 and hands the image to `marrow-runner audit`; `marrow-lifecycle` admits it as
 the store's exact active binding under the lock and opens the native engine
 with `NativeOpenAccess::ReadOnly`. The kernel's logical walk checks every cell,
-and the lifecycle returns findings and an entry-content digest. The owner lock
-is released before the runner renders the report. Physical integrity is not
-checked, and inspection leaves an inherited unclean-shutdown obligation
-undischarged ([storage](storage.md#auditing-a-store)). This report grants no
-recovery or admission permit.
+and the lifecycle returns findings and an entry-content digest. Physical
+integrity is not checked, and inspection leaves an inherited unclean-shutdown
+obligation undischarged ([storage](storage.md#auditing-a-store)). This report
+grants no recovery or admission permit.
 
 `marrow backup` shares project capture and image staging with doctor through
 `cmd_store`. The runner's `store_transfer` command module reads bounded image
@@ -184,6 +185,11 @@ allocation. The compiler's
 [`FunctionRegistry`](../../crates/marrow-compile/src/lower/registry.rs) retains
 the reserved identities; lowering fills their slots, and semantic analyses use
 those same indices.
+
+[`ScopedName`](../../crates/marrow-compile/src/source.rs) is the one key shape
+for a declared name — a type, a store root, a Product's resource spelling —
+pairing it with the captured tree that declares it, so two trees may each
+declare `Book` and an origin is never recovered from a spelling.
 
 Independent verification is a separate trust boundary: the verifier reconstructs
 types and demand from image bytes without consulting compiler state. Diagnostic
