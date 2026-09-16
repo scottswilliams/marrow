@@ -362,8 +362,8 @@ pub enum Instruction<R: Operands> {
     FieldUnset(u16),
     SomeWrap,
     VacantLoad(ImageType),
-    /// Construct enum `enum_idx`'s variant `variant` from its dense scalar payload
-    /// popped in reverse (p0 pushed first). Operands: `u16 enum_idx ‖ u16 variant`.
+    /// Construct enum `enum_idx`'s variant `variant` from its dense payload popped
+    /// in reverse (p0 pushed first). Operands: `u16 enum_idx ‖ u16 variant`.
     EnumConstruct {
         enum_idx: R::Enum,
         variant: u16,

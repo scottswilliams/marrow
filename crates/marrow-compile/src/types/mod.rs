@@ -1170,16 +1170,16 @@ impl DeclarationVerdict {
     }
 }
 
-/// One enum-variant payload leaf: a named scalar carried by that variant, in
+/// One enum-variant payload leaf: a named bare value carried by that variant, in
 /// declaration order. The name is used for named construction; the image records
-/// only the scalar.
+/// the leaf's erased type.
 #[derive(Clone)]
 pub(crate) struct EnumPayloadInfo {
     pub(crate) name: String,
-    pub(crate) scalar: ScalarType,
+    pub(crate) ty: GArg,
 }
 
-/// One selectable enum variant: its member name and dense scalar payload.
+/// One selectable enum variant: its member name and dense payload.
 #[derive(Clone)]
 pub(crate) struct VariantInfo {
     pub(crate) name: String,
@@ -1198,19 +1198,16 @@ pub(crate) struct EnumInfo {
 }
 
 impl EnumInfo {
-    /// This declared enum's members as resolved variants. Every payload leaf of a
-    /// concrete `enum` is a scalar, so no instantiation cache is consulted.
+    /// This declared enum's members as resolved variants. A declared enum's payload
+    /// leaves are resolved when the declaration fills, so no instantiation cache is
+    /// consulted.
     pub(crate) fn resolved_variants(&self) -> ResolvedEnumVariants {
         self.variants
             .iter()
             .map(|variant| {
                 (
                     variant.name.clone(),
-                    variant
-                        .payload
-                        .iter()
-                        .map(|field| GArg::Scalar(field.scalar))
-                        .collect(),
+                    variant.payload.iter().map(|field| field.ty).collect(),
                 )
             })
             .collect()
@@ -1840,6 +1837,62 @@ impl TypeRegistry {
         }
     }
 
+    /// Admit one enum-variant payload leaf: the bare value type the leaf carries,
+    /// and the collection that disqualifies it when it is not a payload type.
+    ///
+    /// A declared `enum` member and a generic enum instantiation share this one
+    /// rule, so both admit exactly a bare scalar, a nominal int, a struct, or
+    /// another enum (a generic application of those resolves to one of them). The
+    /// image admits a bare scalar, record, or enum as a payload leaf, so a
+    /// collection is refused here — at the declaration or at the mint — and a
+    /// checker-clean program can never emit an image the verifier rejects at the
+    /// Table phase. The leaf is returned either way: the generic line still fills
+    /// its body so the shared instance cache stays consistent, and each caller
+    /// renders the refusal into its own ledger.
+    ///
+    /// This sits on the monomorphization recursion, one frame per nesting level of
+    /// `MINT_DEPTH_LIMIT`, so the refusal text is built by the cold owner below
+    /// rather than in this frame.
+    fn enum_payload_leaf(
+        &mut self,
+        draft: &mut DraftTxn<'_>,
+        ty: &TypeExpr,
+        subst: &[(String, GArg)],
+        site: MintSite<'_>,
+    ) -> Result<(GArg, Option<CollTypeId>), ResolveError> {
+        let arg = self.resolve_garg_annotation(draft, ty, subst, site)?;
+        Ok(match arg {
+            GArg::Collection(coll) => (arg, Some(coll)),
+            _ => (arg, None),
+        })
+    }
+
+    /// The refusal a collection payload leaf earns, wherever it was written.
+    #[inline(never)]
+    fn collection_payload_refusal(
+        &self,
+        site: MintSite<'_>,
+        enum_name: &str,
+        variant_name: &str,
+        coll: CollTypeId,
+    ) -> SourceDiagnostic {
+        let kind = match self.collection_spec(coll) {
+            CollSpec::List { .. } => "List",
+            CollSpec::Map { .. } => "Map",
+        };
+        SourceDiagnostic::at(
+            Code::CheckUnsupported,
+            site.file,
+            site.span,
+            format!(
+                "the `{variant_name}` payload of `{enum_name}` is a `{kind}` value. An enum \
+                 member payload is a bare scalar, a struct, or another enum; a collection is \
+                 not a payload type. Declare a struct that holds the collection and use that \
+                 struct as the payload."
+            ),
+        )
+    }
+
     /// Resolve a type annotation to a bare value type (a [`GArg`]), monomorphizing
     /// any `Option`/`Result`/user generic application into `draft` on first use.
     /// `None` for an optional, the resource record, or a name not yet
@@ -2462,15 +2515,17 @@ impl TypeRegistry {
             let mut payload = Vec::with_capacity(variant.payload.len());
             let mut leaves = Vec::with_capacity(variant.payload.len());
             for field in &variant.payload {
-                let arg = self.resolve_garg_env(draft, &field.ty, &subst, site)?;
-                // The image admits a bare scalar, record, or enum as an enum
-                // payload leaf; a collection is not a payload type. Reject at the
-                // mint so a checker-clean program can never emit an image the
-                // verifier rejects at the Table phase.
-                if let GArg::Collection(coll) = arg
+                let (arg, refused) = self.enum_payload_leaf(draft, &field.ty, &subst, site)?;
+                // The instantiation still fills its body so the shared instance
+                // cache stays consistent; the non-empty pending queue makes the
+                // driver reject before the image is encoded, so the collection leaf
+                // never reaches the verifier.
+                if let Some(coll) = refused
                     && !reported
                 {
-                    self.record_collection_payload_rejection(site, enum_name, &variant.name, coll);
+                    let refusal =
+                        self.collection_payload_refusal(site, enum_name, &variant.name, coll);
+                    self.generics.borrow_mut().collection_payloads.push(refusal);
                     reported = true;
                 }
                 leaves.push(arg.image());
@@ -2795,38 +2850,6 @@ impl TypeRegistry {
                 message,
             ));
         }
-    }
-
-    /// Record the mint-time rejection of a collection payload leaf at the construction
-    /// or annotation site. The instantiation still fills its body so the shared
-    /// instance cache stays consistent; the non-empty pending queue makes the driver
-    /// reject before the image is encoded, so the collection leaf never reaches the
-    /// verifier.
-    fn record_collection_payload_rejection(
-        &self,
-        site: MintSite<'_>,
-        enum_name: &str,
-        variant_name: &str,
-        coll: CollTypeId,
-    ) {
-        let kind = match self.collection_spec(coll) {
-            CollSpec::List { .. } => "List",
-            CollSpec::Map { .. } => "Map",
-        };
-        self.generics
-            .borrow_mut()
-            .collection_payloads
-            .push(SourceDiagnostic::at(
-                Code::CheckUnsupported,
-                site.file,
-                site.span,
-                format!(
-                    "the `{variant_name}` payload of `{enum_name}` is a `{kind}` value. An enum \
-                 member payload is a bare scalar, a struct, or another enum; a collection is not a \
-                 payload type. Declare a struct that holds the collection and use that struct as \
-                 the payload."
-                ),
-            ));
     }
 
     /// The resolved member shape of a minted type instantiation, if `id` names one.
@@ -3820,7 +3843,13 @@ impl ValueGraph {
             push(ValueNode::Record(info.type_id), info.name.clone(), outgoing);
         }
         for info in &registry.enums {
-            push(ValueNode::Enum(info.enum_id), info.name.clone(), Vec::new());
+            let outgoing = info
+                .variants
+                .iter()
+                .flat_map(|variant| variant.payload.iter().map(|field| field.ty))
+                .collect::<Vec<_>>();
+            view.validate_args_with(&outgoing, None, metadata)?;
+            push(ValueNode::Enum(info.enum_id), info.name.clone(), outgoing);
         }
         for inst in &view.generics.type_insts {
             let Some(body) = view.ready_inst_body_with(inst, metadata)? else {

@@ -1183,7 +1183,7 @@ pub(super) fn declare_enums<'a>(
 /// Pass two for the closed flat enum types: resolve each reserved enum's variants and
 /// fill both the registry info and the image ENUMS entry. Hierarchy is deferred: a
 /// `category` member or a member with nested members is `check.unsupported`. A member's
-/// payload is the dense `name: Type` form over bare scalars. A declaration with a
+/// payload is the dense `name: Type` form over bare payload types. A declaration with a
 /// defect is refused whole (its reserved image entry stays empty and its name leaves
 /// the accepted set) so a later match cannot resolve against a broken enum. Its
 /// reserved row stays in place carrying [`DeclarationVerdict::Refused`], for the reason
@@ -1234,15 +1234,15 @@ pub(super) fn fill_enums(
 /// One enum's selectable variants and the image definitions that carry them.
 type EnumVariants = (Vec<VariantInfo>, Vec<VariantDef>);
 
-/// One enum member's payload fields, as info and as the scalars the image holds.
-type EnumPayload = (Vec<EnumPayloadInfo>, Vec<ScalarType>);
+/// One enum member's payload fields, as info and as the leaf types the image holds.
+type EnumPayload = (Vec<EnumPayloadInfo>, Vec<ImageType>);
 
 /// Resolve an enum's members to its selectable variants and their image
 /// definitions, or `None` if any member is unsupported. On the flat line every
 /// member is a leaf: a `category` member or one with nested members is deferred.
 fn enum_variants(
     draft: &mut DraftTxn<'_>,
-    registry: &TypeRegistry,
+    registry: &mut TypeRegistry,
     declared: DeclarationSite<'_>,
     decl: &EnumDecl,
     diagnostics: &mut DiagnosticCollector,
@@ -1252,6 +1252,7 @@ fn enum_variants(
     let mut variant_defs = Vec::new();
     let mut names = MemberNamespace::new(&decl.name);
     let mut refusal = None;
+    let mut limited = false;
     for member in &decl.members {
         if member.category {
             refuse_first(
@@ -1283,8 +1284,15 @@ fn enum_variants(
             refuse_first(&mut refusal, diagnostics, declared, row);
             continue;
         }
-        let Some((payload, payload_scalars)) =
-            enum_payload(registry, declared, member, diagnostics, &mut refusal)?
+        let Some((payload, payload_leaves)) = enum_payload(
+            draft,
+            registry,
+            declared,
+            member,
+            diagnostics,
+            &mut refusal,
+            &mut limited,
+        )?
         else {
             continue;
         };
@@ -1292,32 +1300,36 @@ fn enum_variants(
         variant_defs.push(VariantDef {
             name: name_id,
             category: false,
-            payload: payload_scalars
-                .iter()
-                .map(|scalar| ImageType::scalar(scalar.image()))
-                .collect(),
+            payload: payload_leaves,
         });
         variants.push(VariantInfo {
             name: member.name.clone(),
             payload,
         });
     }
-    Ok(match refusal {
-        Some(refusal) => DeclarationOccurrence::Refused(refusal),
-        None => DeclarationOccurrence::Accepted((variants, variant_defs)),
+    Ok(match (refusal, limited) {
+        (Some(refusal), _) => DeclarationOccurrence::Refused(refusal),
+        // The shared instantiation limit reports once, at the monomorphization owner;
+        // this declaration is refused for that cause.
+        (None, true) => {
+            DeclarationOccurrence::Refused(refuse_covered(declared, Code::CheckInstantiationLimit))
+        }
+        (None, false) => DeclarationOccurrence::Accepted((variants, variant_defs)),
     })
 }
 
-/// Resolve one member's payload fields to their scalars and info, or `None` when
-/// a field is not the bare `name: scalar` form. A defect refuses the whole
-/// declaration, so it is recorded in the enum's shared refusal rather than
-/// returned separately.
+/// Resolve one member's payload fields to their leaf types and info, or `None`
+/// when a field is not the bare `name: Type` form over a payload type. A defect
+/// refuses the whole declaration, so it is recorded in the enum's shared refusal
+/// rather than returned separately.
 fn enum_payload(
-    registry: &TypeRegistry,
+    draft: &mut DraftTxn<'_>,
+    registry: &mut TypeRegistry,
     declared: DeclarationSite<'_>,
     member: &EnumMember,
     diagnostics: &mut DiagnosticCollector,
     refusal: &mut Option<DeclarationRefusalSummary>,
+    limited: &mut bool,
 ) -> Result<Option<EnumPayload>, BuildError> {
     let file = declared.file;
     if member.payload.len() > marrow_image::bounds::MAX_PAYLOAD_FIELDS {
@@ -1339,7 +1351,7 @@ fn enum_payload(
         return Ok(None);
     }
     let mut payload = Vec::new();
-    let mut scalars = Vec::new();
+    let mut leaves = Vec::new();
     let mut names = MemberNamespace::new(format!("{}.{}", declared.name, member.name));
     let mut ok = true;
     for field in &member.payload {
@@ -1348,16 +1360,29 @@ fn enum_payload(
             ok = false;
             continue;
         }
-        let scalar = match registry.scalar_annotation(&field.ty) {
-            Ok(scalar) => scalar,
+        let site = MintSite {
+            file,
+            span: field.ty.span(),
+        };
+        let ty = match registry.enum_payload_leaf(draft, &field.ty, &[], site) {
+            Ok((ty, None)) => ty,
+            Ok((_, Some(coll))) => {
+                let row =
+                    registry.collection_payload_refusal(site, declared.name, &member.name, coll);
+                refuse_first(refusal, diagnostics, declared, row);
+                ok = false;
+                continue;
+            }
             Err(ResolveError::Refusal(refused)) => {
                 let subject = if registry.optional_annotation(&field.ty) {
                     "an optional enum payload field type"
                 } else {
                     "this enum payload field type"
                 };
-                let row = registry.scalar_refusal_row(refused, file, field.ty.span(), subject)?;
-                refuse_first(refusal, diagnostics, declared, row);
+                match registry.member_refusal_row(refused, file, field.ty.span(), subject)? {
+                    Some(row) => refuse_first(refusal, diagnostics, declared, row),
+                    None => *limited = true,
+                }
                 ok = false;
                 continue;
             }
@@ -1365,11 +1390,11 @@ fn enum_payload(
         };
         payload.push(EnumPayloadInfo {
             name: field.name.clone(),
-            scalar,
+            ty,
         });
-        scalars.push(scalar);
+        leaves.push(ty.image());
     }
-    Ok(ok.then_some((payload, scalars)))
+    Ok(ok.then_some((payload, leaves)))
 }
 
 /// Pass one for the admitted record types: reserve each resource's image

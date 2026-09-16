@@ -1118,8 +1118,14 @@ impl TypeMetadataSession<'_> {
                             }
                         }
                     }
-                    NominalBoundaryNode::Enum(EnumMetadataOwner::DeclaredEnum(_)) => {
-                        // Declared enum payloads currently carry only ScalarType.
+                    NominalBoundaryNode::Enum(EnumMetadataOwner::DeclaredEnum(row)) => {
+                        for field in self.view.registry.enums[row]
+                            .variants
+                            .iter()
+                            .flat_map(|variant| &variant.payload)
+                        {
+                            walk.push(Value(field.ty), origin, self)?;
+                        }
                     }
                     NominalBoundaryNode::Collection(id) => {
                         self.view.validate_args_with(

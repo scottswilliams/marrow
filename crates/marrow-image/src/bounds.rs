@@ -37,7 +37,7 @@ pub const MAX_RECORD_FIELDS: usize = 4096;
 /// deliberately does not scale with [`MAX_RECORD_FIELDS`].
 pub const MAX_STRUCT_LEAVES: usize = 64;
 
-/// Closed enum value types, variants per enum, and dense scalar payload leaves per
+/// Closed enum value types, variants per enum, and dense payload leaves per
 /// variant. User enums and every monomorphized `Option`/`Result`/generic instance
 /// share the enum count.
 pub const MAX_ENUMS: usize = 4096;

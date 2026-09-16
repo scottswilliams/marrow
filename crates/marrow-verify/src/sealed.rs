@@ -336,8 +336,8 @@ impl SealedRecordType {
 
 /// One sealed enum variant: its member name, `category` flag, and dense payload in
 /// declaration order. Each payload leaf is a bare (non-optional) [`ImageType`]: a
-/// user `enum` member carries only bare scalars, while a built-in `Option`/`Result`
-/// instantiation carries whatever concrete type its argument monomorphized to.
+/// scalar, a record, or another enum, whether the member was declared or
+/// monomorphized from a generic template.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealedVariant {
     pub(crate) name: Rc<str>,

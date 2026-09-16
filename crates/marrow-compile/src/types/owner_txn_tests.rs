@@ -512,6 +512,20 @@ fn test_function_definition(draft: &mut DraftTxn<'_>, name: &str) -> marrow_imag
 /// Temporarily complete every known reservation to compare complete image bytes;
 /// an extra vacancy fails encoding, and an extra filled row changes those bytes.
 /// The armed transaction restores the original vacancies after the observation.
+/// The `List<T>` annotation a payload-leaf resolution is driven with.
+fn list_of(elem: &str) -> TypeExpr {
+    TypeExpr::Apply {
+        head: "List".to_string(),
+        head_span: SourceSpan::default(),
+        args: vec![TypeExpr::Name {
+            text: elem.to_string(),
+            segment_spans: Vec::new(),
+            span: SourceSpan::default(),
+        }],
+        span: SourceSpan::default(),
+    }
+}
+
 fn pending_function_snapshot(
     owner: &mut ImageDraft,
     registry: &TypeRegistry,
@@ -640,20 +654,23 @@ fn template_proof_savepoint_isolates_a_failed_proof_and_transfers_once() {
                 fields: Vec::new(),
             })
             .expect("a within-domain mint");
-        let proof_collection = registry
-            .instantiate_list(proof_draft, text)
-            .expect("the proof mints a distinct collection on the real registry");
+        // A collection payload leaf is refused by the shared enum-payload rule; the
+        // proof mints its own collection row along the way.
+        let (_, refused) = registry
+            .enum_payload_leaf(proof_draft, &list_of("string"), &[], site(29))
+            .expect("a collection resolves as a payload leaf");
         assert_eq!(
             registry.collections.borrow().len(),
             2,
             "the proof appended its own collection row",
         );
-        registry.record_collection_payload_rejection(
-            site(29),
-            "Payload",
-            "value",
-            proof_collection,
-        );
+        let coll = refused.expect("a collection is not an enum payload type");
+        let refusal = registry.collection_payload_refusal(site(29), "Payload", "value", coll);
+        registry
+            .generics
+            .borrow_mut()
+            .collection_payloads
+            .push(refusal);
         registry.record_limit(site(30), InstantiationLimit::Count);
 
         // Simulate a proof that failed mid-fill, leaving the transient batch state dirty:

@@ -2509,7 +2509,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// Lower an enum construction `Enum::member` or `Enum::member(field: v, ...)`.
     /// A payloadless member takes no arguments; a payload member takes the exact
-    /// named payload set, each coerced to its declared scalar in payload
+    /// named payload set, each coerced to its declared leaf type in payload
     /// declaration order (p0 pushed first), then `EnumConstruct`.
     fn lower_enum_construct(
         &mut self,
@@ -2542,13 +2542,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         // The payload plan, resolved before emission so evaluation order is the
         // payload declaration order.
-        let plan: Vec<(String, ScalarType)> = info
+        let plan: Vec<(String, GArg)> = info
             .variant(variant_name)
             .ok_or(LoweringFailure::Recoverable)?
             .1
             .payload
             .iter()
-            .map(|field| (field.name.clone(), field.scalar))
+            .map(|field| (field.name.clone(), field.ty))
             .collect();
 
         if plan.is_empty() {
@@ -2602,13 +2602,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             if !ok {
                 return Err(LoweringFailure::Recoverable);
             }
-            for (field_name, scalar) in &plan {
+            for (field_name, field_ty) in &plan {
                 let arg = args
                     .iter()
                     .find(|a| a.name.as_ref().map(NameSegment::text) == Some(field_name.as_str()));
                 match arg {
                     Some(argument) => {
-                        self.lower_as(&argument.value, LTy::bare_scalar(*scalar))?;
+                        self.lower_as(&argument.value, garg_to_lty(*field_ty))?;
                     }
                     None => {
                         self.fail(SourceDiagnostic::at(

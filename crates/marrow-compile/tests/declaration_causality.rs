@@ -1589,7 +1589,7 @@ fn a_binding_refused_for_its_annotation_is_not_out_of_scope_at_its_uses() {
 // diagnostics: the reader would see a spanless `cli.compiler_invariant` instead of
 // the `check.unsupported` row reported at the declaration.
 //
-// Both fill-ordering directions that can bind a nominal leaf are covered:
+// Both fill-ordering directions that can bind a refused leaf are covered:
 // `fill_records` before `fill_structs`/`fill_enums`, and `fill_structs` filling one
 // struct before a later sibling it names.
 // ---------------------------------------------------------------------------
@@ -1605,7 +1605,7 @@ struct FillOrderCase {
     rows: &'static [(u32, u32)],
 }
 
-/// Both fill-ordering directions that can bind a nominal leaf: records filled before
+/// Both fill-ordering directions that can bind a refused leaf: records filled before
 /// structs and enums, and one struct filled before a later sibling it names. In every
 /// direction the refused declaration's own row survives to the reader rather than being
 /// replaced by a compiler invariant.
@@ -1629,14 +1629,12 @@ pub fn make(): int {
         rows: &[(4, 8)],
     },
     FillOrderCase {
-        naming: "a resource field naming an enum refused for a nominal payload leaf",
+        naming: "a resource field naming an enum refused for an optional payload leaf",
         source: r#"module main
-
-type Age: int in 0..=150
 
 enum E {
     none
-    some(a: Age)
+    some(a: int?)
 }
 
 resource R {
@@ -1647,24 +1645,22 @@ pub fn make(): int {
     return 1
 }
 "#,
-        rows: &[(7, 13)],
+        rows: &[(5, 13)],
     },
     FillOrderCase {
         naming: "the same enum with no resource field, which must report the same row",
         source: r#"module main
 
-type Age: int in 0..=150
-
 enum E {
     none
-    some(a: Age)
+    some(a: int?)
 }
 
 pub fn make(): int {
     return 1
 }
 "#,
-        rows: &[(7, 13)],
+        rows: &[(5, 13)],
     },
     FillOrderCase {
         naming: "a struct field naming a later struct the same pass refuses",
@@ -1688,22 +1684,20 @@ pub fn make(): int {
         naming: "a struct field naming an enum the later enum fill refuses",
         source: r#"module main
 
-type Age: int in 0..=150
-
 struct A {
     e: E
 }
 
 enum E {
     none
-    some(a: Age)
+    some(a: int?)
 }
 
 pub fn make(): int {
     return 1
 }
 "#,
-        rows: &[(11, 13)],
+        rows: &[(9, 13)],
     },
     FillOrderCase {
         naming: "a resource field aliasing a refused struct, which reaches the same \
@@ -1940,10 +1934,9 @@ fn a_field_read_on_a_refused_struct_is_not_a_missing_field() {
 fn a_match_on_a_refused_enum_is_not_a_set_of_unknown_members() {
     let diagnostics = diagnostics(
         "module main\n\n\
-         type Age: int in 0..=150\n\n\
          enum Color {\n\
          \x20   red\n\
-         \x20   blue(a: Age)\n\
+         \x20   blue(a: int?)\n\
          }\n\n\
          fn pick(c: Color): int {\n\
          \x20   match c {\n\
@@ -1971,8 +1964,8 @@ fn a_match_on_a_refused_enum_is_not_a_set_of_unknown_members() {
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", Code::CheckUnsupported, 7, 13),
-            ("src/main.mw", Code::CheckUnsupported, 10, 12),
+            ("src/main.mw", Code::CheckUnsupported, 5, 13),
+            ("src/main.mw", Code::CheckUnsupported, 8, 12),
         ],
         "the payload reports the cause and the parameter is steered to it: {:#?}",
         messages(&diagnostics),
@@ -2111,10 +2104,9 @@ fn a_payload_construction_on_a_refused_enum_steers_to_its_cause() {
     let source = |construct: &str| {
         format!(
             "module main\n\n\
-             type Age: int in 0..=150\n\n\
              enum Color {{\n\
              \x20   red\n\
-             \x20   blue(a: Age)\n\
+             \x20   blue(a: int?)\n\
              }}\n\n\
              pub fn make(): int {{\n\
              \x20   const c = {construct}\n\
