@@ -3,13 +3,10 @@
 //! Every state in the closed map is built on a real filesystem the way a crash
 //! would leave it — the durable header and phase records through the journal
 //! owner's own encoders, the artifact and stage entries as real inodes — and
-//! then driven through the production recovery entry. Nothing here reaches a
-//! test-only production path: the only crate-private reach is the header
-//! encoder, which is exactly the durable representation under test.
+//! then driven through the production recovery entry.
 //!
 //! Guard acquisition is serialized across this binary because the quarantine is
-//! process-wide by construction; the temp roots are disjoint, so the
-//! serialization costs a lock and nothing else.
+//! process-wide by construction; the temp roots are disjoint.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -40,9 +37,6 @@ fn serialized() -> MutexGuard<'static, ()> {
 }
 
 /// Recover `project` and require it to settle as `expected`.
-///
-/// The planting stays in each kat, because the state a kat plants is its whole
-/// subject. What is shared is only the drive-and-check that follows it.
 fn assert_settled(project: &Project, expected: IdsPublication) {
     let settled = project.guard().recover_ids().expect("recovery runs");
     assert_eq!(settled, Some(expected));
@@ -92,11 +86,6 @@ impl Project {
 
     /// The one state an interrupted removal can leave: the object under the
     /// quarantine name, its own name absent.
-    ///
-    /// A removal's only entry mutations are one rename in and either an unlink
-    /// or one rename back, all within the metadata directory. Before the first
-    /// there is nothing to find; after the last there is nothing to find; the
-    /// interval between them is this.
     fn move_into_quarantine(&self, name: &str) {
         fs::rename(self.meta().join(name), self.quarantine())
             .expect("move the object to the quarantine name");
@@ -575,7 +564,7 @@ fn a_generation_a_checkout_landed_reverts_the_publication() {
 /// The same checkout, one record earlier. A publication interrupted before its
 /// `Installing` record has mutated no artifact either, so the reverted reading
 /// means exactly what it means in the `Installing` window and settles the same
-/// way. The two windows classify one writer identically.
+/// way.
 #[test]
 fn a_generation_a_checkout_landed_before_the_installing_record_reverts_the_publication() {
     let _serial = serialized();
@@ -621,8 +610,7 @@ fn a_destination_taken_before_the_installing_record_reverts_the_publication() {
 
 /// The window admits exactly two readings. A state only this publication's own
 /// mutations could have produced — the successor already committed while no
-/// `Installing` record exists — stays retained corruption, so the shared rule
-/// widened the classification of an outside writer and nothing else.
+/// `Installing` record exists — stays retained corruption.
 #[test]
 fn an_installed_successor_before_the_installing_record_is_retained() {
     let _serial = serialized();
@@ -775,14 +763,11 @@ fn a_third_inode_beside_an_installed_successor_is_retained() {
 ///
 /// An inode number is free for reuse the moment its last link goes, and ext4
 /// and XFS hand it straight back to the next create in the same block group;
-/// APFS draws from a counter that never repeats. The bound generation here is
-/// unlinked and the third entry lands on its number, which the fixture spells
-/// directly by witnessing the number off the entry that carries it — the state
-/// a recycling filesystem produces on its own, reproduced on any filesystem.
-/// It is the same state and the same observable outcome as the Linux failure,
-/// not the same panic text: these kats name their own expectations.
-/// The stage name then maps to the bound number under a run that is not the
-/// bound one, and that is not the displaced generation coming back.
+/// APFS draws from a counter that never repeats. The fixture witnesses the
+/// number off the entry that carries it, so the state a recycling filesystem
+/// produces on its own is reproduced on any filesystem: the stage name maps to
+/// the bound number under a run that is not the bound one, which is not the
+/// displaced generation coming back.
 ///
 /// The foreign run is the bound run's own length, so the resolution that
 /// separates them is the byte comparison and not the size it is filtered by.
@@ -816,10 +801,8 @@ fn a_third_inode_on_the_bound_generation_s_recycled_number_is_retained() {
 /// ledger is a committed file, so the entry a checkout replaces is unlinked and
 /// the replacement can be handed the same number. The run it carries is not the
 /// bound one, so the plan's generation is gone and the publication is reverted
-/// exactly as it is when the number differs.
-///
-/// As above, the landed run is the bound run's own length, so the byte
-/// comparison is what separates them.
+/// exactly as it is when the number differs. The landed run is the bound run's
+/// own length, so the byte comparison is what separates them.
 #[test]
 fn a_generation_on_the_bound_generation_s_recycled_number_reverts_the_publication() {
     let _serial = serialized();
@@ -847,7 +830,7 @@ fn a_generation_on_the_bound_generation_s_recycled_number_reverts_the_publicatio
 /// recorded, stage swept, target still naming neither bound run — is a state
 /// the protocol produces itself. It must finish, not retain: the terminal
 /// record already says which way this publication went, and no mutation is
-/// still owed. Nothing here is unlinked but the marker.
+/// still owed.
 #[test]
 fn a_reverted_terminal_over_a_drifted_target_finishes_after_its_own_cleanup() {
     let _serial = serialized();
@@ -945,8 +928,7 @@ fn an_object_left_in_quarantine_by_an_interrupted_removal_is_finished_not_strand
 /// into quarantine and then failed to unlink it hands back a pending
 /// publication; consuming that value drives the same classification a fresh
 /// process would, so it must not read the quarantined object's absent name as
-/// a cleanup already finished. Driven here through the fixed state that retry
-/// sees, entered by the same production call the CLI makes.
+/// a cleanup already finished.
 #[test]
 fn a_publication_retried_over_an_occupied_quarantine_does_not_read_the_cleanup_as_done() {
     let _serial = serialized();
@@ -1019,8 +1001,7 @@ fn a_reverted_cleanup_interrupted_over_a_mutated_target_finishes_rather_than_wed
 /// judgeable. A publication that reconciled before classifying would put a
 /// successor the reverted cleanup had already taken back under the stage name,
 /// manufacture a reading the terminal contradicts, and leave the project in a
-/// state no later command could settle. Refusing first costs one refusal and
-/// keeps the state settleable.
+/// state no later command could settle.
 #[test]
 fn a_publication_over_an_interrupted_removal_refuses_and_leaves_it_settleable() {
     let _serial = serialized();
@@ -1520,18 +1501,17 @@ ids.publish.quarantine\n\
 ids.pending\n\
 ids.pending.create\n";
 
-/// The exact entry an earlier build of this owner wrote: its header line above
-/// the lock's name alone. A project that published before the four transient
-/// names joined the block carries this on disk.
+/// The entry a project that published under the earlier name set still carries
+/// on disk: the header line above the lock's name alone.
 const PREVIOUS_FORMAT_IGNORE: &[u8] = b"\
 # Machine-written by Marrow. The cooperative project-metadata write lock is\n\
 # machine-local runtime state that no checkout carries.\n\
 publish.lock\n";
 
-/// Exactly what the previous format becomes: the four names it lacks, appended
-/// under the header already there. A second header above a stale first block
-/// would leave a developer's checkout carrying two Marrow-written comments, the
-/// first of them describing a name set the file no longer has.
+/// What that entry becomes: the four names it lacks, appended under the header
+/// already there. A second header would leave a developer's checkout carrying
+/// two Marrow-written comments, the first describing a name set the file no
+/// longer has.
 const UPGRADED_IGNORE: &[u8] = b"\
 # Machine-written by Marrow. The cooperative project-metadata write lock is\n\
 # machine-local runtime state that no checkout carries.\n\
@@ -1543,14 +1523,12 @@ ids.pending.create\n";
 
 /// An entry this owner wrote under an earlier name set is completed in place:
 /// the names it lacks are appended, and the comment it already carries is not
-/// written a second time. The bytes are pinned exactly, and a second
-/// acquisition adds nothing to them.
+/// written a second time.
 ///
-/// This is also what holds the comment's stable opening in place. The owner
-/// tells its own entry from a developer's file by that opening alone, so a
-/// reword that reached it would stop recognizing every entry written before the
-/// reword — and this kat, whose planted entry carries the earlier wording, is
-/// where that shows up.
+/// This also holds the comment's opening line fixed. The owner tells its own
+/// entry from a developer's file by that opening alone, so rewording it would
+/// stop recognizing every entry already on disk — which is what the planted
+/// earlier wording here catches.
 #[test]
 fn an_entry_written_under_an_earlier_name_set_gains_only_the_missing_names() {
     let _serial = serialized();
@@ -1636,11 +1614,9 @@ fn the_ignore_entry_is_completed_rather_than_rewritten() {
 /// owner's derived marker names, so a protocol that grows an eighth name fails
 /// here until the block covers it.
 ///
-/// The uncovered names are not theoretical debris: crash debris under a
-/// transient name that no ignore entry covers is offered by `git add -A`,
-/// committed, and then recreated by every checkout of the result — and a
-/// committed `ids.pending` makes every read-only front door refuse on every
-/// clone, because a marker is exactly what says the ledger is indeterminate.
+/// An uncovered transient is offered by `git add -A`, committed, and recreated
+/// by every checkout of the result; a committed `ids.pending` then makes every
+/// read-only front door refuse on every clone.
 #[test]
 fn the_written_ignore_names_every_transient_the_protocol_can_leave() {
     let _serial = serialized();
@@ -1802,11 +1778,7 @@ fn withhold_write(path: &Path) {
 }
 
 /// Withhold read access to `path` with `mode`, failing loudly when the mode
-/// binds nothing.
-///
-/// The same vacuity this file's write-withholding helper guards against applies
-/// here: an unreadable entry that binds nothing would leave its kat asserting an
-/// acquisition nothing was ever in the way of.
+/// binds nothing, for the reason `withhold_write` documents.
 fn withhold_read(path: &Path, mode: u32) {
     set_mode(path, mode);
     let binds = fs::OpenOptions::new().read(true).open(path).is_err();
@@ -1824,11 +1796,7 @@ fn withhold_read(path: &Path, mode: u32) {
 /// tracked, and this entry is what establishes that in a project no index gate
 /// of ours can see. An entry whose contents cannot be read cannot be shown to
 /// name them, so the contract is not established and nothing is staged or
-/// claimed. Proceeding would publish transients an ordinary `git add -A`
-/// offers and a later checkout writes — precisely the writer the protocol
-/// claims not to have.
-///
-/// The entry is left exactly as found: the refusal is a refusal to proceed,
+/// claimed. The entry is left exactly as found: this is a refusal to proceed,
 /// not an attempt to repair.
 #[test]
 fn an_unreadable_ignore_entry_refuses_the_acquisition() {
@@ -1935,8 +1903,7 @@ fn an_ignore_entry_negating_a_transient_refuses_the_acquisition() {
 ///
 /// The check exists to catch a transient being re-included, not to make any
 /// developer's ignore file unusable. A pattern naming another suffix, another
-/// directory, or a path below this one reaches nothing here, and a project
-/// carrying one publishes exactly as it did before.
+/// directory, or a path below this one reaches nothing here.
 #[test]
 fn an_ignore_entry_negating_something_else_leaves_the_owner_working() {
     let _serial = serialized();
@@ -1977,9 +1944,7 @@ fn an_ignore_entry_negating_something_else_leaves_the_owner_working() {
 /// The names are missing, so the entry does not keep this project's transients
 /// untracked, and an entry that cannot be written cannot be completed. That is
 /// the same unestablished contract an unreadable or oversized entry leaves, and
-/// it gets the same answer. An entry that already names every transient is a
-/// different case entirely: nothing needs writing, and a read-only complete
-/// entry keeps working.
+/// it gets the same answer.
 #[test]
 fn an_incomplete_unwritable_ignore_entry_refuses_the_acquisition() {
     let _serial = serialized();
@@ -2002,9 +1967,9 @@ fn an_incomplete_unwritable_ignore_entry_refuses_the_acquisition() {
 
 /// Only a withheld write is read as a convenience the owner leaves alone. A
 /// node kind this owner never wrote is a corrupted metadata directory, not a
-/// permissions case, so it stays the typed refusal it already was — including
-/// the FIFO, which an owner that blocked on classifying it would hang on under
-/// the write lock rather than refuse.
+/// permissions case, and stays a typed refusal — including the FIFO, which an
+/// owner that blocked on classifying it would hang on under the write lock
+/// rather than refuse.
 #[test]
 fn a_non_regular_ignore_entry_is_still_refused() {
     let _serial = serialized();
@@ -2052,10 +2017,7 @@ fn concurrent_acquisitions_write_one_ignore_entry() {
     /// Each seat needs one uncontended acquisition; the bound turns a livelock
     /// into a failure rather than a hung suite. A seat that yields between
     /// attempts retries about once per seat ahead of it, so the bound sits far
-    /// above what contention costs and nothing here measures anything: on the
-    /// run this was written against the worst seat reached attempt 8 with the
-    /// yield and 10 without, on a machine and scheduler neither number is a
-    /// property of.
+    /// above what contention costs and measures nothing.
     const ATTEMPTS: usize = 10_000;
 
     for round in 0..ROUNDS {
@@ -2146,42 +2108,26 @@ fn the_publication_names_derive_from_the_pure_owner_s_spellings() {
 // removal never reaches it because the move to the quarantine name refuses
 // first.
 //
-// A removal's renames are within one directory, which is the rename atomicity
-// this protocol already rests on for its exchange and its destination-refusing
-// link, so the quarantine adds no filesystem property to the documented
-// file-and-directory-`fsync` envelope. Within that envelope an interrupted
-// removal leaves exactly one state — the object at the quarantine name, its
-// own name absent — because before its first rename and after its last there
-// is nothing to find. Sudden power loss remains outside the envelope here
-// exactly as it is everywhere else in this protocol. That is a real
-// refusal from the production path rather than an injected one, and it needs no
-// seam: the fault is applied from outside the protocol, between two production
-// calls, and the phase the planted journal has reached selects which mutation
-// meets it.
+// The fault is applied from outside the protocol, between two production calls,
+// and the phase the planted journal has reached selects which mutation meets it.
 //
 // Two operations are outside what withdrawing directory write can reach: the
 // stage's `append` and every `sync`. Both act on a descriptor this process
 // already holds, and mode bits are checked when a name is resolved rather than
-// when an open file is written or flushed, so no change to those bits refuses
-// them. That is a statement about mode bits, not about the operations: a full
-// filesystem, an exceeded quota, a revoked mount, a media error, and a lowered
-// `RLIMIT_FSIZE` each refuse a write or a flush on an already-open descriptor.
-// Installing one of those from inside this binary needs privileged setup this
-// suite does not assume, or — for the file-size limit, whose refusal arrives as
-// `SIGXFSZ` first — a signal disposition this workspace's `forbid(unsafe_code)`
-// rules out. So the paths they would exercise are untested here rather than
-// unreachable: the two `?` operators in `stage_successor` around `file.append`
-// and `file.sync`, the `meta.sync()` calls that follow each mutation, and the
-// `discard_stage` precedence rule that only a fault on those reaches.
+// when an open file is written or flushed. The conditions that do refuse them —
+// a full filesystem, an exceeded quota, a revoked mount, a media error, a
+// lowered `RLIMIT_FSIZE` — need privileged setup this suite does not assume, or
+// a signal disposition `forbid(unsafe_code)` rules out. So the `?` operators in
+// `stage_successor` around `file.append` and `file.sync`, the `meta.sync()`
+// calls after each mutation, and the `discard_stage` precedence rule only a
+// fault on those reaches are untested here rather than unreachable.
 
 /// Withdraw write access to the metadata directory, restoring it on drop.
 ///
 /// A withdrawal that binds nothing would leave every kat below asserting a
-/// refusal that never happened, so it panics instead of reporting green. Mode
-/// bits do not bind a process holding the mode-override capability (`root`, or
-/// `CAP_DAC_OVERRIDE` on Linux), and a filesystem that carries no mode bits
-/// does not enforce them at all; `withdrawn_directory_write_binds_this_process`
-/// is the control that names the cause once.
+/// refusal that never happened, so it panics instead of reporting green;
+/// `withdrawn_directory_write_binds_this_process` is the control that names the
+/// cause once.
 struct RefusingMeta {
     path: PathBuf,
 }

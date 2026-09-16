@@ -249,12 +249,9 @@ pub(super) fn recover(
     guard: &ProjectMetadataWriteGuard,
 ) -> Result<Option<IdsPublication>, IdsPublicationError> {
     let meta = guard.meta();
-    // The journal classification below reads the two marker names only, so an
+    // The classification below reads the two marker names only, so an
     // interrupted removal cannot affect it. Reconciliation therefore happens
-    // after it, where the header and the recorded terminal are in hand and the
-    // object in quarantine can be judged by the rule that authorized its
-    // removal. The arms that read the stage without a header reconcile on their
-    // own terms, where no terminal exists for a restore to contradict.
+    // after it, with the header and recorded terminal in hand.
     let names = guard.journal_names();
     // The shape is bound rather than consumed, so the identity the header is
     // checked against is the one this classification acted on. Statting the
@@ -388,15 +385,11 @@ fn publish_admitted<'a>(
     let journal = match claimed {
         Ok(journal) => journal,
         Err(refusal) => {
-            // The claim names which arm it refused on, so this one does not
-            // guess. A preclaim refusal issued no link, so no marker can
-            // exist: the stage this call created is removed and the cause
-            // returned. A possibly-durable one may have left a marker, and the
-            // contract for a marker that may exist is the affine pending value
-            // — removing the stage there could leave a marker with no
-            // successor to resume from, and returning a bare error would drop
-            // the guard borrow and the drop glue that keeps this process
-            // honest about it.
+            // A preclaim refusal issued no link, so no marker can exist: the
+            // stage is removed and the cause returned. A possibly-durable one
+            // may have left a marker, and the contract for a marker that may
+            // exist is the affine pending value — removing the stage there
+            // could leave a marker with no successor to resume from.
             match refusal {
                 ClaimRefusal::Preclaim(error) => {
                     // The cause that stopped the claim outranks a refusal from
@@ -429,15 +422,10 @@ fn publish_admitted<'a>(
 
 /// The pending outcome for a publication interrupted after its claim.
 ///
-/// Three shapes, and the third is the one a finish leaves. A session that still
-/// holds its journal is handed back to be resumed through it. One whose journal
-/// a refused finish already consumed can resume nothing, so it is dropped and
-/// what remains on disk decides: a marker still present is recovery's to adopt,
-/// and a marker already unlinked means the finish got far enough that the
-/// publication happened — its closing checks or its final sync are what
-/// refused. Recovery reads markers, so with none present it would report a
-/// completed publication as one that was never claimed. The terminal this
-/// session recorded is carried along for exactly that case.
+/// A session that still holds its journal is handed back to be resumed through
+/// it. One whose journal a refused finish already consumed can resume nothing,
+/// so what remains on disk decides, with [`Session::recorded`] carried along for
+/// the case where the marker is already gone.
 fn interrupted<'a>(
     guard: &'a ProjectMetadataWriteGuard,
     session: Session<'a>,
