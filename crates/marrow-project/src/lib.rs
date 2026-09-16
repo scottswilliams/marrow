@@ -16,16 +16,21 @@
 //! regardless of arrival order or where the project lives.
 
 mod capture;
+mod dependency;
 mod identity;
 mod ids;
 mod manifest;
 
 pub use capture::{
-    CaptureBound, CaptureError, CaptureErrorKind, CaptureLimits, CapturedFile, CollisionReason,
-    ModuleInput, ProjectInput, capture,
+    CaptureBound, CaptureError, CaptureErrorKind, CaptureLimits, CapturedDependency, CapturedFile,
+    CollisionReason, ModuleInput, ProjectInput, capture, capture_origins,
+};
+pub use dependency::{
+    Dependency, DependencyAlias, DependencyAliasReason, DependencyPath, DependencyPathReason,
+    MAX_DEPENDENCY_ALIAS_BYTES, MAX_DEPENDENCY_PATH_BYTES,
 };
 pub use identity::{
-    FileIdentity, MAX_FILE_IDENTITY_BYTES, ModuleName, SOURCE_EXTENSION, SOURCE_ROOT,
+    FileIdentity, MAX_FILE_IDENTITY_BYTES, ModuleName, SOURCE_EXTENSION, SOURCE_ROOT, SourceOrigin,
     SourcePathReason,
 };
 pub use ids::{
@@ -34,4 +39,6 @@ pub use ids::{
     LEGACY_IDS_FILE, LedgerExpectedArtifact, LedgerPublicationPlan, LedgerPublicationView,
     MAX_IDS_BYTES, MAX_IDS_ROWS, META_DIR,
 };
-pub use manifest::{Edition, Manifest, ManifestError, ManifestErrorKind, Position};
+pub use manifest::{
+    DependencyShapeFault, Edition, Manifest, ManifestError, ManifestErrorKind, Position,
+};

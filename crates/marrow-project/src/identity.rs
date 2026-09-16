@@ -9,6 +9,8 @@
 //! matching in-source header. A headerless script keeps its path-derived identity
 //! for export lookup but cannot be imported.
 
+use crate::dependency::DependencyAlias;
+
 /// The fixed directory every project's source lives under. A captured identity
 /// that does not begin here is outside the source root and cannot name a module.
 pub const SOURCE_ROOT: &str = "src";
@@ -53,6 +55,19 @@ impl FileIdentity {
     /// semantic owner. Control characters are rejected here because they are wrong
     /// under any such domain.
     pub fn validate(path: &str) -> Result<(FileIdentity, ModuleName), SourcePathReason> {
+        Self::validate_in(path, &SourceOrigin::Root)
+    }
+
+    /// Validate a caller-supplied root-relative path and derive its identity and
+    /// the module name it carries *in `origin`*. The identity is the same in every
+    /// tree — it is root-relative and location-independent — while a dependency's
+    /// module name is rooted at the consuming project's alias for that dependency,
+    /// which is why the prefix is applied here, at construction, and never spelled
+    /// in the dependency's own source.
+    pub(crate) fn validate_in(
+        path: &str,
+        origin: &SourceOrigin,
+    ) -> Result<(FileIdentity, ModuleName), SourcePathReason> {
         Self::check(path)?;
 
         // `check` has established the canonical shape; the allocation below is
@@ -65,7 +80,11 @@ impl FileIdentity {
             .expect("check guarantees a file under the root");
         let stem = mw_stem(file_segment).expect("check guarantees a non-empty `.mw` stem");
 
-        let mut module_segments: Vec<&str> = under_root[..under_root.len() - 1].to_vec();
+        let mut module_segments: Vec<&str> = Vec::with_capacity(under_root.len() + 1);
+        if let SourceOrigin::Dependency(alias) = origin {
+            module_segments.push(alias.as_str());
+        }
+        module_segments.extend_from_slice(&under_root[..under_root.len() - 1]);
         module_segments.push(stem);
         let module = ModuleName(module_segments.join("."));
 
@@ -147,8 +166,9 @@ fn mw_stem(file_segment: &str) -> Option<&str> {
         .filter(|stem| !stem.is_empty())
 }
 
-/// The path-derived dotted module name, such as `foo.bar`. Constructed only
-/// alongside a [`FileIdentity`].
+/// The path-derived dotted module name, such as `foo.bar`. A module captured from
+/// a dependency carries the consuming project's alias as its first segment.
+/// Constructed only alongside a [`FileIdentity`].
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct ModuleName(String);
 
@@ -156,6 +176,38 @@ impl ModuleName {
     /// The dotted module name.
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// The name's first dotted segment: the alias for a dependency module, and the
+    /// first path segment under `src` for a root module.
+    pub fn first_segment(&self) -> &str {
+        self.0.split('.').next().expect("a module name is nonempty")
+    }
+}
+
+/// Which tree a captured source file came from: the root project, or one
+/// dependency the root's manifest declares under a consumer-chosen alias.
+///
+/// A sibling of [`FileIdentity`], never folded into its path string: an identity
+/// stays root-relative and location-independent in every tree, so a file keeps one
+/// spelling whether it is compiled standalone or as somebody's dependency. The
+/// ordering puts the root before every dependency and dependencies in alias order,
+/// which is the canonical order captured modules are held in.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum SourceOrigin {
+    /// The project the command was invoked on.
+    Root,
+    /// The dependency the root's manifest declares under this alias.
+    Dependency(DependencyAlias),
+}
+
+impl SourceOrigin {
+    /// The declaring alias, or `None` for the root project.
+    pub fn alias(&self) -> Option<&DependencyAlias> {
+        match self {
+            SourceOrigin::Root => None,
+            SourceOrigin::Dependency(alias) => Some(alias),
+        }
     }
 }
 

@@ -10,24 +10,37 @@
 
 use marrow_codes::Code;
 
-use crate::identity::{FileIdentity, ModuleName, SourcePathReason};
+use crate::dependency::{DependencyAlias, DependencyAliasReason};
+use crate::identity::{FileIdentity, ModuleName, SourceOrigin, SourcePathReason};
 use crate::ids::{CapturedLedger, IDS_FILE, IdentityLedger, IdsError};
 use crate::manifest::{Edition, Manifest};
 
-/// A source file handed to [`capture`] by the physical adapter: a caller-supplied
-/// root-relative path and the file's bytes.
+/// A source file handed to [`capture`] by the physical adapter: the tree it came
+/// from, a caller-supplied path relative to *that* tree's root, and its bytes.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct CapturedFile {
+    origin: SourceOrigin,
     relative_path: String,
     bytes: Vec<u8>,
 }
 
 impl CapturedFile {
-    /// Pair a root-relative path with its bytes. Validation happens in
+    /// Pair a root-project-relative path with its bytes. Validation happens in
     /// [`capture`]; this constructor imposes no structure so the adapter can pass
     /// exactly what it read.
     pub fn new(relative_path: String, bytes: Vec<u8>) -> Self {
         Self {
+            origin: SourceOrigin::Root,
+            relative_path,
+            bytes,
+        }
+    }
+
+    /// Pair a path relative to the root of the dependency captured under `alias`
+    /// with its bytes.
+    pub fn in_dependency(alias: DependencyAlias, relative_path: String, bytes: Vec<u8>) -> Self {
+        Self {
+            origin: SourceOrigin::Dependency(alias),
             relative_path,
             bytes,
         }
@@ -98,18 +111,43 @@ impl Default for CaptureLimits {
     }
 }
 
-/// One captured module: its canonical identity, the module name its path implies,
-/// and its source bytes. Fields are private; a `ModuleInput` exists only inside a
-/// [`ProjectInput`] built by [`capture`].
+/// One captured dependency tree: the alias it was captured under and the
+/// `.marrow/ids` bytes the adapter read there, or `None` when that tree committed
+/// none. A dependency's ledger is read, never written: the declaring tree owns the
+/// identities it committed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CapturedDependency<'a> {
+    alias: &'a DependencyAlias,
+    ids: Option<&'a [u8]>,
+}
+
+impl<'a> CapturedDependency<'a> {
+    /// Name the dependency captured under `alias` and the ledger bytes it
+    /// committed.
+    pub fn new(alias: &'a DependencyAlias, ids: Option<&'a [u8]>) -> Self {
+        Self { alias, ids }
+    }
+}
+
+/// One captured module: the tree it came from, its canonical identity in that
+/// tree, the module name its path implies there, and its source bytes. Fields are
+/// private; a `ModuleInput` exists only inside a [`ProjectInput`] built by
+/// [`capture`].
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ModuleInput {
+    origin: SourceOrigin,
     identity: FileIdentity,
     module: ModuleName,
     source: Vec<u8>,
 }
 
 impl ModuleInput {
-    /// The canonical root-relative identity.
+    /// The tree this module was captured from.
+    pub fn origin(&self) -> &SourceOrigin {
+        &self.origin
+    }
+
+    /// The canonical identity, relative to the root of the tree it came from.
     pub fn identity(&self) -> &FileIdentity {
         &self.identity
     }
@@ -125,14 +163,18 @@ impl ModuleInput {
     }
 }
 
-/// The immutable input the rest of the pipeline consumes: the declared edition
-/// and the project's modules in canonical identity order. Constructed only
-/// through [`capture`].
+/// The immutable input the rest of the pipeline consumes: the declared edition,
+/// the captured origins in canonical order with each origin's committed identity
+/// ledger, and every module in canonical `(origin, identity)` order. Constructed
+/// only through [`capture`].
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ProjectInput {
     edition: Edition,
     modules: Vec<ModuleInput>,
-    captured_ledger: CapturedLedger,
+    /// Captured origins in canonical order (the root first), parallel to
+    /// `ledgers`. The root is always present, so `ledgers[0]` is its ledger.
+    origins: Vec<SourceOrigin>,
+    ledgers: Vec<CapturedLedger>,
 }
 
 impl ProjectInput {
@@ -141,29 +183,52 @@ impl ProjectInput {
         self.edition
     }
 
-    /// The captured modules, in canonical identity order.
+    /// The captured modules, in canonical `(origin, identity)` order: the root
+    /// project's modules first, then each dependency's in alias order.
     pub fn modules(&self) -> &[ModuleInput] {
         &self.modules
     }
 
-    /// The parsed durable-identity ledger, when the project committed a
+    /// The trees this input was captured from, in canonical order. The root is
+    /// always first; a dependency appears whether or not it contributed a module.
+    pub fn origins(&self) -> &[SourceOrigin] {
+        &self.origins
+    }
+
+    /// The root project's parsed durable-identity ledger, when it committed a
     /// `.marrow/ids` artifact. `None` means the artifact is absent — the normal
     /// state of a storeless project, equivalent to an empty ledger.
     pub fn identity_ledger(&self) -> Option<&IdentityLedger> {
-        self.captured_ledger.present_ledger()
+        self.root_ledger().present_ledger()
+    }
+
+    /// The parsed durable-identity ledger of one captured origin, or `None` when
+    /// that tree committed no artifact. A durable declaration resolves against the
+    /// ledger of the tree that declares it, so a dependency's declarations keep the
+    /// identities the dependency committed.
+    pub fn identity_ledger_for(&self, origin: &SourceOrigin) -> Option<&IdentityLedger> {
+        let index = self.origins.iter().position(|held| held == origin)?;
+        self.ledgers[index].present_ledger()
     }
 
     /// Admit one structurally nonempty identity-mint operation against the exact
-    /// captured ledger state, then invoke `supply` once with the exact positive
-    /// candidate count.
+    /// captured root ledger state, then invoke `supply` once with the exact
+    /// positive candidate count. Minting is the root project's alone: a dependency
+    /// commits its own ledger in its own tree.
     pub fn admit_identity_mints_with<E>(
         &self,
         first: crate::IdentityAnchor,
         rest: Vec<crate::IdentityAnchor>,
         supply: impl FnOnce(usize) -> Result<Vec<crate::DurableIdentityId>, E>,
     ) -> Result<crate::LedgerPublicationPlan, crate::IdentityMintFailure<E>> {
-        self.captured_ledger
+        self.root_ledger()
             .admit_identity_mints_with(first, rest, supply)
+    }
+
+    fn root_ledger(&self) -> &CapturedLedger {
+        self.ledgers
+            .first()
+            .expect("every capture holds the root origin's ledger")
     }
 }
 
@@ -186,7 +251,37 @@ pub fn capture(
     ids: Option<&[u8]>,
     limits: &CaptureLimits,
 ) -> Result<ProjectInput, CaptureError> {
-    let captured_ledger = CapturedLedger::capture(ids).map_err(CaptureError::ids)?;
+    capture_origins(manifest, files, ids, &[], limits)
+}
+
+/// Capture a validated [`Manifest`], a caller-supplied origin-tagged source
+/// listing, and each origin's optional `.marrow/ids` bytes into one immutable
+/// [`ProjectInput`].
+///
+/// Every tree enters through this one call, so the file-count, per-file and total
+/// byte bounds span all of them and no counter is reset per tree. The supplied
+/// dependencies must be exactly the ones `manifest` declares, each once; anything
+/// else is a `project.dependency_alias` fault, since the owner does not trust an
+/// adapter to have matched the manifest it parsed.
+///
+/// The check precedence of [`capture`] is preserved and extended: the dependency
+/// set, then each origin's identity artifact in canonical order, then the
+/// file-count bound, per-path validity, alias-versus-root-module collisions,
+/// module-identity collisions, and finally the per-file and total byte bounds.
+pub fn capture_origins(
+    manifest: &Manifest,
+    files: Vec<CapturedFile>,
+    ids: Option<&[u8]>,
+    dependencies: &[CapturedDependency<'_>],
+    limits: &CaptureLimits,
+) -> Result<ProjectInput, CaptureError> {
+    let ordered = admit_dependencies(manifest, dependencies)?;
+    let mut captured_origins = vec![SourceOrigin::Root];
+    let mut ledgers = vec![CapturedLedger::capture(ids).map_err(CaptureError::ids)?];
+    for dependency in ordered {
+        ledgers.push(CapturedLedger::capture(dependency.ids).map_err(CaptureError::ids)?);
+        captured_origins.push(SourceOrigin::Dependency(dependency.alias.clone()));
+    }
     if files.len() > limits.max_files {
         return Err(CaptureError::limit(
             CaptureBound::FileCount,
@@ -196,55 +291,63 @@ pub fn capture(
     }
 
     // A valid identity past the maximum refuses before the ordinary invalid-path
-    // collection. The offender is the lexicographically smallest such spelling, so
-    // the fault is input-order independent.
-    let mut overbound: Option<(&str, usize, usize)> = None;
+    // collection. The offender is the smallest such `(origin, spelling)`, so the
+    // fault is input-order independent.
+    let mut overbound: Option<(&SourceOrigin, &str, usize, usize)> = None;
     for file in &files {
         if let Err(SourcePathReason::TooLong { limit, actual }) =
             FileIdentity::check(&file.relative_path)
         {
-            let path = file.relative_path.as_str();
-            if overbound.is_none_or(|(smallest, ..)| path < smallest) {
-                overbound = Some((path, limit, actual));
+            let key = (&file.origin, file.relative_path.as_str());
+            if overbound.is_none_or(|(origin, path, ..)| key < (origin, path)) {
+                overbound = Some((key.0, key.1, limit, actual));
             }
         }
     }
-    if let Some((_, limit, actual)) = overbound {
+    if let Some((.., limit, actual)) = overbound {
         return Err(CaptureError::source_path_too_long(limit, actual));
     }
 
     // Validate every path before reporting, so an invalid path is chosen by its
-    // sorted raw spelling rather than by arrival order.
-    let mut invalid: Vec<(String, SourcePathReason)> = Vec::new();
-    let mut valid: Vec<(FileIdentity, ModuleName, Vec<u8>)> = Vec::with_capacity(files.len());
+    // sorted `(origin, raw spelling)` rather than by arrival order.
+    let mut invalid: Vec<(SourceOrigin, String, SourcePathReason)> = Vec::new();
+    let mut valid: Vec<ModuleInput> = Vec::with_capacity(files.len());
     for file in files {
-        match FileIdentity::validate(&file.relative_path) {
-            Ok((identity, module)) => valid.push((identity, module, file.bytes)),
-            Err(reason) => invalid.push((file.relative_path, reason)),
+        match FileIdentity::validate_in(&file.relative_path, &file.origin) {
+            Ok((identity, module)) => valid.push(ModuleInput {
+                origin: file.origin,
+                identity,
+                module,
+                source: file.bytes,
+            }),
+            Err(reason) => invalid.push((file.origin, file.relative_path, reason)),
         }
     }
     if !invalid.is_empty() {
-        invalid.sort_by(|a, b| a.0.cmp(&b.0));
-        let (path, reason) = invalid.into_iter().next().expect("non-empty invalid set");
+        invalid.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+        let (_, path, reason) = invalid.into_iter().next().expect("non-empty invalid set");
         return Err(CaptureError::source_path(path, reason));
     }
 
-    valid.sort_by(|a, b| a.0.cmp(&b.0));
+    valid.sort_by(|a, b| (&a.origin, &a.identity).cmp(&(&b.origin, &b.identity)));
 
+    if let Some(fault) = find_alias_collision(&captured_origins, &valid) {
+        return Err(fault);
+    }
     if let Some(collision) = find_collision(&valid) {
         return Err(collision);
     }
 
     let mut total_bytes = 0usize;
-    for (identity, _module, bytes) in &valid {
-        if bytes.len() > limits.max_file_bytes {
+    for module in &valid {
+        if module.source.len() > limits.max_file_bytes {
             return Err(CaptureError::file_bytes(
-                identity.clone(),
+                module.identity.clone(),
                 limits.max_file_bytes,
-                bytes.len(),
+                module.source.len(),
             ));
         }
-        total_bytes = total_bytes.saturating_add(bytes.len());
+        total_bytes = total_bytes.saturating_add(module.source.len());
     }
     if total_bytes > limits.max_total_bytes {
         return Err(CaptureError::limit(
@@ -254,42 +357,107 @@ pub fn capture(
         ));
     }
 
-    let modules = valid
-        .into_iter()
-        .map(|(identity, module, source)| ModuleInput {
-            identity,
-            module,
-            source,
-        })
-        .collect();
-
     Ok(ProjectInput {
         edition: manifest.edition(),
-        modules,
-        captured_ledger,
+        modules: valid,
+        origins: captured_origins,
+        ledgers,
     })
 }
 
-/// Find the first module-identity collision among the sorted entries: two files
-/// that derive the same module name, or two identities that differ only in case
-/// and would collide on a case-insensitive filesystem. Both offenders are named,
-/// with the smaller identity first, so the reported collision is deterministic.
-fn find_collision(sorted: &[(FileIdentity, ModuleName, Vec<u8>)]) -> Option<CaptureError> {
-    for (i, (identity, module, _)) in sorted.iter().enumerate() {
-        for (other_identity, other_module, _) in &sorted[i + 1..] {
-            if module == other_module {
+/// Order the supplied dependencies into manifest (alias) order and check them
+/// against the manifest: each declared dependency captured exactly once, and no
+/// dependency the manifest does not declare.
+fn admit_dependencies<'a>(
+    manifest: &Manifest,
+    captured: &[CapturedDependency<'a>],
+) -> Result<Vec<CapturedDependency<'a>>, CaptureError> {
+    let mut ordered = Vec::with_capacity(manifest.dependencies().len());
+    for dependency in manifest.dependencies() {
+        let mut matching = captured
+            .iter()
+            .filter(|supplied| supplied.alias == dependency.alias());
+        let supplied = matching.next().ok_or_else(|| {
+            CaptureError::dependency_alias(
+                dependency.alias().clone(),
+                DependencyAliasReason::Uncaptured,
+            )
+        })?;
+        if matching.next().is_some() {
+            return Err(CaptureError::dependency_alias(
+                dependency.alias().clone(),
+                DependencyAliasReason::Duplicate,
+            ));
+        }
+        ordered.push(*supplied);
+    }
+
+    if ordered.len() != captured.len() {
+        let undeclared = captured
+            .iter()
+            .map(|supplied| supplied.alias)
+            .find(|alias| {
+                !manifest
+                    .dependencies()
+                    .iter()
+                    .any(|dependency| dependency.alias() == *alias)
+            })
+            .expect("a surplus captured tree names an undeclared alias");
+        return Err(CaptureError::dependency_alias(
+            undeclared.clone(),
+            DependencyAliasReason::Undeclared,
+        ));
+    }
+    Ok(ordered)
+}
+
+/// Refuse an alias that occupies the first segment of a root module's name: the
+/// alias-rooted path `alias.rest` would otherwise name two different modules.
+fn find_alias_collision(origins: &[SourceOrigin], sorted: &[ModuleInput]) -> Option<CaptureError> {
+    for origin in origins {
+        let Some(alias) = origin.alias() else {
+            continue;
+        };
+        let collision = sorted.iter().find(|module| {
+            module.origin == SourceOrigin::Root && module.module.first_segment() == alias.as_str()
+        });
+        if let Some(collision) = collision {
+            return Some(CaptureError::dependency_alias(
+                alias.clone(),
+                DependencyAliasReason::RootModuleCollision {
+                    module: collision.module.clone(),
+                },
+            ));
+        }
+    }
+    None
+}
+
+/// Find the first module-identity collision among the sorted modules: two files
+/// that derive the same module name — within one tree, or across trees once alias
+/// prefixes are applied — or two identities in the same tree that differ only in
+/// case and would collide on a case-insensitive filesystem. Two trees may hold the
+/// same identity, since each is relative to its own root. Both offenders are named,
+/// with the smaller `(origin, identity)` first, so the reported collision is
+/// deterministic.
+fn find_collision(sorted: &[ModuleInput]) -> Option<CaptureError> {
+    for (index, module) in sorted.iter().enumerate() {
+        for other in &sorted[index + 1..] {
+            if module.module == other.module {
                 return Some(CaptureError::module_collision(
-                    module.clone(),
-                    identity.clone(),
-                    other_identity.clone(),
+                    module.module.clone(),
+                    module.identity.clone(),
+                    other.identity.clone(),
                     CollisionReason::DuplicateModule,
                 ));
             }
-            if identity.case_fold() == other_identity.case_fold() {
+            if module.origin == other.origin
+                && module.identity.case_fold() == other.identity.case_fold()
+            {
                 return Some(CaptureError::module_collision(
-                    module.clone(),
-                    identity.clone(),
-                    other_identity.clone(),
+                    module.module.clone(),
+                    module.identity.clone(),
+                    other.identity.clone(),
                     CollisionReason::CaseInsensitivePath,
                 ));
             }
@@ -347,6 +515,13 @@ pub enum CaptureErrorKind {
     },
     /// The committed `.marrow/ids` identity artifact is corrupt (rejected whole).
     IdsCorrupt { error: IdsError },
+    /// A declared dependency alias cannot root the modules it would contribute.
+    DependencyAlias {
+        /// The offending alias.
+        alias: DependencyAlias,
+        /// Why it was refused.
+        reason: DependencyAliasReason,
+    },
 }
 
 /// A capture failure. Carries a stable code, a typed [`CaptureErrorKind`], and a
@@ -442,6 +617,33 @@ impl CaptureError {
                 reason,
             },
             message: format!("colliding module identity: {explanation}"),
+        }
+    }
+
+    fn dependency_alias(alias: DependencyAlias, reason: DependencyAliasReason) -> Self {
+        let explanation = match &reason {
+            DependencyAliasReason::RootModuleCollision { module } => format!(
+                "is the first segment of the root project's module `{}`",
+                module.as_str()
+            ),
+            DependencyAliasReason::Duplicate => "was captured from more than one tree".to_string(),
+            DependencyAliasReason::Undeclared => {
+                "was captured but the manifest declares no such dependency".to_string()
+            }
+            DependencyAliasReason::Uncaptured => {
+                "is declared but no tree was captured for it".to_string()
+            }
+            DependencyAliasReason::NotIdentifier | DependencyAliasReason::TooLong { .. } => {
+                "is not a usable identifier".to_string()
+            }
+        };
+        Self {
+            code: Code::ProjectDependencyAlias,
+            kind: CaptureErrorKind::DependencyAlias {
+                alias: alias.clone(),
+                reason,
+            },
+            message: format!("dependency alias `{}` {explanation}", alias.as_str()),
         }
     }
 

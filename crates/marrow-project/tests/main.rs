@@ -3,6 +3,8 @@
 
 #[path = "cases/capture.rs"]
 mod capture;
+#[path = "cases/dependencies.rs"]
+mod dependencies;
 #[path = "cases/identity.rs"]
 mod identity;
 #[path = "cases/identity_kind_tags.rs"]
