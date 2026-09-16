@@ -1271,10 +1271,28 @@ fn field_index<'f>(fields: &'f [FieldInfo], name: &str) -> Option<(u16, &'f Fiel
 /// The owner is scoped to the tree that declared it: two trees may each declare a
 /// resource of one name, and a bare-name key would merge their members into one
 /// record and steer a refused member to the wrong declaration.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MemberKey {
     owner: ScopedTypeName,
     member: String,
+}
+
+/// Every member of one record shares that record's owner, so the member name is the
+/// discriminating half of the key. Ordering on it first keeps a ledger probe from
+/// comparing the same origin and record spelling at every step of its search — a
+/// resource declaring thousands of fields is the shape this ledger is sized for.
+impl Ord for MemberKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.member
+            .cmp(&other.member)
+            .then_with(|| self.owner.cmp(&other.owner))
+    }
+}
+
+impl PartialOrd for MemberKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl MemberKey {
