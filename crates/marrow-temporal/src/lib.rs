@@ -11,11 +11,9 @@
 //!   canonical text `[-]PT<seconds>[.fraction]S` (zero is `PT0S`).
 //!
 //! The codec is strict: every parser reads back exactly what its formatter writes
-//! and rejects any non-canonical spelling. The crate has no dependency on a clock,
-//! a timezone database, a locale, a store, or the program image, so the storeless
-//! compiler (which validates temporal literals and folds them to constants) and the
-//! runtime (which encodes saved values and evaluates temporal arithmetic) consume
-//! the same implementation and cannot drift.
+//! and rejects any non-canonical spelling. The crate depends on no clock, timezone
+//! database, locale, store, or program image, so the storeless compiler and the
+//! runtime consume the same implementation and cannot drift.
 
 const NANOS_PER_SEC: i128 = 1_000_000_000;
 
