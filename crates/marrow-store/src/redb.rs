@@ -19,10 +19,7 @@
 //!   kill and an OS crash** — the engine flushes to the kernel and the kernel
 //!   owns the page cache — but **not** across **power loss or a drive-cache
 //!   reset**, where a drive may acknowledge an `fsync` before the bytes reach
-//!   stable media. Default SQLite behaves identically. Routing commits through
-//!   `F_FULLFSYNC` for power-loss durability is a later lifecycle
-//!   (native-attach / audit) and operations-documentation decision, not this
-//!   contract.
+//!   stable media. Default SQLite behaves identically.
 //! - `fsync` on a directory makes a new directory entry durable. The engine
 //!   commits with [`Durability::Immediate`], and a fresh store's parent
 //!   directory is fsynced after the create commit ([`sync_parent_directory`]).
@@ -183,10 +180,8 @@ fn io<E: std::fmt::Display>(op: StoreOp) -> impl Fn(E) -> StoreError {
 /// internally on some externally-mutated files rather than returning `Err`, so an
 /// operation over a corrupt body can unwind instead of failing cleanly; this
 /// converts that unwind into a typed corruption error. It is adapter-boundary
-/// containment of one dependency's panic policy over a bounded call, not a
-/// process-global panic hook (the deleted `B00` hook swap stays forbidden). The
-/// engine itself contains no `unsafe`; redb ships reviewed internal `unsafe`, so
-/// a corrupt body is contained here rather than trusted to fail gracefully.
+/// containment of one dependency's panic policy over a bounded call; swapping a
+/// process-global panic hook to achieve the same thing stays forbidden.
 fn contain_panic<T>(
     op: StoreOp,
     body: impl FnOnce() -> Result<T, StoreError>,
@@ -216,16 +211,14 @@ fn contain_panic<T>(
 /// on the same path was dropped can still observe that lock held and fail with
 /// `DatabaseAlreadyOpen`, and the window widens with machine load.
 ///
-/// Why the lock is still held is not established. Two candidates fit every observation:
-/// the kernel's release trailing the close the drop performs, and a concurrently spawned
-/// child inheriting the descriptor until its exec. Both are absorbed by the same wait, so
-/// the retry does not depend on choosing between them. A genuine conflicting holder — conflicting rather than merely
-/// concurrent, since two read-only handles take compatible shared locks and the second
-/// simply succeeds — keeps the lock for the whole budget and surfaces as
-/// [`StoreError::Locked`], as does a transient window longer than
-/// the budget. Bounded here means the retry sleeps are bounded — 1, 2, 4 and 8 ms — which
-/// is the only part this function controls; it does not bound the filesystem or database
-/// open it is retrying.
+/// Why the lock is still held is not established — the kernel's release trailing the
+/// close, or a concurrently spawned child inheriting the descriptor until its exec — and
+/// the same wait absorbs either. A genuine conflicting holder (conflicting rather than
+/// merely concurrent: two read-only handles take compatible shared locks and the second
+/// simply succeeds) keeps the lock for the whole budget and surfaces as
+/// [`StoreError::Locked`], as does a transient window longer than the budget. Only the
+/// retry sleeps are bounded — 1, 2, 4 and 8 ms; the filesystem and database open being
+/// retried are not.
 fn open_past_lock_release<T>(
     path: &Path,
     open: impl Fn() -> Result<T, DatabaseError>,
@@ -348,14 +341,11 @@ fn open_tolerating_creation_race(
 }
 
 /// Whether a corruption an open reported for this path may be a transient artifact of
-/// a concurrent creator still forming the store rather than settled damage. The header
-/// is laid down under the lock with the magic written last, and a delete-and-create
-/// recreation raced on distinct inodes can leave the file header-absent or a torn
-/// intermediate that already bears the magic. Neither state is distinguishable from
-/// settled damage by a cheap probe once the open has already failed, so a corruption
-/// against any regular store file is retried; a settled torn store keeps failing every
-/// attempt and surfaces once the retry budget is spent. A non-regular path (a FIFO,
-/// socket, or directory) or a missing file is not a store under construction.
+/// a concurrent creator still forming the store rather than settled damage. Neither
+/// forming state is distinguishable from settled damage by a cheap probe once the open
+/// has already failed, so a corruption against any regular store file is retried. A
+/// non-regular path (a FIFO, socket, or directory) or a missing file is not a store
+/// under construction.
 fn store_file_may_be_forming(path: &Path) -> bool {
     matches!(fs::metadata(path), Ok(metadata) if metadata.file_type().is_file())
 }
@@ -862,11 +852,8 @@ where
 
 /// Create, as a raw redb handle, a database for a test to seed or inspect.
 ///
-/// The paths these tests create on are fresh, so none races a preceding drop today. It
-/// waits anyway, because the alternative is a claim with four exceptions: every open of a
-/// redb database in this crate goes through [`open_past_lock_release`], full stop, and a
-/// reader checking that does not have to hold four sites in mind. The wait costs nothing
-/// on a path nobody holds.
+/// Routed through [`open_past_lock_release`] so that every open of a redb database in
+/// this crate goes through it without exception. The wait costs nothing on a fresh path.
 #[cfg(test)]
 pub(crate) fn create_raw(path: &Path, subject: &str) -> Database {
     open_past_lock_release(path, || Database::create(path))
@@ -876,21 +863,13 @@ pub(crate) fn create_raw(path: &Path, subject: &str) -> Database {
 /// Reopen, as a raw redb handle, a file whose previous handle was just dropped.
 ///
 /// A store's advisory lock can still be held for a short interval after the handle that
-/// took it is dropped — whether because the kernel's release trails the close, or because
-/// a concurrently spawned child transiently inherited the descriptor before its exec. The
-/// cause is not established; both produce the same observation, a `DatabaseAlreadyOpen`
-/// for a path whose Marrow handle is gone, and both are absorbed by the same wait.
-/// [`open_past_lock_release`] is where every opener in this file absorbs it. A test that
-/// opens directly reintroduces the hazard and reports it as a store defect, so every raw
-/// reopen in this crate's tests comes through here.
+/// took it is dropped (see [`open_past_lock_release`]). A test that opens directly
+/// reintroduces that hazard and reports it as a store defect, so every raw reopen in this
+/// crate's tests comes through here.
 ///
-/// The retry is bounded rather than indefinite: a genuinely held lock exhausts the backoff
-/// and this helper then panics with that [`StoreError`] rendered into the message — a
-/// `Locked` for an exhausted wait — so a test sees the reason rather than a bare failure.
-/// The value itself is not retained; the panic payload is a string. Bounded means the
-/// retry sleeps are bounded, which is the only part this helper controls: it does not
-/// bound the filesystem or database open it is retrying. It never reports a held lock as
-/// success.
+/// A genuinely held lock exhausts the backoff and this helper panics with that
+/// [`StoreError`] rendered into the message, so a test sees the reason. It never reports
+/// a held lock as success.
 #[cfg(test)]
 pub(crate) fn reopen_raw(path: &Path, subject: &str) -> Database {
     open_past_lock_release(path, || Database::open(path))
