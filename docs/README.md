@@ -6,7 +6,8 @@ revision that carries them. Marrow is unreleased.
 
 ## Reading order
 
-- [Installation](install.md) builds the `marrow` command from source.
+- [Installation](install.md) builds the toolchain from source and stages the
+  install directory.
 - [Quickstart](quickstart.md) goes from `marrow init` to a running durable
   program.
 - [Walkthrough](walkthrough.md) reads a complete durable application line by

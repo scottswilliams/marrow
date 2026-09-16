@@ -85,13 +85,20 @@ program that uses no durable data needs no store.
 
 ## Status
 
-Marrow is unreleased; today, keyed durable roots, transactions, bounded
-traversal, indexes, and durable tests run end to end. Packages, schema
-evolution, and path authority are future work ([status](docs/status.md)).
+Marrow is unreleased. Today keyed durable roots, transactions, bounded
+traversal, indexes, durable tests, and local-path project dependencies run end
+to end, and `marrow apply` adds a sparse scalar field to a populated store.
+Remote package acquisition, schema evolution past that, and path authority are
+future work. The [beta scope](docs/vision.md#beta-scope) is a useful storeless
+program and a recoverable local application on one machine; that is a scope
+decision, not a readiness claim, and [status](docs/status.md) lists what is
+still missing.
 
 ## Documentation
 
-- [Installation](docs/install.md) builds `marrow` from source.
+- [Installation](docs/install.md) builds the toolchain from source: one script
+  stages `marrow`, its companion runner, `marrow-lsp`, and the release manifest
+  into the directory you put on `PATH`.
 - [Quickstart](docs/quickstart.md) goes from `marrow init` to a durable program.
 - [Walkthrough](docs/walkthrough.md) reads one durable application line by line.
 - [Language reference](docs/language/) defines current `.mw` behavior.
