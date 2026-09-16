@@ -622,6 +622,86 @@ fn a_map_argument_accepts_unique_pairs_in_reverse_order() {
     );
 }
 
+/// Every input ordering of one key family's Map admits to the same canonical order, and
+/// every admitted key looks up its own value while a key outside the map reads absent.
+fn every_map_ordering_canonicalizes(
+    service: &Service,
+    ids: &[(String, Id32)],
+    kind: &str,
+    keys: &[Json],
+) {
+    let pair = |key, value| array(vec![key, value]);
+    let export = id_of(ids, &format!("observe_{kind}"));
+    let entries = keys
+        .iter()
+        .enumerate()
+        .map(|(index, key)| {
+            let value = i64::try_from(index + 1).expect("small key fixture") * 10;
+            pair(key.clone(), Json::Int(value))
+        })
+        .collect::<Vec<_>>();
+    let reversed = entries.iter().cloned().rev().collect::<Vec<_>>();
+    for (case, input, ordered) in [
+        ("empty", vec![], vec![]),
+        (
+            "singleton",
+            vec![entries[0].clone()],
+            vec![entries[0].clone()],
+        ),
+        ("sorted", entries.clone(), entries.clone()),
+        ("reversed", reversed, entries.clone()),
+    ] {
+        // Query every admitted key, including missing keys in the small controls.
+        for (index, key) in keys.iter().enumerate() {
+            let found = if index < ordered.len() {
+                i64::try_from(index + 1).expect("small key fixture") * 10
+            } else {
+                -1
+            };
+            assert_eq!(
+                call(service, export, vec![array(input.clone()), key.clone()]),
+                ServerMessage::Value {
+                    data: Json::Object(vec![
+                        ("entries".to_string(), array(ordered.clone())),
+                        ("found".to_string(), Json::Int(found)),
+                    ])
+                },
+                "{kind}/{case}/lookup-{index}"
+            );
+        }
+    }
+    let wrong_key = if kind == "int" {
+        Json::Bool(false)
+    } else {
+        Json::Int(1)
+    };
+    for (case, input) in [
+        (
+            "nonadjacent-duplicate",
+            array(vec![
+                entries[0].clone(),
+                entries[1].clone(),
+                pair(keys[0].clone(), Json::Int(999)),
+            ]),
+        ),
+        ("malformed-pair", array(vec![array(vec![keys[0].clone()])])),
+        ("non-pair", array(vec![Json::Null])),
+        (
+            "wrong-value",
+            array(vec![pair(keys[0].clone(), Json::Bool(false))]),
+        ),
+        ("wrong-key", array(vec![pair(wrong_key, Json::Int(1))])),
+    ] {
+        assert_eq!(
+            call(service, export, vec![input, keys[0].clone()]),
+            ServerMessage::Reject {
+                code: Code::RunnerArgMismatch
+            },
+            "{kind}/{case}"
+        );
+    }
+}
+
 #[test]
 fn map_arguments_preserve_canonical_order_and_lookup_for_every_key_type() {
     let text = |value: &str| Json::Str(value.to_string());
@@ -669,75 +749,7 @@ pub fn observe_{kind}(m: Map<{kind}, int>, k: {kind}): Observed_{kind} {{
     let (service, ids) = build(&source, None);
     let pair = |key, value| array(vec![key, value]);
     for (kind, keys) in families {
-        let export = id_of(&ids, &format!("observe_{kind}"));
-        let entries = keys
-            .iter()
-            .enumerate()
-            .map(|(index, key)| {
-                let value = i64::try_from(index + 1).expect("small key fixture") * 10;
-                pair(key.clone(), Json::Int(value))
-            })
-            .collect::<Vec<_>>();
-        let reversed = entries.iter().cloned().rev().collect::<Vec<_>>();
-        for (case, input, ordered) in [
-            ("empty", vec![], vec![]),
-            (
-                "singleton",
-                vec![entries[0].clone()],
-                vec![entries[0].clone()],
-            ),
-            ("sorted", entries.clone(), entries.clone()),
-            ("reversed", reversed, entries.clone()),
-        ] {
-            // Query every admitted key, including missing keys in the small controls.
-            for (index, key) in keys.iter().enumerate() {
-                let found = if index < ordered.len() {
-                    i64::try_from(index + 1).expect("small key fixture") * 10
-                } else {
-                    -1
-                };
-                assert_eq!(
-                    call(&service, export, vec![array(input.clone()), key.clone()]),
-                    ServerMessage::Value {
-                        data: Json::Object(vec![
-                            ("entries".to_string(), array(ordered.clone())),
-                            ("found".to_string(), Json::Int(found)),
-                        ])
-                    },
-                    "{kind}/{case}/lookup-{index}"
-                );
-            }
-        }
-        let wrong_key = if kind == "int" {
-            Json::Bool(false)
-        } else {
-            Json::Int(1)
-        };
-        for (case, input) in [
-            (
-                "nonadjacent-duplicate",
-                array(vec![
-                    entries[0].clone(),
-                    entries[1].clone(),
-                    pair(keys[0].clone(), Json::Int(999)),
-                ]),
-            ),
-            ("malformed-pair", array(vec![array(vec![keys[0].clone()])])),
-            ("non-pair", array(vec![Json::Null])),
-            (
-                "wrong-value",
-                array(vec![pair(keys[0].clone(), Json::Bool(false))]),
-            ),
-            ("wrong-key", array(vec![pair(wrong_key, Json::Int(1))])),
-        ] {
-            assert_eq!(
-                call(&service, export, vec![input, keys[0].clone()]),
-                ServerMessage::Reject {
-                    code: Code::RunnerArgMismatch
-                },
-                "{kind}/{case}"
-            );
-        }
+        every_map_ordering_canonicalizes(&service, &ids, kind, &keys);
     }
     let nested_input = array(vec![
         pair(
