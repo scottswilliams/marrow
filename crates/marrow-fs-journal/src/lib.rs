@@ -62,6 +62,11 @@ mod journal;
 mod lock;
 mod sys;
 
+/// The crate's one scratch-directory fixture, shared with the integration suites.
+#[cfg(test)]
+#[path = "../tests/common/scratch.rs"]
+mod scratch;
+
 pub use custody::{
     AdmittedDir, CustodyError, CustodyOp, EntryStat, FsIdentity, LockAcquisition, NodeKind,
     OpenedFile, qualified_platform,

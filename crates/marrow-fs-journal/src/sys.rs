@@ -367,24 +367,17 @@ mod imp {
     mod tests {
         use super::*;
 
+        use crate::scratch::Scratch;
+
         /// Every retained descriptor is close-on-exec, and journal files are
         /// append-mode: the flags are read back through `fcntl` rather than
         /// trusted from the open call.
         #[test]
         fn retained_descriptors_are_cloexec_and_journal_files_append() {
-            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let nonce = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|elapsed| elapsed.as_nanos())
-                .unwrap_or(0);
-            let root = std::env::temp_dir().join(format!(
-                "marrow-fs-journal-sys-flags-{}-{nonce}-{serial}",
-                std::process::id()
-            ));
-            std::fs::create_dir(&root).expect("create scratch");
+            let scratch = Scratch::new("sys-flags");
+            let root = scratch.path();
 
-            let dir = open_dir_root(&root).expect("open scratch root");
+            let dir = open_dir_root(root).expect("open scratch root");
             let dir_fd_flags = rustix::io::fcntl_getfd(&dir).expect("dir descriptor flags");
             assert!(dir_fd_flags.contains(rustix::io::FdFlags::CLOEXEC));
 
@@ -407,7 +400,6 @@ mod imp {
             drop(lock);
             drop(file);
             drop(dir);
-            let _ = std::fs::remove_dir_all(&root);
         }
 
         /// The typed refusal classification, pinned per errno.
