@@ -143,11 +143,11 @@ packaged, or downloadable build.
 - The runner bounds image input before verification to the 512 KiB image limit
   plus one excess byte. Oversized images are refused with `image.envelope`
   ([execution limits](language/execution-limits.md#limits)).
-- Verification states the machine stack it needs, 128 KiB, whatever image it
-  is given; `crates/marrow-verify/tests/stack_budget.rs` measures that budget
-  on the deepest image the bounds admit. Heap and work are bounded per pass and
-  per instruction only: there is still no total verifier memory or work budget
-  ([execution pipeline](implementation/README.md#pipeline)).
+- Verification declares the machine stack it needs, 128 KiB, whatever image it
+  is given, and `crates/marrow-verify/tests/stack_budget.rs` holds it to that
+  bound on the deepest image the bounds admit. Heap and work are bounded per
+  pass and per instruction only: there is still no total verifier memory or
+  work budget ([execution pipeline](implementation/README.md#pipeline)).
 - The verifier and the store admission fence accept only the supported image and
   logical-head generations, and refuse anything else before the engine opens.
   Older artifacts and data require their matching tools
