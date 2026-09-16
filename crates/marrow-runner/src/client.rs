@@ -218,4 +218,34 @@ mod tests {
         // the safe-to-consider-undone class, and never reaches the lost-reply path.
         assert_eq!(classify(HandoffStage::BeforeSend), LossClass::NotStarted);
     }
+
+    /// Failing to write the request frame is a write, so it reports `io.write`, the code
+    /// the catalog names for "writing a runner protocol frame". Today `ClientError::Io`
+    /// carries no direction and every socket error reports `io.read`, so a companion that
+    /// dies while the terminal is still writing the request is reported as a failed read.
+    #[test]
+    #[ignore = "ClientError::Io carries no read/write direction, so a failed request \
+                write reports io.read; splitting the variant changes an observable code \
+                on the shared ephemeral-session path and is a lead decision"]
+    fn a_failed_request_frame_write_reports_io_write() {
+        use std::os::unix::net::UnixStream;
+
+        use crate::terminal::write_message_with_turn;
+        use marrow_local_wire::{ClientMessage, Id32};
+
+        let (mut near, far) = UnixStream::pair().expect("socket pair");
+        near.set_nonblocking(true).expect("non-blocking");
+        drop(far);
+        let error = write_message_with_turn(
+            &mut near,
+            &ClientMessage::Request {
+                export: Id32::from_bytes([0u8; 32]),
+                args: Vec::new(),
+            },
+            0,
+            std::time::Duration::from_millis(50),
+        )
+        .expect_err("a write to a closed peer fails");
+        assert_eq!(error.code(), Code::IoWrite);
+    }
 }
