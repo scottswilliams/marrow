@@ -7,7 +7,7 @@ use super::*;
 /// Report that `name` cannot be declared because `holder` already took it.
 fn name_conflict(
     diagnostics: &mut DiagnosticCollector,
-    file: &FileIdentity,
+    file: &ProjectFile,
     span: SourceSpan,
     name: &str,
     holder: NameHolder,
@@ -111,9 +111,9 @@ pub(super) fn reserved_templates() -> Vec<TypeTemplate> {
 /// `Name<Args>` use resolves against it.
 pub(super) fn register_type_templates(
     registry: &mut TypeRegistry,
-    structs: &[(FileRef, FileIdentity, &StructDecl)],
-    enums: &[(FileRef, FileIdentity, &EnumDecl)],
-    resources: &[(FileRef, FileIdentity, &ResourceDecl)],
+    structs: &[(FileRef, ProjectFile, &StructDecl)],
+    enums: &[(FileRef, ProjectFile, &EnumDecl)],
+    resources: &[(FileRef, ProjectFile, &ResourceDecl)],
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<(), DeclareError> {
     // Templates yield to the concrete declarations of the same name; the generic rows
@@ -310,7 +310,7 @@ fn settle_template(
 
 /// Refuse every type parameter of `owner` that repeats an earlier one, in order.
 fn refuse_repeated_type_params(
-    file: &FileIdentity,
+    file: &ProjectFile,
     owner: &str,
     params: &[marrow_syntax::TypeParamDecl],
     declared: DeclarationSite<'_>,
@@ -335,12 +335,12 @@ fn refuse_repeated_type_params(
 /// concrete types reserve, which also lets one template name another declared later.
 fn unknown_template_member(
     registry: &TypeRegistry,
-    structs: &[(FileRef, FileIdentity, &StructDecl)],
-    enums: &[(FileRef, FileIdentity, &EnumDecl)],
-    resources: &[(FileRef, FileIdentity, &ResourceDecl)],
+    structs: &[(FileRef, ProjectFile, &StructDecl)],
+    enums: &[(FileRef, ProjectFile, &EnumDecl)],
+    resources: &[(FileRef, ProjectFile, &ResourceDecl)],
     params: &[marrow_syntax::TypeParamDecl],
     ty: &TypeExpr,
-    file: &FileIdentity,
+    file: &ProjectFile,
 ) -> Option<SourceDiagnostic> {
     let declares = |name: &str| {
         params.iter().any(|param| param.name == name)
@@ -402,7 +402,7 @@ fn unknown_template_member(
 /// type, so a refusal spelled here is the one a reader sees from both.
 fn admit_struct_member<'a>(
     member: &'a ResourceMember,
-    file: &FileIdentity,
+    file: &ProjectFile,
     names: &mut MemberNamespace<'a>,
     declared: DeclarationSite<'_>,
     diagnostics: &mut DiagnosticCollector,
@@ -447,7 +447,7 @@ fn admit_struct_member<'a>(
 }
 
 fn declared_template_fields(
-    file: &FileIdentity,
+    file: &ProjectFile,
     decl: &StructDecl,
     diagnostics: &mut DiagnosticCollector,
     declared: DeclarationSite<'_>,
@@ -482,7 +482,7 @@ fn declared_template_fields(
 /// `None` if any member is a `category` or a nested member (a generic enum is flat;
 /// its payload field types are resolved per instantiation).
 fn template_enum_variants(
-    file: &FileIdentity,
+    file: &ProjectFile,
     decl: &EnumDecl,
     diagnostics: &mut DiagnosticCollector,
     declared: DeclarationSite<'_>,
@@ -538,10 +538,10 @@ fn template_enum_variants(
 /// and does not enter the map.
 pub(super) fn build_alias_table(
     named: &mut DeclarationLedger<String, NamedTypeKind>,
-    aliases: &[(FileRef, FileIdentity, &AliasDecl)],
-    resources: &[(FileRef, FileIdentity, &ResourceDecl)],
-    structs: &[(FileRef, FileIdentity, &StructDecl)],
-    enums: &[(FileRef, FileIdentity, &EnumDecl)],
+    aliases: &[(FileRef, ProjectFile, &AliasDecl)],
+    resources: &[(FileRef, ProjectFile, &ResourceDecl)],
+    structs: &[(FileRef, ProjectFile, &StructDecl)],
+    enums: &[(FileRef, ProjectFile, &EnumDecl)],
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<AliasTable, DeclareError> {
     let mut raw = BTreeMap::new();
@@ -627,7 +627,7 @@ pub(super) fn build_alias_table(
 /// An unknown target is `check.type`; a refused declaration retains its cause.
 pub(super) fn validate_alias_targets(
     registry: &mut TypeRegistry,
-    aliases: &[(FileRef, FileIdentity, &AliasDecl)],
+    aliases: &[(FileRef, ProjectFile, &AliasDecl)],
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<(), DeclareError> {
     let mut refused: Vec<String> = Vec::new();
@@ -690,10 +690,10 @@ pub(super) fn validate_alias_targets(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_nominals(
     registry: &mut TypeRegistry,
-    nominals: &[(FileRef, FileIdentity, &NominalDecl)],
-    resources: &[(FileRef, FileIdentity, &ResourceDecl)],
-    structs: &[(FileRef, FileIdentity, &StructDecl)],
-    enums: &[(FileRef, FileIdentity, &EnumDecl)],
+    nominals: &[(FileRef, ProjectFile, &NominalDecl)],
+    resources: &[(FileRef, ProjectFile, &ResourceDecl)],
+    structs: &[(FileRef, ProjectFile, &StructDecl)],
+    enums: &[(FileRef, ProjectFile, &EnumDecl)],
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<Vec<NominalInfo>, BuildError> {
     let mut built: Vec<NominalInfo> = Vec::new();
@@ -806,7 +806,7 @@ pub(super) fn build_nominals(
 /// value. The refusal row is returned rather than pushed, so the caller retains it as
 /// the declaration's cause in the same statement that reports it.
 fn nominal_interval(
-    file: &FileIdentity,
+    file: &ProjectFile,
     interval: &Expression,
 ) -> Result<(i64, i64), Box<SourceDiagnostic>> {
     let error = |span, message: &str| {
@@ -873,7 +873,7 @@ fn literal_int(expr: &Expression) -> Option<i64> {
 /// Resolve a declaration's `supports` spellings against the closed capability
 /// set, rejecting an unknown or repeated capability.
 fn support_set(
-    file: &FileIdentity,
+    file: &ProjectFile,
     decl: &NominalDecl,
 ) -> Result<SupportSet, Box<SourceDiagnostic>> {
     let mut supports = SupportSet::default();
@@ -910,7 +910,7 @@ fn support_set(
 /// One struct reserved in pass one: the file it was declared in, its declaration,
 /// and the image record index it will fill in pass two.
 pub(super) struct ReservedStruct<'a> {
-    pub(super) file: FileIdentity,
+    pub(super) file: ProjectFile,
     pub(super) at: FileRef,
     pub(super) decl: &'a StructDecl,
     pub(super) type_id: TypeId,
@@ -924,7 +924,7 @@ pub(super) struct ReservedStruct<'a> {
 pub(super) fn declare_structs<'a>(
     draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
-    structs: &'a [(FileRef, FileIdentity, &StructDecl)],
+    structs: &'a [(FileRef, ProjectFile, &StructDecl)],
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<Vec<ReservedStruct<'a>>, DeclareError> {
     let mut reserved: Vec<ReservedStruct<'a>> = Vec::new();
@@ -1105,7 +1105,7 @@ fn struct_fields(
 /// One enum reserved in pass one: the file it was declared in, its declaration,
 /// and the image ENUMS index it will fill in pass two.
 pub(super) struct ReservedEnum<'a> {
-    pub(super) file: FileIdentity,
+    pub(super) file: ProjectFile,
     pub(super) at: FileRef,
     pub(super) decl: &'a EnumDecl,
     pub(super) enum_id: EnumId,
@@ -1120,7 +1120,7 @@ pub(super) struct ReservedEnum<'a> {
 pub(super) fn declare_enums<'a>(
     draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
-    enums: &'a [(FileRef, FileIdentity, &EnumDecl)],
+    enums: &'a [(FileRef, ProjectFile, &EnumDecl)],
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<Vec<ReservedEnum<'a>>, DeclareError> {
     let mut reserved: Vec<ReservedEnum<'a>> = Vec::new();
@@ -1408,9 +1408,9 @@ fn enum_payload(
 pub(super) fn declare_records<'a>(
     draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
-    resources: &'a [(FileRef, FileIdentity, &ResourceDecl)],
+    resources: &'a [(FileRef, ProjectFile, &ResourceDecl)],
     diagnostics: &mut DiagnosticCollector,
-) -> Result<Vec<(FileRef, FileIdentity, &'a ResourceDecl)>, DeclareError> {
+) -> Result<Vec<(FileRef, ProjectFile, &'a ResourceDecl)>, DeclareError> {
     let mut survivors = Vec::new();
     for (ordinal, (at, file, resource)) in resources.iter().enumerate() {
         let declared = DeclarationSite {
@@ -1485,7 +1485,7 @@ pub(super) fn declare_records<'a>(
 pub(super) fn fill_records(
     draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
-    record_decls: &[(FileRef, FileIdentity, &ResourceDecl)],
+    record_decls: &[(FileRef, ProjectFile, &ResourceDecl)],
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<(), BuildError> {
     // The survivors are in the same order as the reserved records, so record `index`
@@ -1700,7 +1700,7 @@ fn seal_record_slots(
 /// every layer below a branch, and it runs once per declaration rather than once per
 /// store that binds the resource.
 fn refuse_branch_layer_repeats(
-    file: &FileIdentity,
+    file: &ProjectFile,
     anchor: &str,
     group: &GroupDecl,
     declared: DeclarationSite<'_>,

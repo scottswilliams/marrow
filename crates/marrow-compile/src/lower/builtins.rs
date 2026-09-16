@@ -231,7 +231,7 @@ pub(crate) fn builtin_const_int(name: &str) -> Option<i64> {
 
 /// The diagnostic for a value declaration whose name is a reserved built-in.
 pub(crate) fn reserved_builtin_name(
-    file: &FileIdentity,
+    file: &ProjectFile,
     span: SourceSpan,
     name: &str,
 ) -> SourceDiagnostic {
@@ -263,7 +263,7 @@ pub(super) fn collection_ctor_call(expr: &Expression) -> Option<(&'static str, &
 
 /// The diagnostic for a built-in called with the wrong argument shape.
 pub(super) fn builtin_arity(
-    file: &FileIdentity,
+    file: &ProjectFile,
     span: SourceSpan,
     name: &str,
     arity: usize,

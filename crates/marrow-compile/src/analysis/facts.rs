@@ -452,10 +452,9 @@ mod fact_ledger_tests {
         .unwrap_or(0) as u64
     }
 
-    /// The exact accounted worst case, published as a figure in the implementation map.
-    /// A change to it is an observable-contract change, so it is asserted rather than
-    /// only bounded.
-    const ACCOUNTED_WORST_CASE_RETAINED_BYTES: u64 = 11_116_544;
+    /// The exact accounted worst case. A change to it is an observable-contract
+    /// change, so it is asserted rather than only bounded.
+    const ACCOUNTED_WORST_CASE_RETAINED_BYTES: u64 = 11_214_848;
 
     /// The accounted footprint closes under the exported term.
     ///
@@ -490,8 +489,8 @@ mod fact_ledger_tests {
         );
         assert_eq!(
             accounted, ACCOUNTED_WORST_CASE_RETAINED_BYTES,
-            "the exact accounted worst case is published; update the implementation map \
-             and this pin together"
+            "the exact accounted worst case moved; re-derive it before changing \
+             this pin"
         );
         assert!(
             accounted <= MAX_ANALYSIS_SNAPSHOT_RETAINED_BYTES,

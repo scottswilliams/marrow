@@ -9,8 +9,8 @@
 use std::collections::BTreeMap;
 use std::ops::Deref;
 
+use crate::source::ProjectFile;
 use marrow_image::{EnumId, TypeId};
-use marrow_project::FileIdentity;
 use marrow_syntax::SourceSpan;
 
 use super::RecordInfo;
@@ -80,7 +80,7 @@ pub(crate) struct DeclarationCoordinates {
     /// One owned identity per module that declared a value type, not one per
     /// declaration. Keyed rather than appended because the declare pass is not
     /// required to finish one module's declarations before starting the next.
-    files: BTreeMap<FileRef, FileIdentity>,
+    files: BTreeMap<FileRef, ProjectFile>,
     declarations: BTreeMap<TypeId, DeclarationCoordinate>,
     enums: BTreeMap<EnumId, DeclarationCoordinate>,
 }
@@ -92,7 +92,7 @@ impl DeclarationCoordinates {
         &mut self,
         type_id: TypeId,
         at: FileRef,
-        file: &FileIdentity,
+        file: &ProjectFile,
         span: SourceSpan,
     ) {
         self.files.entry(at).or_insert_with(|| file.clone());
@@ -113,7 +113,7 @@ impl DeclarationCoordinates {
 
     /// Where `type_id` was declared, or `None` for a type this pass minted no
     /// coordinate for — a reserved toolchain template has no source declaration.
-    pub(super) fn resolve(&self, type_id: TypeId) -> Option<(&FileIdentity, SourceSpan)> {
+    pub(super) fn resolve(&self, type_id: TypeId) -> Option<(&ProjectFile, SourceSpan)> {
         self.locate(self.declarations.get(&type_id)?)
     }
 
@@ -123,7 +123,7 @@ impl DeclarationCoordinates {
         &mut self,
         enum_id: EnumId,
         at: FileRef,
-        file: &FileIdentity,
+        file: &ProjectFile,
         span: SourceSpan,
     ) {
         self.files.entry(at).or_insert_with(|| file.clone());
@@ -134,11 +134,11 @@ impl DeclarationCoordinates {
 
     /// Where the declared `enum` `enum_id` was written, or `None` for a minted
     /// instantiation.
-    pub(super) fn resolve_enum(&self, enum_id: EnumId) -> Option<(&FileIdentity, SourceSpan)> {
+    pub(super) fn resolve_enum(&self, enum_id: EnumId) -> Option<(&ProjectFile, SourceSpan)> {
         self.locate(self.enums.get(&enum_id)?)
     }
 
-    fn locate(&self, coordinate: &DeclarationCoordinate) -> Option<(&FileIdentity, SourceSpan)> {
+    fn locate(&self, coordinate: &DeclarationCoordinate) -> Option<(&ProjectFile, SourceSpan)> {
         let file = self.files.get(&coordinate.at)?;
         Some((file, coordinate.span))
     }

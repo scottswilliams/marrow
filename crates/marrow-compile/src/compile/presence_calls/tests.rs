@@ -295,7 +295,7 @@ fn sparse_presence_reports_only_callee_closed_available_functions() {
         "the caller of the missing body must not be reported"
     );
     assert_eq!(rows[0].code(), Code::CheckRequiresPresence);
-    assert_eq!(rows[0].file(), crate::test_main_file_identity());
+    assert_eq!(rows[0].file(), crate::test_main_file_identity().identity());
     assert_eq!(rows[0].span(), use_span);
     assert!(
         rows[0].message().contains("`eraser`"),

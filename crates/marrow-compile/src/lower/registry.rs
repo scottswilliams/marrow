@@ -14,7 +14,7 @@ use crate::types::{BuildError, NominalBoundaryKind, NominalBoundaryRoot, Nominal
 /// diagnostics point into, the snapshot coordinate its editor facts are retained
 /// under, and its dotted module.
 pub(crate) struct DeclaredFn<'p> {
-    pub(crate) file: FileIdentity,
+    pub(crate) file: ProjectFile,
     pub(crate) at: FileRef,
     pub(crate) module: String,
     pub(crate) decl: &'p FunctionDecl,
@@ -425,7 +425,7 @@ pub(crate) struct GenericTemplate<'p> {
     /// The file spelling a diagnostic reported against this template names. Distinct
     /// from `at`: a diagnostic carries the identity, a retained fact the compact
     /// coordinate.
-    pub(super) file: FileIdentity,
+    pub(super) file: ProjectFile,
     /// The snapshot coordinate this template's editor facts are retained under.
     pub(super) at: FileRef,
     pub(super) module: String,
@@ -502,7 +502,7 @@ impl<'p> GenericRegistry<'p> {
 }
 
 impl<'p> GenericTemplate<'p> {
-    pub(crate) fn source_file(&self) -> &FileIdentity {
+    pub(crate) fn source_file(&self) -> &ProjectFile {
         &self.file
     }
 

@@ -37,6 +37,7 @@ mod issuance;
 mod konst;
 mod lower;
 mod scalar;
+mod source;
 mod types;
 
 #[cfg(test)]
@@ -65,22 +66,25 @@ pub use diag::{IdentityGap, RefusedDeclaration, SourceDiagnostic};
 pub use marrow_image::ExportId;
 pub use marrow_syntax::FormatRefusal;
 pub use scalar::ScalarType;
+pub use source::ProjectFile;
 
-/// The canonical [`FileIdentity`](marrow_project::FileIdentity) for a test source
-/// path, so tests attribute diagnostics through the same identity type the production
-/// capture path uses rather than a bare string.
+/// The canonical root-project [`ProjectFile`] for a test source path, so tests
+/// attribute diagnostics through the same address the production capture path
+/// produces rather than a bare string.
 #[cfg(test)]
-pub(crate) fn test_file_identity(path: &str) -> marrow_project::FileIdentity {
-    marrow_project::FileIdentity::validate(path)
-        .expect("test source path is a canonical identity")
-        .0
+pub(crate) fn test_file_identity(path: &str) -> ProjectFile {
+    ProjectFile::root(
+        marrow_project::FileIdentity::validate(path)
+            .expect("test source path is a canonical identity")
+            .0,
+    )
 }
 
-/// A `'static` reference to the canonical `src/main.mw` identity, for test sites that
-/// borrow or return a `&'static FileIdentity`.
+/// A `'static` reference to the canonical root-project `src/main.mw` address, for
+/// test sites that borrow or return a `&'static ProjectFile`.
 #[cfg(test)]
-pub(crate) fn test_main_file_identity() -> &'static marrow_project::FileIdentity {
-    static ID: std::sync::OnceLock<marrow_project::FileIdentity> = std::sync::OnceLock::new();
+pub(crate) fn test_main_file_identity() -> &'static ProjectFile {
+    static ID: std::sync::OnceLock<ProjectFile> = std::sync::OnceLock::new();
     ID.get_or_init(|| test_file_identity("src/main.mw"))
 }
 

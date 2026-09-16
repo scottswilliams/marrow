@@ -15,8 +15,9 @@
 
 use crate::bounded::{Bounded, Ceiling};
 use crate::decl::{DeclarationNamespace, RefusalReport};
+use crate::source::ProjectFile;
 use marrow_codes::Code;
-use marrow_project::{FileIdentity, IdentityAnchor, IdentityKind};
+use marrow_project::{FileIdentity, IdentityAnchor, IdentityKind, SourceOrigin};
 use marrow_syntax::{
     Diagnostic, DiagnosticReason, Severity, SourceSpan, SyntaxDiagnosticLimit, SyntaxDiagnostics,
 };
@@ -54,7 +55,7 @@ const INVALID_UTF8_SPAN: SourceSpan = SourceSpan {
 /// rendered form, its typed identity gap, or the typed invalid-UTF-8 facts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceDiagnostic {
-    file: FileIdentity,
+    file: ProjectFile,
     payload: SourceDiagnosticPayload,
 }
 
@@ -136,7 +137,7 @@ pub struct RefusedDeclaration {
 }
 
 impl SourceDiagnostic {
-    pub(crate) fn at(code: Code, file: &FileIdentity, span: SourceSpan, message: String) -> Self {
+    pub(crate) fn at(code: Code, file: &ProjectFile, span: SourceSpan, message: String) -> Self {
         Self {
             file: file.clone(),
             payload: SourceDiagnosticPayload::Compiler(CompilerDiagnostic::Rendered {
@@ -149,7 +150,7 @@ impl SourceDiagnostic {
 
     pub(crate) fn with_identity_gap(
         code: Code,
-        file: &FileIdentity,
+        file: &ProjectFile,
         span: SourceSpan,
         message: String,
         gap: IdentityGap,
@@ -174,7 +175,7 @@ impl SourceDiagnostic {
     /// names under its own `check.type`.
     pub(crate) fn with_refused_declaration(
         code: Code,
-        file: &FileIdentity,
+        file: &ProjectFile,
         span: SourceSpan,
         message: String,
         refused: RefusedDeclaration,
@@ -191,7 +192,7 @@ impl SourceDiagnostic {
     }
 
     pub(crate) fn invalid_utf8(
-        file: &FileIdentity,
+        file: &ProjectFile,
         valid_up_to: usize,
         error_len: Option<usize>,
     ) -> Self {
@@ -206,7 +207,7 @@ impl SourceDiagnostic {
 
     /// A syntax row absorbed by the bridge: the original diagnostic retained
     /// whole under the file it was parsed from.
-    fn syntax(file: &FileIdentity, diagnostic: Diagnostic) -> Self {
+    fn syntax(file: &ProjectFile, diagnostic: Diagnostic) -> Self {
         Self {
             file: file.clone(),
             payload: SourceDiagnosticPayload::Syntax(diagnostic),
@@ -300,8 +301,16 @@ impl SourceDiagnostic {
 
     /// The captured source file this diagnostic points into. Always a canonical
     /// bounded identity — never empty, a sentinel, or a consumer-chosen placeholder.
+    /// It is relative to the root of [`Self::origin`]'s tree, so a renderer that
+    /// rejoins it to a directory must use that tree's root.
     pub fn file(&self) -> &FileIdentity {
-        &self.file
+        self.file.identity()
+    }
+
+    /// The tree this diagnostic's file was captured from: the root project, or the
+    /// dependency the root declares under an alias.
+    pub fn origin(&self) -> &SourceOrigin {
+        self.file.origin()
     }
 
     /// The full UTF-8 span of the offending construct.
@@ -344,14 +353,15 @@ impl SourceDiagnostic {
     }
 
     /// The retained variable payload bytes this row charges against
-    /// [`MAX_DIAGNOSTIC_BYTES`]: its file spelling plus its owned message,
-    /// syntax help, and identity-gap path bytes. A logical initialized-payload
+    /// [`MAX_DIAGNOSTIC_BYTES`]: its file address — the spelling plus the short
+    /// declaring alias — plus its owned message, syntax help, and identity-gap
+    /// path bytes. A logical initialized-payload
     /// budget — never `Vec`/`String` capacity or allocator metadata. Static
     /// facts (the invalid-UTF-8 message, codes, spans) charge nothing. Syntax
     /// reason-owned bytes are charged at the `absorb_syntax` boundary instead,
     /// so this per-row charge and the batch charge agree.
     pub(crate) fn retained_owned_bytes(&self) -> usize {
-        let file = self.file.as_str().len();
+        let file = self.file.retained_owned_bytes();
         match &self.payload {
             SourceDiagnosticPayload::Syntax(diagnostic) => {
                 file + diagnostic.message.len() + diagnostic.help.as_deref().map_or(0, str::len)
@@ -510,18 +520,19 @@ impl DiagnosticCollector {
     }
 
     /// The sole syntax bridge: consume one parsed file's bounded terminal.
-    /// The batch charge is the summary's owned bytes plus one file spelling per
+    /// The batch charge is the summary's owned bytes plus one file address per
     /// row, which is exactly the per-row
     /// [`SourceDiagnostic::retained_owned_bytes`] sum. A Limited terminal
     /// composes the same charge from its saturated summary and leaves this
     /// owner Limited unconditionally, selecting Count when both composed kinds
     /// have crossed.
-    pub(crate) fn absorb_syntax(&mut self, file: &FileIdentity, diagnostics: SyntaxDiagnostics) {
+    pub(crate) fn absorb_syntax(&mut self, file: &ProjectFile, diagnostics: SyntaxDiagnostics) {
         let summary = diagnostics.summary();
         let charge = |count: usize| {
             summary
                 .owned_bytes()
-                .saturating_add(count.saturating_mul(file.as_str().len())) as u64
+                .saturating_add(count.saturating_mul(file.retained_owned_bytes()))
+                as u64
         };
         match diagnostics.into_complete() {
             Ok(payload) => {
@@ -605,7 +616,7 @@ mod tests {
         assert_eq!(MAX_DIAGNOSTIC_BYTES, SYNTAX_DIAGNOSTIC_OWNED_BYTES_LIMIT);
     }
 
-    fn file() -> &'static FileIdentity {
+    fn file() -> &'static ProjectFile {
         crate::test_main_file_identity()
     }
 
@@ -625,7 +636,7 @@ mod tests {
     /// invalid-UTF-8 message charges nothing beyond the file.
     #[test]
     fn retained_owned_bytes_charges_each_payload_component_exactly() {
-        let file_len = file().as_str().len();
+        let file_len = file().retained_owned_bytes();
 
         let rendered = row_with_message_len(10);
         assert_eq!(rendered.retained_owned_bytes(), file_len + 10);
@@ -709,7 +720,7 @@ mod tests {
     /// byte destroys it for an OwnedBytes limit with saturated byte totals.
     #[test]
     fn byte_edge_is_exact_and_saturates_at_ceiling_plus_one() {
-        let file_len = file().as_str().len();
+        let file_len = file().retained_owned_bytes();
         let first = MAX_DIAGNOSTIC_BYTES / 2;
         let second = MAX_DIAGNOSTIC_BYTES - first - 2 * file_len;
 
@@ -793,10 +804,13 @@ mod tests {
         target.absorb(terminal);
         let merged = target.probe();
         assert_eq!(merged.count, 3);
-        assert_eq!(merged.owned_bytes, 3 * file().as_str().len() + 1 + 3 + 5);
+        assert_eq!(
+            merged.owned_bytes,
+            3 * file().retained_owned_bytes() + 1 + 3 + 5
+        );
         assert_eq!(
             merged.rows[1].retained_owned_bytes(),
-            file().as_str().len() + 3
+            file().retained_owned_bytes() + 3
         );
 
         // With the composed count crossed, Count outranks the absorbed kind.
@@ -910,7 +924,7 @@ mod tests {
     }
 
     /// The syntax bridge charges the summary's owned bytes plus one file
-    /// spelling per row — so a longer file identity crosses the byte ceiling
+    /// address per row — so a longer file identity crosses the byte ceiling
     /// where a shorter one retains, at the exact edge.
     #[test]
     fn absorb_syntax_multiplies_the_file_spelling_by_the_row_count() {
@@ -918,14 +932,17 @@ mod tests {
         let summary = marrow_syntax::parse_source(source).diagnostics.summary();
         let short = crate::test_file_identity("src/a.mw");
         let long = crate::test_file_identity("src/abcdefgh.mw");
-        assert_eq!(long.as_str().len(), short.as_str().len() + 7);
+        assert_eq!(
+            long.retained_owned_bytes(),
+            short.retained_owned_bytes() + 7
+        );
 
         // Fill so that absorbing under the short path lands exactly at the
         // ceiling and under the long path crosses it.
-        let batch = |identity: &FileIdentity| {
-            summary.owned_bytes() + summary.count() * identity.as_str().len()
+        let batch = |identity: &ProjectFile| {
+            summary.owned_bytes() + summary.count() * identity.retained_owned_bytes()
         };
-        let prefill = MAX_DIAGNOSTIC_BYTES - batch(&short) - file().as_str().len();
+        let prefill = MAX_DIAGNOSTIC_BYTES - batch(&short) - file().retained_owned_bytes();
 
         let mut exact = DiagnosticCollector::new();
         exact.push(row_with_message_len(prefill));
@@ -958,7 +975,7 @@ mod tests {
         assert_eq!(probe.count, 2);
         assert_eq!(
             probe.owned_bytes,
-            summary.owned_bytes() + 2 * file().as_str().len()
+            summary.owned_bytes() + 2 * file().retained_owned_bytes()
         );
         assert_eq!(
             probe.owned_bytes,
@@ -976,7 +993,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![1, 2]
         );
-        assert!(probe.rows.iter().all(|row| row.file() == file()));
+        assert!(probe.rows.iter().all(|row| row.file() == file().identity()));
     }
 
     /// Absorbing a Limited syntax terminal leaves the collector Limited even

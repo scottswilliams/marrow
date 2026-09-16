@@ -135,11 +135,7 @@ pub(super) fn simple_value_spelling(value: &Expression) -> Option<String> {
     }
 }
 
-pub(super) fn unsupported(
-    file: &FileIdentity,
-    span: SourceSpan,
-    subject: &str,
-) -> SourceDiagnostic {
+pub(super) fn unsupported(file: &ProjectFile, span: SourceSpan, subject: &str) -> SourceDiagnostic {
     SourceDiagnostic::at(
         Code::CheckUnsupported,
         file,
@@ -192,7 +188,7 @@ pub(super) fn is_group_leaf_address(expr: &Expression) -> bool {
 /// Reject an operation on a root whose declared shape is not executable.
 /// Binding diagnostics may independently refuse publication of the same root.
 pub(super) fn not_yet_executable(
-    file: &FileIdentity,
+    file: &ProjectFile,
     span: SourceSpan,
     root: &str,
 ) -> SourceDiagnostic {
@@ -213,7 +209,7 @@ pub(super) fn not_yet_executable(
 /// No store root is named: several roots may occur over one resource, so naming one would
 /// answer a declaration question with an occurrence.
 pub(super) fn branch_not_a_field(
-    file: &FileIdentity,
+    file: &ProjectFile,
     span: SourceSpan,
     branch: &str,
     resource: &str,
@@ -236,7 +232,7 @@ pub(super) fn branch_not_a_field(
 /// node, not a field; the concrete root spelling is not in hand, so the message steers to
 /// the durable-path form generically.
 pub(super) fn subbranch_not_a_field(
-    file: &FileIdentity,
+    file: &ProjectFile,
     span: SourceSpan,
     branch: &str,
 ) -> SourceDiagnostic {
@@ -257,7 +253,7 @@ pub(super) fn subbranch_not_a_field(
 /// (`if const` / `??` / `exists`); no equality-shaped spelling is admitted, so the message
 /// steers to the presence forms rather than the generic uninferable-`absent` type error.
 pub(super) fn absent_not_operand(
-    file: &FileIdentity,
+    file: &ProjectFile,
     span: SourceSpan,
     op: BinaryOp,
 ) -> SourceDiagnostic {
@@ -274,7 +270,7 @@ pub(super) fn absent_not_operand(
     )
 }
 
-pub(super) fn name_error(file: &FileIdentity, span: SourceSpan, name: &str) -> SourceDiagnostic {
+pub(super) fn name_error(file: &ProjectFile, span: SourceSpan, name: &str) -> SourceDiagnostic {
     SourceDiagnostic::at(
         Code::CheckType,
         file,
@@ -297,7 +293,7 @@ pub(super) enum NameKind {
 /// one is a close misspelling. Without a suggestion this is exactly [`name_error`]; a
 /// suggestion spells the candidate in its family's form, so the fix is a single edit.
 pub(super) fn name_not_in_scope(
-    file: &FileIdentity,
+    file: &ProjectFile,
     span: SourceSpan,
     name: &str,
     suggestion: Option<&str>,
@@ -382,7 +378,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
 /// site names the admission failure instead. A genuinely undeclared root keeps
 /// [`name_error`].
 pub(super) fn identity_admission_failed(
-    file: &FileIdentity,
+    file: &ProjectFile,
     span: SourceSpan,
     refusal: &DeclarationRefusalSummary,
 ) -> SourceDiagnostic {
@@ -404,7 +400,7 @@ pub(super) fn identity_admission_failed(
 }
 
 pub(super) fn checked_arm_error(
-    file: &FileIdentity,
+    file: &ProjectFile,
     span: SourceSpan,
     detail: &str,
 ) -> SourceDiagnostic {
@@ -416,7 +412,7 @@ pub(super) fn checked_arm_error(
     )
 }
 
-pub(super) fn loop_error(file: &FileIdentity, span: SourceSpan, keyword: &str) -> SourceDiagnostic {
+pub(super) fn loop_error(file: &ProjectFile, span: SourceSpan, keyword: &str) -> SourceDiagnostic {
     SourceDiagnostic::at(
         Code::CheckType,
         file,
@@ -437,7 +433,7 @@ fn present_idiom_steer(message: &mut String) {
 
 /// The refusal of a presence-dependent use. `detail` names why no proof holds here.
 pub(crate) fn requires_presence(
-    file: &FileIdentity,
+    file: &ProjectFile,
     span: SourceSpan,
     detail: &str,
 ) -> SourceDiagnostic {
@@ -457,7 +453,7 @@ pub(crate) fn requires_presence(
 
 pub(super) fn type_mismatch(
     records: &TypeRegistry,
-    file: &FileIdentity,
+    file: &ProjectFile,
     span: SourceSpan,
     found: LTy,
     want: LTy,
@@ -476,7 +472,7 @@ pub(super) fn type_mismatch(
 
 pub(super) fn unary_error(
     records: &TypeRegistry,
-    file: &FileIdentity,
+    file: &ProjectFile,
     span: SourceSpan,
     verb: &str,
     ty: LTy,
@@ -492,7 +488,7 @@ pub(super) fn unary_error(
 
 pub(super) fn binary_error(
     records: &TypeRegistry,
-    file: &FileIdentity,
+    file: &ProjectFile,
     span: SourceSpan,
     op: BinaryOp,
     left: LTy,
@@ -513,7 +509,7 @@ pub(super) fn binary_error(
 
 pub(super) fn logic_operand(
     records: &TypeRegistry,
-    file: &FileIdentity,
+    file: &ProjectFile,
     span: SourceSpan,
     op: BinaryOp,
     ty: LTy,

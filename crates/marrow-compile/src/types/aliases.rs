@@ -35,7 +35,7 @@ pub(crate) struct GlobalAliasTarget<'a> {
 
 pub(super) struct AliasInput<'a> {
     pub(super) at: FileRef,
-    pub(super) file: &'a FileIdentity,
+    pub(super) file: &'a ProjectFile,
     pub(super) decl: &'a AliasDecl,
     pub(super) target: &'a str,
     pub(super) presence: AliasPresence,

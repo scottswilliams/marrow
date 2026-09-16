@@ -13,6 +13,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
+use crate::source::ProjectFile;
 use marrow_codes::Code;
 use marrow_image::{
     AdmittedGraphInputPlan, CanonicalDeclarationPathSelector, CanonicalValueShapeDag,
@@ -21,7 +22,7 @@ use marrow_image::{
     LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, RootOccurrenceSelector, Scalar,
     SemanticTarget, ValueShapeNodeId, ValueShapeView, bounds,
 };
-use marrow_project::{FileIdentity, IdentityAnchor, IdentityKind, IdentityLedger};
+use marrow_project::{IdentityAnchor, IdentityKind, IdentityLedger};
 use marrow_syntax::{FieldDecl, ResourceDecl, SourceSpan, StoreDecl};
 
 use crate::analysis::FileRef;
@@ -706,8 +707,8 @@ impl DurableRegistry {
     pub(crate) fn build<'source>(
         draft: &mut ImageDraft,
         records: &TypeRegistry,
-        resources: &[(FileRef, FileIdentity, &ResourceDecl)],
-        stores: &'source [(FileRef, FileIdentity, &StoreDecl)],
+        resources: &[(FileRef, ProjectFile, &ResourceDecl)],
+        stores: &'source [(FileRef, ProjectFile, &StoreDecl)],
         ledger: Option<&IdentityLedger>,
         diagnostics: &mut DiagnosticCollector,
         budget: DeclarationBudget,
@@ -1059,7 +1060,7 @@ impl<'stores> ProductOccurrenceCensus<'stores> {
     /// declaration is partitioned by Product identity rather than by source text, and an
     /// unbound one, which is an occurrence of no Product, by the only thing it has.
     fn take(
-        stores: &'stores [(FileRef, FileIdentity, &StoreDecl)],
+        stores: &'stores [(FileRef, ProjectFile, &StoreDecl)],
         rows: &[StoreRow<'stores>],
     ) -> Self {
         let mut declared: BTreeSet<&str> = BTreeSet::new();
@@ -1253,7 +1254,7 @@ fn root_is_executable(
 fn resolve_root_tuple<'a>(
     row: &'a StoreRow<'a>,
     directory: &'a ResourceDirectory<'a>,
-    file: &FileIdentity,
+    file: &ProjectFile,
     span: SourceSpan,
 ) -> Result<(Vec<AdmittedKeyColumn<'a>>, &'a ResourceRow<'a>), Box<SourceDiagnostic>> {
     let key_columns = match row.keys.columns() {
@@ -2023,7 +2024,7 @@ impl<'a> IdentityResolver<'a> {
     /// The key tuple of a branch placement: each column's scalar and its ledger id
     /// anchored at `<branch path>.<column>`. A key type outside the closed orderable
     /// durable-key set is a precise diagnostic and marks the graph incomplete.
-    fn build_branch_keys(&mut self, keys: &KeyTable<'_>, file: &FileIdentity) -> Vec<KeyColumn> {
+    fn build_branch_keys(&mut self, keys: &KeyTable<'_>, file: &ProjectFile) -> Vec<KeyColumn> {
         match keys.columns() {
             KeyColumns::OverWide { span, message } => {
                 self.refuse(DurableRefusal::Admission {
@@ -2791,7 +2792,7 @@ fn build_branches(
 /// The precise missing/retired-identity diagnostic: the typed `(kind, path)`
 /// gap plus a message naming the identity and the command that mints it.
 fn identity_gap(
-    file: &FileIdentity,
+    file: &ProjectFile,
     span: SourceSpan,
     kind: IdentityKind,
     path: &str,
@@ -2825,7 +2826,7 @@ fn identity_gap(
     )
 }
 
-fn unsupported(file: &FileIdentity, span: SourceSpan, subject: &str) -> SourceDiagnostic {
+fn unsupported(file: &ProjectFile, span: SourceSpan, subject: &str) -> SourceDiagnostic {
     SourceDiagnostic::at(
         Code::CheckUnsupported,
         file,
@@ -2837,7 +2838,7 @@ fn unsupported(file: &FileIdentity, span: SourceSpan, subject: &str) -> SourceDi
 /// A `check.resource_limit`: one durable construct crosses a fixed compiler-owned
 /// bound the image cannot represent, reported at the offending construct's span so
 /// the source, not a fabricated location, carries the diagnostic.
-fn resource_limit(file: &FileIdentity, span: SourceSpan, message: String) -> SourceDiagnostic {
+fn resource_limit(file: &ProjectFile, span: SourceSpan, message: String) -> SourceDiagnostic {
     SourceDiagnostic::at(Code::CheckResourceLimit, file, span, message)
 }
 
@@ -2849,7 +2850,7 @@ fn resource_limit(file: &FileIdentity, span: SourceSpan, message: String) -> Sou
 /// source file, so a member span is never paired with the store's file.
 #[derive(Clone, Copy)]
 struct MemberCursor<'a> {
-    file: &'a FileIdentity,
+    file: &'a ProjectFile,
     parent: Option<usize>,
     depth: usize,
     container: &'a str,
@@ -2858,7 +2859,7 @@ struct MemberCursor<'a> {
 impl<'a> MemberCursor<'a> {
     /// The resource's own members: no parent node, nesting level 1, anchored at the
     /// resource name.
-    fn top(resource: &'a str, file: &'a FileIdentity) -> Self {
+    fn top(resource: &'a str, file: &'a ProjectFile) -> Self {
         Self {
             file,
             parent: None,

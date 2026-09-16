@@ -8,10 +8,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::source::ProjectFile;
 use marrow_codes::Code;
 use marrow_image::bounds;
 use marrow_image::{DraftTxn, EncodedImage, ExportId, FuncId, ImageBuildError, ImageDraft, Instr};
-use marrow_project::{CaptureLimits, FileIdentity, ProjectInput};
+use marrow_project::{CaptureLimits, ProjectInput};
 use marrow_syntax::{
     ConstDecl, Declaration, ResourceDecl, ResourceMember, SourceFile, SourceSpan, TestDecl,
     parse_source,
@@ -585,13 +586,13 @@ enum TestMode {
 /// refused so a `use` or a qualified call into it names that stage's report.
 struct UnparsedModule {
     name: String,
-    file: FileIdentity,
+    file: ProjectFile,
     at: FileRef,
     stage: SourceStage,
 }
 
 struct Module {
-    file: FileIdentity,
+    file: ProjectFile,
     /// This module's position in the project's own module order — the coordinate every
     /// editor fact this module produces is retained under.
     at: FileRef,
@@ -606,7 +607,7 @@ struct Module {
 /// performs outside any `transaction` block.
 struct LoweredFn {
     func: FuncId,
-    file: FileIdentity,
+    file: ProjectFile,
     name: String,
     span: SourceSpan,
     callees: Vec<u16>,
@@ -1070,9 +1071,9 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
     // file never enters parsing, but it is still a project module that did not parse;
     // record it as broken so a qualified call into it is a dependency gap rather than
     // an absence.
-    let mut decoded: Vec<(FileIdentity, FileRef, String, &str)> = Vec::new();
+    let mut decoded: Vec<(ProjectFile, FileRef, String, &str)> = Vec::new();
     for (at, module) in admitted.coordinates().zip(project.modules()) {
-        let file = module.identity().clone();
+        let file = ProjectFile::from(module);
         let name = module.module().as_str().to_string();
         match std::str::from_utf8(module.source()) {
             Ok(source) => decoded.push((file, at, name, source)),
@@ -1322,7 +1323,7 @@ fn bind_imports(
 fn declared_items<'a, T>(
     parsed: &'a [Module],
     select: impl Fn(&'a Declaration) -> Option<&'a T>,
-) -> Vec<(FileRef, FileIdentity, &'a T)> {
+) -> Vec<(FileRef, ProjectFile, &'a T)> {
     let select = &select;
     parsed
         .iter()
@@ -1397,7 +1398,7 @@ fn report_nominal_boundary(
 /// admitted transaction — the first owned mutation of the compile.
 fn build_type_registry(
     parsed: &[Module],
-    resources: &[(FileRef, FileIdentity, &ResourceDecl)],
+    resources: &[(FileRef, ProjectFile, &ResourceDecl)],
     draft: &mut ImageDraft,
     budget: &DeclarationBudget,
     diagnostics: &mut DiagnosticCollector,
@@ -1555,7 +1556,7 @@ fn run_semantic(
 
     // Module-private constants, evaluated before body lowering so a reference folds
     // to its value.
-    let const_decls: Vec<(String, FileRef, FileIdentity, &ConstDecl)> = parsed
+    let const_decls: Vec<(String, FileRef, ProjectFile, &ConstDecl)> = parsed
         .iter()
         .flat_map(|module| {
             module.ast.declarations.iter().filter_map(|decl| {
@@ -2188,7 +2189,7 @@ fn lower_declared_tests(
         entries.push(TestEntry {
             name: test.name.clone(),
             module: module.name.clone(),
-            file: module.file.as_str().to_string(),
+            file: module.file.spelling(),
             line: test.name_span.line,
             column: test.name_span.column,
         });
@@ -2848,7 +2849,7 @@ fn check_structural_resource_bounds(parsed: &[Module], diagnostics: &mut Diagnos
 /// record-field width. Group and branch members are not top-level record fields, so
 /// they are not counted here.
 fn check_record_field_width(
-    file: &FileIdentity,
+    file: &ProjectFile,
     span: SourceSpan,
     members: &[ResourceMember],
     diagnostics: &mut DiagnosticCollector,

@@ -328,8 +328,6 @@ fn signature_registry(functions: &[crate::lower::DeclaredFn<'_>]) -> FunctionReg
 
 #[test]
 fn a_refusal_behind_an_accepted_duplicate_leaves_the_signature_table_incomplete() {
-    let (identity, _) =
-        marrow_project::FileIdentity::validate("src/main.mw").expect("a valid source path");
     let parsed = marrow_syntax::parse_source(
         "module main\n\nfn dup(a: int): int {\n    return a\n}\n\n\
          fn dup(a: Nope): int {\n    return 1\n}\n",
@@ -340,7 +338,7 @@ fn a_refusal_behind_an_accepted_duplicate_leaves_the_signature_table_incomplete(
         .iter()
         .filter_map(|decl| match decl {
             Declaration::Function(function) => Some(crate::lower::DeclaredFn {
-                file: identity.clone(),
+                file: crate::test_file_identity("src/main.mw"),
                 at: crate::analysis::FileRef::admitted(0),
                 module: "main".to_string(),
                 decl: function,

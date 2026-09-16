@@ -21,8 +21,8 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
+use crate::source::ProjectFile;
 use marrow_codes::Code;
-use marrow_project::FileIdentity;
 use marrow_syntax::SourceSpan;
 
 use crate::analysis::FileRef;
@@ -329,7 +329,7 @@ impl<'a> MemberNamespace<'a> {
     /// answered with the row refusing it.
     pub(crate) fn claim(
         &mut self,
-        file: &FileIdentity,
+        file: &ProjectFile,
         name: &'a str,
         span: SourceSpan,
     ) -> Option<SourceDiagnostic> {
@@ -385,7 +385,7 @@ fn covered(
 /// The row carries the *declaring* code, so a use-site assertion names the
 /// declaration's typed identity and the reader follows one code to one fix.
 pub(crate) fn declaration_refused(
-    file: &FileIdentity,
+    file: &ProjectFile,
     span: SourceSpan,
     refusal: &DeclarationRefusalSummary,
 ) -> SourceDiagnostic {
@@ -413,7 +413,7 @@ pub(crate) fn declaration_refused(
 #[derive(Clone, Copy)]
 pub(crate) struct DeclarationSite<'a> {
     pub(crate) name: &'a str,
-    pub(crate) file: &'a FileIdentity,
+    pub(crate) file: &'a ProjectFile,
     pub(crate) at: FileRef,
     pub(crate) span: SourceSpan,
 }
@@ -422,7 +422,7 @@ impl<'a> DeclarationSite<'a> {
     /// A declaration whose whole source an earlier stage refused: a file that did not
     /// decode or parse produced no construct to point at, so the site has no span of
     /// its own and the report the reader follows is that stage's.
-    pub(crate) fn whole_file(name: &'a str, file: &'a FileIdentity, at: FileRef) -> Self {
+    pub(crate) fn whole_file(name: &'a str, file: &'a ProjectFile, at: FileRef) -> Self {
         Self {
             name,
             file,
@@ -841,7 +841,7 @@ mod tests {
     }
 
     fn refused(name: &str, diagnostics: &mut DiagnosticCollector) -> DeclarationRefusalSummary {
-        let (identity, _) = FileIdentity::validate("src/main.mw").expect("a valid source path");
+        let identity = crate::test_file_identity("src/main.mw");
         refuse(
             diagnostics,
             DeclarationSite {

@@ -6,8 +6,8 @@
 //! subset restricts a constant's value to a scalar literal, optionally a negated
 //! integer literal.
 
+use crate::source::ProjectFile;
 use marrow_codes::Code;
-use marrow_project::FileIdentity;
 use marrow_syntax::{
     ConstDecl, Expression, LiteralKind, SourceSpan, UnaryOp, decode_string_literal,
 };
@@ -82,7 +82,7 @@ impl ConstRegistry {
     /// representations: the owned identity a diagnostic renders and the `Copy`
     /// coordinate the ledger retains.
     pub(crate) fn build(
-        consts: &[(String, FileRef, FileIdentity, &ConstDecl)],
+        consts: &[(String, FileRef, ProjectFile, &ConstDecl)],
         types: &TypeRegistry,
         diagnostics: &mut DiagnosticCollector,
         budget: DeclarationBudget,

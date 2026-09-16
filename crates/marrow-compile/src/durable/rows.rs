@@ -13,8 +13,8 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
+use crate::source::ProjectFile;
 use marrow_image::bounds;
-use marrow_project::FileIdentity;
 use marrow_syntax::{
     FieldDecl, IndexDecl, KeyParam, ResourceDecl, ResourceMember, SourceSpan, StoreDecl,
 };
@@ -39,7 +39,7 @@ pub(super) struct ResourceDeclId(usize);
 /// The row holds no `ResourceDecl` of its own: the declaration is borrowed for the
 /// projection and left where it was.
 pub(super) struct ResourceRow<'a> {
-    pub(super) file: &'a FileIdentity,
+    pub(super) file: &'a ProjectFile,
     pub(super) record: &'a RecordInfo,
     pub(super) groups: Vec<GroupRow<'a>>,
 }
@@ -63,7 +63,7 @@ pub(super) struct ResourceDirectory<'a> {
 
 impl<'a> ResourceDirectory<'a> {
     pub(super) fn take(
-        resources: &'a [(FileRef, FileIdentity, &'a ResourceDecl)],
+        resources: &'a [(FileRef, ProjectFile, &'a ResourceDecl)],
         records: &'a TypeRegistry,
     ) -> Result<Self, GenericInvariant> {
         // The declare pass paired every admitted record with its declaration by pushing
@@ -142,7 +142,7 @@ impl<'a> StoreRow<'a> {
         directory: &ResourceDirectory<'a>,
         store: &'a StoreDecl,
         records: &TypeRegistry,
-        file: &FileIdentity,
+        file: &ProjectFile,
     ) -> Result<Self, GenericInvariant> {
         let resource = store.resource.as_str();
         let binding = match directory.lookup(resource) {
@@ -383,7 +383,7 @@ impl<'a> KeyTable<'a> {
     pub(super) fn take(
         owner: KeyOwner<'a>,
         keys: &'a [KeyParam],
-        file: &FileIdentity,
+        file: &ProjectFile,
         records: &TypeRegistry,
     ) -> Result<Self, GenericInvariant> {
         let resolution = resolve_key_columns(file, &owner, keys, records)?;
@@ -501,7 +501,7 @@ pub(super) struct GroupRow<'a> {
 
 /// Project the group rows of `members`, in declaration order, recursively.
 fn group_rows<'a>(
-    file: &FileIdentity,
+    file: &ProjectFile,
     records: &TypeRegistry,
     container: &str,
     members: &'a [ResourceMember],
@@ -557,7 +557,7 @@ fn group_rows<'a>(
 /// the row that reports it. It is boxed because a diagnostic is wide next to a key
 /// column vector and this is the refused arm, never the admitted column loop.
 fn resolve_key_columns<'a>(
-    file: &FileIdentity,
+    file: &ProjectFile,
     owner: &KeyOwner<'a>,
     keys: &'a [KeyParam],
     records: &TypeRegistry,

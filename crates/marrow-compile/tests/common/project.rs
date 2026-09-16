@@ -63,11 +63,7 @@ pub fn dependency_project(
         .map(|(path, source)| CapturedFile::new(path.to_string(), source.as_bytes().to_vec()))
         .collect();
     captured.extend(dependency.iter().map(|(path, source)| {
-        CapturedFile::in_dependency(
-            alias.clone(),
-            path.to_string(),
-            source.as_bytes().to_vec(),
-        )
+        CapturedFile::in_dependency(alias.clone(), path.to_string(), source.as_bytes().to_vec())
     }));
     capture_origins(
         &manifest,

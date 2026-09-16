@@ -18,12 +18,12 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::hash::Hash;
 use std::rc::Rc;
 
+use crate::source::ProjectFile;
 use marrow_codes::Code;
 use marrow_image::{
     CollTypeId, CollectionTypeDef, DraftTxn, EnumId, FieldDef, ImageType, RecordTypeDef, Scalar,
     TypeId, VariantDef,
 };
-use marrow_project::FileIdentity;
 use marrow_syntax::{
     AliasDecl, EnumDecl, EnumMember, Expression, FieldDecl, GroupDecl, LiteralKind, NominalDecl,
     ResourceDecl, ResourceMember, SourceSpan, StructDecl, TypeExpr, UnaryOp, range_expr,
@@ -117,7 +117,7 @@ pub(crate) enum NominalBoundaryKind {
 pub(crate) struct NominalBoundaryRoot<'a> {
     pub(crate) value: NominalBoundaryValue,
     pub(crate) kind: NominalBoundaryKind,
-    pub(crate) file: &'a FileIdentity,
+    pub(crate) file: &'a ProjectFile,
     pub(crate) span: SourceSpan,
 }
 
@@ -733,7 +733,7 @@ struct TypeTemplate {
     /// toolchain generic (`Option`, `Result`) that has no source file. A template
     /// with a source file always carries a real identity; the absence is
     /// structural, so no diagnostic can ever name an empty or sentinel file.
-    file: Option<FileIdentity>,
+    file: Option<ProjectFile>,
     name_span: SourceSpan,
     reserved: Option<Reserved>,
     type_params: Vec<(String, Option<TypeConstraint>)>,
@@ -920,7 +920,7 @@ struct FnInst {
 /// synthetic construct.
 #[derive(Clone, Copy)]
 pub(crate) struct MintSite<'a> {
-    pub(crate) file: &'a FileIdentity,
+    pub(crate) file: &'a ProjectFile,
     pub(crate) span: SourceSpan,
 }
 
@@ -3245,7 +3245,7 @@ impl TypeRegistry {
     fn member_refusal_row(
         &self,
         refusal: ResolveRefusal,
-        file: &FileIdentity,
+        file: &ProjectFile,
         span: SourceSpan,
         subject: &str,
     ) -> Result<Option<SourceDiagnostic>, GenericInvariant> {
@@ -3264,7 +3264,7 @@ impl TypeRegistry {
     pub(crate) fn scalar_refusal_row(
         &self,
         refusal: ResolveRefusal,
-        file: &FileIdentity,
+        file: &ProjectFile,
         span: SourceSpan,
         subject: &str,
     ) -> Result<SourceDiagnostic, GenericInvariant> {
@@ -3318,7 +3318,7 @@ impl TypeRegistry {
     pub(crate) fn refused_member_steer(
         &self,
         id: DeclarationRefusalId,
-        file: &FileIdentity,
+        file: &ProjectFile,
         span: SourceSpan,
     ) -> Result<Option<SourceDiagnostic>, DeclarationIndexDrift> {
         let summary = self.members.refusal(id)?;
@@ -3392,11 +3392,11 @@ impl TypeRegistry {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn build(
         draft: &mut DraftTxn<'_>,
-        aliases: &[(FileRef, FileIdentity, &AliasDecl)],
-        nominals: &[(FileRef, FileIdentity, &NominalDecl)],
-        structs: &[(FileRef, FileIdentity, &StructDecl)],
-        enums: &[(FileRef, FileIdentity, &EnumDecl)],
-        resources: &[(FileRef, FileIdentity, &ResourceDecl)],
+        aliases: &[(FileRef, ProjectFile, &AliasDecl)],
+        nominals: &[(FileRef, ProjectFile, &NominalDecl)],
+        structs: &[(FileRef, ProjectFile, &StructDecl)],
+        enums: &[(FileRef, ProjectFile, &EnumDecl)],
+        resources: &[(FileRef, ProjectFile, &ResourceDecl)],
         diagnostics: &mut DiagnosticCollector,
         budget: DeclarationBudget,
     ) -> Result<Self, BuildError> {
@@ -3430,12 +3430,12 @@ impl TypeRegistry {
         // A generic `struct`/`enum` (one carrying type parameters) is a template
         // monomorphized on use, not a concrete image type; the concrete declarations
         // are declared-then-filled below, the templates registered aside.
-        let concrete_structs: Vec<(FileRef, FileIdentity, &StructDecl)> = structs
+        let concrete_structs: Vec<(FileRef, ProjectFile, &StructDecl)> = structs
             .iter()
             .filter(|(_, _, decl)| decl.type_params.is_empty())
             .map(|(at, file, decl)| (*at, file.clone(), *decl))
             .collect();
-        let concrete_enums: Vec<(FileRef, FileIdentity, &EnumDecl)> = enums
+        let concrete_enums: Vec<(FileRef, ProjectFile, &EnumDecl)> = enums
             .iter()
             .filter(|(_, _, decl)| decl.type_params.is_empty())
             .map(|(at, file, decl)| (*at, file.clone(), *decl))
@@ -3787,7 +3787,7 @@ pub(crate) fn reject_value_cycles(
 }
 
 fn value_cycle_diagnostic(
-    file: &FileIdentity,
+    file: &ProjectFile,
     span: SourceSpan,
     name: &str,
     path: &[String],
@@ -4046,7 +4046,7 @@ impl ValueGraph {
 }
 
 /// The diagnostic for a declaration that reuses a built-in generic type name.
-fn reserved_name(file: &FileIdentity, span: SourceSpan, name: &str) -> SourceDiagnostic {
+fn reserved_name(file: &ProjectFile, span: SourceSpan, name: &str) -> SourceDiagnostic {
     SourceDiagnostic::at(
         Code::CheckNameConflict,
         file,
@@ -4055,7 +4055,7 @@ fn reserved_name(file: &FileIdentity, span: SourceSpan, name: &str) -> SourceDia
     )
 }
 
-fn unsupported(file: &FileIdentity, span: SourceSpan, subject: &str) -> SourceDiagnostic {
+fn unsupported(file: &ProjectFile, span: SourceSpan, subject: &str) -> SourceDiagnostic {
     SourceDiagnostic::at(
         Code::CheckUnsupported,
         file,

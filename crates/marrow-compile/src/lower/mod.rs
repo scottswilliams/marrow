@@ -22,13 +22,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::source::ProjectFile;
 use marrow_codes::Code;
 use marrow_image::{
     CanonicalDeclarationPathSelector, CollTypeId, DraftTxn, EnumId, FuncId, FunctionDef,
     ImageDraft, ImageType, Instr, OccurrenceSiteHandle, OpClass, PlannedSiteRef, RootId,
     RootOccurrenceSelector, Scalar, SemanticTarget, SpanEntry, TypeId,
 };
-use marrow_project::FileIdentity;
 
 use crate::analysis::{AnalysisFactCollector, DefinitionTarget, FactSink, FileRef, StagedBodyTxn};
 use marrow_syntax::{
@@ -263,7 +263,7 @@ pub(super) fn annotation_refusal_row(
     records: &TypeRegistry,
     durable: &DurableRegistry,
     refusal: ResolveRefusal,
-    file: &FileIdentity,
+    file: &ProjectFile,
     span: SourceSpan,
     subject: &str,
 ) -> Result<AnnotationRefusal, LowerInvariant> {
@@ -329,7 +329,7 @@ pub(crate) struct FnLowerer<'a, 'd> {
     /// buffer and are admitted by the caller only when the body lowers.
     facts: FactSink<'a>,
     /// The file identity every diagnostic reported against this body names.
-    file: &'a FileIdentity,
+    file: &'a ProjectFile,
     /// The dotted module the function being lowered belongs to; unqualified calls
     /// resolve within it.
     module: &'a str,
@@ -446,7 +446,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// A fresh lowerer over an empty body, for one function or test body.
     fn new(
         ctx: LowerCtx<'a, 'd>,
-        file: &'a FileIdentity,
+        file: &'a ProjectFile,
         module: &'a str,
         ret: RetType,
         body_kind: BodyKind,
@@ -546,7 +546,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// it holds the dotted module name the export's [`marrow_image::ExportId`] needs.
     pub(crate) fn lower(
         ctx: LowerCtx<'a, 'd>,
-        file: &'a FileIdentity,
+        file: &'a ProjectFile,
         module: &'a str,
         function: &FunctionDecl,
         func: FuncId,
@@ -648,7 +648,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// value parameters, lower the body, and fill the reserved image function.
     fn lower_with_env(
         ctx: LowerCtx<'a, 'd>,
-        file: &'a FileIdentity,
+        file: &'a ProjectFile,
         module: &'a str,
         function: &FunctionDecl,
         func: FuncId,
@@ -825,7 +825,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// interned as the function name and bound by the caller into the TEST-ENTRY table.
     pub(crate) fn lower_test(
         ctx: LowerCtx<'a, 'd>,
-        file: &'a FileIdentity,
+        file: &'a ProjectFile,
         module: &'a str,
         name: &str,
         body: &Block,
@@ -863,7 +863,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             return Ok(BodyOutcome::Refused);
         }
         let name_id = self.draft.intern_string(name)?;
-        let source_id = self.draft.intern_string(self.file.as_str())?;
+        let source_id = self.draft.intern_string(&self.file.spelling())?;
         let code = std::mem::take(&mut self.code);
         let spans = std::mem::take(&mut self.spans);
         let code_spans = std::mem::take(&mut self.full_spans);
@@ -1035,7 +1035,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     fn reject_at(
         &mut self,
         error: ResolveError,
-        file: &FileIdentity,
+        file: &ProjectFile,
         span: SourceSpan,
         subject: &str,
     ) {

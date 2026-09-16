@@ -5,9 +5,9 @@
 //! operation below runs against the owners stored in the same aggregate, and every
 //! release consumes that aggregate after its producer has committed or erased.
 
+use crate::source::ProjectFile;
 use marrow_codes::Code;
 use marrow_image::{ExportId, ImageDraft};
-use marrow_project::FileIdentity;
 use marrow_syntax::{Block, FunctionDecl};
 
 use super::{
@@ -23,7 +23,7 @@ use crate::types::{GArg, GenericDiagnostics, GenericInvariant, GenericOwnerTxn, 
 #[derive(Clone, Copy)]
 pub(crate) struct BodySite<'a> {
     pub(crate) at: FileRef,
-    pub(crate) file: &'a FileIdentity,
+    pub(crate) file: &'a ProjectFile,
     pub(crate) module: &'a str,
 }
 
