@@ -313,7 +313,7 @@ fn read_entry(dir: &Path, image: &VerifiedImage, id: i64) -> Option<EntryValue> 
     read.read_entry(&site, &[KeyScalar::Int(id)]).expect("read")
 }
 
-/// The whole exit-gate journey: a realistic JSONL corpus populates a provisioned store through
+/// The whole journey: a realistic JSONL corpus populates a provisioned store through
 /// the importer, and reading entries back through the kernel proves each row is a typed durable
 /// entry with its required field present and its sparse field present-or-absent per the source.
 #[test]
