@@ -2,7 +2,7 @@
 //! through.
 
 use super::*;
-use crate::diag::{RefusedDeclaration, Steer, Unresolved};
+use crate::diag::{RefusedDeclaration, Steer, TypeMismatch, TypeSpelling, Unresolved};
 
 /// Whether `ty` is a value that renders to canonical text — a bare scalar, enum, or
 /// entry identity. A record, collection, or optional is not renderable; those are not
@@ -383,16 +383,6 @@ pub(super) fn loop_error(file: &ProjectFile, span: SourceSpan, keyword: &str) ->
     )
 }
 
-/// The steer appended when an optional value `T?` is used where the present `T` is
-/// required. Callers append it only once they have established that presence is the sole
-/// blocker; a different bare type is not presence-fixable and carries no steer.
-fn present_idiom_steer(message: &mut String) {
-    message.push_str(
-        " This value is optional; prove it present by binding it with `if const x = … { … }`, \
-         or supply a fallback with `… ?? default`, then use the present value.",
-    );
-}
-
 /// The refusal of a presence-dependent use. `detail` names why no proof holds here.
 pub(crate) fn requires_presence(
     file: &ProjectFile,
@@ -413,6 +403,14 @@ pub(crate) fn requires_presence(
     )
 }
 
+/// The presence steer, carried when the found type is the required one under exactly one
+/// optional layer, so binding or coalescing the value is the whole fix. A different bare
+/// type survives making the value present and is not presence-fixable.
+fn presence_steer(fixable: bool) -> Option<Steer> {
+    fixable.then_some(Steer::Presence)
+}
+
+/// A value whose type does not fit the position it is written in.
 pub(super) fn type_mismatch(
     records: &TypeRegistry,
     file: &ProjectFile,
@@ -420,34 +418,42 @@ pub(super) fn type_mismatch(
     found: LTy,
     want: LTy,
 ) -> SourceDiagnostic {
-    let mut message = format!(
-        "found {} where {} is required",
-        found.spelling(records),
-        want.spelling(records)
-    );
-    // `found` is `want` under one optional layer, so presence is the sole blocker.
-    if found.is_optional() && !want.is_optional() && found.to_bare() == want {
-        present_idiom_steer(&mut message);
-    }
-    SourceDiagnostic::at(Code::CheckType, file, span, message)
+    SourceDiagnostic::with_type_mismatch(
+        file,
+        span,
+        TypeMismatch::Value {
+            found: TypeSpelling::new(found.spelling(records)),
+            expected: TypeSpelling::new(want.spelling(records)),
+        },
+        presence_steer(found.is_optional() && !want.is_optional() && found.to_bare() == want),
+    )
 }
 
+/// A unary operator applied to an operand type it is not defined for. The operator fixes
+/// the type it wants — `-` an int, `not` a bool — so only that one operand is a fact.
 pub(super) fn unary_error(
     records: &TypeRegistry,
     file: &ProjectFile,
     span: SourceSpan,
-    verb: &str,
+    op: UnaryOp,
     ty: LTy,
-    wanted: LTy,
 ) -> SourceDiagnostic {
-    let mut message = format!("cannot {verb} {}", ty.spelling(records));
-    // The operand is `wanted` under one optional layer, so presence is the sole blocker.
-    if ty.is_optional() && ty.to_bare() == wanted {
-        present_idiom_steer(&mut message);
-    }
-    SourceDiagnostic::at(Code::CheckType, file, span, message)
+    let wanted = match op {
+        UnaryOp::Neg => LTy::bare_scalar(ScalarType::Int),
+        UnaryOp::Not => LTy::bare_scalar(ScalarType::Bool),
+    };
+    SourceDiagnostic::with_type_mismatch(
+        file,
+        span,
+        TypeMismatch::Unary {
+            op,
+            found: TypeSpelling::new(ty.spelling(records)),
+        },
+        presence_steer(ty.is_optional() && ty.to_bare() == wanted),
+    )
 }
 
+/// A binary operator defined for no pair of these operand types.
 pub(super) fn binary_error(
     records: &TypeRegistry,
     file: &ProjectFile,
@@ -456,19 +462,21 @@ pub(super) fn binary_error(
     left: LTy,
     right: LTy,
 ) -> SourceDiagnostic {
-    let mut message = format!(
-        "`{}` is not defined for {} and {}",
-        operator_symbol(op),
-        left.spelling(records),
-        right.spelling(records)
-    );
     // The operands differ solely in presence — same bare type, at least one optional.
-    if (left.is_optional() || right.is_optional()) && left.to_bare() == right.to_bare() {
-        present_idiom_steer(&mut message);
-    }
-    SourceDiagnostic::at(Code::CheckType, file, span, message)
+    let fixable = (left.is_optional() || right.is_optional()) && left.to_bare() == right.to_bare();
+    SourceDiagnostic::with_type_mismatch(
+        file,
+        span,
+        TypeMismatch::Binary {
+            op,
+            left: TypeSpelling::new(left.spelling(records)),
+            right: TypeSpelling::new(right.spelling(records)),
+        },
+        presence_steer(fixable),
+    )
 }
 
+/// An `and`/`or` operand that is not `bool`.
 pub(super) fn logic_operand(
     records: &TypeRegistry,
     file: &ProjectFile,
@@ -476,16 +484,16 @@ pub(super) fn logic_operand(
     op: BinaryOp,
     ty: LTy,
 ) -> SourceDiagnostic {
-    let mut message = format!(
-        "`{}` operand must be bool, found {}",
-        operator_symbol(op),
-        ty.spelling(records)
-    );
-    // `and`/`or` require bool, so only a `bool?` operand is presence-fixable.
-    if ty.is_optional() && ty.to_bare() == LTy::bare_scalar(ScalarType::Bool) {
-        present_idiom_steer(&mut message);
-    }
-    SourceDiagnostic::at(Code::CheckType, file, span, message)
+    SourceDiagnostic::with_type_mismatch(
+        file,
+        span,
+        TypeMismatch::LogicOperand {
+            op,
+            found: TypeSpelling::new(ty.spelling(records)),
+        },
+        // `and`/`or` require bool, so only a `bool?` operand is presence-fixable.
+        presence_steer(ty.is_optional() && ty.to_bare() == LTy::bare_scalar(ScalarType::Bool)),
+    )
 }
 
 #[cfg(test)]

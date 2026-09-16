@@ -708,25 +708,6 @@ pub(super) fn eq_instr(scalar: ScalarType) -> Instr {
     }
 }
 
-pub(super) fn operator_symbol(op: BinaryOp) -> &'static str {
-    match op {
-        BinaryOp::Add => "+",
-        BinaryOp::Subtract => "-",
-        BinaryOp::Multiply => "*",
-        BinaryOp::Divide => "/",
-        BinaryOp::Remainder => "%",
-        BinaryOp::Less => "<",
-        BinaryOp::LessEqual => "<=",
-        BinaryOp::Greater => ">",
-        BinaryOp::GreaterEqual => ">=",
-        BinaryOp::Equal => "==",
-        BinaryOp::NotEqual => "!=",
-        BinaryOp::And => "and",
-        BinaryOp::Or => "or",
-        _ => "operator",
-    }
-}
-
 pub(crate) fn parse_int(text: &str) -> Option<i64> {
     text.replace('_', "").parse().ok()
 }

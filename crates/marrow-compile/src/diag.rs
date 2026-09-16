@@ -21,7 +21,8 @@ use crate::source::ProjectFile;
 use marrow_codes::Code;
 use marrow_project::{FileIdentity, IdentityAnchor, IdentityKind, SourceOrigin};
 use marrow_syntax::{
-    Diagnostic, DiagnosticReason, Severity, SourceSpan, SyntaxDiagnosticLimit, SyntaxDiagnostics,
+    BinaryOp, Diagnostic, DiagnosticReason, Severity, SourceSpan, SyntaxDiagnosticLimit,
+    SyntaxDiagnostics, UnaryOp,
 };
 
 /// The most diagnostic rows the compiler collector retains before it discards
@@ -113,6 +114,18 @@ enum CompilerDiagnostic {
         unresolved: Unresolved,
         steer: Option<Box<Steer>>,
     },
+    /// A type that does not fit where it is written, carrying the typed position and
+    /// the source spellings of the types involved beside the rendered form, and the
+    /// presence steer when a single optional layer is the sole blocker. Always
+    /// `check.type`, so the variant owns no code. Both payloads are boxed rather than
+    /// widening every retained row: the spellings are wider than any other variant's
+    /// facts, and most mismatches are not presence-fixable.
+    Mismatch {
+        span: SourceSpan,
+        message: String,
+        mismatch: Box<TypeMismatch>,
+        steer: Option<Box<Steer>>,
+    },
     /// A file the drive could not decode. The message is the central static and
     /// the span the fixed file-start point, so this variant owns only the
     /// typed `Utf8Error` numbers.
@@ -193,6 +206,115 @@ impl fmt::Display for Unresolved {
     }
 }
 
+/// A binary operator's source spelling, for the diagnostics that name the operator the
+/// reader wrote. Ranges, `??` and `is` reach no such diagnostic, so they read as the
+/// generic word rather than inventing a second spelling of their syntax.
+pub(crate) fn operator_symbol(op: BinaryOp) -> &'static str {
+    match op {
+        BinaryOp::Add => "+",
+        BinaryOp::Subtract => "-",
+        BinaryOp::Multiply => "*",
+        BinaryOp::Divide => "/",
+        BinaryOp::Remainder => "%",
+        BinaryOp::Less => "<",
+        BinaryOp::LessEqual => "<=",
+        BinaryOp::Greater => ">",
+        BinaryOp::GreaterEqual => ">=",
+        BinaryOp::Equal => "==",
+        BinaryOp::NotEqual => "!=",
+        BinaryOp::And => "and",
+        BinaryOp::Or => "or",
+        _ => "operator",
+    }
+}
+
+/// A type's source spelling, as the compiler's one type renderer produced it.
+///
+/// The compiler mints every one of these from the lowered type, so a consumer compares
+/// the spelling it was given rather than rebuilding one from prose, from the image, or
+/// from a declaration name. Nothing outside this crate can construct one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeSpelling(String);
+
+impl TypeSpelling {
+    pub(crate) fn new(spelling: String) -> Self {
+        Self(spelling)
+    }
+
+    /// The spelling, as a renderer or an assertion reads it.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for TypeSpelling {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// A type that does not fit where it is written.
+///
+/// Every row here is `check.type` at the offending span, so the code and the span say
+/// only that something is ill-typed: which position failed, and which types met there,
+/// are these facts. [`Display`](std::fmt::Display) is the one renderer of the sentence;
+/// the prose lives nowhere else, so payload and message cannot drift.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeMismatch {
+    /// A value of `found` written where `expected` is required — a return, an
+    /// argument, an initializer, a durable write.
+    Value {
+        found: TypeSpelling,
+        expected: TypeSpelling,
+    },
+    /// A unary operator with no meaning for its operand type.
+    Unary { op: UnaryOp, found: TypeSpelling },
+    /// A binary operator defined for no pair of these operand types.
+    Binary {
+        op: BinaryOp,
+        left: TypeSpelling,
+        right: TypeSpelling,
+    },
+    /// An `and`/`or` operand that is not `bool`.
+    LogicOperand { op: BinaryOp, found: TypeSpelling },
+}
+
+impl TypeMismatch {
+    /// The owned payload bytes these spellings charge against the diagnostic byte
+    /// ceiling.
+    fn retained_owned_bytes(&self) -> usize {
+        match self {
+            Self::Value { found, expected } => found.0.len() + expected.0.len(),
+            Self::Unary { found, .. } | Self::LogicOperand { found, .. } => found.0.len(),
+            Self::Binary { left, right, .. } => left.0.len() + right.0.len(),
+        }
+    }
+}
+
+impl fmt::Display for TypeMismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Value { found, expected } => {
+                write!(f, "found {found} where {expected} is required")
+            }
+            Self::Unary { op, found } => match op {
+                UnaryOp::Neg => write!(f, "cannot negate {found}"),
+                UnaryOp::Not => write!(f, "cannot apply `not` to {found}"),
+            },
+            Self::Binary { op, left, right } => write!(
+                f,
+                "`{}` is not defined for {left} and {right}",
+                operator_symbol(*op)
+            ),
+            Self::LogicOperand { op, found } => write!(
+                f,
+                "`{}` operand must be bool, found {found}",
+                operator_symbol(*op)
+            ),
+        }
+    }
+}
+
 /// Where a steering diagnostic sends the reader.
 ///
 /// A steer reuses the code of the finding it rides — today every one of these is a
@@ -218,6 +340,11 @@ pub enum Steer {
         branch: String,
         resource: Option<String>,
     },
+    /// An optional value where the present value is required, with presence the sole
+    /// blocker: the required type is the found one minus a single optional layer, so
+    /// binding or coalescing the value fixes the site. A type clash that survives
+    /// making the value present is not presence-fixable and earns no steer.
+    Presence,
 }
 
 impl Steer {
@@ -228,6 +355,7 @@ impl Steer {
             Self::KeyedBranch { branch, resource } => {
                 branch.len() + resource.as_ref().map_or(0, String::len)
             }
+            Self::Presence => 0,
         }
     }
 }
@@ -266,6 +394,11 @@ impl fmt::Display for Steer {
                  branch is a distinct durable node reached through a store path, not projected \
                  from a materialized record. Read it through its durable path, or bind it with a \
                  nested `if const`."
+            ),
+            Self::Presence => write!(
+                f,
+                "This value is optional; prove it present by binding it with `if const x = … \
+                 {{ … }}`, or supply a fallback with `… ?? default`, then use the present value."
             ),
         }
     }
@@ -369,6 +502,30 @@ impl SourceDiagnostic {
         }
     }
 
+    /// A type that does not fit where it is written, with the presence steer when a
+    /// single optional layer is the sole blocker. Both payloads render their own prose,
+    /// so the typed facts and the message are one construction.
+    pub(crate) fn with_type_mismatch(
+        file: &ProjectFile,
+        span: SourceSpan,
+        mismatch: TypeMismatch,
+        steer: Option<Steer>,
+    ) -> Self {
+        let message = match &steer {
+            Some(steer) => format!("{mismatch} {steer}"),
+            None => mismatch.to_string(),
+        };
+        Self {
+            file: file.clone(),
+            payload: SourceDiagnosticPayload::Compiler(CompilerDiagnostic::Mismatch {
+                span,
+                message,
+                mismatch: Box::new(mismatch),
+                steer: steer.map(Box::new),
+            }),
+        }
+    }
+
     pub(crate) fn invalid_utf8(
         file: &ProjectFile,
         valid_up_to: usize,
@@ -403,9 +560,9 @@ impl SourceDiagnostic {
                 | CompilerDiagnostic::RefusedDeclaration { code, .. }
                 | CompilerDiagnostic::Steered { code, .. },
             ) => *code,
-            SourceDiagnosticPayload::Compiler(CompilerDiagnostic::Unresolved { .. }) => {
-                Code::CheckType
-            }
+            SourceDiagnosticPayload::Compiler(
+                CompilerDiagnostic::Unresolved { .. } | CompilerDiagnostic::Mismatch { .. },
+            ) => Code::CheckType,
             SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8 { .. }) => {
                 Code::CheckUnsupported
             }
@@ -421,7 +578,8 @@ impl SourceDiagnostic {
                 | CompilerDiagnostic::IdentityGap { message, .. }
                 | CompilerDiagnostic::RefusedDeclaration { message, .. }
                 | CompilerDiagnostic::Steered { message, .. }
-                | CompilerDiagnostic::Unresolved { message, .. },
+                | CompilerDiagnostic::Unresolved { message, .. }
+                | CompilerDiagnostic::Mismatch { message, .. },
             ) => message,
             SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8 { .. }) => {
                 INVALID_UTF8_MESSAGE
@@ -493,9 +651,10 @@ impl SourceDiagnostic {
             SourceDiagnosticPayload::Compiler(CompilerDiagnostic::Steered { steer, .. }) => {
                 Some(steer)
             }
-            SourceDiagnosticPayload::Compiler(CompilerDiagnostic::Unresolved { steer, .. }) => {
-                steer.as_deref()
-            }
+            SourceDiagnosticPayload::Compiler(
+                CompilerDiagnostic::Unresolved { steer, .. }
+                | CompilerDiagnostic::Mismatch { steer, .. },
+            ) => steer.as_deref(),
             _ => None,
         }
     }
@@ -512,6 +671,22 @@ impl SourceDiagnostic {
                 unresolved,
                 ..
             }) => Some(unresolved),
+            _ => None,
+        }
+    }
+
+    /// The typed facts behind a type that does not fit where it is written, `None` for
+    /// every other payload.
+    ///
+    /// Every one of these is `check.type` at the offending span, so the code and span say
+    /// only that something is ill-typed. A test that means to pin which position failed,
+    /// or how the compiler spells the types that met there, reads this instead of the
+    /// rendered prose, which is not a contract.
+    pub fn type_mismatch(&self) -> Option<&TypeMismatch> {
+        match &self.payload {
+            SourceDiagnosticPayload::Compiler(CompilerDiagnostic::Mismatch {
+                mismatch, ..
+            }) => Some(mismatch),
             _ => None,
         }
     }
@@ -539,7 +714,8 @@ impl SourceDiagnostic {
                 | CompilerDiagnostic::IdentityGap { span, .. }
                 | CompilerDiagnostic::RefusedDeclaration { span, .. }
                 | CompilerDiagnostic::Steered { span, .. }
-                | CompilerDiagnostic::Unresolved { span, .. },
+                | CompilerDiagnostic::Unresolved { span, .. }
+                | CompilerDiagnostic::Mismatch { span, .. },
             ) => *span,
             SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8 { .. }) => {
                 INVALID_UTF8_SPAN
@@ -614,6 +790,16 @@ impl SourceDiagnostic {
             }) => {
                 file + message.len()
                     + unresolved.name.len()
+                    + steer.as_deref().map_or(0, Steer::retained_owned_bytes)
+            }
+            SourceDiagnosticPayload::Compiler(CompilerDiagnostic::Mismatch {
+                message,
+                mismatch,
+                steer,
+                ..
+            }) => {
+                file + message.len()
+                    + mismatch.retained_owned_bytes()
                     + steer.as_deref().map_or(0, Steer::retained_owned_bytes)
             }
             SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8 { .. }) => file,
