@@ -152,6 +152,9 @@ impl<'a, 's> ExprParser<'a, 's> {
         if expr.is_error() && !has_recovery {
             ParseComplete::Reported
         } else if self.report_stray_assignment_operator() {
+            // A `=` left where the expression should have ended is the `=`-for-`==`
+            // mistake, and a trailing compound-assign operator is a misplaced assignment;
+            // either way this arm owns the single diagnostic for it.
             ParseComplete::Reported
         } else if self.pos < self.tokens.len() {
             ParseComplete::Incomplete(self.tokens[self.pos].span)
