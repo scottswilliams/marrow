@@ -9,37 +9,8 @@ use super::*;
 use ::redb::{ReadableDatabase, TableDefinition};
 
 use crate::redb::{create_raw, reopen_raw};
+use crate::scratch_tests::Scratch;
 use marrow_codes::Code;
-
-struct Scratch(PathBuf);
-
-impl Scratch {
-    fn new(tag: &str) -> Self {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_nanos())
-            .unwrap_or(0);
-        let path = std::env::temp_dir().join(format!(
-            "marrow-native-owner-{tag}-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&path).expect("scratch directory");
-        Self(path)
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            eprintln!(
-                "failed native-owner fixture retained at {}",
-                self.0.display()
-            );
-            return;
-        }
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
 
 /// Acquire, bind, and open in the one order production uses.
 fn open_existing(
@@ -56,11 +27,11 @@ fn open_existing(
 /// rather than a raw engine handle.
 #[test]
 fn the_native_owner_passes_the_conformance_suite() -> Result<(), StoreError> {
-    let scratch = Scratch::new("conformance");
+    let scratch = Scratch::new("native-owner-conformance");
     let mut counter = 0u8;
     crate::conformance::run_all(|| {
         counter += 1;
-        let dir = scratch.0.join(format!("store-{counter}"));
+        let dir = scratch.path().join(format!("store-{counter}"));
         std::fs::create_dir_all(&dir).expect("store directory");
         NativeEngineOwner::provision(&dir)?;
         open_existing(&dir, [counter; 16]).map_err(|error| match error {
@@ -93,13 +64,13 @@ pub(super) fn assert_handoff_excludes_contenders(dir: &Path) {
 #[test]
 #[cfg(unix)]
 fn service_promotion_preserves_the_inherited_physical_audit_obligation() {
-    let scratch = Scratch::new("promote-physical-audit");
-    NativeEngineOwner::provision(&scratch.0).expect("provision");
-    seed_audit_body(&scratch.0);
-    std::fs::write(scratch.0.join(NATIVE_LOCK_FILE), b"unclean").expect("prior obligation");
-    let owner = inspect_existing(&scratch.0);
+    let scratch = Scratch::new("native-owner-promote-physical-audit");
+    NativeEngineOwner::provision(scratch.path()).expect("provision");
+    seed_audit_body(scratch.path());
+    std::fs::write(scratch.path().join(NATIVE_LOCK_FILE), b"unclean").expect("prior obligation");
+    let owner = inspect_existing(scratch.path());
     // Clearing the still-held marker cannot erase the obligation read at admission.
-    std::fs::write(scratch.0.join(NATIVE_LOCK_FILE), b"").expect("clear marker bytes");
+    std::fs::write(scratch.path().join(NATIVE_LOCK_FILE), b"").expect("clear marker bytes");
     MUTATE_AFTER_OPEN.with(|slot| {
         assert!(slot.borrow().is_none());
         *slot.borrow_mut() = Some(owner.directory.clone());
@@ -114,19 +85,19 @@ fn service_promotion_preserves_the_inherited_physical_audit_obligation() {
             panic!("service preparation skipped its inherited physical audit");
         }
     }
-    assert!(!marker_bytes(&scratch.0).is_empty());
+    assert!(!marker_bytes(scratch.path()).is_empty());
 }
 
 #[test]
 fn service_promotion_refuses_marker_appearance_and_removal() {
     for initially_present in [false, true] {
-        let scratch = Scratch::new("promote-marker-presence");
-        NativeEngineOwner::provision(&scratch.0).expect("provision");
-        let marker = scratch.0.join(NATIVE_LOCK_FILE);
+        let scratch = Scratch::new("native-owner-promote-marker-presence");
+        NativeEngineOwner::provision(scratch.path()).expect("provision");
+        let marker = scratch.path().join(NATIVE_LOCK_FILE);
         if initially_present {
             std::fs::write(&marker, b"unclean").expect("marker");
         }
-        let owner = inspect_existing(&scratch.0);
+        let owner = inspect_existing(scratch.path());
         if initially_present {
             std::fs::remove_file(&marker).expect("remove marker");
         } else {
@@ -139,7 +110,7 @@ fn service_promotion_refuses_marker_appearance_and_removal() {
         if initially_present {
             assert!(!marker.exists());
         } else {
-            assert_eq!(marker_bytes(&scratch.0), b"changed");
+            assert_eq!(marker_bytes(scratch.path()), b"changed");
         }
     }
 }
@@ -147,20 +118,20 @@ fn service_promotion_refuses_marker_appearance_and_removal() {
 #[test]
 fn service_promotion_preserves_exclusion_and_returns_write_access() {
     for marker in [None, Some(&b""[..]), Some(&b"unclean"[..])] {
-        let scratch = Scratch::new("promote");
-        NativeEngineOwner::provision(&scratch.0).expect("provision");
+        let scratch = Scratch::new("native-owner-promote");
+        NativeEngineOwner::provision(scratch.path()).expect("provision");
         if let Some(bytes) = marker {
-            std::fs::write(scratch.0.join(NATIVE_LOCK_FILE), bytes).expect("seed marker");
+            std::fs::write(scratch.path().join(NATIVE_LOCK_FILE), bytes).expect("seed marker");
         }
-        let owner = inspect_existing(&scratch.0);
+        let owner = inspect_existing(scratch.path());
         assert!(matches!(
-            NativeEngineOwner::acquire_existing(&scratch.0),
+            NativeEngineOwner::acquire_existing(scratch.path()),
             Err(NativeOwnerAcquireError::Lock(
                 NativeLockError::StoreInUse { .. }
             ))
         ));
         assert_eq!(
-            std::fs::read(scratch.0.join(NATIVE_LOCK_FILE))
+            std::fs::read(scratch.path().join(NATIVE_LOCK_FILE))
                 .ok()
                 .as_deref(),
             marker
@@ -169,7 +140,7 @@ fn service_promotion_preserves_exclusion_and_returns_write_access() {
             .into_service([0x71; 16])
             .expect("promote without self-contention");
         assert!(matches!(
-            NativeEngineOwner::acquire_existing(&scratch.0),
+            NativeEngineOwner::acquire_existing(scratch.path()),
             Err(NativeOwnerAcquireError::Lock(
                 NativeLockError::StoreInUse { .. }
             ))
@@ -186,40 +157,40 @@ fn service_promotion_preserves_exclusion_and_returns_write_access() {
             Some(vec![42])
         );
         drop(owner);
-        assert!(marker_bytes(&scratch.0).is_empty());
+        assert!(marker_bytes(scratch.path()).is_empty());
     }
 }
 
 #[test]
 fn service_promotion_refuses_replaced_engine_and_marker() {
     for entry in [NATIVE_ENGINE_FILE, NATIVE_LOCK_FILE] {
-        let scratch = Scratch::new("promote-replaced");
-        NativeEngineOwner::provision(&scratch.0).expect("provision");
-        std::fs::write(scratch.0.join(NATIVE_LOCK_FILE), b"unclean").expect("marker");
-        let owner = inspect_existing(&scratch.0);
-        let path = scratch.0.join(entry);
-        let displaced = scratch.0.join("displaced");
+        let scratch = Scratch::new("native-owner-promote-replaced");
+        NativeEngineOwner::provision(scratch.path()).expect("provision");
+        std::fs::write(scratch.path().join(NATIVE_LOCK_FILE), b"unclean").expect("marker");
+        let owner = inspect_existing(scratch.path());
+        let path = scratch.path().join(entry);
+        let displaced = scratch.path().join("displaced");
         std::fs::rename(&path, &displaced).expect("displace");
         std::fs::copy(&displaced, &path).expect("replace with exact bytes");
         let before = std::fs::read(&path).expect("replacement bytes");
         assert!(owner.into_service([0x71; 16]).is_err());
         assert_eq!(std::fs::read(&path).expect("retained replacement"), before);
-        assert_eq!(marker_bytes(&scratch.0), b"unclean");
+        assert_eq!(marker_bytes(scratch.path()), b"unclean");
     }
 }
 
 #[test]
 fn service_promotion_refuses_writable_and_quarantined_owners() {
-    let scratch = Scratch::new("promote-writable");
-    NativeEngineOwner::provision(&scratch.0).expect("provision");
-    let owner = open_existing(&scratch.0, [0x71; 16]).expect("service");
+    let scratch = Scratch::new("native-owner-promote-writable");
+    NativeEngineOwner::provision(scratch.path()).expect("provision");
+    let owner = open_existing(scratch.path(), [0x71; 16]).expect("service");
     assert!(matches!(
         owner.into_service([0x71; 16]),
         Err(NativeOwnerOpenError::Refused(
             NativePromotionRefusal::NotReadOnly
         ))
     ));
-    let mut owner = inspect_existing(&scratch.0);
+    let mut owner = inspect_existing(scratch.path());
     owner.lock.quarantine();
     assert!(matches!(
         owner.into_service([0x71; 16]),
@@ -228,7 +199,7 @@ fn service_promotion_refuses_writable_and_quarantined_owners() {
         ))
     ));
     assert!(matches!(
-        NativeEngineOwner::acquire_existing(&scratch.0),
+        NativeEngineOwner::acquire_existing(scratch.path()),
         Err(NativeOwnerAcquireError::Lock(
             NativeLockError::StoreInUse { .. }
         ))
@@ -240,9 +211,9 @@ fn service_promotion_refuses_writable_and_quarantined_owners() {
 fn retained_directory_metadata_and_exclusion_survive_rename() {
     use std::os::unix::fs::MetadataExt;
 
-    let scratch = Scratch::new("retained-directory");
-    let original = scratch.0.join("original");
-    let moved = scratch.0.join("moved");
+    let scratch = Scratch::new("native-owner-retained-directory");
+    let original = scratch.path().join("original");
+    let moved = scratch.path().join("moved");
     std::fs::create_dir(&original).expect("create directory");
     let owner = NativeEngineOwner::acquire_existing(&original).expect("acquire owner");
     let identity = |metadata: std::fs::Metadata| (metadata.dev(), metadata.ino());
@@ -293,13 +264,13 @@ fn releasing_an_owner_does_not_wait_for_duplicate_handles_to_close() {
         Release::Clean,
         Release::ReadOnlyUnclean,
     ] {
-        let scratch = Scratch::new("duplicate-release");
-        NativeEngineOwner::provision(&scratch.0).expect("provision");
-        std::fs::write(scratch.0.join(NATIVE_LOCK_FILE), b"unclean")
+        let scratch = Scratch::new("native-owner-duplicate-release");
+        NativeEngineOwner::provision(scratch.path()).expect("provision");
+        std::fs::write(scratch.path().join(NATIVE_LOCK_FILE), b"unclean")
             .expect("inherited audit obligation");
-        let pending = NativeEngineOwner::acquire_existing(&scratch.0).expect("acquire");
+        let pending = NativeEngineOwner::acquire_existing(scratch.path()).expect("acquire");
         assert!(matches!(
-            contend(&scratch.0),
+            contend(scratch.path()),
             NativeOwnerAcquireError::Lock(NativeLockError::StoreInUse { .. }),
         ));
         let retained = match release {
@@ -336,15 +307,15 @@ fn releasing_an_owner_does_not_wait_for_duplicate_handles_to_close() {
             }
         };
         assert_eq!(
-            marker_bytes(&scratch.0).is_empty(),
+            marker_bytes(scratch.path()).is_empty(),
             matches!(release, Release::Clean),
             "only a clean owner discharges the inherited obligation",
         );
-        match NativeEngineOwner::acquire_existing(&scratch.0) {
+        match NativeEngineOwner::acquire_existing(scratch.path()) {
             Ok(successor) => {
                 drop(retained);
                 assert!(matches!(
-                    contend(&scratch.0),
+                    contend(scratch.path()),
                     NativeOwnerAcquireError::Lock(NativeLockError::StoreInUse { .. }),
                 ));
                 drop(successor);
@@ -354,7 +325,7 @@ fn releasing_an_owner_does_not_wait_for_duplicate_handles_to_close() {
                 drop(retained);
             }
         }
-        NativeEngineOwner::acquire_existing(&scratch.0)
+        NativeEngineOwner::acquire_existing(scratch.path())
             .expect("control: no owner or duplicate remains");
     }
     assert!(
@@ -366,9 +337,9 @@ fn releasing_an_owner_does_not_wait_for_duplicate_handles_to_close() {
 #[test]
 fn read_only_ownership_cannot_write_upgrade_or_clear_an_inherited_obligation() {
     for marker in [None, Some(b"".as_slice()), Some(b"unclean".as_slice())] {
-        let scratch = Scratch::new("read-only");
-        NativeEngineOwner::provision(&scratch.0).expect("provision");
-        let marker_path = scratch.0.join(NATIVE_LOCK_FILE);
+        let scratch = Scratch::new("native-owner-read-only");
+        NativeEngineOwner::provision(scratch.path()).expect("provision");
+        let marker_path = scratch.path().join(NATIVE_LOCK_FILE);
         if let Some(bytes) = marker {
             std::fs::write(&marker_path, bytes).expect("initial marker");
         }
@@ -380,9 +351,9 @@ fn read_only_ownership_cannot_write_upgrade_or_clear_an_inherited_obligation() {
             };
             assert_eq!(observed.as_deref(), marker);
         };
-        let path = scratch.0.join(NATIVE_ENGINE_FILE);
+        let path = scratch.path().join(NATIVE_ENGINE_FILE);
         let before = std::fs::read(&path).expect("engine before");
-        let pending = NativeEngineOwner::acquire_existing(&scratch.0).expect("acquire");
+        let pending = NativeEngineOwner::acquire_existing(scratch.path()).expect("acquire");
         assert_marker();
         let mut owner = pending
             .bind_and_open_existing(NativeOpenAccess::ReadOnly, [0x41; 16], || Ok::<(), ()>(()))
@@ -414,9 +385,9 @@ fn read_only_ownership_cannot_write_upgrade_or_clear_an_inherited_obligation() {
 
 #[test]
 fn a_read_only_open_refuses_required_repair_without_changing_the_engine() {
-    let scratch = Scratch::new("read-only-recovery");
-    NativeEngineOwner::provision(&scratch.0).expect("provision");
-    let path = scratch.0.join(NATIVE_ENGINE_FILE);
+    let scratch = Scratch::new("native-owner-read-only-recovery");
+    NativeEngineOwner::provision(scratch.path()).expect("provision");
+    let path = scratch.path().join(NATIVE_ENGINE_FILE);
     let mut bytes = std::fs::read(&path).expect("engine");
     // The redb 4 header keeps the recovery-required flag immediately after its
     // nine-byte magic. Leave both commit slots intact and require an opener to
@@ -424,7 +395,7 @@ fn a_read_only_open_refuses_required_repair_without_changing_the_engine() {
     assert_eq!(&bytes[..9], b"redb\x1a\x0a\xa9\x0d\x0a");
     bytes[9] |= 2;
     std::fs::write(&path, &bytes).expect("require physical recovery");
-    let refused = NativeEngineOwner::acquire_existing(&scratch.0)
+    let refused = NativeEngineOwner::acquire_existing(scratch.path())
         .expect("acquire")
         .bind_and_open_existing(NativeOpenAccess::ReadOnly, [0x43; 16], || Ok::<(), ()>(()));
     assert!(matches!(
@@ -432,22 +403,22 @@ fn a_read_only_open_refuses_required_repair_without_changing_the_engine() {
         Err(NativeOwnerOpenError::Store(StoreError::RecoveryRequired))
     ));
     assert!(bytes == std::fs::read(path).expect("engine after"));
-    assert!(!scratch.0.join(NATIVE_LOCK_FILE).exists());
+    assert!(!scratch.path().join(NATIVE_LOCK_FILE).exists());
 }
 
 #[test]
 fn a_read_only_open_refusal_preserves_the_engine_and_unclean_obligation() {
-    let scratch = Scratch::new("read-only-malformed");
-    NativeEngineOwner::provision(&scratch.0).expect("provision");
-    let path = scratch.0.join(NATIVE_ENGINE_FILE);
+    let scratch = Scratch::new("native-owner-read-only-malformed");
+    NativeEngineOwner::provision(scratch.path()).expect("provision");
+    let path = scratch.path().join(NATIVE_ENGINE_FILE);
     std::fs::write(&path, b"not an engine").expect("malformed engine");
-    std::fs::write(scratch.0.join(NATIVE_LOCK_FILE), b"unclean").expect("prior marker");
-    let refused = NativeEngineOwner::acquire_existing(&scratch.0)
+    std::fs::write(scratch.path().join(NATIVE_LOCK_FILE), b"unclean").expect("prior marker");
+    let refused = NativeEngineOwner::acquire_existing(scratch.path())
         .expect("acquire")
         .bind_and_open_existing(NativeOpenAccess::ReadOnly, [0x42; 16], || Ok::<(), ()>(()));
     assert!(matches!(refused, Err(NativeOwnerOpenError::Store(_))));
     assert_eq!(std::fs::read(path).expect("engine after"), b"not an engine");
-    assert_eq!(marker_bytes(&scratch.0), b"unclean");
+    assert_eq!(marker_bytes(scratch.path()), b"unclean");
 }
 
 fn contend(dir: &Path) -> NativeOwnerAcquireError {
@@ -459,17 +430,17 @@ fn contend(dir: &Path) -> NativeOwnerAcquireError {
 
 #[test]
 fn provision_is_create_only_and_existing_open_holds_the_lock() {
-    let scratch = Scratch::new("provision");
-    NativeEngineOwner::provision(&scratch.0).expect("provision");
-    assert!(NativeEngineOwner::provision(&scratch.0).is_err());
+    let scratch = Scratch::new("native-owner-provision");
+    NativeEngineOwner::provision(scratch.path()).expect("provision");
+    assert!(NativeEngineOwner::provision(scratch.path()).is_err());
 
-    let owner = open_existing(&scratch.0, [7; 16]).expect("open owner");
+    let owner = open_existing(scratch.path(), [7; 16]).expect("open owner");
     assert!(matches!(
-        contend(&scratch.0),
+        contend(scratch.path()),
         NativeOwnerAcquireError::Lock(NativeLockError::StoreInUse { .. }),
     ));
     drop(owner);
-    open_existing(&scratch.0, [8; 16]).expect("clean close releases lock");
+    open_existing(scratch.path(), [8; 16]).expect("clean close releases lock");
 }
 
 /// Exclusion is decided before the store directory is read, and the marker
@@ -477,16 +448,16 @@ fn provision_is_create_only_and_existing_open_holds_the_lock() {
 /// contender is told the store is locked in both states.
 #[test]
 fn a_contender_is_locked_out_before_and_after_the_holder_binds_its_instance() {
-    let scratch = Scratch::new("pending-and-bound-contention");
-    NativeEngineOwner::provision(&scratch.0).expect("provision");
+    let scratch = Scratch::new("native-owner-pending-and-bound-contention");
+    NativeEngineOwner::provision(scratch.path()).expect("provision");
     let pending =
-        NativeEngineOwner::acquire_existing(&scratch.0).expect("acquire without an instance");
+        NativeEngineOwner::acquire_existing(scratch.path()).expect("acquire without an instance");
 
-    match contend(&scratch.0) {
+    match contend(scratch.path()) {
         NativeOwnerAcquireError::Lock(error @ NativeLockError::StoreInUse { .. }) => {
             assert_eq!(error.code(), Code::StoreLocked);
             assert!(matches!(error, NativeLockError::StoreInUse { owner: None }));
-            assert!(!scratch.0.join(NATIVE_LOCK_FILE).exists());
+            assert!(!scratch.path().join(NATIVE_LOCK_FILE).exists());
         }
         other => panic!("a pending holder must exclude a contender: {other}"),
     }
@@ -496,7 +467,7 @@ fn a_contender_is_locked_out_before_and_after_the_holder_binds_its_instance() {
             Ok::<_, std::convert::Infallible>(())
         })
         .expect("bind and open");
-    match contend(&scratch.0) {
+    match contend(scratch.path()) {
         NativeOwnerAcquireError::Lock(NativeLockError::StoreInUse { owner: Some(named) }) => {
             assert_eq!(named.pid, std::process::id());
             assert_eq!(
@@ -525,11 +496,11 @@ fn an_unreadable_marker_still_yields_exactly_the_exclusion_verdict() {
         ("truncated-bound", b"MWSL\x01\x02\x00\x00\x00\x01"),
     ] {
         let scratch = Scratch::new(&format!("unreadable-marker-{tag}"));
-        NativeEngineOwner::provision(&scratch.0).expect("provision");
-        let held = open_existing(&scratch.0, [0x5C; 16]).expect("open owner");
-        std::fs::write(scratch.0.join(NATIVE_LOCK_FILE), body).expect("overwrite the marker");
+        NativeEngineOwner::provision(scratch.path()).expect("provision");
+        let held = open_existing(scratch.path(), [0x5C; 16]).expect("open owner");
+        std::fs::write(scratch.path().join(NATIVE_LOCK_FILE), body).expect("overwrite the marker");
 
-        match contend(&scratch.0) {
+        match contend(scratch.path()) {
             NativeOwnerAcquireError::Lock(error @ NativeLockError::StoreInUse { .. }) => {
                 assert_eq!(error.code(), Code::StoreLocked, "marker {tag}");
             }
@@ -574,10 +545,10 @@ fn no_marker_byte_pattern_can_abort_the_decoder() {
 #[cfg(unix)]
 #[test]
 fn every_marker_a_contender_can_meet_still_yields_the_exclusion_verdict() {
-    let scratch = Scratch::new("contender-marker-sweep");
-    NativeEngineOwner::provision(&scratch.0).expect("provision");
-    let held = open_existing(&scratch.0, [0x5D; 16]).expect("open owner");
-    let marker = scratch.0.join(NATIVE_LOCK_FILE);
+    let scratch = Scratch::new("native-owner-contender-marker-sweep");
+    NativeEngineOwner::provision(scratch.path()).expect("provision");
+    let held = open_existing(scratch.path(), [0x5D; 16]).expect("open owner");
+    let marker = scratch.path().join(NATIVE_LOCK_FILE);
 
     let mut bodies: Vec<Vec<u8>> = Vec::new();
     for instance in [None, Some([0x5E; 16])] {
@@ -606,7 +577,7 @@ fn every_marker_a_contender_can_meet_still_yields_the_exclusion_verdict() {
 
     for body in &bodies {
         std::fs::write(&marker, body).expect("rewrite the marker under the holder");
-        match contend(&scratch.0) {
+        match contend(scratch.path()) {
             NativeOwnerAcquireError::Lock(error @ NativeLockError::StoreInUse { .. }) => {
                 assert_eq!(
                     error.code(),
@@ -619,8 +590,8 @@ fn every_marker_a_contender_can_meet_still_yields_the_exclusion_verdict() {
         }
     }
 
-    std::fs::hard_link(&marker, scratch.0.join("marker-alias")).expect("add a second link");
-    match contend(&scratch.0) {
+    std::fs::hard_link(&marker, scratch.path().join("marker-alias")).expect("add a second link");
+    match contend(scratch.path()) {
         NativeOwnerAcquireError::Lock(NativeLockError::StoreInUse { .. }) => {}
         other => panic!("a multiply-linked marker preempted the exclusion verdict: {other}"),
     }
@@ -657,11 +628,12 @@ fn the_marker_round_trips_in_both_states() {
 fn an_inherited_unclean_obligation_survives_refusal_and_drop() {
     for (tag, bind_before_death) in [("pending-death", false), ("bound-death", true)] {
         let scratch = Scratch::new(tag);
-        NativeEngineOwner::provision(&scratch.0).expect("provision");
-        std::fs::write(scratch.0.join(NATIVE_LOCK_FILE), b"unclean").expect("prior marker");
+        NativeEngineOwner::provision(scratch.path()).expect("provision");
+        std::fs::write(scratch.path().join(NATIVE_LOCK_FILE), b"unclean").expect("prior marker");
 
         // A holder that never closes cleanly: the marker keeps its body.
-        let pending = NativeEngineOwner::acquire_existing(&scratch.0).expect("acquire the owner");
+        let pending =
+            NativeEngineOwner::acquire_existing(scratch.path()).expect("acquire the owner");
         if bind_before_death {
             let refused = pending
                 .bind_and_open_existing(NativeOpenAccess::ReadWrite, [0x6C; 16], || {
@@ -674,12 +646,12 @@ fn an_inherited_unclean_obligation_survives_refusal_and_drop() {
             drop(pending);
         }
         assert!(
-            !marker_bytes(&scratch.0).is_empty(),
+            !marker_bytes(scratch.path()).is_empty(),
             "{tag} must leave the unclean obligation behind",
         );
 
         // Inheriting it and refusing again hands the same obligation on.
-        let inherited = NativeEngineOwner::acquire_existing(&scratch.0)
+        let inherited = NativeEngineOwner::acquire_existing(scratch.path())
             .expect("inherit the obligation")
             .bind_and_open_existing(NativeOpenAccess::ReadWrite, [0x6D; 16], || {
                 Err::<(), _>("refused again")
@@ -691,14 +663,14 @@ fn an_inherited_unclean_obligation_survives_refusal_and_drop() {
             NativeOwnerOpenError::Refused("refused again"),
         ));
         assert!(
-            !marker_bytes(&scratch.0).is_empty(),
+            !marker_bytes(scratch.path()).is_empty(),
             "{tag} must not let a refusal discharge an inherited obligation",
         );
 
         // Only a completed open and clean close discharges it.
-        drop(open_existing(&scratch.0, [0x6E; 16]).expect("a full open discharges it"));
+        drop(open_existing(scratch.path(), [0x6E; 16]).expect("a full open discharges it"));
         assert!(
-            marker_bytes(&scratch.0).is_empty(),
+            marker_bytes(scratch.path()).is_empty(),
             "{tag} must be discharged by a clean close",
         );
     }
@@ -711,12 +683,12 @@ fn an_inherited_unclean_obligation_survives_refusal_and_drop() {
 #[test]
 fn the_owner_marker_refuses_a_substituted_or_multiply_linked_entry() {
     for access in [NativeOpenAccess::ReadOnly, NativeOpenAccess::ReadWrite] {
-        let scratch = Scratch::new("marker-substitution");
-        NativeEngineOwner::provision(&scratch.0).expect("provision");
-        let elsewhere = scratch.0.join("elsewhere");
-        let marker = scratch.0.join(NATIVE_LOCK_FILE);
+        let scratch = Scratch::new("native-owner-marker-substitution");
+        NativeEngineOwner::provision(scratch.path()).expect("provision");
+        let elsewhere = scratch.path().join("elsewhere");
+        let marker = scratch.path().join(NATIVE_LOCK_FILE);
         let open = || {
-            NativeEngineOwner::acquire_existing(&scratch.0)
+            NativeEngineOwner::acquire_existing(scratch.path())
                 .expect("directory exclusion")
                 .bind_and_open_existing(access, [0x68; 16], || Ok::<(), ()>(()))
         };
@@ -734,7 +706,7 @@ fn the_owner_marker_refuses_a_substituted_or_multiply_linked_entry() {
         std::fs::remove_file(&marker).expect("remove the link");
 
         std::fs::write(&marker, b"unclean").expect("create a real marker");
-        let alias = scratch.0.join("marker-alias");
+        let alias = scratch.path().join("marker-alias");
         std::fs::hard_link(&marker, &alias).expect("add a second link");
         assert!(matches!(
             open(),
@@ -748,19 +720,19 @@ fn the_owner_marker_refuses_a_substituted_or_multiply_linked_entry() {
 #[test]
 fn admission_runs_under_lock_before_engine_open() {
     for access in [NativeOpenAccess::ReadOnly, NativeOpenAccess::ReadWrite] {
-        let scratch = Scratch::new("admission");
-        NativeEngineOwner::provision(&scratch.0).expect("provision");
-        let engine = scratch.0.join(NATIVE_ENGINE_FILE);
+        let scratch = Scratch::new("native-owner-admission");
+        NativeEngineOwner::provision(scratch.path()).expect("provision");
+        let engine = scratch.path().join(NATIVE_ENGINE_FILE);
         let before = std::fs::read(&engine).expect("engine before");
-        let error = NativeEngineOwner::acquire_existing(&scratch.0)
+        let error = NativeEngineOwner::acquire_existing(scratch.path())
             .expect("acquire the owner")
             .bind_and_open_existing(access, [9; 16], || {
                 assert!(matches!(
-                    contend(&scratch.0),
+                    contend(scratch.path()),
                     NativeOwnerAcquireError::Lock(NativeLockError::StoreInUse { .. }),
                 ));
                 if access == NativeOpenAccess::ReadOnly {
-                    assert!(!scratch.0.join(NATIVE_LOCK_FILE).exists());
+                    assert!(!scratch.path().join(NATIVE_LOCK_FILE).exists());
                 }
                 Err::<(), _>("refused")
             });
@@ -770,20 +742,20 @@ fn admission_runs_under_lock_before_engine_open() {
         ));
         assert_eq!(std::fs::read(engine).expect("engine after"), before);
         if access == NativeOpenAccess::ReadOnly {
-            assert!(!scratch.0.join(NATIVE_LOCK_FILE).exists());
+            assert!(!scratch.path().join(NATIVE_LOCK_FILE).exists());
         }
-        open_existing(&scratch.0, [10; 16])
+        open_existing(scratch.path(), [10; 16])
             .expect("a pre-engine refusal releases its non-quarantined lock");
     }
 }
 
 #[test]
 fn existing_owner_open_refuses_missing_and_invalid_bodies_without_adopting_them() {
-    let missing = Scratch::new("missing-existing");
-    let missing_path = missing.0.join(NATIVE_ENGINE_FILE);
+    let missing = Scratch::new("native-owner-missing-existing");
+    let missing_path = missing.path().join(NATIVE_ENGINE_FILE);
     for _ in 0..2 {
         assert!(matches!(
-            open_existing(&missing.0, [0x21; 16]),
+            open_existing(missing.path(), [0x21; 16]),
             Err(NativeOwnerOpenError::Store(_))
         ));
         assert!(
@@ -797,10 +769,10 @@ fn existing_owner_open_refuses_missing_and_invalid_bodies_without_adopting_them(
         ("bad-existing", b"not redb"),
     ] {
         let scratch = Scratch::new(tag);
-        let path = scratch.0.join(NATIVE_ENGINE_FILE);
+        let path = scratch.path().join(NATIVE_ENGINE_FILE);
         std::fs::write(&path, bytes).expect("write invalid engine body");
         assert!(matches!(
-            open_existing(&scratch.0, [0x22; 16]),
+            open_existing(scratch.path(), [0x22; 16]),
             Err(NativeOwnerOpenError::Store(_))
         ));
         assert_eq!(
@@ -810,11 +782,11 @@ fn existing_owner_open_refuses_missing_and_invalid_bodies_without_adopting_them(
         );
     }
 
-    let unstamped = Scratch::new("unstamped-existing");
-    let path = unstamped.0.join(NATIVE_ENGINE_FILE);
+    let unstamped = Scratch::new("native-owner-unstamped-existing");
+    let path = unstamped.path().join(NATIVE_ENGINE_FILE);
     drop(create_raw(&path, "an unstamped redb database"));
     assert!(matches!(
-        open_existing(&unstamped.0, [0x23; 16]),
+        open_existing(unstamped.path(), [0x23; 16]),
         Err(NativeOwnerOpenError::Store(_))
     ));
     let db = reopen_raw(&path, "refused unstamped database");
@@ -831,9 +803,9 @@ fn existing_owner_open_refuses_missing_and_invalid_bodies_without_adopting_them(
 
 #[test]
 fn recovery_reopen_is_irreversibly_quarantined_after_success() {
-    let scratch = Scratch::new("quarantine-success");
-    NativeEngineOwner::provision(&scratch.0).expect("provision");
-    let owner = open_existing(&scratch.0, [11; 16]).expect("open owner");
+    let scratch = Scratch::new("native-owner-quarantine-success");
+    NativeEngineOwner::provision(scratch.path()).expect("provision");
+    let owner = open_existing(scratch.path(), [11; 16]).expect("open owner");
     let mut owner = owner
         .reopen_existing_and_audit()
         .expect("reopen and audit under retained lock");
@@ -854,11 +826,11 @@ fn recovery_reopen_is_irreversibly_quarantined_after_success() {
     drop(owner);
 
     assert!(matches!(
-        contend(&scratch.0),
+        contend(scratch.path()),
         NativeOwnerAcquireError::Lock(NativeLockError::StoreInUse { .. }),
     ));
     assert_ne!(
-        std::fs::metadata(scratch.0.join(NATIVE_LOCK_FILE))
+        std::fs::metadata(scratch.path().join(NATIVE_LOCK_FILE))
             .expect("lock metadata")
             .len(),
         0,
@@ -873,28 +845,29 @@ fn recovery_reopen_is_irreversibly_quarantined_after_success() {
 #[cfg(unix)]
 #[test]
 fn quarantine_survives_the_replacement_of_the_marker_it_leaked() {
-    let scratch = Scratch::new("quarantine-replaced-marker");
-    NativeEngineOwner::provision(&scratch.0).expect("provision");
-    let owner = open_existing(&scratch.0, [17; 16]).expect("open owner");
+    let scratch = Scratch::new("native-owner-quarantine-replaced-marker");
+    NativeEngineOwner::provision(scratch.path()).expect("provision");
+    let owner = open_existing(scratch.path(), [17; 16]).expect("open owner");
     drop(
         owner
             .reopen_existing_and_audit()
             .expect("reopen and audit under retained lock"),
     );
 
-    std::fs::remove_file(scratch.0.join(NATIVE_LOCK_FILE)).expect("remove the quarantined marker");
+    std::fs::remove_file(scratch.path().join(NATIVE_LOCK_FILE))
+        .expect("remove the quarantined marker");
     assert!(matches!(
-        contend(&scratch.0),
+        contend(scratch.path()),
         NativeOwnerAcquireError::Lock(NativeLockError::StoreInUse { .. }),
     ));
 }
 
 #[test]
 fn failed_recovery_reopen_never_recreates_and_remains_quarantined() {
-    let scratch = Scratch::new("quarantine-missing");
-    NativeEngineOwner::provision(&scratch.0).expect("provision");
-    let owner = open_existing(&scratch.0, [13; 16]).expect("open owner");
-    let engine_path = scratch.0.join(NATIVE_ENGINE_FILE);
+    let scratch = Scratch::new("native-owner-quarantine-missing");
+    NativeEngineOwner::provision(scratch.path()).expect("provision");
+    let owner = open_existing(scratch.path(), [13; 16]).expect("open owner");
+    let engine_path = scratch.path().join(NATIVE_ENGINE_FILE);
     std::fs::remove_file(&engine_path).expect("remove engine");
     assert!(owner.reopen_existing_and_audit().is_err());
     assert!(
@@ -902,7 +875,7 @@ fn failed_recovery_reopen_never_recreates_and_remains_quarantined() {
         "recovery must not recreate the engine"
     );
     assert!(matches!(
-        contend(&scratch.0),
+        contend(scratch.path()),
         NativeOwnerAcquireError::Lock(NativeLockError::StoreInUse { .. }),
     ));
 }
@@ -914,9 +887,9 @@ fn failed_recovery_reopen_never_adopts_invalid_replacements() {
         ("quarantine-malformed", b"not redb"),
     ] {
         let scratch = Scratch::new(tag);
-        NativeEngineOwner::provision(&scratch.0).expect("provision");
-        let owner = open_existing(&scratch.0, [0x31; 16]).expect("open owner");
-        let engine_path = scratch.0.join(NATIVE_ENGINE_FILE);
+        NativeEngineOwner::provision(scratch.path()).expect("provision");
+        let owner = open_existing(scratch.path(), [0x31; 16]).expect("open owner");
+        let engine_path = scratch.path().join(NATIVE_ENGINE_FILE);
         std::fs::remove_file(&engine_path).expect("remove live engine path");
         std::fs::write(&engine_path, replacement).expect("install invalid replacement");
 
@@ -927,7 +900,7 @@ fn failed_recovery_reopen_never_adopts_invalid_replacements() {
             "recovery must not rewrite or stamp an invalid replacement",
         );
         assert!(matches!(
-            contend(&scratch.0),
+            contend(scratch.path()),
             NativeOwnerAcquireError::Lock(NativeLockError::StoreInUse { .. }),
         ));
     }
@@ -967,8 +940,8 @@ fn transaction_wrapper_latches_only_an_indeterminate_engine_outcome() {
         ("indeterminate", CommitOutcome::Indeterminate, true),
     ] {
         let scratch = Scratch::new(tag);
-        NativeEngineOwner::provision(&scratch.0).expect("provision");
-        let mut owner = open_existing(&scratch.0, [17; 16]).expect("open owner");
+        NativeEngineOwner::provision(scratch.path()).expect("provision");
+        let mut owner = open_existing(scratch.path(), [17; 16]).expect("open owner");
         assert_eq!(
             commit_and_latch(VerdictTxn(outcome), &mut owner.lock),
             outcome,
@@ -977,7 +950,7 @@ fn transaction_wrapper_latches_only_an_indeterminate_engine_outcome() {
         drop(owner);
         assert_eq!(
             matches!(
-                NativeEngineOwner::acquire_existing(&scratch.0),
+                NativeEngineOwner::acquire_existing(scratch.path()),
                 Err(NativeOwnerAcquireError::Lock(
                     NativeLockError::StoreInUse { .. }
                 ))
@@ -1292,13 +1265,16 @@ pub(super) fn mutate_after_open_if_armed(directory: &Path) {
 #[cfg(unix)]
 #[test]
 fn explicit_recovery_audits_even_after_a_clean_shutdown() {
-    let scratch = Scratch::new("clean-recovery-audit");
-    NativeEngineOwner::provision(&scratch.0).expect("provision");
-    seed_audit_body(&scratch.0);
-    assert!(marker_bytes(&scratch.0).is_empty(), "seed closes cleanly");
-    let pending = NativeEngineOwner::acquire_existing(&scratch.0).expect("acquire");
+    let scratch = Scratch::new("native-owner-clean-recovery-audit");
+    NativeEngineOwner::provision(scratch.path()).expect("provision");
+    seed_audit_body(scratch.path());
     assert!(
-        marker_bytes(&scratch.0).is_empty(),
+        marker_bytes(scratch.path()).is_empty(),
+        "seed closes cleanly"
+    );
+    let pending = NativeEngineOwner::acquire_existing(scratch.path()).expect("acquire");
+    assert!(
+        marker_bytes(scratch.path()).is_empty(),
         "no inherited audit obligation"
     );
     MUTATE_AFTER_OPEN.with(|slot| {
@@ -1312,7 +1288,7 @@ fn explicit_recovery_audits_even_after_a_clean_shutdown() {
         "mutation followed successful engine open"
     );
     if let Ok(owner) = result {
-        let path = scratch.0.clone();
+        let path = scratch.path().to_path_buf();
         std::mem::forget(owner);
         std::mem::forget(scratch);
         panic!(
@@ -1329,7 +1305,7 @@ fn explicit_recovery_audits_even_after_a_clean_shutdown() {
         "{error:?}"
     );
     assert!(
-        !marker_bytes(&scratch.0).is_empty(),
+        !marker_bytes(scratch.path()).is_empty(),
         "failed audit retains the obligation"
     );
 }
@@ -1337,105 +1313,111 @@ fn explicit_recovery_audits_even_after_a_clean_shutdown() {
 #[cfg(unix)]
 fn run_coordinated_quarantine_case(mode: CoordinatedMode) {
     let scratch = Scratch::new(&mode.to_string());
-    NativeEngineOwner::provision(&scratch.0).expect("provision");
+    NativeEngineOwner::provision(scratch.path()).expect("provision");
     if mode == CoordinatedMode::AuditFailure {
-        seed_audit_body(&scratch.0);
+        seed_audit_body(scratch.path());
     }
-    let pristine = std::fs::read(scratch.0.join(NATIVE_ENGINE_FILE)).expect("read pristine engine");
-    let mut child = ChildGuard::spawn(&scratch.0, mode);
+    let pristine =
+        std::fs::read(scratch.path().join(NATIVE_ENGINE_FILE)).expect("read pristine engine");
+    let mut child = ChildGuard::spawn(scratch.path(), mode);
 
     wait_for_phase(
         &mut child,
-        &scratch.0,
+        scratch.path(),
         mode,
         CoordinatedPhase::BeforeRecovery,
     );
     assert_competing_open_is_exactly_lock_refused(
-        &scratch.0,
+        scratch.path(),
         child.id(),
         CoordinatedPhase::BeforeRecovery,
     );
 
-    let backup = scratch.0.join("store.redb.before-recovery");
+    let backup = scratch.path().join("store.redb.before-recovery");
     if mode == CoordinatedMode::ReopenFailure {
-        std::fs::rename(scratch.0.join(NATIVE_ENGINE_FILE), &backup)
+        std::fs::rename(scratch.path().join(NATIVE_ENGINE_FILE), &backup)
             .expect("remove engine before recovery reopen");
     }
-    release_phase(&scratch.0, mode, CoordinatedPhase::BeforeRecovery);
+    release_phase(scratch.path(), mode, CoordinatedPhase::BeforeRecovery);
 
     match mode {
         CoordinatedMode::Success => {
             wait_for_phase(
                 &mut child,
-                &scratch.0,
+                scratch.path(),
                 mode,
                 CoordinatedPhase::RecoveredLive,
             );
             assert_competing_open_is_exactly_lock_refused(
-                &scratch.0,
+                scratch.path(),
                 child.id(),
                 CoordinatedPhase::RecoveredLive,
             );
-            release_phase(&scratch.0, mode, CoordinatedPhase::RecoveredLive);
+            release_phase(scratch.path(), mode, CoordinatedPhase::RecoveredLive);
 
             wait_for_phase(
                 &mut child,
-                &scratch.0,
+                scratch.path(),
                 mode,
                 CoordinatedPhase::RecoveredDropped,
             );
             assert_competing_open_is_exactly_lock_refused(
-                &scratch.0,
+                scratch.path(),
                 child.id(),
                 CoordinatedPhase::RecoveredDropped,
             );
-            release_phase(&scratch.0, mode, CoordinatedPhase::RecoveredDropped);
+            release_phase(scratch.path(), mode, CoordinatedPhase::RecoveredDropped);
         }
         CoordinatedMode::ReopenFailure => {
             wait_for_phase(
                 &mut child,
-                &scratch.0,
+                scratch.path(),
                 mode,
                 CoordinatedPhase::ReopenRefused,
             );
             assert_competing_open_is_exactly_lock_refused(
-                &scratch.0,
+                scratch.path(),
                 child.id(),
                 CoordinatedPhase::ReopenRefused,
             );
-            std::fs::rename(&backup, scratch.0.join(NATIVE_ENGINE_FILE))
+            std::fs::rename(&backup, scratch.path().join(NATIVE_ENGINE_FILE))
                 .expect("restore valid engine before child exit");
-            release_phase(&scratch.0, mode, CoordinatedPhase::ReopenRefused);
+            release_phase(scratch.path(), mode, CoordinatedPhase::ReopenRefused);
         }
         CoordinatedMode::AuditFailure => {
             wait_for_phase(
                 &mut child,
-                &scratch.0,
+                scratch.path(),
                 mode,
                 CoordinatedPhase::ReopenedBeforeAudit,
             );
             assert_competing_open_is_exactly_lock_refused(
-                &scratch.0,
+                scratch.path(),
                 child.id(),
                 CoordinatedPhase::ReopenedBeforeAudit,
             );
-            corrupt_live_engine_for_audit(&scratch.0);
-            release_phase(&scratch.0, mode, CoordinatedPhase::ReopenedBeforeAudit);
+            corrupt_live_engine_for_audit(scratch.path());
+            release_phase(scratch.path(), mode, CoordinatedPhase::ReopenedBeforeAudit);
 
-            wait_for_phase(&mut child, &scratch.0, mode, CoordinatedPhase::AuditRefused);
+            wait_for_phase(
+                &mut child,
+                scratch.path(),
+                mode,
+                CoordinatedPhase::AuditRefused,
+            );
             assert_competing_open_is_exactly_lock_refused(
-                &scratch.0,
+                scratch.path(),
                 child.id(),
                 CoordinatedPhase::AuditRefused,
             );
-            std::fs::write(scratch.0.join(NATIVE_ENGINE_FILE), &pristine)
+            std::fs::write(scratch.path().join(NATIVE_ENGINE_FILE), &pristine)
                 .expect("restore valid engine before child exit");
-            release_phase(&scratch.0, mode, CoordinatedPhase::AuditRefused);
+            release_phase(scratch.path(), mode, CoordinatedPhase::AuditRefused);
         }
     }
 
     child.wait_success();
-    open_existing(&scratch.0, [0x73; 16]).expect("process exit is the sole quarantine release");
+    open_existing(scratch.path(), [0x73; 16]).expect("process exit is the sole quarantine release");
 }
 
 #[cfg(unix)]

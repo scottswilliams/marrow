@@ -1,9 +1,7 @@
 //! Native redb adapter controls: open classification, hardening, conformance and the
 //! memory/redb differential.
 
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::Ordering;
 
 use marrow_codes::Code;
 use redb::{ReadableDatabase, TableDefinition};
@@ -11,58 +9,14 @@ use redb::{ReadableDatabase, TableDefinition};
 use super::{FORMAT_VERSION, META, NativeEngine, TABLE, create_raw, map_open_error, reopen_raw};
 use crate::conformance;
 use crate::engine::{ByteEngine, CommitOutcome, ReadView, WriteTxn};
-use crate::error::{StoreError, StoreOp};
-
-static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-#[derive(Debug)]
-struct TempDir {
-    path: PathBuf,
-}
-
-impl TempDir {
-    fn new(prefix: &str) -> std::io::Result<Self> {
-        let base = std::env::temp_dir();
-        let process = std::process::id();
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        for attempt in 0..128u64 {
-            let counter = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let path = base.join(format!("{prefix}-{process}-{nonce}-{counter}-{attempt}"));
-            match std::fs::create_dir(&path) {
-                Ok(()) => return Ok(Self { path }),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error),
-            }
-        }
-        Err(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "could not allocate a unique temp dir",
-        ))
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            eprintln!("failed redb fixture retained at {}", self.path.display());
-            return;
-        }
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
+use crate::error::StoreError;
+use crate::scratch_tests::Scratch;
 
 #[test]
 fn read_only_admission_selects_the_writable_allocator_path_without_full_repair() {
     use std::sync::{Arc, atomic::AtomicBool};
 
-    let dir = TempDir::new("marrow-store-admitted-allocator").expect("temp dir");
+    let dir = Scratch::new("admitted-allocator");
     let path = dir.path().join("store.redb");
     drop(NativeEngine::create_new(&path).expect("provision"));
     drop(NativeEngine::open_read_only(&path).expect("read-only admission"));
@@ -87,7 +41,7 @@ fn read_only_admission_selects_the_writable_allocator_path_without_full_repair()
 fn service_preparation_aborts_full_repair_of_a_panicked_store() {
     struct UncleanClose;
 
-    let dir = TempDir::new("marrow-store-panicked-preparation").expect("temp dir");
+    let dir = Scratch::new("panicked-preparation");
     let path = dir.path().join("store.redb");
     let writer_path = path.clone();
     let failure = std::thread::spawn(move || {
@@ -110,7 +64,7 @@ fn service_preparation_aborts_full_repair_of_a_panicked_store() {
 #[cfg(unix)]
 #[test]
 fn missing_symlink_target_detection_stops_relative_cycles() {
-    let root = TempDir::new("redb-symlink-cycle").expect("temp dir");
+    let root = Scratch::new("redb-symlink-cycle");
     let data_dir = root.path().join(".data");
     std::fs::create_dir_all(&data_dir).expect("create data dir");
     let store_path = data_dir.join("marrow.redb");
@@ -134,7 +88,7 @@ fn missing_symlink_target_detection_stops_relative_cycles() {
 fn opening_a_denied_store_file_is_permission_denied_on_every_open_path() {
     use std::os::unix::fs::PermissionsExt;
 
-    let dir = TempDir::new("marrow-store-redb-denied-file").expect("temp dir");
+    let dir = Scratch::new("redb-denied-file");
     let path = dir.path().join("marrow.redb");
     {
         let mut store = NativeEngine::create_new(&path).expect("create fresh store");
@@ -170,7 +124,7 @@ fn opening_a_denied_store_file_is_permission_denied_on_every_open_path() {
 #[cfg(unix)]
 #[test]
 fn opening_a_symlink_loop_or_dangling_target_is_io_without_a_raw_errno() {
-    let dir = TempDir::new("marrow-store-redb-symlink").expect("temp dir");
+    let dir = Scratch::new("redb-symlink");
 
     let loop_a = dir.path().join("loop-a.redb");
     let loop_b = dir.path().join("loop-b.redb");
@@ -260,10 +214,7 @@ fn map_open_error_classifies_each_redb_failure() {
 /// in-memory store — one contract, two backends.
 #[test]
 fn redb_store_passes_the_conformance_suite() -> Result<(), StoreError> {
-    let dir = TempDir::new("marrow-store-redb-test").map_err(|error| StoreError::Io {
-        op: StoreOp::Provision,
-        message: error.to_string(),
-    })?;
+    let dir = Scratch::new("redb-test");
     let mut counter = 0;
     conformance::run_all(|| {
         // Each law gets a fresh redb file in the shared temp dir; the dir (and
@@ -281,7 +232,7 @@ fn redb_store_passes_the_conformance_suite() -> Result<(), StoreError> {
 fn audit_detects_external_corruption_without_crashing() {
     use std::io::{Read, Seek, SeekFrom, Write};
 
-    let dir = TempDir::new("marrow-store-redb-audit").expect("temp dir");
+    let dir = Scratch::new("redb-audit");
     let path = dir.path().join("audit.redb");
     let mut store = NativeEngine::create_new(&path).expect("open fresh");
 
@@ -371,7 +322,7 @@ fn memory_and_redb_agree_byte_for_byte() {
 
     let mem = apply(&mut MemoryEngine::new());
 
-    let dir = TempDir::new("marrow-store-redb-diff").expect("temp dir");
+    let dir = Scratch::new("redb-diff");
     let path = dir.path().join("diff.redb");
     let native = apply(&mut NativeEngine::create_new(&path).expect("open native"));
 
@@ -380,7 +331,7 @@ fn memory_and_redb_agree_byte_for_byte() {
 
 #[test]
 fn redb_read_transactions_are_stable_snapshots() {
-    let dir = TempDir::new("marrow-store-redb-test").expect("temp dir");
+    let dir = Scratch::new("redb-test");
     let path = dir.path().join("snapshot.redb");
     let key: &[u8] = b"k";
     let old: &[u8] = b"old";
@@ -438,7 +389,7 @@ fn redb_read_transactions_are_stable_snapshots() {
 
 #[test]
 fn redb_aborted_write_transaction_does_not_publish_raw_byte_changes() {
-    let dir = TempDir::new("marrow-store-redb-test").expect("temp dir");
+    let dir = Scratch::new("redb-test");
     let path = dir.path().join("aborted-write.redb");
 
     drop(NativeEngine::create_new(&path).expect("open"));
@@ -498,7 +449,7 @@ fn redb_aborted_write_transaction_does_not_publish_raw_byte_changes() {
 
 #[test]
 fn redb_table_orders_raw_byte_keys_lexicographically() {
-    let dir = TempDir::new("marrow-store-redb-test").expect("temp dir");
+    let dir = Scratch::new("redb-test");
     let path = dir.path().join("ordered-bytes.redb");
 
     drop(NativeEngine::create_new(&path).expect("open"));
@@ -552,7 +503,7 @@ fn redb_table_orders_raw_byte_keys_lexicographically() {
 /// a brand-new database from an existing one by whether it has any tables.)
 #[test]
 fn open_rejects_an_existing_file_missing_meta() {
-    let dir = TempDir::new("marrow-store-redb-test").expect("temp dir");
+    let dir = Scratch::new("redb-test");
     let path = dir.path().join("foreign.redb");
 
     // Build a non-empty redb file with some other table and no `marrow.meta`.
@@ -588,7 +539,7 @@ fn open_rejects_an_existing_file_missing_meta() {
 
 #[test]
 fn existing_only_open_refuses_empty_malformed_and_unstamped_files_without_adopting_them() {
-    let dir = TempDir::new("marrow-store-redb-invalid-existing").expect("temp dir");
+    let dir = Scratch::new("redb-invalid-existing");
 
     for (name, bytes) in [
         ("empty.redb", b"".as_slice()),
@@ -626,7 +577,7 @@ fn existing_only_open_refuses_empty_malformed_and_unstamped_files_without_adopti
 
 #[test]
 fn open_rejects_unsupported_format_version_with_typed_error() {
-    let dir = TempDir::new("marrow-store-redb-test").expect("temp dir");
+    let dir = Scratch::new("redb-test");
     let path = dir.path().join("future-format.redb");
     let unsupported = FORMAT_VERSION + 1;
 
@@ -667,7 +618,7 @@ fn open_rejects_unsupported_format_version_with_typed_error() {
 /// succeeds — the new-vs-existing distinction does not break the normal path.
 #[test]
 fn create_new_then_open_existing_round_trips_a_fresh_store() {
-    let dir = TempDir::new("marrow-store-redb-test").expect("temp dir");
+    let dir = Scratch::new("redb-test");
     let path = dir.path().join("fresh.redb");
     {
         let mut store = NativeEngine::create_new(&path).expect("create fresh");
@@ -691,7 +642,7 @@ fn create_new_then_open_existing_round_trips_a_fresh_store() {
 /// provisioner has created and stamped the store.
 #[test]
 fn existing_only_open_never_creates_and_remains_write_capable() {
-    let dir = TempDir::new("marrow-store-redb-existing-only").expect("temp dir");
+    let dir = Scratch::new("redb-existing-only");
     let path = dir.path().join("store.redb");
 
     assert!(
@@ -731,7 +682,7 @@ fn opening_a_fifo_store_fails_closed_without_blocking() {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    let dir = TempDir::new("marrow-store-redb-fifo").expect("temp dir");
+    let dir = Scratch::new("redb-fifo");
     let path = dir.path().join("marrow.redb");
     let status = std::process::Command::new("mkfifo")
         .arg(&path)
