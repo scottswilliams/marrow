@@ -12,7 +12,7 @@
 use marrow_codes::Code;
 use std::collections::BTreeMap;
 
-use marrow_compile::{CompileFailure, SourceDiagnostic, compile};
+use marrow_compile::{CompileFailure, SourceDiagnostic, TypeMismatch, compile};
 
 use super::project;
 
@@ -85,11 +85,10 @@ fn a_non_bool_condition_is_rejected() {
     let diagnostics = diagnostics(source);
     let diagnostic = diagnostics.first().expect("a rejection");
     assert_eq!(diagnostic.code(), Code::CheckType);
-    assert!(
-        diagnostic.message().contains("bool"),
-        "{}",
-        diagnostic.message()
-    );
+    let Some(TypeMismatch::Condition { found }) = diagnostic.type_mismatch() else {
+        panic!("a non-bool condition is a condition mismatch: {diagnostic:?}");
+    };
+    assert_eq!(found.as_str(), "int");
 }
 
 /// `try` propagates an existing failure and `require` originates one; both exits type

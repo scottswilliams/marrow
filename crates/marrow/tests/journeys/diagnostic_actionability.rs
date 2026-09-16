@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 
 use crate::common::{Diagnostics, Project};
-use marrow_compile::{NameFamily, Steer};
+use marrow_compile::{NameFamily, Steer, TypeMismatch};
 
 /// The frozen fixture corpus root, resolved from the crate manifest so a mutation reads
 /// the same bytes the ensemble suites check.
@@ -204,8 +204,15 @@ fn d04_a_failed_binding_does_not_cascade_not_in_scope() {
         "at the optional arithmetic: {:?}",
         diagnostics.all()
     );
-    assert!(
-        primary.message().contains("int?"),
+    let Some(TypeMismatch::Binary { left, right, .. }) = primary.type_mismatch() else {
+        panic!(
+            "the primary is a binary type mismatch: {}",
+            primary.message()
+        );
+    };
+    assert_eq!(
+        (left.as_str(), right.as_str()),
+        ("int?", "int"),
         "the primary names the optional operand: {}",
         primary.message()
     );

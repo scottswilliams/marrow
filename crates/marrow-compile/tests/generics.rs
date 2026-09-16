@@ -7,9 +7,30 @@
 use marrow_codes::Code;
 use marrow_compile::compile_with_tests;
 use marrow_compile::{CompileFailure, CompileInvariant, NonEmptySourceDiagnostics};
-use marrow_compile::{Compiled, SourceDiagnostic, compile};
+use marrow_compile::{Compiled, SourceDiagnostic, TypeMismatch, compile};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 use std::fmt::Write as _;
+
+/// The type spellings the type-mismatch payloads carry, as the compiler's one type
+/// renderer minted them. A spelling assertion reads these rather than the sentence they
+/// are rendered into.
+fn found_spellings(diagnostics: &[SourceDiagnostic]) -> Vec<&str> {
+    diagnostics
+        .iter()
+        .filter_map(SourceDiagnostic::type_mismatch)
+        .flat_map(|mismatch| match mismatch {
+            TypeMismatch::Value { found, expected } => vec![found.as_str(), expected.as_str()],
+            TypeMismatch::Unary { found, .. }
+            | TypeMismatch::LogicOperand { found, .. }
+            | TypeMismatch::Condition { found } => vec![found.as_str()],
+            TypeMismatch::Binary { left, right, .. } => vec![left.as_str(), right.as_str()],
+            TypeMismatch::TryPropagation {
+                propagated,
+                returns,
+            } => vec![propagated.as_str(), returns.as_str()],
+        })
+        .collect()
+}
 
 /// Capture a single-module project from source, the way the CLI adapter feeds the
 /// compiler, so these tests exercise the real capture + compile path.
@@ -1653,10 +1674,8 @@ pub fn run(): int {
     );
     assert!(has_code(&diagnostics, Code::CheckType), "{diagnostics:#?}");
     assert!(
-        diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message().contains("Map<string, List<int>>")),
-        "the collection type must render in angle form: {diagnostics:#?}"
+        found_spellings(&diagnostics).contains(&"Map<string, List<int>>"),
+        "the collection type must be spelled in angle form: {diagnostics:#?}"
     );
 }
 
@@ -1682,10 +1701,8 @@ pub fn f(): Result<int, int> {
     );
     assert!(has_code(&diagnostics, Code::CheckType), "{diagnostics:#?}");
     assert!(
-        diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message().contains("Result<int, string>")),
-        "the propagated error operand must render in angle form: {diagnostics:#?}"
+        found_spellings(&diagnostics).contains(&"Result<int, string>"),
+        "the propagated error operand must be spelled in angle form: {diagnostics:#?}"
     );
 }
 
