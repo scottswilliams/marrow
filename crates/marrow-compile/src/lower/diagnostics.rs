@@ -476,6 +476,42 @@ pub(super) fn binary_error(
     )
 }
 
+/// A branch or guard condition that is not `bool`.
+pub(super) fn condition_not_bool(
+    records: &TypeRegistry,
+    file: &ProjectFile,
+    span: SourceSpan,
+    ty: LTy,
+) -> SourceDiagnostic {
+    SourceDiagnostic::with_type_mismatch(
+        file,
+        span,
+        TypeMismatch::Condition {
+            found: TypeSpelling::new(ty.spelling(records)),
+        },
+        None,
+    )
+}
+
+/// A `try` whose propagated error type is not the one its enclosing function returns.
+pub(super) fn try_propagation_error(
+    records: &TypeRegistry,
+    file: &ProjectFile,
+    span: SourceSpan,
+    propagated: GArg,
+    returns: GArg,
+) -> SourceDiagnostic {
+    SourceDiagnostic::with_type_mismatch(
+        file,
+        span,
+        TypeMismatch::TryPropagation {
+            propagated: TypeSpelling::new(garg_spelling(propagated, records)),
+            returns: TypeSpelling::new(garg_spelling(returns, records)),
+        },
+        None,
+    )
+}
+
 /// An `and`/`or` operand that is not `bool`.
 pub(super) fn logic_operand(
     records: &TypeRegistry,

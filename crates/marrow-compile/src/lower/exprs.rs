@@ -3024,15 +3024,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             return Err(LoweringFailure::Recoverable);
         };
         if ret_err != e_arg {
-            self.fail(SourceDiagnostic::at(
-                Code::CheckType,
+            self.fail(try_propagation_error(
+                self.records,
                 self.file,
                 span,
-                format!(
-                    "`try` propagates the error type {}, but the function returns {}",
-                    garg_spelling(e_arg, self.records),
-                    garg_spelling(ret_err, self.records)
-                ),
+                e_arg,
+                ret_err,
             ));
             return Err(LoweringFailure::Recoverable);
         }

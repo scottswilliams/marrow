@@ -2927,15 +2927,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     fn lower_condition(&mut self, expr: &Expression) -> ConstructResult<()> {
         let ty = self.lower_expr(expr)?;
         if ty != LTy::bare_scalar(ScalarType::Bool) {
-            self.fail(SourceDiagnostic::at(
-                Code::CheckType,
-                self.file,
-                expr.span(),
-                format!(
-                    "condition must be bool, found {}",
-                    ty.spelling(self.records)
-                ),
-            ));
+            self.fail(condition_not_bool(self.records, self.file, expr.span(), ty));
             return Err(LoweringFailure::Recoverable);
         }
         Ok(())

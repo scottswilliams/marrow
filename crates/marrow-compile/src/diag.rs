@@ -277,6 +277,14 @@ pub enum TypeMismatch {
     },
     /// An `and`/`or` operand that is not `bool`.
     LogicOperand { op: BinaryOp, found: TypeSpelling },
+    /// A `try` whose propagated error type is not the error channel its enclosing
+    /// function returns. There is no conversion, so the two must be spelled alike.
+    TryPropagation {
+        propagated: TypeSpelling,
+        returns: TypeSpelling,
+    },
+    /// A branch or guard condition that is not `bool`.
+    Condition { found: TypeSpelling },
 }
 
 impl TypeMismatch {
@@ -285,8 +293,14 @@ impl TypeMismatch {
     fn retained_owned_bytes(&self) -> usize {
         match self {
             Self::Value { found, expected } => found.0.len() + expected.0.len(),
-            Self::Unary { found, .. } | Self::LogicOperand { found, .. } => found.0.len(),
+            Self::Unary { found, .. }
+            | Self::LogicOperand { found, .. }
+            | Self::Condition { found } => found.0.len(),
             Self::Binary { left, right, .. } => left.0.len() + right.0.len(),
+            Self::TryPropagation {
+                propagated,
+                returns,
+            } => propagated.0.len() + returns.0.len(),
         }
     }
 }
@@ -311,6 +325,14 @@ impl fmt::Display for TypeMismatch {
                 "`{}` operand must be bool, found {found}",
                 operator_symbol(*op)
             ),
+            Self::TryPropagation {
+                propagated,
+                returns,
+            } => write!(
+                f,
+                "`try` propagates the error type {propagated}, but the function returns {returns}"
+            ),
+            Self::Condition { found } => write!(f, "condition must be bool, found {found}"),
         }
     }
 }
