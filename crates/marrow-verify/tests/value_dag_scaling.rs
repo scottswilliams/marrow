@@ -15,10 +15,6 @@
 //!    budget two orders of magnitude above its linear cost, so a rebuild-per-member or
 //!    an expansion-per-occurrence — either of which is quadratic in these corpora —
 //!    cannot pass.
-//!
-//! The deleted half of the same red — the per-member value-shape clone the verifier
-//! used to take while rebuilding the descriptor — is enforced structurally by the
-//! absence gate `the_verifier_holds_no_raw_durable_value_tree`, not measured here.
 
 use std::time::{Duration, Instant};
 

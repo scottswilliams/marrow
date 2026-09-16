@@ -26,13 +26,12 @@ use marrow_image::{
 pub struct FunctionIndex(u16);
 
 impl FunctionIndex {
-    /// Wrap a relative function-table position without selecting an image or
-    /// checking its bounds.
+    /// Wrap a relative function-table position without selecting an image or checking its
+    /// bounds.
     pub fn new(raw: u16) -> Self {
         FunctionIndex(raw)
     }
 
-    /// The raw function-table position.
     pub fn get(self) -> u16 {
         self.0
     }
@@ -110,20 +109,19 @@ pub enum SealedSiteTarget {
 /// root — a root with one or more key columns whose members are all fields or simple
 /// keyed branches (no group at any level). Widened (record/enum) field values,
 /// composite key tuples, and keyed branches nested to any depth all execute. Every
-/// other resolved site — a singleton (keyless) root, a group-bearing root (a group at
-/// any level, or a branch enclosing one), or a managed-index read — is
-/// [`SealedSite::Parked`]: its identity is complete and its path and target agree with
-/// the reconstructed graph, but physical execution stays parked (index traversal lands
-/// at E05; groups at their lane). A durable opcode may reference only a `Flat` site; a
+/// other resolved site — a singleton (keyless) root, a group-bearing root (a group at any
+/// level, or a branch enclosing one), or a managed-index read — is [`SealedSite::Parked`]:
+/// its identity is complete and its path and target agree with the reconstructed graph,
+/// but it is not yet executable. A durable opcode may reference only a `Flat` site; a
 /// reference to a `Parked` site is refused in phase 3.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SealedSite {
     /// Executable on the flat keyed root: the root index it resolved to
     /// and the whole-payload or resolved-field-index target.
     Flat { root: u16, target: SealedSiteTarget },
-    /// A sealed but not-yet-executable site over the wider durable graph. It carries
-    /// the resolved node path and target so the widened kernel derives its physical
-    /// coordinates at E01 without re-parsing the image.
+    /// A sealed but not-yet-executable site over the wider durable graph. It carries the
+    /// resolved node path and target so a widened kernel can derive its physical
+    /// coordinates without re-parsing the image.
     Parked {
         path: SemanticPath,
         target: SemanticTarget,
@@ -142,21 +140,8 @@ pub struct SealedRoot {
     pub(crate) name: Rc<str>,
     pub(crate) keys: Vec<Scalar>,
     pub(crate) record: u16,
-    /// Whether the root's member tree holds a shape the flat kernel
-    /// cannot execute: a static `group` namespace, a nested or composite-key branch,
-    /// or a widened (non-scalar) field. A scalar-field keyed branch of
-    /// scalar fields does *not* count — it is executable (E03), so a root of scalar
-    /// fields and such branches is flat-executable.
     pub(crate) has_extras: bool,
-    /// The root's scalar-field keyed branches, in declaration order, each
-    /// carrying its own nested branches recursively. Populated only for a flat-executable
-    /// root; empty otherwise, so a [`SealedSiteTarget::BranchEntry`] branch path into this
-    /// tree is meaningful exactly when a branch site sealed executable.
     pub(crate) branches: Vec<SealedBranch>,
-    /// The root's unkeyed `group` nodes, in declaration order, each carrying its own
-    /// materialized record type. Populated only for a flat-executable root; empty
-    /// otherwise, so a [`SealedSiteTarget::GroupEntry`] group index into this list is
-    /// meaningful exactly when a group site sealed executable.
     pub(crate) groups: Vec<SealedGroup>,
 }
 
@@ -175,7 +160,6 @@ impl SealedGroup {
     pub fn name(&self) -> &str {
         &self.name
     }
-    /// The group's materialized record type index.
     pub fn record(&self) -> u16 {
         self.record
     }
@@ -205,7 +189,6 @@ impl SealedBranch {
     pub fn keys(&self) -> &[Scalar] {
         &self.keys
     }
-    /// The branch entry's materialized record type index.
     pub fn record(&self) -> u16 {
         self.record
     }
@@ -227,21 +210,24 @@ impl SealedRoot {
     pub fn record(&self) -> u16 {
         self.record
     }
-    /// Whether the resource declares a member shape the flat kernel cannot execute (a
-    /// group, a nested/composite branch, or a widened field). A single-level
-    /// scalar-field keyed branch is executable and does not set this.
+    /// Whether the resource declares a member shape the flat kernel cannot execute: a
+    /// group, a nested or composite-key branch, or a widened (non-scalar) field. A
+    /// scalar-field keyed branch of scalar fields is executable and does not set this.
     pub fn has_extras(&self) -> bool {
         self.has_extras
     }
 
-    /// The root's executable single-level branches, in declaration order. Empty unless
-    /// the root is flat-executable.
+    /// The root's executable keyed branches, in declaration order, each carrying its own
+    /// nested branches. Empty unless the root is flat-executable, so a
+    /// [`SealedSiteTarget::BranchEntry`] path into this tree is meaningful exactly when a
+    /// branch site sealed executable.
     pub fn branches(&self) -> &[SealedBranch] {
         &self.branches
     }
 
     /// The root's unkeyed groups, in declaration order. Empty unless the root is
-    /// flat-executable.
+    /// flat-executable, so a [`SealedSiteTarget::GroupEntry`] index into this list is
+    /// meaningful exactly when a group site sealed executable.
     pub fn groups(&self) -> &[SealedGroup] {
         &self.groups
     }
@@ -291,8 +277,8 @@ impl SealedIndex {
         self.root
     }
 
-    /// Whether this is a unique index (a complete-key exact lookup yielding at most
-    /// one source key) rather than a nonunique ordered index.
+    /// Whether this is a unique index (a complete-key exact lookup yielding at most one
+    /// source key) rather than a nonunique ordered index.
     pub fn unique(&self) -> bool {
         self.unique
     }
@@ -327,7 +313,6 @@ impl SealedField {
     pub fn name(&self) -> &Rc<str> {
         &self.name
     }
-    /// The field's bare value type.
     pub fn ty(&self) -> ImageType {
         self.ty
     }
@@ -664,9 +649,9 @@ impl VerifiedImage {
             .union(self.exports.iter().map(|entry| usize::from(entry.func)))
     }
 
-    /// The durable demand union over every test entry: the ceiling an E01 ephemeral
-    /// test attachment bounds a durable source test by. Empty unless the test-profile
-    /// image carries a durable test. Derived, never serialized.
+    /// The durable demand union over every test entry: the ceiling an ephemeral test
+    /// attachment bounds a durable source test by. Empty unless the test-profile image
+    /// carries a durable test. Derived, never serialized.
     pub fn test_demand_union(&self) -> ExportDemand {
         self.function_demands.union(
             self.test_entries

@@ -686,23 +686,19 @@ mod opcode_bijection {
 
 #[cfg(test)]
 mod index_site_partition {
-    //! Hostile tidy artifact for the index-site opcode partition in
-    //! [`super::super::flow::apply_durable`]. That partition refuses a forged image
-    //! that aims a managed-index read (`DurIndexScan`/`DurIndexLookup`/`DurIndexExists`)
-    //! at a non-index site, so the mismatch is a typed rejection rather than a
-    //! fall-through to the whole-entry `unreachable!`. The IndexRead operation *class*
-    //! is wider than that index-*site* family: `DurIterateBounded` is IndexRead-class
-    //! yet iterates an *entry* family, so the entry-site guard refuses it over a
-    //! field-leaf site with a different typed detail. The partition therefore cannot
-    //! derive from `operation_class`, and a future index-site opcode omitted from the
-    //! `apply_durable` guard would reach the `unreachable!` on a forged image.
+    //! The index-site opcode partition in [`super::super::flow::apply_durable`] refuses a
+    //! forged image aiming a managed-index read at a non-index site, so the mismatch is a
+    //! typed rejection rather than a fall-through to the whole-entry `unreachable!`. It
+    //! cannot derive from `operation_class`: `DurIterateBounded` is IndexRead-class yet
+    //! iterates an *entry* family, so the entry-site guard owns it with a different typed
+    //! detail, and an index-site opcode omitted from the guard would reach the
+    //! `unreachable!` on a forged image.
     //!
-    //! This sweep enumerates every opcode from the decode-bijection [`samples()`]
-    //! source of truth, classifies each with the exhaustive [`role`] match (no wildcard
-    //! arm — a new opcode fails to compile until a maintainer classifies it, the
-    //! conspicuous-omission gate), forges each IndexRead-class opcode over a non-index
-    //! field-leaf site, and asserts it rejects *typed* — never a panic — with the
-    //! detail its guard owns.
+    //! This sweep enumerates every opcode from the decode-bijection [`samples()`] source
+    //! of truth, classifies each with the exhaustive [`role`] match (no wildcard arm, so a
+    //! new opcode fails to compile until it is classified), forges each IndexRead-class
+    //! opcode over a non-index field-leaf site, and asserts it rejects typed rather than
+    //! panicking.
 
     use marrow_image::{
         CanonicalDeclarationPathSelector, CollTypeId, CollectionTypeDef, DeclarationMemberDef,

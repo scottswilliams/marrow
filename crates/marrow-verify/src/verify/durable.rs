@@ -62,11 +62,9 @@ struct DecodedTables<'a> {
 ///
 /// The one structural count the section states is read and bounded by the caller, before
 /// any graph exists and before a row is allocated, so a hostile root count is answered by
-/// that bound rather than by the allocator — and by *one* bound with one message, rather
-/// than by a preflight and a decode that must be kept saying the same thing. The admitted
-/// counts follow from it: each root declares at most one Product, and a declaration's
-/// command vector is admitted at the image's own one-past-the-bound declaration width,
-/// which the per-Product member budget then spends exactly.
+/// that one bound rather than by the allocator. The admitted counts follow from it: each
+/// root declares at most one Product, and a declaration's command vector is admitted at
+/// the image's own one-past-the-bound declaration width.
 ///
 /// The mint is total, and nothing saturates in it: an admitted `root_count` is already
 /// within `MAX_ROOTS`, which sits below every admitted-intake ceiling.
@@ -142,10 +140,9 @@ pub(super) fn decode_durable(
     // The construction plan is minted before the graph exists, from the one structural
     // count just bounded: no plan, no graph.
     let plan = structural_plan(root_count);
-    // This image's one durable contract graph. Every declaration, occurrence, and field
-    // value shape is decoded into it and referenced from there, so a repeated Product
-    // costs one declaration row and the decoder never holds a second representation of a
-    // member graph or of a value.
+    // This image's one durable contract graph: every declaration, occurrence, and field
+    // value shape is decoded into it, so a repeated Product costs one declaration row and
+    // the decoder never holds a second representation of a member graph or a value.
     let mut graph = DurableContractGraph::new();
     let roots = decode_roots(&mut reader, root_count, &plan, &mut graph, tables)?;
 
@@ -361,12 +358,10 @@ fn decode_sites(
     // node it addresses; a flat site drops the path from its executable form, so it
     // is retained here rather than re-derived.
     let mut site_paths: Vec<SemanticPath> = Vec::with_capacity(site_count);
-    // The resolved identities already claimed, keyed. Sites are unique by that identity:
-    // a flat site by (root, target), a parked site by (path, target), and a flat and a
-    // parked site can never collide. Comparing each fresh site against every retained one
-    // instead was a deep structural comparison of whole path chains and branch paths, so
-    // the claim cost grew with the square of the site count while the answer — and the
-    // wire ordinal the first duplicate is refused at — is exactly this one.
+    // The resolved identities already claimed, keyed: a flat site by (root, target), a
+    // parked site by (path, target), and the two can never collide. Keying keeps the claim
+    // cost linear where comparing each fresh site against every retained one would be
+    // quadratic in whole path chains, for the same first-duplicate wire ordinal.
     let mut claimed: HashSet<SealedSite> = HashSet::with_capacity(site_count);
     for _ in 0..site_count {
         let (site, path) = decode_site(reader, &projection)?;
@@ -630,9 +625,9 @@ enum NodeCoordinates {
 }
 
 /// The per-parent ordinals a node takes among its same-kind siblings, in declaration
-/// order. A field's ordinal is its index into its container's materialized record (their
-/// orders are tied during decode), a branch's is its index into the sealed branch list at
-/// its level, and a group's is its index into its root's sealed group list.
+/// order: a field indexes its container's materialized record (the orders are tied during
+/// decode), a branch the sealed branch list at its level, and a group its root's sealed
+/// group list.
 #[derive(Default)]
 struct SiblingOrdinals {
     fields: u16,
@@ -892,18 +887,15 @@ pub(super) fn seal_groups(root: &DecodedRoot, types: &[SealedRecordType]) -> Vec
 /// `root_index`, resolving each ledger-id projection to the record/key positions the
 /// path kernel maintains.
 ///
-/// A managed index is declared by one root occurrence, and its projection is resolved
+/// A managed index is declared by one root occurrence and its projection is resolved
 /// against that occurrence and no other: a field component names its position in the
-/// Product declaration's member order (tied to the materialized record), and a key
-/// component names its column in *this occurrence's* key tuple, which two roots over one
-/// Product may spell differently. Sealing the whole set here rather than resolving one
-/// projection at a time is what makes that pairing structural — the sealed row's root and
-/// the graph its components resolved against come from the same occurrence by
-/// construction, so no caller can pair an index with a neighbouring root.
+/// Product declaration's member order, while a key component names its column in *this
+/// occurrence's* key tuple, which two roots over one Product may spell differently.
+/// Sealing the whole set at once is what makes that pairing structural, so no caller can
+/// pair an index with a neighbouring root.
 ///
 /// Every component already resolved to a real leaf during decode, so a miss here is an
-/// internal inconsistency the verifier refuses rather than mis-addressing a maintained
-/// index cell.
+/// internal inconsistency the verifier refuses rather than mis-addressing a cell.
 pub(super) fn seal_root_indexes(
     root_index: u16,
     root: &DecodedRoot,

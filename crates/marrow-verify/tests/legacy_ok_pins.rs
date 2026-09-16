@@ -668,9 +668,9 @@ fn a_dangling_index_scan_list_type_draws_the_collection_type_refusal() {
     );
 }
 
-// ---- Domain-decoy `ImageType` pins (review 7 item 5): index 0 into an EMPTY target
-// domain while a WRONG domain is populated at index 0, asserting the exact
-// target-domain refusal — a check consulting the wrong table would accept these.
+// ---- Domain-decoy `ImageType` pins: index 0 into an EMPTY target domain while a WRONG
+// domain is populated at index 0, asserting the exact target-domain refusal — a check
+// consulting the wrong table would accept these.
 
 /// A fieldless record populating TYPES row 0, as decoy for the non-record domains.
 fn with_decoy_record(mut owner: ImageDraft) -> ImageDraft {
@@ -725,9 +725,8 @@ fn a_record_type_decoy_draws_the_types_domain_refusal() {
     );
 }
 
-/// A decoy: with ENUMS empty and TYPES populated at index 0, a producer check
-/// consulting the wrong table would accept this draft; the exact
-/// `InvalidReference(ReferenceKind::EnumType)` refusal pins the correct domain.
+/// The `EnumType` decoy (see above), pinning
+/// `InvalidReference(ReferenceKind::EnumType)`.
 #[test]
 fn an_enum_type_decoy_draws_the_enums_domain_refusal() {
     let draft = with_decoy_record(main_draft(
@@ -743,9 +742,8 @@ fn an_enum_type_decoy_draws_the_enums_domain_refusal() {
     );
 }
 
-/// A decoy: with COLLTYPES empty and TYPES populated at index 0, a producer check
-/// consulting the wrong table would accept this draft; the exact
-/// `InvalidReference(ReferenceKind::CollectionType)` refusal pins the correct domain.
+/// The `CollectionType` decoy (see above), pinning
+/// `InvalidReference(ReferenceKind::CollectionType)`.
 #[test]
 fn a_collection_type_decoy_draws_the_colltypes_domain_refusal() {
     let draft = with_decoy_record(main_draft(
@@ -763,9 +761,8 @@ fn a_collection_type_decoy_draws_the_colltypes_domain_refusal() {
     );
 }
 
-/// A decoy: with ROOTS empty and TYPES populated at index 0, a producer check
-/// consulting the wrong table would accept this draft; the exact
-/// `InvalidReference(ReferenceKind::RootTable)` refusal pins the correct domain.
+/// The `RootTable` decoy (see above), pinning
+/// `InvalidReference(ReferenceKind::RootTable)`.
 #[test]
 fn an_identity_type_decoy_draws_the_roots_domain_refusal() {
     let draft = with_decoy_record(main_draft(

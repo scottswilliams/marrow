@@ -77,17 +77,15 @@ pub(super) fn flow_successors(code: &[SealedInstr], index: usize) -> Vec<usize> 
 /// compiler, so a forged or mis-lowered present-form op whose graph cannot imply its
 /// payload is refused.
 ///
-/// The lattice state at each program point is the set of proven-present entries, each
+/// The lattice state at each program point is the set of proven-present entries, each with
 /// its family and its key-path slots. A fact is *established* by a guard that tests the
-/// entry keyed by the slots — `LocalGet(S…); DurExists(entry); JumpIfFalse` on its
-/// present (fallthrough) edge, or an optional entry/group read followed by `BranchPresent` on its
-/// present edge — or by a whole-entry `DurCreateEntry` keyed by those slots (create
-/// leaves the entry present whether it was created or already present). It is *killed*
-/// by any entry erase of the fact's family, whatever key the erase names; by a call
-/// whose demand closure erases an entry of the family; and by any `LocalSet` of a slot the fact
-/// reads (a `place` key slot is bind-once, so a rebind never fires on compiler output —
-/// it hardens the recheck against a mutated tape). Facts join by intersection at
-/// merges: an entry is present only if it holds on every incoming edge.
+/// entry keyed by the slots — `LocalGet(S…); DurExists(entry); JumpIfFalse` on its present
+/// (fallthrough) edge, or an optional entry/group read followed by `BranchPresent` on its
+/// present edge — or by a whole-entry `DurCreateEntry` keyed by those slots. It is *killed*
+/// by any entry erase of the fact's family whatever key the erase names, by a call whose
+/// demand closure erases an entry of the family, and by any `LocalSet` of a slot the fact
+/// reads (a `place` key slot is bind-once, so a rebind never fires on compiler output; it
+/// hardens the recheck against a mutated tape). Facts join by intersection at merges.
 pub(super) fn check_presence_flow(
     function: &SealedFunction,
     ctx: &Ctx,
