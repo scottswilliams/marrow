@@ -570,3 +570,64 @@ fn a_root_module_may_not_shadow_an_alias() {
     .expect_err("an alias-shadowing root module is refused");
     assert_eq!(failure.code().as_str(), "project.dependency_alias");
 }
+
+/// An enum payload annotation is written in the tree that declares the enum, so the
+/// one payload-admission rule resolves it in that tree's namespace. Both projects
+/// declare `Point`; the library's payload carries the library's.
+#[test]
+fn an_enum_payload_resolves_in_its_declaring_tree() {
+    let project = project_capture::project_with_dependency(
+        "graphtext",
+        &[(
+            "src/main.mw",
+            r#"module main
+
+use graphtext::shapes
+
+struct Point {
+    label: string
+}
+
+pub fn run(): int {
+    const mine = Point(label: "here")
+    const cell = shapes::filled(3, 4)
+    if isEmpty(mine.label) {
+        return 0
+    }
+    return shapes::spread(cell)
+}
+"#,
+        )],
+        &[(
+            "src/shapes.mw",
+            r#"module shapes
+
+struct Point {
+    x: int
+    y: int
+}
+
+enum Cell {
+    empty
+    filled(at: Point)
+}
+
+pub fn filled(x: int, y: int): Cell {
+    return Cell::filled(at: Point(x: x, y: y))
+}
+
+pub fn spread(cell: Cell): int {
+    match cell {
+        empty => {
+            return 0
+        }
+        filled(at) => {
+            return at.x + at.y
+        }
+    }
+}
+"#,
+        )],
+    );
+    assert_eq!(codes_and_messages(&project), Vec::new());
+}

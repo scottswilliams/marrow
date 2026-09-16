@@ -223,10 +223,10 @@ same file and in another module. A value type that contains itself, directly or
 through other types, is a `check.recursion` naming the cycle. Two structs have
 no `==`; compare their fields.
 
-A struct name is project-wide and is written bare from any module of the project that declares it. A resource
-is the durable counterpart: it adds sparse fields, groups, and keyed branches,
-and a store may declare it as a root. Resource values are described under
-[resources](resources.md#local-values).
+A struct name is project-wide: it is written bare from any module of the project
+that declares it. A resource is the durable counterpart: it adds sparse fields,
+groups, and keyed branches, and a store may declare it as a root. Resource
+values are described under [resources](resources.md#local-values).
 
 ## Enums
 
