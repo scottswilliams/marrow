@@ -7,8 +7,6 @@
 //! the one canonical re-encoder. The payload types are [`lsp_types`]; the server owns no
 //! hand-written duplicate DTO.
 
-use std::str::FromStr;
-
 use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionResponse, Diagnostic, DiagnosticSeverity,
     DocumentSymbol, DocumentSymbolResponse, Hover, HoverContents, Location, MarkupContent,
@@ -25,7 +23,6 @@ use marrow_project_fs::FileIdentity;
 use marrow_syntax::{Severity, SourceSpan};
 
 use crate::position::{LineMap, Position, Range};
-use crate::uri::{SelectedRoot, diagnostic_uri};
 
 /// Why a payload could not be projected. Both are refusals, never a repaired result: a
 /// misplaced range would point an editor at the wrong text.
@@ -46,10 +43,6 @@ fn to_lsp_range(range: Range) -> LspRange {
     LspRange::new(to_lsp_position(range.start), to_lsp_position(range.end))
 }
 
-fn to_uri(root: &SelectedRoot, identity: &FileIdentity) -> Result<Uri, ProjectionRefusal> {
-    Uri::from_str(&diagnostic_uri(root, identity)).map_err(|_| ProjectionRefusal::Uri)
-}
-
 /// The LSP severity of a diagnostic, projected from the payload's typed severity —
 /// the one severity owner — never reconstructed by classifying the code.
 fn to_lsp_severity(severity: Severity) -> DiagnosticSeverity {
@@ -61,10 +54,11 @@ fn to_lsp_severity(severity: Severity) -> DiagnosticSeverity {
 
 /// Build the per-file publish-diagnostics parameters for one snapshot file. The file's
 /// own bytes drive the UTF-16 range projection, so a file that is not UTF-8 is refused
-/// rather than published with every diagnostic collapsed onto the first character.
+/// rather than published with every diagnostic collapsed onto the first character. The
+/// `uri` is the caller's, because only the server knows which tree the file came from.
 pub(crate) fn diagnostics_for_file(
     snapshot: &AnalysisSnapshot,
-    root: &SelectedRoot,
+    uri: Uri,
     file: &FileIdentity,
     source: &[u8],
     version: Option<i32>,
@@ -92,7 +86,7 @@ pub(crate) fn diagnostics_for_file(
         })
         .collect();
     Ok(PublishDiagnosticsParams {
-        uri: to_uri(root, file)?,
+        uri,
         diagnostics,
         version,
     })
@@ -125,13 +119,14 @@ pub(crate) fn hover(
 
 /// The definition location at an LSP position, or `None` (LSP `null`). The target file,
 /// selection range, and source are the snapshot's; the range projects through the
-/// target file's own source bytes.
+/// target file's own source bytes, and `target_uri` resolves the target against the tree
+/// it belongs to.
 pub(crate) fn definition(
     snapshot: &AnalysisSnapshot,
-    root: &SelectedRoot,
     file: &FileIdentity,
     source: &str,
     target_source: impl Fn(&FileIdentity) -> Option<String>,
+    target_uri: impl Fn(&FileIdentity) -> Option<Uri>,
     position: LspPosition,
 ) -> Result<Option<Location>, ProjectionRefusal> {
     let offset = LineMap::new(source).byte_at(Position {
@@ -152,7 +147,7 @@ pub(crate) fn definition(
     let range =
         to_lsp_range(LineMap::new(&text).range_of(name_span.start_byte, name_span.end_byte));
     Ok(Some(Location {
-        uri: to_uri(root, target.file())?,
+        uri: target_uri(target.file()).ok_or(ProjectionRefusal::Uri)?,
         range,
     }))
 }
@@ -357,10 +352,13 @@ fn symbol_kind(kind: DeclKind) -> SymbolKind {
 mod tests {
     use super::*;
     use std::path::Path;
+    use std::str::FromStr;
     use std::sync::Arc;
 
     use crate::analysis::{AnalysisOutcome, OverlayInput, run_analysis};
+    use crate::uri::{DocumentKey, OriginRoots, SelectedRoot, document_uri};
     use marrow_compile::InputRevision;
+    use marrow_project_fs::SourceOrigin;
 
     fn identity(path: &str) -> FileIdentity {
         FileIdentity::validate(path).unwrap().0
@@ -382,6 +380,12 @@ mod tests {
         fs::write(base.join("src/main.mw"), main).unwrap();
         let root = root_for(&base);
         (base, root)
+    }
+
+    /// The project's own `src/main.mw` URI, built the way the server builds one.
+    fn main_uri(root: &SelectedRoot) -> Uri {
+        let key = DocumentKey::captured(&SourceOrigin::Root, &identity("src/main.mw"));
+        Uri::from_str(&document_uri(root, &OriginRoots::default(), &key).unwrap()).unwrap()
     }
 
     fn root_for(dir: &Path) -> SelectedRoot {
@@ -417,9 +421,10 @@ mod tests {
     fn diagnostics_project_span_to_utf16_range() {
         let main = "module main\n\npub fn f(): int {\n    return \n}\n";
         let (snapshot, root, base) = analyze_source("diag", main);
+        let uri = main_uri(&root);
         let params = diagnostics_for_file(
             &snapshot,
-            &root,
+            uri.clone(),
             &identity("src/main.mw"),
             main.as_bytes(),
             Some(3),
@@ -427,10 +432,7 @@ mod tests {
         .unwrap();
         assert!(!params.diagnostics.is_empty());
         assert_eq!(params.version, Some(3));
-        assert_eq!(
-            params.uri.as_str(),
-            &diagnostic_uri(&root, &identity("src/main.mw"))
-        );
+        assert_eq!(params.uri, uri);
         // Every diagnostic has a real (nonzero-width or positioned) range and a code.
         for diagnostic in &params.diagnostics {
             assert!(matches!(diagnostic.code, Some(NumberOrString::String(_))));
@@ -445,7 +447,7 @@ mod tests {
         let (snapshot, root, base) = analyze_source("clean", main);
         let params = diagnostics_for_file(
             &snapshot,
-            &root,
+            main_uri(&root),
             &identity("src/main.mw"),
             main.as_bytes(),
             Some(1),

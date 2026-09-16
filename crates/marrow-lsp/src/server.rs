@@ -45,7 +45,9 @@ use crate::lifecycle::{
 };
 use crate::outbound::{MessageType, Outbound, encode};
 use crate::protocol::{Inbound, InvalidReason, Reject, RequestId, decode};
-use crate::uri::{DocumentKey, SelectedRoot, UriError};
+use marrow_project_fs::SourceOrigin;
+
+use crate::uri::{DocumentKey, OriginRoots, SelectedRoot, UriError};
 
 /// A unit of capture/analyze work handed to the worker.
 struct WorkerJob {
@@ -424,6 +426,11 @@ enum CurrentAnalysis {
 struct Coordinator {
     lifecycle: Lifecycle,
     root: Option<SelectedRoot>,
+    /// Where each captured dependency sits relative to `root`, taken from the most
+    /// recent successful capture. Empty until one succeeds, which is why a document URI
+    /// resolves against `root` alone: the workspace is one project and only its own
+    /// source is ever opened.
+    origins: OriginRoots,
     ledger: DocumentLedger,
     revisions: RevisionCounter,
     current_revision: InputRevision,
@@ -470,6 +477,7 @@ impl Coordinator {
         Self {
             lifecycle: Lifecycle::new(),
             root: None,
+            origins: OriginRoots::default(),
             ledger: DocumentLedger::new(),
             revisions,
             current_revision,
@@ -727,12 +735,23 @@ impl Coordinator {
             }),
             HeldKind::Definition(position) => {
                 let source_lookup = |file: &marrow_project_fs::FileIdentity| self.file_source(file);
+                // The snapshot's definition target carries no origin yet, so a target is
+                // resolved in the root project's tree. Key it on the target's own origin
+                // once the compiler reports one, and a definition across a dependency
+                // boundary resolves through this same fact with no new one.
+                let uri_lookup = |file: &marrow_project_fs::FileIdentity| {
+                    lsp_uri(
+                        root,
+                        &self.origins,
+                        &DocumentKey::captured(&SourceOrigin::Root, file),
+                    )
+                };
                 match facts::definition(
                     snapshot,
-                    root,
                     &identity,
                     &source,
                     source_lookup,
+                    uri_lookup,
                     *position,
                 ) {
                     Ok(result) => SemanticAnswer::Reply(Outbound::Definition { id, result }),
@@ -779,7 +798,7 @@ impl Coordinator {
     }
 
     fn file_source(&self, file: &marrow_project_fs::FileIdentity) -> Option<String> {
-        let key = DocumentKey::from_identity(file);
+        let key = DocumentKey::captured(&SourceOrigin::Root, file);
         self.ledger
             .text_entries()
             .find(|(open_key, _)| **open_key == key)
@@ -983,6 +1002,7 @@ impl Coordinator {
         match outcome {
             AnalysisOutcome::Snapshot(snapshot) => {
                 if snapshot.revision() == self.current_revision {
+                    self.origins = OriginRoots::of(snapshot.input());
                     self.analysis = CurrentAnalysis::Ready(snapshot);
                     self.begin_publication();
                     self.serve_ready_queries();
@@ -1132,12 +1152,18 @@ impl Coordinator {
         };
         let mut frames = Vec::new();
         let mut new_published = Vec::new();
+        let origins = OriginRoots::of(snapshot.input());
         for module in snapshot.input().modules() {
             let identity = module.identity();
-            let key = DocumentKey::from_identity(identity);
+            let key = DocumentKey::captured(module.origin(), identity);
+            // Only the root project's files are ever open, so a dependency file is
+            // always published unversioned.
             let version = self.ledger.get(&key).map(DocumentState::version);
+            let Some(uri) = lsp_uri(&root, &origins, &key) else {
+                continue;
+            };
             if let Ok(params) =
-                facts::diagnostics_for_file(snapshot, &root, identity, module.source(), version)
+                facts::diagnostics_for_file(snapshot, uri, identity, module.source(), version)
             {
                 let has = !params.diagnostics.is_empty();
                 frames.push(Outbound::PublishDiagnostics(Box::new(params)));
@@ -1150,11 +1176,11 @@ impl Coordinator {
             .input()
             .modules()
             .iter()
-            .map(|module| DocumentKey::from_identity(module.identity()))
+            .map(|module| DocumentKey::captured(module.origin(), module.identity()))
             .collect();
         for key in &self.published {
             if !snapshot_keys.contains(key)
-                && let Some(retraction) = Self::diagnostic_retraction(&root, key, None)
+                && let Some(retraction) = Self::diagnostic_retraction(&root, &origins, key, None)
             {
                 frames.push(retraction);
             }
@@ -1172,7 +1198,9 @@ impl Coordinator {
         if let Some(root) = &self.root {
             for key in &self.published {
                 let version = self.ledger.get(key).map(DocumentState::version);
-                if let Some(retraction) = Self::diagnostic_retraction(root, key, version) {
+                if let Some(retraction) =
+                    Self::diagnostic_retraction(root, &self.origins, key, version)
+                {
                     frames.push(retraction);
                 }
             }
@@ -1182,11 +1210,11 @@ impl Coordinator {
 
     fn diagnostic_retraction(
         root: &SelectedRoot,
+        origins: &OriginRoots,
         key: &DocumentKey,
         version: Option<i32>,
     ) -> Option<Outbound> {
-        let (identity, _) = marrow_project_fs::FileIdentity::validate(key.relative()).ok()?;
-        let uri = lsp_uri(root, &identity)?;
+        let uri = lsp_uri(root, origins, key)?;
         Some(Outbound::PublishDiagnostics(Box::new(
             lsp_types::PublishDiagnosticsParams {
                 uri,
@@ -1533,10 +1561,11 @@ fn restore_after_rejected_initialize() -> Lifecycle {
 
 fn lsp_uri(
     root: &SelectedRoot,
-    identity: &marrow_project_fs::FileIdentity,
+    origins: &OriginRoots,
+    key: &DocumentKey,
 ) -> Option<lsp_types::Uri> {
     use std::str::FromStr;
-    lsp_types::Uri::from_str(&crate::uri::diagnostic_uri(root, identity)).ok()
+    lsp_types::Uri::from_str(&crate::uri::document_uri(root, origins, key)?).ok()
 }
 
 fn parse<T: serde::de::DeserializeOwned>(raw: &serde_json::value::RawValue) -> Option<T> {

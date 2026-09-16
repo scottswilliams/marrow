@@ -21,7 +21,12 @@ struct Connection {
 /// representable.
 enum ExpectedMessage<'a> {
     Response(i64),
-    Diagnostics { uri: &'a str, version: i64 },
+    Diagnostics {
+        uri: &'a str,
+        /// `None` matches a frame the server publishes with no version — a file no open
+        /// document names, which is every dependency file.
+        version: Option<i64>,
+    },
 }
 
 impl ExpectedMessage<'_> {
@@ -32,7 +37,7 @@ impl ExpectedMessage<'_> {
                 message.get("method").and_then(Value::as_str)
                     == Some("textDocument/publishDiagnostics")
                     && message["params"]["uri"].as_str() == Some(*uri)
-                    && message["params"]["version"].as_i64() == Some(*version)
+                    && message["params"]["version"].as_i64() == *version
             }
         }
     }
@@ -120,7 +125,15 @@ impl Connection {
     }
 
     fn recv_diagnostics(&mut self, uri: &str, version: i64) -> Value {
-        self.recv_until(ExpectedMessage::Diagnostics { uri, version })
+        self.recv_until(ExpectedMessage::Diagnostics {
+            uri,
+            version: Some(version),
+        })
+    }
+
+    /// The diagnostics frame for a file no open document names.
+    fn recv_unversioned_diagnostics(&mut self, uri: &str) -> Value {
+        self.recv_until(ExpectedMessage::Diagnostics { uri, version: None })
     }
 
     fn wait(mut self) -> i32 {
@@ -131,11 +144,18 @@ impl Connection {
     }
 }
 
-/// The Graph Report conformance fixture source: a single 393-line module (structs, an
-/// enum with members, a generic helper, monomorphic helpers, and tests) — the earning
-/// caller for completion, signature help, and document symbols.
+/// The Graph Report conformance fixture source: one module of structs, an enum with
+/// members, monomorphic helpers, and tests — the earning caller for completion, signature
+/// help, and document symbols.
 const GRAPH_REPORT: &str =
     include_str!("../../../fixtures/v01/conformance/graph_report/src/graph_report.mw");
+
+/// The library the Graph Report reaches through its `[dependencies]` alias: the generic
+/// helper and the struct that crosses the boundary live here now, and the file checks on
+/// its own, so it is the earning caller for the declarations the application no longer
+/// declares.
+const GRAPH_TEXT: &str =
+    include_str!("../../../fixtures/v01/conformance/graph_report_lib/src/text.mw");
 
 /// The zero-based LSP position (line, UTF-16 character) of a UTF-8 byte offset in a
 /// source string. Mirrors the server's own UTF-16 owner so the probe addresses the exact
@@ -174,6 +194,23 @@ fn root_uri(dir: &Path) -> String {
         }
     }
     uri
+}
+
+/// A workspace whose project declares one local dependency nested inside it, so both
+/// trees sit under the one selected root and the server must tell them apart by origin
+/// rather than by containment.
+fn temp_dependency_project(tag: &str, main: &str) -> PathBuf {
+    let base = temp_project(tag, main);
+    let lib = base.join("lib/graphtext");
+    std::fs::create_dir_all(lib.join("src")).unwrap();
+    std::fs::write(lib.join("marrow.toml"), "edition = \"2026\"\n").unwrap();
+    std::fs::write(lib.join("src/text.mw"), GRAPH_TEXT).unwrap();
+    std::fs::write(
+        base.join("marrow.toml"),
+        "edition = \"2026\"\n\n[dependencies]\ngraphtext = { path = \"lib/graphtext\" }\n",
+    )
+    .unwrap();
+    base
 }
 
 fn temp_project(tag: &str, main: &str) -> PathBuf {
@@ -332,8 +369,8 @@ fn signature_help_inside_call_marks_active_parameter() {
     let mut conn = Connection::spawn();
     initialize(&mut conn, &dir);
     open_graph_report(&mut conn, &dir);
-    // Inside `getOr(reached, e.src, false)` at the second argument slot.
-    let (line, character) = lsp_position(GRAPH_REPORT, after(GRAPH_REPORT, "getOr(reached, "));
+    // Inside `classifyRole(o, i)` at the second argument slot.
+    let (line, character) = lsp_position(GRAPH_REPORT, after(GRAPH_REPORT, "classifyRole(o, "));
     conn.request(
         31,
         "textDocument/signatureHelp",
@@ -351,8 +388,8 @@ fn signature_help_inside_call_marks_active_parameter() {
         signatures[0]["label"]
             .as_str()
             .unwrap_or("")
-            .contains("getOr"),
-        "the callee signature is `getOr`"
+            .contains("classifyRole"),
+        "the callee signature is `classifyRole`"
     );
     assert_eq!(
         reply["result"]["activeParameter"].as_i64(),
@@ -385,7 +422,7 @@ fn document_symbol_returns_declaration_outline() {
         .iter()
         .filter_map(|symbol| symbol["name"].as_str())
         .collect();
-    for name in ["Pair", "Edge", "Role", "getOr", "classifyRole", "report"] {
+    for name in ["Edge", "Role", "classifyRole", "topoOrder", "report"] {
         assert!(
             names.contains(&name),
             "top-level declaration {name} present"
@@ -405,6 +442,112 @@ fn document_symbol_returns_declaration_outline() {
     for member in ["source", "sink", "internal", "isolated"] {
         assert!(members.contains(&member), "enum member {member} nested");
     }
+    conn.request(9, "shutdown", Value::Null);
+    conn.recv_response(9);
+    conn.notify("exit", Value::Null);
+    assert_eq!(conn.wait(), 0);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A dependency's file is reported at its own location. The library sits at
+/// `lib/graphtext`, so its `src/text.mw` publishes under that directory rather than under
+/// the consuming project's `src`, where no such file exists. Identities are relative to
+/// their own tree; the origin is what places them.
+#[test]
+fn a_dependency_file_publishes_under_its_own_root() {
+    let main = "module main\n\nuse graphtext::text\n\npub fn f(): int {\n    return 1\n}\n";
+    let dir = temp_dependency_project("dependency-uri", main);
+    let mut conn = Connection::spawn();
+    initialize(&mut conn, &dir);
+    did_open(&mut conn, &dir, main, 1);
+    conn.recv_diagnostics(&document_uri(&dir), 1);
+    let published =
+        conn.recv_unversioned_diagnostics(&format!("{}/lib/graphtext/src/text.mw", root_uri(&dir)));
+    assert_eq!(
+        published["params"]["version"],
+        Value::Null,
+        "a dependency file names no open document, so it publishes unversioned"
+    );
+    conn.request(9, "shutdown", Value::Null);
+    conn.recv_response(9);
+    conn.notify("exit", Value::Null);
+    assert_eq!(conn.wait(), 0);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A dependency file is read-only: opening one never places its body in the capture
+/// overlay, so the workspace keeps analysing. An overlay entry naming a file the root
+/// project does not declare refuses the whole capture, which is exactly what must not
+/// happen when a developer opens a library file to read it.
+#[test]
+fn opening_a_dependency_file_leaves_the_workspace_analysing() {
+    let main = "module main\n\nuse graphtext::text\n\npub fn f(): int {\n    return 1\n}\n";
+    let dir = temp_dependency_project("dependency-readonly", main);
+    let mut conn = Connection::spawn();
+    initialize(&mut conn, &dir);
+    did_open(&mut conn, &dir, main, 1);
+    conn.recv_diagnostics(&document_uri(&dir), 1);
+
+    let library_uri = format!("{}/lib/graphtext/src/text.mw", root_uri(&dir));
+    conn.notify(
+        "textDocument/didOpen",
+        serde_json::json!({
+            "textDocument": {
+                "uri": library_uri,
+                "languageId": "marrow",
+                "version": 1,
+                "text": "module text\n\nthis is not Marrow source\n",
+            }
+        }),
+    );
+
+    // The project still analyses, and against the library's committed bytes: an overlay
+    // entry naming a file the root project does not declare refuses the whole capture,
+    // and no diagnostics for this edit would ever arrive.
+    let edited = main.replace("return 1", "return 2");
+    conn.notify(
+        "textDocument/didChange",
+        serde_json::json!({
+            "textDocument": { "uri": document_uri(&dir), "version": 2 },
+            "contentChanges": [{ "text": edited }],
+        }),
+    );
+    conn.recv_diagnostics(&document_uri(&dir), 2);
+
+    conn.request(9, "shutdown", Value::Null);
+    conn.recv_response(9);
+    conn.notify("exit", Value::Null);
+    assert_eq!(conn.wait(), 0);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Definition from the application into a library function returns the library's own
+/// file URI. The target resolves through the existing definition fact: the boundary needs
+/// no new canonical fact, only the origin the snapshot will carry.
+#[test]
+#[ignore = "needs the compiler half of local dependencies"]
+fn definition_across_a_dependency_boundary_names_the_library_file() {
+    let main = "module main\n\nuse graphtext::text\n\npub fn f(): bool {\n    return text::startsWith(\"ab\", \"a\")\n}\n";
+    let dir = temp_dependency_project("dependency-definition", main);
+    let mut conn = Connection::spawn();
+    initialize(&mut conn, &dir);
+    did_open(&mut conn, &dir, main, 1);
+    conn.recv_diagnostics(&document_uri(&dir), 1);
+    let (line, character) = lsp_position(main, after(main, "text::start"));
+    conn.request(
+        40,
+        "textDocument/definition",
+        serde_json::json!({
+            "textDocument": { "uri": document_uri(&dir) },
+            "position": { "line": line, "character": character },
+        }),
+    );
+    let reply = conn.recv_response(40);
+    assert_eq!(
+        reply["result"]["uri"].as_str(),
+        Some(format!("{}/lib/graphtext/src/text.mw", root_uri(&dir)).as_str()),
+        "the definition names the library's own file: {reply}"
+    );
     conn.request(9, "shutdown", Value::Null);
     conn.recv_response(9);
     conn.notify("exit", Value::Null);

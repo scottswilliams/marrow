@@ -6,7 +6,7 @@
 //! overlay input, and an opaque [`CaptureFailure`] presented through a borrowed
 //! [`CapturePresentation`]. It re-exports the canonical pure-owner facts a thin
 //! consumer needs — the diagnostic [`Code`] registry and the pure
-//! [`ProjectInput`], its [`SourceOrigin`] and [`DependencyAlias`],
+//! [`ProjectInput`], its [`SourceOrigin`], [`DependencyAlias`] and [`DependencyPath`],
 //! [`ManifestError`], [`CaptureError`], and manifest [`Position`] — so a consumer
 //! with only this edge can name the successful boundary without a direct
 //! `marrow-project` edge.
@@ -62,6 +62,7 @@
 //! [`Position`]: marrow_project::Position
 //! [`SourceOrigin`]: marrow_project::SourceOrigin
 //! [`DependencyAlias`]: marrow_project::DependencyAlias
+//! [`DependencyPath`]: marrow_project::DependencyPath
 
 #![warn(missing_docs)]
 
@@ -96,6 +97,6 @@ pub use publication::{
 
 pub use marrow_codes::Code;
 pub use marrow_project::{
-    CaptureError, DependencyAlias, FileIdentity, ManifestError, Position, ProjectInput,
-    SourceOrigin,
+    CaptureError, DependencyAlias, DependencyPath, FileIdentity, ManifestError, Position,
+    ProjectInput, SourceOrigin,
 };

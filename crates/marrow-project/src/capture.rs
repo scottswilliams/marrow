@@ -10,7 +10,7 @@
 
 use marrow_codes::Code;
 
-use crate::dependency::{DependencyAlias, DependencyAliasReason};
+use crate::dependency::{DependencyAlias, DependencyAliasReason, DependencyPath};
 use crate::identity::{FileIdentity, ModuleName, SourceOrigin, SourcePathReason};
 use crate::ids::{CapturedLedger, IDS_FILE, IdentityLedger, IdsError};
 use crate::manifest::{Edition, Manifest};
@@ -175,6 +175,11 @@ pub struct ProjectInput {
     /// `ledgers`. The root is always present, so `ledgers[0]` is its ledger.
     origins: Vec<SourceOrigin>,
     ledgers: Vec<CapturedLedger>,
+    /// The manifest-declared location of each dependency origin, parallel to
+    /// `origins[1..]`. The spelling is the manifest's own — relative to the consuming
+    /// root — so a `ProjectInput` says where a tree sits *relative to the project*
+    /// without ever carrying an absolute path.
+    paths: Vec<DependencyPath>,
 }
 
 impl ProjectInput {
@@ -193,6 +198,19 @@ impl ProjectInput {
     /// always first; a dependency appears whether or not it contributed a module.
     pub fn origins(&self) -> &[SourceOrigin] {
         &self.origins
+    }
+
+    /// The location the manifest declares for one captured dependency, relative to the
+    /// consuming root. `None` for the root origin, which is the project itself, and for
+    /// an origin this input did not capture.
+    ///
+    /// A consumer that must name a dependency's file on disk — an editor rebuilding a
+    /// document URI, say — joins this relative spelling to the root it captured from.
+    /// The relative spelling is what keeps a capture byte-identical wherever the pair
+    /// sits.
+    pub fn dependency_path(&self, origin: &SourceOrigin) -> Option<&DependencyPath> {
+        let index = self.origins.iter().position(|held| held == origin)?;
+        self.paths.get(index.checked_sub(1)?)
     }
 
     /// The root project's parsed durable-identity ledger, when it committed a
@@ -278,9 +296,14 @@ pub fn capture_origins(
     let ordered = admit_dependencies(manifest, dependencies)?;
     let mut captured_origins = vec![SourceOrigin::Root];
     let mut ledgers = vec![CapturedLedger::capture(ids).map_err(CaptureError::ids)?];
-    for dependency in ordered {
+    let mut paths = Vec::with_capacity(ordered.len());
+    // `admit_dependencies` returns the captured trees in manifest order, so the two
+    // sequences agree entry by entry and a declared path lands beside its own origin.
+    for (declared, dependency) in manifest.dependencies().iter().zip(ordered) {
+        debug_assert_eq!(declared.alias(), dependency.alias);
         ledgers.push(CapturedLedger::capture(dependency.ids).map_err(CaptureError::ids)?);
         captured_origins.push(SourceOrigin::Dependency(dependency.alias.clone()));
+        paths.push(declared.path().clone());
     }
     if files.len() > limits.max_files {
         return Err(CaptureError::limit(
@@ -362,6 +385,7 @@ pub fn capture_origins(
         modules: valid,
         origins: captured_origins,
         ledgers,
+        paths,
     })
 }
 

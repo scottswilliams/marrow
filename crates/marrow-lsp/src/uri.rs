@@ -12,7 +12,9 @@
 
 use std::fmt::Write as _;
 
-use marrow_project_fs::FileIdentity;
+use marrow_project_fs::{
+    DependencyAlias, DependencyPath, FileIdentity, ProjectInput, SourceOrigin,
+};
 
 use crate::capacities::MAX_URI_BYTES;
 
@@ -33,6 +35,9 @@ pub(crate) enum UriError {
     NonCanonicalPath,
     /// The decoded bytes were not valid UTF-8.
     NotUtf8,
+    /// The URI named a real file under the selected root that is not one of the
+    /// project's own source files — anything outside `src`, or not a `.mw` file.
+    NotProjectSource,
 }
 
 /// The caller-selected project root: its decoded absolute lexical path components. No
@@ -60,19 +65,28 @@ impl SelectedRoot {
     }
 }
 
-/// A document identity: its root-relative components under the selected root. Two URI
+/// A document identity: the tree it belongs to and its identity in that tree. Two URI
 /// spellings that decode to the same admitted path produce one key; filesystem case,
 /// Unicode, symlink, and hardlink aliases are never coalesced here.
+///
+/// A key built from a URI is always [`SourceOrigin::Root`]: the workspace is one project
+/// and only its own source is ever opened, overlaid, or formatted. A dependency key
+/// exists only for a file the analysis snapshot reports on, which is what makes
+/// "dependency files are read-only" a property of the type rather than a rule a caller
+/// must remember.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct DocumentKey {
-    /// Forward-slash-joined root-relative path, e.g. `src/foo.mw`.
+    origin: SourceOrigin,
+    /// Forward-slash-joined path relative to the origin's own root, e.g. `src/foo.mw`.
     relative: String,
 }
 
 impl DocumentKey {
-    /// Admit a `file` document URI under a selected root. The document must be a
-    /// proper descendant of the root — a sibling sharing a name prefix is not
-    /// containment.
+    /// Admit a `file` document URI as one of the root project's own source files. The
+    /// document must be a proper descendant of the root — a sibling sharing a name
+    /// prefix is not containment — and must be a canonical captured source spelling, so
+    /// a file the project does not compile never enters the document ledger or the
+    /// capture overlay.
     pub(crate) fn from_uri(uri: &str, root: &SelectedRoot) -> Result<Self, UriError> {
         let components = decode_file_uri_path(uri)?;
         let root_len = root.components.len();
@@ -83,37 +97,97 @@ impl DocumentKey {
             return Err(UriError::NonCanonicalPath);
         }
         let relative = components[root_len..].join("/");
-        Ok(Self { relative })
+        FileIdentity::check(&relative).map_err(|_| UriError::NotProjectSource)?;
+        Ok(Self {
+            origin: SourceOrigin::Root,
+            relative,
+        })
     }
 
-    /// The forward-slash-joined root-relative path.
+    /// The forward-slash-joined path relative to this document's own tree.
     pub(crate) fn relative(&self) -> &str {
         &self.relative
     }
 
-    /// The document key for a snapshot file identity (already a canonical root-relative
-    /// path such as `src/foo.mw`).
-    pub(crate) fn from_identity(identity: &FileIdentity) -> Self {
+    /// The document key for one captured file: the tree it came from and its identity
+    /// there.
+    pub(crate) fn captured(origin: &SourceOrigin, identity: &FileIdentity) -> Self {
         Self {
+            origin: origin.clone(),
             relative: identity.as_str().to_owned(),
         }
     }
 }
 
-/// Re-encode a snapshot [`FileIdentity`] to a diagnostic `file` URI over the retained
-/// selected-root spelling. The client's own document-URI spelling is never echoed; the
-/// caller-selected root spelling is deliberately retained and canonically re-encoded.
-pub(crate) fn diagnostic_uri(root: &SelectedRoot, identity: &FileIdentity) -> String {
-    let mut uri = String::from("file://");
-    for component in &root.components {
-        uri.push('/');
-        percent_encode_segment(&mut uri, component);
+/// Where each captured tree sits, as the selected root plus each dependency's declared
+/// relative location. The declared spelling is the manifest's, so this owner joins two
+/// facts it is given and canonicalizes no path of its own.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct OriginRoots {
+    dependencies: Vec<(DependencyAlias, DependencyPath)>,
+}
+
+impl OriginRoots {
+    /// The declared locations of one captured project's dependencies.
+    pub(crate) fn of(input: &ProjectInput) -> Self {
+        Self {
+            dependencies: input
+                .origins()
+                .iter()
+                .filter_map(|origin| {
+                    let alias = origin.alias()?;
+                    let path = input.dependency_path(origin)?;
+                    Some((alias.clone(), path.clone()))
+                })
+                .collect(),
+        }
     }
-    for segment in identity.as_str().split('/') {
+
+    /// The absolute path components of one origin's root: the selected root itself, or
+    /// the selected root with the dependency's declared relative path applied — a
+    /// leading `..` run pops a component, every other segment descends. `None` when the
+    /// alias is not one of these dependencies, or when the declared path would step
+    /// above the filesystem root.
+    fn root_of(&self, root: &SelectedRoot, origin: &SourceOrigin) -> Option<Vec<String>> {
+        let Some(alias) = origin.alias() else {
+            return Some(root.components.clone());
+        };
+        let (_, path) = self
+            .dependencies
+            .iter()
+            .find(|(declared, _)| declared == alias)?;
+        let mut components = root.components.clone();
+        for segment in path.segments() {
+            if segment == ".." {
+                components.pop()?;
+            } else {
+                components.push(segment.to_owned());
+            }
+        }
+        Some(components)
+    }
+}
+
+/// Re-encode one captured document to a `file` URI over the retained selected-root
+/// spelling. The client's own document-URI spelling is never echoed; the caller-selected
+/// root spelling is deliberately retained and canonically re-encoded. A dependency's file
+/// resolves against *its* root, so the URI names the file where it actually lives rather
+/// than a path that does not exist in the consuming tree.
+pub(crate) fn document_uri(
+    root: &SelectedRoot,
+    origins: &OriginRoots,
+    key: &DocumentKey,
+) -> Option<String> {
+    let mut uri = String::from("file://");
+    for component in origins.root_of(root, &key.origin)? {
+        uri.push('/');
+        percent_encode_segment(&mut uri, &component);
+    }
+    for segment in key.relative.split('/') {
         uri.push('/');
         percent_encode_segment(&mut uri, segment);
     }
-    uri
+    Some(uri)
 }
 
 /// Decode a `file` URI into its absolute decoded path components, enforcing every
@@ -220,6 +294,23 @@ mod tests {
 
     fn identity(path: &str) -> FileIdentity {
         FileIdentity::validate(path).unwrap().0
+    }
+
+    fn root_key(path: &str) -> DocumentKey {
+        DocumentKey::captured(&SourceOrigin::Root, &identity(path))
+    }
+
+    fn dependency(alias: &str) -> SourceOrigin {
+        SourceOrigin::Dependency(DependencyAlias::parse(alias).unwrap())
+    }
+
+    fn origins_for(alias: &str, declared: &str) -> OriginRoots {
+        OriginRoots {
+            dependencies: vec![(
+                DependencyAlias::parse(alias).unwrap(),
+                DependencyPath::parse(declared).unwrap(),
+            )],
+        }
     }
 
     #[test]
@@ -333,19 +424,96 @@ mod tests {
     }
 
     #[test]
-    fn diagnostic_uri_round_trips_identity() {
+    fn a_file_outside_the_source_root_is_not_a_document() {
         let root = SelectedRoot::from_uri("file:///proj").unwrap();
-        let uri = diagnostic_uri(&root, &identity("src/foo.mw"));
-        assert_eq!(uri, "file:///proj/src/foo.mw");
-        // And it re-parses to the same document key.
-        let key = DocumentKey::from_uri(&uri, &root).unwrap();
-        assert_eq!(key, DocumentKey::from_identity(&identity("src/foo.mw")));
+        for outside in [
+            "file:///proj/README.md",
+            "file:///proj/marrow.toml",
+            "file:///proj/notes.mw",
+            "file:///proj/lib/text/src/text.mw",
+        ] {
+            assert_eq!(
+                DocumentKey::from_uri(outside, &root),
+                Err(UriError::NotProjectSource),
+                "{outside}"
+            );
+        }
     }
 
     #[test]
-    fn diagnostic_uri_encodes_space_in_root() {
+    fn document_uri_round_trips_a_root_document() {
+        let root = SelectedRoot::from_uri("file:///proj").unwrap();
+        let key = root_key("src/foo.mw");
+        let uri = document_uri(&root, &OriginRoots::default(), &key).unwrap();
+        assert_eq!(uri, "file:///proj/src/foo.mw");
+        // And it re-parses to the same document key.
+        assert_eq!(DocumentKey::from_uri(&uri, &root).unwrap(), key);
+    }
+
+    #[test]
+    fn document_uri_encodes_space_in_root() {
         let root = SelectedRoot::from_uri("file:///my%20proj").unwrap();
-        let uri = diagnostic_uri(&root, &identity("src/foo.mw"));
+        let uri = document_uri(&root, &OriginRoots::default(), &root_key("src/foo.mw")).unwrap();
         assert_eq!(uri, "file:///my%20proj/src/foo.mw");
+    }
+
+    /// A dependency file resolves against the dependency's own root: the declared
+    /// relative path is applied to the selected root, so the URI names the file where it
+    /// lives rather than a path in the consuming tree.
+    #[test]
+    fn a_dependency_document_resolves_against_its_own_root() {
+        let root = SelectedRoot::from_uri("file:///home/dev/app").unwrap();
+        for (declared, expected) in [
+            ("../graphtext", "file:///home/dev/graphtext/src/text.mw"),
+            (
+                "lib/graphtext",
+                "file:///home/dev/app/lib/graphtext/src/text.mw",
+            ),
+            (
+                "../../shared/graphtext",
+                "file:///home/shared/graphtext/src/text.mw",
+            ),
+        ] {
+            let origins = origins_for("graphtext", declared);
+            let key = DocumentKey::captured(&dependency("graphtext"), &identity("src/text.mw"));
+            assert_eq!(
+                document_uri(&root, &origins, &key).as_deref(),
+                Some(expected),
+                "{declared}"
+            );
+        }
+    }
+
+    /// Two trees may hold the same identity. The origin, not the identity string, is what
+    /// tells the two documents apart.
+    #[test]
+    fn the_same_identity_in_two_trees_is_two_documents() {
+        let root = SelectedRoot::from_uri("file:///home/dev/app").unwrap();
+        let origins = origins_for("graphtext", "../graphtext");
+        let mine = root_key("src/text.mw");
+        let theirs = DocumentKey::captured(&dependency("graphtext"), &identity("src/text.mw"));
+        assert_ne!(mine, theirs);
+        assert_ne!(
+            document_uri(&root, &origins, &mine),
+            document_uri(&root, &origins, &theirs)
+        );
+    }
+
+    /// An alias no capture reported has no root, so no URI is invented for it.
+    #[test]
+    fn an_unknown_alias_has_no_document_uri() {
+        let root = SelectedRoot::from_uri("file:///proj").unwrap();
+        let key = DocumentKey::captured(&dependency("absent"), &identity("src/text.mw"));
+        assert_eq!(document_uri(&root, &OriginRoots::default(), &key), None);
+    }
+
+    /// A declared path that would step above the filesystem root names no directory, so
+    /// it yields no URI rather than a truncated one.
+    #[test]
+    fn a_path_above_the_filesystem_root_has_no_document_uri() {
+        let root = SelectedRoot::from_uri("file:///proj").unwrap();
+        let origins = origins_for("graphtext", "../../graphtext");
+        let key = DocumentKey::captured(&dependency("graphtext"), &identity("src/text.mw"));
+        assert_eq!(document_uri(&root, &origins, &key), None);
     }
 }
