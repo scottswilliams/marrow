@@ -1374,6 +1374,70 @@ fn resolve_root_tuple<'a>(
     Ok((key_columns, resource))
 }
 
+/// The ledger identities the `store` declaration itself anchors.
+struct RootAnchors {
+    application: LedgerIdBytes,
+    placement: LedgerIdBytes,
+    product: LedgerIdBytes,
+    key_ids: Vec<LedgerIdBytes>,
+}
+
+/// Anchor the identities written in the `store` declaration itself.
+///
+/// The application anchor is the root project's alone: a dependency's `application` row
+/// is never read, merged, or copied, so a library under a consumer contributes none of
+/// its own. The root placement and its key tuple are written in the `store` declaration,
+/// so they belong to that declaration's tree, not to the resource's.
+fn resolve_store_anchors(
+    resolver: &mut IdentityResolver<'_>,
+    store: &StoreDecl,
+    row: &StoreRow<'_>,
+    file: &ProjectFile,
+    key_columns: &[AdmittedKeyColumn<'_>],
+) -> RootAnchors {
+    let application = resolver.resolve(
+        &SourceOrigin::Root,
+        IdentityKind::Application,
+        APPLICATION_ANCHOR_PATH,
+    );
+    let store_origin = file.origin().clone();
+    let placement = resolver.resolve(&store_origin, IdentityKind::Root, &store.root.root);
+    resolver.name_step(placement, PathSigil::Root, &store.root.root);
+    let product = resolver.resolve_declared(IdentityKind::Product, row.resource);
+    let key_ids = key_columns
+        .iter()
+        .map(|column| resolver.resolve(&store_origin, IdentityKind::Key, &column.anchor))
+        .collect();
+    RootAnchors {
+        application,
+        placement,
+        product,
+        key_ids,
+    }
+}
+
+/// A flat root's top-level fields. They map positionally to the captured field paths, so
+/// `paths[i]` is the canonical declaration path of `record.fields[i]` (both in
+/// member/record order). Each field carries its resolved value type (a scalar or a
+/// widened composite), from which the lowerer builds the read/written value type; its
+/// field-leaf site is bound and allocated lazily when an instruction first addresses it.
+fn durable_fields(
+    record: &RecordInfo,
+    paths: Vec<CanonicalDeclarationPathSelector>,
+) -> Vec<DurableField> {
+    record
+        .fields
+        .iter()
+        .zip(paths)
+        .map(|(field, path)| DurableField {
+            name: field.name.clone(),
+            path,
+            ty: field.ty,
+            required: field.required,
+        })
+        .collect()
+}
+
 /// Resolve, validate, and commit one `store` declaration into the draft, returning its
 /// build outcome. A failing store pushes its diagnostic and commits no root, site, or
 /// application identity, so it cannot corrupt an already-appended root (`build_extras` may
@@ -1441,24 +1505,12 @@ fn build_one(
         identity_build.reported_gaps,
         diagnostics,
     );
-    // The application anchor is the root project's alone: a dependency's `application`
-    // row is never read, merged, or copied, so a library under a consumer contributes
-    // none of its own.
-    let application = resolver.resolve(
-        &SourceOrigin::Root,
-        IdentityKind::Application,
-        APPLICATION_ANCHOR_PATH,
-    );
-    // The root placement and its key tuple are written in the `store` declaration, so
-    // they belong to that declaration's tree, not to the resource's.
-    let store_origin = file.origin().clone();
-    let placement = resolver.resolve(&store_origin, IdentityKind::Root, &store.root.root);
-    resolver.name_step(placement, PathSigil::Root, &store.root.root);
-    let product = resolver.resolve_declared(IdentityKind::Product, row.resource);
-    let key_ids: Vec<LedgerIdBytes> = key_columns
-        .iter()
-        .map(|column| resolver.resolve(&store_origin, IdentityKind::Key, &column.anchor))
-        .collect();
+    let RootAnchors {
+        application,
+        placement,
+        product,
+        key_ids,
+    } = resolve_store_anchors(&mut resolver, store, row, file, &key_columns);
 
     // The resource's member tree, in canonical order: its top-level fields
     // (aligned with the materialized record), then its static `group`
@@ -1596,23 +1648,7 @@ fn build_one(
             naming,
         })));
     }
-    // A flat root's top-level fields map positionally to the captured field paths, so
-    // `captured.fields[i]` is the canonical declaration path of `record.fields[i]` (both
-    // in member/record order). Each field carries its resolved value type (a scalar or a
-    // widened composite), from which the lowerer builds the read/written value type; its
-    // field-leaf site is bound and allocated lazily when an instruction first addresses
-    // it.
-    let fields = record
-        .fields
-        .iter()
-        .zip(captured.fields)
-        .map(|(field, path)| DurableField {
-            name: field.name.clone(),
-            path,
-            ty: field.ty,
-            required: field.required,
-        })
-        .collect();
+    let fields = durable_fields(record, captured.fields);
 
     Ok(StoreBuild::Admitted(Box::new(BuiltRoot {
         naming,
