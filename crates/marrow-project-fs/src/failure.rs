@@ -36,6 +36,10 @@ pub enum PhysicalRole {
     SourceDirectory,
     /// A selected `.mw` source file.
     SourceFile,
+    /// A local dependency the root manifest declares, while it is being located
+    /// and admitted as a project. Every refusal in this role is a
+    /// dependency-path fault, whatever evidence it carries.
+    Dependency,
 }
 
 /// A physical operation active when admission produced evidence.
@@ -185,6 +189,28 @@ pub enum PhysicalRefusal {
     },
     /// The target platform has no admitted physical-capture implementation.
     UnsupportedPlatform,
+    /// A declared dependency resolved to a directory that cannot serve as one.
+    Dependency {
+        /// What the resolved directory was.
+        reason: DependencyRefusal,
+    },
+}
+
+/// Why a resolved dependency directory cannot serve as a dependency. The location
+/// faults a path spelling can carry — absolute, non-canonical, over-long — are
+/// refused by the pure manifest owner before any of these are reached.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DependencyRefusal {
+    /// The directory holds no `marrow.toml`, or no `src` source root.
+    NotAProject,
+    /// The directory's `marrow.toml` is not a valid manifest.
+    InvalidManifest,
+    /// The path resolves to the consuming project itself.
+    SelfReference,
+    /// The dependency declares `[dependencies]` of its own. This build admits no
+    /// transitive dependency, so a dependency graph is always one edge deep and a
+    /// cycle through one is unrepresentable.
+    Transitive,
 }
 
 /// Whether the ledger's home path (`.marrow/ids`) also holds a file when its

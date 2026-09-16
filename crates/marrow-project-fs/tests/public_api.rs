@@ -7,10 +7,10 @@
 //! matched from here.
 
 use marrow_project_fs::{
-    CaptureError, CaptureFailure, CapturePresentation, Code, LedgerHome, LinkPosition,
-    ManifestError, OverlayBound, OverlayEntry, OverlayFailure, OverlayReason, OverlaySnapshot,
-    PhysicalBound, PhysicalFailure, PhysicalIoError, PhysicalKind, PhysicalOperation,
-    PhysicalRefusal, PhysicalRole, Position, ProjectInput,
+    CaptureError, CaptureFailure, CapturePresentation, Code, DependencyRefusal, LedgerHome,
+    LinkPosition, ManifestError, OverlayBound, OverlayEntry, OverlayFailure, OverlayReason,
+    OverlaySnapshot, PhysicalBound, PhysicalFailure, PhysicalIoError, PhysicalKind,
+    PhysicalOperation, PhysicalRefusal, PhysicalRole, Position, ProjectInput,
 };
 
 fn name<T>() {}
@@ -22,7 +22,8 @@ fn match_physical_role(role: PhysicalRole) {
         | PhysicalRole::IdentityLedger
         | PhysicalRole::SourceRoot
         | PhysicalRole::SourceDirectory
-        | PhysicalRole::SourceFile => {}
+        | PhysicalRole::SourceFile
+        | PhysicalRole::Dependency => {}
     }
 }
 
@@ -57,6 +58,12 @@ fn match_physical_refusal(refusal: PhysicalRefusal) {
         | PhysicalRefusal::InvalidPathEncoding
         | PhysicalRefusal::Changed
         | PhysicalRefusal::UnsupportedPlatform => {}
+        PhysicalRefusal::Dependency { reason } => match reason {
+            DependencyRefusal::NotAProject
+            | DependencyRefusal::InvalidManifest
+            | DependencyRefusal::SelfReference
+            | DependencyRefusal::Transitive => {}
+        },
         PhysicalRefusal::LegacyLedgerPath { home } => match home {
             LedgerHome::Vacant | LedgerHome::Occupied => {}
         },

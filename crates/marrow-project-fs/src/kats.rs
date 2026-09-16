@@ -1492,7 +1492,7 @@ mod directory_admission {
     use std::path::{Path, PathBuf};
 
     use super::base_limits;
-    use crate::capture::unix::DirectoryAdmission;
+    use crate::capture::unix::{DirectoryAdmission, Tree};
     use crate::failure::{CaptureFailure, CaptureFailureKind, PhysicalBound, PhysicalRefusal};
     use crate::limits::AdapterLimits;
     use crate::path::PathBudget;
@@ -1533,6 +1533,7 @@ mod directory_admission {
         let mut visited = 0usize;
         let children = DirectoryAdmission::settle(
             ok_entries(order).into_iter(),
+            &Tree::root(PathBuf::from("/root")),
             Path::new("src"),
             &mut budget,
             limits,
@@ -1586,6 +1587,7 @@ mod directory_admission {
         let mut visited = 2usize;
         let ok = DirectoryAdmission::settle(
             ok_entries(&["/root/a"]).into_iter(),
+            &Tree::root(PathBuf::from("/root")),
             Path::new("src"),
             &mut budget,
             &limits,
@@ -1598,6 +1600,7 @@ mod directory_admission {
         let baseline_retained = budget.retained();
         let failure = refusal(DirectoryAdmission::settle(
             ok_entries(&["/root/b", "/root/c"]).into_iter(),
+            &Tree::root(PathBuf::from("/root")),
             Path::new("src"),
             &mut budget,
             &limits,
@@ -1621,6 +1624,7 @@ mod directory_admission {
         let mut visited = 0usize;
         let failure = refusal(DirectoryAdmission::settle(
             ok_entries(&["/root/a", "/root/b"]).into_iter(),
+            &Tree::root(PathBuf::from("/root")),
             Path::new("src"),
             &mut budget,
             &limits,
@@ -1643,6 +1647,7 @@ mod directory_admission {
         ];
         let failure = refusal(DirectoryAdmission::settle(
             entries.into_iter(),
+            &Tree::root(PathBuf::from("/root")),
             Path::new("src"),
             &mut budget,
             &limits,
@@ -1669,6 +1674,7 @@ mod directory_admission {
         ];
         let failure = refusal(DirectoryAdmission::settle(
             entries.into_iter(),
+            &Tree::root(PathBuf::from("/root")),
             Path::new("src"),
             &mut budget,
             &limits,
@@ -1686,6 +1692,7 @@ mod directory_admission {
         let mut visited = 0usize;
         let failure = refusal(DirectoryAdmission::settle(
             ok_entries(&["/root/a"]).into_iter(),
+            &Tree::root(PathBuf::from("/root")),
             Path::new("src"),
             &mut budget,
             &limits,
@@ -1724,6 +1731,7 @@ mod directory_admission {
         let mut visited = 0usize;
         let children = DirectoryAdmission::settle(
             ok_entries(order).into_iter(),
+            &Tree::root(PathBuf::from("/root")),
             Path::new("src"),
             &mut budget,
             limits,
@@ -1765,6 +1773,7 @@ mod directory_admission {
         let mut visited = 0usize;
         let children = DirectoryAdmission::settle(
             full.into_iter(),
+            &Tree::root(PathBuf::from("/root")),
             Path::new("src"),
             &mut budget,
             &limits,
@@ -1790,6 +1799,7 @@ mod directory_admission {
             let mut visited = 0usize;
             let failure = refusal(DirectoryAdmission::settle(
                 order.into_iter(),
+                &Tree::root(PathBuf::from("/root")),
                 Path::new("src"),
                 &mut budget,
                 &limits,

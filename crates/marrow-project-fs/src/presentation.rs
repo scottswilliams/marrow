@@ -15,8 +15,8 @@ use marrow_codes::Code;
 use marrow_project::Position;
 
 use crate::failure::{
-    CaptureFailure, CaptureFailureKind, LedgerHome, LinkPosition, PhysicalBound, PhysicalFailure,
-    PhysicalKind, PhysicalRefusal, PhysicalRole,
+    CaptureFailure, CaptureFailureKind, DependencyRefusal, LedgerHome, LinkPosition, PhysicalBound,
+    PhysicalFailure, PhysicalKind, PhysicalRefusal, PhysicalRole,
 };
 use crate::overlay::{OverlayBound, OverlayReason};
 use crate::path::OperationalPath;
@@ -99,7 +99,24 @@ impl<'a> CapturePresentation<'a> {
         failure: &PhysicalFailure,
         os_prose: bool,
     ) -> fmt::Result {
+        // A refusal met while locating a declared dependency reads as one sentence
+        // about the declared path, whatever physical evidence produced it. A bound
+        // or raw I/O fault keeps its own body, which already names its numbers.
+        if failure.role() == PhysicalRole::Dependency
+            && let Some(tail) = dependency_tail(failure.refusal())
+        {
+            sink.write_str("dependency ")?;
+            self.write_joined(sink, failure.path())?;
+            return sink.write_str(tail);
+        }
         match failure.refusal() {
+            PhysicalRefusal::Dependency { .. } => {
+                sink.write_str("dependency ")?;
+                self.write_joined(sink, failure.path())?;
+                sink.write_str(
+                    dependency_tail(failure.refusal()).expect("a dependency refusal has prose"),
+                )
+            }
             PhysicalRefusal::Missing { error } | PhysicalRefusal::Io { error } => {
                 sink.write_str("failed to read ")?;
                 self.write_joined(sink, failure.path())?;
@@ -288,10 +305,40 @@ impl<'a> CapturePresentation<'a> {
     }
 }
 
+/// The one-sentence tail a dependency-location refusal renders after its declared
+/// path, or `None` for a refusal whose own body already stands on its numbers.
+fn dependency_tail(refusal: &PhysicalRefusal) -> Option<&'static str> {
+    Some(match refusal {
+        PhysicalRefusal::Missing { .. } => " does not exist",
+        PhysicalRefusal::Link { .. } => {
+            " is reached through a symbolic link; a dependency path names a real directory \
+             relative to this project"
+        }
+        PhysicalRefusal::UnexpectedKind { .. } => " is not a directory",
+        PhysicalRefusal::Dependency { reason } => match reason {
+            DependencyRefusal::NotAProject => {
+                " is not a Marrow project; a dependency path names a directory holding \
+                 `marrow.toml` and `src`"
+            }
+            DependencyRefusal::InvalidManifest => {
+                " has an invalid `marrow.toml`; check that project on its own"
+            }
+            DependencyRefusal::SelfReference => {
+                " is this project; a project does not depend on itself"
+            }
+            DependencyRefusal::Transitive => {
+                " declares dependencies of its own; a dependency of a dependency is not admitted"
+            }
+        },
+        _ => return None,
+    })
+}
+
 /// The role noun that names the subject of a pathless physical refusal.
 fn role_noun(role: PhysicalRole) -> &'static str {
     match role {
         PhysicalRole::Root => "the project root",
+        PhysicalRole::Dependency => "a declared dependency",
         PhysicalRole::Manifest => "the manifest",
         PhysicalRole::IdentityLedger => "the identity artifact",
         PhysicalRole::SourceRoot => "the source root",
@@ -320,6 +367,13 @@ fn write_direct(sink: &mut impl fmt::Write, path: Option<&OperationalPath>) -> f
 /// The Physical code classification: pure source families are preserved and the new
 /// physical faults use the operational `io.read` family.
 fn physical_code(failure: &PhysicalFailure) -> Code {
+    // Locating and admitting a declared dependency is one question — whether the
+    // declared path names a usable project — so every refusal in that role carries
+    // the one code, whatever physical evidence it holds. A dependency's own source,
+    // directory, and ledger roles classify exactly as the root project's do.
+    if failure.role() == PhysicalRole::Dependency {
+        return Code::ProjectDependencyPath;
+    }
     match failure.refusal() {
         PhysicalRefusal::Missing { .. } | PhysicalRefusal::Io { .. } => Code::IoRead,
         PhysicalRefusal::Link { .. } => match failure.role() {
@@ -340,6 +394,7 @@ fn physical_code(failure: &PhysicalFailure) -> Code {
         },
         PhysicalRefusal::InvalidPathEncoding => Code::ProjectSourcePath,
         PhysicalRefusal::LegacyLedgerPath { .. } => Code::ProjectIdsLocation,
+        PhysicalRefusal::Dependency { .. } => Code::ProjectDependencyPath,
         PhysicalRefusal::UnexpectedKind { .. }
         | PhysicalRefusal::Hardlink
         | PhysicalRefusal::Changed

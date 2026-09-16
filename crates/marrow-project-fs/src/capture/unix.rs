@@ -6,11 +6,14 @@ use std::io::{self, Read};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
-use marrow_project::{CapturedFile, FileIdentity, Manifest, ProjectInput};
+use marrow_project::{
+    CapturedDependency, CapturedFile, Dependency, DependencyAlias, FileIdentity, Manifest,
+    ProjectInput,
+};
 
 use crate::failure::{
-    CaptureFailure, LedgerHome, LinkPosition, PhysicalBound, PhysicalFailure, PhysicalIoError,
-    PhysicalKind, PhysicalOperation, PhysicalRefusal, PhysicalRole,
+    CaptureFailure, DependencyRefusal, LedgerHome, LinkPosition, PhysicalBound, PhysicalFailure,
+    PhysicalIoError, PhysicalKind, PhysicalOperation, PhysicalRefusal, PhysicalRole,
 };
 use crate::limits::AdapterLimits;
 use crate::overlay::OverlaySnapshot;
@@ -29,23 +32,47 @@ type BareRefusal = (PhysicalOperation, PhysicalRefusal);
 
 pub(super) fn capture(
     root: &Path,
-    mut overlay: OverlaySnapshot<'_>,
+    overlay: OverlaySnapshot<'_>,
     limits: &AdapterLimits,
 ) -> Result<ProjectInput, CaptureFailure> {
-    let mut budget = PathBudget::new();
+    let mut walk = Walk::new(overlay, limits);
 
-    let root_admission = admit_root(root, &mut budget, limits)?;
-    let canonical = root_admission.canonical.as_path().to_path_buf();
+    let (canonical_root, root_admission) = walk.admit_root(root)?;
+    let root_tree = Tree::root(canonical_root.as_path().to_path_buf());
 
-    let manifest = manifest_stage(&canonical, &mut budget, limits, &mut overlay)?;
-    let batch = source_stage(&canonical, &mut budget, limits, &mut overlay)?;
-    let ids = ledger_stage(&canonical, &mut budget, limits, &mut overlay)?;
+    let manifest = walk.manifest_stage(&root_tree)?;
+    walk.source_stage(&root_tree)?;
+    let root_ids = walk.ledger_stage(&root_tree)?;
+
+    // Each declared dependency is admitted from the root's canonical path and
+    // walked through the same stages, carrying the same accumulators.
+    let mut dependencies = Vec::with_capacity(manifest.dependencies().len());
+    for declared in manifest.dependencies() {
+        let (tree, admission) = walk.admit_dependency(&root_tree, declared)?;
+        walk.source_stage(&tree)?;
+        let ids = walk.ledger_stage(&tree)?;
+        dependencies.push((declared.alias().clone(), ids, admission, tree));
+    }
 
     root_admission.recheck()?;
+    for (_, _, admission, _) in &dependencies {
+        admission.recheck()?;
+    }
+    let captured: Vec<CapturedDependency<'_>> = dependencies
+        .iter()
+        .map(|(alias, ids, ..)| CapturedDependency::new(alias, ids.as_deref()))
+        .collect();
 
+    let Walk { batch, overlay, .. } = walk;
     let (files, guards) = batch.into_parts();
-    let input = marrow_project::capture(&manifest, files, ids.as_deref(), &limits.source)
-        .map_err(CaptureFailure::from_project)?;
+    let input = marrow_project::capture_origins(
+        &manifest,
+        files,
+        root_ids.as_deref(),
+        &captured,
+        &limits.source,
+    )
+    .map_err(CaptureFailure::from_project)?;
     // The guards keep every source native-path lease live across the pure-capture
     // call; only now may they drop.
     drop(guards);
@@ -59,139 +86,352 @@ pub(super) fn capture(
     Ok(input)
 }
 
-// ===== Composition stages =====================================================
+// ===== Admitted trees =========================================================
 
-fn manifest_stage(
-    canonical: &Path,
-    budget: &mut PathBudget,
-    limits: &AdapterLimits,
-    overlay: &mut OverlaySnapshot<'_>,
-) -> Result<Manifest, CaptureFailure> {
-    overlay.mark_wrong_role(MANIFEST_FILE);
-    let live = reserve_fixed(
-        budget,
-        limits,
-        PhysicalRole::Manifest,
-        PathBuf::from(MANIFEST_FILE),
-    )?;
-    let mut admitted = admit_relative(
-        canonical,
-        live,
-        PhysicalRole::Manifest,
-        PhysicalKind::RegularFile,
-    )?;
-    let bytes = admitted.read_bounded(
-        ReadBudget::new(PhysicalBound::ManifestBytes, limits.manifest_bytes),
-        None,
-    )?;
-    let source = admitted.decode_utf8(bytes)?;
-    Manifest::parse(&source).map_err(CaptureFailure::from_manifest)
+/// One admitted source tree: the canonical directory capture walks, the spelling
+/// that locates it under the caller's root, and the alias every file it
+/// contributes is captured under. The root project's prefix is empty and its alias
+/// is `None`.
+///
+/// A path a failure carries is always relative to the *caller's* root, so a
+/// dependency's evidence keeps its declared prefix and never renders as a path in
+/// the consuming tree.
+pub(crate) struct Tree {
+    canonical: PathBuf,
+    prefix: PathBuf,
+    alias: Option<DependencyAlias>,
+    /// The dependency prefix's native-path lease, held for the tree's life.
+    _live: Option<LiveNativePath>,
 }
 
-fn ledger_stage(
-    canonical: &Path,
-    budget: &mut PathBudget,
-    limits: &AdapterLimits,
-    overlay: &mut OverlaySnapshot<'_>,
-) -> Result<Option<Vec<u8>>, CaptureFailure> {
-    overlay.mark_wrong_role(marrow_project::IDS_FILE);
-    overlay.mark_wrong_role(marrow_project::LEGACY_IDS_FILE);
-    // A live publication marker means the committed ledger is whichever
-    // generation recovery settles on, so every read-only front door refuses
-    // here rather than capturing a generation that is about to be replaced.
-    if let Some(marker) = crate::publication::ids_publication_marker(canonical) {
-        return Err(CaptureFailure::from_ids_publication_marker(marker));
+impl Tree {
+    pub(crate) fn root(canonical: PathBuf) -> Self {
+        Self {
+            canonical,
+            prefix: PathBuf::new(),
+            alias: None,
+            _live: None,
+        }
     }
-    let home_present = !optional_absent(&canonical.join(marrow_project::IDS_FILE));
-    // The ledger has one home. A file at the retired root path is refused with
-    // a one-line steer rather than read, so two live ledger locations are
-    // unrepresentable and no second read path exists.
-    if !optional_absent(&canonical.join(marrow_project::LEGACY_IDS_FILE)) {
-        return Err(physical(
-            PhysicalRole::IdentityLedger,
-            PhysicalOperation::Inspect,
-            OperationalPath::new(PathBuf::from(marrow_project::LEGACY_IDS_FILE)),
-            PhysicalRefusal::LegacyLedgerPath {
-                home: if home_present {
-                    LedgerHome::Occupied
-                } else {
-                    LedgerHome::Vacant
-                },
-            },
-        ));
+
+    /// The caller-root-relative evidence spelling of an in-tree path.
+    fn evidence(&self, relative: &Path) -> PathBuf {
+        if self.prefix.as_os_str().is_empty() {
+            relative.to_path_buf()
+        } else {
+            self.prefix.join(relative)
+        }
     }
-    if !home_present {
-        return Ok(None);
+
+    fn manifest_role(&self) -> PhysicalRole {
+        match self.alias {
+            None => PhysicalRole::Manifest,
+            Some(_) => PhysicalRole::Dependency,
+        }
     }
-    let live = reserve_fixed(
-        budget,
-        limits,
-        PhysicalRole::IdentityLedger,
-        PathBuf::from(marrow_project::IDS_FILE),
-    )?;
-    let mut admitted = admit_relative(
-        canonical,
-        live,
-        PhysicalRole::IdentityLedger,
-        PhysicalKind::RegularFile,
-    )?;
-    let bytes = admitted.read_bounded(
-        ReadBudget::new(
-            PhysicalBound::IdentityLedgerBytes,
-            limits.identity_ledger_bytes,
-        ),
-        None,
-    )?;
-    Ok(Some(bytes))
+
+    /// Whether this tree's bodies may be replaced from the overlay. Only the root
+    /// project is edited; a dependency is read exactly as it is committed.
+    fn overlaid(&self) -> bool {
+        self.alias.is_none()
+    }
+
+    fn captured(&self, spelling: String, bytes: Vec<u8>) -> CapturedFile {
+        match &self.alias {
+            None => CapturedFile::new(spelling, bytes),
+            Some(alias) => CapturedFile::in_dependency(alias.clone(), spelling, bytes),
+        }
+    }
 }
 
-fn source_stage(
-    canonical: &Path,
-    budget: &mut PathBudget,
-    limits: &AdapterLimits,
-    overlay: &mut OverlaySnapshot<'_>,
-) -> Result<CapturedBatch, CaptureFailure> {
-    overlay.mark_wrong_role(SOURCE_DIR);
-    if optional_absent(&canonical.join(SOURCE_DIR)) {
-        return Ok(CapturedBatch::new());
-    }
-    let live = reserve_fixed(
-        budget,
-        limits,
-        PhysicalRole::SourceRoot,
-        PathBuf::from(SOURCE_DIR),
-    )?;
-    let root_dir = admit_relative(
-        canonical,
-        live,
-        PhysicalRole::SourceRoot,
-        PhysicalKind::Directory,
-    )?;
-
-    let mut traversal = Traversal {
-        canonical,
-        budget,
-        limits,
-        overlay,
-        visited: 0,
-        total_bytes: 0,
-        batch: CapturedBatch::new(),
-    };
-    traversal.run(root_dir)?;
-    Ok(traversal.batch)
+/// An opened tree root whose identity is held through capture and rechecked before
+/// the pure owner is entered.
+struct TreeAdmission {
+    canonical: PathBuf,
+    role: PhysicalRole,
+    handle: File,
+    identity: ObjectIdentity,
 }
 
-// ===== Iterative bounded source traversal =====================================
+impl TreeAdmission {
+    fn recheck(&self) -> Result<(), CaptureFailure> {
+        let handle = self
+            .handle
+            .metadata()
+            .map_err(|error| pathless(self.role, PhysicalOperation::Recheck, io_refusal(error)))?;
+        let path = fs::symlink_metadata(&self.canonical)
+            .map_err(|error| pathless(self.role, PhysicalOperation::Recheck, io_refusal(error)))?;
+        if ObjectIdentity::from_metadata(&handle) != self.identity
+            || ObjectIdentity::from_metadata(&path) != self.identity
+        {
+            return Err(pathless(
+                self.role,
+                PhysicalOperation::Recheck,
+                PhysicalRefusal::Changed,
+            ));
+        }
+        Ok(())
+    }
+}
 
-struct Traversal<'a, 'o> {
-    canonical: &'a Path,
-    budget: &'a mut PathBudget,
+// ===== One bounded walk over every admitted tree ==============================
+
+/// One capture's shared accumulators: the native-path budget, the visited-entry
+/// and source-byte counters, the borrowed overlay, and the one growing captured
+/// batch. Every admitted tree walks through this one value, so a second root
+/// continues the bounds the first one spent rather than restarting them.
+struct Walk<'a, 'o> {
     limits: &'a AdapterLimits,
-    overlay: &'a mut OverlaySnapshot<'o>,
+    budget: PathBudget,
+    overlay: OverlaySnapshot<'o>,
     visited: usize,
     total_bytes: usize,
     batch: CapturedBatch,
 }
+
+impl<'a, 'o> Walk<'a, 'o> {
+    fn new(overlay: OverlaySnapshot<'o>, limits: &'a AdapterLimits) -> Self {
+        Self {
+            limits,
+            budget: PathBudget::new(),
+            overlay,
+            visited: 0,
+            total_bytes: 0,
+            batch: CapturedBatch::new(),
+        }
+    }
+
+    /// Reserve the caller-root-relative evidence spelling of an in-tree path.
+    fn reserve(
+        &mut self,
+        tree: &Tree,
+        role: PhysicalRole,
+        relative: &Path,
+    ) -> Result<LiveNativePath, CaptureFailure> {
+        reserve_fixed(&mut self.budget, self.limits, role, tree.evidence(relative))
+    }
+
+    fn admit_root(
+        &mut self,
+        root: &Path,
+    ) -> Result<(CanonicalRoot, TreeAdmission), CaptureFailure> {
+        // Caller-root work charge before canonicalization.
+        self.budget
+            .charge_work(native_units(root), self.limits.max_path_work_units)
+            .map_err(|error| {
+                pathless(
+                    PhysicalRole::Root,
+                    PhysicalOperation::Retain,
+                    reserve_refusal(error),
+                )
+            })?;
+        let canonical = fs::canonicalize(root)
+            .map_err(|error| root_io(PhysicalOperation::Canonicalize, error))?;
+        let lease = self
+            .budget
+            .reserve(
+                native_units(&canonical),
+                self.limits.max_retained_path_units,
+                self.limits.max_path_work_units,
+            )
+            .map_err(|error| {
+                pathless(
+                    PhysicalRole::Root,
+                    PhysicalOperation::Retain,
+                    reserve_refusal(error),
+                )
+            })?;
+        let canonical_root = CanonicalRoot::new(canonical.clone(), lease);
+
+        let (handle, identity) = open_terminal(&canonical, PhysicalKind::Directory)
+            .map_err(|(operation, refusal)| pathless(PhysicalRole::Root, operation, refusal))?;
+        Ok((
+            canonical_root,
+            TreeAdmission {
+                canonical,
+                role: PhysicalRole::Root,
+                handle,
+                identity,
+            },
+        ))
+    }
+
+    /// Admit one declared dependency: resolve its relative path from the root's
+    /// canonical path without following a link, refuse a target that is the
+    /// consuming project itself or is not a project, and refuse a dependency that
+    /// declares dependencies of its own.
+    fn admit_dependency(
+        &mut self,
+        root: &Tree,
+        declared: &Dependency,
+    ) -> Result<(Tree, TreeAdmission), CaptureFailure> {
+        let prefix = PathBuf::from(declared.path().as_str());
+        let live = reserve_fixed(
+            &mut self.budget,
+            self.limits,
+            PhysicalRole::Dependency,
+            prefix.clone(),
+        )?;
+        let canonical = match resolve_dependency(&root.canonical, declared) {
+            Ok(canonical) => canonical,
+            Err((operation, refusal)) => {
+                return Err(physical(
+                    PhysicalRole::Dependency,
+                    operation,
+                    live.into_operational(),
+                    refusal,
+                ));
+            }
+        };
+
+        let (handle, identity) = match open_terminal(&canonical, PhysicalKind::Directory) {
+            Ok(admitted) => admitted,
+            Err((operation, refusal)) => {
+                return Err(physical(
+                    PhysicalRole::Dependency,
+                    operation,
+                    live.into_operational(),
+                    refusal,
+                ));
+            }
+        };
+        let tree = Tree {
+            canonical: canonical.clone(),
+            prefix,
+            alias: Some(declared.alias().clone()),
+            _live: Some(live),
+        };
+        let admission = TreeAdmission {
+            canonical,
+            role: PhysicalRole::Dependency,
+            handle,
+            identity,
+        };
+
+        // A directory with no manifest, or with no source root to contribute
+        // modules from, is not a project; saying so once is clearer than a read
+        // failure on a file the consumer never named.
+        if optional_absent(&tree.canonical.join(MANIFEST_FILE))
+            || optional_absent(&tree.canonical.join(SOURCE_DIR))
+        {
+            return Err(self.dependency_refusal(&tree, DependencyRefusal::NotAProject));
+        }
+
+        let manifest = self.manifest_stage(&tree)?;
+        if !manifest.dependencies().is_empty() {
+            return Err(self.dependency_refusal(&tree, DependencyRefusal::Transitive));
+        }
+        Ok((tree, admission))
+    }
+
+    fn dependency_refusal(&mut self, tree: &Tree, reason: DependencyRefusal) -> CaptureFailure {
+        physical(
+            PhysicalRole::Dependency,
+            PhysicalOperation::Inspect,
+            OperationalPath::new(tree.prefix.clone()),
+            PhysicalRefusal::Dependency { reason },
+        )
+    }
+
+    // ===== Composition stages =================================================
+
+    fn manifest_stage(&mut self, tree: &Tree) -> Result<Manifest, CaptureFailure> {
+        if tree.overlaid() {
+            self.overlay.mark_wrong_role(MANIFEST_FILE);
+        }
+        let role = tree.manifest_role();
+        let relative = Path::new(MANIFEST_FILE);
+        let live = self.reserve(tree, role, relative)?;
+        let mut admitted = admit_in_tree(tree, relative, live, role, PhysicalKind::RegularFile)?;
+        let bytes = admitted.read_bounded(
+            ReadBudget::new(PhysicalBound::ManifestBytes, self.limits.manifest_bytes),
+            None,
+        )?;
+        let source = admitted.decode_utf8(bytes)?;
+        match Manifest::parse(&source) {
+            Ok(manifest) => Ok(manifest),
+            // A dependency's manifest faults belong to the dependency's own
+            // project; from here it is simply not a usable project.
+            Err(_) if tree.alias.is_some() => {
+                Err(self.dependency_refusal(tree, DependencyRefusal::InvalidManifest))
+            }
+            Err(error) => Err(CaptureFailure::from_manifest(error)),
+        }
+    }
+
+    fn ledger_stage(&mut self, tree: &Tree) -> Result<Option<Vec<u8>>, CaptureFailure> {
+        if tree.overlaid() {
+            self.overlay.mark_wrong_role(marrow_project::IDS_FILE);
+            self.overlay
+                .mark_wrong_role(marrow_project::LEGACY_IDS_FILE);
+        }
+        // A live publication marker means the committed ledger is whichever
+        // generation recovery settles on, so every read-only front door refuses
+        // here rather than capturing a generation that is about to be replaced.
+        if let Some(marker) = crate::publication::ids_publication_marker(&tree.canonical) {
+            return Err(CaptureFailure::from_ids_publication_marker(marker));
+        }
+        let home_present = !optional_absent(&tree.canonical.join(marrow_project::IDS_FILE));
+        // The ledger has one home. A file at the retired root path is refused with
+        // a one-line steer rather than read, so two live ledger locations are
+        // unrepresentable and no second read path exists.
+        if !optional_absent(&tree.canonical.join(marrow_project::LEGACY_IDS_FILE)) {
+            return Err(physical(
+                PhysicalRole::IdentityLedger,
+                PhysicalOperation::Inspect,
+                OperationalPath::new(tree.evidence(Path::new(marrow_project::LEGACY_IDS_FILE))),
+                PhysicalRefusal::LegacyLedgerPath {
+                    home: if home_present {
+                        LedgerHome::Occupied
+                    } else {
+                        LedgerHome::Vacant
+                    },
+                },
+            ));
+        }
+        if !home_present {
+            return Ok(None);
+        }
+        let relative = Path::new(marrow_project::IDS_FILE);
+        let live = self.reserve(tree, PhysicalRole::IdentityLedger, relative)?;
+        let mut admitted = admit_in_tree(
+            tree,
+            relative,
+            live,
+            PhysicalRole::IdentityLedger,
+            PhysicalKind::RegularFile,
+        )?;
+        let bytes = admitted.read_bounded(
+            ReadBudget::new(
+                PhysicalBound::IdentityLedgerBytes,
+                self.limits.identity_ledger_bytes,
+            ),
+            None,
+        )?;
+        Ok(Some(bytes))
+    }
+
+    fn source_stage(&mut self, tree: &Tree) -> Result<(), CaptureFailure> {
+        if tree.overlaid() {
+            self.overlay.mark_wrong_role(SOURCE_DIR);
+        }
+        let relative = Path::new(SOURCE_DIR);
+        if optional_absent(&tree.canonical.join(SOURCE_DIR)) {
+            return Ok(());
+        }
+        let live = self.reserve(tree, PhysicalRole::SourceRoot, relative)?;
+        let root_dir = admit_in_tree(
+            tree,
+            relative,
+            live,
+            PhysicalRole::SourceRoot,
+            PhysicalKind::Directory,
+        )?;
+        self.run(tree, root_dir)
+    }
+}
+
+// ===== Iterative bounded source traversal =====================================
 
 struct DirectoryFrame {
     depth: usize,
@@ -228,6 +468,7 @@ pub(crate) struct DirectoryAdmission;
 impl DirectoryAdmission {
     pub(crate) fn settle(
         entries: impl Iterator<Item = io::Result<PathBuf>>,
+        tree: &Tree,
         relative: &Path,
         budget: &mut PathBudget,
         limits: &AdapterLimits,
@@ -245,7 +486,7 @@ impl DirectoryAdmission {
                 physical(
                     PhysicalRole::SourceDirectory,
                     PhysicalOperation::Enumerate,
-                    OperationalPath::new(relative.to_path_buf()),
+                    OperationalPath::new(tree.evidence(relative)),
                     io_refusal(error),
                 )
             })?;
@@ -329,10 +570,10 @@ impl DirectoryAdmission {
     }
 }
 
-impl Traversal<'_, '_> {
-    fn run(&mut self, root_dir: AdmittedObject) -> Result<(), CaptureFailure> {
+impl Walk<'_, '_> {
+    fn run(&mut self, tree: &Tree, root_dir: AdmittedObject) -> Result<(), CaptureFailure> {
         let mut stack: Vec<DirectoryFrame> =
-            vec![self.enumerate(PathBuf::from(SOURCE_DIR), 0, root_dir)?];
+            vec![self.enumerate(tree, PathBuf::from(SOURCE_DIR), 0, root_dir)?];
 
         loop {
             let next = match stack.last_mut() {
@@ -358,7 +599,7 @@ impl Traversal<'_, '_> {
                 physical(
                     PhysicalRole::SourceDirectory,
                     PhysicalOperation::Inspect,
-                    OperationalPath::new(relative.clone()),
+                    OperationalPath::new(tree.evidence(&relative)),
                     io_refusal(error),
                 )
             })?;
@@ -372,7 +613,7 @@ impl Traversal<'_, '_> {
                 return Err(physical(
                     PhysicalRole::SourceDirectory,
                     PhysicalOperation::Inspect,
-                    OperationalPath::new(relative),
+                    OperationalPath::new(tree.evidence(&relative)),
                     PhysicalRefusal::Link {
                         position: LinkPosition::Terminal,
                     },
@@ -384,7 +625,7 @@ impl Traversal<'_, '_> {
                     return Err(physical(
                         PhysicalRole::SourceDirectory,
                         PhysicalOperation::Enumerate,
-                        OperationalPath::new(relative),
+                        OperationalPath::new(tree.evidence(&relative)),
                         bound_refusal(
                             PhysicalBound::TraversalDepth,
                             self.limits.traversal_depth,
@@ -392,27 +633,23 @@ impl Traversal<'_, '_> {
                         ),
                     ));
                 }
-                let live = reserve_fixed(
-                    self.budget,
-                    self.limits,
-                    PhysicalRole::SourceDirectory,
-                    relative.clone(),
-                )?;
-                let admitted = admit_relative(
-                    self.canonical,
+                let live = self.reserve(tree, PhysicalRole::SourceDirectory, &relative)?;
+                let admitted = admit_in_tree(
+                    tree,
+                    &relative,
                     live,
                     PhysicalRole::SourceDirectory,
                     PhysicalKind::Directory,
                 )?;
-                let subframe = self.enumerate(relative, child_depth, admitted)?;
+                let subframe = self.enumerate(tree, relative, child_depth, admitted)?;
                 stack.push(subframe);
             } else if has_mw_extension(&relative) {
                 // Every entry occupying a module identity reaches the one source
                 // owner, which classifies the terminal kind before opening it. A
                 // special file there refuses as a wrong kind instead of leaving
                 // the module it names missing without a cause.
-                self.admit_source(&relative)?;
-            } else {
+                self.admit_source(tree, &relative)?;
+            } else if tree.overlaid() {
                 // An ignored entry (special file, or non-`.mw` regular file): counted
                 // but never opened, and a wrong-role overlay member if named.
                 self.overlay
@@ -426,6 +663,7 @@ impl Traversal<'_, '_> {
     /// [`DirectoryAdmission`] for the bounds it settles.
     fn enumerate(
         &mut self,
+        tree: &Tree,
         relative: PathBuf,
         depth: usize,
         dir: AdmittedObject,
@@ -434,14 +672,15 @@ impl Traversal<'_, '_> {
             physical(
                 PhysicalRole::SourceDirectory,
                 PhysicalOperation::Enumerate,
-                OperationalPath::new(relative.clone()),
+                OperationalPath::new(tree.evidence(&relative)),
                 io_refusal(error),
             )
         })?;
         let children = DirectoryAdmission::settle(
             read_dir.map(|entry| entry.map(|entry| entry.path())),
+            tree,
             &relative,
-            &mut *self.budget,
+            &mut self.budget,
             self.limits,
             &mut self.visited,
         )?;
@@ -456,14 +695,15 @@ impl Traversal<'_, '_> {
     /// Admit one selected `.mw` source: file-count check, opened-handle admission,
     /// borrowed spelling, allocation-free check, valid-only spelling bound, checked
     /// materialization, pure validation, then overlay or disk bytes.
-    fn admit_source(&mut self, relative: &Path) -> Result<(), CaptureFailure> {
+    fn admit_source(&mut self, tree: &Tree, relative: &Path) -> Result<(), CaptureFailure> {
         if self.batch.len() >= self.limits.source.max_files() {
             // The file-count bound fires before opening the next file; it joins the
-            // caller root to the offending path.
+            // caller root to the offending path. The count spans every admitted
+            // tree, so the offender may sit in a dependency.
             return Err(physical(
                 PhysicalRole::SourceFile,
                 PhysicalOperation::Retain,
-                OperationalPath::new(relative.to_path_buf()),
+                OperationalPath::new(tree.evidence(relative)),
                 bound_refusal(
                     PhysicalBound::SourceFiles,
                     self.limits.source.max_files(),
@@ -473,12 +713,7 @@ impl Traversal<'_, '_> {
         }
 
         let Some(spelling) = forward_slash_checked(relative) else {
-            let live = reserve_fixed(
-                self.budget,
-                self.limits,
-                PhysicalRole::SourceFile,
-                relative.to_path_buf(),
-            )?;
+            let live = self.reserve(tree, PhysicalRole::SourceFile, relative)?;
             return Err(physical(
                 PhysicalRole::SourceFile,
                 PhysicalOperation::Inspect,
@@ -495,14 +730,10 @@ impl Traversal<'_, '_> {
         // forwarded unmatched: this adapter neither inspects nor reclassifies it.
         CapturedFile::check_identity_bound(&spelling).map_err(CaptureFailure::from_project)?;
 
-        let live = reserve_fixed(
-            self.budget,
-            self.limits,
-            PhysicalRole::SourceFile,
-            relative.to_path_buf(),
-        )?;
-        let mut admitted = admit_relative(
-            self.canonical,
+        let live = self.reserve(tree, PhysicalRole::SourceFile, relative)?;
+        let mut admitted = admit_in_tree(
+            tree,
+            relative,
             live,
             PhysicalRole::SourceFile,
             PhysicalKind::RegularFile,
@@ -512,8 +743,9 @@ impl Traversal<'_, '_> {
 
         // Overlay membership decides the body: an exact member replaces the disk body
         // and never reads it; a pure-invalid spelling always takes the disk path so
-        // pure capture keeps `project.source_path` precedence.
-        let overlay_bytes = if valid_spelling {
+        // pure capture keeps `project.source_path` precedence. A dependency is never
+        // overlaid: it is read exactly as it is committed.
+        let overlay_bytes = if valid_spelling && tree.overlaid() {
             match FileIdentity::validate(&spelling).ok() {
                 Some((identity, _module)) => self.overlay.accept_source(&identity)?,
                 None => None,
@@ -531,7 +763,7 @@ impl Traversal<'_, '_> {
 
         let guard = admitted.into_guard();
         self.batch
-            .push(CapturedFile::new(spelling, bytes), guard)
+            .push(tree.captured(spelling, bytes), guard)
             .map_err(|error| {
                 pathless(
                     PhysicalRole::SourceFile,
@@ -695,90 +927,78 @@ impl AdmittedObject {
     }
 }
 
-/// The opened, rechecked project root: its handle and identity are held through
-/// capture and rechecked before return; its charge stays live via `CanonicalRoot`.
-struct RootAdmission {
-    canonical: CanonicalRoot,
-    handle: File,
-    identity: ObjectIdentity,
-}
-
-impl RootAdmission {
-    fn recheck(&self) -> Result<(), CaptureFailure> {
-        let handle = self
-            .handle
-            .metadata()
-            .map_err(|error| root_io(PhysicalOperation::Recheck, error))?;
-        let path = fs::symlink_metadata(self.canonical.as_path())
-            .map_err(|error| root_io(PhysicalOperation::Recheck, error))?;
-        if ObjectIdentity::from_metadata(&handle) != self.identity
-            || ObjectIdentity::from_metadata(&path) != self.identity
-        {
-            return Err(pathless(
-                PhysicalRole::Root,
-                PhysicalOperation::Recheck,
-                PhysicalRefusal::Changed,
+/// Resolve one declared dependency path from the consuming project's canonical
+/// root. A leading `..` run pops that canonical path, which is sound because it
+/// holds no link; every descending segment is then inspected without following
+/// links, so a dependency cannot be reached through one. The result is canonical by
+/// construction and is never handed to `canonicalize`, which would follow a link
+/// silently.
+fn resolve_dependency(root: &Path, declared: &Dependency) -> Result<PathBuf, BareRefusal> {
+    let mut current = root.to_path_buf();
+    let mut segments = declared.path().segments().peekable();
+    while let Some(segment) = segments.next() {
+        if segment == ".." {
+            if !current.pop() {
+                return Err((
+                    PhysicalOperation::Inspect,
+                    PhysicalRefusal::Missing {
+                        error: PhysicalIoError::new(io::Error::from(io::ErrorKind::NotFound)),
+                    },
+                ));
+            }
+            continue;
+        }
+        current.push(segment);
+        let metadata = fs::symlink_metadata(&current)
+            .map_err(|error| (PhysicalOperation::Inspect, io_refusal(error)))?;
+        if metadata.file_type().is_symlink() {
+            return Err((
+                PhysicalOperation::Inspect,
+                PhysicalRefusal::Link {
+                    position: if segments.peek().is_none() {
+                        LinkPosition::Terminal
+                    } else {
+                        LinkPosition::Intermediate
+                    },
+                },
             ));
         }
-        Ok(())
+        if !metadata.is_dir() {
+            return Err((
+                PhysicalOperation::Inspect,
+                PhysicalRefusal::UnexpectedKind {
+                    expected: PhysicalKind::Directory,
+                    actual: classify_kind(&metadata),
+                },
+            ));
+        }
     }
+    if current == root {
+        return Err((
+            PhysicalOperation::Inspect,
+            PhysicalRefusal::Dependency {
+                reason: DependencyRefusal::SelfReference,
+            },
+        ));
+    }
+    Ok(current)
 }
 
-fn admit_root(
-    root: &Path,
-    budget: &mut PathBudget,
-    limits: &AdapterLimits,
-) -> Result<RootAdmission, CaptureFailure> {
-    // Caller-root work charge before canonicalization.
-    budget
-        .charge_work(native_units(root), limits.max_path_work_units)
-        .map_err(|error| {
-            pathless(
-                PhysicalRole::Root,
-                PhysicalOperation::Retain,
-                reserve_refusal(error),
-            )
-        })?;
-    let canonical =
-        fs::canonicalize(root).map_err(|error| root_io(PhysicalOperation::Canonicalize, error))?;
-    let lease = budget
-        .reserve(
-            native_units(&canonical),
-            limits.max_retained_path_units,
-            limits.max_path_work_units,
-        )
-        .map_err(|error| {
-            pathless(
-                PhysicalRole::Root,
-                PhysicalOperation::Retain,
-                reserve_refusal(error),
-            )
-        })?;
-    let canonical_root = CanonicalRoot::new(canonical.clone(), lease);
-
-    let (handle, identity) = open_terminal(&canonical, PhysicalKind::Directory)
-        .map_err(|(operation, refusal)| pathless(PhysicalRole::Root, operation, refusal))?;
-    Ok(RootAdmission {
-        canonical: canonical_root,
-        handle,
-        identity,
-    })
-}
-
-/// Admit a role-relative object: inspect every component without following links,
-/// then admit the terminal object with an opened handle whose identity matches. On
-/// any refusal the leased path terminalizes into the failure evidence.
-fn admit_relative(
-    canonical_root: &Path,
+/// Admit an object by its path inside one admitted tree: inspect every component
+/// without following links, then admit the terminal object with an opened handle
+/// whose identity matches. The live path carries the caller-root-relative evidence
+/// spelling, which terminalizes into the failure on any refusal.
+fn admit_in_tree(
+    tree: &Tree,
+    relative: &Path,
     live: LiveNativePath,
     role: PhysicalRole,
     expected: PhysicalKind,
 ) -> Result<AdmittedObject, CaptureFailure> {
-    let relative = live.as_path().to_path_buf();
-    if let Err((operation, refusal)) = inspect_components(canonical_root, &relative, expected) {
+    if let Err((operation, refusal)) = inspect_components(&tree.canonical, relative, expected) {
         return Err(physical(role, operation, live.into_operational(), refusal));
     }
-    let absolute = canonical_root.join(&relative);
+    let absolute = tree.canonical.join(relative);
     match open_terminal(&absolute, expected) {
         Ok((file, identity)) => Ok(AdmittedObject {
             file,

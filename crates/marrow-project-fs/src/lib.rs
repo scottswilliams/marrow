@@ -71,14 +71,16 @@ mod presentation;
 mod publication;
 
 #[cfg(test)]
+mod dependency_kats;
+#[cfg(test)]
 mod kats;
 #[cfg(test)]
 mod publication_kats;
 
 pub use capture::capture_project;
 pub use failure::{
-    CaptureFailure, LedgerHome, LinkPosition, PhysicalBound, PhysicalFailure, PhysicalIoError,
-    PhysicalKind, PhysicalOperation, PhysicalRefusal, PhysicalRole,
+    CaptureFailure, DependencyRefusal, LedgerHome, LinkPosition, PhysicalBound, PhysicalFailure,
+    PhysicalIoError, PhysicalKind, PhysicalOperation, PhysicalRefusal, PhysicalRole,
 };
 pub use overlay::{
     OverlayBound, OverlayEntry, OverlayEntryIndex, OverlayFailure, OverlayReason, OverlaySnapshot,
