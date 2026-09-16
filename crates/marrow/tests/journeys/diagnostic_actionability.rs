@@ -170,10 +170,7 @@ fn d07_a_dropped_root_reports_one_primary_and_one_steer() {
         diagnostics.all()
     );
     assert!(
-        diagnostics
-            .messages()
-            .iter()
-            .all(|message| !message.contains("is not in scope")),
+        diagnostics.iter().all(|d| d.unresolved().is_none()),
         "no dependent binding re-reports as an unknown name: {:?}",
         diagnostics.all()
     );
@@ -192,7 +189,7 @@ fn d07_a_dropped_root_reports_one_primary_and_one_steer() {
 
 /// A forgotten `??` leaves an optional in arithmetic. The precise primary
 /// (`+` is not defined for int? and int`) fires once; the `const` whose initializer
-/// failed is poisoned, so its later uses raise no `is not in scope` cascade.
+/// failed is poisoned, so its later uses carry no unresolved-name cascade.
 #[test]
 fn d04_a_failed_binding_does_not_cascade_not_in_scope() {
     let project = locker_mutated(
@@ -213,10 +210,7 @@ fn d04_a_failed_binding_does_not_cascade_not_in_scope() {
         primary.message()
     );
     assert!(
-        diagnostics
-            .messages()
-            .iter()
-            .all(|message| !message.contains("is not in scope")),
+        diagnostics.iter().all(|d| d.unresolved().is_none()),
         "the poisoned `next` raises no scope cascade: {:?}",
         diagnostics.all()
     );

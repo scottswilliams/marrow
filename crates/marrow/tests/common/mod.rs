@@ -388,8 +388,9 @@ impl Diagnostics {
     }
 
     /// The rendered messages, in compiler order, for the few assertions whose subject is
-    /// a clause the renderer builds and no payload names, and for cascade checks that a
-    /// phrase appears nowhere. A typed steer is read with [`SourceDiagnostic::steer`].
+    /// a clause the renderer builds and no payload names. A typed steer is read with
+    /// [`SourceDiagnostic::steer`] and an unresolved name with
+    /// [`SourceDiagnostic::unresolved`].
     pub fn messages(&self) -> Vec<&str> {
         self.diagnostics.iter().map(|d| d.message()).collect()
     }

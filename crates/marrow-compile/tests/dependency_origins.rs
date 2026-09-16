@@ -4,7 +4,7 @@
 //! and drives the production `check`, so what is asserted is what `marrow check`
 //! would report over the same two directories.
 
-use marrow_compile::{CompileFailure, SourceDiagnostic, check};
+use marrow_compile::{CompileFailure, NameFamily, SourceDiagnostic, Unresolved, check};
 use marrow_project::ProjectInput;
 
 #[path = "common/project.rs"]
@@ -1013,6 +1013,15 @@ pub fn wrong(): int {
     );
 }
 
+/// What a constructor callee resolved to, as the site's one diagnostic reports it.
+enum Resolved {
+    /// A declared type: the report is about the field list, which only a resolved
+    /// type has.
+    Type(&'static str),
+    /// Nothing: the report carries the typed unresolved name, spelled as written.
+    Nothing(&'static str),
+}
+
 /// A constructor call resolves its callee as a type exactly where an annotation of
 /// the same text would: through a declared alias, at one or two segments. A report
 /// names the type the way this site spells it.
@@ -1021,22 +1030,22 @@ fn a_constructor_callee_is_a_type_name_or_nothing() {
     for (written, expected) in [
         (
             r#"graphtext::Pair(key: "a", nope: "b")"#,
-            "`graphtext::Pair` has no field `nope`",
+            Resolved::Type("`graphtext::Pair` has no field `nope`"),
         ),
         // Three segments: the head names no type, so this is not a constructor.
         (
             r#"graphtext::text::Pair(key: "a", value: "b")"#,
-            "`graphtext::text::Pair` is not in scope",
+            Resolved::Nothing("graphtext::text::Pair"),
         ),
         // No dependency is declared under `nowhere`.
         (
             r#"nowhere::Pair(key: "a", value: "b")"#,
-            "`nowhere::Pair` is not in scope",
+            Resolved::Nothing("nowhere::Pair"),
         ),
         // The alias is declared; the dependency declares no such type.
         (
             "graphtext::Missing(item: 1)",
-            "`graphtext::Missing` is not in scope",
+            Resolved::Nothing("graphtext::Missing"),
         ),
     ] {
         let project = project_capture::project_with_dependency(
@@ -1049,11 +1058,27 @@ fn a_constructor_callee_is_a_type_name_or_nothing() {
             )],
             &[("src/text.mw", CONSTRUCTED_LIBRARY)],
         );
-        assert_eq!(
-            codes_and_messages(&project),
-            vec![("check.type", expected.to_string())],
-            "input {written:?}",
-        );
+        match expected {
+            Resolved::Type(message) => assert_eq!(
+                codes_and_messages(&project),
+                vec![("check.type", message.to_string())],
+                "input {written:?}",
+            ),
+            Resolved::Nothing(name) => {
+                let rows = diagnostics(&project);
+                let [row] = &rows[..] else {
+                    panic!("input {written:?} reports exactly one row, got {rows:#?}");
+                };
+                assert_eq!(
+                    row.unresolved(),
+                    Some(&Unresolved {
+                        family: NameFamily::Function,
+                        name: name.to_string(),
+                    }),
+                    "input {written:?}",
+                );
+            }
+        }
     }
 }
 

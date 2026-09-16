@@ -625,7 +625,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             if self.poisoned_bindings.contains(name) {
                 self.failed = true;
             } else {
-                self.fail(name_not_in_scope(self.file, *span, NameFamily::Value, name, None));
+                self.fail(name_not_in_scope(
+                    self.file,
+                    *span,
+                    NameFamily::Value,
+                    name,
+                    None,
+                ));
             }
             return None;
         };

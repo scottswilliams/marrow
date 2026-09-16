@@ -14,8 +14,8 @@
 //! declared sit at the same span under the same code, because the steer reuses the
 //! *declaring* code rather than minting one of its own.
 //!
-//! The one prose assertion is negative — that a refused name is never called out of
-//! scope — the fabrication these fixtures exist to rule out.
+//! The cascade guard is negative and equally typed: no row carries an `Unresolved`
+//! payload naming a declared name, the fabrication these fixtures exist to rule out.
 
 use marrow_codes::Code;
 use marrow_compile::{
@@ -136,10 +136,16 @@ fn assert_steers_to(
     );
 }
 
+/// No row denies that `name` was declared.
+///
+/// The discriminator is the typed payload, not the sentence: a steer to the refused
+/// declaration and a row about a name that never existed are `(code, line, column)`-identical,
+/// and only an `Unresolved` payload says the compiler found no declaration at all.
 fn assert_never_out_of_scope(diagnostics: &[SourceDiagnostic], name: &str) {
     for row in diagnostics {
         assert!(
-            !row.message().contains(&format!("`{name}` is not in scope")),
+            row.unresolved()
+                .is_none_or(|unresolved| unresolved.name != name),
             "`{name}` is declared in this source; no row may call it out of scope: {:#?}",
             rows(diagnostics),
         );

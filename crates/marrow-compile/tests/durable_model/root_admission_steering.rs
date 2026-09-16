@@ -7,7 +7,7 @@
 //! message.
 
 use marrow_codes::Code;
-use marrow_compile::Steer;
+use marrow_compile::{NameFamily, Steer, Unresolved};
 use marrow_project::ProjectInput;
 
 use super::project_capture::project_with_ids;
@@ -53,7 +53,7 @@ fn a_reference_to_an_admission_failed_root_is_steered_to_the_identity_reports() 
         "the reference site names the admission failure, not a bare unknown name",
     );
     assert!(
-        !steering.message().contains("is not in scope"),
+        steering.unresolved().is_none(),
         "an admission-failed root must not read as an unknown name: {}",
         steering.message(),
     );
@@ -98,9 +98,11 @@ fn a_genuinely_undeclared_root_keeps_the_unknown_name_message() {
         ("src/report.mw", reference),
     ]));
     assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.code() == Code::CheckType && d.message() == "`ghosts` is not in scope"),
+        diagnostics.iter().any(|d| d.unresolved()
+            == Some(&Unresolved {
+                family: NameFamily::Root,
+                name: "ghosts".to_string(),
+            })),
         "an undeclared root is a plain unknown name: {diagnostics:#?}",
     );
     assert!(

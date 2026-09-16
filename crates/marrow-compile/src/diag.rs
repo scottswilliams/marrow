@@ -509,7 +509,8 @@ impl SourceDiagnostic {
     pub fn unresolved(&self) -> Option<&Unresolved> {
         match &self.payload {
             SourceDiagnosticPayload::Compiler(CompilerDiagnostic::Unresolved {
-                unresolved, ..
+                unresolved,
+                ..
             }) => Some(unresolved),
             _ => None,
         }
@@ -1321,4 +1322,3 @@ mod tests {
         );
     }
 }
-

@@ -6,7 +6,7 @@
 //! by the governing teaching sentence.
 
 use marrow_codes::Code;
-use marrow_compile::SourceDiagnostic;
+use marrow_compile::{NameFamily, SourceDiagnostic, Unresolved};
 
 use super::{compile_err, compile_ok, wrap};
 
@@ -183,8 +183,12 @@ fn get_and_insert_are_deleted_but_shadowable() {
             "pub fn f(m: Map<string, int>): int {{\n    return {name}(m, \"k\") ?? 0\n}}"
         )));
         let diagnostic = first_of(&diagnostics, Code::CheckType);
-        assert!(
-            diagnostic.message().contains("not in scope"),
+        assert_eq!(
+            diagnostic.unresolved(),
+            Some(&Unresolved {
+                family: NameFamily::Function,
+                name: name.to_string(),
+            }),
             "{name}: {}",
             diagnostic.message()
         );
