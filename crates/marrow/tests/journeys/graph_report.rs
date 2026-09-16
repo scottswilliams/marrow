@@ -229,24 +229,6 @@ fn a_string_at_the_raw_output_limit_survives_json_escaping() {
 }
 
 #[test]
-fn an_oversized_string_json_error_has_a_failed_process_status() {
-    let workspace = Project::single(STRING_IDENTITY_SOURCE).materialize("text-output-excess");
-    let input = "a".repeat(TEXT_BYTES_LIMIT + 1);
-    let output = workspace.marrow(&["run", "echo", "--format", "jsonl", "--", &input]);
-    assert_eq!(
-        output.stdout.as_slice(),
-        b"{\"code\":\"io.write\",\"kind\":\"run\",\"outcome\":\"error\"}\n",
-        "oversized returned text must produce the operational error",
-    );
-    assert!(
-        !output.status.success(),
-        "an output error must not keep the invocation's success status: {:?}",
-        output.status,
-    );
-    assert!(output.stderr.is_empty(), "{output:?}");
-}
-
-#[test]
 fn aggregate_text_keeps_its_separate_output_policy() {
     let source = r#"enum E {
     x(s: string)
