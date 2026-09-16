@@ -7,8 +7,9 @@
 //! class is derived purely positionally.
 
 use marrow_syntax::{
-    Block, Declaration, EnumDecl, EnumMember, Expression, FunctionDecl, NameSegment, Recovery,
-    ResourceMember, SourceSpan, Statement, TypeExpr,
+    Block, CheckedBind, Declaration, ElseIf, EnumDecl, EnumMember, Expression, ForBinding,
+    FunctionDecl, IfConstBinding, MatchArm, NameSegment, Recovery, ResourceMember, SourceSpan,
+    Statement, TraversalBound, TypeExpr,
 };
 
 use crate::lower::builtin_value_names;
@@ -260,15 +261,24 @@ fn following_binding(statement: &Statement) -> Option<Binding<'_>> {
             ty: ty.as_deref(),
         }),
         Statement::Checked { bind, .. } => match bind {
-            marrow_syntax::CheckedBind::Const { name, ty, .. }
-            | marrow_syntax::CheckedBind::Var { name, ty, .. } => Some(Binding {
-                name: name.clone(),
-                ty: ty.as_deref(),
-            }),
-            marrow_syntax::CheckedBind::Return => None,
+            CheckedBind::Const { name, ty, .. } | CheckedBind::Var { name, ty, .. } => {
+                Some(Binding {
+                    name: name.clone(),
+                    ty: ty.as_deref(),
+                })
+            }
+            CheckedBind::Return => None,
         },
         _ => None,
     }
+}
+
+/// The block structure shared by the three `if` forms: the `then` block and the
+/// `else if` / `else` tail that follows it.
+struct Branches<'a> {
+    then_block: &'a Block,
+    else_ifs: &'a [ElseIf],
+    else_block: Option<&'a Block>,
 }
 
 fn locate_statement<'a>(
@@ -278,66 +288,50 @@ fn locate_statement<'a>(
 ) -> Option<Located<'a>> {
     match statement {
         Statement::Const { ty, value, .. } => {
-            if let Some(ty) = ty
-                && contains(ty.span(), offset)
-            {
+            if in_annotation(ty.as_deref(), offset) {
                 return Some(Located::TypeAnnotation);
             }
             locate_expression(value, offset)
         }
         Statement::Var { ty, value, .. } => {
-            if let Some(ty) = ty
-                && contains(ty.span(), offset)
-            {
+            if in_annotation(ty.as_deref(), offset) {
                 return Some(Located::TypeAnnotation);
             }
             value
                 .as_ref()
                 .and_then(|value| locate_expression(value, offset))
         }
-        Statement::Assign { target, value, .. } => {
+        Statement::Assign { target, value, .. }
+        | Statement::CompoundAssign { target, value, .. } => {
             locate_expression(target, offset).or_else(|| locate_expression(value, offset))
         }
-        Statement::CompoundAssign { target, value, .. } => {
-            locate_expression(target, offset).or_else(|| locate_expression(value, offset))
-        }
-        Statement::Delete { path, .. } => locate_expression(path, offset),
-        Statement::PlaceBinding { place, .. } => locate_expression(place, offset),
-        Statement::Unset { place, .. } => locate_expression(place, offset),
-        Statement::Return { value, .. } => value
-            .as_ref()
-            .and_then(|value| locate_expression(value, offset)),
-        Statement::Assert { value, .. } => locate_expression(value, offset),
-        Statement::Expr { value, .. } => locate_expression(value, offset),
         Statement::Require {
             condition, value, ..
         } => locate_expression(condition, offset).or_else(|| locate_expression(value, offset)),
+        Statement::Delete { path: value, .. }
+        | Statement::PlaceBinding { place: value, .. }
+        | Statement::Unset { place: value, .. }
+        | Statement::Assert { value, .. }
+        | Statement::Expr { value, .. } => locate_expression(value, offset),
+        Statement::Return { value, .. } => value
+            .as_ref()
+            .and_then(|value| locate_expression(value, offset)),
         Statement::If {
             condition,
             then_block,
             else_ifs,
             else_block,
             ..
-        } => {
-            if let Some(located) = locate_expression(condition, offset) {
-                return Some(located);
-            }
-            if contains(then_block.span, offset) {
-                return locate_block(then_block, offset, scope);
-            }
-            for else_if in else_ifs {
-                if let Some(located) = locate_expression(&else_if.condition, offset) {
-                    return Some(located);
-                }
-                if contains(else_if.block.span, offset) {
-                    return locate_block(&else_if.block, offset, scope);
-                }
-            }
-            else_block
-                .as_ref()
-                .filter(|block| contains(block.span, offset))
-                .and_then(|block| locate_block(block, offset, scope))
-        }
+        } => locate_if(
+            condition,
+            Branches {
+                then_block,
+                else_ifs,
+                else_block: else_block.as_ref(),
+            },
+            offset,
+            scope,
+        ),
         Statement::IfConst {
             name,
             ty,
@@ -346,147 +340,18 @@ fn locate_statement<'a>(
             else_ifs,
             else_block,
             ..
-        } => {
-            if let Some(ty) = ty
-                && contains(ty.span(), offset)
-            {
-                return Some(Located::TypeAnnotation);
-            }
-            if let Some(located) = locate_expression(value, offset) {
-                return Some(located);
-            }
-            if contains(then_block.span, offset) {
-                scope.locals.push(Binding {
-                    name: name.clone(),
-                    ty: ty.as_deref(),
-                });
-                return locate_block(then_block, offset, scope);
-            }
-            for else_if in else_ifs {
-                if let Some(located) = locate_expression(&else_if.condition, offset) {
-                    return Some(located);
-                }
-                if contains(else_if.block.span, offset) {
-                    return locate_block(&else_if.block, offset, scope);
-                }
-            }
-            else_block
-                .as_ref()
-                .filter(|block| contains(block.span, offset))
-                .and_then(|block| locate_block(block, offset, scope))
-        }
-        Statement::While {
-            condition, body, ..
-        } => locate_expression(condition, offset).or_else(|| {
-            contains(body.span, offset)
-                .then(|| locate_block(body, offset, scope))
-                .flatten()
-        }),
-        Statement::For {
-            binding,
-            iterable,
-            step,
-            bound,
-            body,
-            ..
-        } => {
-            if let Some(located) = locate_expression(iterable, offset) {
-                return Some(located);
-            }
-            if let Some(step) = step
-                && let Some(located) = locate_expression(step, offset)
-            {
-                return Some(located);
-            }
-            if let Some(bound) = bound {
-                if let Some(located) = locate_expression(&bound.limit, offset) {
-                    return Some(located);
-                }
-                if let Some(from) = &bound.from
-                    && let Some(located) = locate_expression(from, offset)
-                {
-                    return Some(located);
-                }
-                if let Some(on_more) = &bound.on_more
-                    && contains(on_more.span, offset)
-                {
-                    return locate_block(on_more, offset, scope);
-                }
-            }
-            if contains(body.span, offset) {
-                for name in &binding.names {
-                    scope.locals.push(Binding {
-                        name: name.name.clone(),
-                        ty: None,
-                    });
-                }
-                return locate_block(body, offset, scope);
-            }
-            None
-        }
-        Statement::Transaction { body, .. } => contains(body.span, offset)
-            .then(|| locate_block(body, offset, scope))
-            .flatten(),
-        Statement::Match {
-            scrutinee, arms, ..
-        } => {
-            if let Some(located) = locate_expression(scrutinee, offset) {
-                return Some(located);
-            }
-            for arm in arms {
-                if contains(arm.block.span, offset) {
-                    for arm_binding in &arm.bindings {
-                        scope.locals.push(Binding {
-                            name: arm_binding.name.clone(),
-                            ty: None,
-                        });
-                    }
-                    return locate_block(&arm.block, offset, scope);
-                }
-            }
-            None
-        }
-        Statement::Checked {
-            bind,
-            op,
-            out_of_range,
-            zero_divisor,
-            ..
-        } => {
-            if let marrow_syntax::CheckedBind::Const { ty: Some(ty), .. }
-            | marrow_syntax::CheckedBind::Var { ty: Some(ty), .. } = bind
-                && contains(ty.span(), offset)
-            {
-                return Some(Located::TypeAnnotation);
-            }
-            if let Some(located) = locate_expression(op, offset) {
-                return Some(located);
-            }
-            for block in [out_of_range, zero_divisor].into_iter().flatten() {
-                if contains(block.span, offset) {
-                    return locate_block(block, offset, scope);
-                }
-            }
-            None
-        }
-        Statement::LetElse {
-            ty,
+        } => locate_if_const(
+            name,
+            ty.as_deref(),
             value,
-            else_block,
-            ..
-        } => {
-            if let Some(ty) = ty
-                && contains(ty.span(), offset)
-            {
-                return Some(Located::TypeAnnotation);
-            }
-            if let Some(located) = locate_expression(value, offset) {
-                return Some(located);
-            }
-            contains(else_block.span, offset)
-                .then(|| locate_block(else_block, offset, scope))
-                .flatten()
-        }
+            Branches {
+                then_block,
+                else_ifs,
+                else_block: else_block.as_ref(),
+            },
+            offset,
+            scope,
+        ),
         Statement::IfConstChain {
             bindings,
             condition,
@@ -494,38 +359,290 @@ fn locate_statement<'a>(
             else_ifs,
             else_block,
             ..
-        } => {
-            for binding in bindings {
-                if let Some(located) = locate_expression(&binding.value, offset) {
-                    return Some(located);
-                }
-            }
-            if let Some(condition) = condition
-                && let Some(located) = locate_expression(condition, offset)
-            {
-                return Some(located);
-            }
-            if contains(then_block.span, offset) {
-                for binding in bindings {
-                    scope.locals.push(Binding {
-                        name: binding.name.clone(),
-                        ty: binding.ty.as_ref(),
-                    });
-                }
-                return locate_block(then_block, offset, scope);
-            }
-            for else_if in else_ifs {
-                if contains(else_if.block.span, offset) {
-                    return locate_block(&else_if.block, offset, scope);
-                }
-            }
-            else_block
-                .as_ref()
-                .filter(|block| contains(block.span, offset))
-                .and_then(|block| locate_block(block, offset, scope))
-        }
+        } => locate_if_const_chain(
+            bindings,
+            condition.as_ref(),
+            Branches {
+                then_block,
+                else_ifs,
+                else_block: else_block.as_ref(),
+            },
+            offset,
+            scope,
+        ),
+        Statement::While {
+            condition, body, ..
+        } => locate_expression(condition, offset)
+            .or_else(|| locate_contained_block(body, offset, scope)),
+        Statement::For {
+            binding,
+            iterable,
+            step,
+            bound,
+            body,
+            ..
+        } => locate_for(
+            binding,
+            iterable,
+            step.as_ref(),
+            bound.as_deref(),
+            body,
+            offset,
+            scope,
+        ),
+        Statement::Transaction { body, .. } => locate_contained_block(body, offset, scope),
+        Statement::Match {
+            scrutinee, arms, ..
+        } => locate_match(scrutinee, arms, offset, scope),
+        Statement::Checked {
+            bind,
+            op,
+            out_of_range,
+            zero_divisor,
+            ..
+        } => locate_checked(
+            bind,
+            op,
+            out_of_range.as_ref(),
+            zero_divisor.as_ref(),
+            offset,
+            scope,
+        ),
+        Statement::LetElse {
+            ty,
+            value,
+            else_block,
+            ..
+        } => locate_let_else(ty.as_deref(), value, else_block, offset, scope),
         Statement::Break { .. } | Statement::Continue { .. } | Statement::Error { .. } => None,
     }
+}
+
+/// Whether the offset falls inside a written type annotation.
+fn in_annotation(ty: Option<&TypeExpr>, offset: u32) -> bool {
+    ty.is_some_and(|ty| contains(ty.span(), offset))
+}
+
+/// Descend into a block only when it contains the offset.
+fn locate_contained_block<'a>(
+    block: &'a Block,
+    offset: u32,
+    scope: &mut Scope<'a>,
+) -> Option<Located<'a>> {
+    contains(block.span, offset)
+        .then(|| locate_block(block, offset, scope))
+        .flatten()
+}
+
+/// The `else if` / `else` tail of `if` and `if const`: each clause condition, then the
+/// clause block that contains the offset.
+fn locate_else_chain<'a>(
+    branches: &Branches<'a>,
+    offset: u32,
+    scope: &mut Scope<'a>,
+) -> Option<Located<'a>> {
+    for else_if in branches.else_ifs {
+        if let Some(located) = locate_expression(&else_if.condition, offset) {
+            return Some(located);
+        }
+        if contains(else_if.block.span, offset) {
+            return locate_block(&else_if.block, offset, scope);
+        }
+    }
+    branches
+        .else_block
+        .and_then(|block| locate_contained_block(block, offset, scope))
+}
+
+fn locate_if<'a>(
+    condition: &'a Expression,
+    branches: Branches<'a>,
+    offset: u32,
+    scope: &mut Scope<'a>,
+) -> Option<Located<'a>> {
+    if let Some(located) = locate_expression(condition, offset) {
+        return Some(located);
+    }
+    if contains(branches.then_block.span, offset) {
+        return locate_block(branches.then_block, offset, scope);
+    }
+    locate_else_chain(&branches, offset, scope)
+}
+
+/// `if const`: the binding is in scope only inside the `then` block, so it is pushed
+/// only on the descent into that block.
+fn locate_if_const<'a>(
+    name: &str,
+    ty: Option<&'a TypeExpr>,
+    value: &'a Expression,
+    branches: Branches<'a>,
+    offset: u32,
+    scope: &mut Scope<'a>,
+) -> Option<Located<'a>> {
+    if in_annotation(ty, offset) {
+        return Some(Located::TypeAnnotation);
+    }
+    if let Some(located) = locate_expression(value, offset) {
+        return Some(located);
+    }
+    if contains(branches.then_block.span, offset) {
+        scope.locals.push(Binding {
+            name: name.to_owned(),
+            ty,
+        });
+        return locate_block(branches.then_block, offset, scope);
+    }
+    locate_else_chain(&branches, offset, scope)
+}
+
+/// The chained `if const` head. Its `else if` conditions are not descended into: the
+/// form is parse-only and `marrow-compile` rejects it, so the clause conditions carry
+/// no resolvable scope.
+fn locate_if_const_chain<'a>(
+    bindings: &'a [IfConstBinding],
+    condition: Option<&'a Expression>,
+    branches: Branches<'a>,
+    offset: u32,
+    scope: &mut Scope<'a>,
+) -> Option<Located<'a>> {
+    for binding in bindings {
+        if let Some(located) = locate_expression(&binding.value, offset) {
+            return Some(located);
+        }
+    }
+    if let Some(condition) = condition
+        && let Some(located) = locate_expression(condition, offset)
+    {
+        return Some(located);
+    }
+    if contains(branches.then_block.span, offset) {
+        for binding in bindings {
+            scope.locals.push(Binding {
+                name: binding.name.clone(),
+                ty: binding.ty.as_ref(),
+            });
+        }
+        return locate_block(branches.then_block, offset, scope);
+    }
+    for else_if in branches.else_ifs {
+        if contains(else_if.block.span, offset) {
+            return locate_block(&else_if.block, offset, scope);
+        }
+    }
+    branches
+        .else_block
+        .and_then(|block| locate_contained_block(block, offset, scope))
+}
+
+/// A `for` head and body. The loop names bind only inside the body, so the bounded
+/// traversal clause is searched before they are pushed.
+fn locate_for<'a>(
+    binding: &'a ForBinding,
+    iterable: &'a Expression,
+    step: Option<&'a Expression>,
+    bound: Option<&'a TraversalBound>,
+    body: &'a Block,
+    offset: u32,
+    scope: &mut Scope<'a>,
+) -> Option<Located<'a>> {
+    if let Some(located) = locate_expression(iterable, offset) {
+        return Some(located);
+    }
+    if let Some(step) = step
+        && let Some(located) = locate_expression(step, offset)
+    {
+        return Some(located);
+    }
+    if let Some(bound) = bound {
+        if let Some(located) = locate_expression(&bound.limit, offset) {
+            return Some(located);
+        }
+        if let Some(from) = &bound.from
+            && let Some(located) = locate_expression(from, offset)
+        {
+            return Some(located);
+        }
+        if let Some(on_more) = &bound.on_more
+            && contains(on_more.span, offset)
+        {
+            return locate_block(on_more, offset, scope);
+        }
+    }
+    if contains(body.span, offset) {
+        for name in &binding.names {
+            scope.locals.push(Binding {
+                name: name.name.clone(),
+                ty: None,
+            });
+        }
+        return locate_block(body, offset, scope);
+    }
+    None
+}
+
+/// A `match`: the selected arm's payload bindings enter scope with its block.
+fn locate_match<'a>(
+    scrutinee: &'a Expression,
+    arms: &'a [MatchArm],
+    offset: u32,
+    scope: &mut Scope<'a>,
+) -> Option<Located<'a>> {
+    if let Some(located) = locate_expression(scrutinee, offset) {
+        return Some(located);
+    }
+    for arm in arms {
+        if contains(arm.block.span, offset) {
+            for arm_binding in &arm.bindings {
+                scope.locals.push(Binding {
+                    name: arm_binding.name.clone(),
+                    ty: None,
+                });
+            }
+            return locate_block(&arm.block, offset, scope);
+        }
+    }
+    None
+}
+
+/// A `checked` form: its binding is not in scope in the operation or the `on` arms.
+fn locate_checked<'a>(
+    bind: &'a CheckedBind,
+    op: &'a Expression,
+    out_of_range: Option<&'a Block>,
+    zero_divisor: Option<&'a Block>,
+    offset: u32,
+    scope: &mut Scope<'a>,
+) -> Option<Located<'a>> {
+    if let CheckedBind::Const { ty: Some(ty), .. } | CheckedBind::Var { ty: Some(ty), .. } = bind
+        && contains(ty.span(), offset)
+    {
+        return Some(Located::TypeAnnotation);
+    }
+    if let Some(located) = locate_expression(op, offset) {
+        return Some(located);
+    }
+    for block in [out_of_range, zero_divisor].into_iter().flatten() {
+        if contains(block.span, offset) {
+            return locate_block(block, offset, scope);
+        }
+    }
+    None
+}
+
+fn locate_let_else<'a>(
+    ty: Option<&'a TypeExpr>,
+    value: &'a Expression,
+    else_block: &'a Block,
+    offset: u32,
+    scope: &mut Scope<'a>,
+) -> Option<Located<'a>> {
+    if in_annotation(ty, offset) {
+        return Some(Located::TypeAnnotation);
+    }
+    if let Some(located) = locate_expression(value, offset) {
+        return Some(located);
+    }
+    locate_contained_block(else_block, offset, scope)
 }
 
 /// The immediate expression children to recurse into for the compositional forms. The
