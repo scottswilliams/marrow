@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use marrow_codes::Code;
 use marrow_compile::{CompileFailure, Compiled, SourceDiagnostic, compile};
-use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput, capture};
+use marrow_project::{CaptureLimits, CapturedFile, IdentityKind, Manifest, ProjectInput, capture};
 use marrow_verify::{VerifiedImage, verify};
 use marrow_vm::{
     DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
@@ -391,6 +391,16 @@ impl Diagnostics {
     /// did-you-mean candidate, a named bound clause) that rides the diagnostic payload.
     pub fn messages(&self) -> Vec<&str> {
         self.diagnostics.iter().map(|d| d.message()).collect()
+    }
+
+    /// Whether some `check.durable_identity` diagnostic names the `(kind, path)` anchor,
+    /// with `retired` recording whether the ledger retired it. The gap is the typed
+    /// payload those diagnostics carry, so an anchor is asserted here and never in prose.
+    pub fn names_identity_gap(&self, kind: IdentityKind, path: &str, retired: bool) -> bool {
+        self.diagnostics
+            .iter()
+            .filter_map(|d| d.identity_gap())
+            .any(|gap| gap.kind == kind && gap.path == path && gap.retired == retired)
     }
 }
 

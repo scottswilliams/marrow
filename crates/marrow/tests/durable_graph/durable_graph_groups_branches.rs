@@ -16,6 +16,7 @@
 //! executability assertions confirm a root-level group does not park the root.
 
 use crate::common::{Diagnostics, Project};
+use marrow_project::IdentityKind;
 use marrow_verify::DurableContractId;
 
 /// Compile and independently verify, returning the durable-contract identity.
@@ -143,10 +144,7 @@ fn a_missing_group_identity_fails_precisely() {
         diagnostics.all()
     );
     assert!(
-        diagnostics
-            .messages()
-            .iter()
-            .any(|message| message.contains("group `Book.details`")),
+        diagnostics.names_identity_gap(IdentityKind::Group, "Book.details", false),
         "the gap names the group anchor: {:?}",
         diagnostics.messages()
     );
@@ -165,10 +163,7 @@ fn a_missing_group_field_identity_fails_precisely() {
         diagnostics.all()
     );
     assert!(
-        diagnostics
-            .messages()
-            .iter()
-            .any(|message| message.contains("field `Book.details.pages`")),
+        diagnostics.names_identity_gap(IdentityKind::Field, "Book.details.pages", false),
         "the gap names the group-qualified field path: {:?}",
         diagnostics.messages()
     );
@@ -353,11 +348,8 @@ fn a_retired_group_anchor_cannot_be_reused() {
         diagnostics.all()
     );
     assert!(
-        diagnostics
-            .messages()
-            .iter()
-            .any(|message| message.contains("retired")),
-        "the diagnostic names the retirement: {:?}",
+        diagnostics.names_identity_gap(IdentityKind::Group, "Book.details", true),
+        "the gap names the retired group anchor: {:?}",
         diagnostics.messages()
     );
 }

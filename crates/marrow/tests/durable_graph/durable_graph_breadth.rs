@@ -233,12 +233,9 @@ pub fn get(name: string): int? {
         diagnostics.all()
     );
     assert!(
-        !diagnostics
-            .messages()
-            .iter()
-            .any(|message| message.contains("not yet executable")),
+        !diagnostics.has_code("check.unsupported"),
         "a single-key root must not be mislabelled not-yet-executable: {:?}",
-        diagnostics.messages()
+        diagnostics.all()
     );
 }
 
