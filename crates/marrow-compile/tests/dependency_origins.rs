@@ -923,3 +923,44 @@ fn an_imported_enum_costs_the_image_nothing() {
     assert_eq!(imported.image.bytes, renamed.image.bytes);
     assert_eq!(imported.image.image_id, renamed.image.image_id);
 }
+
+/// A dependency's type is constructed through the same alias that annotates it: a
+/// struct, a nominal int, and a resource record all take their own tree's arguments.
+#[test]
+fn a_dependency_type_is_constructible_through_its_alias() {
+    let project = project_capture::project_with_dependency(
+        "graphtext",
+        &[(
+            "src/main.mw",
+            r#"module main
+
+pub fn run(): string {
+    const pair: graphtext::Pair = graphtext::Pair(key: "a", value: "b")
+    const age: graphtext::Age = graphtext::Age(7)
+    const book: graphtext::Book = graphtext::Book(title: pair.key)
+    if age == graphtext::Age(7) {
+        return book.title
+    }
+    return pair.value
+}
+"#,
+        )],
+        &[(
+            "src/text.mw",
+            r#"module text
+
+struct Pair {
+    key: string
+    value: string
+}
+
+type Age: int in 0..150
+
+resource Book {
+    required title: string
+}
+"#,
+        )],
+    );
+    assert_eq!(codes_and_messages(&project), Vec::new());
+}
