@@ -54,9 +54,9 @@ use crate::types::{
 };
 
 /// Whether control continues past a statement or block, leaves it (via `return`,
-/// `break`, or `continue`), or is terminally rejected by a lowering owner.
-/// `Rejected` is propagated by every nested control owner, so later branches and
-/// structural checks cannot observe a partially lowered body.
+/// `break`, or `continue`), or is terminally rejected. `Rejected` is propagated by every
+/// nested control owner, so later branches and structural checks cannot observe a
+/// partially lowered body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Flow {
     Fallthrough,
@@ -150,9 +150,8 @@ pub(crate) struct Lowered {
     pub unwrapped_mutations: Vec<SourceSpan>,
     /// Calls this body performs outside any `transaction` block, with their spans.
     pub unwrapped_calls: Vec<(u16, SourceSpan)>,
-    /// Whether this body performs a durable-place operation directly (as opposed to
-    /// reaching durable data only through calls). Consumed by the test-body
-    /// direct-operation refusal.
+    /// Whether this body performs a durable-place operation directly rather than only
+    /// through calls. Consumed by the test-body direct-operation refusal.
     pub has_direct_durable_op: bool,
     /// Entry families directly erased by this body. Calls inherit only these
     /// erasures when checking the lifetime of a presence fact.
@@ -171,13 +170,11 @@ pub(crate) enum CallResolution<'a> {
     /// A function with the name exists in the target module but is not `pub`, so it
     /// is not callable across the module boundary.
     NotPublic,
-    /// A function of that name is declared in the target module and its signature
-    /// was refused, so it is callable from nowhere. The declaration reported the
-    /// cause; this call reuses it.
+    /// A function of that name is declared in the target module and its signature was
+    /// refused, so it is callable from nowhere and reuses the declaration's cause.
     SignatureRefused(&'a DeclarationRefusalSummary),
     /// The qualifying prefix names a module this project contains and refused, so no
-    /// scope to resolve `item` in exists. The module's declaration reported the
-    /// cause; this call reuses it.
+    /// scope to resolve `item` in exists; the call reuses the module's cause.
     ModuleRefused(&'a DeclarationRefusalSummary),
     /// No function with that name is reachable from the calling module.
     NotFound,
@@ -227,9 +224,9 @@ struct PlaceChain {
 
 /// The refusal a handle addresses, from the namespace ledger that minted it.
 ///
-/// The one place a `Copy` refusal handle becomes a renderable cause, so no
-/// consumer picks a ledger by guesswork. The tag is checked by the ledger itself:
-/// a handle presented to the wrong owner is drift, not a neighbouring summary.
+/// The one place a `Copy` refusal handle becomes a renderable cause, so no consumer picks
+/// a ledger by guesswork. The ledger checks the tag itself: a handle presented to the
+/// wrong owner is drift, not a neighbouring summary.
 pub(super) fn refusal_summary<'r>(
     records: &'r TypeRegistry,
     durable: &'r DurableRegistry,
@@ -337,8 +334,7 @@ pub(crate) struct FnLowerer<'a, 'd> {
     /// resolve within it.
     module: &'a str,
     /// The type-parameter environment: empty for a monomorphic body, the abstract
-    /// parameters for the template pass, or the concrete substitutions for an
-    /// instance body.
+    /// parameters for the template pass, the concrete substitutions for an instance.
     type_env: Vec<TypeParamSlot>,
     /// Whether this body emits an image function and monomorphizes, or is the
     /// once-checked template pass over abstract parameters.
@@ -430,10 +426,9 @@ pub(crate) use self::registry::{
 pub(crate) use self::types::parse_int;
 
 impl<'a, 'd> FnLowerer<'a, 'd> {
-    /// Run one checked draft mint. A carrier-domain refusal is unreachable under
-    /// the admitted source envelope, so it is remembered as the lowering invariant —
-    /// the body aborts at the invariant boundary — and the current path stops with
-    /// `None`, never a diagnostic against the source.
+    /// Run one checked draft mint. A carrier-domain refusal is unreachable under the
+    /// admitted source envelope, so it is remembered as the lowering invariant and the
+    /// current path stops with `None`, never a diagnostic against the source.
     fn checked_mint<T>(
         &mut self,
         mint: impl FnOnce(&mut DraftTxn<'d>) -> Result<T, marrow_image::DraftStateError>,
@@ -648,10 +643,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Ok(TemplateProofOutcome { generic, body })
     }
 
-    /// The shared driver for an ordinary function, a generic instance, and the
-    /// template pass: resolve the return type in the type environment, bind the
+    /// The shared driver for an ordinary function, a generic instance, and the template
+    /// pass, which `type_env` and `mode` distinguish: resolve the return type, bind the
     /// value parameters, lower the body, and fill the reserved image function.
-    /// The `type_env` and `mode` distinguish the three.
     fn lower_with_env(
         ctx: LowerCtx<'a, 'd>,
         file: &'a FileIdentity,
@@ -758,10 +752,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 mutable: false,
                 slot,
             });
-            // A bare nominal parameter revalidates its interval on entry. In-language
-            // callers already passed the type, but the image records only the base
-            // int, so a terminal or wire caller could otherwise inject an
-            // out-of-interval value into the type.
+            // A bare nominal parameter revalidates its interval on entry: the image
+            // records only the base int, so a terminal or wire caller could otherwise
+            // inject an out-of-interval value into the type.
             if let Some(id) = ty.bare_nominal() {
                 let info = lowerer.records.nominal(id);
                 let (lo, hi) = (info.lo, info.hi);
@@ -827,10 +820,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         lowerer.finish(func, &function.name, params, ret_ref)
     }
 
-    /// Lower a `test` body into a storeless, zero-argument, unit-returning function
-    /// and return its [`Lowered`] identity. The body is the only place the owned
-    /// `assert` is legal; `name` is the test title (interned as the function name),
-    /// and the caller binds it into the image's TEST-ENTRY table.
+    /// Lower a `test` body into a storeless, zero-argument, unit-returning function. The
+    /// body is the only place the owned `assert` is legal; `name` is the test title,
+    /// interned as the function name and bound by the caller into the TEST-ENTRY table.
     pub(crate) fn lower_test(
         ctx: LowerCtx<'a, 'd>,
         file: &'a FileIdentity,
@@ -1227,9 +1219,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Whether lowering must stop before any later handler, interning, patching, or
-    /// emission. The shared instantiation limit, the frame's or code tape's first
-    /// over-bound request, and the first private generic invariant are terminal for
-    /// this body.
+    /// emission: the shared instantiation limit, the frame's or code tape's first
+    /// over-bound request, and the first private generic invariant are all terminal.
     fn terminal_rejection(&self) -> bool {
         self.records.has_instantiation_limit()
             || self.local_limit_reached
@@ -1237,9 +1228,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             || self.invariant.is_some()
     }
 
-    /// Preserve the code-byte refusal's structural carrier when a shared terminal
-    /// check runs inside expression lowering; every other terminal owner uses the
-    /// ordinary construct-refusal path and is classified at the statement boundary.
+    /// Preserve the code-byte refusal's structural carrier when a shared terminal check
+    /// runs inside expression lowering; every other terminal owner is classified at the
+    /// statement boundary.
     fn terminal_lowering_failure(&self) -> LoweringFailure {
         if self.code_limit_reached {
             LoweringFailure::CodeLimitReached

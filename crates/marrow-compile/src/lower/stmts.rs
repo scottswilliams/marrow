@@ -289,9 +289,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
     }
 
-    /// Lower `assert <expr>`. The condition must be bool; on false the emitted
-    /// `Assert` op faults the running test with `run.assert`. Legal only in a test
-    /// body — in an ordinary function it is `check.assert_outside_test`.
+    /// Lower `assert <expr>`: the condition must be bool, and on false the emitted
+    /// `Assert` op faults the running test with `run.assert`. Legal only in a test body.
     fn lower_assert(&mut self, value: &Expression, span: SourceSpan) -> ConstructResult<()> {
         if self.body_kind != BodyKind::Test {
             self.fail(SourceDiagnostic::at(
@@ -399,8 +398,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             self.lower_local_field_assign(base, name, *span, value)?;
             return Ok(());
         }
-        // `m[k] = value`: a keyed write on a local map, create-or-replace at the key
-        // (the same sentence as a durable keyed write, differing only by the `^`). A
+        // `m[k] = value`: a keyed write on a local map, create-or-replace at the key. A
         // list has no keyed write; `xs[i] = value` is refused with a teaching diagnostic.
         if let Expression::Keyed {
             base, keys, span, ..
@@ -484,9 +482,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Ok(())
     }
 
-    /// Write each mutated container back into its parent (innermost first) and store
-    /// the updated local. Pairs with [`Self::push_place_containers`] after the leaf op
-    /// has left the innermost container's new value on the stack.
+    /// Write each mutated container back into its parent (innermost first) and store the
+    /// updated local. Pairs with [`Self::push_place_containers`].
     fn writeback_place_containers(
         &mut self,
         slot: u16,
@@ -699,9 +696,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
     }
 
-    /// The exit value is already on the stack, so evaluation precedes the
-    /// stack-neutral commit. Only the function owning this lexical region has
-    /// positive depth; a helper's return never commits its caller's region.
+    /// The exit value is already on the stack, so evaluation precedes the stack-neutral
+    /// commit. Only the function owning this lexical region has positive depth, so a
+    /// helper's return never commits its caller's region.
     pub(super) fn emit_region_return(&mut self, span: SourceSpan) -> ConstructResult<()> {
         if self.txn_depth > 0 {
             self.push(Instr::TxnCommit, span)?;
@@ -1795,9 +1792,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // ancestor path. An identity-captured slot carries its root as a typed identity
         // column, which the bounded-traversal ancestor pop re-proves like any other.
         let ancestor_keys = place.bound_keys();
-        // The traversed branch is declared beneath the place's node — the same projection a
-        // place field access uses. The node borrows the registry (`'a`), not `&self`, so a
-        // diagnostic may still borrow `self` mutably.
+        // The node borrows the registry (`'a`), not `&self`, so a diagnostic may still
+        // borrow `self` mutably.
         let node = place.node;
         let Some(branch) = node.branch(layer_name) else {
             self.fail(SourceDiagnostic::at(
@@ -1912,9 +1908,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             let mut slots = Vec::with_capacity(target.ancestor_keys.len());
             for column in &target.ancestor_keys {
                 match column.key {
-                    // A place/pin base supplies its ancestor columns as slots evaluated once
-                    // at the place binding; the pin reuses those slots directly rather than
-                    // re-evaluating the key.
+                    // A place/pin base supplies its ancestor columns as slots evaluated
+                    // once at the place binding, reused rather than re-evaluated.
                     PlaceKey::Bound(slot) => slots.push((slot, column.key_ty)),
                     // An inline `^root(k)….branch` base evaluates each ancestor key once here
                     // into a fresh slot, so the pin and the opcode read one evaluation.
@@ -1970,9 +1965,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         self.push(Instr::LocalSet(coll_slot), span)?;
 
-        // A positional walk over the frozen `List[K]` binds `k` per position.
-        // `continue` advances to the loop top; a body `break`/`return` skips past
-        // the `on more` block.
+        // A positional walk over the frozen `List[K]` binds `k` per position. A body
+        // `break`/`return` skips past the `on more` block.
         let node = target.node;
         let key_name = var.name.clone();
         let place_name = place_var.map(|name| name.name.clone());
@@ -1992,9 +1986,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 // LocalSet presence-lattice rule, any presence fact an earlier iteration
                 // established on this key.
                 lower.push(Instr::LocalSet(key_slot), span)?;
-                // Traversal establishes no presence fact for the body: `k` names a
-                // frozen key whose entry an earlier body iteration may already have
-                // erased.
+                // Traversal establishes no presence fact for the body: `k` names a frozen
+                // key whose entry an earlier iteration may already have erased.
                 lower.locals.push(Local {
                     name: key_name,
                     ty: LTy::bare_scalar(key_ty),
@@ -2095,8 +2088,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             return Ok(Flow::Fallthrough);
         }
         // The scan yields a whole source identity, so the root's identity is a single key
-        // column; the scanned (trailing) projection component is that key. The scanned
-        // index belongs to `read.root` (resolved with it), so its identity is that root's.
+        // column and the scanned (trailing) projection component is that key.
         let root = read.root;
         if root.key.len() != 1 {
             self.fail(unsupported(
@@ -2656,9 +2648,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
         };
 
-        // A checked `/`/`%` tests its divisor first; a zero divisor runs the diverging
-        // `on zero_divisor` arm. A provably-nonzero literal divisor has no such arm and
-        // needs no runtime test — the operation cannot reach a zero divisor.
+        // A checked `/`/`%` tests its divisor first, running the diverging
+        // `on zero_divisor` arm. A provably-nonzero literal divisor needs no such test.
         if is_div && let Some(zero_block) = zero_divisor {
             #[expect(
                 clippy::expect_used,
@@ -2696,9 +2687,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let checked_at = self.here();
         self.push(checked, span)?;
 
-        // Success path: coerce the int result to the binding and store it. A
-        // `const`/`var` binding (`pending` is `Some`) falls through and jumps over the
-        // handler; a `return` binding leaves the frame, so no skip jump is needed.
+        // A `const`/`var` binding (`pending` is `Some`) jumps over the handler; a
+        // `return` binding leaves the frame, so it needs no skip jump.
         let pending = match self.store_checked_result(bind, span) {
             Ok(pending) => pending,
             Err(LoweringFailure::Recoverable) if self.terminal_rejection() => {

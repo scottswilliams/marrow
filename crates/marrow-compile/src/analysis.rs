@@ -30,8 +30,8 @@ pub(crate) use facts::{AnalysisFactCollector, BodySite, FactSink, ReleasedBody, 
 
 /// A caller-assigned revision echoed by every analysis outcome. It labels which input a
 /// result belongs to; the floor never treats it as content identity, a cache key, or an
-/// ordering relation. Two analyses of byte-identical inputs at different revisions are
-/// distinct outcomes that each echo their own revision.
+/// ordering relation, so two analyses of byte-identical inputs at different revisions
+/// are distinct outcomes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub struct InputRevision(u64);
 
@@ -436,17 +436,17 @@ impl AnalysisSnapshot {
         }
     }
 
-    /// The checked whole-document format of an input file. Consumes the one
-    /// syntax-owned [`marrow_syntax::check_format`] policy — the same the CLI's
-    /// `marrow fmt` uses — so the refusal decision is classified once. The output is
-    /// bounded by [`MAX_FORMAT_OUTPUT_BYTES`] as a query-local refusal (never retained
-    /// in the snapshot). An unknown file is a typed [`QueryError`].
+    /// The checked whole-document format of an input file. Consumes the one syntax-owned
+    /// [`marrow_syntax::check_format`] policy — the same the CLI's `marrow fmt` uses — so
+    /// the refusal decision is classified once. The output is bounded by
+    /// [`MAX_FORMAT_OUTPUT_BYTES`] as an unretained query-local refusal. An unknown file
+    /// is a typed [`QueryError`].
     pub fn format(&self, file: &FileIdentity) -> Result<FormatOutcome, QueryError> {
         let (_, source) = self.locate(file)?;
         let Ok(source) = std::str::from_utf8(source) else {
-            // A non-UTF-8 file cannot be lexed. A parse-invalid refusal carries
-            // real nonempty syntax evidence, which an undecodable file has
-            // none of, so the outcome is its own typed arm.
+            // A non-UTF-8 file cannot be lexed. A parse-invalid refusal carries nonempty
+            // syntax evidence, which an undecodable file has none of, so it gets its
+            // own typed arm.
             return Ok(FormatOutcome::InvalidUtf8);
         };
         match marrow_syntax::check_format(source) {
@@ -501,19 +501,15 @@ impl AnalysisSnapshot {
     ///
     /// The set is never prefix-filtered, ranked, or truncated: an over-cap namespace is a
     /// query-local [`CompletionOutcome::Refused`]. The parse and the re-resolution over
-    /// it are per query and transient — no parse tree and no per-position candidate set
-    /// is retained.
+    /// it are per query and transient, and the traversal is strictly read-only — it never
+    /// drives the compile-path lowerer or resolver, so a partial or malformed base yields
+    /// an empty classification and leaks no diagnostic into the snapshot.
     ///
     /// An unknown file or an out-of-range offset is a typed [`QueryError`]. A file that
     /// produced no parse tree (a non-UTF-8 file) is [`Unavailability::Syntax`]. A broken
     /// file still classifies: a position over a recovered incomplete form (`base.`,
-    /// `Enum::`) yields its class and candidates even though the file has parse errors.
-    /// A position with no class (a literal, a comment, whitespace outside any recovered
-    /// node) is `Absent`.
-    ///
-    /// The traversal is strictly read-only: it never drives the compile-path lowerer or
-    /// resolver, so a partial or malformed base yields an `Absent`/empty classification
-    /// and leaks no diagnostic into the snapshot.
+    /// `Enum::`) yields its class and candidates. A position with no class (a literal, a
+    /// comment, whitespace outside any recovered node) is `Absent`.
     pub fn completions(
         &self,
         file: &FileIdentity,
@@ -713,8 +709,8 @@ pub fn analyze(
 
 /// Map the ledger's typed ceiling to its public resource-limit record: the one
 /// failure-boundary translation, exhaustive over both kinds. The ledger's saturated
-/// count and byte totals stay internal — a published saturated total would be exactly
-/// the fabricated count the typed limits exist to prevent.
+/// totals stay internal — publishing one would be the fabricated count the typed limits
+/// exist to prevent.
 fn fact_limit_failure(limit: AnalysisFactLimit) -> AnalysisResourceLimit {
     match limit {
         AnalysisFactLimit::Count { limit } => AnalysisResourceLimit::SnapshotFactCount { limit },
@@ -803,8 +799,8 @@ pub(crate) enum AnalysisFactLimit {
 }
 
 /// The complete retained fact set of one snapshot, sealed by the ledger's single
-/// `finish`. Every collection is a boxed slice, so the amortized growth capacity the
-/// ledger used while collecting is not retained.
+/// `finish`. Every collection is a boxed slice, so the ledger's growth capacity is
+/// not retained.
 #[derive(Default)]
 pub(crate) struct RetainedFacts {
     /// Private to this module because [`HoverFact`] is: the type a producer must not be
@@ -841,10 +837,9 @@ impl BoundedAnalysisFacts {
     }
 }
 
-/// A selectively-queried editor fact. It is `Present`, legitimately `Absent`, or
-/// `Unavailable` because a syntax or dependency invalidity prevents its computation. An
-/// unknown file or an out-of-range offset is not absence — it is a typed [`QueryError`],
-/// distinct from every `Fact` outcome.
+/// A selectively-queried editor fact: `Present`, legitimately `Absent`, or `Unavailable`
+/// because a syntax or dependency invalidity prevents its computation. An unknown file or
+/// an out-of-range offset is not absence — it is a typed [`QueryError`].
 pub enum Fact<T> {
     /// The fact is computed and present.
     Present(T),
@@ -862,8 +857,7 @@ pub enum Unavailability {
     /// parse, so the owner is incomplete.
     Dependency,
     /// The fact crossed a fixed per-file bound, so it was never retained. No truncated
-    /// value is ever published in its place, and no other fact — in this file or any
-    /// other — is affected.
+    /// value is published in its place, and no other fact is affected.
     Bounded,
 }
 
@@ -891,9 +885,9 @@ impl Hover {
 }
 
 /// The declaration kind of a [`DeclSymbol`], mirroring the parser's `Declaration`
-/// variants plus the nested `EnumMember`. Closed and exhaustively matchable so a
-/// consumer maps each kind to its editor symbol category without a wildcard, and a new
-/// declaration variant forces a decision here.
+/// variants plus the nested `EnumMember`. Closed and exhaustively matchable, so a
+/// consumer maps each kind without a wildcard and a new declaration variant forces a
+/// decision here.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DeclKind {
     /// A transparent `alias` type declaration.
@@ -921,9 +915,8 @@ pub enum DeclKind {
 /// One node of a module file's declaration hierarchy: a declared name, its kind, the
 /// span of its declared name (the selection range), the full header-through-body
 /// declaration range, and its nested member children. Children are non-empty only for an
-/// enum and its nested `category` members; every other declaration is a leaf on this
-/// floor. A pure projection of the parsed AST — it carries no resolved type, effect, or
-/// durable-anchor spelling.
+/// enum and its nested `category` members. A pure projection of the parsed AST — it
+/// carries no resolved type, effect, or durable-anchor spelling.
 pub struct DeclSymbol {
     name: Box<str>,
     kind: DeclKind,
@@ -1009,9 +1002,8 @@ pub(crate) fn project_document_symbols(
         .collect()
 }
 
-/// The bounded projection walk. It carries the running per-file node count and enforces
-/// the count and depth bounds as it descends, so no outline is materialized past either
-/// bound.
+/// The bounded projection walk: it carries the running per-file node count and enforces
+/// the count and depth bounds as it descends, so no outline is materialized past either.
 struct SymbolProjection {
     count: u64,
 }
@@ -1066,8 +1058,8 @@ impl SymbolProjection {
             Declaration::Struct(item) => {
                 leaf(&item.name, DeclKind::Struct, item.name_span, item.span)
             }
-            // A store's declared name is its saved-root spelling; its name span covers
-            // the `^root` sigiled root.
+            // A store's declared name is its saved-root spelling, and its name span
+            // covers the `^root` sigil.
             Declaration::Store(store) => leaf(
                 &store.root.root,
                 DeclKind::Store,
@@ -1136,7 +1128,7 @@ pub enum PositionClass {
     /// After `.`/`?.` on a receiver: the base type's declared fields when the base
     /// resolves to a struct type, else an empty candidate set.
     Member,
-    /// After `::` on a resolved enum path: that enum node's immediate members, categories
+    /// After `::` on a resolved enum path: that enum's immediate members, with categories
     /// marked non-selectable.
     EnumPath,
     /// A type-annotation position: named types, generic templates, built-in type names,
@@ -1244,9 +1236,9 @@ impl ParamPiece {
 
 /// The active-call fact at a position: the innermost enclosing call's callee signature
 /// display, its parameter pieces in declaration order, and the active argument index the
-/// offset sits at. `active` is `None` when the callee declares no parameters; otherwise it
-/// is the slot the cursor occupies, which may sit past the last parameter when more
-/// arguments than parameters are present.
+/// offset sits at. `active` is `None` when the callee declares no parameters, and
+/// otherwise may sit past the last parameter when there are more arguments than
+/// parameters.
 pub struct ActiveCall {
     signature: String,
     params: Vec<ParamPiece>,
