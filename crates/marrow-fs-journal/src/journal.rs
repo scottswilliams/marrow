@@ -612,9 +612,8 @@ pub enum ClaimRefusal {
 #[derive(Debug, Clone)]
 pub enum BuiltHeader {
     /// A header led by the shared common. The caller supplies the generation
-    /// slot and the bytes after it; the claim composes the common from the
-    /// directory it is claiming under and the inode it created, so the two
-    /// identities a caller cannot know are the two it does not supply.
+    /// slot and the bytes after it; the two identities it cannot know are the
+    /// two it does not supply.
     Witnessed {
         /// The row's 16-byte generation evidence.
         generation: [u8; 16],
@@ -832,15 +831,11 @@ pub struct MarkerNames<'n> {
     pending: &'n EntryName,
 }
 
-/// Which of the four marker-name shapes the pair is in.
-///
-/// This is the whole of what the name pair decides, and it is decided from the
-/// stats alone: [`classify`] receives no directory and no names, so a
-/// classification cannot read an artifact.
-///
-/// Turning a shape into a state that can act — discard, adopt, resume — reads
-/// the marker file and needs the directory, so it is a separate, named step the
-/// caller takes at the point of consumption.
+/// Which of the four marker-name shapes the pair is in, decided from the stats
+/// alone: [`classify`] receives no directory and no names, so a classification
+/// cannot read an artifact. Turning a shape into a state that can act — discard,
+/// adopt, resume — reads the marker file and needs the directory, so it is a
+/// separate step the caller takes at the point of consumption.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarkerShape {
     /// Neither name exists.
@@ -893,11 +888,10 @@ impl MarkerShape {
     /// Turn this shape into the state that can act on it, reading the marker
     /// file where the shape says there is one.
     ///
-    /// This runs after the shape is decided, so it is not the reader the
-    /// classify-before-reconcile ordering depends on — that one is
-    /// [`MarkerStats::read`], narrowed to the two names. Admission takes the
-    /// full pair and the directory because the states it returns act through
-    /// both afterwards: a preclaim discard and a pending resume among them.
+    /// This runs after the shape is decided, so the classify-before-reconcile
+    /// ordering depends on [`MarkerStats::read`], not on this. Admission takes
+    /// the full pair and the directory because the states it returns — a
+    /// preclaim discard, a pending resume — act through both afterwards.
     ///
     /// # Errors
     ///

@@ -32,20 +32,19 @@
 //!
 //! One crash window stays open by design. Entry creation is an `openat` whose
 //! mode the process umask masks, followed by an `fchmod` that restores the
-//! documented mode, so only a crash between the two leaves an entry carrying
-//! the masked mode. Creating under a generated temporary name and linking into
-//! place would close it, at the cost of debris under names this crate — which
+//! documented mode, so only a crash between the two leaves an entry carrying the
+//! masked mode. Creating under a generated temporary name and linking into place
+//! would close it, at the cost of debris under names this crate — which
 //! enumerates no directory — could never reach again.
 //!
 //! A umask that strips owner read or write leaves such an entry unreachable to
-//! any later open bound by those bits: preclaim debris it cannot read, or a
-//! lock entry it cannot reacquire. Both refuse with
+//! any later open bound by those bits. Both cases refuse with
 //! [`CustodyError::ModeDenied`], naming the observed mode and the mode to
-//! restore; restoring it returns the entry to ordinary classification. This
-//! crate performs no path-based `chmod` of its own, because repairing a name it
-//! has not opened would write through whatever that name maps to at that
-//! instant. A process holding the mode-override capability (`root`, or
-//! `CAP_DAC_OVERRIDE` on Linux) is bound by none of those bits.
+//! restore; restoring it returns the entry to ordinary classification. This crate
+//! performs no path-based `chmod` of its own, because repairing a name it has not
+//! opened would write through whatever that name maps to at that instant. A
+//! process holding the mode-override capability (`root`, or `CAP_DAC_OVERRIDE` on
+//! Linux) is bound by none of those bits.
 //!
 //! # Durability envelope
 //!

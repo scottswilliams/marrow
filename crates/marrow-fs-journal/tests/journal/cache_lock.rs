@@ -87,12 +87,10 @@ fn distinct_names_lock_independently() {
 /// `0000`. Restoring the named mode is the whole of the operator action, so
 /// the acquisition that follows it succeeds.
 ///
-/// A process holding the mode-override capability (`root`, or
-/// `CAP_DAC_OVERRIDE` on Linux) is bound by none of those bits: its reopen
-/// succeeds, the mode restore reaches the stripped entry, and acquisition
-/// returns it to `0600` on its own. Under such a process the planted modes
-/// refuse nothing, so this check would assert a refusal that never happened;
-/// the control below fails loudly there rather than reporting green.
+/// A process holding the mode-override capability (`root`, or `CAP_DAC_OVERRIDE`
+/// on Linux) is bound by none of those bits, so the planted modes refuse nothing
+/// and this check would assert a refusal that never happened; the control below
+/// fails loudly there rather than reporting green.
 #[test]
 fn a_mode_stripped_lock_entry_names_the_operator_action() {
     let scratch = Scratch::new("mode-stripped-lock");

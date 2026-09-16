@@ -54,13 +54,8 @@ const REQUIRED_DIR: u32 = 0o700;
 /// can do is put the object under a name no writer it must tolerate ever
 /// touches; the publication owner does that, and the writers it admits —
 /// ordinary Git operations, which write tracked paths — touch none of its
-/// untracked transients.
-///
-/// So: against a cooperating writer, no distinguishable content is lost.
-/// Against a writer outside the contract — one holding a descriptor opened
-/// before the operation began, or one deliberately writing untracked protocol
-/// names — the interval is open and this design does not close it. A removal
-/// never proves an object is its own.
+/// untracked transients. Against a writer outside that contract the interval
+/// stays open: a removal never proves an object is its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FsIdentity {
     dev: u64,

@@ -3,11 +3,10 @@
 //! Planting the one non-regular node an `RDWR | CREATE | NOFOLLOW` open
 //! accepts — a FIFO — requires a subprocess, and a `flock` survives in a
 //! concurrently spawned child until that child's close-on-exec descriptor
-//! closes at `exec`. A sibling test releasing a lock in the same process
-//! during that window would observe a spurious `Held`, so this leg holds no
-//! company. Every test in this crate that plants a FIFO under a custody open
-//! belongs here for that reason. The window is per-process, so a test binary in
-//! another crate that plants its own FIFO shares none of it.
+//! closes at `exec`. A sibling test releasing a lock in the same process during
+//! that window would observe a spurious `Held`, so every test in this crate that
+//! plants a FIFO under a custody open belongs in this binary alone. The window is
+//! per-process, so another crate's test binary shares none of it.
 
 mod common;
 
@@ -75,24 +74,17 @@ type EntryOpen = fn(&AdmittedDir, &EntryName) -> Result<(), CustodyError>;
 /// Every custody open of an existing entry refuses a planted FIFO for its node
 /// kind instead of blocking on it.
 ///
-/// `O_RDONLY` on a FIFO with no writer blocks until a writer arrives, so the
-/// read-only classification open would, without `O_NONBLOCK`, never reach the
-/// node-kind refusal at all: the caller would hang, indefinitely and under the
-/// write lock, on a node it was about to refuse. The read-write open reaches the
-/// refusal on its own flags, because an `O_RDWR` open of a FIFO waits for
-/// nobody — but that is a property of the platform's FIFO semantics rather than
-/// of this crate's code, so it is asserted here under the same budget rather
-/// than assumed. Both legs together are what make this file the evidence for
-/// every open a planted FIFO can reach; `open_lock_file` is covered by the
-/// sibling test above.
+/// `O_RDONLY` on a FIFO with no writer blocks until a writer arrives, so without
+/// `O_NONBLOCK` the read-only classification open would hang indefinitely, and
+/// under the write lock, on a node it was about to refuse. The read-write open
+/// reaches the refusal on its own flags, since an `O_RDWR` open of a FIFO waits
+/// for nobody; that is platform semantics, so it is asserted rather than assumed.
 ///
-/// Each open runs on its own thread over its own planted node and is awaited
-/// with a budget, so an open that does block fails this test loudly rather than
-/// hanging the binary. A blocked thread is unblockable by construction, so it is
-/// left parked and the process exit collects it; a failing run is already
-/// reporting the defect. The nodes are separate because a later leg opening a
-/// shared FIFO for writing would release an earlier leg blocked on it and hide
-/// exactly the defect this budget exists to catch.
+/// Each open runs on its own thread over its own planted node under a budget, so
+/// an open that does block fails loudly rather than hanging the binary. A blocked
+/// thread is unblockable by construction and is left parked for process exit. The
+/// nodes are separate because a later leg opening a shared FIFO for writing would
+/// release an earlier blocked leg and hide the defect this budget exists to catch.
 #[test]
 fn every_entry_open_refuses_a_fifo_rather_than_blocking_on_it() {
     for (tag, open) in [

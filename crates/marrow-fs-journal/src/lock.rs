@@ -17,21 +17,19 @@ use crate::entry::EntryName;
 /// and must stay disjoint from them; that namespace discipline is cooperative
 /// and belongs to the consumer.
 ///
-/// Release is not instantaneous across a concurrent process spawn. A child
-/// forked while the lock is held shares the underlying open file, so dropping
-/// the holder releases the exclusion only once the child's close-on-exec
-/// descriptor closes at `exec`. A holder that releases and immediately
-/// reacquires during that window may observe [`LockError::Held`].
-///
 /// What the lock excludes is a *separate* acquisition. `flock` is held by an
-/// open file description, not by a process or a thread, so a child that
-/// inherits the descriptor across `fork` shares the *same* hold: it is inside
-/// the exclusion, and parent and child can operate under it concurrently. A
+/// open file description, not by a process or a thread, so a child that inherits
+/// the descriptor across `fork` shares the *same* hold: it is inside the
+/// exclusion, and parent and child can operate under it concurrently. A
 /// genuinely fresh open in that child does contend, as any other process's
 /// would. Threads sharing one holder are likewise not serialized by it;
 /// serializing the operations performed under a single acquisition is the
-/// holder's own job, and exclusive borrows cover threads sharing one value but
-/// not two address spaces holding copies of it after a `fork`.
+/// holder's own job.
+///
+/// Release is therefore not instantaneous across a concurrent process spawn:
+/// dropping the holder releases the exclusion only once the forked child's
+/// close-on-exec descriptor closes at `exec`. A holder that releases and
+/// immediately reacquires during that window may observe [`LockError::Held`].
 ///
 /// ```compile_fail
 /// fn duplicate(lock: marrow_fs_journal::CacheLock) {

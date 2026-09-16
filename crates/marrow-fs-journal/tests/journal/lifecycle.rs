@@ -61,11 +61,10 @@ fn lineage_tail() -> BuiltHeader {
     }
 }
 
-/// `claim` with its arm named and then dropped. These tests assert which
-/// refusal a claim produces; which arm it fell on is asserted by the
-/// publication owner's own kats, where the two arms call for different
-/// handling. The match is spelled out rather than converted, because dropping
-/// the distinction is exactly what production code must never do implicitly.
+/// `claim` with its arm named and then dropped. These tests assert which refusal
+/// a claim produces; which arm it fell on is asserted by the publication owner's
+/// own kats. The match is spelled out rather than converted, so dropping the
+/// distinction stays explicit.
 fn claim_error<'d>(
     dir: &'d AdmittedDir,
     name: &PendingName,
@@ -204,8 +203,8 @@ fn a_frame_law_violation_in_the_header_is_refused_before_any_link() {
 // A pre-link recheck refusal discards the never-linked claim file it created.
 // No caller code runs between the create and the recheck — that is what keeps
 // a preclaim refusal from following a link — so the state cannot be induced
-// from inside the process. It needs a fault seam engaging after
-// `create_file_excl` succeeds, which the QACRASH01 register carries.
+// from inside the process, and reaching it needs a fault seam engaging after
+// `create_file_excl` succeeds.
 
 #[test]
 fn a_claim_collides_with_existing_journal_names() {
