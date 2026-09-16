@@ -250,8 +250,8 @@ pub(super) fn absent_not_operand(
 /// declared identifier of the same family rides along as a typed [`Steer::DidYouMean`]
 /// when one is an unambiguous close misspelling, so the fix is a single edit.
 ///
-/// The one writer of the not-in-scope sentence: every site that cannot resolve a name
-/// reports through here, and the prose itself lives on [`Unresolved`].
+/// The one builder of an unresolved-name row: every site that fails to resolve a name
+/// reports through here, and the sentence itself is rendered by [`Unresolved`].
 pub(super) fn name_not_in_scope(
     file: &ProjectFile,
     span: SourceSpan,
