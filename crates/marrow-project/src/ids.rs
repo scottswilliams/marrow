@@ -70,9 +70,9 @@ const _: () = {
     }
 };
 
-/// The ledger's retired pre-relocation path at the project root. Nothing reads
-/// it: capture refuses a file here with a one-line steer to the ledger's home,
-/// so a project never has two live ledger locations.
+/// A ledger path no project may use. Nothing reads it: capture refuses a file
+/// here with a one-line steer to the ledger's home, so a project never has two
+/// live ledger locations.
 pub const LEGACY_IDS_FILE: &str = "marrow.ids";
 
 /// The artifact header line. The version is part of the frozen line grammar.
@@ -90,27 +90,22 @@ const ID_HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 /// stored-format bytes — the `marrow ids v0` header is unchanged, so an older
 /// toolchain meeting a larger artifact rejects it rather than misreading it.
 ///
-/// The row cap tracks the durable member-tree scale so the full record-field
-/// width guard is reachable for a single wide resource: a resource of
+/// The row cap tracks the durable member-tree scale so the record-field width
+/// guard stays reachable for a single wide resource: a resource of
 /// `marrow-image`'s `MAX_RECORD_FIELDS` (4096) declared fields anchors one `Field`
-/// row per field plus a small fixed overhead (application, product, root
-/// placement, and its key columns), ~4100 rows — past the former 4096 cap. The
-/// value matches `marrow-image`'s `MAX_DURABLE_MEMBERS` (8192, the member-tree
-/// total) as the one obvious ceiling; `MAX_IDS_BYTES` carries a single wide
-/// resource with headroom (~4100 rows ≈ 250 KB « 1 MiB) but is not the binder at
-/// this width — the field-count guard is. A multi-root project carrying several
-/// wide resources can still exceed this row cap; sizing for that is a separate
-/// future widen.
+/// row per field plus a small fixed overhead, ~4100 rows. The cap matches
+/// `marrow-image`'s `MAX_DURABLE_MEMBERS` (8192). At this width the binder is the
+/// field-count guard, not `MAX_IDS_BYTES` (~4100 rows ≈ 250 KB « 1 MiB). A
+/// multi-root project carrying several wide resources can still exceed the row
+/// cap; sizing for that is a separate widen.
 pub const MAX_IDS_BYTES: usize = 1 << 20;
 pub const MAX_IDS_ROWS: usize = 8192;
 /// The longest anchor path a row may carry.
 const MAX_PATH_BYTES: usize = 512;
 
-// The ledger row cap must admit a full record-field-width resource plus its fixed
-// placement overhead, or the durable width guard would be unreachable through the
-// ledger. `marrow-image`'s `MAX_RECORD_FIELDS` is 4096; this crate does not depend on
-// `marrow-image`, so the width is stated as the documented cross-crate invariant here
-// and `marrow-image::bounds` carries the image-side half.
+// This crate does not depend on `marrow-image`, so its `MAX_RECORD_FIELDS` (4096)
+// is restated here as a cross-crate invariant; `marrow-image::bounds` carries the
+// image-side half.
 const _: () = assert!(
     MAX_IDS_ROWS >= 4096 + 16,
     "the ledger row cap must admit a full MAX_RECORD_FIELDS-width resource plus overhead",
@@ -502,9 +497,8 @@ impl IdentityLedger {
                 ));
             }
         }
-        // Preserve the parser's input-order rejection precedence above, then
-        // normalize only the admitted semantic state for equality, lookup, and
-        // canonical successor construction.
+        // Only the admitted semantic state is normalized; the parser's input-order
+        // rejection precedence above must survive unchanged.
         ledger.tombstones.sort_by(canonical_tombstone_order);
         Ok(ledger)
     }
@@ -2221,10 +2215,8 @@ mod tests {
         ));
     }
 
-    /// The row cap holds its chosen value (8192, tracking `marrow-image`'s member-tree
-    /// total) so the full 4096 record-field width is reachable for a single wide resource.
-    /// The `MAX_IDS_ROWS >= 4096 + overhead` decoupling invariant is enforced at compile
-    /// time by the `const _` block. An artifact one row past the cap rejects as `Bound`.
+    /// An artifact one row past the cap rejects as `Bound`. The cap's relation to the
+    /// record-field width is enforced at compile time by the `const _` block above.
     #[test]
     fn row_cap_holds_its_widened_value_and_rejects_one_past_it() {
         assert_eq!(super::MAX_IDS_ROWS, 8192, "durable-identity row cap");

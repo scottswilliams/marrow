@@ -33,14 +33,12 @@ impl CapturedFile {
         }
     }
 
-    /// Report whether a borrowed root-relative spelling is a syntactically valid
-    /// identity that exceeds [`MAX_FILE_IDENTITY_BYTES`], mapping only that
-    /// valid-overbound case to the sealed pathless
+    /// Map a borrowed root-relative spelling that is a syntactically valid identity
+    /// past [`MAX_FILE_IDENTITY_BYTES`] to the pathless
     /// [`CaptureErrorKind::SourcePathTooLong`]. Every other outcome — a valid
-    /// in-bound identity or any syntax error — returns `Ok(())`, so an over-long
-    /// identity is refused before any path copy while a syntactically invalid
-    /// spelling stays deferred to [`capture`]'s ordinary raw-path selection. It
-    /// borrows the spelling and copies no path.
+    /// in-bound identity or any syntax error — returns `Ok(())`, leaving a
+    /// syntactically invalid spelling to [`capture`]'s raw-path selection. The
+    /// spelling is borrowed and no path is copied.
     ///
     /// [`MAX_FILE_IDENTITY_BYTES`]: crate::MAX_FILE_IDENTITY_BYTES
     pub fn check_identity_bound(path: &str) -> Result<(), CaptureError> {
@@ -197,11 +195,9 @@ pub fn capture(
         ));
     }
 
-    // A syntactically valid identity longer than the maximum refuses first, before
-    // the ordinary invalid-path collection. The offender is the lexicographically
-    // smallest raw valid-overbound spelling; only its bounded limit/actual evidence
-    // is retained — never the raw path — so the fault is input-order independent and
-    // carries no path.
+    // A valid identity past the maximum refuses before the ordinary invalid-path
+    // collection. The offender is the lexicographically smallest such spelling, so
+    // the fault is input-order independent.
     let mut overbound: Option<(&str, usize, usize)> = None;
     for file in &files {
         if let Err(SourcePathReason::TooLong { limit, actual }) =
@@ -393,8 +389,7 @@ impl CaptureError {
             }
             SourcePathReason::OutsideSourceRoot => "must live under the `src` source root",
             SourcePathReason::NotMarrowSource => "must be a `.mw` file with a non-empty name",
-            // An over-long identity is always reported pathless; the raw path is
-            // never retained, so it cannot ride the located source-path message.
+            // An over-long identity is always reported pathless.
             SourcePathReason::TooLong { limit, actual } => {
                 return Self::source_path_too_long(limit, actual);
             }
