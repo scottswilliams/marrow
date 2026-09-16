@@ -1,25 +1,23 @@
-//! Durable value-shape accounting: the corpora that fix the depth
-//! decision and the expansion cost of a durable field's stored value.
+//! Durable value-shape accounting: the corpora that fix the depth decision and the
+//! expansion cost of a durable field's stored value.
 //!
-//! A durable field's value is a reference into the program's acyclic value-shape
-//! graph, not an occurrence tree. Three properties are pinned here, each against the
-//! production `compile()` path:
+//! A durable field's value is a reference into the program's acyclic value-shape graph,
+//! not an occurrence tree. Four properties are pinned against the production `compile()`
+//! path:
 //!
-//! 1. **Cost.** Nesting is a shared subgraph, so admitting or refusing a value costs
-//!    work in the unique value types and their declared edges. A project whose
-//!    *expanded* occurrence tree is exponential in its nesting depth must still be
-//!    decided promptly, with the same typed outcome.
-//! 2. **Depth.** A value type reached at two different depths is one node with one
-//!    depth: the longest path from a top-level field value down to it. The decision
-//!    may not depend on which occurrence the walk visits first, so the refuse/admit
-//!    boundary is pinned in both field orders.
-//! 3. **Location.** The over-deep report keeps the exact code, message, and span it
-//!    has today, for a struct leaf, an enum payload leaf, and a terminal scalar leaf,
-//!    at both the admitting and the refusing level.
-//! 4. **Bytes.** A value graph that *fits* encodes to the exact bytes and the exact
-//!    durable-contract identity it encoded to before the graph replaced the occurrence
-//!    tree — a diamond, where the shared shape is the thing an interned graph
-//!    represents differently.
+//! 1. **Cost.** Nesting is a shared subgraph, so deciding a value costs work in the
+//!    unique value types and their declared edges: a project whose *expanded* occurrence
+//!    tree is exponential in its depth must still be decided promptly, with the same
+//!    typed outcome.
+//! 2. **Depth.** A type reached at two depths is one node with one depth — the longest
+//!    path from a top-level field value down to it — so the refuse/admit boundary is
+//!    pinned in both field orders.
+//! 3. **Location.** The over-deep report keeps its exact code, message, and span for a
+//!    struct leaf, an enum payload leaf, and a terminal scalar leaf, at both the
+//!    admitting and the refusing level.
+//! 4. **Bytes.** A value graph that *fits* encodes to exact frozen bytes and an exact
+//!    durable-contract identity, pinned on a diamond — the shared shape an interned
+//!    graph represents differently from an occurrence tree.
 
 use marrow_codes::Code;
 use std::fmt::Write as _;
@@ -88,8 +86,7 @@ fn nominal_boundaries_include_sparse_and_parked_durable_bindings() {
 #[test]
 fn nominal_boundaries_preserve_the_existing_generic_struct_durable_refusal() {
     let source = "module main\ntype Age: int in 0..=150\nstruct Phantom<T> { value: int }\nresource R { required f: Phantom<Age> }\nstore ^a[id: int]: R\npub fn plain(): int { return 0 }\n";
-    // Generic struct fields already have a separate durable eligibility refusal;
-    // this boundary check does not widen that existing subset.
+    // The boundary check does not widen the separate generic-field refusal subset.
     let diagnostics = diagnostics(compile(&project(source, Some(&store_ledger(&[])))));
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(diagnostics[0].code(), Code::CheckUnsupported);
@@ -103,8 +100,6 @@ fn nominal_boundaries_preserve_a_nominal_free_bound_resource_with_generic_fields
     compile(&input).expect("generic fields and owned groups remain supported together");
 }
 
-/// The source diagnostics of a failed compile, or a panic naming the arm reached
-/// instead.
 fn diagnostics(result: Result<impl std::fmt::Debug, CompileFailure>) -> Vec<SourceDiagnostic> {
     match result {
         Ok(compiled) => panic!("expected diagnostics, compiled: {compiled:?}"),
@@ -113,9 +108,9 @@ fn diagnostics(result: Result<impl std::fmt::Debug, CompileFailure>) -> Vec<Sour
     }
 }
 
-/// Every `check.resource_limit` row of a failed compile, rendered exactly as the CLI
-/// spells it: `<file>:<line>:<column>: <code>: <message>`. The whole row is compared, so a
-/// moved span or a reworded message fails the comparison.
+/// Every `check.resource_limit` row of a failed compile, rendered as the CLI spells it:
+/// `<file>:<line>:<column>: <code>: <message>`. The whole row is compared, so a moved
+/// span or a reworded message fails.
 fn located_resource_limits(result: Result<impl std::fmt::Debug, CompileFailure>) -> Vec<String> {
     diagnostics(result)
         .iter()
@@ -142,17 +137,14 @@ fn over_deep_row(line: u32) -> String {
     )
 }
 
-// ---- Expansion cost is the unique value graph, not the occurrence tree.
-
-/// A single-root project whose one durable field nests `levels` distinct structs,
-/// each with `fanout` fields referencing the level below, terminating in one scalar.
+/// A single-root project whose one durable field nests `levels` distinct structs, each
+/// with `fanout` fields referencing the level below, terminating in one scalar.
 ///
-/// Every declared bound holds: the value is `levels + 2` levels deep (well inside
-/// `MAX_DURABLE_VALUE_DEPTH` = 32) and each struct carries `fanout` leaves (well
-/// inside `MAX_STRUCT_LEAVES` = 64). The *expanded* occurrence tree, however, has
-/// `fanout ^ levels` leaves, so any representation that materializes one — in the
-/// compiler, in the contract preimage, or in the DURABLE section — costs time
-/// exponential in `levels`.
+/// Every declared bound holds: the value is `levels + 2` levels deep (inside
+/// `MAX_DURABLE_VALUE_DEPTH` = 32) and each struct carries `fanout` leaves (inside
+/// `MAX_STRUCT_LEAVES` = 64). The *expanded* occurrence tree has `fanout ^ levels`
+/// leaves, so any representation that materializes one — in the compiler, in the
+/// contract preimage, or in the DURABLE section — costs time exponential in `levels`.
 fn nested_struct_fanout(levels: usize, fanout: usize) -> ProjectInput {
     let mut source = String::from("module main\n\nstruct S0 {\n    v: int\n}\n");
     for level in 1..=levels {
@@ -171,18 +163,16 @@ fn nested_struct_fanout(levels: usize, fanout: usize) -> ProjectInput {
 }
 
 /// The wall-clock budget for one whole-project compile of a corpus whose expanded
-/// occurrence tree is exponential. The work the invariant permits is linear in the
-/// unique value nodes and declared edges (a few dozen here) plus the bytes the
-/// bounded sink actually emits, so the true cost is milliseconds; the budget is two
-/// orders of magnitude above that, and two orders of magnitude below the base
-/// tree-materializing cost, so it distinguishes the two without timing precision.
+/// occurrence tree is exponential. The permitted work is linear in the unique value
+/// nodes and declared edges (a few dozen here) plus the bytes the bounded sink emits, so
+/// the true cost is milliseconds: the budget sits two orders of magnitude above that and
+/// two below the tree-materializing cost, distinguishing them without timing precision.
 const EXPANSION_BUDGET: Duration = Duration::from_secs(20);
 
-/// 14 levels of 4 fields is 268,435,456 expanded leaves over 16 declared struct
-/// types. Expanding that tree is minutes of CPU; deciding it from the value graph is
-/// immediate. The typed outcome is unchanged either way: the DURABLE body this value
-/// would occupy is far past `MAX_IMAGE_BYTES`, so the compile reaches the aggregate
-/// `ImageBytes` resource limit.
+/// 14 levels of 4 fields is 268,435,456 expanded leaves over 16 declared struct types.
+/// Expanding that tree is minutes of CPU; deciding it from the value graph is immediate.
+/// The typed outcome is the same either way: the DURABLE body this value would occupy is
+/// far past `MAX_IMAGE_BYTES`, so the compile reaches the aggregate `ImageBytes` limit.
 #[test]
 fn an_exponentially_expanded_value_is_decided_in_its_unique_nodes() {
     let input = nested_struct_fanout(14, 4);
@@ -201,18 +191,15 @@ fn an_exponentially_expanded_value_is_decided_in_its_unique_nodes() {
     );
 }
 
-// ---- One type reached at two depths has one longest-path depth.
-
-/// A diamond: struct `D` is both a top-level durable field value (depth 1) and the
-/// base of a `chain`-long nesting chain under a second field. `D`'s scalar leaf
-/// therefore sits at depth 2 through one field and at depth `chain + 2` through the
-/// other, so the two occurrences of one type disagree about depth and only the
+/// A diamond: struct `D` is both a top-level durable field value (depth 1) and the base
+/// of a `chain`-long nesting chain under a second field, so `D`'s scalar leaf sits at
+/// depth 2 through one field and at depth `chain + 2` through the other. Only the
 /// longest path decides the bound.
 ///
-/// `field_order` is the declaration order of the two fields. The decision must not
-/// depend on it: a walk that visits the shallow occurrence first and dedupes by
-/// first visit would admit an over-deep value, and one that visits the deep
-/// occurrence first and dedupes would refuse a fitting one.
+/// The decision must not depend on the declaration order of the two fields: a walk that
+/// visits the shallow occurrence first and dedupes by first visit would admit an
+/// over-deep value, and one that visits the deep occurrence first would refuse a
+/// fitting one.
 fn depth_diamond(chain: usize, shallow_first: bool) -> ProjectInput {
     let mut source =
         String::from("module main\n\nstruct D {\n    v: int\n}\nstruct C1 {\n    inner: D\n}\n");
@@ -250,15 +237,12 @@ fn a_diamond_at_the_depth_bound_admits_in_both_field_orders() {
 }
 
 /// One level deeper the same shared type's longest path reaches 33 and the value
-/// refuses — again in either field order, and with the located report at the store
-/// declaration. The shallow occurrence of the very same type stays within the bound,
-/// so a per-node metric that kept only the first depth it saw would decide this
+/// refuses, in either field order. The shallow occurrence of that very type stays within
+/// the bound, so a per-node metric keeping only the first depth it saw would decide this
 /// wrongly in one direction or the other.
 #[test]
 fn a_diamond_one_level_past_the_bound_refuses_in_both_field_orders() {
     for shallow_first in [true, false] {
-        // The store declaration follows `D`, `C1..=C31`, the resource, and the blank
-        // lines the corpus writes between them.
         let rows = located_resource_limits(compile(&depth_diamond(31, shallow_first)));
         assert_eq!(
             rows.len(),
@@ -274,8 +258,6 @@ fn a_diamond_one_level_past_the_bound_refuses_in_both_field_orders() {
         );
     }
 }
-
-// ---- The located depth report is exact.
 
 /// A durable field whose value nests `chain` structs over `leaf`, so the leaf sits at
 /// depth `chain + 1`. `store_line` is the 1-based line the `store ^a` declaration
@@ -309,9 +291,8 @@ fn leaf_chain(
     )
 }
 
-/// A terminating scalar occupies a level of its own. At 31 enclosing structs the
-/// scalar sits at depth 32 and admits; at 32 it sits at depth 33 and draws exactly
-/// the frozen located row.
+/// A terminating scalar occupies a level of its own, so 31 enclosing structs put it at
+/// depth 32 and 32 put it one past the bound.
 #[test]
 fn a_terminal_scalar_leaf_reports_at_the_frozen_span() {
     let (fitting, _) = leaf_chain(31, "int", &[], "");
@@ -324,9 +305,9 @@ fn a_terminal_scalar_leaf_reports_at_the_frozen_span() {
     );
 }
 
-/// A struct leaf one level past the bound reports the same row: the value that
-/// terminates the chain is a nested product, so the enclosing structs all fit while
-/// the product's own leaf does not.
+/// A struct leaf one level past the bound reports the same row: the value terminating
+/// the chain is a nested product, so the enclosing structs fit while its own leaf does
+/// not.
 #[test]
 fn a_struct_leaf_reports_at_the_frozen_span() {
     let prelude = "struct Leaf {\n    v: int\n}\n\n";
@@ -357,8 +338,6 @@ fn an_enum_payload_leaf_reports_at_the_frozen_span() {
     );
 }
 
-// ---- One located row per over-deep field, and its sibling for the excluded types.
-
 /// Every located row of a failed compile carrying `code`, in report order, rendered
 /// exactly as the CLI spells it.
 fn located_rows(result: Result<impl std::fmt::Debug, CompileFailure>, code: Code) -> Vec<String> {
@@ -378,14 +357,13 @@ fn located_rows(result: Result<impl std::fmt::Debug, CompileFailure>, code: Code
         .collect()
 }
 
-/// The recorded B11 probe: a 32-level chain `C0..=C31`, a struct `W` holding that
-/// chain twice, and a resource storing `W` in one field and the chain directly in
-/// another, projected by two stores.
+/// A 32-level chain `C0..=C31`, a struct `W` holding that chain twice, and a resource
+/// storing `W` in one field and the chain directly in another, projected by two stores.
 ///
-/// Both durable fields are over-deep. The expanded occurrence tree has *three*
-/// over-deep leaves per store — `f.a`, `f.b`, and `g` — so an accounting that decides
-/// at the leaf reports three identical rows per store. Deciding at the field root,
-/// which is what makes the value graph a graph, reports one row per over-deep field.
+/// Both durable fields are over-deep. The expanded occurrence tree has *three* over-deep
+/// leaves per store — `f.a`, `f.b`, and `g` — so an accounting that decides at the leaf
+/// reports three identical rows per store. Deciding at the field root, which is what
+/// makes the value graph a graph, reports one row per over-deep field.
 fn two_over_deep_fields_over_two_stores() -> (ProjectInput, u32) {
     let mut source = String::from("module main\n\nstruct C0 {\n    v: int\n}\n");
     for level in 1..=31 {
@@ -407,10 +385,8 @@ fn two_over_deep_fields_over_two_stores() -> (ProjectInput, u32) {
     )
 }
 
-/// One over-deep durable field draws one located refusal, whatever the multiplicity
-/// of over-deep leaves its expansion would have had. The message and span are
-/// unchanged, and the per-store ordering is unchanged: this is a strict subset of the
-/// rows the leaf-counting accounting emitted, and preserving the multiplicity would
+/// One over-deep durable field draws one located refusal, whatever the multiplicity of
+/// over-deep leaves its expansion would have had. Preserving that multiplicity would
 /// require building the expansion the value graph exists to avoid.
 #[test]
 fn one_over_deep_field_draws_one_row_however_many_leaves_its_expansion_would_have() {
@@ -440,9 +416,8 @@ fn source_line(source: &str, prefix: &str) -> u32 {
 }
 
 /// The same law for the value types the durable set excludes: a struct holding a
-/// collection is refused once per store, not once per durable field that stores it.
-/// The report is the same located `check.unsupported` row either way, so this is the
-/// same strict subset the depth row takes.
+/// collection is refused once per store, not once per durable field that stores it, and
+/// the located `check.unsupported` row is the same either way.
 #[test]
 fn an_unsupported_value_type_draws_one_row_however_many_fields_store_it() {
     let source = "module main\n\n\
@@ -462,17 +437,14 @@ fn an_unsupported_value_type_draws_one_row_however_many_fields_store_it() {
     );
 }
 
-// ---- A hostile compact expansion costs the bytes the ceiling admits.
-
-/// The frozen hostile corpus: one scalar base under exactly 31 enclosing struct
-/// levels, each carrying `MAX_STRUCT_LEAVES` = 64 fields referencing the level below.
+/// The frozen hostile corpus: one scalar base under exactly 31 enclosing struct levels,
+/// each carrying `MAX_STRUCT_LEAVES` = 64 fields referencing the level below.
 ///
-/// Nothing here is over any declared bound. The outer value is depth 32 — exactly
-/// `MAX_DURABLE_VALUE_DEPTH` — and every level is exactly at the leaf bound. What the
-/// v0 wire would have to spell is `64^31` leaves, some 55 orders of magnitude past
-/// `MAX_IMAGE_BYTES`, while the value graph that describes it is 32 nodes and 1,984
-/// declared edges. This is the corpus that separates the two costs: a representation
-/// that expands is not slow here, it does not terminate.
+/// Nothing here is over any declared bound — the outer value is depth 32, exactly
+/// `MAX_DURABLE_VALUE_DEPTH`, and every level is exactly at the leaf bound. What the v0
+/// wire would have to spell is `64^31` leaves, some 55 orders of magnitude past
+/// `MAX_IMAGE_BYTES`, while the value graph describing it is 32 nodes and 1,984 declared
+/// edges. A representation that expands is not slow here; it does not terminate.
 fn hostile_compact_expansion() -> ProjectInput {
     let mut source = String::from("module main\n\nstruct S0 {\n    v: int\n}\n");
     for level in 1..=30 {
@@ -490,13 +462,12 @@ fn hostile_compact_expansion() -> ProjectInput {
     project(&source, Some(&store_ledger(&[])))
 }
 
-/// The repeated enum-payload analogue, at the same total depth. An enum payload leaf
-/// is a scalar on the beta line, so the repetition is carried by the enclosing struct
-/// levels: `Opt` sits at depth 2 and 30 enclosing levels of 64 fields each reference
-/// it, so the outer value is depth 32 and the expansion writes the enum's sum and
-/// member identities `64^30` times over. The enum arm of the expansion is what this
-/// corpus drives — a header, two ledger identities, and a member count per occurrence
-/// — rather than the scalar arm the struct corpus repeats.
+/// The repeated enum-payload analogue, at the same total depth. An enum payload leaf is
+/// a scalar on the beta line, so the repetition is carried by the enclosing struct
+/// levels: `Opt` sits at depth 2 and 30 enclosing levels of 64 fields each reference it,
+/// so the outer value is depth 32 and the expansion would write the enum's sum and
+/// member identities `64^30` times over — driving the enum arm rather than the scalar
+/// arm the struct corpus repeats.
 fn hostile_enum_payload_expansion() -> ProjectInput {
     let mut source = String::from("module main\n\nenum Opt {\n    none\n    some(v: int)\n}\n");
     for level in 1..=30 {
@@ -532,9 +503,7 @@ fn hostile_enum_payload_expansion() -> ProjectInput {
 ///
 /// No stage may expand it: the compiler holds 32 value nodes, the producer's
 /// durable-body lower bound stops at the first byte past `MAX_IMAGE_BYTES`, and the
-/// contract identity is never computed over bytes no image can carry. The reported
-/// outcome is the aggregate `ImageBytes` limit, which is what a body larger than the
-/// whole-image ceiling has always meant.
+/// contract identity is never computed over bytes no image can carry.
 #[test]
 fn a_hostile_compact_expansion_is_decided_without_being_expanded() {
     for (name, input) in [
@@ -560,12 +529,10 @@ fn a_hostile_compact_expansion_is_decided_without_being_expanded() {
     }
 }
 
-// ---- A fitting diamond keeps its exact v0 bytes and contract identity.
-
 /// The fitting small-diamond corpus: struct `Leaf` is the value of one durable field
 /// *and* both leaves of `Mid`, which is the value of another. One shape, two depths,
-/// three occurrences — the case where an interned graph and an occurrence tree differ
-/// in representation and must not differ in a single byte.
+/// three occurrences — where an interned graph and an occurrence tree differ in
+/// representation and must not differ in a single byte.
 fn small_diamond() -> ProjectInput {
     let source = "module main\n\n\
          struct Leaf {\n    v: int\n    w: string\n}\n\
@@ -607,9 +574,8 @@ fn hex(bytes: &[u8]) -> String {
     out
 }
 
-/// The diamond's DURABLE section and contract retain the occurrence-tree encoding.
 /// The shared shape is spelled once per occurrence on the wire. Separate image
-/// identities pin the current generation's header, digest slot and payload.
+/// identities pin the current generation's header, digest slot, and payload.
 #[test]
 fn a_fitting_diamond_keeps_its_exact_bytes_and_contract_identity() {
     let compiled = compile(&small_diamond()).expect("the small diamond fits every bound");
@@ -646,14 +612,11 @@ const DIAMOND_CONTRACT_ID: &str =
 /// The current-generation whole-image identity of [`small_diamond`].
 const DIAMOND_IMAGE_ID: &str = "151aea50ca5b088757436d4705353175560ebc64c67d3a2fcd102ecf8c1faa32";
 
-/// The full-image digest of [`small_diamond`]: marrow-image's domain-separated
-/// `image_id` construction applied to EVERY emitted byte — magic, version, the embedded
-/// `ImageId` slot, and all sections — so a header rewrite or digest-slot forgery of
-/// equal length cannot hide behind the section and embedded-id pins above.
+/// The full-image digest of [`small_diamond`]: `image_id` applied to EVERY emitted byte
+/// — magic, version, the embedded `ImageId` slot, and all sections — so a header rewrite
+/// or a digest-slot forgery of equal length cannot hide behind the pins above.
 const DIAMOND_FULL_IMAGE_DIGEST: &str =
     "03396a4c9a3175bca34e8c2bf4d8b5c551e786b493e0876b0d871c4d5d093222";
-
-// ---- The refusal rows compose rather than replace one another.
 
 /// The over-wide row the struct-leaf bound reports, at the store declaration's own line.
 fn over_wide_row(line: u32) -> String {
@@ -691,11 +654,10 @@ fn bounds_max_struct_leaves() -> usize {
 /// A field that is over-deep *and* whose value contains an over-wide struct draws both
 /// rows.
 ///
-/// The depth decision happens at the field root, after the walk that found the width; it
-/// adds a row rather than replacing one. Reporting only the depth would mean fixing the
-/// nesting to be told about the width, and reporting only the width would leave the
-/// depth undiscovered — both are true facts about the same declaration, so the rows
-/// compose. The order is the order they were found: the walk's row first, then the root's.
+/// The depth decision happens at the field root, after the walk that found the width,
+/// and adds a row rather than replacing one: reporting only the depth would mean fixing
+/// the nesting to be told about the width. The order is the order they were found — the
+/// walk's row first, then the root's.
 #[test]
 fn a_field_that_is_both_over_deep_and_over_wide_draws_both_rows() {
     let (input, store_line) = over_wide_under_over_deep();
@@ -728,11 +690,10 @@ fn unsupported_under_two_over_deep_fields() -> (ProjectInput, u32) {
 
 /// The two laws compose without either becoming the other's multiplicity.
 ///
-/// A value type outside the durable set is decided once per distinct shape, so the shared
-/// `Bad` draws one `check.unsupported` however many fields reach it. Depth is decided per
-/// field, so both over-deep fields draw their own row. Three rows, one of each kind and
-/// one per over-deep field — not one row per over-deep leaf of an expansion, and not one
-/// row standing in for the other two.
+/// A value type outside the durable set is decided once per distinct shape, so the
+/// shared `Bad` draws one `check.unsupported` however many fields reach it; depth is
+/// decided per field, so both over-deep fields draw their own row. Neither stands in for
+/// the other, and neither is one row per over-deep leaf of an expansion.
 #[test]
 fn an_unsupported_shape_shared_by_two_over_deep_fields_draws_three_rows() {
     let (input, store_line) = unsupported_under_two_over_deep_fields();

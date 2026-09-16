@@ -7,14 +7,14 @@
 //! so a lookup answers `Refused` — carrying the declaring code, file, and span —
 //! rather than `Absent`.
 //!
-//! The retained summary is the only owned retention this module adds, and it is
-//! charged at `declare` against the pass's one [`DeclarationBudget`], whose ceiling
-//! is [`MAX_DECLARATION_LEDGER_BYTES`]. The charge is per refused *key*: re-refusing
-//! a key already in the ledger increments a bounded occurrence count and retains no
-//! second summary, which is what holds amplification to the number of refused
-//! declarations rather than the number of uses. A merge that adopts an identity gap
-//! the first refusal did not carry retains that gap's path and is charged for it, so
-//! the ceiling bounds what the ledger holds rather than what it first charged.
+//! The retained summary is the only owned retention this module adds, charged at
+//! `declare` against the pass's one [`DeclarationBudget`], whose ceiling is
+//! [`MAX_DECLARATION_LEDGER_BYTES`]. The charge is per refused *key*: re-refusing a
+//! key already in the ledger raises a bounded occurrence count and retains no second
+//! summary, holding amplification to the number of refused declarations rather than
+//! the number of uses. A merge that adopts an identity gap the first refusal did not
+//! carry is charged for that gap's path, so the ceiling bounds what the ledger holds
+//! rather than what it first charged.
 
 use std::borrow::Borrow;
 use std::cell::Cell;
@@ -35,10 +35,8 @@ use crate::diag::{
 /// Stated, not derived from a length: the ledger is live concurrently with the
 /// diagnostic collector, and no retained refusal is worth more than the report that
 /// accompanies it, so the ledger's budget is the collector's. The refused-key count
-/// is otherwise bounded only by the admitted source (`CaptureLimits::DEFAULT`
-/// admits up to 64 MiB), because a refused declaration reaches neither the image
-/// bounds nor a halt at the diagnostic ceiling — a `Limited` collector keeps
-/// admitting and discarding while the pass runs on.
+/// is otherwise bounded only by the admitted source (up to 64 MiB), because a refused
+/// declaration reaches neither the image bounds nor a halt at the diagnostic ceiling.
 pub(crate) const MAX_DECLARATION_LEDGER_BYTES: usize = MAX_DIAGNOSTIC_BYTES;
 
 /// The ledger's byte budget is spent; the pass stops with a typed resource limit
@@ -50,9 +48,8 @@ pub(crate) struct DeclarationLedgerFull;
 ///
 /// Both arms stop the pass at the invariant boundary rather than dropping the key:
 /// a namespace that swallowed either would answer a later lookup with a fabricated
-/// absence, which is the defect this module exists to remove. Drift reaches this
-/// channel because a repeat of a refused key is merged through the lookup index, so
-/// `declare` reads that index exactly as `lookup` and `refusal` do.
+/// absence. Drift reaches this channel because a repeat of a refused key merges
+/// through the lookup index, so `declare` reads that index as `lookup` does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeclareError {
     LedgerFull(DeclarationLedgerFull),
@@ -87,9 +84,8 @@ impl From<DeclarationIndexDrift> for DeclareError {
 /// the pass retains while the diagnostic collector is live, and a pass runs six
 /// production ledgers, so a per-ledger charge would admit six times the declared
 /// bound. Shared by handle rather than by `&mut`, because the ledgers are owned by
-/// separate registries that are built in sequence and then read together — no
-/// single mutable borrow spans them. A semantic pass runs on one thread, and the
-/// handle is deliberately not `Sync`.
+/// separate registries built in sequence and then read together — no single mutable
+/// borrow spans them. A semantic pass runs on one thread; the handle is not `Sync`.
 #[derive(Clone, Default)]
 pub(crate) struct DeclarationBudget(Rc<Cell<usize>>);
 
@@ -112,12 +108,10 @@ impl DeclarationBudget {
 
 /// Which namespace's ledger minted a [`DeclarationRefusalId`].
 ///
-/// The tag is what makes an id comparable across ledgers. Several namespaces
-/// answer one resolution — a type name, a generic template name, and a store root
-/// name all reach `ResolveRefusal` — so a bare index would let two unrelated
-/// refusals with equal indexes compare equal and collapse into one steer. Every
-/// variant names a live producer; a namespace earns a variant when its ledger
-/// lands, never before.
+/// The tag is what makes an id comparable across ledgers. Several namespaces answer
+/// one resolution — a type name, a generic template name, and a store root name all
+/// reach `ResolveRefusal` — so a bare index would let two unrelated refusals with
+/// equal indexes compare equal and collapse into one steer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DeclarationNamespace {
     Constant,
@@ -131,11 +125,10 @@ pub enum DeclarationNamespace {
     /// source refused it outright.
     Module,
     NamedType,
-    /// The members of one resource record or one of its unkeyed groups, keyed by
-    /// the owner they are written in. A member is the one declaration this line
-    /// refuses *without* refusing what contains it, so the containing record
-    /// survives with a narrowed member set and every lookup of the refused member
-    /// would otherwise read as never written.
+    /// The members of one resource record or one of its unkeyed groups, keyed by the
+    /// owner they are written in. A member is the one declaration refused *without*
+    /// refusing what contains it, so the containing record survives with a narrowed
+    /// member set and the refused member would otherwise read as never written.
     ResourceMember,
 }
 
@@ -144,8 +137,8 @@ pub enum DeclarationNamespace {
 ///
 /// The two namespaces keyed this way — module constants and function signatures —
 /// are separate ledgers, so the pair is the key rather than an owner discriminator.
-/// A named tuple rather than a bare `(String, String)`: the two halves are not
-/// interchangeable, and a key built with them swapped would resolve silently.
+/// Named rather than a bare `(String, String)`: the halves are not interchangeable,
+/// and a key built with them swapped would resolve silently.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct ModuleScopedName {
     owner: String,
@@ -199,27 +192,24 @@ pub(crate) struct DeclarationRefusalSummary {
     code: Code,
     /// The ledger that holds this refusal, stamped by [`Ledger::declare`].
     ///
-    /// A summary is built by the refusing pass and only then handed to a ledger, so
-    /// the namespace is not knowable at construction; every summary a *steer* reads
-    /// is read back out of a ledger, so by then it is. `None` therefore means
-    /// exactly "built, not yet declared", which is a state no steer can observe.
+    /// The namespace is not knowable at construction, since a summary is built by the
+    /// refusing pass and only then handed to a ledger. `None` means exactly "built,
+    /// not yet declared", a state no steer can observe.
     namespace: Option<DeclarationNamespace>,
     further: u16,
     gap: Option<IdentityGap>,
     report: RefusalReport,
     /// Whether a use site has already been steered to this cause. A `Cell` because
     /// the flag is the report-once record and every namespace ledger is read through
-    /// a shared reference during lowering; the alternative is the parallel
-    /// `&mut BTreeSet<String>` of steered names this ledger replaces.
+    /// a shared reference during lowering.
     steered: Cell<bool>,
 }
 
 /// Which occurrence or pass owns reporting a refusal's cause.
 ///
-/// A steer sends the reader to the cause, so it must not claim a location the
-/// report does not occupy. A covered cause retains its code here while another
-/// occurrence or pass owns reporting; a deferred pass may be pre-empted by a terminal
-/// stop.
+/// A steer sends the reader to the cause, so it must not claim a location the report
+/// does not occupy. A covered cause retains its code here while another occurrence or
+/// pass owns reporting; a deferred pass may be pre-empted by a terminal stop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefusalReport {
     /// The refusing site pushed the row at this declaration's own span.
@@ -227,10 +217,9 @@ pub enum RefusalReport {
     /// A different pass or occurrence owns reporting. The steer names the code
     /// without claiming a report location or that a deferred pass has run.
     ByCoveringPass,
-    /// A stage that ran before the semantic pass refused the whole source this
-    /// declaration was written in, and already reported why. The steer names that
-    /// stage, because the reader looks for the report in the refused source rather
-    /// than at the declaration that names it.
+    /// A stage before the semantic pass refused the whole source this declaration was
+    /// written in, and already reported why. The steer names that stage, because the
+    /// report sits in the refused source rather than at the declaration.
     ByEarlierStage(SourceStage),
 }
 
@@ -268,10 +257,9 @@ impl SourceStage {
 /// Push the diagnostic that refuses `name` and summarize it from the same triple,
 /// so a retained refusal cannot describe a report that was never made.
 ///
-/// This is the only way a [`DeclarationRefusalSummary`] is built outside the
-/// ledger's own merge, which is what makes "push the diagnostic and `continue`"
-/// inexpressible against a ledger: the pushed row and the retained summary are one
-/// statement.
+/// The only way a [`DeclarationRefusalSummary`] is built outside the ledger's own
+/// merge, which is what makes "push the diagnostic and `continue`" inexpressible
+/// against a ledger: the pushed row and the retained summary are one statement.
 pub(crate) fn refuse(
     diagnostics: &mut DiagnosticCollector,
     at: DeclarationSite<'_>,
@@ -318,14 +306,12 @@ pub(crate) fn refuse_first(
 
 /// One layer of declared members, refusing a repeated name at the repeat.
 ///
-/// Every namespace of members a declaration opens — a struct's or resource's
-/// fields, an enum's members and one member's payload fields, a type-parameter
-/// list, a parameter list, a root's key tuple, a branch's key tuple together with
-/// the members it keys — takes its names through one of these, in declaration
-/// order. The first occurrence keeps the name and the repeat earns the
-/// `check.name_conflict` row at its own name token, so a second slot is never
-/// minted for a name the reader wrote once and no image carries two members of
-/// one name for the verifier to refuse without a span.
+/// Every namespace of members a declaration opens — struct or resource fields, enum
+/// members and payload fields, a type-parameter list, a parameter list, a root's or
+/// branch's key tuple — takes its names through one of these, in declaration order.
+/// The first occurrence keeps the name and the repeat earns the `check.name_conflict`
+/// row at its own name token, so no image carries two members of one name for the
+/// verifier to refuse without a span.
 ///
 /// The set borrows the names from the declaration it walks; the owner spelling is
 /// rendered into the row, so it is owned.
@@ -363,9 +349,8 @@ impl<'a> MemberNamespace<'a> {
     }
 }
 
-/// Retain the code for a cause whose report another occurrence or pass owns.
-/// The caller supplies that ownership; the filename inventory is a review prompt,
-/// not a report-delivery check. Deferred reporting depends on reaching its pass.
+/// Retain the code for a cause whose report another occurrence or pass owns. The
+/// caller supplies that ownership; deferred reporting depends on reaching its pass.
 pub(crate) fn refuse_covered(at: DeclarationSite<'_>, code: Code) -> DeclarationRefusalSummary {
     covered(at, code, RefusalReport::ByCoveringPass)
 }
@@ -374,9 +359,7 @@ pub(crate) fn refuse_covered(at: DeclarationSite<'_>, code: Code) -> Declaration
 /// and reported.
 ///
 /// The stage owns the code, so this cannot cite a report the named stage does not
-/// make. Re-deriving the stage's own row here would either double-report it or
-/// re-plumb that stage to hand its rows back for nothing: the row already stands in
-/// the terminal the reader is shown.
+/// make, and the stage's own row already stands in the terminal the reader is shown.
 pub(crate) fn refuse_at_earlier_stage(
     at: DeclarationSite<'_>,
     stage: SourceStage,
@@ -440,9 +423,9 @@ pub(crate) struct DeclarationSite<'a> {
 }
 
 impl<'a> DeclarationSite<'a> {
-    /// A declaration whose whole source an earlier stage refused, so it has no span
-    /// of its own: a file that did not decode or did not parse produced no construct
-    /// to point at, and the report the reader follows is that stage's.
+    /// A declaration whose whole source an earlier stage refused: a file that did not
+    /// decode or parse produced no construct to point at, so the site has no span of
+    /// its own and the report the reader follows is that stage's.
     pub(crate) fn whole_file(name: &'a str, file: &'a FileIdentity, at: FileRef) -> Self {
         Self {
             name,
@@ -472,10 +455,10 @@ impl DeclarationRefusalSummary {
     /// Attach the identity gap this refusal carries.
     ///
     /// Only the identity class does: its steer sends the reader to the
-    /// `check.durable_identity` report family rather than to a single declaring
-    /// row, so the gap is what tells the two classes apart at the use site. The
-    /// retained path is a second copy of one the collector already holds, and §4's
-    /// term charges it as such — which is why no other class carries one.
+    /// `check.durable_identity` report family rather than to a single declaring row,
+    /// so the gap is what tells the two classes apart at the use site. The retained
+    /// path is a second copy of one the collector already holds, and is charged as
+    /// such — which is why no other class carries one.
     pub(crate) fn with_gap(mut self, gap: IdentityGap) -> Self {
         self.gap = Some(gap);
         self
@@ -499,10 +482,9 @@ impl DeclarationRefusalSummary {
     /// What the reader has to correct, phrased so it names a location only where a
     /// report actually sits.
     ///
-    /// A steer sends the reader to the cause. Most refusals report at the
-    /// declaration itself and can say so. A covered cause names only its code:
-    /// another occurrence owns the row, or a later pass owns it if execution reaches
-    /// that pass. A whole-source refusal instead names its earlier stage.
+    /// Most refusals report at the declaration itself and can say so. A covered cause
+    /// names only its code, since another occurrence or a later pass owns the row. A
+    /// whole-source refusal instead names its earlier stage.
     pub(crate) fn correction(&self) -> String {
         let (name, code) = (self.name(), self.code());
         match self.report {
@@ -544,11 +526,9 @@ impl DeclarationRefusalSummary {
     /// Adopting a gap is the one retention a merge adds — every other field is `Copy`
     /// or discarded — and it is charged before it is held, so the ceiling bounds what
     /// the pass retains rather than only what its first refusal charged. No production
-    /// producer reaches this arm today: the one class that carries a gap is a durable
-    /// root, and that namespace rejects a repeated placement name before declaring it,
-    /// so a second occurrence never reaches the ledger. The charge stands regardless —
-    /// it is what the summary would owe — and a namespace that later admits a repeated
-    /// gap-carrying refusal inherits the accounting rather than a hole in it.
+    /// producer reaches that arm: the one gap-carrying class is a durable root, whose
+    /// namespace rejects a repeated placement name before declaring it. The charge is
+    /// kept so a namespace that later admits such a repeat inherits the accounting.
     fn merge(
         &mut self,
         other: Self,

@@ -1,26 +1,23 @@
 //! The compiler-owned durable-path naming join and the per-export demand sentence.
 //!
-//! A verifier-reconstructed [`DemandView`] names each durable node it touches by a
-//! [`SemanticPath`] — the stable chain of kind-tagged ledger ids from the application
-//! down — and never by a source name (the image carries no demand and the verifier
-//! learns no spelling). [`DurableNaming`] is the compiler's join from those ledger ids
-//! back to the program's own `^root.member` spelling: the durable registry records one
-//! entry per graph node as it resolves the node's identity, so a demand set can be
-//! *described* in source spelling without the verifier owning any name.
+//! A verifier-reconstructed [`DemandView`] names each durable node by a [`SemanticPath`]
+//! — the stable chain of kind-tagged ledger ids from the application down — never by a
+//! source name, since the image carries no demand and the verifier learns no spelling.
+//! [`DurableNaming`] is the compiler's join from those ledger ids back to the program's
+//! own `^root.member` spelling, so a demand set can be *described* in source spelling
+//! without the verifier owning any name.
 //!
-//! The description never grants: [`DurableNaming::demand_sentence`] renders which
-//! durable places an export reads and writes, exactly the access the compiler already
-//! reconstructed. Whether an invocation may exercise that demand is a separate authority
-//! concern this owner does not touch.
+//! The description never grants: rendering which durable places an export reads and
+//! writes states access the compiler already reconstructed. Whether an invocation may
+//! exercise that demand is a separate authority concern this owner does not touch.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use marrow_image::{DemandView, LedgerIdBytes, SemanticPath, SemanticStepKind};
 
 /// Whether a named durable node opens a durable path (a store root, spelled `^name`) or
-/// extends one (a field, index, group, or keyed branch, spelled `.name`). A typed state
-/// rather than a bare flag: the sigil is the node's rendered prefix, fixed at the point
-/// its identity is resolved.
+/// extends one (a field, index, group, or keyed branch, spelled `.name`). The sigil is
+/// the node's rendered prefix, fixed when its identity is resolved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PathSigil {
     /// A top-level store root: rendered `^name`.
@@ -34,10 +31,8 @@ pub(crate) enum PathSigil {
 /// spelling.
 ///
 /// The join is keyed by ledger id, so it survives every representation the same node
-/// wears elsewhere (an operation site, a verifier node, a physical key). A demand atom's
-/// [`SemanticPath`] is a chain of those ledger ids; [`Self::spell`] walks the chain and
-/// renders it in the program's own `^root.member` spelling. Two nodes at different ledger
-/// ids never collide, so the map is exact.
+/// wears elsewhere (an operation site, a verifier node, a physical key). Two nodes at
+/// different ledger ids never collide, so the map is exact.
 #[derive(Debug, Clone, Default)]
 pub struct DurableNaming {
     by_id: BTreeMap<LedgerIdBytes, (PathSigil, Box<str>)>,
@@ -45,7 +40,7 @@ pub struct DurableNaming {
 
 impl DurableNaming {
     /// Build the join from the durable registry's collected `(id, sigil, name)` entries.
-    /// The registry commits entries only for an admitted durable graph, so every id here
+    /// The registry commits entries only for an admitted durable graph, so every id
     /// belongs to a node whose identity resolved completely.
     pub(crate) fn from_entries(entries: Vec<(LedgerIdBytes, PathSigil, String)>) -> Self {
         Self {
@@ -58,8 +53,7 @@ impl DurableNaming {
 
     /// Render one durable node's [`SemanticPath`] in source spelling, or `None` if any
     /// step names a node this join does not know. The application step carries no
-    /// spelling (it is the shared root of every path); each remaining step contributes
-    /// its sigil and name, so `[application, root, field]` renders `^root.field`.
+    /// spelling, so `[application, root, field]` renders `^root.field`.
     fn spell(&self, path: &SemanticPath) -> Option<String> {
         let mut out = String::new();
         for step in path.steps() {
@@ -81,12 +75,11 @@ impl DurableNaming {
     ///
     /// Access is grouped by read/write coverage — a presence probe, a field or entry
     /// read, and an ordered index or family traversal are all *reads*; a write and an
-    /// erase are *writes* — the same projection the store ceiling checks, and the same
-    /// `read`/`write` coverage a durable place is described by. A place a read-modify-
-    /// write export both reads and writes appears in both clauses. Paths are ordered by
-    /// their spelling and de-duplicated, so the sentence is a stable function of the
-    /// demand set. Returns `None` only if a demanded node is unspellable, which cannot
-    /// happen for a demand reconstructed from an admitted graph.
+    /// erase are *writes* — the same projection the store ceiling checks. A place a
+    /// read-modify-write export both reads and writes appears in both clauses. Paths are
+    /// ordered by spelling and de-duplicated, so the sentence is a stable function of the
+    /// demand set. `None` only if a demanded node is unspellable, which cannot happen for
+    /// a demand reconstructed from an admitted graph.
     pub fn demand_sentence(&self, demand: DemandView<'_>) -> Option<String> {
         if demand.is_empty() {
             return Some("reads or writes no durable data".to_string());
@@ -111,13 +104,11 @@ impl DurableNaming {
         Some(clauses.join("; "))
     }
 
-    /// The per-export demand projected to durable **roots**, split by the same
-    /// read/write coverage [`Self::demand_sentence`] uses, for a summary that names each
-    /// touched root and how many distinct child places under it the export touches
-    /// rather than listing every child atom. Derived from the same demand atoms and the
-    /// same coverage classification as the sentence, so the two never disagree. Returns
-    /// `None` only if a demanded node is unspellable, which cannot happen for a demand
-    /// reconstructed from an admitted graph.
+    /// The per-export demand projected to durable **roots**: each touched root and how
+    /// many distinct child places under it the export touches, rather than every child
+    /// atom. Derived from the same atoms and coverage classification as
+    /// [`Self::demand_sentence`], so the two never disagree. `None` only for an
+    /// unspellable node, which an admitted graph cannot produce.
     pub fn demand_summary(&self, demand: DemandView<'_>) -> Option<DemandSummary> {
         Some(DemandSummary {
             reads: self.roll_up(demand, false)?,
@@ -130,10 +121,9 @@ impl DurableNaming {
     /// places it touches under that root with that coverage. A root touched only as a
     /// whole entry carries a zero child count.
     fn roll_up(&self, demand: DemandView<'_>, mutating: bool) -> Option<Vec<RootDemand>> {
-        // Root spelling -> the distinct child extensions touched under it. The child key
-        // is the atom's spelled remainder below the root (e.g. `.revision`), so two atoms
-        // of the same field under different operation classes count once, matching the
-        // sentence's own de-duplication.
+        // Root spelling -> distinct child extensions under it. The child key is the
+        // atom's spelled remainder below the root, so two atoms of the same field under
+        // different operation classes count once, as in the sentence.
         let mut roots: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for atom in demand.atoms() {
             if atom.class().mutates() != mutating {
@@ -159,8 +149,7 @@ impl DurableNaming {
     /// Split one durable node's [`SemanticPath`] into its root spelling (`^name`) and the
     /// spelled remainder below the root (`.a.b`, or `None` for a whole-entry atom).
     /// Reuses the same ledger-id join and sigils as [`Self::spell`], so a summary and a
-    /// sentence spell the same node identically. `None` if any step is unknown to the
-    /// join, mirroring [`Self::spell`].
+    /// sentence spell the same node identically, and is `None` on an unknown step.
     fn split_root(&self, path: &SemanticPath) -> Option<(String, Option<String>)> {
         let mut root: Option<String> = None;
         let mut child = String::new();
@@ -193,9 +182,9 @@ pub struct RootDemand {
     pub child_count: usize,
 }
 
-/// An export's durable demand projected to roots, split by read/write coverage. The same
+/// An export's durable demand projected to roots, split by read/write coverage: the same
 /// projection [`DurableNaming::demand_sentence`] renders as prose, exposed as typed facts
-/// so a renderer can group and summarize without re-deriving spelling or coverage.
+/// so a renderer never re-derives spelling or coverage.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DemandSummary {
     /// The roots this export reads, in spelling order.
@@ -304,8 +293,7 @@ mod tests {
 
     #[test]
     fn presence_and_a_family_traversal_read_and_an_erase_writes() {
-        // Presence and an index/family traversal are non-mutating reads; an erase is a
-        // mutating write. The coverage projection, not the finer class, drives the clause.
+        // The coverage projection, not the finer operation class, drives the clause.
         assert_eq!(
             sentence(vec![DemandAtom::new(root_path(), OperationClass::Presence)]),
             "reads ^books",
@@ -343,9 +331,8 @@ mod tests {
 
     #[test]
     fn demand_summary_rolls_child_reads_up_to_their_root_with_a_child_count() {
-        // A whole-entry read plus two field reads under the same root roll up to one
-        // read root; the index read under `books` also counts as a child place, so the
-        // child count is three. The projection uses the same coverage split as the sentence.
+        // A managed index counts as a child place alongside the two fields, so the
+        // whole-entry read plus three child reads roll up to one root with a count of 3.
         let summary = naming()
             .demand_summary(
                 ExportDemand::from_atoms(vec![
@@ -369,8 +356,7 @@ mod tests {
 
     #[test]
     fn demand_summary_splits_read_and_write_coverage_per_root() {
-        // A read of one field and a write of another under the same root produce one read
-        // root and one write root, each counting only its own coverage's children.
+        // Each coverage counts only its own children, so one root appears under both.
         let summary = naming()
             .demand_summary(
                 ExportDemand::from_atoms(vec![
@@ -415,8 +401,7 @@ mod tests {
 
     #[test]
     fn demand_summary_de_duplicates_a_field_touched_under_two_classes() {
-        // A presence probe and a read of the same field are both non-mutating reads of
-        // one child; the field counts once, matching the sentence's de-duplication.
+        // Both classes are non-mutating reads of one child, so the field counts once.
         let summary = naming()
             .demand_summary(
                 ExportDemand::from_atoms(vec![
@@ -453,9 +438,7 @@ mod tests {
 
     #[test]
     fn a_demand_over_an_unknown_node_is_unspellable() {
-        // A node the join does not know cannot be rendered, so the whole sentence is
-        // `None` rather than a partial or invented spelling. This never happens for a
-        // demand reconstructed from an admitted graph.
+        // The whole sentence is `None` rather than a partial or invented spelling.
         let unknown = SemanticPath::root(id(APP), id(0x77));
         let demand = ExportDemand::from_atoms([DemandAtom::new(unknown, OperationClass::Read)]);
         assert!(naming().demand_sentence(demand.as_view()).is_none());

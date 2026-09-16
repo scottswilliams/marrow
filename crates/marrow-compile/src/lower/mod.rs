@@ -1,4 +1,4 @@
-//! Function-body lowering (design §B/§D).
+//! Function-body lowering.
 //!
 //! [`FnLowerer`] type-checks the compiled subset and lowers one function body to
 //! a draft instruction stream. Locals are allocated one fresh slot per `const`/
@@ -8,37 +8,17 @@
 //! and patched to instruction indices once the target position is known; the
 //! encoder rewrites indices to byte offsets.
 //!
-//! ## Panic surface (never reachable from a source shape)
+//! ## Panic surface
 //!
-//! Every source-level problem lowering can encounter is reported by pushing a typed
-//! [`SourceDiagnostic`] onto `diagnostics` and returning a private lowering failure;
-//! lowering never aborts on ill-typed or unsupported source. The remaining
-//! `expect`/`unreachable!`/`panic!`
-//! sites assert invariants established *before* the panicking line, so a source shape
-//! cannot reach one — only a compiler bug could. Each falls into one class, and each
-//! carries a message naming its guarantor:
-//!
-//! - **Checker-classified type** — a scrutinee already resolved to an enum, a type
-//!   already classified as a struct or nominal, a bare enum value already bound to its
-//!   variants. The checker rejects the mismatched source (`check.type`,
-//!   `check.match_arm`, `check.unsupported`) before lowering runs.
-//! - **Match-arm narrowing** — a dispatch whose earlier arms removed every other case
-//!   (an admitted arithmetic op, `and`/`or` short-circuit, a text-floor or temporal
-//!   builtin the caller already matched by name).
-//! - **Parser-guaranteed shape** — a binary operation has both operands; a list
-//!   literal reaching the inferred path is non-empty (the empty case is handled first).
-//! - **Lowering's own bookkeeping** — a loop context pushed at loop entry is present at
-//!   `break`/loop-exit; a jump placeholder patched here was emitted here as a jump; a
-//!   group-leaf `delete` was routed to its dedicated path before the shared emit.
-//!
-//! The audit that established this (2026-07-18): every `panic!`/`unwrap`/`expect`/
-//! `unreachable!` in this file was enumerated and classified into the four classes
-//! above; the one bare `unwrap` was given a message; and a battery of adversarial
-//! source shapes (`break`/`continue` outside a loop, a `match` on a non-enum, a
-//! mis-arity builtin call, an ill-typed operator, an unresolved enum member, an empty
-//! inferred list) was driven through the production pipeline and each produced a typed
-//! diagnostic, never a panic. New panic-class sites must fall into one of these
-//! classes and say so, or become a diagnostic.
+//! Every source-level problem is reported by pushing a typed [`SourceDiagnostic`] and
+//! returning a private lowering failure; lowering never aborts on ill-typed or
+//! unsupported source. Each remaining `expect`/`unreachable!`/`panic!` asserts an
+//! invariant established *before* the panicking line, so no source shape can reach one,
+//! and each carries a message naming its guarantor. The classes are: a type the checker
+//! already classified; a dispatch whose earlier arms removed every other case; a shape
+//! the parser guarantees; and lowering's own bookkeeping (a loop context pushed at loop
+//! entry, a jump placeholder emitted here). A new panic-class site falls into one of
+//! these and says so, or becomes a diagnostic.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -203,11 +183,11 @@ pub(crate) enum CallResolution<'a> {
     NotFound,
 }
 
-/// Whether a body produced an image function. A refused body is the ordinary
-/// outcome of a source error inside it: its diagnostics are already pushed, it
-/// consumed no image index, and the phase artifact that depends on every declared
-/// body having lowered is thereby unavailable. Naming the two cases keeps that
-/// consequence at the call site instead of leaving it to an untyped `None`.
+/// Whether a body produced an image function. A refused body is the ordinary outcome
+/// of a source error inside it: its diagnostics are already pushed and it consumed no
+/// image index, so the artifact that needs every declared body lowered is unavailable.
+/// Naming the two cases keeps that consequence at the call site rather than in an
+/// untyped `None`.
 pub(crate) enum BodyOutcome {
     Lowered(Lowered),
     Refused,
@@ -215,10 +195,9 @@ pub(crate) enum BodyOutcome {
 
 type LowerResult = Result<BodyOutcome, LowerInvariant>;
 
-/// Which lowering pass a body is in: an ordinary or instance body that emits an
-/// image function and monomorphizes its generic calls, or the once-checked template
-/// pass that lowers against abstract parameters in a transaction whose additions
-/// are erased and only checks (never monomorphizes) the generic calls it makes.
+/// Which lowering pass a body is in: an ordinary or instance body that emits an image
+/// function and monomorphizes its generic calls, or the once-checked template pass that
+/// lowers against abstract parameters in a transaction whose additions are erased.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LowerMode {
     Concrete,
@@ -234,10 +213,9 @@ struct Local {
 }
 
 /// A resolved nested place path rooted at a local. `indices` are the field slots
-/// descended from the local (empty for the bare local); `ty` is the value type at
-/// the end of that descent — the container a leaf field is then read or written in.
-/// Every descended field is a present composite, so the path supports a read-modify-
-/// write without a presence test.
+/// descended from the local (empty for the bare local); `ty` is the value type at the
+/// end of that descent. Every descended field is a present composite, so the path
+/// supports a read-modify-write without a presence test.
 struct PlaceChain {
     slot: u16,
     mutable: bool,
@@ -260,10 +238,8 @@ pub(super) fn refusal_summary<'r>(
     match id.namespace() {
         DeclarationNamespace::NamedType => records.refusal(id),
         DeclarationNamespace::DurableRoot => durable.refusal(id),
-        // A constant is looked up by its own name at its own use site, a resource
-        // member by its owner and its own name, a module by its dotted path, and a
-        // function by its module and name, so none travels through type resolution
-        // and no handle of one reaches here.
+        // None of these namespaces travels through type resolution, so no handle of
+        // one reaches here.
         DeclarationNamespace::Constant
         | DeclarationNamespace::Function
         | DeclarationNamespace::Module
@@ -274,11 +250,9 @@ pub(super) fn refusal_summary<'r>(
 /// What a type-annotation position does with a resolution refusal.
 ///
 /// `row` is the report this site owns, once per refused key: the causal steer for a
-/// refused declaration, the subset-gap phrase for a genuine gap, and `None` where
-/// the report is owed elsewhere — to the use that already steered to this cause, or
-/// to the monomorphization owner that reports the shared instantiation limit once.
-/// `code` carries the cause either way, so a declaration refused for an annotation
-/// it could not resolve retains a cause even when it owes no row.
+/// refused declaration, the subset-gap phrase for a genuine gap, and `None` where the
+/// report is owed elsewhere. `code` carries the cause either way, so a declaration
+/// refused for an unresolvable annotation retains a cause even when it owes no row.
 pub(super) struct AnnotationRefusal {
     pub(super) row: Option<SourceDiagnostic>,
     pub(super) code: Code,
@@ -354,9 +328,8 @@ pub(crate) struct FnLowerer<'a, 'd> {
     diagnostics: &'a mut DiagnosticCollector,
     /// The scoped editor-fact borrow for this body. A dependency gap is written
     /// through it as it is discovered — like a diagnostic — so the gap survives even
-    /// when the body it sits in fails to lower (an unresolved call fails the body).
-    /// Hover facts stage in this body's own buffer and are admitted by the caller only
-    /// when the body lowers, exactly as they were before.
+    /// when the body it sits in fails to lower. Hover facts stage in this body's own
+    /// buffer and are admitted by the caller only when the body lowers.
     facts: FactSink<'a>,
     /// The file identity every diagnostic reported against this body names.
     file: &'a FileIdentity,
@@ -375,22 +348,20 @@ pub(crate) struct FnLowerer<'a, 'd> {
     /// instruction-width owner before each append.
     code_bytes: usize,
     /// The first instruction that would cross the per-function code-byte bound is a
-    /// source-located terminal refusal. Its error propagates out of the whole body before
-    /// any later lowering work can run.
+    /// source-located terminal refusal, propagating out of the whole body.
     code_limit_reached: bool,
     spans: Vec<SpanEntry>,
     /// Full UTF-8 source span of each emitted instruction, parallel to `code`. The
-    /// image itself keeps only the line/column [`SpanEntry`]; these byte-accurate
-    /// spans stay compiler-local so the check-time transaction-ownership pass can point
-    /// a diagnostic at the exact offending construct. Never enters the image.
+    /// image keeps only the line/column [`SpanEntry`]; these byte-accurate spans stay
+    /// compiler-local so the check-time transaction-ownership pass can point a
+    /// diagnostic at the exact offending construct.
     full_spans: Vec<SourceSpan>,
     /// The image indices of every function this body calls directly, in emission
     /// order. The caller uses these to detect a recursive call cycle at check time.
     calls: Vec<u16>,
     /// Lexical `transaction`-block nesting depth at the current emission point. A
     /// durable mutation or a call emitted at depth zero is not covered by an ambient
-    /// transaction owned by this body; the requires-ambient-transaction check consumes
-    /// the sites recorded below.
+    /// transaction owned by this body.
     txn_depth: u32,
     /// Spans of durable mutations emitted outside any `transaction` block in this body.
     unwrapped_mutations: Vec<SourceSpan>,
@@ -400,9 +371,8 @@ pub(crate) struct FnLowerer<'a, 'd> {
     unwrapped_calls: Vec<(u16, SourceSpan)>,
     locals: Vec<Local>,
     /// Names of `const`/`var` bindings whose initializer failed to type-check, so no
-    /// `Local` was bound. A later reference to such a name is the consequence of the
-    /// initializer's own error, not a fresh undefined name; suppressing it keeps one
-    /// bad initializer from spawning an `is not in scope` report at every later use.
+    /// `Local` was bound. Suppressing a later reference keeps one bad initializer from
+    /// spawning an `is not in scope` report at every later use.
     poisoned_bindings: BTreeSet<String>,
     /// In-scope source-local named `place` bindings, scoped like `locals`.
     places: Vec<PlaceLocal<'a>>,
@@ -478,9 +448,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
     }
 
-    /// A fresh lowerer over an empty body, for one function or test body. The
-    /// shared field set has this single owner; `ret` and `body_kind` are the only
-    /// per-body-kind inputs.
+    /// A fresh lowerer over an empty body, for one function or test body.
     fn new(
         ctx: LowerCtx<'a, 'd>,
         file: &'a FileIdentity,
@@ -540,18 +508,17 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Whether this body's hover displays are still worth rendering: its facts are
-    /// retained (a generic instance's duplicate its template's and are discarded), and no
-    /// snapshot ceiling has been crossed. A caller renders the display inside this guard
-    /// so a discarded body never pays the O(depth) spelling render, which on a deeply
-    /// monomorphized instance would be Σ = O(instances²) across a divergent
-    /// monomorphization.
+    /// retained (a generic instance's duplicate its template's) and no snapshot ceiling
+    /// has been crossed. A caller renders inside this guard so a discarded body never
+    /// pays the O(depth) spelling render, which across a divergent monomorphization
+    /// would sum to O(instances²).
     fn collects_hover(&self) -> bool {
         self.facts.renders_facts()
     }
 
-    /// Admit one editor hover fact at `span` through the ledger, at the push: a resolved
-    /// local or parameter use carries a type display and no definition; a resolved
-    /// function callee carries its signature display and its definition target.
+    /// Admit one editor hover fact at `span` through the ledger: a resolved local or
+    /// parameter use carries a type display and no definition; a resolved function
+    /// callee carries its signature display and its definition target.
     fn record_hover(
         &mut self,
         span: SourceSpan,
@@ -564,9 +531,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// The hover display of a local or parameter's value type. A bare template type
     /// parameter renders by its declared spelling from the type-parameter environment
     /// (`T`) rather than the positional `type parameter #N` form, so a hover inside a
-    /// generic template body reads the source name; every other type, and a monomorphic
-    /// body (whose environment is empty and whose types are never [`LTy::Param`]), defers
-    /// to the canonical spelling unchanged.
+    /// generic template body reads the source name; every other type defers to the
+    /// canonical spelling unchanged.
     fn hover_type_display(&self, ty: LTy) -> String {
         if let LTy::Param { index, optional } = ty
             && let Some(slot) = self.type_env.get(index.position())
@@ -580,11 +546,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         ty.spelling(self.records)
     }
 
-    /// Lower `function` into its reserved draft slot, returning its [`FuncId`]
-    /// and the indices of the functions it calls directly. Export minting is the
-    /// caller's job: it holds the dotted module name needed to compute the export's
-    /// [`marrow_image::ExportId`]. A function that fails to lower pushes its
-    /// diagnostics and returns [`BodyOutcome::Refused`].
+    /// Lower `function` into its reserved draft slot, returning its [`FuncId`] and the
+    /// indices of the functions it calls directly. Export minting is the caller's job:
+    /// it holds the dotted module name the export's [`marrow_image::ExportId`] needs.
     pub(crate) fn lower(
         ctx: LowerCtx<'a, 'd>,
         file: &'a FileIdentity,
@@ -631,9 +595,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         )
     }
 
-    /// Lower one generic template against its abstract parameter constraints. The
-    /// producer-owning staging guard calls this exact operation without exposing its
-    /// draft, registry, diagnostic, or fact owners to the driver.
+    /// Lower one generic template against its abstract parameter constraints. Called by
+    /// the staging guard, which never exposes its draft, registry, diagnostic, or fact
+    /// owners to the driver.
     pub(crate) fn lower_template(
         ctx: LowerCtx<'a, 'd>,
         template: &'a GenericTemplate<'a>,
@@ -660,10 +624,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// Run the once-checked template pass over a generic function: lower its body
     /// against abstract type parameters (each admitting only its declared constraint)
-    /// inside a composite savepoint over the in-progress registry and draft. The body
-    /// is checked once — including rejecting `==`/`<` on an unconstrained parameter —
-    /// independently of whether or how it is instantiated. Its diagnostics and derived
-    /// editor facts survive; the emitted code and proof-appended owner suffixes are erased.
+    /// inside a composite savepoint over the in-progress registry and draft. The body is
+    /// checked once — including rejecting `==`/`<` on an unconstrained parameter —
+    /// independently of whether or how it is instantiated. Its diagnostics and editor
+    /// facts survive; the emitted code and proof-appended owner suffixes are erased.
     pub(crate) fn check_template(
         draft: &mut ImageDraft,
         records: &mut TypeRegistry,
@@ -672,23 +636,14 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         template: &GenericTemplate,
     ) -> Result<TemplateProofOutcome, LowerInvariant> {
         // Prove the body directly on the in-progress registry and draft — so it sees every
-        // already-minted type at its real index (a concrete callee's signature stays
-        // consistent) — inside the generic-owner composite guard that erases the
-        // abstract-parameter instantiations and throwaway emitted code the pass appends.
-        // The guard takes the registry by exclusive `&mut` and the draft through an armed
-        // transaction, and restores both owners on every path — a normal return, an early
-        // lowering invariant, or an unwind — registry inverse first, then the armed draft
-        // guard, exactly once. The producer-owning scope also owns both payloads, so a
-        // failure drops its diagnostics and editor facts with the still-armed producer.
+        // already-minted type at its real index — inside the composite guard that erases
+        // the abstract-parameter instantiations and throwaway code the pass appends. The
+        // guard restores both owners on every path (normal return, lowering invariant, or
+        // unwind): registry inverse first, then the armed draft guard, exactly once.
         let scope = StagedBodyTxn::enter_proof(records, draft)?;
-        // The template body is checked exactly once (never per instance), so its editor
-        // facts are collected here: a template-parameter use renders by its declared
-        // spelling and no divergent-monomorphization O(N²) rendering occurs. The sink
-        // charges them live but retains them only in this producer-owning scope. Only the
-        // throwaway image function this pass emits is discarded with the scope.
         // Proof and erasure are one consuming operation: no throwaway function identity
-        // or staged payload can leave while its producer remains armed. An invariant
-        // drops producer and payload together.
+        // or staged payload can leave while its producer remains armed, so a failure
+        // drops the pass's diagnostics and editor facts with it.
         let (generic, body) = scope.prove_template(resolution, facts, template)?;
         Ok(TemplateProofOutcome { generic, body })
     }
@@ -743,21 +698,19 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         lowerer.type_env = type_env;
         lowerer.mode = mode;
 
-        // Params occupy the first slots, pre-initialized to their type: a bare
-        // scalar, a bare nominal (int-shaped), or a bare struct record ref.
+        // Params occupy the first slots, pre-initialized to their type: a bare scalar, a
+        // bare nominal (int-shaped), or a bare struct record ref.
         //
-        // One entry per source parameter, in source order: the bound parameter's
-        // lowered type, or `None` for one whose type was refused. The image's
-        // parameter list is built from this rather than from a positional zip
-        // against `locals`, which body lowering also grows — a dropped parameter
-        // would otherwise shift the correspondence and give the image a signature
-        // the source never wrote.
+        // One entry per source parameter, in source order: its lowered type, or `None`
+        // for one whose type was refused. The image's parameter list is built from this
+        // rather than from a positional zip against `locals`, which body lowering also
+        // grows — a dropped parameter would otherwise shift the correspondence and give
+        // the image a signature the source never wrote.
         let mut declared_params: Vec<Option<LTy>> = Vec::with_capacity(function.params.len());
-        // Type parameters and parameters are two layers of one signature; each
-        // refuses a repeat at the repeat, before the repeat could take a slot the
-        // body would then read in place of the name the reader wrote. The rows are
-        // the declaration's, reported by its one once-checked lowering — a concrete
-        // body or the template pass — never again by an instance.
+        // A repeated type parameter or parameter name is refused at the repeat, before it
+        // could take a slot the body would read in place of the name the reader wrote.
+        // The rows belong to the declaration's one once-checked lowering — a concrete
+        // body or the template pass — never to an instance.
         let reports_signature = mode == LowerMode::Template || lowerer.type_env.is_empty();
         let mut type_param_names = MemberNamespace::new(&function.name);
         for param in &function.type_params {
@@ -788,10 +741,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 if lowerer.terminal_rejection() {
                     return lowerer.finish(func, &function.name, Vec::new(), ImageType::Unit);
                 }
-                // The parameter keeps its name. Its type was reported at the
-                // annotation, so a use of it in the body reuses that cause and
-                // fails silently instead of calling a name the reader can see
-                // written unknown, once per use.
+                // The parameter keeps its name: its type was reported at the annotation,
+                // so a use in the body reuses that cause rather than calling a name the
+                // reader can see written unknown, once per use.
                 lowerer.poisoned_bindings.insert(param.name.clone());
                 declared_params.push(None);
                 continue;
@@ -854,20 +806,18 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
         }
 
-        // A bare nominal param erases to its base int in the image; in-language callers
-        // passed the type, and the entry guard emitted above revalidates the
-        // interval against out-of-language callers. Aggregate parameters carry only
-        // their erased image types; public nominal-containing aggregates are refused
-        // when signatures settle.
+        // A bare nominal param erases to its base int in the image; the entry guard
+        // emitted above revalidates its interval. Aggregate parameters carry only their
+        // erased image types; public nominal-containing aggregates are refused when
+        // signatures settle.
         let Some(params) = declared_params
             .iter()
             .map(|ty| ty.as_ref().map(|ty| ty.image()))
             .collect::<Option<Vec<ImageType>>>()
         else {
-            // A refused parameter has no image type, so this function has no
-            // parameter list to emit. The body already failed; refusing the list
-            // here is what keeps a shortened one from ever being read as the
-            // signature the source wrote.
+            // A refused parameter has no image type, so this function has no parameter
+            // list to emit — a shortened one would read as a signature the source never
+            // wrote.
             return lowerer.finish(func, &function.name, Vec::new(), ImageType::Unit);
         };
         let ret_ref = match ret {
@@ -890,8 +840,6 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         func: FuncId,
     ) -> LowerResult {
         let mut lowerer = FnLowerer::new(ctx, file, module, RetType::Unit, BodyKind::Test);
-        // A test body is a unit-returning block: control that falls through ends with
-        // an implicit return, exactly like a unit function.
         match lowerer.lower_block(body) {
             Ok(Flow::Fallthrough) => {
                 if lowerer.push(Instr::Return, body.span).is_err() {
@@ -907,9 +855,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         lowerer.finish(func, name, Vec::new(), ImageType::Unit)
     }
 
-    /// Intern the function name and source, fill the reserved draft slot,
-    /// and return its identity — the shared tail of function and test lowering. A
-    /// body that failed to lower returns [`BodyOutcome::Refused`].
+    /// Intern the function name and source, fill the reserved draft slot, and return its
+    /// identity — the shared tail of function and test lowering.
     fn finish(
         mut self,
         func_id: FuncId,
@@ -1107,9 +1054,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 return;
             }
         };
-        // A use of a declaration this project refused is steered to that
-        // declaration's own cause, once, rather than described as a form the
-        // language does not support.
+        // A use of a declaration this project refused is steered to that declaration's
+        // own cause, not described as a form the language does not support.
         match annotation_refusal_row(self.records, self.durable, refusal, file, span, subject) {
             Ok(AnnotationRefusal { row: Some(row), .. }) => self.fail(row),
             Ok(AnnotationRefusal { row: None, .. }) => self.failed = true,
@@ -1117,17 +1063,14 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
     }
 
-    /// Steer one use of a refused declaration to the cause its declaration
-    /// reported, once per refused key: the first use carries the row and every
-    /// later one fails silently, which is what holds amplification to the number of
-    /// refused declarations rather than the number of uses.
+    /// Steer one use of a refused declaration to the cause its declaration reported,
+    /// once per refused key: the first use carries the row and every later one fails
+    /// silently, holding amplification to the number of refused declarations rather
+    /// than the number of uses.
     ///
-    /// The one exception is written here rather than at a use site: a missing ledger
-    /// identity is the single refusal class whose cause is a report *family* rather
-    /// than one row, so its steer names that family instead of citing a single
-    /// declaring row. Every other cause reuses the row its declaration pushed, which
-    /// is what keeps the other refusal classes from claiming an identity failure
-    /// that was never reported.
+    /// A missing ledger identity is the one refusal class whose cause is a report
+    /// *family* rather than one row, so its steer names that family. Every other cause
+    /// reuses the row its declaration pushed.
     fn steer_refusal(&mut self, summary: &DeclarationRefusalSummary, span: SourceSpan) {
         let row = self.steer_row(summary, span);
         self.settle_steer(row);
@@ -1135,9 +1078,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// The row a steered refusal owes, derived under a shared borrow alone.
     ///
-    /// Splitting derivation from reporting is what lets a steer read its summary
-    /// straight out of the exclusively held registry: the summary's borrow ends with
-    /// the owned row, so the reporting mutation follows it rather than overlapping it.
+    /// Splitting derivation from reporting lets a steer read its summary straight out of
+    /// the exclusively held registry: the summary's borrow ends with the owned row, so
+    /// the reporting mutation follows it rather than overlapping it.
     fn steer_row(
         &self,
         summary: &DeclarationRefusalSummary,
@@ -1161,13 +1104,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
     }
 
-    /// Steer a use that named a refused type to that declaration's cause, if the
-    /// name is one, reporting once per refused key.
+    /// Steer a use that named a refused type to that declaration's cause, if the name is
+    /// one, reporting once per refused key.
     ///
-    /// A construction site and a qualified name resolve through the kind-specific
-    /// tables rather than through type-annotation resolution, so they reach their
-    /// own not-in-scope report without ever consulting a `ResolveRefusal`. This is
-    /// the one probe that keeps those paths from calling a refused type undeclared.
+    /// A construction site and a qualified name resolve through the kind-specific tables
+    /// rather than through type-annotation resolution, so this probe is what keeps those
+    /// paths from calling a refused type undeclared.
     fn steer_refused_type(&mut self, name: &str, span: SourceSpan) -> bool {
         let steer = match self.records.named_type(name) {
             Ok(Binding::Refused(_, summary)) => Ok(Some(self.steer_row(summary, span))),
@@ -1187,12 +1129,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
     }
 
-    /// The same steer for a member of a resource record or one of its unkeyed
-    /// groups, named by its owner. `false` means the owner never declared the
-    /// member, which is the one case a "has no field" report may describe.
-    ///
-    /// `owner` is a resource record's name, or the `Record.group` anchor of an
-    /// unkeyed group.
+    /// The same steer for a member of a resource record or one of its unkeyed groups.
+    /// `owner` is the record's name, or the `Record.group` anchor of an unkeyed group.
+    /// `false` means the owner never declared the member, which is the one case a "has
+    /// no field" report may describe.
     fn steer_refused_member(&mut self, owner: &str, member: &str, span: SourceSpan) -> bool {
         let steer = match self.records.member(owner, member) {
             Ok(Binding::Refused(_, summary)) => Ok(Some(self.steer_row(summary, span))),
@@ -1226,9 +1166,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// Route a namespace ledger's coherence failure to the invariant path.
     ///
-    /// A drifted lookup answers nothing about the source, so no diagnostic is
-    /// pushed and no binding is invented for it: the pass reports the invariant and
-    /// this body produces no value.
+    /// A drifted lookup answers nothing about the source, so no diagnostic is pushed and
+    /// no binding is invented for it.
     fn ledger_drift<T>(&mut self, drift: DeclarationIndexDrift) -> Option<T> {
         self.record_invariant(LowerInvariant::from(drift));
         None
@@ -1340,11 +1279,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// Resolve the store root named `name` to its executable descriptor, reporting the
     /// precise diagnostic on failure: a not-yet-executable rejection when a root of that
-    /// name is declared but parked (a singleton root, or a root whose resource declares a
-    /// group or a nominal-typed field — its identity is complete but the kernel does not
-    /// serve its shape), or a name error when no root of that name is declared at all. The
-    /// returned reference borrows the durable registry (lifetime `'a`), not `self`, so it
-    /// stays valid across later mutating lowering calls.
+    /// name is declared but parked (its identity is complete but the kernel does not
+    /// serve its shape), or a name error when none is declared. The returned reference
+    /// borrows the durable registry (lifetime `'a`), not `self`, so it stays valid
+    /// across later mutating lowering calls.
     fn resolve_root(
         &mut self,
         name: &str,
@@ -1362,10 +1300,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 None
             }
             RootBinding::Refused(_, refusal) => {
-                // A refused root is referenced from many sites; the declaration
-                // already reported the cause, so the first reference is steered to it
-                // and the rest fail silently. One refused store does not echo at every
-                // use.
+                // One refused store does not echo at every use: the first reference is
+                // steered to the declaration's cause and the rest fail silently.
                 self.steer_refusal(refusal, span);
                 None
             }

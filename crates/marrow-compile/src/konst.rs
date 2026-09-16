@@ -3,8 +3,8 @@
 //! A top-level `const NAME [: type] = <literal>` binds a compile-time scalar value
 //! that is module-private: it is referenced by name only from within its own
 //! module, and folded into the image as a constant load at each use. The compiled
-//! subset restricts a constant's value to a scalar literal (optionally a negated
-//! integer literal); richer constant expressions land in a later lane.
+//! subset restricts a constant's value to a scalar literal, optionally a negated
+//! integer literal.
 
 use marrow_codes::Code;
 use marrow_project::FileIdentity;
@@ -32,7 +32,6 @@ pub(crate) enum ConstScalar {
 }
 
 impl ConstScalar {
-    /// The language scalar type of this constant.
     pub(crate) fn scalar(&self) -> ScalarType {
         match self {
             ConstScalar::Int(_) => ScalarType::Int,
@@ -243,10 +242,9 @@ fn literal_value(
                 format!("cannot negate a `{}` constant", other.scalar().spelling()),
             )),
         },
-        // An integer-bound value built-in (`maxInt`/`minInt`) is a compile-time `int`
-        // value, so `const CAP = maxInt` folds to that bound. Only these bare names are
-        // admitted; every other name stays a non-literal that a later
-        // constant-expression lane will handle.
+        // An integer-bound built-in (`maxInt`/`minInt`) is a compile-time `int`, so
+        // `const CAP = maxInt` folds to that bound. Only these bare names are admitted;
+        // every other name stays a non-literal.
         Expression::Name { segments, .. }
             if segments.len() == 1
                 && crate::lower::builtin_const_int(segments[0].text()).is_some() =>

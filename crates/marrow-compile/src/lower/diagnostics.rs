@@ -1,4 +1,5 @@
-//! Typed diagnostic builders and the small literal-shape helpers lowering reports through.
+//! Typed diagnostic builders and the small literal-shape helpers lowering reports
+//! through.
 
 use super::*;
 use crate::diag::RefusedDeclaration;
@@ -65,10 +66,9 @@ pub(super) fn duration_words_nanos(text: &str) -> Option<i128> {
 }
 
 /// The rendered index text of a statically dead list index literal — `0` or any
-/// negative literal — or `None` when the key is not a dead-index literal. List
-/// positions are 1-based, so a literal `0` or negative names no position and is
-/// refused at check time; a positive literal past the length is not statically dead
-/// (the length is a runtime fact) and reads absent instead.
+/// negative literal — or `None` otherwise. List positions are 1-based, so those name no
+/// position and are refused at check time; a positive literal past the length is not
+/// statically dead (the length is a runtime fact) and reads absent instead.
 pub(super) fn dead_list_index_literal(key: &Expression) -> Option<String> {
     match key {
         Expression::Literal {
@@ -150,9 +150,8 @@ pub(super) fn unsupported(
 
 /// The store-root name a durable address expression bottoms out at: the leftmost
 /// `^name` leaf reached through keyed accesses and field/branch selectors, or `None`
-/// when `expr` is not rooted at a `SavedRoot` (not a `^root` durable access at all).
-/// The one owner that extracts which store an address names, so the resolvers dispatch
-/// against a single root lookup.
+/// when `expr` is not rooted at a `SavedRoot`. The one owner that extracts which store
+/// an address names, so the resolvers dispatch against a single root lookup.
 pub(super) fn saved_root_name(expr: &Expression) -> Option<&str> {
     match expr {
         Expression::SavedRoot { name, .. } => Some(name),
@@ -184,9 +183,8 @@ pub(super) fn is_field_address(expr: &Expression) -> bool {
 }
 
 /// Whether `expr` is a durable group-leaf address `^root(k).group.leaf`: a field selection
-/// whose base is itself a field-of-an-entry-address (the whole-group address). The resolver
-/// confirms the middle selector names a root-level group; a base that turns out to be a
-/// stored field is a clean resolution failure, not a group leaf.
+/// whose base is itself a field-of-an-entry-address. The resolver confirms the middle
+/// selector names a root-level group; a stored field there is a clean resolution failure.
 pub(super) fn is_group_leaf_address(expr: &Expression) -> bool {
     matches!(expr, Expression::Field { base, .. } if is_field_address(base))
 }
@@ -212,11 +210,8 @@ pub(super) fn not_yet_executable(
 /// A keyed branch named where a field of a materialized entry record is expected — the
 /// `b.notes[…]` chain off `if const b = ^root(k)`. A branch is a distinct durable node, not
 /// a projection of the whole-entry value, so the message steers to the durable-path form.
-/// `resource` is the resource the record materializes; `branch` is the branch member in
-/// source spelling. No store root is named: which resource declares the branch is the
-/// Product declaration fact that reaches this report, and several roots may occur over one
-/// Product, so naming one of them would present an occurrence as the answer to a
-/// declaration question — and a Product with no executable root has none to name.
+/// No store root is named: several roots may occur over one resource, so naming one would
+/// answer a declaration question with an occurrence.
 pub(super) fn branch_not_a_field(
     file: &FileIdentity,
     span: SourceSpan,
@@ -238,8 +233,8 @@ pub(super) fn branch_not_a_field(
 
 /// A keyed sub-branch named on a materialized branch entry value (the `n.replies[…]` chain
 /// off `if const n = ^root(k).notes(nk)`). Like a top-level branch it is a distinct durable
-/// node, not a field; the concrete root spelling is not in hand here, so the message steers
-/// to the durable-path form generically.
+/// node, not a field; the concrete root spelling is not in hand, so the message steers to
+/// the durable-path form generically.
 pub(super) fn subbranch_not_a_field(
     file: &FileIdentity,
     span: SourceSpan,
@@ -258,10 +253,9 @@ pub(super) fn subbranch_not_a_field(
     )
 }
 
-/// `absent` used as an operand of `==`/`!=`. Presence is a distinct question with one
-/// canonical vocabulary (`if const` / `??` / `exists`); a second equality-shaped spelling
-/// is not admitted, so the message steers to the presence forms rather than reporting the
-/// generic uninferable-`absent` type error. Points at the `absent` operand span.
+/// `absent` used as an operand of `==`/`!=`. Presence has one canonical vocabulary
+/// (`if const` / `??` / `exists`); no equality-shaped spelling is admitted, so the message
+/// steers to the presence forms rather than the generic uninferable-`absent` type error.
 pub(super) fn absent_not_operand(
     file: &FileIdentity,
     span: SourceSpan,
@@ -300,9 +294,8 @@ pub(super) enum NameKind {
 }
 
 /// An unresolved name, offering the nearest declared identifier of the same family when
-/// one is a close misspelling. Without a suggestion this is exactly [`name_error`]; the
-/// suggestion, when present, spells the candidate in its family's form so the fix is a
-/// single edit the reader can apply directly.
+/// one is a close misspelling. Without a suggestion this is exactly [`name_error`]; a
+/// suggestion spells the candidate in its family's form, so the fix is a single edit.
 pub(super) fn name_not_in_scope(
     file: &FileIdentity,
     span: SourceSpan,
@@ -323,10 +316,9 @@ pub(super) fn name_not_in_scope(
 }
 
 /// The single declared name within edit distance two of `target`, or `None` when none
-/// is that close or two candidates tie for nearest. Deliberately conservative: a
-/// did-you-mean earns its place only as one unambiguous suggestion, never a list. A
-/// candidate must also be closer than a full rewrite (`distance < target length`), so a
-/// short name does not match an unrelated one.
+/// is that close or two candidates tie for nearest: a did-you-mean earns its place only
+/// as one unambiguous suggestion, never a list. A candidate must also be closer than a
+/// full rewrite (`distance < target length`), so a short name matches nothing unrelated.
 pub(super) fn nearest_name<'n>(
     target: &str,
     candidates: impl Iterator<Item = &'n str>,
@@ -384,11 +376,11 @@ fn edit_distance(a: &str, b: &str) -> usize {
     prev[b.len()]
 }
 
-/// A reference to a store root whose durable identity failed admission: the root was
-/// declared but each identity gap was reported as `check.durable_identity`, so it dropped
-/// from the registry. Reporting a bare not-in-scope name here would misdirect toward a
-/// typo; instead the reference site names the admission failure and points at the identity
-/// reports. A genuinely undeclared root keeps the plain [`name_error`].
+/// A reference to a store root whose durable identity failed admission: declared, but
+/// each identity gap was reported as `check.durable_identity`, so it dropped from the
+/// registry. A bare not-in-scope name would misdirect toward a typo, so the reference
+/// site names the admission failure instead. A genuinely undeclared root keeps
+/// [`name_error`].
 pub(super) fn identity_admission_failed(
     file: &FileIdentity,
     span: SourceSpan,
@@ -434,10 +426,8 @@ pub(super) fn loop_error(file: &FileIdentity, span: SourceSpan, keyword: &str) -
 }
 
 /// The steer appended when an optional value `T?` is used where the present `T` is
-/// required — the optional-vs-present misuse family. It names the two presence idioms so
-/// the diagnostic points at the fix rather than only reporting the type clash. Callers
-/// append it only once they have established that an operand is optional where a present
-/// value is required.
+/// required. Callers append it only once they have established that presence is the sole
+/// blocker; a different bare type is not presence-fixable and carries no steer.
 fn present_idiom_steer(message: &mut String) {
     message.push_str(
         " This value is optional; prove it present by binding it with `if const x = … { … }`, \
@@ -477,8 +467,7 @@ pub(super) fn type_mismatch(
         found.spelling(records),
         want.spelling(records)
     );
-    // An optional used exactly where its present counterpart is required steers to the
-    // presence idiom: `found` is `want` under one optional layer.
+    // `found` is `want` under one optional layer, so presence is the sole blocker.
     if found.is_optional() && !want.is_optional() && found.to_bare() == want {
         present_idiom_steer(&mut message);
     }
@@ -494,9 +483,7 @@ pub(super) fn unary_error(
     wanted: LTy,
 ) -> SourceDiagnostic {
     let mut message = format!("cannot {verb} {}", ty.spelling(records));
-    // Steer only when presence is the sole blocker: the operand is `wanted` under one
-    // optional layer, so making it present resolves the operation. A different bare type
-    // (`not text`) is not presence-fixable and carries no steer.
+    // The operand is `wanted` under one optional layer, so presence is the sole blocker.
     if ty.is_optional() && ty.to_bare() == wanted {
         present_idiom_steer(&mut message);
     }
@@ -517,9 +504,7 @@ pub(super) fn binary_error(
         left.spelling(records),
         right.spelling(records)
     );
-    // Steer only when the operands differ solely in presence — same bare type, at least one
-    // optional — so making the optional present is what resolves the operator. Operands of
-    // different bare types (`int? + text`) are not presence-fixable and carry no steer.
+    // The operands differ solely in presence — same bare type, at least one optional.
     if (left.is_optional() || right.is_optional()) && left.to_bare() == right.to_bare() {
         present_idiom_steer(&mut message);
     }
@@ -538,8 +523,7 @@ pub(super) fn logic_operand(
         operator_symbol(op),
         ty.spelling(records)
     );
-    // `and`/`or` require bool; steer only when the operand is `bool?`, so presence is the
-    // sole blocker. A non-bool optional (`int?`) is not presence-fixable here.
+    // `and`/`or` require bool, so only a `bool?` operand is presence-fixable.
     if ty.is_optional() && ty.to_bare() == LTy::bare_scalar(ScalarType::Bool) {
         present_idiom_steer(&mut message);
     }
@@ -566,8 +550,6 @@ mod nearest_name_tests {
 
     #[test]
     fn a_shadowed_name_repeated_at_the_same_distance_is_not_a_tie() {
-        // A shadowing local presents the same candidate name twice; that is one
-        // unambiguous suggestion, not an ambiguous tie.
         assert_eq!(
             nearest_name("cache", ["cache", "cache"].into_iter()),
             None,

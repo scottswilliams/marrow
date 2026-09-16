@@ -12,14 +12,12 @@ use marrow_project::ProjectInput;
 use super::project_capture::project_with_ids;
 use super::refused as diagnostics;
 
-/// Capture a multi-file project with no `.marrow/ids` ledger, so every durable identity is
-/// missing and any declared store fails admission.
+/// A project with no ledger, so every declared store fails identity admission.
 fn project(files: &[(&str, &str)]) -> ProjectInput {
     project_with(files, None)
 }
 
-/// Capture a project against an explicit partial ledger, so some declared stores are
-/// admitted and others fail admission.
+/// A project against an explicit ledger, so admission can succeed for some stores only.
 fn project_with(files: &[(&str, &str)], ids: Option<&str>) -> ProjectInput {
     project_with_ids(files, ids.map(str::as_bytes))
 }
@@ -30,10 +28,8 @@ const STORE_MODULE: &str = "module main\n\n\
      }\n\n\
      store ^members[id: int]: Member\n";
 
-/// The two-module confound: `^members` is declared in `main` but its identity fails
-/// admission (no ledger), so it drops from the registry. A reference from another module
-/// names the admission failure and points at the identity reports — never a bare
-/// not-in-scope error, which would misdirect toward a typo.
+/// `^members` is declared in `main` but fails admission, so it drops from the registry. A
+/// reference from another module must still name the admission failure.
 #[test]
 fn a_reference_to_an_admission_failed_root_is_steered_to_the_identity_reports() {
     let reference = "module report\n\n\
@@ -68,9 +64,7 @@ fn a_reference_to_an_admission_failed_root_is_steered_to_the_identity_reports() 
     );
 }
 
-/// A single-module reference reproduces the same steering: the confound was never
-/// cross-module (roots are project-wide); it was an identity-less root dropping from the
-/// registry and reading as an unknown name in its own module too.
+/// Roots are project-wide, so the steering does not depend on crossing a module boundary.
 #[test]
 fn the_steering_holds_within_the_declaring_module() {
     let source = "module main\n\n\
@@ -91,8 +85,7 @@ fn the_steering_holds_within_the_declaring_module() {
     );
 }
 
-/// A genuinely undeclared root keeps the plain not-in-scope message: the steering fires
-/// only for a declared root that failed admission, never for a typo.
+/// The steering fires only for a declared root that failed admission, never for a typo.
 #[test]
 fn a_genuinely_undeclared_root_keeps_the_unknown_name_message() {
     let reference = "module report\n\n\
@@ -117,10 +110,8 @@ fn a_genuinely_undeclared_root_keeps_the_unknown_name_message() {
     );
 }
 
-/// The reference steer fires once per dropped root across the whole compile, even when
-/// one reference sits in a generic function's once-checked template body (proved before
-/// the monomorphic bodies) and another in an ordinary function. The template proof shares
-/// the compile-wide steered-root set, so a root referenced from both does not steer twice.
+/// The steered-root set is compile-wide, so a generic function's once-checked template body
+/// and an ordinary body referencing the same dropped root yield one steer, not two.
 #[test]
 fn a_dropped_root_referenced_from_a_generic_and_an_ordinary_function_steers_once() {
     let source = "module main\n\n\
@@ -149,8 +140,7 @@ fn a_dropped_root_referenced_from_a_generic_and_an_ordinary_function_steers_once
     );
 }
 
-/// A ledger that admits `^b` over `Book` but has no identity for `^a`, so one of the two
-/// stores projecting that Product is refused and the other stands.
+/// Admits `^b` over `Book` but not `^a`, so one of two stores over that Product is refused.
 const PARTIAL_IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
      id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
@@ -174,13 +164,9 @@ const SHARED_PRODUCT_MODULE: &str = "module main\n\n\
      store ^a[id: int]: Book\n\
      store ^b[id: int]: Book\n";
 
-/// A refused store does not carry its cause to a Product a sibling store admits.
-///
-/// `Book.notes(…)` is a Product declaration question: it builds the branch's materialized
-/// entry record and addresses no store root. Resolving it through the *first* store
-/// binding the resource sent every use of that constructor to `^a`'s identity failure,
-/// even where the write it supplies is a write to the perfectly admitted `^b`. The steer
-/// belongs to `^a`'s own references.
+/// `Book.notes(…)` builds the branch's materialized entry record and addresses no store
+/// root, so it must not resolve through whichever store happens to bind the resource first.
+/// A refused store's steer belongs to that store's own references.
 #[test]
 fn a_refused_store_does_not_steer_a_product_its_sibling_admits() {
     let source = format!(
@@ -234,9 +220,8 @@ fn a_refused_store_still_steers_its_own_references() {
     );
 }
 
-/// A ledger admitting one keyless store `^solo` over `Book`. A keyless (singleton) root
-/// carries a complete durable identity and is admitted, but it is outside the executable
-/// subset, so its `RootBinding` is `NotYetExecutable`.
+/// Admits one keyless store `^solo` over `Book`. A singleton root carries a complete durable
+/// identity yet sits outside the executable subset (`RootBinding::NotYetExecutable`).
 const KEYLESS_IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
      id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
@@ -270,15 +255,13 @@ const BOOK_DECL: &str = "resource Book {\n\
      \x20   }\n\
      }\n";
 
-/// `Book.notes` is a keyed branch, not a projectable field of `Book`'s materialized
-/// whole-entry record. Naming it as a field must be steered to the durable-path form.
+/// `Book.notes` is a keyed branch, not a projectable field of `Book`'s whole-entry record,
+/// and naming it as a field must be steered to the durable-path form.
 ///
-/// Whether `Book` declares a branch `notes` is a Product DECLARATION question. It is
-/// answered here from the branch-record table, which is written only at a Product's first
-/// *executable* root, and the steer additionally requires `ProductBinding::Declared` —
-/// an executable-occurrence scan. A Product whose only store is keyless is admitted with a
-/// complete identity and a complete declared branch tree, yet answers `NotYetExecutable`,
-/// so the same source question degrades to the bare missing-field report.
+/// Whether `Book` declares that branch is a declaration fact, so the answer must not depend
+/// on the branch-record table or on any root over the Product reaching the executable
+/// subset: a Product whose only store is keyless answers `NotYetExecutable` yet has a
+/// complete declared branch tree.
 #[test]
 fn a_branch_named_as_a_field_is_steered_whether_or_not_a_root_is_executable() {
     let field_use = "\npub fn peek(): int {\n\

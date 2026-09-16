@@ -3,16 +3,15 @@
 //!
 //! Recursion membership, the requires-ambient-transaction closure, and the
 //! mutate/durable closures all consume the same direct-call relation. The graph is
-//! analyzed once with iterative Tarjan: each function is discovered once and each
-//! edge is read once. One further sweep closes body availability over that order.
-//! The analysis mints an [`AcyclicCallOrder`] whose
-//! reverse-topological order settles any subrelation in one pass, with each relevant
-//! function and edge examined once.
+//! analyzed once with iterative Tarjan — each function discovered once, each edge read
+//! once — and one further sweep closes body availability over that order. The resulting
+//! [`AcyclicCallOrder`] settles any subrelation in one pass, examining each relevant
+//! function and edge once.
 //!
-//! The traversal is iterative rather than recursive, so call depth does not become
-//! native stack depth. SCC members are emitted into one flat vector; an ordinary
-//! acyclic program does not allocate one nested vector per function. Cycle reporting
-//! remains the caller's decision and order: this owner supplies membership only.
+//! The traversal is iterative, so call depth does not become native stack depth. SCC
+//! members are emitted into one flat vector, so an acyclic program allocates no nested
+//! vector per function. Cycle reporting is the caller's decision and order: this owner
+//! supplies membership only.
 
 /// Cycle membership and the flat SCC emission order of one direct-call graph.
 pub(crate) struct CallGraphAnalysis {
@@ -182,11 +181,10 @@ pub(crate) fn analyze(callees: &[Option<&[u16]>]) -> CallGraphAnalysis {
         }
     }
 
-    // Every SCC is classified before this sweep: an early member of a cycle must
-    // never look like a settled callee. Tarjan emits callees before their callers,
-    // so one pass closes availability transitively without another graph or fixpoint.
-    // SCC traversal no longer needs its stack-membership scratch. Reuse that
-    // allocation for the full-domain eligibility mask retained by the result.
+    // Every SCC is classified before this sweep: an early member of a cycle must never
+    // look like a settled callee. Tarjan emits callees before their callers, so one pass
+    // closes availability transitively without another graph or fixpoint. The
+    // stack-membership scratch is dead by here, so it becomes the eligibility mask.
     let mut eligible = on_stack;
     for ((eligible, body), &cycle) in eligible.iter_mut().zip(callees).zip(&on_cycle) {
         *eligible = body.is_some() && !cycle;

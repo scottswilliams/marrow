@@ -27,9 +27,8 @@ pub(crate) trait Ceiling {
 ///
 /// `count` and `bytes` are this owner's own contribution, not a composed total: a
 /// staging owner charges over a settled ledger's totals through the `base` argument of
-/// [`Bounded::admit`] while still releasing only what it added. A `Limited` owner's
-/// totals saturate at ceiling plus one, so later input keeps composing without
-/// unbounded growth.
+/// [`Bounded::admit`] while releasing only what it added. A `Limited` owner's totals
+/// saturate at ceiling plus one, so later input composes without unbounded growth.
 pub(crate) enum Bounded<C: Ceiling> {
     Retaining {
         count: u64,
@@ -169,11 +168,10 @@ impl<C: Ceiling> Bounded<C> {
         }
     }
 
-    /// Compose a contribution whose own payload was already destroyed by a crossing:
-    /// this owner becomes (or stays) `Limited` unconditionally, even when the composed
-    /// totals sit under both ceilings, because that payload never re-materializes. A
-    /// composed crossing selects its own kind, count first; otherwise `inherited` is
-    /// kept.
+    /// Compose a contribution whose own payload a crossing already destroyed: this owner
+    /// becomes (or stays) `Limited` unconditionally, even when the composed totals sit
+    /// under both ceilings, because that payload never re-materializes. A composed
+    /// crossing selects its own kind, count first; otherwise `inherited` stands.
     pub(crate) fn absorb_limited(
         &mut self,
         added_count: u64,

@@ -20,9 +20,7 @@ use super::{
 };
 
 /// One in-scope binding: its spelling and, when annotated, its declared type node
-/// borrowed from that parse. The type node is the fail-soft type-probe: a
-/// bare struct-name annotation (a single-segment [`TypeExpr::Name`]) resolves to that
-/// struct's fields; any other type shape resolves to no fields.
+/// borrowed from that parse. The node is what the fail-soft type probe reads.
 struct Binding<'a> {
     name: String,
     ty: Option<&'a TypeExpr>,
@@ -30,8 +28,8 @@ struct Binding<'a> {
 
 /// The lexical scope accumulated while descending to the offset: the enclosing
 /// declaration's generic type parameters, its parameters, and the locals introduced
-/// before the offset. A superset is never built — only bindings that precede the
-/// offset on the path to it are added.
+/// before the offset. Only bindings that precede the offset on the path to it are
+/// added, so this is never a superset.
 #[derive(Default)]
 struct Scope<'a> {
     type_params: Vec<String>,
@@ -563,10 +561,8 @@ fn expression_children(expression: &Expression) -> Vec<&Expression> {
             })
             .collect(),
         Expression::Try { inner, .. } => vec![inner.as_ref()],
-        // Leaves carry no sub-expression; `Name`, `Field`, `OptionalField`, and
-        // `Error` carry a completion class of their own and are matched before this
-        // helper is reached. The match stays exhaustive so a new child-bearing
-        // `Expression` variant is a compile error here rather than a silent gap.
+        // Leaves carry no sub-expression. The match stays exhaustive so a new
+        // child-bearing `Expression` variant is a compile error here, not a silent gap.
         Expression::Literal { .. }
         | Expression::Name { .. }
         | Expression::SavedRoot { .. }
@@ -712,12 +708,11 @@ fn struct_field_candidates(members: &[ResourceMember]) -> Vec<Candidate> {
     candidates
 }
 
-/// The fail-soft type probe: the struct-type name of a single-segment base that
-/// resolves to a local or parameter annotated with a bare struct name (a
-/// single-segment [`TypeExpr::Name`]). Any partial, unannotated, generic, optional,
-/// identity, or otherwise non-bare annotation yields `None` — never a resolver
-/// failure. The name is read from the type node structurally, not from a rendered
-/// display string.
+/// The fail-soft type probe: the struct-type name of a single-segment base that resolves
+/// to a local or parameter annotated with a bare struct name (a single-segment
+/// [`TypeExpr::Name`]). Any partial, unannotated, generic, optional, identity, or
+/// otherwise non-bare annotation yields `None` — never a resolver failure. The name is
+/// read from the type node structurally, not from a rendered display string.
 fn base_type_name<'a>(scope: &Scope<'a>, base: &Expression) -> Option<&'a str> {
     let Expression::Name { segments, .. } = base else {
         return None;

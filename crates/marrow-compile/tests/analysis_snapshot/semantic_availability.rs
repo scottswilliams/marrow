@@ -43,8 +43,8 @@ fn codes(rows: &[SourceDiagnostic]) -> Vec<Code> {
     rows.iter().map(SourceDiagnostic::code).collect()
 }
 
-/// Each projection sees the same source, and every expected diagnostic names its
-/// entire source construct. Run all three before comparing their results.
+/// Each projection sees the same source, and every expected diagnostic names its entire
+/// source construct.
 fn assert_diagnostic_sites(
     files: &[(&str, &str)],
     ids: Option<&[u8]>,
@@ -104,13 +104,11 @@ fn assert_diagnostic_sites(
     assert_eq!(actual, expected);
 }
 
-/// Red 7. A refused function signature refuses that declaration alone.
+/// A refused function signature refuses that declaration alone.
 ///
-/// The signature table is always built, so an unrelated body still lowers and
-/// reports its own error, and constant evaluation and the value-cycle audit run in
-/// their existing positions. A refused signature is a refused ledger entry rather
-/// than a withheld table, so `driver`'s own unresolved call is reported beside the
-/// three declaration refusals.
+/// The signature table is always built, so a refused signature is a refused ledger entry
+/// rather than a withheld table: an unrelated body still lowers and reports its own error,
+/// and constant evaluation and the value-cycle audit still run.
 #[test]
 fn signature_refusal_keeps_independent_checks_runnable() {
     let rows = diagnostics(
@@ -144,10 +142,9 @@ pub fn driver(): int {
     );
 }
 
-/// Red 8a. A duplicate function name is an ordinary source refusal that leaves every
-/// artifact available: bodies still lower, so the independent call cycle is reported
-/// beside it. The base gates `reject_recursion` on an empty diagnostic set and reports
-/// the name conflict alone.
+/// A duplicate function name leaves every artifact available: bodies still lower, so the
+/// independent call cycle is reported beside it. The base gates `reject_recursion` on an
+/// empty diagnostic set and reports the name conflict alone.
 #[test]
 fn a_duplicate_function_name_does_not_suppress_an_independent_call_cycle() {
     let rows = diagnostics(
@@ -185,10 +182,9 @@ pub fn driver(): int {
     );
 }
 
-/// Red 8b. A duplicate test title skips one test body, which is a declaration
-/// refusal, not a lowering refusal: the indices actually minted stay dense, so the
-/// call graph over the lowered set is exact and the independent cycle is still
-/// reported. The base reports the title conflict alone.
+/// A duplicate test title is a declaration refusal, not a lowering refusal: the indices
+/// actually minted stay dense, so the call graph over the lowered set is exact and the
+/// independent cycle is still reported. The base reports the title conflict alone.
 #[test]
 fn a_duplicate_test_title_does_not_suppress_an_independent_call_cycle() {
     let rows = diagnostics(
@@ -226,8 +222,8 @@ test "same" {
     );
 }
 
-/// Red 8c. A module-header path mismatch is reported before any registry is built and
-/// makes no artifact unavailable, so the independent call cycle is reported beside it.
+/// A module-header path mismatch is reported before any registry is built and makes no
+/// artifact unavailable, so the independent call cycle is reported beside it.
 #[test]
 fn a_module_path_diagnostic_does_not_suppress_an_independent_call_cycle() {
     let rows = diagnostics_over(&[(
@@ -258,8 +254,8 @@ pub fn driver(): int {
     );
 }
 
-/// One program's outcome from a production entry, named so a test can say which arm it
-/// requires without matching an opaque payload.
+/// One program's outcome from a production entry, so a test can name the arm it requires
+/// instead of matching an opaque payload.
 #[derive(Debug, PartialEq, Eq)]
 enum Outcome {
     Built,
@@ -277,8 +273,8 @@ fn outcome_of(result: Result<impl std::fmt::Debug, CompileFailure>) -> Outcome {
     }
 }
 
-/// A body queues a generic instance before its later unresolved call refuses the body.
-/// Draining completes the instance while the caller's reserved slot remains vacant.
+/// A queued generic instance drains to completion even though the caller's later unresolved
+/// call refuses the body and leaves its reserved slot vacant.
 const REFUSED_BODY_WITH_QUEUED_INSTANCE: &str = r#"module main
 
 pub fn caller(): int {
@@ -355,10 +351,9 @@ test "same" {
     );
 }
 
-/// Red 11. A production compile excludes test bodies, so `CompleteDeclaredTestBodies`
-/// holds vacuously: a project whose only refusal is inside a test still builds its
-/// production image, and no test-body diagnostic appears in that compile. The same
-/// project reports through `compile_with_tests`.
+/// A production compile excludes test bodies, so `CompleteDeclaredTestBodies` holds
+/// vacuously: a project whose only refusal is inside a test still builds its production
+/// image, and no test-body diagnostic appears in that compile.
 #[test]
 fn excluded_test_bodies_leave_the_production_image_unchanged() {
     let with_broken_test = r#"module main
@@ -412,16 +407,13 @@ fn a_refused_declared_body_with_a_completed_instance_cannot_build_an_image() {
     );
 }
 
-/// Red 13. A diagnostic avalanche over a program that also crosses an image ceiling
-/// reports its own diagnostic bound: the semantic terminal is `Limited`, which is a
-/// diagnostic state, and the fence takes that strictly before the projection's verdict.
-/// No image-policy kind may surface here.
+/// A diagnostic avalanche over a program that also crosses an image ceiling reports its own
+/// diagnostic bound: the semantic terminal `Limited` is a diagnostic state, and the fence
+/// takes it strictly before the projection's verdict, so no image-policy kind surfaces.
 ///
-/// The two halves are separate on purpose. The 257 public functions lower cleanly and
-/// mint 257 exports, which latches a real `MAX_EXPORTS` excess into the draft — a
-/// program whose bodies are all refused mints nothing and would cross no image ceiling
-/// at all, so the fixture would not be testing the fence. The single avalanche body
-/// then overflows the diagnostic collector.
+/// The two halves are separate on purpose: the 257 clean public functions latch a real
+/// `MAX_EXPORTS` excess into the draft (all-refused bodies mint nothing and would cross no
+/// ceiling), and the single avalanche body then overflows the diagnostic collector.
 #[test]
 fn a_limited_terminal_reports_its_own_bound_over_an_image_ceiling() {
     let mut source = String::from("module main\n\n");
@@ -478,9 +470,9 @@ fn the_settled_body_byte_ceiling_stops_before_a_settled_refusal_is_reported() {
     );
 }
 
-/// Red 13. Every refusal in this suite is a reported one: an artifact never becomes
-/// unavailable without a diagnostic to explain it, so no source program in the
-/// continuation corpus reaches the `UnavailableWithoutReport` invariant.
+/// Every refusal in this suite is a reported one: an artifact never becomes unavailable
+/// without a diagnostic to explain it, so no source program in the continuation corpus
+/// reaches the `UnavailableWithoutReport` invariant.
 #[test]
 fn no_continuation_fixture_reaches_an_invariant() {
     let corpus = [

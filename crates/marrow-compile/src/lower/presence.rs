@@ -4,11 +4,11 @@
 
 use super::*;
 
-/// A loop's patch targets — where `continue` jumps, and the jumps `break` emits that
-/// must be patched to the loop's exit once it is known — and its proof region: a loop
-/// body is one region, so a use through a fact older than the loop is refused when
-/// the body erases the fact's family or calls a function that erases it, because the
-/// back edge puts that erase before the use.
+/// A loop's patch targets — where `continue` jumps, and the `break` jumps to patch to
+/// the loop's exit once it is known — and its proof region. A loop body is one region:
+/// a use through a fact older than the loop is refused when the body erases the fact's
+/// family or calls a function that erases it, because the back edge puts that erase
+/// before the use.
 pub(super) struct LoopCtx<'a> {
     pub(super) continue_target: usize,
     pub(super) break_jumps: Vec<usize>,

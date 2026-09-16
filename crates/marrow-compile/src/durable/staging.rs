@@ -1,7 +1,7 @@
 //! Producer-bound custody for one durable store build.
 //!
-//! The parent durable builder can request only its exact `build_one` operation and a
-//! consuming settlement. It cannot borrow, replace, or exchange the armed producer or
+//! The parent durable builder can request only its exact `build_one` operation, which
+//! consumes the staging. It cannot borrow, replace, or exchange the armed producer or
 //! its diagnostic owner while another store transaction is live.
 
 use marrow_image::{AdmittedGraphInputPlan, DraftTxn, ImageDraft};

@@ -1,4 +1,5 @@
-//! Type-annotation and operator resolution: the type-parameter environment, unification, and the operator/comparison tables.
+//! Type-annotation and operator resolution: the type-parameter environment,
+//! unification, and the operator/comparison tables.
 
 use super::*;
 
@@ -55,10 +56,8 @@ impl TypeEnv<'_> {
 
 /// Resolve a parameter annotation to its lowered type: a bare scalar, a bare
 /// nominal, a bare `struct`, or a bare resource-record value. Optionals and
-/// unresolved names are outside the parameter subset. A resource value crosses the
-/// boundary by value like any other record, sharing the image `Record` shape. One
-/// owner for signature building and body lowering, so the two can never disagree on
-/// a parameter's type.
+/// unresolved names are outside the parameter subset. One owner for signature
+/// building and body lowering, so the two cannot disagree on a parameter's type.
 pub(super) fn param_type(
     records: &mut TypeRegistry,
     draft: &mut DraftTxn<'_>,
@@ -101,7 +100,7 @@ pub(super) fn param_type(
         ) => Ok(param),
         // A type that resolves but is outside the parameter subset is a genuine
         // subset gap. Every refusal passes through unchanged, so a refused
-        // declaration keeps its cause the whole way to the report.
+        // declaration keeps its cause all the way to the report.
         Ok(_) => Err(ResolveError::Refusal(ResolveRefusal::Unsupported)),
         Err(error) => Err(error),
     }
@@ -181,9 +180,8 @@ pub(super) fn resolve_type(
             resolve_generic(records, draft, durable, head, args, env, site)
         }
         // `Id(^root)`: the entry-identity value type of the named store root, carrying
-        // that root's declaration-ordered RootId. An identity over a root that is not
-        // declared, or over a not-yet-executable root, is an unsupported type (`None`),
-        // reported by the caller like any other unresolved annotation.
+        // that root's declaration-ordered RootId. An undeclared or not-yet-executable
+        // root is an unsupported type, reported by the caller.
         TypeExpr::Identity(identity) => {
             let root = match durable.root(&identity.root)? {
                 RootBinding::Executable(root) => root,
@@ -210,12 +208,10 @@ pub(super) fn resolve_type(
 
 /// Resolve a generic type application to a bare instantiation, monomorphizing it
 /// into the draft on first use. `List`/`Map` are the compiler collections; every
-/// other head is a value-type template (the reserved `Option`/`Result` or a user
-/// `struct`/`enum`) resolved through the one instantiation owner. A wrong arity, an
-/// argument that is not a value type, or a constraint violation yields `None`, so
-/// the caller reports it as an unsupported type. An argument may itself be an
-/// abstract type parameter in the once-checked template pass; its constraint then
-/// stands in for the concrete one during revalidation.
+/// other head is a value-type template resolved through the one instantiation owner.
+/// A wrong arity, a non-value-type argument, or a constraint violation refuses as an
+/// unsupported type. An argument may itself be an abstract type parameter, whose
+/// declared constraint then stands in for the concrete one during revalidation.
 fn resolve_generic(
     records: &mut TypeRegistry,
     draft: &mut DraftTxn<'_>,
@@ -287,9 +283,8 @@ fn resolve_generic(
                     };
                     if !satisfied {
                         // A malformed registry remains an invariant even when this
-                        // application also violates a source constraint. The normal
-                        // successful mint path owns the same preflight and must not
-                        // rebuild it here.
+                        // application also violates a source constraint, so the
+                        // preflight still runs before the refusal.
                         records.validate_type_arguments(&resolved)?;
                         return Err(ResolveError::Refusal(ResolveRefusal::Unsupported));
                     }
@@ -309,12 +304,11 @@ fn resolve_generic(
     }
 }
 
-/// Structurally unify a generic parameter's declared type against an argument's
-/// inferred type, binding each type parameter to the concrete value type filling
-/// its position. `annotation` is the written syntax. Inference is exact: a bare
-/// parameter position requires a bare argument (no implicit bare-to-optional
-/// widening), and a concrete named position requires an exactly matching argument. A
-/// conflicting binding or a shape mismatch is an error the caller reports.
+/// Why structural unification of a generic parameter against an argument failed.
+///
+/// Inference is exact: a bare parameter position requires a bare argument (no
+/// implicit bare-to-optional widening), and a concrete named position requires an
+/// exactly matching argument.
 pub(super) enum UnifyError {
     Mismatch(String),
     Invariant(LowerInvariant),
@@ -326,6 +320,8 @@ impl From<LowerInvariant> for UnifyError {
     }
 }
 
+/// Structurally unify a generic parameter's declared type against an argument's
+/// inferred type, binding each type parameter to the value type filling its position.
 pub(super) fn unify_type_param(
     records: &TypeRegistry,
     type_params: &[(String, Option<TypeConstraint>)],
@@ -497,8 +493,7 @@ fn unify_apply_with(
                 ))),
             }
         }
-        // Every other generic head is a value-type template (the reserved
-        // `Option`/`Result` or a user `struct`/`enum`): the argument must be an
+        // Every other generic head is a value-type template: the argument must be an
         // instantiation of the same template, and each type argument unifies
         // positionally against its parameter.
         _ => {
@@ -602,8 +597,8 @@ fn named_type(
 }
 
 /// The instruction an int ordering comparison lowers to, shared by the bare-int
-/// operator table and the same-nominal comparison path (one owner). Equality
-/// stays with [`eq_instr`].
+/// operator table and the same-nominal comparison path. Equality stays with
+/// [`eq_instr`].
 pub(super) fn int_comparison(op: BinaryOp) -> Option<Instr> {
     Some(match op {
         BinaryOp::Less => Instr::IntLt,

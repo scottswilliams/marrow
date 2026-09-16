@@ -6,13 +6,9 @@
 //! paths, key widths, key columns, and index arguments are settled here, so a consumer
 //! is handed validated projections rather than a question it could answer a second way.
 //!
-//! Declaration syntax stays reachable through these tables, and that is the state of
-//! the build today rather than an oversight. `DurableRegistry::build` still receives
-//! the raw `resource` declarations the tables are constructed from; each store's own
-//! `StoreDecl` travels beside its row for the root placement name and the spans its
-//! refusals report at; and a [`GroupRow`] retains its member `FieldDecl`s, which carry
-//! their own key syntax. Each row states what it retains. Closing those routes means
-//! the build accepting rows and nothing else, which is successor row DURSYNTAX01's work.
+//! Declaration syntax is still reachable past these tables: the build receives the raw
+//! `resource` declarations, each `StoreDecl` travels beside its row, and a [`GroupRow`]
+//! retains its member `FieldDecl`s. Each row states what it retains.
 
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -29,8 +25,7 @@ use crate::diag::SourceDiagnostic;
 use crate::scalar::ScalarType;
 use crate::types::{GenericInvariant, RecordInfo, ResolveError, ResolveRefusal, TypeRegistry};
 /// A typed handle to one admitted `resource` declaration: a row index into the
-/// [`ResourceDirectory`] that minted it, rather than a narrowed ordinal, and never on
-/// the wire.
+/// [`ResourceDirectory`] that minted it, never on the wire.
 ///
 /// The handle carries no brand for its directory, so a second directory would accept it;
 /// the build takes one directory per compile, so there is no second one to reach.
@@ -42,9 +37,7 @@ pub(super) struct ResourceDeclId(usize);
 /// declaration the parser wrote.
 ///
 /// The row holds no `ResourceDecl` of its own: the declaration is borrowed for the
-/// projection and left where it was. It stays reachable to the build through the slice
-/// `DurableRegistry::build` receives, so this row narrows what the build reads without
-/// putting the declaration out of reach.
+/// projection and left where it was.
 pub(super) struct ResourceRow<'a> {
     pub(super) file: &'a FileIdentity,
     pub(super) record: &'a RecordInfo,
@@ -55,16 +48,14 @@ pub(super) struct ResourceRow<'a> {
 /// [`ResourceDeclId`] and looked up by written spelling.
 ///
 /// This is the one join between a resource's two owners — the declaration the parser
-/// wrote and the record the type registry admitted — and it is performed once, before
-/// any store is built. The registry drives the join: every row comes from an admitted
-/// record, so which resources exist is decided by exactly one owner, and a store
-/// reaches a record only *through* a row this join built from a declaration. An
-/// admitted record whose cited declaration is absent, or sits somewhere other than the
-/// declare pass recorded, is the two build inputs drifting apart — a compiler
-/// coherence failure raised here, at the single join, and nowhere else.
+/// wrote and the record the type registry admitted — performed once, before any store
+/// is built. The registry drives it: every row comes from an admitted record, so which
+/// resources exist is decided by exactly one owner, and a store reaches a record only
+/// *through* a row this join built. An admitted record whose cited declaration is
+/// absent, or sits somewhere other than the declare pass recorded, is a compiler
+/// coherence failure raised here and nowhere else.
 ///
-/// The join is the ordinal the declare pass recorded, not the written name, and
-/// [`Self::take`] states what that pairing does and does not establish.
+/// The join key is the ordinal the declare pass recorded, not the written name.
 pub(super) struct ResourceDirectory<'a> {
     rows: Vec<ResourceRow<'a>>,
     by_spelling: BTreeMap<&'a str, ResourceDeclId>,
@@ -75,16 +66,13 @@ impl<'a> ResourceDirectory<'a> {
         resources: &'a [(FileRef, FileIdentity, &'a ResourceDecl)],
         records: &'a TypeRegistry,
     ) -> Result<Self, GenericInvariant> {
-        // The declare pass paired every admitted record with the declaration it was built
-        // from by pushing both in lockstep; this reads that pairing rather than rebuilding
-        // it from resource name spellings, which is not declaration identity.
-        //
-        // The coordinate check below adds this: at each ordinal an admitted record cites,
-        // the declaration found there must sit at the module position and name span the
-        // declare pass recorded, so a cited declaration that MOVED is refused rather than
-        // paired with whatever now sits at that index. It does not reach an ordinal no
-        // record cites, and it does not authenticate the slice — `FileRef` is
-        // snapshot-local and `FileIdentity` is not compared.
+        // The declare pass paired every admitted record with its declaration by pushing
+        // both in lockstep; this reads that pairing rather than rebuilding it from name
+        // spellings, which are not declaration identity. The coordinate check requires
+        // the declaration at each cited ordinal to sit at the module position and name
+        // span the declare pass recorded, so a declaration that moved is refused rather
+        // than paired with whatever now sits at that index. It does not authenticate the
+        // slice: `FileRef` is snapshot-local and `FileIdentity` is not compared.
         let ordinals = records.record_declaration_ordinals();
         let admitted = records.admitted_resources();
         let mut rows = Vec::with_capacity(admitted.len());
@@ -116,9 +104,8 @@ impl<'a> ResourceDirectory<'a> {
         self.by_spelling.get(spelling).copied()
     }
 
-    /// The row `id` addresses. `id` is minted only by [`Self::take`], from a length
-    /// taken immediately before the matching push, so it addresses a row of the
-    /// directory that minted it — of a second directory, only by coincidence of length.
+    /// The row `id` addresses. `id` is minted only by [`Self::take`], from a length taken
+    /// immediately before the matching push, so it always addresses a live row.
     pub(super) fn row(&self, id: ResourceDeclId) -> &ResourceRow<'a> {
         &self.rows[id.0]
     }
@@ -126,17 +113,17 @@ impl<'a> ResourceDirectory<'a> {
 
 /// One `store` declaration's resource binding, resolved before any store is built.
 ///
-/// The row carries the written spelling beside the binding because every diagnostic
-/// the binding produces renders that spelling: a row that held only the resolution
-/// would send its consumer back to the declaration for the half it reports.
+/// The written spelling is carried beside the binding because every diagnostic the
+/// binding produces renders it; a row holding only the resolution would send its
+/// consumer back to the declaration.
 pub(super) struct StoreRow<'a> {
     pub(super) resource: &'a str,
     pub(super) binding: StoreResourceBinding,
     /// The root's managed indexes, taken from the declaration with the binding so the
     /// build reads no `index` syntax of its own.
     pub(super) indexes: IndexTable<'a>,
-    /// The root's identity key tuple, taken and resolved with the same reading. The
-    /// build renders a refusal at the position it always held; it re-resolves nothing.
+    /// The root's identity key tuple, taken and resolved with the same reading, so the
+    /// build re-resolves nothing.
     pub(super) keys: KeyTable<'a>,
 }
 
@@ -145,11 +132,8 @@ pub(super) enum StoreResourceBinding {
     /// The spelling names a `resource` declaration the type registry admitted.
     Accepted(ResourceDeclId),
     /// No admitted resource answers the spelling: it names nothing, a declaration of
-    /// another kind, or a declaration this project refused. The durable build reports
-    /// all of those with the same row at the same span, so the distinction would be a
-    /// retained cause no consumer reads — and the moment a steer to a refused
-    /// declaration's own cause is wanted, minting it is a diagnostic change, not a
-    /// binding change.
+    /// another kind, or one this project refused. The durable build reports all of those
+    /// with the same row at the same span, so the cause is not retained.
     Unbound,
 }
 
@@ -195,9 +179,8 @@ impl<'a> StoreRow<'a> {
 ///
 /// A bound store counts under the resolved declaration it binds; an unbound one counts
 /// under its written spelling, because that is all an unbound store has. Keying the
-/// bound case on the resolved declaration is what the census's own retained note asked
-/// for: distinct spellings cannot name one declaration, so the partition is the
-/// Product's rather than the source text's, and it stays correct if resources ever stop
+/// bound case on the declaration rather than the text partitions by Product — distinct
+/// spellings cannot name one declaration — and stays correct if resources ever stop
 /// resolving project-globally.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum ProductKey<'stores> {
@@ -219,8 +202,8 @@ pub(super) struct IndexRow<'a> {
 ///
 /// A managed index projects the root's own leaves, so an argument's path shape decides
 /// only whether it stays at the top level or reaches through a member; which leaf a
-/// top-level name reaches is resolved later. The row states the shape as the closed fact
-/// it is, rather than leaving a segment count for each consumer to compare against one.
+/// top-level name reaches is resolved later. Stating the shape as a closed fact keeps
+/// each consumer from re-comparing a segment count.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum IndexArgReach {
     /// A single-segment path: resolution later admits it as a key or a field, or rejects it.
@@ -232,10 +215,9 @@ pub(super) enum IndexArgReach {
 /// One projection argument of a managed index: the path spelling every diagnostic
 /// about it renders, its own span, and how far it reaches.
 ///
-/// The spelling is rendered once, here, from the parsed path segments. Every consumer
-/// downstream compares and reports that one rendering instead of re-rendering the
-/// path, which is what makes "the same component" one answer rather than one per
-/// caller.
+/// The spelling is rendered once, here, from the parsed path segments; every consumer
+/// compares and reports that one rendering, so "the same component" has one answer
+/// rather than one per caller.
 pub(super) struct IndexArgRow {
     pub(super) spelling: String,
     pub(super) span: SourceSpan,
@@ -246,9 +228,8 @@ pub(super) struct IndexArgRow {
 /// the declaration before the root is built.
 ///
 /// The two tables are one owner because an index's admission ends in its arguments: the
-/// width cap and component resolution read the index row and its argument rows together,
-/// while the name-collision and keyed-root rules read the row alone. A range into a single
-/// argument vector keeps that pairing a property of the table, not of each caller.
+/// width cap and component resolution read the index row and its argument rows together.
+/// A range into a single argument vector keeps that pairing a property of the table.
 pub(super) struct IndexTable<'a> {
     indexes: Vec<IndexRow<'a>>,
     args: Vec<IndexArgRow>,
@@ -290,9 +271,9 @@ impl<'a> IndexTable<'a> {
 
     /// Each index row paired with the argument rows it projects, in declaration order.
     ///
-    /// The pairing is the table's, not the caller's: an index row's argument range
-    /// addresses this table's argument vector and nothing else, so handing out the two
-    /// together is what keeps a row from ever being read against the wrong arguments.
+    /// An index row's argument range addresses this table's argument vector and nothing
+    /// else, so handing the two out together keeps a row from being read against the
+    /// wrong arguments.
     pub(super) fn entries(&self) -> impl Iterator<Item = (&IndexRow<'a>, &[IndexArgRow])> {
         self.indexes
             .iter()
@@ -302,12 +283,11 @@ impl<'a> IndexTable<'a> {
 /// Which declaration a durable key tuple belongs to: the anchor its columns hang
 /// under, the span its width cap reports at, and the subject that cap names.
 ///
-/// A root's key tuple and a branch's key tuple are the same shape enforced by the
-/// same rules and anchored the same way, declared in two different places. Carrying
-/// the difference as a closed owner is what lets the rules and the anchor join exist
-/// once: the two sites used to spell the join `format!("{path}.{name}")` twice, in
-/// two functions, and a divergence between them re-anchors durable identity — reported
-/// as a `.marrow/ids` gap on the new anchor, never as a rename of the old one.
+/// A root's key tuple and a branch's key tuple are the same shape enforced by the same
+/// rules and anchored the same way, declared in two different places. Carrying the
+/// difference as a closed owner lets the rules and the anchor join exist once: two
+/// spellings of that join re-anchor durable identity, reported as a `.marrow/ids` gap
+/// on the new anchor and never as a rename of the old one.
 pub(super) enum KeyOwner<'a> {
     /// A `store` root's key tuple, anchored at the root placement name.
     Store { root: &'a str, span: SourceSpan },
@@ -344,7 +324,7 @@ impl KeyOwner<'_> {
 /// and the scalar its declared type resolved to.
 ///
 /// The declared type is not kept. A tuple is admitted whole or refused whole, so a row
-/// that exists has already passed the closed durable-key scalar set, and no consumer
+/// that exists has already passed the closed durable-key scalar set and no consumer
 /// holds the annotation a second resolution would need.
 struct KeyColumnRow<'a> {
     spelling: &'a str,
@@ -355,14 +335,11 @@ struct KeyColumnRow<'a> {
 /// to the durable-key scalar set or the one refusal that resolution earned.
 ///
 /// A root's tuple and a branch's tuple are the same shape enforced by the same rules,
-/// so they are one owner. It is taken once per declared tuple per compile, and this
-/// table retains none of the `KeyParam`s it was taken from: the width is a count, a
-/// column is a name and a scalar, and the refusal is a settled diagnostic, so a
-/// consumer cannot resolve a column's scalar a second time off the table it was handed.
-/// The claim is the table's alone — a keyed field's own key syntax travels with the
-/// `FieldDecl` in [`GroupRow::fields`]. Column position is declaration order
-/// throughout, which is the order the identity suffix law and the image key tuple both
-/// read.
+/// so they are one owner, taken once per declared tuple per compile. The table retains
+/// none of the `KeyParam`s it was taken from — the width is a count, a column is a name
+/// and a scalar, the refusal is a settled diagnostic — so a consumer cannot resolve a
+/// column's scalar a second time off it. Column position is declaration order
+/// throughout, the order the identity suffix law and the image key tuple both read.
 pub(super) struct KeyTable<'a> {
     owner: KeyOwner<'a>,
     /// The declared column count. Kept beside the resolution because the width cap
@@ -382,10 +359,9 @@ pub(super) struct AdmittedKeyColumn<'a> {
 /// What a key tuple admits, in the order its refusals are ranked.
 ///
 /// The three arms are the whole answer, so a consumer cannot read the columns without
-/// having been handed the refusal that would have made them wrong. Both readings of a
-/// table rank through [`KeyTable::admitted`], so a tuple that is both over-wide and
-/// unresolvable is refused for its width at each: [`KeyTable::columns`] answers
-/// `OverWide`, and [`KeyTable::resolved`] hands out no scalar tuple either way.
+/// having been handed the refusal that would have made them wrong. Both readings rank
+/// through [`KeyTable::admitted`], so a tuple that is both over-wide and unresolvable is
+/// refused for its width at each.
 pub(super) enum KeyColumns<'a> {
     Admitted(Vec<AdmittedKeyColumn<'a>>),
     /// The tuple is over the image's fixed key width: the refusal and its span.
@@ -401,10 +377,9 @@ pub(super) enum KeyColumns<'a> {
 impl<'a> KeyTable<'a> {
     /// Take and resolve one declared tuple.
     ///
-    /// The fields are private, so outside this module this is the only constructor, and
-    /// it charges the once-per-compile counter itself: a reconstruction cannot avoid the
-    /// count by living at a different call site. Resolution happens here rather than at a
-    /// consumer: it is a fact of the tuple, settled once.
+    /// The fields are private, so this is the only constructor outside this module.
+    /// Resolution happens here rather than at a consumer: it is a fact of the tuple,
+    /// settled once.
     pub(super) fn take(
         owner: KeyOwner<'a>,
         keys: &'a [KeyParam],
@@ -439,10 +414,9 @@ impl<'a> KeyTable<'a> {
     /// The columns this tuple admits, or the refusal that outranks them.
     ///
     /// The one place the width cap and the scalar resolution are ranked against each
-    /// other. Every reading of a table is answered from here, so neither can be read
-    /// ahead of the other at one reading and behind it at another: the width cap is a
-    /// fact of the declared tuple, and a tuple past it has no admitted columns to
-    /// report whatever its columns resolved to.
+    /// other, so neither can lead at one reading and trail at another. The width cap is
+    /// a fact of the declared tuple: a tuple past it has no admitted columns to report
+    /// whatever its columns resolved to.
     fn admitted(&self) -> Result<&[KeyColumnRow<'a>], KeyColumns<'_>> {
         if let Some(message) = self.over_wide() {
             return Err(KeyColumns::OverWide {
@@ -457,11 +431,9 @@ impl<'a> KeyTable<'a> {
     }
 
     /// The settled scalar tuple, or the typed coherence failure for a consumer that can
-    /// only run once this tuple was admitted. The graph build consumes a refusal as the
-    /// declaring member's own diagnostic, and a refused member refuses its store, so a
-    /// store that reached the executable derivation proved every tuple admitted — both
-    /// resolved and within the width cap, which is why either refusal answers here with
-    /// the same coherence failure rather than with a scalar tuple.
+    /// only run once this tuple was admitted. A refused member refuses its store, so a
+    /// store reaching the executable derivation has proved every tuple both resolved and
+    /// within the width cap; either refusal therefore answers with a coherence failure.
     pub(super) fn resolved(&self) -> Result<Vec<ScalarType>, GenericInvariant> {
         match self.admitted() {
             Ok(columns) => Ok(columns.iter().map(|column| column.scalar).collect()),
@@ -486,12 +458,11 @@ impl<'a> KeyTable<'a> {
 
     /// The ledger anchor path of one column: the owner's anchor, then the column name.
     ///
-    /// This is the only place a key column's anchor is assembled. The anchors it
-    /// returns are the keys of the machine-written `.marrow/ids` ledger, so a second
-    /// spelling of this join re-anchors durable identity: the compiler reports the new
-    /// anchor as a missing-identity gap and the mint action commits it beside the id the
-    /// old spelling still owns. It is private so no consumer needs to assemble one — not
-    /// because none could: `pub(super)` spellings and a held anchor leave the join writable.
+    /// The only place a key column's anchor is assembled. These anchors are the keys of
+    /// the machine-written `.marrow/ids` ledger, so a second spelling of this join
+    /// re-anchors durable identity: the compiler reports the new anchor as a
+    /// missing-identity gap and the mint action commits it beside the id the old
+    /// spelling still owns.
     fn identity_path(&self, spelling: &str) -> String {
         format!("{}.{}", self.owner.anchor(), spelling)
     }
@@ -501,10 +472,10 @@ impl<'a> KeyTable<'a> {
 /// qualified path every walker used to assemble on its own, its key rows when keyed,
 /// and its nested group rows in declaration order.
 ///
-/// The tree mirrors the declaration's group nesting exactly, so a walker drives off
-/// the rows and re-derives neither a member path nor keyedness from syntax. It is taken
-/// once per compile, with the directory: a store attempt that stages and rolls back
-/// consumes the same rows a later attempt does.
+/// The tree mirrors the declaration's group nesting exactly, so a walker drives off the
+/// rows and re-derives neither a member path nor keyedness from syntax. Taken once per
+/// compile with the directory: a store attempt that stages and rolls back consumes the
+/// same rows a later attempt does.
 pub(super) struct GroupRow<'a> {
     /// The member's simple name — what the physical layer keys a branch family by,
     /// and the segment its path ends with.
@@ -517,10 +488,9 @@ pub(super) struct GroupRow<'a> {
     /// The member's directly declared stored fields, in declaration order.
     ///
     /// The `group` declaration itself is not retained, so its own key tuple reaches a
-    /// consumer only as [`GroupRow::keys`]. A field's key tuple is another matter: a
-    /// `FieldDecl` carries its `KeyParam`s, and `DurableRegistry::build_field` reads
-    /// them to refuse a keyed field. A consumer holding this row therefore holds that
-    /// much key syntax, and will until DURSYNTAX01 displaces the declaration with a row.
+    /// consumer only as [`GroupRow::keys`]. A `FieldDecl` does carry its own `KeyParam`s,
+    /// which `DurableRegistry::build_field` reads to refuse a keyed field, so a consumer
+    /// holding this row holds that much key syntax.
     pub(super) fields: Vec<&'a FieldDecl>,
     /// The span of the first declared member, for the depth-cap refusal.
     pub(super) first_member_span: Option<SourceSpan>,
@@ -583,11 +553,9 @@ fn group_rows<'a>(
 /// an empty vector. Called only from [`KeyTable::take`], so it is the sole reader of a
 /// key column's declared type and the resolution is a fact of the table.
 ///
-/// The rejection row is returned rather than pushed: the build refuses a store with
-/// it at the position the refusal always held, and a refusal is summarized from the
-/// row that reports it in one statement. It is boxed because a diagnostic is wide
-/// next to a key column vector and this path is the refused arm, never the admitted
-/// column loop.
+/// The rejection row is returned rather than pushed, so the build refuses a store from
+/// the row that reports it. It is boxed because a diagnostic is wide next to a key
+/// column vector and this is the refused arm, never the admitted column loop.
 fn resolve_key_columns<'a>(
     file: &FileIdentity,
     owner: &KeyOwner<'a>,
@@ -646,11 +614,9 @@ mod tests {
     /// A tuple past the width cap is refused at every reading of its table, the settled
     /// scalars included.
     ///
-    /// Production asks for the verdict before the scalars, so no compile reaches
-    /// `resolved` on an over-wide tuple and no source can exercise this; the state is
-    /// built here directly because the property is the type's rather than a caller
-    /// ordering's. Ranking the width cap at only one of the two readings restores the
-    /// bypass and fails here.
+    /// Production asks for the verdict before the scalars, so no source can exercise
+    /// this; the state is built directly because the property belongs to the type rather
+    /// than to a caller ordering.
     #[test]
     fn an_over_wide_tuple_is_refused_at_the_scalar_reading_too() {
         let store = || KeyOwner::Store {

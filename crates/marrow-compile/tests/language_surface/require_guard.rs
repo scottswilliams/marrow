@@ -1,16 +1,13 @@
 //! The `require <condition> else <value>` guard statement.
 //!
-//! `require C else E` is pure lowering sugar for `if not C { return err(E) }`:
-//! the condition is a `bool`, the bare failure value types against the enclosing
-//! function's `Result` error type, and the failure exit is an implicit return
-//! that commits only the function's active region. This suite pins the
-//! checker-side typing rules and the pure-sugar claim itself: the sugar and its
-//! handwritten form compile to images whose every section except the
-//! source-position table is byte-identical. (The span section necessarily
-//! differs: the two spellings occupy different source positions.)
+//! `require C else E` is pure lowering sugar for `if not C { return err(E) }`: the condition
+//! is a `bool`, the bare failure value types against the enclosing function's `Result` error
+//! type, and the failure exit is an implicit return committing only the function's active
+//! region. The pure-sugar claim is enforced here as byte identity of the two spellings'
+//! images in every section but the source-position table, which necessarily differs.
 //!
-//! Transaction-owner and helper exits are pinned beside the other ownership
-//! laws in `durable_model/transaction_ownership.rs`.
+//! Transaction-owner and helper exits are pinned in
+//! `durable_model/transaction_ownership.rs`.
 
 use marrow_codes::Code;
 use std::collections::BTreeMap;
@@ -36,18 +33,13 @@ fn image_bytes(source: &str) -> Vec<u8> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Checker rules: the else value types against the function's error type.
-// ---------------------------------------------------------------------------
-
 #[test]
 fn a_require_in_a_result_function_compiles() {
     let source = "module main\n\nfn isPositive(n: int): bool {\n    return n > 0\n}\n\npub fn check(n: int): Result<int, string> {\n    require isPositive(n) else \"not positive\"\n    return ok(n)\n}\n";
     assert!(diagnostics(source).is_empty(), "{:#?}", diagnostics(source));
 }
 
-/// `require` in a function that does not return a `Result` is refused: the
-/// implicit failure exit has no error channel to return through.
+/// The implicit failure exit needs an error channel to return through.
 #[test]
 fn a_require_outside_a_result_function_is_rejected() {
     let source = "module main\n\npub fn check(n: int): int {\n    require n > 0 else \"not positive\"\n    return n\n}\n";
@@ -76,8 +68,8 @@ fn a_require_in_a_unit_function_is_rejected() {
     );
 }
 
-/// The bare failure value must be the function's exact error type; there is no
-/// implicit conversion (mirroring `try`).
+/// The bare failure value must be the function's exact error type, as for `try`; there is
+/// no implicit conversion.
 #[test]
 fn a_mistyped_else_value_is_rejected() {
     let source = "module main\n\npub fn check(n: int): Result<int, string> {\n    require n > 0 else 42\n    return ok(n)\n}\n";
@@ -100,23 +92,17 @@ fn a_non_bool_condition_is_rejected() {
     );
 }
 
-/// `require` and prefix `try` interleave in one Result function: `try`
-/// propagates an existing failure, `require` originates one, and both exits
-/// type against the same error channel.
+/// `try` propagates an existing failure and `require` originates one; both exits type
+/// against the same error channel.
 #[test]
 fn require_and_try_interleave_in_one_function() {
     let source = "module main\n\nfn isPositive(n: int): bool {\n    return n > 0\n}\n\nfn half(n: int): Result<int, string> {\n    require isPositive(n) else \"not positive\"\n    return ok(n / 2)\n}\n\npub fn quarter(n: int): Result<int, string> {\n    const h = try half(n)\n    require isPositive(h) else \"halved away\"\n    const q = try half(h)\n    return ok(q)\n}\n";
     assert!(diagnostics(source).is_empty(), "{:#?}", diagnostics(source));
 }
 
-// ---------------------------------------------------------------------------
-// The pure-sugar enforcement artifact: byte identity with the handwritten form.
-// ---------------------------------------------------------------------------
-
-/// The common body of the fixture pair. Two guards — a literal failure value and
-/// a computed one (evaluated only on the failure path in both spellings) — then
-/// the ok exit, behind a helper so the pair differs in nothing but the guard
-/// spelling.
+/// The common body of the fixture pair, behind a helper so the two spellings differ in
+/// nothing but the guard. The computed failure value is evaluated only on the failure path
+/// in both.
 const SUGARED: &str = "module main\n\nfn isPositive(n: int): bool {\n    return n > 0\n}\n\nfn inRange(n: int): bool {\n    return n < 100\n}\n\nfn renderHigh(n: int): string {\n    return \"too high\"\n}\n\nfn classify(n: int): Result<int, string> {\n    require isPositive(n) else \"not positive\"\n    require inRange(n) else renderHigh(n)\n    return ok(n)\n}\n\npub fn classifyPort(n: int): Result<int, string> {\n    return classify(n)\n}\n";
 
 const HANDWRITTEN: &str = "module main\n\nfn isPositive(n: int): bool {\n    return n > 0\n}\n\nfn inRange(n: int): bool {\n    return n < 100\n}\n\nfn renderHigh(n: int): string {\n    return \"too high\"\n}\n\nfn classify(n: int): Result<int, string> {\n    if not isPositive(n) {\n        return err(\"not positive\")\n    }\n    if not inRange(n) {\n        return err(renderHigh(n))\n    }\n    return ok(n)\n}\n\npub fn classifyPort(n: int): Result<int, string> {\n    return classify(n)\n}\n";
@@ -139,14 +125,12 @@ fn sections(bytes: &[u8]) -> BTreeMap<u8, Vec<u8>> {
     sections
 }
 
-/// The source-position section: the one section allowed to differ between the
-/// fixture pair, because the two spellings occupy different source positions.
+/// The one section allowed to differ between the pair: the two spellings occupy different
+/// source positions.
 const SPAN_SECTION: u8 = 0x07;
 
-/// `require C else E` compiles to the identical image as the handwritten
-/// `if not C { return err(E) }` in every section except the source-position
-/// table: same strings, types, constants, function code, exports, and enums.
-/// This is the "pure lowering sugar" claim as an enforced artifact.
+/// The enforced form of the pure-sugar claim: same strings, types, constants, function
+/// code, exports, and enums, differing only in the source-position table.
 #[test]
 fn require_is_byte_identical_to_the_handwritten_guard() {
     let sugared = sections(&image_bytes(SUGARED));
@@ -165,8 +149,7 @@ fn require_is_byte_identical_to_the_handwritten_guard() {
             "section {id:#04x} must be byte-identical between the sugared and handwritten forms"
         );
     }
-    // The code section is present and non-trivial, so the identity above is not
-    // vacuous.
+    // The code section is present and non-trivial, so the identity above is not vacuous.
     assert!(
         !sugared[&0x05].is_empty(),
         "the function section carries the lowered code"

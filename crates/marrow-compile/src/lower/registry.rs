@@ -23,10 +23,9 @@ pub(crate) struct DeclaredFn<'p> {
 /// What an importable module name binds to.
 ///
 /// The binding carries no payload: module scope resolves a name *through* the dotted
-/// path, and every signature carries its own module string, so nothing is looked up
-/// on the module itself. It exists to make the accepted set a typed ledger entry
-/// rather than a bare name in a set, which is what lets a refused module answer with
-/// its cause instead of reading as a module the project does not contain.
+/// path, and every signature carries its own module string. It exists so the accepted
+/// set is a typed ledger entry, which lets a refused module answer with its cause
+/// instead of reading as a module the project does not contain.
 pub(crate) struct ModuleBinding;
 
 /// The project's modules keyed by dotted path: importable when accepted, and refused
@@ -49,8 +48,7 @@ pub(crate) struct ModuleScope {
 
 /// The project's functions and the module scope a call resolves against: every
 /// function signature (resolved before body lowering so a forward call resolves),
-/// the module ledger, and each module's `use` bindings. A duplicate name in one
-/// module is reported by its own check before this is built.
+/// the module ledger, and each module's `use` bindings.
 pub(crate) struct FunctionRegistry {
     sigs: DeclarationLedger<FnKey, FnSignature>,
     /// Each monomorphic function declaration in the source order body lowering
@@ -68,8 +66,7 @@ pub(crate) enum SignatureOutcome {
     /// Every annotation resolved; the body lowers against the signature.
     Resolved(FuncId),
     /// A parameter or return type was refused and reported at this declaration.
-    /// The body is refused with it: there is no parameter list to bind, and
-    /// resolving the same annotation again would report the cause a second time.
+    /// The body is refused with it: there is no parameter list to bind.
     Refused,
 }
 
@@ -85,12 +82,9 @@ struct DeclaredSignature {
 /// A cursor over the monomorphic signature declarations, in the source order both
 /// the signature build and body lowering walk them.
 ///
-/// The refusal is keyed to the *occurrence*, never to the name. A module may
-/// declare one name twice — the repeat is reported by its own duplicate check and
-/// both declarations still lower a body — so a name-keyed answer serves the first
-/// occurrence's outcome to every later one: it lowers a refused body, which
-/// re-resolves the annotation already reported, and withholds an accepted body
-/// whose image index was minted.
+/// The refusal is keyed to the *occurrence*, never to the name: a module may declare
+/// one name twice and both declarations still lower a body, so a name-keyed answer
+/// would serve the first occurrence's outcome to every later one.
 pub(crate) struct SignatureWalk<'a> {
     remaining: std::slice::Iter<'a, DeclaredSignature>,
 }
@@ -100,9 +94,8 @@ impl SignatureWalk<'_> {
     /// consuming one entry.
     ///
     /// The site is checked, not assumed: the two walks derive their declaration
-    /// sequence separately from the same parse, and a divergence is
-    /// [`DeclarationIndexDrift`] rather than a refusal answered for a neighbouring
-    /// declaration.
+    /// sequence separately from the same parse, so a divergence is
+    /// [`DeclarationIndexDrift`] rather than an answer for a neighbouring declaration.
     pub(crate) fn next_at(
         &mut self,
         at: FileRef,
@@ -126,11 +119,10 @@ pub(crate) struct TemplateProofOutcome {
 impl FunctionRegistry {
     /// Resolve every function's signature in declaration order.
     ///
-    /// A signature is refused whole: one parameter or return type the compiler
-    /// could not resolve refuses the declaration and takes no image index, so no
-    /// signature with a short parameter list enters the table and no later
-    /// declaration inherits an index that was never minted. The declaration keeps
-    /// its name, so a call to it reuses that cause rather than reading as unknown.
+    /// A signature is refused whole: one unresolvable parameter or return type
+    /// refuses the declaration and takes no image index, so no signature with a
+    /// short parameter list enters the table. The declaration keeps its name, so a
+    /// call to it reuses that cause rather than reading as unknown.
     ///
     /// Each accepted occurrence reserves its image slot here. Body lowering fills
     /// that exact slot; a refused body leaves it vacant without changing later IDs.
@@ -151,9 +143,8 @@ impl FunctionRegistry {
         let mut sigs = DeclarationLedger::new(DeclarationNamespace::Function, budget);
         let mut declarations = Vec::new();
         // Only monomorphic functions take an image index and enter the signature
-        // table; a generic function is a template with no single image entry (its
-        // per-application instances are minted lazily), so it is skipped here and
-        // resolved through the separate [`GenericRegistry`].
+        // table; a generic function is a template with no single image entry, so it
+        // is resolved through the separate [`GenericRegistry`].
         for declared in functions {
             let (file, module, function) = (&declared.file, &declared.module, declared.decl);
             if !function.type_params.is_empty() {
@@ -280,10 +271,8 @@ impl FunctionRegistry {
     }
 
     /// The names of every function declared in `module`, accepted or refused, so an
-    /// unresolved call can offer the nearest one as a did-you-mean. Used for both an
-    /// unqualified call (the caller's own module) and a qualified call (the resolved
-    /// target module). A refused name is still a name the source wrote, so a
-    /// near-miss on one still suggests it.
+    /// unresolved call can offer the nearest one as a did-you-mean. A refused name is
+    /// still a name the source wrote, so a near-miss on one still suggests it.
     pub(super) fn module_function_names<'s>(
         &'s self,
         module: &'s str,
@@ -324,9 +313,9 @@ impl FunctionRegistry {
     ) -> Result<CallResolution<'_>, DeclarationIndexDrift> {
         let module = match self.prefix_module(current, prefix)? {
             ModuleResolution::Accepted(module) => module,
-            // The prefix names a module this project contains and refused. The
-            // declaration reported the cause, so the call reuses it rather than
-            // resolving into a scope that does not exist.
+            // The prefix names a module this project contains and refused: reuse the
+            // declaration's cause rather than resolving into a scope that does not
+            // exist.
             ModuleResolution::Refused(summary) => {
                 return Ok(CallResolution::ModuleRefused(summary));
             }
@@ -338,9 +327,8 @@ impl FunctionRegistry {
                     CallResolution::Found(sig)
                 }
                 Binding::Accepted(_) => CallResolution::NotPublic,
-                // A refused signature is not callable from anywhere, so visibility
-                // is not the question: the declaration reported its cause and this
-                // call reuses it.
+                // A refused signature is not callable from anywhere, so visibility is
+                // not the question: this call reuses the declaration's cause.
                 Binding::Refused(_, summary) => CallResolution::SignatureRefused(summary),
                 Binding::Absent => CallResolution::NotFound,
             },
@@ -364,9 +352,8 @@ impl FunctionRegistry {
     /// module, a module this project contains and refused, or nothing.
     ///
     /// A failed `use` leaves no binding, so a refused dependency presents as a direct
-    /// reference to its own name; a surviving binding to a since-refused target is
-    /// resolved through its dotted target. One owner for both call resolution and
-    /// generic-call resolution, so the two cannot disagree about module scope.
+    /// reference to its own name. One owner for both call resolution and generic-call
+    /// resolution, so the two cannot disagree about module scope.
     fn prefix_module(
         &self,
         current: &str,
@@ -402,9 +389,8 @@ enum ModuleResolution<'a> {
 
 /// Fold one annotation refusal into the signature's retained cause.
 ///
-/// The row is pushed where this site owns it, and the first cause is what the
-/// declaration keeps, so a signature refused for several annotations steers its uses
-/// to the first thing the reader has to fix.
+/// The declaration keeps the first cause, so a signature refused for several
+/// annotations steers its uses to the first thing the reader has to fix.
 fn refuse_annotation(
     refusal: &mut Option<DeclarationRefusalSummary>,
     diagnostics: &mut DiagnosticCollector,
@@ -414,9 +400,8 @@ fn refuse_annotation(
     match refused.row {
         Some(row) => refuse_first(refusal, diagnostics, at, row),
         // The row is owed elsewhere — to the use that already steered to this cause,
-        // or to the monomorphization owner that reports the shared instantiation
-        // limit once. The signature is refused all the same, under the code that
-        // covering report carries.
+        // or to the monomorphization owner reporting the shared instantiation limit
+        // once. The signature is refused under the code that covering report carries.
         None if refusal.is_none() => *refusal = Some(refuse_covered(at, refused.code)),
         None => {}
     }
@@ -438,8 +423,8 @@ fn dotted_module_path(prefix: &[NameSegment]) -> String {
 /// index; each concrete application is a distinct image function.
 pub(crate) struct GenericTemplate<'p> {
     /// The file spelling a diagnostic reported against this template names. Distinct
-    /// from `at`: a diagnostic is rendered for a person and carries the identity, while
-    /// a retained fact carries the compact coordinate.
+    /// from `at`: a diagnostic carries the identity, a retained fact the compact
+    /// coordinate.
     pub(super) file: FileIdentity,
     /// The snapshot coordinate this template's editor facts are retained under.
     pub(super) at: FileRef,
@@ -457,8 +442,7 @@ pub(crate) struct GenericRegistry<'p> {
     pub(super) templates: Vec<GenericTemplate<'p>>,
     /// `(module, name)` to template index, keyed exactly as the signature ledger keys
     /// its own declarations, so a generic call and a monomorphic call resolve a name
-    /// the same way and at the same cost. A repeated declaration keeps the first, which
-    /// is the one its own duplicate check reports against.
+    /// the same way and at the same cost. A repeated declaration keeps the first.
     by_name: BTreeMap<(String, String), usize>,
 }
 
@@ -539,5 +523,4 @@ impl<'p> GenericTemplate<'p> {
 // Generic instantiation identity — for functions and value types together — is
 // owned by the [`TypeRegistry`]'s single monomorphization table (see
 // `reserve_fn_instance`/`next_fn_pending`), keyed by `(template, args)` and bounded
-// by `MAX_INSTANTIATIONS`. The lowerer mints function instances through the shared
-// `records` registry, exactly as it mints generic type instantiations.
+// by `MAX_INSTANTIATIONS`.

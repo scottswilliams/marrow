@@ -1,4 +1,4 @@
-//! E5 — the refusal lattice, pinned in every argument combination.
+//! The refusal lattice, pinned in every argument combination.
 //!
 //! `join` folds refusals for sub-parts of one annotation and for one provisional
 //! instantiation row. Getting an arm wrong is silent: it would report the wrong

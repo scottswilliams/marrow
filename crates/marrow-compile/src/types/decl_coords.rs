@@ -1,11 +1,10 @@
 //! The declaration coordinate tables the declare pass owns: where each declared
-//! `struct` and `resource` was written.
+//! `struct` and `resource` was written, so a pass reporting at a declaration reads a
+//! coordinate instead of scanning the syntax tree for a name match.
 //!
-//! A pass that must report at a declaration reads the coordinate from here rather
-//! than scanning the syntax tree for a declaration whose name matches. Enums have no
-//! row: the value-containment cycle check is the only reader, a cyclic generic
-//! instantiation is reported at its template's span, and a declared enum's payload is
-//! a bare scalar, so no cycle passes through one.
+//! Enums have no row: the value-containment cycle check is the only reader, a cyclic
+//! generic instantiation is reported at its template's span, and a declared enum's
+//! payload is a bare scalar, so no cycle passes through one.
 //!
 //! The tables are owned fields of [`super::TypeRegistry`]. Declaration admission is
 //! one-shot — a pass that fails returns `Err` and the partially built registry is
@@ -27,12 +26,11 @@ use crate::analysis::FileRef;
 /// Index `i` of one addresses index `i` of the other, and the type enforces that no
 /// record can move: [`Self::admit`] is the only append and appends to both vectors,
 /// and no route hands out a `&mut [RecordInfo]`, so `swap`, `sort`, `reverse`,
-/// `truncate` and slice assignment do not compile against this type. [`Self::at_mut`]
-/// lends one record so the reserve-then-fill pass can fill it in place; positions are
-/// stable by construction, contents are not authenticated.
+/// `truncate` and slice assignment do not compile against this type. Positions are
+/// stable by construction; contents are not authenticated.
 ///
-/// The durable build reads this pairing rather than rebuilding one from resource name
-/// spellings: the record slice itself, and the ordinals through [`Self::ordinals`].
+/// The durable build reads this pairing — the record slice and [`Self::ordinals`] —
+/// rather than rebuilding one from resource name spellings.
 #[derive(Default)]
 pub(crate) struct AdmittedRecords {
     records: Vec<RecordInfo>,
@@ -51,13 +49,10 @@ impl AdmittedRecords {
         &self.declarations
     }
 
-    /// The record at `index`, to fill in place. The reserve-then-fill pass edits a record
-    /// where it lies, and a mutable slice would additionally let a caller REORDER records
-    /// while the ordinals stayed put, which this forbids.
-    ///
-    /// It does not forbid replacing the record at a fixed index — `*at_mut(0) = other`
-    /// compiles — so this narrows the mutable surface to position-preserving edits rather
-    /// than authenticating what sits at a position.
+    /// The record at `index`, for the reserve-then-fill pass to fill in place. Lending one
+    /// record rather than a `&mut [RecordInfo]` keeps a caller from reordering records
+    /// while the ordinals stay put; it still permits replacing the record at a fixed
+    /// index, so the mutable surface is position-preserving, not authenticated.
     pub(super) fn at_mut(&mut self, index: usize) -> &mut RecordInfo {
         &mut self.records[index]
     }
@@ -73,11 +68,9 @@ impl Deref for AdmittedRecords {
 
 /// Where one declared `struct` or `resource` was written: its module and name span.
 ///
-/// The module is the existing [`FileRef`] coordinate rather than a second module
-/// ordinal invented here — the compiler already has one owner for "which module",
-/// and a coordinate table is not a reason to mint another. The span is held
-/// inline: this is the only row family citing it today, so a shared span table
-/// would be indirection without sharing.
+/// The module is the existing [`FileRef`] coordinate, keeping one owner for "which
+/// module". The span is inline because this is the only row family citing it, so a
+/// shared span table would be indirection without sharing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct DeclarationCoordinate {
     at: FileRef,
@@ -86,9 +79,9 @@ struct DeclarationCoordinate {
 
 /// The declare pass's coordinate tables.
 ///
-/// Deliberately not `Clone` and never returned by value: a copy handed to a caller
-/// would outlive the admission that minted it, which is exactly the stale-row
-/// window the one-shot ownership above rules out.
+/// Not `Clone` and never returned by value: a copy handed to a caller would outlive
+/// the admission that minted it, reopening the stale-row window one-shot ownership
+/// closes.
 #[derive(Default)]
 pub(crate) struct DeclarationCoordinates {
     /// One owned identity per module that declared a `struct` or `resource`, not one
@@ -99,10 +92,7 @@ pub(crate) struct DeclarationCoordinates {
 }
 
 impl DeclarationCoordinates {
-    /// Record where `type_id` was declared.
-    ///
-    /// A repeat for the same type would be the declare pass reserving one image
-    /// type twice, which it does not do; the first coordinate stands, so a caller
+    /// Record where `type_id` was declared. The first coordinate stands, so a caller
     /// reporting at a declaration can never be steered to a later homonym.
     pub(super) fn declare(
         &mut self,
@@ -120,10 +110,10 @@ impl DeclarationCoordinates {
     /// The module position and span `type_id` was declared at, or `None` when this pass
     /// minted no coordinate for it.
     ///
-    /// Distinct from [`resolve`](Self::resolve), which answers with the module's SPELLING
-    /// for a diagnostic to print. This answers with its position, which is unique within
-    /// one admitted project where a spelling need not be. Two parses of one project
-    /// repeat every position, so it locates a declaration; it does not authenticate one.
+    /// Distinct from [`resolve`](Self::resolve), which answers with the module's spelling
+    /// for a diagnostic to print. A position is unique within one admitted project where
+    /// a spelling need not be, but every parse of a project repeats it: this locates a
+    /// declaration, it does not authenticate one.
     pub(super) fn module_of(&self, type_id: TypeId) -> Option<(FileRef, SourceSpan)> {
         let coordinate = self.declarations.get(&type_id)?;
         Some((coordinate.at, coordinate.span))

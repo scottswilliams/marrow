@@ -1,15 +1,14 @@
 //! The editor analysis snapshot and `check` agree with the production compile over the
 //! full stage-stop corpus, and the snapshot echoes the caller revision.
 //!
-//! For a single-module project the snapshot, `check`, and `compile_with_tests` see the
-//! same diagnostics, so their sets are byte-identical; the corpus exercises each
-//! reachable stage stop (parse, a structural bound, a type-instantiation limit, and an
-//! ordinary semantic error), the resource-limit arm (a driven aggregate image bound), and
-//! the clean arm. For a multi-module project with one parse-failed component the
-//! production compile projects only the parse stage while the snapshot and `check`
-//! retain the independent valid component's diagnostics — the compile set is a prefix of
-//! the union (shared-prefix identity), never a divergence. `check` reports exactly the
-//! snapshot's union: it is the same projection over the same drive.
+//! For a single-module project the snapshot, `check`, and `compile_with_tests` see the same
+//! diagnostics, so their sets are byte-identical. The corpus exercises each reachable stage
+//! stop (parse, a structural bound, a type-instantiation limit, an ordinary semantic error),
+//! the resource-limit arm, and the clean arm.
+//!
+//! For a multi-module project with one parse-failed component the production compile
+//! projects only the parse stage while the snapshot and `check` retain the independent valid
+//! component's diagnostics: the compile set is a prefix of the union, never a divergence.
 
 use std::sync::Arc;
 
@@ -21,8 +20,7 @@ use marrow_project::ProjectInput;
 
 use super::project;
 
-/// The diagnostics `compile_with_tests` reports (empty for a built image), or the
-/// resource-limit kind it stopped on.
+/// The diagnostics `compile_with_tests` reports, or the resource-limit kind it stopped on.
 enum CompileView {
     Diagnostics(Vec<SourceDiagnostic>),
     ResourceLimit(ResourceLimitKind),
@@ -39,8 +37,7 @@ fn compile_view(input: &ProjectInput) -> CompileView {
     }
 }
 
-/// The diagnostics `check` reports (empty for an encoded image), or the resource-limit
-/// kind it stopped on.
+/// The diagnostics `check` reports, or the resource-limit kind it stopped on.
 fn check_view(input: &ProjectInput) -> CompileView {
     match check(input) {
         Ok(_) => CompileView::Diagnostics(Vec::new()),
@@ -64,10 +61,8 @@ fn assert_check_reports_the_snapshot_union(files: &[(&str, &str)], snapshot: &[S
     );
 }
 
-/// For a single-module project the snapshot's complete diagnostic set equals the
-/// production compile's diagnostics exactly, `check` reports that same set, and a
-/// resource-limit fixture surfaces the same aggregate bound through compile and check
-/// alike. The snapshot echoes the caller revision.
+/// For a single-module project all three projections report the same set, and a
+/// resource-limit fixture surfaces the same aggregate bound through compile and check alike.
 fn assert_single_module_agreement(files: &[(&str, &str)]) {
     let input = project(files);
     let revision = InputRevision::new(7);
@@ -88,9 +83,8 @@ fn assert_single_module_agreement(files: &[(&str, &str)]) {
             assert_check_reports_the_snapshot_union(files, snapshot.diagnostics());
         }
         // An image-policy bound is the production projection's verdict, not semantic
-        // unavailability: the compile refuses with its kind while the analysis path —
-        // which never encodes — yields an ordinary snapshot with no diagnostic at all.
-        // `check` encodes the same test-inclusive image, so it refuses with the kind.
+        // unavailability: the analysis path never encodes, so it yields an ordinary
+        // snapshot with no diagnostic, while `check` encodes and refuses with the kind.
         CompileView::ResourceLimit(kind) => {
             let snapshot = analyze(Arc::new(project(files)), revision).unwrap_or_else(|_| {
                 panic!("an image-policy bound still yields a snapshot: {files:?}")
@@ -155,9 +149,7 @@ fn a_semantic_stop_agrees() {
 #[test]
 fn a_driven_resource_limit_agrees() {
     // Each body returns a distinct literal, so this project crosses MAX_CONSTS (1024)
-    // before any other aggregate bound — the measure-core invariant pass consults the constant table
-    // first. The fixture states the kind that actually fires rather than the function
-    // bound it once claimed.
+    // before any other aggregate bound: the invariant pass consults the constant table first.
     let mut source = String::new();
     for index in 0..4097 {
         source.push_str(&format!(
@@ -196,15 +188,15 @@ fn the_compile_diagnostics_are_a_prefix_of_the_resilient_snapshot() {
         panic!("a resilient snapshot is produced past the sibling parse error");
     };
 
-    // Shared-prefix identity: every diagnostic the production compile reports appears,
-    // in order and identically, at the front of the resilient snapshot.
+    // Every diagnostic the production compile reports appears, in order and identically, at
+    // the front of the resilient snapshot.
     assert!(
         snapshot.diagnostics().starts_with(&compile_diagnostics),
         "compile diagnostics must be a prefix of the snapshot:\ncompile: {compile_diagnostics:#?}\nsnapshot: {:#?}",
         snapshot.diagnostics(),
     );
-    // The snapshot retains strictly more: the independent valid module's own diagnostic,
-    // which the production compile's parse-stage projection dropped.
+    // The snapshot retains strictly more: the valid module's own diagnostic, which the
+    // parse-stage projection dropped.
     assert!(
         snapshot.diagnostics().len() > compile_diagnostics.len(),
         "the snapshot must retain the valid module's diagnostics past the sibling parse error",
@@ -218,10 +210,8 @@ fn the_compile_diagnostics_are_a_prefix_of_the_resilient_snapshot() {
     assert_check_reports_the_snapshot_union(files, snapshot.diagnostics());
 }
 
-/// Errors in every stage across three modules — a parse error, a semantic error in an
-/// ordinary body, and a semantic error in a test body — reach `check` as the one ordered
-/// union the snapshot holds, with every file and stage represented; the production
-/// compile projects the parse stage alone and never reaches the test body.
+/// Errors across three modules in every stage reach `check` as the one ordered union the
+/// snapshot holds, while the production compile projects the parse stage alone.
 #[test]
 fn check_reports_parse_semantic_and_test_errors_across_modules_together() {
     let files = &[
@@ -265,9 +255,8 @@ fn check_reports_parse_semantic_and_test_errors_across_modules_together() {
     );
 }
 
-/// Two tests with one title are a declaration refusal at the second title; `check`
-/// reports it as the snapshot does and refuses the image, and so does the production
-/// test compile.
+/// A repeated test title is a declaration refusal at the second title, which `check`, the
+/// snapshot, and the production test compile all report alike.
 #[test]
 fn a_duplicate_test_title_is_refused_by_check_and_the_snapshot_alike() {
     let files = &[(
@@ -288,11 +277,10 @@ fn a_duplicate_test_title_is_refused_by_check_and_the_snapshot_alike() {
     assert_single_module_agreement(files);
 }
 
-/// The union of stages may cross the diagnostic count ceiling no single stage crossed:
-/// 2,100 modules that fail to parse beside one module of 2,100 semantic errors. The
-/// production compile projects the parse stage alone and reports its rows complete;
-/// the snapshot and `check` union the semantic rows in, cross the ceiling, and refuse
-/// with the diagnostic count bound — never a truncated set.
+/// The union of stages may cross the diagnostic count ceiling no single stage crossed. The
+/// production compile projects the parse stage alone and reports its rows complete; the
+/// snapshot and `check` union the semantic rows in and refuse with the typed count bound,
+/// never a truncated set.
 #[test]
 fn a_cross_stage_union_overflow_refuses_check_and_the_snapshot_alike() {
     let per_stage = 2_100usize;

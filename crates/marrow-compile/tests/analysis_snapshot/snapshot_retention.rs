@@ -1,10 +1,9 @@
 //! The retained analysis-fact bounds, observed through the production `analyze`
 //! entry point.
 //!
-//! Every law here is about what one [`marrow_compile::AnalysisSnapshot`] retains:
-//! a project that crosses a snapshot fact ceiling is refused transactionally as a
-//! typed resource limit, never admitted as a truncated or partial fact set, and
-//! the refusal echoes the caller's revision unchanged.
+//! A project that crosses a snapshot fact ceiling is refused transactionally as a typed
+//! resource limit, never admitted as a truncated or partial fact set, and the refusal echoes
+//! the caller's revision unchanged.
 
 use std::sync::Arc;
 
@@ -17,9 +16,8 @@ use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
 use super::identity;
 
-/// Capture a project at limits wide enough for the fixture, exactly as the pure
-/// project owner admits one. The compiler's own drive admission still applies the
-/// production envelope independently.
+/// A project at limits wide enough for the fixture. The compiler's own drive admission
+/// still applies the production envelope independently.
 fn captured(files: Vec<(String, String)>) -> Arc<ProjectInput> {
     let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
     let max_files = files.len().max(1);
@@ -53,11 +51,10 @@ fn module_file(index: usize, source: String) -> (String, String) {
     (format!("src/module_{index}.mw"), source)
 }
 
-/// One module whose enum contributes `members` document-symbol nodes (the enum plus
-/// each member), with each member name padded to `name_bytes`.
-/// A module of `members` enum members, each name padded to `name_bytes`. Sized by its
-/// callers to stay inside the admitted file length: a module over it is refused by drive
-/// admission and never reaches the fact ceilings these fixtures are aimed at.
+/// One module whose enum contributes `members` document-symbol nodes (the enum plus each
+/// member), each name padded to `name_bytes`. Callers size it to stay inside the admitted
+/// file length: a wider module is refused by drive admission and never reaches the fact
+/// ceilings these fixtures aim at.
 fn symbol_module(index: usize, members: usize, name_bytes: usize) -> (String, String) {
     let mut source = format!("module module_{index}\n\nenum E {{\n");
     for member in 0..members {
@@ -92,8 +89,7 @@ fn analyze_snapshot(
     analyze(captured(files), InputRevision::new(revision))
 }
 
-/// The revision a failure echoes, for a panic message: `AnalysisFailure` is
-/// deliberately not `Debug`.
+/// The revision a failure echoes; `AnalysisFailure` is deliberately not `Debug`.
 fn failure_label(failure: &AnalysisFailure) -> String {
     format!("a failure at revision {}", failure.revision().get())
 }
@@ -128,9 +124,8 @@ fn expect_limit(files: Vec<(String, String)>, revision: u64) -> AnalysisResource
     }
 }
 
-/// Crossing the global retained fact count refuses the whole snapshot with the typed
-/// count ceiling. Document-symbol nodes charge the same global count as hover facts,
-/// so a wide declaration hierarchy spread over several files reaches it.
+/// Document-symbol nodes charge the same global count as hover facts, so a wide declaration
+/// hierarchy spread over several files reaches the typed count ceiling.
 #[test]
 fn crossing_the_fact_count_refuses_the_whole_snapshot() {
     let per_file = 4_000usize;
@@ -146,8 +141,7 @@ fn crossing_the_fact_count_refuses_the_whole_snapshot() {
     }
 }
 
-/// Exactly at the count ceiling the snapshot is admitted: the bound refuses only a
-/// crossing, never the last admissible fact.
+/// The bound refuses only a crossing, never the last admissible fact.
 #[test]
 fn the_count_ceiling_itself_is_admitted() {
     // Each module contributes its enum plus `members` member nodes.
@@ -163,8 +157,8 @@ fn the_count_ceiling_itself_is_admitted() {
     expect_snapshot(files, 12);
 }
 
-/// Crossing the retained fact byte ceiling without crossing the count ceiling refuses
-/// with the typed byte limit. Each retained symbol name spelling charges its bytes.
+/// Each retained symbol name spelling charges its bytes, so the byte ceiling can be crossed
+/// without the count ceiling.
 #[test]
 fn crossing_the_fact_bytes_refuses_with_the_byte_limit() {
     let name_bytes = 1_200usize;
@@ -190,8 +184,8 @@ fn crossing_the_fact_bytes_refuses_with_the_byte_limit() {
 /// the count limit, never the byte limit.
 #[test]
 fn count_wins_a_simultaneous_crossing() {
-    // Members per file sized to keep each module inside the admitted file length: the
-    // fixture has to reach the fact ceilings, so it must not be refused before them.
+    // Members per file sized to keep each module inside the admitted file length, so the
+    // fixture is not refused before it reaches the fact ceilings.
     let per_file = 3_500usize;
     let files_needed = (MAX_SNAPSHOT_FACT_COUNT as usize / per_file) + 2;
     let files = (0..files_needed)
@@ -208,9 +202,8 @@ fn count_wins_a_simultaneous_crossing() {
     }
 }
 
-/// A per-file declaration-hierarchy bound bounds one fact, not the snapshot: the
-/// crossing file's outline is never retained, so the snapshot is produced and that one
-/// fact is bounded-unavailable. Nothing partial is retained for it.
+/// A per-file declaration-hierarchy bound bounds one fact, not the snapshot: the crossing
+/// file's outline is bounded-unavailable and nothing partial is retained for it.
 #[test]
 fn the_per_file_symbol_bound_bounds_one_fact_not_the_snapshot() {
     let files = vec![symbol_module(

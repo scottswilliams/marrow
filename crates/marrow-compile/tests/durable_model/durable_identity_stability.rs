@@ -1,27 +1,16 @@
 //! The durable identity anchors a project mints, frozen.
 //!
-//! A durable declaration's `(kind, path)` anchors are the keys of the
-//! machine-written `.marrow/ids` ledger: the compiler resolves each one to a
-//! stable id, and a store keeps its data under the id that anchor resolved to.
-//! A changed anchor spelling therefore reports a missing identity rather than a
-//! rename: `check.durable_identity` names the new anchor as a `.marrow/ids` gap, and
-//! the mint action commits it beside the id the old spelling still owns, so the data
-//! stored under that anchor hangs off an id nothing asks for any more and the
-//! rename-preserves-identity law (`docs/language/traversal-and-indexes.md`) breaks.
+//! A durable declaration's `(kind, path)` anchors are the keys of the machine-written
+//! `.marrow/ids` ledger, and a store keeps its data under the id its anchor resolved to.
+//! A changed anchor spelling reads as a missing identity, not a rename: the mint action
+//! commits a fresh id beside the one the old spelling still owns, stranding the data under
+//! it and breaking rename-preserves-identity
+//! (`docs/language/traversal-and-indexes.md`).
 //!
-//! That makes the anchor set a durable contract rather than a diagnostic
-//! surface, and it is why this suite compares the WHOLE set for a corpus that
-//! reaches every anchor kind, instead of asserting individual anchors
-//! where they are convenient. The corpus below covers each `IdentityKind` a
-//! store declaration can mint: the application anchor, root placements
-//! (single-column, composite, and a second root over one resource), the product,
-//! per-key-column anchors at root and branch layers, stored fields at top level,
-//! group-qualified, branch-qualified, and nested-branch-qualified, group
-//! namespaces, managed indexes, and an enum's sum and member anchors.
-//!
-//! The frozen list is not a restatement of the compiler's spelling rule — it is
-//! the observed output of resolving the corpus's gaps to convergence through the
-//! production `compile` entry point, so a conversion that changes how a path is
+//! The anchor set is therefore a durable contract, so this suite compares the WHOLE set for
+//! a corpus reaching every `IdentityKind` rather than asserting convenient individual
+//! anchors. The frozen list is the observed output of resolving that corpus's gaps to
+//! convergence through the production `compile` entry point, so a change in how a path is
 //! assembled fails here at the byte.
 
 use std::sync::LazyLock;
@@ -34,8 +23,8 @@ use super::project_capture::project_with_ids;
 
 /// A corpus minting an anchor of every `IdentityKind` the durable builder resolves.
 ///
-/// Split across two modules so a coordinate the builder took from the wrong
-/// module cannot pass by there being only one.
+/// Split across two modules so a coordinate taken from the wrong module cannot pass by
+/// there being only one.
 fn corpus(ids: Option<&[u8]>) -> ProjectInput {
     project_with_ids(
         &[
@@ -101,8 +90,7 @@ pub fn subject(): string {
     )
 }
 
-/// Every anchor the corpus mints, in the ledger's canonical order, spelled
-/// `"<kind> <path>"`.
+/// Every anchor the corpus mints, in the ledger's canonical order, as `"<kind> <path>"`.
 const FROZEN_ANCHORS: &[&str] = &[
     "application .",
     "product Book",
@@ -136,8 +124,8 @@ const FROZEN_ANCHORS: &[&str] = &[
     "index books.byShelf",
 ];
 
-/// One convergence for the whole suite: three tests read one corpus, so the
-/// gap-resolution loop runs once and each test consumes the settled artifacts.
+/// One convergence for the whole suite: the gap-resolution loop runs once and every test
+/// consumes the settled artifacts.
 static CONVERGED: LazyLock<(Vec<IdentityAnchor>, Vec<u8>)> =
     LazyLock::new(|| ids::converged(corpus));
 
@@ -156,9 +144,8 @@ fn the_minted_identity_anchor_set_is_frozen() {
     );
 }
 
-/// The frozen set is the set of an ADMITTED program, not of a corpus that
-/// stopped early: a builder that refused halfway would mint a strict subset and
-/// the comparison above would then freeze that subset.
+/// A builder that refused halfway would mint a strict subset, and the comparison above
+/// would freeze that subset instead.
 #[test]
 fn the_corpus_compiles_once_its_anchors_are_minted() {
     let project = corpus(Some(&CONVERGED.1));
@@ -166,9 +153,8 @@ fn the_corpus_compiles_once_its_anchors_are_minted() {
         .unwrap_or_else(|failure| panic!("the identity corpus must compile: {failure:#?}"));
 }
 
-/// The corpus reaches every kind a store declaration can mint. Without this a
-/// later edit could drop a whole family from the corpus and the frozen list
-/// would be edited to agree, with nothing noticing.
+/// Without this, an edit dropping a whole family from the corpus would be absorbed by
+/// editing the frozen list to agree.
 #[test]
 fn the_corpus_reaches_every_identity_kind() {
     for kind in IdentityKind::ALL {

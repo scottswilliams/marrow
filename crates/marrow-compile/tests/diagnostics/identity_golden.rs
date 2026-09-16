@@ -1,36 +1,25 @@
-//! Diagnostic identity across a representation or algorithm change — the pattern of
-//! record.
+//! Diagnostic identity across a representation or algorithm change.
 //!
-//! Three checks read the direct-call graph to decide what to report: recursion-cycle
-//! membership, the requires-ambient-transaction closure, and the mutate/durable
-//! closure the ownership lattice consumes. A fourth, the value-containment cycle
-//! report, decides *where* to report from declaration coordinates the declare pass
-//! owns. Their *answers* are a property of the graph, but the diagnostics a reader
-//! sees are more than the answers: which
-//! functions are named, at which spans, with which prose, and above all **in what
-//! order**. An algorithm that computes the same closure while emitting the same rows
-//! in a different sequence has changed the product, because a compiler's first
-//! reported error is the one a person acts on.
+//! Three checks read the direct-call graph — recursion-cycle membership, the
+//! requires-ambient-transaction closure, and the mutate/durable closure the ownership
+//! lattice consumes — and a fourth, the value-containment cycle report, decides *where*
+//! to report from declaration coordinates the declare pass owns. Their answers are a
+//! property of the graph, but the diagnostics a reader sees are more: which functions
+//! are named, at which spans, with which prose, and above all **in what order**. A
+//! compiler's first reported error is the one a person acts on, so an algorithm that
+//! computes the same closure while emitting the rows in a different sequence has
+//! changed the product.
 //!
-//! This suite pins that whole surface as one ordered artifact per corpus, so a
-//! rewrite of the underlying traversal is a byte-comparison rather than a judgement
-//! call. It is deliberately not a set comparison and deliberately not a code-only
-//! comparison: both would pass a reordering.
+//! Each corpus is therefore pinned as one ordered artifact: the `(file, code, line,
+//! column)` tuple extended with the rendered message, because cycle *membership* is
+//! carried in the prose and nowhere else. A set comparison or a code-only comparison
+//! would both pass a reordering.
 //!
-//! The compared shape is the ordered `(file, code, line, column)` tuple extended with
-//! the rendered message, because cycle *membership* is carried in the prose ("`name`
-//! is part of a recursive call cycle") and nowhere else.
-//!
-//! **What a corpus must contain to be worth pinning.** Each fixture below is built
-//! so that a plausible wrong answer is observable: several disjoint cycles rather
-//! than one (so a traversal that reports components in discovery order instead of
-//! function order is caught), cycles of length one, two, and three (so a self-loop
-//! is not conflated with a component), non-participating functions interleaved
-//! between them (so "report everything" passes nothing), a transitive transaction
-//! requirement three calls deep through a generic instantiation (so a propagation
-//! that stops at depth one is caught), and — for the coordinate corpus — cycles in
-//! two different modules (so an owner returning one module for every row is caught,
-//! which a single-file corpus cannot see).
+//! A corpus is worth pinning only when a plausible wrong answer is observable in it:
+//! several disjoint cycles rather than one, cycles of length one, two, and three,
+//! non-participating functions interleaved between them, a transaction requirement
+//! three calls deep through a generic instantiation, and — for the coordinate corpus —
+//! cycles in two different modules, which a single-file corpus cannot see.
 
 use marrow_codes::Code;
 use marrow_compile::{CompileFailure, SourceDiagnostic, compile};
@@ -39,12 +28,11 @@ use marrow_project::ProjectInput;
 
 use super::{ids, project_capture};
 
-/// Every row a compilation reports, as the ordered artifact this suite compares:
-/// `(file, code, line, column, message)`.
+/// Every row a compilation reports: `(file, code, line, column, message)`.
 ///
-/// The message is part of the shape rather than context. Recursion-cycle membership
-/// is spelled only in the prose, so a tuple without it would pass a rewrite that
-/// reported the right number of rows at the right spans naming the wrong functions.
+/// The message is part of the shape rather than context: recursion-cycle membership is
+/// spelled only in the prose, so a tuple without it would pass a rewrite that reported
+/// the right rows at the right spans naming the wrong functions.
 fn rows(diagnostics: &[SourceDiagnostic]) -> Vec<(String, Code, u32, u32, String)> {
     diagnostics
         .iter()
@@ -72,9 +60,9 @@ fn refused(project: &ProjectInput) -> Vec<SourceDiagnostic> {
 /// The identity of each row — file, code, and exact span — one line per row, so a
 /// mismatch prints as a readable diff rather than a wall of tuple syntax.
 ///
-/// The rendered message is deliberately absent: prose is the renderer's output, not the
-/// contract these goldens pin. What they pin is which rows are reported, under which
-/// code, at which construct, and in which order.
+/// The rendered message is deliberately absent: these goldens pin which rows are
+/// reported, under which code, at which construct, and in which order — not prose,
+/// which is the renderer's output.
 fn artifact(diagnostics: &[SourceDiagnostic]) -> String {
     rows(diagnostics)
         .into_iter()
@@ -83,18 +71,13 @@ fn artifact(diagnostics: &[SourceDiagnostic]) -> String {
         .join("\n")
 }
 
-// ---------------------------------------------------------------------------
-// Corpus A — cycle-heavy.
-// ---------------------------------------------------------------------------
-
 /// Disjoint recursion cycles of length one, two, and three, with acyclic functions
 /// interleaved between them and a generic instantiated from inside a cycle.
 ///
-/// `reject_recursion` reports one row per function that can reach itself, walking
-/// the lowered set in image-index order. The interleaved acyclic functions are what
-/// make the *order* of the reported rows observable: a traversal that emitted whole
-/// components together would group `mutualA`/`mutualB` differently from a walk that
-/// visits functions in index order.
+/// `reject_recursion` reports one row per function that can reach itself, walking the
+/// lowered set in image-index order. The interleaved acyclic functions make that order
+/// observable: a traversal that emitted whole components together would group
+/// `mutualA`/`mutualB` differently from a walk that visits functions in index order.
 const CYCLE_HEAVY: &str = r#"module main
 
 fn selfLoop(n: int): int {
@@ -155,12 +138,9 @@ fn the_cycle_heavy_corpus_reports_its_exact_ordered_artifact() {
     );
 }
 
-/// The corpus earns its name: it holds three disjoint cycles, of three distinct
-/// lengths, and at least as many functions that are on no cycle at all.
-///
-/// A golden over a corpus that had quietly become trivial — every function on one
-/// cycle, or none — would keep passing while proving nothing, so the shape is
-/// asserted rather than assumed.
+/// The corpus earns its name: three disjoint cycles of three distinct lengths, and at
+/// least as many functions on no cycle at all. A corpus that had quietly become trivial
+/// — every function on one cycle, or none — would keep passing while proving nothing.
 #[test]
 fn the_cycle_heavy_corpus_is_actually_cycle_heavy() {
     let project = project_capture::project(&[("src/main.mw", CYCLE_HEAVY)]);
@@ -172,17 +152,12 @@ fn the_cycle_heavy_corpus_is_actually_cycle_heavy() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Corpus B — transaction-closure-heavy, acyclic.
-// ---------------------------------------------------------------------------
-
 /// A transitive mutating chain three calls deep, reached through a generic, beside a
 /// correctly wrapped export and a read-only export.
 ///
-/// `reject_recursion` yields the acyclic witness the transaction closures require,
-/// so this corpus exercises the requires-ambient-transaction propagation rather than
-/// the cycle report. `outerCaller` mutates only through `middle` -> `inner`, so a
-/// propagation that stopped at depth one would report nothing for it.
+/// `outerCaller` mutates only through `middle` -> `inner`, so a
+/// requires-ambient-transaction propagation that stopped at depth one would report
+/// nothing for it.
 const TRANSACTION_HEAVY: &str = r#"module main
 
 resource Counter {
@@ -236,25 +211,19 @@ fn the_transaction_heavy_corpus_reports_its_exact_ordered_artifact() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Corpus C — value-containment cycles across two modules.
-// ---------------------------------------------------------------------------
-
 /// The value-cycle report names a declaration, so its artifact is a *coordinate*
 /// artifact: the module the type was written in and the exact name span.
 ///
-/// The corpus spans two modules on purpose. The declare pass owns one identity per
-/// module and each declaration's span, and a single-module corpus would keep
-/// passing if that owner returned the wrong module for every row. Acyclic
-/// declarations are interleaved so "report everything" proves nothing, and the
-/// cycle set mixes a self-cycle and a two-step cycle so a walk that conflated a
-/// self-loop with a component is observable, and the second module carries a cycle
-/// of its own so a wrong module coordinate cannot hide behind a single-file corpus.
+/// The corpus spans two modules on purpose: the declare pass owns one identity per
+/// module and each declaration's span, and a single-module corpus would keep passing if
+/// that owner returned the wrong module for every row. Acyclic declarations are
+/// interleaved so "report everything" proves nothing, and the cycle set mixes a
+/// self-cycle with a two-step cycle so a walk that conflated the two is observable.
 ///
-/// Only struct cycles appear because a record cycle is not expressible in the
-/// admitted subset: a resource field typed as a resource, and a struct field typed
-/// as a resource, are both `check.unsupported` on the beta line, so the record arm
-/// of the report has no source that reaches it today. That predates this suite.
+/// Only struct cycles appear because a record cycle is not expressible in the admitted
+/// subset: a resource field typed as a resource, and a struct field typed as a
+/// resource, are both `check.unsupported` on the beta line, so the record arm of the
+/// report has no source that reaches it.
 const VALUE_CYCLE_MAIN: &str = r#"module main
 
 use shapes
@@ -314,23 +283,17 @@ fn the_value_cycle_corpus_reports_its_exact_ordered_artifact() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Corpus D — store resource bindings.
-// ---------------------------------------------------------------------------
-
 /// Store declarations whose written resource spelling binds four different ways:
 /// an admitted resource, a name declared as another kind, a name declared nowhere,
 /// and a second admitted resource in another module.
 ///
-/// The binding a `store` resolves is decided once, before any store is built, and
-/// the rows a reader sees depend on *which* stores refuse and in what order. A
-/// corpus with one bad store would keep passing an owner that refused every store,
-/// and a single-module corpus would keep passing one that resolved every spelling
-/// against the first module's declarations. The admitted stores interleaved between
-/// the refused ones are what make "refuse everything" observable, and they are also
-/// what carries the identity gaps that follow an admitted binding — so the artifact
-/// pins the refusals *and* their precedence against the rows an accepted binding
-/// goes on to produce.
+/// The binding a `store` resolves is decided once, before any store is built, and the
+/// rows a reader sees depend on *which* stores refuse and in what order. A corpus with
+/// one bad store would keep passing an owner that refused every store, and a
+/// single-module corpus would keep passing one that resolved every spelling against the
+/// first module's declarations. The admitted stores also carry the identity rows that
+/// follow an accepted binding, so the artifact pins the refusals *and* their precedence
+/// against those rows.
 const STORE_BINDING_MAIN: &str = r#"module main
 
 use other
@@ -393,22 +356,15 @@ fn the_store_binding_corpus_reports_its_exact_ordered_artifact() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Corpus E — managed-index admission.
-// ---------------------------------------------------------------------------
-
 /// Store roots whose managed indexes violate one admission rule each: the per-root
 /// count cap, the projection width cap, a name collision with a stored field, a name
 /// collision with an earlier index, and a singleton root that has no identity to point
 /// at.
 ///
-/// Every rule `build_indexes` enforces reads the index rows — a name, an argument
-/// count, a span — and the per-index rules render that name into the row a reader sees.
-/// The per-root count cap and the projection width cap name the root or the count
-/// instead. Admitted indexes are declared first and interleaved between the refused
-/// roots, so an owner that refused every index would not pass, and the count-cap root
-/// carries nine otherwise-valid indexes so the cap is observed on a body that is wrong
-/// only in its length.
+/// Admitted indexes are declared first and interleaved between the refused roots, so an
+/// owner that refused every index would not pass, and the count-cap root carries nine
+/// otherwise-valid indexes so the cap is observed on a body that is wrong only in its
+/// length.
 const INDEX_ADMISSION_MAIN: &str = r#"module main
 
 use other
@@ -460,9 +416,9 @@ store ^many[id: int]: Book {
 /// naming nothing, a component whose stored value is not an orderable durable key, and
 /// a non-unique index that does not end with the root's identity keys.
 ///
-/// It is a second module because a table keyed by declaration must answer for the
-/// module its row came from; a single-file corpus would keep passing an owner that
-/// resolved every index against the first module's declarations.
+/// A table keyed by declaration must answer for the module its row came from, and a
+/// single-file corpus would keep passing an owner that resolved every index against the
+/// first module's declarations.
 const INDEX_ADMISSION_OTHER: &str = r#"module other
 
 resource Note {
@@ -485,10 +441,9 @@ store ^notes[id: int]: Note {
 "#;
 
 /// A third module whose single index crosses the fixed projection width, generated
-/// rather than written out: the cap is 72 components and a source that states it
-/// literally would be unreadable. The components deliberately name nothing — the width
-/// is checked before any leaf is resolved, so this reports the width and only the
-/// width.
+/// rather than written out because the cap is 72 components. The components
+/// deliberately name nothing: the width is checked before any leaf is resolved, so this
+/// reports the width and only the width.
 fn index_width_module() -> String {
     let components = (1..=bounds::MAX_INDEX_COMPONENTS + 1)
         .map(|at| format!("c{at}"))
@@ -564,10 +519,9 @@ fn the_index_admission_corpus_reports_its_exact_ordered_artifact() {
 
 /// The corpus earns its name: the pinned artifact carries one row for every managed-
 /// index admission rule the durable builder enforces, and admitted indexes beside them.
-///
-/// A golden over a corpus that had quietly stopped reaching a rule would keep passing
-/// while proving nothing about it, and a corpus with no admitted index would keep
-/// passing an owner that refused every index. Both are asserted rather than assumed.
+/// A corpus that had quietly stopped reaching a rule would keep passing while proving
+/// nothing about it, and one with no admitted index would keep passing an owner that
+/// refused every index.
 #[test]
 fn the_index_admission_corpus_reaches_every_admission_rule() {
     let wide = index_width_module();
@@ -609,9 +563,6 @@ fn the_index_admission_corpus_reaches_every_admission_rule() {
         );
     }
 }
-// ---------------------------------------------------------------------------
-// Corpus F — durable key-tuple width.
-// ---------------------------------------------------------------------------
 
 /// The two durable key tuples a program can declare, each one column past the fixed
 /// width: a keyed `branch` placement's tuple, and a `store` root's own.
@@ -619,9 +570,8 @@ fn the_index_admission_corpus_reaches_every_admission_rule() {
 /// The two are the same shape under the same limit, declared in two different places
 /// and reported with two different subjects. A corpus carrying only one of them would
 /// keep passing an owner that had collapsed the two subjects into whichever one it
-/// still reached, which is exactly the failure a shared renderer can introduce. The
-/// over-wide branch hangs off an admitted root so the branch refusal is reached at all,
-/// and the over-wide root is declared second so both rows are observable in one run.
+/// still reached — exactly the failure a shared renderer can introduce. The over-wide
+/// branch hangs off an admitted root so the branch refusal is reached at all.
 const KEY_WIDTH_MAIN: &str = r#"module main
 
 resource Slim {
@@ -674,9 +624,8 @@ fn the_key_width_corpus_reports_its_exact_ordered_artifact() {
 }
 
 /// Both key-tuple subjects are present, both over-wide tuples really are one column
-/// past the fixed width, and the admitted tuple sits exactly at the cap — so the
-/// corpus cannot go vacuous by the limit moving underneath it, and an off-by-one that
-/// started refusing the at-cap tuple is caught by the artifact above, not just here.
+/// past the fixed width, and the admitted tuple sits exactly at the cap, so the corpus
+/// cannot go vacuous by the limit moving underneath it.
 #[test]
 fn the_key_width_corpus_carries_both_tuple_subjects() {
     assert_eq!(
@@ -708,15 +657,15 @@ fn the_key_width_corpus_carries_both_tuple_subjects() {
          earning a width refusal",
     );
 }
+
 /// A store root tuple that is both over-wide and carries a column outside the
 /// durable-key scalar set.
 ///
-/// The two refusals are ranked: the width cap is reported and the key type is not.
-/// A tuple past the fixed width has no admissible column list to judge, so telling
-/// its author about one column's type first would steer them at the smaller of two
-/// faults. The ranking is the order the key table answers in, and this corpus is what
-/// holds it — the key-width corpus alone keeps passing with the ranking inverted,
-/// because none of its tuples is both.
+/// The two refusals are ranked: the width cap is reported and the key type is not. A
+/// tuple past the fixed width has no admissible column list to judge, so telling its
+/// author about one column's type first would steer them at the smaller of two faults.
+/// The key-width corpus alone keeps passing with the ranking inverted, because none of
+/// its tuples is both.
 const KEY_RANK_MAIN: &str = r#"module main
 
 resource Plain {
@@ -743,25 +692,20 @@ fn an_over_wide_tuple_reports_its_width_rather_than_a_column_type() {
         "an over-wide tuple reports its width, and reports nothing about a column",
     );
 }
-// ---------------------------------------------------------------------------
-// Corpus G — declaration attribution.
-// ---------------------------------------------------------------------------
 
 /// Two branch key columns that are not durable-key scalars — one a scalar outside
 /// the durable-key set, one no scalar at all — declared in one module and occurred
 /// by a store in another.
 ///
-/// Both refusals are about the branch declaration, so both are attributed to the
-/// module that declares it. Before the key tuple became a row of its resource, the
-/// refusal borrowed the file of whichever store first built the resource's graph — a
-/// declaration-side error reported in a store-side file, and a different file
-/// depending on store order. The two modules are what make the attribution
-/// observable: a single-file corpus would agree either way.
+/// Both refusals are about the branch declaration, so both are attributed to the module
+/// that declares it rather than to whichever store first built the resource's graph.
+/// The two modules are what make that attribution observable: a single-file corpus
+/// would agree either way.
 ///
-/// The corpus carries both refusing columns because the corrected attribution feeds
-/// both arms of the key-scalar resolution: `duration` is a scalar the durable-key set
-/// excludes and earns `check.type`, while a struct is not a scalar at all and earns
-/// `check.unsupported`. Pinning one arm would leave the other free to move.
+/// The corpus carries both refusing columns because the attribution feeds both arms of
+/// key-scalar resolution: `duration` is a scalar the durable-key set excludes and earns
+/// `check.type`, while a struct is not a scalar at all and earns `check.unsupported`.
+/// Pinning one arm would leave the other free to move.
 const BRANCH_KEY_MODEL: &str = r#"module model
 
 struct Note {
@@ -834,11 +778,10 @@ fn a_branch_key_refusal_is_attributed_to_the_declaring_module() {
 /// the concrete one containing itself.
 ///
 /// The value-cycle report names the declaration whose coordinate the declare pass
-/// reserved — the concrete struct, which is the one on the cycle. Before the report
-/// read that coordinate it searched the raw declaration list by name and took the
-/// first match, which here is the generic template: a cycle through the concrete
-/// declaration reported at the template's span. The template is declared first on
-/// purpose; declared second, the name search and the coordinate agree.
+/// reserved — the concrete struct, which is the one on the cycle. A report that instead
+/// searched the raw declaration list by name would take the first match, the generic
+/// template, and pin the cycle at the template's span. The template is declared first
+/// on purpose; declared second, the name search and the coordinate agree.
 const HOMONYM_CYCLE: &str = r#"module main
 
 struct A<T> {

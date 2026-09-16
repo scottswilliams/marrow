@@ -1,16 +1,10 @@
-//! One module's parse failure does not suppress another module's editor facts, and the
-//! projection that makes that true is the same one an abandoned body's facts would reach.
+//! One module's parse failure does not suppress another module's editor facts.
 //!
-//! The production compile refuses a project whose parse stage produced diagnostics before
-//! it consults the semantic outcome. The complete-union projection that `analyze` and
-//! `check` share deliberately does not: it continues semantic work over the cleanly-parsed
-//! modules, and with any parse or structural precheck present it yields the diagnostic
-//! union over a semantic resource stop. `analyze` therefore takes the diagnostics arm and
-//! reads the fact terminal on exactly the input where a semantic body was abandoned.
-//!
-//! These pin the live half of that projection — that a clean module's facts really are
-//! published while another module carries a parse diagnostic — so the custody seam beneath
-//! it has a demonstrated consumer rather than an argued one.
+//! The production compile refuses a project whose parse stage produced diagnostics before it
+//! consults the semantic outcome. The complete-union projection `analyze` and `check` share
+//! deliberately does not: it continues semantic work over the cleanly-parsed modules and
+//! yields the diagnostic union over a semantic resource stop, so `analyze` takes the
+//! diagnostics arm and still reads the fact terminal.
 
 use std::sync::Arc;
 
@@ -18,8 +12,7 @@ use marrow_compile::{AnalysisSnapshot, Fact, InputRevision, Unavailability, anal
 
 use super::{identity, project};
 
-/// Analyze a project and unwrap its snapshot (the opaque `AnalysisFailure` is not
-/// `Debug`, so a `let`-else keeps the failure boundary opaque).
+/// Analyze a project and unwrap its snapshot; `AnalysisFailure` is deliberately not `Debug`.
 fn snap(files: &[(&str, &str)]) -> Arc<AnalysisSnapshot> {
     let Ok(snapshot) = analyze(Arc::new(project(files)), InputRevision::new(1)) else {
         panic!("expected an analysis snapshot for {files:?}");
@@ -39,13 +32,8 @@ const CLEAN: &str = "module clean\n\npub fn width(side: int): int {\n    var are
                      \n    return area\n}\n";
 
 /// With a parse diagnostic present in another module, `analyze` still returns a snapshot
-/// and that snapshot still carries the cleanly-parsed module's facts.
-///
-/// This is the exact projection under which a semantic invariant is suppressed: the
-/// analysis takes the diagnostics arm and reads the fact terminal. If it stopped reading
-/// facts here — the shape that would make an abandoned body's facts structurally
-/// unobservable — this fails, and the custody seam beneath it would no longer have a
-/// consumer to protect.
+/// carrying the cleanly-parsed module's facts: the diagnostics arm still reads the fact
+/// terminal, which is what keeps an abandoned body's facts observable at all.
 #[test]
 fn a_parse_failure_in_one_module_does_not_suppress_another_modules_facts() {
     let snapshot = snap(&[("src/broken.mw", BROKEN), ("src/clean.mw", CLEAN)]);
@@ -82,11 +70,9 @@ fn the_unparsed_modules_positions_are_syntax_unavailable_in_the_same_snapshot() 
 }
 
 /// The clean module's facts are the ones its own bodies produced: adding the broken module
-/// beside it changes neither the fact nor its display.
-///
-/// Order matters to the seam beneath this: a settled body's rows are appended to the
-/// ledger at settlement rather than written through as they are produced, so a fixture
-/// whose facts moved or duplicated under that change would show here.
+/// beside it changes neither the fact nor its display. A settled body's rows are appended to
+/// the ledger at settlement rather than written through as produced, so fact order is part
+/// of what this pins.
 #[test]
 fn a_clean_modules_facts_are_identical_with_and_without_a_broken_sibling() {
     let alone = snap(&[("src/clean.mw", CLEAN)]);

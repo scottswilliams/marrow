@@ -1,4 +1,5 @@
-//! The durable-place model and the lowering of durable reads, writes, presence, traversal, and managed-index access.
+//! The durable-place model and the lowering of durable reads, writes, presence,
+//! traversal, and managed-index access.
 
 use super::*;
 
@@ -22,10 +23,10 @@ pub(super) enum PlaceKey<'e> {
     Bound(u16),
     /// The whole root key-path supplied by one entry-identity operand (`^root[id]`):
     /// the identity is lowered against the addressed root's identity type (`root`), then
-    /// `IdentityKeyPath` spreads it into the root's `cols` key columns. One `Identity` key
-    /// stands for every root key column, so it is only the root whole-key form and never
-    /// mixes with per-column keys. `root` is the addressed root's RootId, so an identity
-    /// minted over a different root is a type mismatch here.
+    /// `IdentityKeyPath` spreads it into the root's `cols` key columns. One `Identity`
+    /// key stands for every root key column, so it is only the root whole-key form and
+    /// never mixes with per-column keys; an identity minted over a different root is a
+    /// type mismatch here.
     Identity {
         expr: &'e Expression,
         root: RootId,
@@ -35,9 +36,9 @@ pub(super) enum PlaceKey<'e> {
 
 /// One column of a durable operation's key-path: how it reaches the stack and its
 /// scalar type. A single-key root entry is a one-column path `[root_key]`; a
-/// single-level branch entry is a two-column path `[root_key, branch_key]`, pushed
-/// root-first so the innermost key is on top (the order the kernel's `pop_key_path`
-/// expects). A composite-key root has several root key columns rather than one.
+/// single-level branch entry is a two-column path `[root_key, branch_key]`. A
+/// composite-key root has several root key columns rather than one. Column order is
+/// owned by [`FnLowerer::emit_key_path`].
 #[derive(Clone, Copy)]
 pub(super) struct DurKey<'e> {
     pub(super) key: PlaceKey<'e>,
@@ -79,9 +80,8 @@ impl DurablePlace<'_, '_> {
 ///
 /// The place retains the exact durable node it was bound against, so every later
 /// operation through it addresses that occurrence directly. A branch entry record and a
-/// resource spelling are Product *declaration* facts — one Product declaration may be
-/// projected by several roots — so neither can name the occurrence a place addresses;
-/// recovering the node from one of them answers with whichever root was declared first.
+/// resource spelling are Product *declaration* facts that several roots may project, so
+/// recovering the node from one of them would answer with whichever root came first.
 pub(super) struct PlaceLocal<'a> {
     pub(super) name: String,
     pub(super) key_slots: Vec<(u16, ScalarType)>,
@@ -122,13 +122,12 @@ impl<'a> PlaceLocal<'a> {
     }
 }
 
-/// A resolved durable target: the whole entry, one field, a whole root-level group, or one
-/// group leaf.
+/// A resolved durable target: the whole entry, one field, a whole root-level group, or
+/// one group leaf.
 ///
 /// Each site-bearing variant carries the **handle** its site was bound to, not a minted
 /// operand: the binding happens once, where the member or place is resolved, and the
-/// operand is minted at the instruction that names it. A retained operand would be a
-/// second copy of an answer the draft already owns.
+/// operand is minted at the instruction that names it.
 #[derive(Clone)]
 enum DurTarget<'a> {
     /// A whole durable entry, addressed through the exact durable node the resolver
@@ -185,8 +184,8 @@ pub(super) enum DurNode<'a> {
 }
 
 impl<'a> DurNode<'a> {
-    /// The root occurrence this node was reached through. Every site over the node is
-    /// bound against it: two roots projecting one Product declaration each get their own.
+    /// The root occurrence this node was reached through; every site over the node is
+    /// bound against it.
     pub(super) fn occurrence(&self) -> &'a RootOccurrenceSelector {
         match self {
             DurNode::Root(root) | DurNode::Branch { root, .. } => &root.occurrence,

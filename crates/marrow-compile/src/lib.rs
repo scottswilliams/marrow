@@ -1,21 +1,16 @@
 //! The storeless Marrow compiler slice.
 //!
-//! This crate is the refounded analysis-fact owner for the compiled subset,
-//! extracted from the prototype checker (design §A). It parses source through the
-//! retained parser, checks the subset, owns the language scalar vocabulary
-//! ([`ScalarType`]), and lowers to a validated [`marrow_image::ImageDraft`] that it
-//! encodes to canonical bytes. It has no edge to the verifier, VM, kernel, or
+//! This crate is the analysis-fact owner for the compiled subset. It parses source
+//! through the retained parser, checks the subset, owns the language scalar
+//! vocabulary ([`ScalarType`]), and lowers to a validated [`marrow_image::ImageDraft`]
+//! that it encodes to canonical bytes. It has no edge to the verifier, VM, kernel, or
 //! store: the compiler emits bytes, opens no store, and mints no verified image.
 
-// Production compiler code reports every source-level problem as a typed
-// diagnostic and never aborts. The six explicit-abort families are denied in
-// non-test builds; each legitimate invariant guard carries a narrow, reasoned
-// `#[expect(...)]` at its site. `expect` self-enables its restriction lint at
-// that span, so it is fulfilled in both the test and non-test compilations under
-// the strict all-targets gate, and it additionally fails as an unfulfilled
-// expectation if a later edit removes the guarded abort — turning a stale guard
-// into a build error that a bare `allow` would silence. Test code keeps the
-// ordinary abort vocabulary.
+// Production compiler code reports every source-level problem as a typed diagnostic
+// and never aborts, so the six explicit-abort families are denied outside tests. Each
+// legitimate invariant guard carries a narrow, reasoned `#[expect(...)]` at its site
+// rather than an `allow`: an `expect` also fails once the guarded abort is removed,
+// so a stale guard becomes a build error. Test code keeps the ordinary vocabulary.
 #![cfg_attr(
     not(test),
     deny(
@@ -72,9 +67,8 @@ pub use marrow_syntax::FormatRefusal;
 pub use scalar::ScalarType;
 
 /// The canonical [`FileIdentity`](marrow_project::FileIdentity) for a test source
-/// path. Tests attribute diagnostics to a real captured file exactly as the
-/// production capture path does, so they name the same identity type rather than a
-/// bare string.
+/// path, so tests attribute diagnostics through the same identity type the production
+/// capture path uses rather than a bare string.
 #[cfg(test)]
 pub(crate) fn test_file_identity(path: &str) -> marrow_project::FileIdentity {
     marrow_project::FileIdentity::validate(path)
@@ -82,9 +76,8 @@ pub(crate) fn test_file_identity(path: &str) -> marrow_project::FileIdentity {
         .0
 }
 
-/// A `'static` reference to the canonical `src/main.mw` identity, for test sites
-/// that borrow a `&FileIdentity` (a `MintSite`, an identity resolver, a lowerer
-/// file) or return one with `'static` lifetime.
+/// A `'static` reference to the canonical `src/main.mw` identity, for test sites that
+/// borrow or return a `&'static FileIdentity`.
 #[cfg(test)]
 pub(crate) fn test_main_file_identity() -> &'static marrow_project::FileIdentity {
     static ID: std::sync::OnceLock<marrow_project::FileIdentity> = std::sync::OnceLock::new();
@@ -93,11 +86,9 @@ pub(crate) fn test_main_file_identity() -> &'static marrow_project::FileIdentity
 
 #[cfg(doctest)]
 pub mod source_diagnostic_privacy_doctests {
-    //! `SourceDiagnostic` is opaque: consumers read the frozen accessor set and
-    //! can neither reach a payload field nor construct a diagnostic.
-    //!
-    //! Access to either declared field does not compile. The field names are
-    //! pinned by the absence gate `source_diagnostic_fields_stay_private`, so a
+    //! `SourceDiagnostic` is opaque: consumers read the frozen accessor set and can
+    //! neither reach a payload field nor construct a diagnostic. The field names below
+    //! are pinned by the absence gate `source_diagnostic_fields_stay_private`, so a
     //! rename must update these doctests instead of voiding them silently.
     //!
     //! ```compile_fail
@@ -128,11 +119,10 @@ pub mod source_diagnostic_privacy_doctests {
 
 #[cfg(doctest)]
 pub mod fact_coordinate_privacy_doctests {
-    //! A retained fact's file coordinate is private to the compiler. It indexes one
+    //! A retained fact's file coordinate is private to the compiler: it indexes one
     //! snapshot's own module order, so it is meaningless outside the snapshot that
-    //! minted it and is never handed to a consumer. A consumer names a file by
-    //! `marrow_project::FileIdentity` and reads a definition through
-    //! [`Definition`](crate::Definition), both of which the snapshot resolves.
+    //! minted it. A consumer names a file by `marrow_project::FileIdentity` and reads a
+    //! definition through [`Definition`](crate::Definition), both snapshot-resolved.
     //!
     //! The coordinate type is not nameable outside the crate:
     //!
@@ -142,8 +132,8 @@ pub mod fact_coordinate_privacy_doctests {
     //! }
     //! ```
     //!
-    //! Neither is the retained fact they index, so a fact cannot be forged and handed
-    //! to a snapshot that did not produce it:
+    //! Neither is the retained fact they index, so a fact cannot be forged and handed to
+    //! a snapshot that did not produce it:
     //!
     //! ```compile_fail
     //! fn fact() -> marrow_compile::HoverFact {
@@ -151,8 +141,8 @@ pub mod fact_coordinate_privacy_doctests {
     //! }
     //! ```
     //!
-    //! The public definition fact carries a resolved file identity and exposes no
-    //! coordinate; its fields stay private:
+    //! The public definition fact carries a resolved identity, never a coordinate, and
+    //! its fields stay private:
     //!
     //! ```compile_fail
     //! fn read(definition: &marrow_compile::Definition) {
@@ -163,9 +153,9 @@ pub mod fact_coordinate_privacy_doctests {
 
 #[cfg(doctest)]
 pub mod compile_invariant_privacy_doctests {
-    //! The compiler invariant is an opaque public outcome. External callers may
-    //! distinguish the outer `CompileFailure::Invariant` arm, but cannot
-    //! construct or classify its private cause.
+    //! The compiler invariant is an opaque public outcome: external callers may
+    //! distinguish the outer `CompileFailure::Invariant` arm, but can neither construct
+    //! nor classify its private cause.
     //!
     //! Tuple construction remains private:
     //!

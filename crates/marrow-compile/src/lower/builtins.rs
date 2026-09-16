@@ -1,4 +1,5 @@
-//! Built-in and constructor classification: the `Builtin`/`CtorKind` vocabulary and the free classifiers over call syntax.
+//! Built-in and constructor classification: the `Builtin`/`CtorKind` vocabulary and
+//! the free classifiers over call syntax.
 
 use super::*;
 
@@ -80,12 +81,10 @@ impl CtorKind {
 /// a keyword, so the parser admits them as identifiers; the reservation is enforced
 /// here instead.
 ///
-/// This enum is the single owner of that name set. Call interception dispatches
-/// on `from_name` (see `lower_unqualified_call`), and declaration rejection
-/// consults the same classifier through [`is_reserved_builtin_name`], so a name
-/// that is intercepted at a use site can never be silently shadowed by a
-/// colliding value declaration. Adding a built-in is a new variant, which the
-/// exhaustive dispatch match forces every consumer to account for.
+/// This enum is the single owner of that name set. Call interception dispatches on
+/// `from_name`, and declaration rejection consults the same classifier through
+/// [`is_reserved_builtin_name`], so a name intercepted at a use site can never be
+/// silently shadowed by a colliding value declaration.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Builtin {
     None,
@@ -99,51 +98,42 @@ pub(super) enum Builtin {
     Contains,
     Trim,
     /// The collection-returning text floor: `split(text, sep): List[string]`,
-    /// `lines(text): List[string]`, `join(List[string], sep): string`. Like the rest
-    /// of the floor these are reserved, so a colliding value declaration is rejected;
-    /// they mint the `List[string]` COLLTYPES instantiation their result or argument
-    /// names.
+    /// `lines(text): List[string]`, `join(List[string], sep): string`. They mint the
+    /// `List[string]` COLLTYPES instantiation their result or argument names.
     Split,
     Lines,
     Join,
     /// The named temporal arithmetic floor: `addDays(date, int): date` and
-    /// `daysBetween(date, date): int`. Named rather than operators so a date
-    /// offset never reads as an ambiguous `date + int`; they are reserved, so a
-    /// colliding value declaration is rejected. `marrow-temporal` owns the checked
+    /// `daysBetween(date, date): int`. Named rather than operators so a date offset
+    /// never reads as an ambiguous `date + int`. `marrow-temporal` owns the checked
     /// operations, which fault `run.temporal_overflow` past the supported range.
     DateAddDays,
     DateDaysBetween,
     /// The empty-collection constructors `List()`/`Map()`, type-directed by the
-    /// expected type. They are reserved (blocking a colliding value declaration)
-    /// because a bare `List`/`Map` at a use site is always the built-in constructor.
-    /// The procedural collection operations (`append`/`insert`/`get`/`length`) are
-    /// deliberately *not* reserved: they are common verbs, so a same-module function
-    /// of that name wins and the collection op is a fallback (see
-    /// [`FnLowerer::lower_collection_fallback`]).
+    /// expected type. The procedural collection operations
+    /// (`append`/`insert`/`get`/`length`) are deliberately *not* reserved: they are
+    /// common verbs, so a same-module function of that name wins and the collection op
+    /// is a fallback (see [`FnLowerer::lower_collection_fallback`]).
     List,
     Map,
     /// The entry-identity constructor `Id(^root, keys…)`: a nominal value constructor
-    /// wrapping the explicit key tuple as an `Id(^root)`. Reserved so a colliding value
-    /// declaration is rejected; the leading `^root` argument is a saved-root reference,
-    /// not an ordinary value, so it is dispatched to its own lowering.
+    /// wrapping the explicit key tuple as an `Id(^root)`. The leading `^root` argument
+    /// is a saved-root reference, not an ordinary value, so it is dispatched to its own
+    /// lowering.
     Id,
-    /// The integer-domain bounds `maxInt` (`i64::MAX`) and `minInt` (`i64::MIN`). The
-    /// owner ruling is that no source spells `9223372036854775807`; the language names
-    /// the bound instead. Unlike every other variant these are argument-free *values*,
-    /// not calls: a bare use folds to a constant `int` load ([`Builtin::const_int_value`]),
-    /// and a call form is rejected. They are reserved (blocking a colliding declaration)
-    /// so a bare `maxInt`/`minInt` is always the bound.
+    /// The integer-domain bounds `maxInt` (`i64::MAX`) and `minInt` (`i64::MIN`): the
+    /// language names the bound so no source spells `9223372036854775807`. Unlike every
+    /// other variant these are argument-free *values*, not calls — a bare use folds to a
+    /// constant `int` load ([`Builtin::const_int_value`]) and a call form is rejected.
     MaxInt,
     MinInt,
 }
 
 impl Builtin {
-    /// Every built-in variant, in declaration order. This is the single registry the
-    /// classifier ([`Builtin::from_name`]) and the editor completion namespace
-    /// ([`builtin_value_names`]) both derive from, so the two can never disagree about
-    /// which names are built-in. A new built-in is added here and given a
-    /// [`Builtin::spelling`]; the exhaustive spelling match rejects a variant that is
-    /// added to the enum without a spelling.
+    /// Every built-in variant, in declaration order. The single registry the classifier
+    /// ([`Builtin::from_name`]) and the editor completion namespace
+    /// ([`builtin_value_names`]) both derive from, so the two cannot disagree about
+    /// which names are built-in.
     const ALL: [Builtin; 20] = [
         Builtin::None,
         Builtin::Some,
@@ -201,9 +191,7 @@ impl Builtin {
     }
 
     /// The `i64` an argument-free integer-bound built-in denotes, or `None` for a
-    /// built-in that is a call or constructor rather than a value bound. A bare use in
-    /// value position folds to a constant load of this value, and a constant
-    /// initializer folds to the same; no source spells the literal.
+    /// built-in that is a call or constructor rather than a value bound.
     pub(super) fn const_int_value(self) -> Option<i64> {
         match self {
             Builtin::MaxInt => Some(i64::MAX),
@@ -213,16 +201,13 @@ impl Builtin {
     }
 }
 
-/// Whether `name` is a reserved value-level built-in that a `fn`, `const`,
-/// parameter, or local binding may not redeclare. A colliding value declaration
-/// would be admitted and then silently shadowed at every use site the compiler
-/// intercepts (`some(v)`, bare `none`, `trim(s)`, ...), surfacing later as a
-/// confusing type error; rejecting the declaration keeps the reserved name and
-/// its interception the single fact.
+/// Whether `name` is a reserved value-level built-in that a `fn`, `const`, parameter,
+/// or local binding may not redeclare. A colliding declaration would be admitted and
+/// then silently shadowed at every use site the compiler intercepts (`some(v)`, bare
+/// `none`, `trim(s)`, ...), surfacing later as a confusing type error.
 ///
-/// Struct fields and enum variants are excluded: both are reached only through
-/// member syntax (`r.none`, `Color::err`), never a bare or unqualified-call use,
-/// so they cannot collide with an intercepted built-in.
+/// Struct fields and enum variants are excluded: both are reached only through member
+/// syntax (`r.none`, `Color::err`), never a bare or unqualified-call use.
 pub(crate) fn is_reserved_builtin_name(name: &str) -> bool {
     Builtin::from_name(name).is_some()
 }
@@ -379,7 +364,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// Lower a collection-returning text-floor call: `split(text, sep): List[string]`
     /// or `lines(text): List[string]`. Both mint (and reuse) the one `List[string]`
     /// COLLTYPES instantiation and emit the split/lines opcode carrying it; the VM
-    /// bounds the result by the same law-9 collection limits `append` observes.
+    /// bounds the result by the same collection limits `append` observes.
     pub(super) fn lower_text_split(
         &mut self,
         name: &str,
@@ -458,11 +443,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Lower a temporal constructor `date("…")` / `instant("…")` / `duration("…")`.
-    /// Construction is from exactly one static string literal, validated and folded
-    /// at compile time: a malformed or out-of-range canonical form is a typed
-    /// `check.type` diagnostic here, so no ordinary program produces an out-of-range
-    /// temporal value at runtime. The folded raw scalar is interned as a temporal
-    /// constant. `marrow-temporal` owns the canonical text grammar.
+    /// Construction is from exactly one static string literal, validated and folded at
+    /// compile time: a malformed or out-of-range canonical form is a `check.type`
+    /// diagnostic here, so no ordinary program produces an out-of-range temporal value
+    /// at runtime. `marrow-temporal` owns the canonical text grammar.
     pub(super) fn lower_temporal_construct(
         &mut self,
         scalar: ScalarType,
@@ -488,9 +472,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             ));
             return Err(LoweringFailure::Recoverable);
         }
-        // A temporal value is constructed only from a static string literal, so its
-        // canonical form is validated once at compile time rather than parsed at
-        // runtime (there is no ambient clock or runtime temporal parse in the floor).
+        // There is no ambient clock or runtime temporal parse in the floor.
         let Expression::Literal {
             kind: LiteralKind::String,
             text,
@@ -662,9 +644,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             return Err(LoweringFailure::Recoverable);
         }
         let source = self.lower_expr(&arg.value)?;
-        // `string(value)` renders any interpolable value — a scalar, an enum, or an
-        // entry identity — to its canonical text, the same rendering interpolation and
-        // program output use.
+        // `string(value)` renders any interpolable value to its canonical text, the
+        // same rendering interpolation and program output use.
         if target == "string" && is_interpolable(source) {
             self.push(Instr::ConvString, span)?;
             return Ok(LTy::bare_scalar(ScalarType::Text));
@@ -736,9 +717,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Ok(CallResult::Diverges)
     }
 
-    /// Lower `todo("static text")`: a deferred path the author has not implemented. It
-    /// mirrors `unreachable` exactly — one static string literal, a fault instruction
-    /// carrying that text, and divergence — but raises `run.todo` when reached.
+    /// Lower `todo("static text")`: a deferred path the author has not implemented.
+    /// Mirrors `unreachable`, but raises `run.todo` when reached.
     pub(super) fn lower_todo(
         &mut self,
         args: &[Argument],
@@ -795,9 +775,8 @@ mod tests {
     use marrow_codes::Code;
     use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
-    /// The integer bounds classify as value built-ins carrying exactly the `i64`
-    /// domain edges, and a built-in that is a call or constructor carries no bound
-    /// value, so only `maxInt`/`minInt` fold in value or constant position.
+    /// Only `maxInt`/`minInt` carry a bound value, so only they fold in value or
+    /// constant position.
     #[test]
     fn the_integer_bounds_carry_the_domain_edges() {
         assert_eq!(builtin_const_int("maxInt"), Some(i64::MAX));
@@ -811,10 +790,8 @@ mod tests {
     }
 
     /// The editor completion namespace is exactly the set the classifier recognizes, in
-    /// both directions: both derive from the single [`Builtin::ALL`] registry, so neither
-    /// can gain (or lose) a name the other lacks. Every registry name classifies and
-    /// round-trips through `spelling`/`from_name`; adding a variant is a compile error in
-    /// `spelling` until it is named, and it then joins both consumers at once.
+    /// both directions, and every registry name round-trips through
+    /// `spelling`/`from_name`.
     #[test]
     fn completion_names_match_the_classifier() {
         for builtin in Builtin::ALL {
@@ -859,20 +836,15 @@ mod tests {
     }
 
     /// The built-in spellings the lexer reserves as keywords, which the parser refuses
-    /// before the semantic conflict check is reached. The reservation is stronger and
-    /// earlier, not absent — but it is a *different* owner, so it is named here: a
+    /// before the semantic conflict check is reached. A different, earlier owner: a
     /// change that stops treating one of these as a keyword must add the semantic
-    /// reservation in the same lane, and this list is what makes that visible.
+    /// reservation with it.
     const KEYWORD_RESERVED: &[&str] = &["Id"];
 
-    /// BLTNSHDW01: every reserved built-in is refused in every value-declaration
-    /// position, swept from the registry rather than from a hand-listed sample.
-    ///
-    /// A built-in absent from the conflict check is admitted as a declaration and then
-    /// silently shadowed at every use the compiler intercepts, so the reader's `fn` is
-    /// never called and the failure surfaces far from its cause. The sweep is driven by
-    /// [`Builtin::ALL`], so a built-in added to the registry without its reservation
-    /// fails here rather than shipping shadowable.
+    /// The sweep is driven by [`Builtin::ALL`] rather than a hand-listed sample, so a
+    /// built-in added to the registry without its reservation fails here rather than
+    /// shipping shadowable — admitted as a declaration and then silently shadowed at
+    /// every use the compiler intercepts.
     #[test]
     fn every_builtin_is_refused_in_every_value_declaration_position() {
         for builtin in Builtin::ALL {

@@ -1,12 +1,11 @@
+//! The active-call query: which call the cursor sits inside, that callee's rendered
+//! signature, and which argument slot the offset occupies.
 //!
-//! Like [`completion`], a distinct read-only pass over the query-local parse: it never
-//! drives the compile-path resolver, so it runs on a broken file over recovered
-//! incomplete-call nodes and leaks no diagnostic. It collects the calls in the enclosing
-//! declaration, selects the innermost whose argument region holds the offset, resolves the
-//! callee to a same-module function or generic template in that parse, renders the
-//! callee's canonical signature and parameter pieces from the declared spellings, and
-//! computes the active argument index positionally. A cross-module callee, a built-in, or
-//! an unknown name resolves to no local declaration and is a legitimate absence.
+//! Like [`completion`], a read-only pass over the query-local parse: it never drives the
+//! compile-path resolver, so it runs on a broken file over recovered incomplete-call
+//! nodes and leaks no diagnostic. The callee is resolved only against same-module
+//! declarations in that parse; a cross-module callee, a built-in, or an unknown name
+//! resolves to no local declaration and is a legitimate absence.
 
 use marrow_syntax::{
     Argument, Block, Declaration, Expression, FunctionDecl, InterpolationPart, SourceSpan,
@@ -39,10 +38,9 @@ pub(super) fn resolve(file: &QueryFile<'_>, source: &[u8]) -> ActiveCallOutcome 
     };
     let mut sites = Vec::new();
     collect_declaration_calls(declaration, &mut sites);
-    // The innermost enclosing call is the smallest-span call whose argument region
-    // holds the offset. A recovered incomplete call extends its region across trailing
-    // whitespace to the cursor, so the just-opened `f(` and just-typed `f(a, ` moments
-    // still resolve.
+    // The innermost enclosing call is the smallest-span call whose argument region holds
+    // the offset. A recovered incomplete call extends its region across trailing
+    // whitespace to the cursor, so `f(` and `f(a, ` still resolve.
     let Some(site) = sites
         .into_iter()
         .filter(|site| region_contains(site, source, offset))

@@ -4,10 +4,9 @@
 //! Three properties are pinned here.
 //!
 //! **Outcome agreement.** Parsing is a pure function of the source bytes, so an outcome
-//! derived from a per-query parse equals the one a retained parse tree would produce.
-//! This file freezes a corpus of rendered outcomes covering the classification cases
-//! those trees served — clean files, a recovered-broken file, a file that never decoded —
-//! so a divergence is a failing assertion rather than an assumption.
+//! derived from a per-query parse equals the one a retained parse tree would produce. A
+//! frozen corpus of rendered outcomes — clean files, a recovered-broken file, a file that
+//! never decoded — makes a divergence a failing assertion rather than an assumption.
 //!
 //! **The parse-transient term.** `MAX_QUERY_PARSE_TRANSIENT_BYTES` is a declared fraction
 //! of the owned-heap ceiling, and `MAX_PARSED_FILE_BYTES` is the longest file whose
@@ -17,21 +16,19 @@
 //! both sides equally. Declaring the heap and deriving the length is what makes a widened
 //! representation narrow what is admitted.
 //!
-//! The charge itself is not measured on a fixture. Three earlier attempts to publish a
-//! measured term were each beaten by a denser admissible file; the accounting below closes
-//! over the grammar instead, and the measurements are kept only as corroborating samples
-//! that must fall under it.
+//! The charge is accounted over the grammar, never measured on a fixture: a measured term
+//! is only ever a lower bound, since a denser admissible file can beat it. Measurements
+//! here are corroborating samples that must fall under the accounting.
 //!
 //! What the accounting closes over is a **declared cap per node family**
 //! ([`MAX_SOURCE_BYTE_CHARGE`]), not a single total. The derived figure is a maximum over
 //! roughly twenty families, so shrinking the widest one promotes the next; a total would
 //! let a widened field hide behind whichever family happened not to be deciding it.
 //!
-//! **Latency is a separate requirement.** The budget below is a regression fence over
-//! a finite corpus of maximum admitted files, asserted only in the optimized profile
-//! the server ships in; every profile records the measurement. A
-//! green capacity bound says the parse fits in the heap it is allowed; latency is
-//! independently checked over a finite corpus by [`QUERY_BUDGET_MS`].
+//! **Latency is a separate obligation.** A green capacity bound says the parse fits in the
+//! heap it is allowed; latency is fenced independently over a finite corpus of maximum
+//! admitted files by [`QUERY_BUDGET_MS`], asserted only in the optimized profile the
+//! server ships in. Every profile records the measurement.
 //!
 //! Parseability itself is never inferred from a query-local parse: `broken_files` stays
 //! the snapshot's independent record, which is why a recovered-broken file still
@@ -61,16 +58,14 @@ use marrow_syntax::{
 };
 
 /// The largest file drive admission lets through — the worst case a query-local parse can
-/// be handed, since admission refuses anything larger before a snapshot exists.
-///
-/// Taken from the crate under test rather than restated: it is a consequence of the heap
-/// ceiling and the parse rate, so a shape built here is a maximum admitted file whatever
-/// those two are.
+/// be handed, since admission refuses anything larger before a snapshot exists. Taken from
+/// the crate under test, so a shape built here is a maximum admitted file whatever the heap
+/// ceiling and parse rate become.
 const MAX_ADMITTED_FILE_BYTES: usize = MAX_PARSED_FILE_BYTES;
 
 /// The language server's owned-heap ceiling, which every retention and transient term
-/// in the analysis layer is sized against. Read from the one owner every gate consuming
-/// it shares: a ceiling restated per gate is a ceiling that can differ per gate.
+/// in the analysis layer is sized against. Read from the one owner every gate shares: a
+/// ceiling restated per gate is a ceiling that can differ per gate.
 const H_OWNED_BYTES: usize = owned_heap::H_OWNED_BYTES as usize;
 
 /// The editor-latency budget for one query of a maximum admitted file, in the optimized
@@ -82,9 +77,7 @@ const H_OWNED_BYTES: usize = owned_heap::H_OWNED_BYTES as usize;
 ///
 /// The release gate checks every shape in [`maximum_admitted_shapes`] after one warm
 /// query, taking the maximum of five samples. This finite corpus is a regression fence;
-/// it does not establish latency for every admitted program or machine. The ordinary
-/// file control has its own [`ORDINARY_QUERY_BUDGET_MS`] fence. Heap admission and
-/// query latency are independent obligations.
+/// it does not establish latency for every admitted program or machine.
 const QUERY_BUDGET_MS: u128 = 150;
 
 /// The same budget for a file of ordinary size, which is what an editor session actually
@@ -96,30 +89,23 @@ const ORDINARY_QUERY_BUDGET_MS: u128 = 10;
 /// this many heap bytes per source byte it exclusively requires.
 ///
 /// **Derived, not sampled.** `the_query_parse_transient_closes_under_the_exported_term`
-/// re-derives the figure from the pinned representation and asserts it. Every measurement
-/// in this file is a corroborating sample under this bound, never the source of it: a
-/// measured term is only ever a lower bound, because a denser admissible file can always
-/// beat it.
+/// re-derives the figure from the pinned representation and asserts it.
 ///
 /// The accounting charges allocated capacity, not resident pages: a container's amortized
-/// growth slack is allocated and paid for by an allocator, but a sampled
-/// `maximum resident set size` never sees it, so a sample is a floor and this cap is the
-/// ceiling. A container slot is charged at the standard library's minimum non-zero
-/// capacity, which is four elements and not the two a doubling factor alone suggests: one
-/// element is the least a family's own spelling admits, and a container holding one
-/// allocates four slots. Two things sit outside the cap, exactly as they do for the
-/// retention term: the caller-shared source bytes, and per-allocation allocator overhead.
+/// growth slack is paid for by an allocator, but a sampled `maximum resident set size`
+/// never sees it, so a sample is a floor and this cap is the ceiling. A container slot is
+/// charged at the standard library's minimum non-zero capacity — four elements, not the
+/// two a doubling factor alone suggests, because a container holding one element allocates
+/// four slots. Two things sit outside the cap, exactly as for the retention term: the
+/// caller-shared source bytes, and per-allocation allocator overhead.
 ///
-/// The derived figure is a maximum over roughly twenty families, so shrinking the widest
-/// one promotes the next; a bound stated only as a total would let a widened field hide
-/// behind whichever family happened to be largest. `no_node_family_exceeds_the_declared_source_byte_cap`
-/// therefore asserts this per family, and the cap sits above the derived maximum so one
-/// future field costs a review rather than a re-derivation.
+/// `no_node_family_exceeds_the_declared_source_byte_cap` asserts this per family, and the
+/// cap sits above the derived maximum so one future field costs a review rather than a
+/// re-derivation.
 ///
-/// **What the cap now costs is admitted length, not a re-derived ceiling.** The heap
-/// ceiling is declared independently of any file size, so this cap decides how long a file
-/// fits it: raising the cap shortens the longest admitted file rather than raising the
-/// heap a query may claim.
+/// What the cap costs is admitted length, not a re-derived ceiling: the heap ceiling is
+/// declared independently of any file size, so raising this cap shortens the longest
+/// admitted file rather than raising the heap a query may claim.
 const MAX_SOURCE_BYTE_CHARGE: usize = 512;
 
 /// The exported term is exactly the stated fraction of the owned-heap ceiling — two
@@ -163,12 +149,12 @@ fn boxed_str_bytes(len: usize) -> usize {
     len
 }
 
-/// What one expression node allocates directly: not the slot it occupies in its parent,
-/// and not its children's slots, but its own retained spellings and parallel span
-/// vectors, at the fewest source bytes the grammar admits for that variant.
+/// What one expression node allocates directly — its own retained spellings and parallel
+/// span vectors at the fewest source bytes the grammar admits for that variant, not the
+/// slot it occupies in its parent and not its children's slots.
 ///
-/// The match destructures every field of every variant, so a new field or a new variant
-/// fails to build here rather than silently widening the term.
+/// The match destructures every field of every variant, so a new field or variant fails to
+/// build here rather than silently widening the term.
 fn expression_own_bytes(expression: &Expression) -> usize {
     match expression {
         // A literal retains a copy of its own token text.
@@ -250,9 +236,9 @@ fn expression_own_bytes(expression: &Expression) -> usize {
     }
 }
 
-/// One value of every `Expression` variant. `expression_own_bytes` is exhaustive, so a
-/// new variant fails to build there; `EXPRESSION_VARIANTS` keeps this list in step, so a
-/// new variant cannot be given an arm and then skipped when the maximum is taken.
+/// One value of every `Expression` variant. `expression_own_bytes` is exhaustive, so a new
+/// variant fails to build there; `EXPRESSION_VARIANTS` keeps this list in step, so it
+/// cannot be given an arm and then skipped when the maximum is taken.
 const EXPRESSION_VARIANTS: usize = 15;
 
 fn expression_variants() -> Vec<Expression> {
@@ -371,10 +357,9 @@ fn worst_charge(charges: Vec<(&'static str, usize, usize)>, floor: usize) -> usi
         .fold(floor, usize::max)
 }
 
-/// The heap one content byte of a statement line can buy: the densest expression node,
-/// or any other kind a statement line holds, whichever is larger. Taking the maximum
-/// makes the accounting sound by construction rather than by the assertion below, which
-/// records that the expression node is in fact the one that wins.
+/// The heap one content byte of a statement line can buy: the densest expression node, or
+/// any other kind a statement line holds, whichever is larger. Taking the maximum makes
+/// the accounting sound by construction, not by which kind currently wins.
 fn content_byte_charge() -> usize {
     worst_charge(statement_line_content_charges(), expression_charge())
 }
@@ -385,22 +370,20 @@ fn content_byte_charge() -> usize {
 /// exactly one: a block's statement list. Two source bytes are the least the grammar
 /// spends on one statement: a statement occupies a *start* — a significant token
 /// following a boundary — and a start costs its own token plus the boundary before it,
-/// which is a newline or the `}` of a nested block. So a statement of `L` bytes charges
-/// one statement slot plus `L - 1` content bytes at the content rate. Which `L` is worst
-/// depends on which of the two is wider, so both regimes are taken (see the body).
+/// a newline or the `}` of a nested block. So a statement of `L` bytes charges one
+/// statement slot plus `L - 1` content bytes at the content rate, and both regimes of `L`
+/// are taken (see the body).
 ///
-/// Two statements *can* share a line — `if a {} if b {}` is two, because the first
-/// closes on a `}` that leaves the cursor mid-line — which is why the count is of starts
-/// and not of lines. Both boundary kinds cost a byte the start does not, so the floor
-/// holds either way, and it is pinned in `marrow-syntax` beside the pass that counts.
+/// The count is of starts, not lines: two statements can share a line (`if a {} if b {}`,
+/// because the first closes on a `}` mid-line). Both boundary kinds cost a byte the start
+/// does not, so the two-byte floor holds either way; it is pinned in `marrow-syntax`
+/// beside the pass that counts.
 ///
 /// The slot is charged once, not with the growth factor: a block's statement list is
 /// allocated at the measured count of starts the block opens directly and handed to
 /// `Box<[Statement]>` at close, so it neither grows nor keeps slack. Measuring each
 /// block's own starts rather than its whole extent is what keeps this sound — the other
-/// count would reserve a nested start once per enclosing block — and the pass that
-/// measures a region is the one that decides the parser builds it, so a list sized at
-/// nothing and grown by doubling is not representable.
+/// count would reserve a nested start once per enclosing block.
 fn statement_line_charge() -> usize {
     let content = content_byte_charge();
     // A line of `L` bytes charges `slot + (L - 1) * content`, so its per-byte rate is
@@ -421,10 +404,9 @@ fn source_byte_charge() -> usize {
 /// charges — the union of the statement-line contents, the constructs outside a
 /// statement line, the expression node, and the statement slot, **not** their maximum.
 ///
-/// [`source_byte_charge`] is a maximum over these families, so shrinking the widest one
-/// promotes the next and a cap asserted only in total lets a widened field hide behind
-/// whichever family happens to be largest at the time. Asserting the cap over this list
-/// is what makes a new or widened field fail a test rather than move the ceiling.
+/// [`source_byte_charge`] is a maximum over these families, so a cap asserted only in
+/// total would let a widened field hide behind whichever family happens to be largest.
+/// Asserting the cap over this list makes a new or widened field fail a test instead.
 fn source_byte_charges_by_family() -> Vec<(&'static str, usize)> {
     statement_line_content_charges()
         .into_iter()
@@ -487,7 +469,6 @@ fn declaration_level_charges() -> Vec<(&'static str, usize, usize)> {
         // top-level statement-start count, which a declaration always opens at least one
         // of, and handed to `Box<[Declaration]>` at close.
         ("Declaration", size_of::<Declaration>() + string_bytes(1), 2),
-        // `use`.
         // `use`. A path is a sequence of segments, so one segment's slot and its own
         // exact spelling are what a one-segment path adds.
         (
@@ -587,16 +568,15 @@ const STATEMENT_CAPACITY_CHARGE: usize = GROWTH * size_of::<(u32, u32)>() / 2;
 const DIAGNOSTIC_ROW_BYTES: usize = 256;
 
 /// The collector's two pinned ceilings, each charged with the growth factor because both
-/// containers are still grown by pushing.
+/// containers are grown by pushing.
 const DIAGNOSTICS: usize = GROWTH * SYNTAX_DIAGNOSTIC_COUNT_LIMIT * DIAGNOSTIC_ROW_BYTES
     + GROWTH * SYNTAX_DIAGNOSTIC_OWNED_BYTES_LIMIT;
 
 /// The accounted worst case of one query-local parse of one maximum admitted file.
 ///
 /// Written with the derived `source_byte_charge()` where `marrow-syntax` carries the
-/// declared cap, so the two differ in one factor only: what a reviewer has to agree with
-/// is the cap, not this figure. It closes under the declared heap ceiling by the distance
-/// the cap sits above the derived maximum.
+/// declared cap, so the two differ in one factor only. It closes under the declared heap
+/// ceiling by the distance the cap sits above the derived maximum.
 fn accounted_query_parse_transient() -> usize {
     MAX_ADMITTED_FILE_BYTES * (source_byte_charge() + TOKEN_CHARGE + STATEMENT_CAPACITY_CHARGE)
         + TOKEN_CHARGE
@@ -745,9 +725,7 @@ fn corpus_outcomes(snapshot: &AnalysisSnapshot) -> Vec<(String, String, String)>
 }
 
 /// The frozen corpus outcomes. Each is the outcome a retained parse tree yields, so a
-/// query-local parse that classified differently — a recovered-broken file that stopped
-/// classifying, an undecodable file that stopped being syntax-unavailable, a candidate
-/// set that changed — fails here.
+/// query-local parse that classified differently fails here.
 #[test]
 fn query_local_outcomes_match_the_frozen_corpus() {
     let snapshot = snapshot(corpus_files());
@@ -809,12 +787,9 @@ fn parseability_is_not_inferred_from_a_query_local_parse() {
 }
 
 /// A file of exactly the largest admitted size, reaching it with comment filler after a
-/// substantial declaration set.
-///
-/// The query lexes and parses every one of the file's bytes either way, and this shape
-/// spends more of them on lexing than the dense shapes do. It is neither the memory nor
-/// the latency worst case — a comment byte builds no tree node — so it is a corroborating
-/// sample, not what any term rests on.
+/// substantial declaration set. It spends more of its bytes on lexing than the dense
+/// shapes do, but a comment byte builds no tree node, so it is neither the memory nor the
+/// latency worst case — a corroborating sample, not what any term rests on.
 fn maximum_admitted_file() -> Vec<u8> {
     let mut source = String::from("module big\n\n");
     for index in 0..2_000usize {
@@ -844,16 +819,14 @@ enum DenseBody {
 /// A file of exactly the largest admitted size built from operator chains, kept as a
 /// corroborating sample rather than as the source of the parse-transient term.
 ///
-/// It is not the worst case, and the reasoning that once made it look like one was
-/// wrong. A file is queryable only if the project it belongs to yields a snapshot at
-/// all, and a maximum-size file whose statements resolve reaches a ceiling that refuses
-/// `analyze` outright — the fact table, the image, or the interned string table,
-/// depending on the shape — while one whose names do not resolve refuses with
-/// `too many diagnostics to retain`. Neither yields a snapshot, so neither can be
-/// queried. The densest *queryable* tree therefore comes from a file whose nodes charge
-/// neither the fact ceiling nor the diagnostic ceiling: a module that failed to parse,
-/// or names that never resolve inside one that did.
-/// [`statement_dense_file`] is that shape, and it is denser than this one.
+/// It is not the worst case. A file is queryable only if its project yields a snapshot,
+/// and a maximum-size file whose statements resolve reaches a ceiling that refuses
+/// `analyze` outright — the fact table, the image, or the interned string table, depending
+/// on the shape — while one whose names do not resolve refuses with `too many diagnostics
+/// to retain`. The densest *queryable* tree therefore comes from a file charging neither
+/// the fact ceiling nor the diagnostic ceiling: a module that failed to parse, or names
+/// that never resolve inside one that did. [`statement_dense_file`] is that shape, and it
+/// is denser than this one.
 ///
 /// With [`DenseBody::Template`] every body is a generic template: it is proved once, so
 /// the whole tree is parsed and lowered, and its throwaway image work is erased before
@@ -930,10 +903,8 @@ fn statement_dense_file(per_body: usize) -> Vec<u8> {
 const STATEMENT_DENSE_PER_BODY: usize = 257;
 
 /// A second statement-dense shape, one past a much larger power of two. Bodies this long
-/// hold their growth slack at a coarser granularity, so while every body is pre-sized
-/// exactly this shape is indistinguishable from the one above — and before that it was
-/// the denser of the two, which is why it is kept: a sample search that stopped at the
-/// first "densest" shape had already missed it.
+/// hold their growth slack at a coarser granularity, so it is the denser of the two the
+/// moment blocks stop being pre-sized exactly.
 const STATEMENT_DENSE_PER_LONG_BODY: usize = 4097;
 
 /// The module path every maximum-size shape is captured at, so one shape's snapshot is
@@ -945,10 +916,9 @@ const SHAPE_PATH: &str = "src/shape.mw";
 /// of it. The operator-chain shape is the template-bodied one: retained ordinary bodies
 /// of that density stop the drive at the image byte ceiling instead.
 ///
-/// Assembled once. Three tests state laws over the same five shapes, and each shape is a
-/// whole maximum admitted file, so building them per test spent more of the suite on
-/// `String::push_str` than on any assertion. The bytes are immutable and the shapes are
-/// the same objects every reader sees.
+/// Assembled once: three tests state laws over the same five shapes, each a whole maximum
+/// admitted file, so per-test construction would spend more of the suite on
+/// `String::push_str` than on any assertion. The bytes are immutable.
 fn maximum_admitted_shapes() -> &'static [(&'static str, Vec<u8>)] {
     static SHAPES: OnceLock<Vec<(&'static str, Vec<u8>)>> = OnceLock::new();
     SHAPES.get_or_init(|| {
@@ -968,13 +938,10 @@ fn maximum_admitted_shapes() -> &'static [(&'static str, Vec<u8>)] {
     })
 }
 
-/// One snapshot per maximum-size shape, built once.
-///
-/// Two tests query these, and an analysis drive over a maximum admitted module is the
-/// single largest thing this file does. A snapshot is immutable and its queries are
-/// query-local — each re-parses the file it is asked about and retains no tree — so a
-/// shared snapshot answers exactly what a freshly built one answers, and the latency
-/// each query pays is the same parse either way.
+/// One snapshot per maximum-size shape, built once: an analysis drive over a maximum
+/// admitted module is the single largest thing this file does. A snapshot is immutable and
+/// its queries are query-local, so a shared snapshot answers exactly what a freshly built
+/// one answers and each query pays the same parse either way.
 fn maximum_admitted_snapshots() -> &'static [(&'static str, Arc<AnalysisSnapshot>)] {
     static SNAPSHOTS: OnceLock<Vec<(&'static str, Arc<AnalysisSnapshot>)>> = OnceLock::new();
     SNAPSHOTS.get_or_init(|| {
@@ -999,9 +966,9 @@ fn desynchronizing_shapes() -> Vec<(&'static str, Vec<u8>)> {
 
 /// A body nested to the block-nesting limit holding one block a level past it.
 ///
-/// The measurement and the parser disagreed about which `{` opens a block, so one block
-/// was reserved at another's start count — a phantom held for the whole parse — while
-/// that other was reserved at nothing and grew by doubling.
+/// This is where the capacity measurement and the parser can disagree about which `{`
+/// opens a block: one block reserved at another's start count is a phantom held for the
+/// whole parse, while that other is reserved at nothing and grows by doubling.
 fn nesting_limit_desync_file() -> Vec<u8> {
     let limit = marrow_syntax::NESTING_DEPTH_LIMIT;
     let mut source = String::from("module m\n\nfn f() {\n");
@@ -1017,8 +984,8 @@ fn nesting_limit_desync_file() -> Vec<u8> {
     fill_to_ceiling(source, tail)
 }
 
-/// Nested `match` bodies, whose braces the measurement counted twice per level and the
-/// parser once, so the two reached the nesting limit at different depths.
+/// Nested `match` bodies, whose two braces per level are the shape that can make the
+/// measurement and the parser reach the nesting limit at different depths.
 fn match_body_desync_file() -> Vec<u8> {
     let levels = marrow_syntax::NESTING_DEPTH_LIMIT / 2 + 1;
     let mut source = String::from("module m\n\nfn f() {\n");
@@ -1071,14 +1038,13 @@ fn name_chain_file() -> Vec<u8> {
     source.into_bytes()
 }
 
-/// The bytes a parsed file's block statement lists hold, which is the accounting's
-/// dominant term and the one a corroborating sample can count exactly rather than
-/// sample through a resident set. Each list is exactly sized, so its length is its
-/// whole cost.
+/// The bytes a parsed file's block statement lists hold: the accounting's dominant term,
+/// and the one a corroborating sample can count exactly rather than sample through a
+/// resident set. Each list is exactly sized, so its length is its whole cost.
 ///
-/// Every list counts, not only a body's outermost one. A shape can put its whole cost
-/// in nested blocks — the two desynchronizing shapes do — and summing only the top
-/// level would report such a file at one statement and call the bound met.
+/// Every list counts, not only a body's outermost one. A shape can put its whole cost in
+/// nested blocks — the two desynchronizing shapes do — and summing only the top level
+/// would report such a file at one statement and call the bound met.
 fn statement_vector_bytes(source: &[u8]) -> usize {
     let text = std::str::from_utf8(source).expect("the fixture is UTF-8");
     marrow_syntax::parse_source(text)
@@ -1267,8 +1233,8 @@ fn worst_query_ms(snapshot: &AnalysisSnapshot, path: &str) -> u128 {
 /// A budget is a property of the optimized profile the language server ships in, so this
 /// asserts **only** there: the unoptimized profile runs the same code about an order of
 /// magnitude slower, and asserting against it would pin a number no user ever meets. Every
-/// profile records the measurement, so an unoptimized run still reports what it saw; a
-/// caller reading a green unoptimized run has observed the measurement, not the budget.
+/// profile records the measurement, so a green unoptimized run has observed the
+/// measurement, not the budget.
 #[track_caller]
 fn assert_within_budget(measured: u128, budget: u128, bytes: usize) {
     eprintln!("query-local completion over {bytes} bytes: worst {measured} ms");
@@ -1283,8 +1249,7 @@ fn assert_within_budget(measured: u128, budget: u128, bytes: usize) {
 
 /// One query over a maximum admitted file stays inside the editor-latency budget in every
 /// maximum-size shape reachable here that stays inside the image bound, including the
-/// statement-dense one the budget is derived from. The comment-padded and operator-chain
-/// shapes are kept because each was once published as the worst case and neither is.
+/// statement-dense one the budget is derived from.
 #[test]
 fn a_query_over_a_maximal_file_inside_the_image_bound_stays_in_budget_when_optimized() {
     for (label, snapshot) in maximum_admitted_snapshots() {
@@ -1321,11 +1286,9 @@ fn a_query_over_an_ordinary_file_stays_far_inside_the_budget_when_optimized() {
 }
 
 /// A maximum admitted file yields a snapshot, so the budgets above measure a reachable
-/// worst case rather than a project the compiler would refuse.
-///
-/// Building the snapshot is also the measurement point for the analysis build transient:
-/// running this test alone, against a run of the querying test above, separates what the
-/// drive spends materializing every module's tree from what one query-local parse costs.
+/// worst case rather than a project the compiler would refuse. Run alone against the
+/// querying test above, it also separates the drive's build transient from one
+/// query-local parse.
 #[test]
 fn a_maximum_admitted_file_yields_a_snapshot() {
     let snapshot = snapshot(vec![("src/big.mw", maximum_admitted_file())]);
@@ -1407,10 +1370,9 @@ fn container_growth_stays_within_the_accounted_factor() {
     }
 
     // The minimum non-zero capacity is the half of the rule a doubling factor hides: a
-    // container holding one element takes four slots, not the two that factor
-    // alone suggests, and one element is the least a family's own spelling admits. Every
-    // per-family slot above is charged through `vec_bytes`, so this is the rule those
-    // charges rest on, asserted over the widths that decide the bound.
+    // container holding one element takes four slots, not two, and one element is the
+    // least a family's own spelling admits. Every per-family slot above is charged through
+    // `vec_bytes`, so this is the rule those charges rest on.
     assert_minimum_capacity_is_accounted::<Argument>("Argument");
     assert_minimum_capacity_is_accounted::<Expression>("Expression");
     assert_minimum_capacity_is_accounted::<TypeExpr>("TypeExpr");
@@ -1448,18 +1410,14 @@ fn assert_minimum_capacity_is_accounted<T>(label: &str) {
 /// The parse transient is accounted, not sampled: an arithmetic property of the per-file
 /// admission ceiling and the representation the parser builds.
 ///
-/// The accounting runs in three steps.
-///
-/// 1. **A statement is the widest node the parser stores in a vector**, and two source
-///    bytes are the least the grammar spends on one. So one source byte of a block buys
-///    at most half a statement slot plus one content byte.
-/// 2. **A content byte buys at most one expression node**, in the widest placement the
-///    grammar admits for one, plus that node's own allocations. Every other kind a
-///    statement line can hold, and every kind outside one, charges less per byte —
-///    asserted below rather than asserted in prose.
-/// 3. **The tokens and the diagnostics are live beside the tree**: the file's lexed
-///    vector, one filtered copy inside the expression parser, and the collector's two
-///    pinned ceilings.
+/// 1. A statement is the widest node the parser stores in a vector, and two source bytes
+///    are the least the grammar spends on one, so one source byte of a block buys at most
+///    half a statement slot plus one content byte.
+/// 2. A content byte buys at most one expression node in the widest placement the grammar
+///    admits, plus that node's own allocations. Every other kind charges less per byte,
+///    which the family assertions below establish rather than prose.
+/// 3. The lexed tokens and the diagnostic collector's two pinned ceilings are live beside
+///    the tree.
 ///
 /// A representation change moves the derived figure, which is why the term carries
 /// headroom over it rather than equalling it.
@@ -1509,16 +1467,15 @@ fn the_query_parse_transient_closes_under_the_exported_term() {
 /// **The enforcement artifact.** Every node family charges under the declared cap.
 ///
 /// The derived bound is a maximum over roughly twenty families. A field added to any one
-/// of them widens that family's charge, and this fails at that family — before the
-/// widening can be absorbed by the distance between the derived maximum and the exported
-/// term, and whether or not the family that grew is the one currently deciding the
-/// maximum.
+/// of them widens that family's charge, and this fails at that family — whether or not it
+/// is the one currently deciding the maximum, and before the widening can be absorbed by
+/// the distance between the derived maximum and the exported term.
 ///
 /// A widened field is caught two ways. Its family's slot is charged from `size_of`, so a
-/// wider field moves the row here. Its *own allocations* are not visible to `size_of` at
-/// all — a new `Vec<String>` costs 24 bytes of slot and an unbounded heap buffer — so
-/// those are caught by [`every_charged_family_names_all_of_its_fields`], which fails to
-/// build until the new field is written down and priced.
+/// wider field moves the row here. Its *own allocations* are invisible to `size_of` — a
+/// new `Vec<String>` costs 24 bytes of slot and an unbounded heap buffer — so those are
+/// caught by [`every_charged_family_names_all_of_its_fields`], which fails to build until
+/// the new field is written down and priced.
 #[test]
 fn no_node_family_exceeds_the_declared_source_byte_cap() {
     let families = source_byte_charges_by_family();
@@ -1551,10 +1508,9 @@ fn no_node_family_exceeds_the_declared_source_byte_cap() {
 ///
 /// A charge row is a width lookup: `size_of` moves when a field widens, but it says
 /// nothing about a field that owns a heap buffer, and a row's `+ string_bytes(1)` term is
-/// a hand-written statement of which fields those are. Two families carrying exactly that
-/// shape — every declaration's `docs: Vec<String>` and a nominal's `supports` — had no row
-/// at all while both tables were only lookups. Naming the fields is what makes that
-/// omission a build failure rather than a silent under-charge.
+/// a hand-written statement of which fields those are. A heap-owning field like a
+/// declaration's `docs: Vec<String>` is invisible to a lookup-only table, so naming the
+/// fields is what makes an omission a build failure rather than a silent under-charge.
 ///
 /// The patterns are typechecked and never run, so this is a compile-time check rather
 /// than a test; a closure body is the smallest place to write one without constructing a
@@ -1724,11 +1680,10 @@ const _: fn() = || {
     };
 
     // The declaration internals. `Declaration` is charged by `size_of` alone, and a
-    // variant's payload lives inline in the enum, so a widened field does move that row.
-    // A field that owns a heap buffer does not: `docs: Vec<String>` and `supports` were
-    // each an allocation per declaration that no row charged, and both were reachable
-    // only through these types. Naming the fields is what makes the next one a build
-    // failure — the same guarantee the tables above carry, extended past the enum.
+    // variant's payload lives inline in the enum, so a widened field does move that row —
+    // but a field that owns a heap buffer (`docs: Vec<String>`, `supports`) does not, and
+    // is reachable only through these types. Naming the fields extends the tables' build
+    // failure past the enum.
     let _ = |value: &Declaration| match value {
         Declaration::Alias(inner) => {
             let _ = inner;
@@ -1962,13 +1917,12 @@ fn statement_list_term() -> usize {
 ///
 /// The gate sits at drive admission, which runs before any module is parsed, so it
 /// bounds the drive's own parse and every query-local re-parse a snapshot later serves.
-/// It is reached under the production capture envelope: the project owner captures files
-/// up to its own per-file ceiling, and this crate admits the shorter length its heap
-/// ceiling buys, so a file between the two is captured and then refused here.
+/// It is reachable under the production capture envelope: the project owner captures files
+/// up to its own per-file ceiling and this crate admits the shorter length its heap ceiling
+/// buys, so a file between the two is captured and then refused here.
 #[test]
 fn an_over_ceiling_file_is_refused_before_it_is_parsed() {
-    // Comment filler: the gate reads the file's length and nothing else, so the fixture
-    // only has to be long.
+    // The gate reads the file's length and nothing else, so the fixture only has to be long.
     let mut source = String::from("module wide\n\n");
     while source.len() <= MAX_PARSED_FILE_BYTES {
         source.push_str("// filler line carrying ordinary comment text\n");
@@ -2010,9 +1964,8 @@ fn an_over_ceiling_file_is_refused_before_it_is_parsed() {
 /// **This is where admission stops being a length compared against a length.** The
 /// ceiling is declared independently of any file size, so the admitted length is the
 /// largest one whose charge fits it — one byte more does not fit. Raise the per-source-byte
-/// rate and this length falls, which is the whole content of the claim that a widened
-/// representation narrows what is admitted: nothing here has to be edited for that to
-/// happen, and this test fails if it stops happening.
+/// rate and this length falls, with nothing here edited; this test fails if it stops
+/// falling.
 #[test]
 fn the_admitted_length_and_the_exported_term_agree_with_the_derivation() {
     assert_eq!(
@@ -2041,12 +1994,11 @@ fn the_admitted_length_and_the_exported_term_agree_with_the_derivation() {
     );
 }
 
-/// A statement list nested inside a block is counted.
-///
-/// **The enforcement artifact for the sample itself.** Both desynchronizing shapes put
-/// their whole cost in nested blocks, so a sample that summed only a body's outermost
-/// list would report them at one statement each and pass its bound by a factor of
-/// hundreds of thousands — measuring nothing, on exactly the shapes it exists to fence.
+/// A statement list nested inside a block is counted — the enforcement artifact for the
+/// sample itself. Both desynchronizing shapes put their whole cost in nested blocks, so a
+/// sample summing only a body's outermost list would report them at one statement each and
+/// pass its bound by a factor of hundreds of thousands, measuring nothing on exactly the
+/// shapes it exists to fence.
 #[test]
 fn the_statement_list_sample_counts_the_lists_inside_nested_blocks() {
     let statements = 64;
@@ -2065,12 +2017,12 @@ fn the_statement_list_sample_counts_the_lists_inside_nested_blocks() {
     );
 }
 
-/// The shapes that broke the derivation are admissible and queryable, which is what made
-/// the defect reachable: capture accepts them, `analyze` yields a snapshot, and a query
-/// over one is answered — so every query on such a file paid the phantom.
+/// The desynchronizing shapes are admissible and queryable, which is what makes a
+/// measurement/parser disagreement reachable: capture accepts them, `analyze` yields a
+/// snapshot, and a query over one is answered, so every such query would pay the phantom.
 ///
-/// Asserted through the production path rather than through the parser alone, and on a
-/// large stack because a 256-deep nest needs one in the unoptimized profile.
+/// Asserted through the production path rather than the parser alone, on a large stack
+/// because a 256-deep nest needs one in the unoptimized profile.
 #[test]
 fn a_desynchronizing_maximum_admitted_file_is_still_admitted_and_queryable() {
     std::thread::Builder::new()
@@ -2104,12 +2056,11 @@ fn a_desynchronizing_maximum_admitted_file_is_still_admitted_and_queryable() {
 /// the image bound is queryable, and each one's statement lists stay under what the
 /// derivation predicts for them.
 ///
-/// The densest sample is compared against [`statement_list_term`] rather than against the
-/// whole exported term, which also covers expressions, tokens, diagnostics, and the cap's
+/// The densest sample is compared against [`statement_list_term`] rather than the whole
+/// exported term, which also covers expressions, tokens, diagnostics, and the cap's
 /// deliberate headroom. Being close to that sub-term is the evidence that the derivation
 /// still describes what the parser builds; being under it is the evidence that the
-/// derivation is not optimistic. The term was derived first and the samples fell under
-/// it, rather than a sample being searched for and published as a term.
+/// derivation is not optimistic.
 #[test]
 fn every_maximal_shape_inside_the_image_bound_stays_under_the_derived_bound() {
     let predicted = statement_list_term();

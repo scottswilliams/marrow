@@ -39,19 +39,15 @@ pub(super) struct RegistryInverse {
 /// The live owners an isolated template proof runs without.
 ///
 /// `Monomorph`'s `limit` and `collection_payloads` — the instantiation-limit terminal
-/// and the ordered collection-payload diagnostic buffer — are the two owners this
-/// inverse deliberately does not restore. Both are diagnostic payload, which the phase
-/// places exclusively in the predecessor substrate's custody: `DraftTxn` never owns,
-/// copies, journals, or exposes it, and this inverse mirrors that boundary rather than
-/// opening a second custody for the same rows. That exclusion is sound because the
-/// staged-body guard owns this guard and its still-private diagnostic and fact payloads
+/// and the ordered collection-payload diagnostic buffer — are never restored by this
+/// inverse. Both are diagnostic payload, which stays in the predecessor substrate's sole
+/// custody; the staged-body guard owns this guard and those still-private payloads
 /// together, and a batch that ends in an invariant drops the aggregate whole.
 ///
-/// An isolated template proof is the one exception, and it is not a restoration either:
-/// it *swaps them out* at admission so the throwaway pass cannot reach the live ones at
-/// all, then puts the live owners back whole. [`TypeRegistry::admit_generic_owners`]
-/// destructures `Monomorph` exhaustively, so a new owner cannot be added without a
-/// decision recorded at one of these two places.
+/// A template proof does not restore them either: it *swaps them out* at admission so
+/// the throwaway pass cannot reach the live ones, then re-seats the live owners whole.
+/// [`TypeRegistry::admit_generic_owners`] destructures `Monomorph` exhaustively, so a new
+/// owner cannot be added without a decision recorded at one of these two places.
 pub(super) struct ProofIsolation {
     pub(super) prior_payloads: DiagnosticCollector,
 }
@@ -59,12 +55,11 @@ pub(super) struct ProofIsolation {
 /// The generic-owner composite guard: one admitted batch over the real registry (held
 /// by exclusive `&mut`) and the real draft (held through an armed [`DraftTxn`]).
 ///
-/// Holding the registry exclusively is what makes the guard's restoration
-/// borrow-panic-free: `Drop` has `&mut self` and so reaches every interior owner
-/// through `RefCell::get_mut`, with no runtime borrow flag to conflict with. It is also
-/// what makes a metadata session or interior borrow derived inside the batch die before
-/// the guard can drop — a guard dropped under a live session is a compile error rather
-/// than an unwind abort.
+/// Holding the registry exclusively makes restoration borrow-panic-free: `Drop` has
+/// `&mut self` and reaches every interior owner through `RefCell::get_mut`, with no
+/// runtime borrow flag to conflict with. It also forces any metadata session or interior
+/// borrow derived inside the batch to die before the guard drops, so a guard dropped
+/// under a live session is a compile error rather than an unwind abort.
 ///
 /// Both owners are restored on **every** armed exit — an ordinary refusal, an early
 /// invariant, or an unwind — registry inverse first, then the still-armed draft guard,
@@ -159,11 +154,10 @@ impl<'r, 'd> GenericOwnerTxn<'r, 'd> {
     /// Erase this batch now — registry inverse first, then the armed draft guard's own
     /// inverse.
     ///
-    /// This is the explicit spelling of the isolated template proof's exit, whose product
-    /// is its diagnostics and its editor facts rather than the throwaway image work it
-    /// emits. Dropping the producer-owning aggregate restores exactly the same owners and
-    /// drops its still-private payloads. The order matches `Drop`'s: a path may not retain
-    /// draft rows whose registry rows were erased.
+    /// The explicit spelling of the isolated template proof's exit, whose product is its
+    /// diagnostics and editor facts rather than the throwaway image work it emits. The
+    /// order matches `Drop`'s: no path may retain draft rows whose registry rows were
+    /// erased.
     pub(crate) fn erase(mut self) {
         if let Some(inverse) = self.inverse.take() {
             self.registry.restore_generic_owners(inverse);
@@ -180,8 +174,6 @@ impl<'r, 'd> GenericOwnerTxn<'r, 'd> {
 }
 
 impl Drop for GenericOwnerTxn<'_, '_> {
-    /// Restore the compiler registry's inverse first, then take and drop the
-    /// still-armed draft guard exactly once — the drop-order law.
     fn drop(&mut self) {
         if let Some(inverse) = self.inverse.take() {
             self.registry.restore_generic_owners(inverse);

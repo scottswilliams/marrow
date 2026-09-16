@@ -20,9 +20,8 @@ impl TypeRegistry {
     ) -> Result<FuncId, ResolveError> {
         self.validate_type_arguments(&args)?;
         let mut generics = self.generics.borrow_mut();
-        // Reservation-dedup reuse probe: a keyed lookup into the append-only secondary
-        // index. The reserved image function index is read from the named row (the
-        // authority), and a row that does not carry the looked-up key is drift.
+        // The secondary index is lookup-only: the reserved image function index is read
+        // from the named row, the authority, and a row not carrying the key is drift.
         if let Some(&row) = generics
             .fn_index
             .get(&template)
@@ -52,12 +51,10 @@ impl TypeRegistry {
             args,
             func,
         };
-        // Keep the lookup-only reuse index in lockstep with its authority. A reserve
-        // only appends on a dedup miss, so this key is new; a pre-existing entry means
-        // the dedup probe and the index disagree. Reject it as a typed invariant on the
-        // same terms as the type mint: the append below reserves an image function index
-        // and queues a body for it, so a duplicate key would mint a second reservation
-        // and a second lowering for one instantiation.
+        // A reserve appends only on a dedup miss, so this key is new; a pre-existing
+        // entry means the probe and the index disagree. The append below reserves an
+        // image function index and queues a body for it, so accepting a duplicate key
+        // would mint a second reservation and a second lowering for one instantiation.
         let displaced = generics
             .fn_index
             .entry(inst.template)
@@ -77,12 +74,11 @@ impl TypeRegistry {
     /// The next generic function instance awaiting body lowering: its template index,
     /// concrete arguments, and reserved image function index.
     ///
-    /// This *reads* the front entry and leaves the queue alone. Removing it is
-    /// [`Self::consume_fn_pending`], which the drain driver calls only once the batch that
-    /// lowered the entry has settled. The split is what makes the queue invertible: an
-    /// inverse that captures a length can undo the batch's appends, but it cannot put
-    /// back a front entry the driver removed before the batch was even admitted, and
-    /// reinstating one would mean an allocating call on the restore path.
+    /// Reading and removing are split — removal is [`Self::consume_fn_pending`], called
+    /// only once the batch that lowered the entry has settled — because that is what
+    /// makes the queue invertible: an inverse capturing a length can undo the batch's
+    /// appends, but cannot put back a front entry removed before the batch was admitted
+    /// without an allocating call on the restore path.
     pub(crate) fn peek_fn_pending(&self) -> Option<(usize, Vec<GArg>, FuncId)> {
         self.generics
             .borrow()

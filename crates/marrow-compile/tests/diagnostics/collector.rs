@@ -48,10 +48,9 @@ mod bounds {
     }
 
     /// One deterministic syntax error per `@` character: the lexer reports each as
-    /// `unexpected character` and consumes it, and no token reaches the parser, so
-    /// the per-line diagnostic count is exact. The premise is asserted here through
-    /// the public syntax API so a lexer change fails this probe rather than
-    /// silently skewing every count fixture below.
+    /// `unexpected character` and consumes it, and no token reaches the parser, so the
+    /// per-line diagnostic count is exact. Asserted through the public syntax API so a
+    /// lexer change fails this probe rather than silently skewing every count fixture.
     fn assert_one_error_per_at_sign() {
         assert_eq!(
             marrow_syntax::parse_source("@\n")
@@ -75,8 +74,7 @@ mod bounds {
 
     /// A source of `use` declarations that each fail import resolution with a
     /// deterministic `no module ...` diagnostic whose rendered message is
-    /// `name.len() + 28` bytes. Names embed `tag` so multi-file fixtures stay
-    /// distinct.
+    /// `name.len() + 28` bytes. Names embed `tag` so multi-file fixtures stay distinct.
     fn long_import_source(tag: usize, uses: usize, name_len: usize) -> Vec<u8> {
         let mut source = String::new();
         for index in 0..uses {
@@ -87,9 +85,8 @@ mod bounds {
         source.into_bytes()
     }
 
-    /// Exactly the count ceiling in one file is a complete bounded diagnostics
-    /// failure carrying every row: the N edge of the compiler count bound through
-    /// the consuming syntax bridge.
+    /// The N edge of the compiler count bound, through the consuming syntax bridge:
+    /// every row is retained.
     #[test]
     fn exactly_the_count_ceiling_is_a_complete_diagnostics_failure() {
         assert_one_error_per_at_sign();
@@ -105,9 +102,8 @@ mod bounds {
         }
     }
 
-    /// One row past the count ceiling discards the whole collection (prefix
-    /// included) for the typed DiagnosticCount resource limit, whose public limit
-    /// value equals the syntax ceiling.
+    /// One row past the ceiling discards the whole collection, prefix included, for the
+    /// typed DiagnosticCount limit whose public value equals the syntax ceiling.
     #[test]
     fn one_past_the_count_ceiling_is_a_diagnostic_count_resource_limit() {
         assert_one_error_per_at_sign();
@@ -138,17 +134,16 @@ mod bounds {
         assert_eq!(limit.kind(), ResourceLimitKind::DiagnosticCount);
     }
 
-    /// Absorbing a Limited syntax terminal unconditionally leaves the compiler
-    /// collector Limited. A sibling clean file must not let the destroyed payload
-    /// disappear into a successful or partial compile — in either canonical order,
-    /// so a clean batch absorbed after the Limited one cannot restore a retaining
-    /// owner either.
+    /// Absorbing a Limited syntax terminal unconditionally leaves the compiler collector
+    /// Limited: a sibling clean file must not let the destroyed payload disappear into a
+    /// successful or partial compile, in either canonical order, so a clean batch
+    /// absorbed after the Limited one cannot restore a retaining owner either.
     #[test]
     fn a_limited_syntax_file_forces_limited_beside_a_clean_sibling() {
         assert_one_error_per_at_sign();
         for (clean_module, dense_path) in [
-            // The clean file is absorbed first, then the Limited one; then the
-            // reverse, so a Complete batch absorbed into a Limited owner is covered.
+            // Clean absorbed first, then Limited; then the reverse, so a Complete
+            // batch absorbed into a Limited owner is covered too.
             ("clean", "src/dense.mw"),
             ("zclean", "src/adense.mw"),
         ] {
@@ -171,12 +166,11 @@ mod bounds {
         }
     }
 
-    /// The premise that keeps the collector's *unconditional* Limited guard
-    /// unobservable from production: a sealed syntax terminal always reports at
-    /// least one total past the ceiling it names, and the compiler ceilings equal
-    /// the syntax ceilings, so every absorbed Limited terminal crosses a compiler
-    /// ceiling on the composition alone. The guard is what holds the bound if that
-    /// premise changes; it is covered where it lives, in the collector.
+    /// The premise that keeps the collector's *unconditional* Limited guard unobservable
+    /// from production: a sealed syntax terminal always reports at least one total past
+    /// the ceiling it names, and the compiler ceilings equal the syntax ceilings, so
+    /// every absorbed Limited terminal crosses a compiler ceiling on the composition
+    /// alone.
     #[test]
     fn a_limited_syntax_terminal_always_crosses_a_compiler_ceiling_on_its_own() {
         let dense = "@\n".repeat(SYNTAX_DIAGNOSTIC_COUNT_LIMIT + 1);
@@ -195,10 +189,9 @@ mod bounds {
         );
     }
 
-    /// Crossing the retained-owned-byte ceiling discards the collection for the
-    /// typed DiagnosticBytes resource limit whose public value equals the syntax
-    /// byte ceiling; a set below the ceiling stays a complete
-    /// diagnostics failure with every row intact.
+    /// Crossing the retained-owned-byte ceiling discards the collection for the typed
+    /// DiagnosticBytes limit whose public value equals the syntax byte ceiling; a set
+    /// below the ceiling keeps every row.
     #[test]
     fn crossing_the_byte_ceiling_is_a_diagnostic_bytes_resource_limit() {
         let over: Vec<(String, Vec<u8>)> = (0..8)
@@ -217,10 +210,9 @@ mod bounds {
         assert_eq!(rows.len(), 4 * 26, "every under-ceiling row is retained");
     }
 
-    /// The pinned invalid-UTF-8 contract: the existing `check.unsupported` code,
-    /// the central static message, a zero-length 1:1 span at file start, no help,
-    /// no reason, no identity gap — and invalid-file rows form the canonical-order
-    /// prefix ahead of valid files' syntax rows.
+    /// The pinned invalid-UTF-8 contract: `check.unsupported`, the central static
+    /// message, a zero-length 1:1 span at file start, no help, no reason, no identity
+    /// gap — and invalid-file rows sort ahead of valid files' syntax rows.
     #[test]
     fn invalid_utf8_rows_form_the_canonical_prefix_with_the_pinned_contract() {
         let input = project(vec![
@@ -250,9 +242,9 @@ mod bounds {
         assert_eq!(syntax.severity(), marrow_syntax::Severity::Error);
     }
 
-    /// 4096 invalid files — the admission maximum — retain exactly the count
-    /// ceiling of typed rows as a complete bounded set: the static invalid-UTF-8
-    /// message charges no owned bytes, so the byte ceiling is nowhere near.
+    /// 4096 invalid files — the admission maximum — retain exactly the count ceiling of
+    /// typed rows as a complete bounded set: the static invalid-UTF-8 message charges no
+    /// owned bytes, so the byte ceiling is nowhere near.
     #[test]
     fn the_full_admission_width_of_invalid_files_stays_a_complete_set() {
         let files: Vec<(String, Vec<u8>)> = (0..CaptureLimits::DEFAULT.max_files())
@@ -289,11 +281,9 @@ mod bounds {
         );
     }
 
-    /// The production compile projects the first non-empty stage; the analysis
-    /// union alone composes stages and may cross the shared ceiling. No production
-    /// cross-stage strengthening exists: the same project is a complete parse-stage
-    /// diagnostics failure for `compile` and a DiagnosticCount refusal for
-    /// `analyze`.
+    /// The production compile projects the first non-empty stage; only the analysis
+    /// union composes stages and may cross the shared ceiling, so no production
+    /// cross-stage strengthening exists.
     #[test]
     fn production_projects_the_parse_stage_while_the_analysis_union_crosses() {
         assert_one_error_per_at_sign();
@@ -357,15 +347,12 @@ mod bounds {
     }
 
     /// Every sentence fragment `AnalysisResourceLimit::description` hands a reader, pinned
-    /// exactly. The five analysis-owned bounds ship hand-written prose that reaches a user
+    /// exactly: the five analysis-owned bounds ship hand-written prose that reaches a user
     /// through three CLI commands and the language server, so a reworded fragment is a
-    /// user-visible change and belongs in a review of what it now says, not in whatever lane
-    /// happened to touch the file. The sixth arm delegates, and its law — a compile-side
-    /// bound reads the same whichever owner reports it — is asserted below against a limit
-    /// the production path produced.
-    ///
-    /// The match is exhaustive and each arm is written out, so a new bound cannot land
-    /// without a fragment stated here.
+    /// user-visible change. The sixth arm delegates — a compile-side bound reads the same
+    /// whichever owner reports it — and is asserted below against a limit the production
+    /// path produced. The match is exhaustive and each arm is written out, so a new bound
+    /// cannot land without a fragment stated here.
     #[test]
     fn every_analysis_resource_limit_description_is_pinned() {
         let analysis_owned = [
@@ -417,9 +404,8 @@ mod bounds {
             "each analysis-owned bound must be distinguishable by the sentence a reader sees"
         );
 
-        // The delegating arm: a compile-side bound answers in `ResourceLimitKind`'s own
-        // words, so the same exhausted bound reads identically whether `compile` or
-        // `analyze` reported it.
+        // The delegating arm answers in `ResourceLimitKind`'s own words, so an exhausted
+        // compile-side bound reads identically whichever entry point reported it.
         assert_one_error_per_at_sign();
         let input = project(vec![(
             "src/main.mw".to_string(),
@@ -446,7 +432,6 @@ mod bounds {
 }
 
 /// Production-path compiler-input admission and diagnostic-retention laws.
-///
 mod retention {
     use super::*;
     fn captured_project(files: Vec<CapturedFile>, limits: CaptureLimits) -> ProjectInput {
@@ -660,13 +645,11 @@ mod retention {
     }
 }
 
-/// No pre-collector amplification. An error-dense many-file project is
-/// bounded by the one compiler collector's ceiling — the drive absorbs each
-/// file's syntax terminal immediately after parsing it, so no un-absorbed
-/// per-file diagnostic collection ever accumulates. The structural half of the
-/// law (no collection of un-absorbed `ParsedSource` values can exist) is
-/// enforced by the `ParsedSource` absence gate in `absence_gates.rs`.
-///
+/// No pre-collector amplification: an error-dense many-file project is bounded by the one
+/// compiler collector's ceiling, because the drive absorbs each file's syntax terminal
+/// immediately after parsing it and no un-absorbed per-file collection ever accumulates.
+/// The structural half — no collection of un-absorbed `ParsedSource` values can exist —
+/// is enforced by the absence gate in `absence_gates.rs`.
 mod amplification {
     use super::*;
     fn assert_limit(failure: CompileFailure, kind: ResourceLimitKind, limit: usize) {
@@ -677,11 +660,10 @@ mod amplification {
         assert_eq!(resource.limit(), limit as u64);
     }
 
-    /// The admission's maximum file count, each file with 16 syntax errors (16
-    /// times the ceiling in rows), resolves to exactly the typed DiagnosticCount
-    /// ceiling on every public entry. The retained outcome is the ceiling itself:
-    /// no per-file collection survives to amplify retention with the file count,
-    /// at the widest project the drive will admit.
+    /// The admission's maximum file count, each file with 16 syntax errors — 16 times the
+    /// ceiling in rows — resolves to exactly the typed DiagnosticCount ceiling on every
+    /// public entry: no per-file collection survives to amplify retention with the file
+    /// count, at the widest project the drive will admit.
     #[test]
     fn an_error_dense_many_file_project_is_bounded_by_the_count_ceiling() {
         let files: Vec<(String, Vec<u8>)> = (0..CaptureLimits::DEFAULT.max_files())
@@ -716,10 +698,9 @@ mod amplification {
         assert_eq!(limit.limit(), SYNTAX_DIAGNOSTIC_COUNT_LIMIT as u64);
     }
 
-    /// A byte-dense many-file project (about three times the byte ceiling of
-    /// rendered semantic diagnostics) resolves to the typed DiagnosticBytes
-    /// ceiling: retained bytes never scale with the file count past the one
-    /// collector's bound.
+    /// A byte-dense many-file project — about three times the byte ceiling of rendered
+    /// semantic diagnostics — resolves to the typed DiagnosticBytes ceiling: retained
+    /// bytes never scale with the file count past the one collector's bound.
     #[test]
     fn a_byte_dense_many_file_project_is_bounded_by_the_byte_ceiling() {
         let files: Vec<(String, Vec<u8>)> = (0..24)
@@ -748,12 +729,8 @@ mod amplification {
 /// captured source file; a diagnostic with no truthful file is not a source
 /// diagnostic.
 ///
-/// This is the behavioral half of sentinel elimination: an instantiation-limit
-/// diagnostic carries the real use-site file rather than a reserved template's empty
-/// file and a 0:0 span. The structural half is enforced by the type:
-/// `TypeTemplate::file` is `Option<FileIdentity>`, so an empty-string file cannot be
-/// constructed.
-///
+/// The structural half is enforced by the type: `TypeTemplate::file` is
+/// `Option<FileIdentity>`, so an empty-string file cannot be constructed.
 mod file_identity {
     use super::*;
     fn diagnostics(files: Vec<(&str, &str)>) -> Vec<SourceDiagnostic> {
@@ -810,9 +787,8 @@ mod file_identity {
 /// into a selection range; a point-only diagnostic could not.
 ///
 /// The production `compile` path threads a full `SourceSpan` into every diagnostic
-/// constructor, and this gate proves the constructor keeps the byte range rather than
+/// constructor; this gate proves the constructor keeps the byte range rather than
 /// collapsing it to a point.
-///
 mod full_span {
     use super::*;
     fn first_diagnostic(source: &str) -> SourceDiagnostic {
@@ -828,8 +804,6 @@ mod full_span {
 
     #[test]
     fn diagnostic_retains_full_byte_span_covering_the_construct() {
-        // A syntax error over a multi-byte construct yields a diagnostic whose span
-        // covers a real byte range, not a collapsed point.
         let source = "fn main() {\n    let x: = 0\n}\n";
         let diagnostic = first_diagnostic(source);
         let span = diagnostic.span();
@@ -837,7 +811,7 @@ mod full_span {
             span.end_byte >= span.start_byte,
             "span byte range must be well-ordered, got {span:?}",
         );
-        // The retained point stays consistent with the retained span (one owner).
+        // The retained point and the retained span have one owner.
         assert_eq!(diagnostic.line(), span.line);
         assert_eq!(diagnostic.column(), span.column);
         assert!(

@@ -363,9 +363,8 @@ pub fn driver(): int {
 }
 "#,
     );
-    // Four distinct instantiations of `identity` were minted (int, string, bool,
-    // and a second int reusing the first), yet the only export is the monomorphic
-    // `driver`; neither `identity` nor any instance has a stable identity.
+    // Four instantiations of `identity` are minted here (int, string, bool, and a second
+    // int reusing the first).
     let export_items: Vec<&str> = compiled
         .exports
         .iter()
@@ -1034,9 +1033,8 @@ pub fn driver(): string {
 }
 
 /// A recursive type fill that refuses at a function signature must reject that
-/// signature before the placeholder-looking body can be lowered. This pins one
-/// located limit with no false field cascade; replay and cache mechanics belong to
-/// private owner KATs.
+/// signature before the placeholder-looking body can be lowered: one located limit,
+/// no false field cascade.
 #[test]
 fn a_failed_recursive_type_fill_rejects_the_signature_before_body_lowering() {
     let diagnostics = compile_err(
@@ -1183,8 +1181,7 @@ pub fn driver(): int {
 /// An unused generic template is checked inside an isolated savepoint over the live
 /// registry and draft. Its proof-local type limit and collection-payload refusal must
 /// both transfer to the real diagnostic coordinator in canonical limit-before-payload
-/// order. The later safe export only keeps the fixture free of an unrelated body
-/// diagnostic.
+/// order.
 #[test]
 fn template_proof_transfers_its_limit_before_its_payload_diagnostic() {
     let diagnostics = compile_err(
@@ -1413,13 +1410,11 @@ pub fn safe(): int {
 
 /// `Inner<int>` can finish locally while its `outer` field points at the in-progress
 /// `Outer<int>`. If `Outer<int>` later fails through its `bad` sibling, production
-/// readers must not expose that failed placeholder through a Ready-looking
-/// `Inner<int>`. Atomic rejection of every provisional row in the mutually recursive
-/// dependency closure is left to the required private type-owner KAT
-/// `failed_fill_rejects_reverse_dependent_rows_without_poisoning_siblings`:
-/// the failed `Outer` and completed dependent `Inner` are rejected, an independent
-/// `Good` remains ready, no unresolved filling state remains, and the fill stack is
-/// empty. Those private state assertions are not claims of this boundary test.
+/// readers must not expose that failed placeholder through a Ready-looking `Inner<int>`.
+///
+/// Atomic rejection of every provisional row in the mutually recursive dependency closure
+/// is asserted by the private type-owner KAT
+/// `failed_fill_rejects_reverse_dependent_rows_without_poisoning_siblings`, not here.
 #[test]
 fn completed_inner_reuse_never_exposes_failed_outer_placeholder() {
     let diagnostics = compile_err(
@@ -1457,9 +1452,7 @@ pub fn safe(): int {
 
 /// `Bad<int>` names an unavailable nested generic type. Resolving that application
 /// at a function parameter must produce the contextual `Unsupported` at that
-/// observable current site instead of exposing an incomplete type. Row identity,
-/// remint behavior, cache length and depth, and replay mechanics belong to private
-/// owner KATs rather than this production-path check.
+/// observable current site instead of exposing an incomplete type.
 #[test]
 fn a_parameter_bound_nested_unsupported_resolution_is_contextually_refused() {
     let diagnostics = compile_err(
@@ -1492,7 +1485,7 @@ fn useGood(value: Good<int>): int {
     );
 }
 
-// --- user-definable generic value types (slice 3) ---
+// --- user-definable generic value types ---
 
 /// A generic `struct` and `enum` are templates, not concrete image types: they mint
 /// nothing until used, and neither a template nor any of its instantiations is a
@@ -1670,9 +1663,8 @@ pub fn run(): int {
 /// A nested `try` error mismatch names its `Result` operands in the canonical angle
 /// form: when the propagated error type is itself a `Result<int, string>`, the typed
 /// `check.type` message renders `Result<int, string>` at every level, not a bracket
-/// spelling. This is the compiler diagnostic owner — `marrow run` projects
-/// diagnostics to KAT-frozen code+span records, so the operand is asserted here at
-/// `compile`, not through the binary.
+/// spelling. `compile` is the diagnostic owner; `marrow run` only projects code+span
+/// records, so the rendered operand is asserted here.
 #[test]
 fn a_nested_try_error_mismatch_names_result_operands_in_angle_form() {
     let diagnostics = compile_err(
@@ -1961,9 +1953,8 @@ pub fn run(): int {
 /// A generic-heavy program that settles many instantiations at declare time and then runs
 /// several once-checked template proofs over that population. The proofs run directly on
 /// the in-progress registry and draft inside a savepoint, not on a per-template clone, so
-/// this is the accepted-program byte-identity fence for that path: the encoded image bytes
-/// are frozen, and any perturbation of the proof pass that leaked into the real image fails
-/// here. The digest is a hash of the full encoded image; a single changed byte changes it.
+/// this is the accepted-program byte-identity fence for that path: the digest hashes the
+/// full encoded image, and any proof-pass perturbation that leaked into it changes a byte.
 #[test]
 fn a_generic_heavy_program_has_frozen_image_bytes() {
     let compiled = compile_ok(
@@ -2058,10 +2049,9 @@ pub fn driver(): int {
 }
 
 /// A type parameter's declaration position is a distinct abstract identity at any
-/// admitted width: with 65,537 parameters in one admitted source file, the parameter
-/// at position 65,536 is not the parameter at position 0, so returning the first
-/// where the last is expected is the same `check.type` mismatch the two-parameter
-/// control below proves — never a silent alias of ordinal 0.
+/// admitted width: with 65,537 parameters in one source file, position 65,536 is not
+/// position 0, so returning the first where the last is expected stays the same
+/// `check.type` mismatch rather than silently aliasing ordinal 0.
 #[test]
 fn a_type_parameter_past_the_u16_domain_does_not_alias_ordinal_zero() {
     // The control: the shape at width two is a mismatch.

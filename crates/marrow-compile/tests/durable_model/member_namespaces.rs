@@ -1,16 +1,14 @@
 //! Every namespace of declared members refuses a repeated name at the repeat.
 //!
 //! One conflict owner serves struct fields, enum members and payload fields, type
-//! parameters, function parameters, key columns, and every member layer of a
-//! resource: its own fields, groups, and branches, and each branch's key columns
-//! together with its members. A root's key columns are the store's own layer, so
-//! a root key named like a resource field is not a repeat. Each fixture below repeats one name in one namespace and asserts the
-//! whole diagnostic list: exactly one `check.name_conflict`, at the line and column
-//! of the repeated name token, and nothing else. A repeat that reached the verifier
-//! (a span-less `image.table`) or executed (`f(1, 2)` answering `2`) would surface
-//! here as a compile that succeeded. Rows are the declaration's: a resource with
-//! no store or with two stores reports a branch repeat once, and a generic
-//! function reports a parameter repeat once however often it is called.
+//! parameters, function parameters, key columns, and every member layer of a resource: its
+//! own fields, groups, and branches, and each branch's key columns together with its
+//! members. A root's key columns are the store's own layer, so a root key named like a
+//! resource field is not a repeat.
+//!
+//! Rows belong to the declaration, not to its uses: a resource with no store or with two
+//! stores reports a branch repeat once, and a generic function reports a parameter repeat
+//! once however often it is called.
 
 use marrow_codes::Code;
 use marrow_project::ProjectInput;
@@ -30,8 +28,8 @@ fn storeless(body: &str) -> ProjectInput {
     project_capture::project(&[("src/main.mw", source.as_str())])
 }
 
-/// A durable fixture under a complete identity ledger, so the only refusal left is
-/// the repeated name.
+/// A durable fixture under a complete identity ledger, so the only refusal left is the
+/// repeated name.
 fn durable(body: &str) -> ProjectInput {
     let source = format!("module main\n\n{body}");
     ids::minted(|ledger| {
@@ -109,8 +107,8 @@ fn a_function_parameter_declared_twice() {
     assert_one_conflict(&storeless(&source), 3, 14, "function parameter");
 }
 
-/// The executable shape: admitting a second `a` would give it the second slot, so
-/// `f(1, 2)` would answer `2` for a body that wrote one parameter name.
+/// Admitting a second `a` would give it the second slot, so `f(1, 2)` would answer `2` for
+/// a body that wrote one parameter name.
 #[test]
 fn a_called_function_with_a_repeated_parameter_never_compiles() {
     let source = "fn f(a: int, a: int): int {\n    return a\n}\n\
@@ -226,7 +224,7 @@ fn a_branch_repeat_is_reported_once_under_two_stores() {
     assert_one_conflict(&durable(&source), 6, 9, "branch member, two stores");
 }
 
-/// A static group nested in a branch claims its own leaves.
+/// A group nested in a branch claims its own leaves.
 #[test]
 fn a_group_nested_in_a_branch_refuses_a_repeated_leaf() {
     let source = format!(
@@ -241,8 +239,6 @@ fn a_group_nested_in_a_branch_refuses_a_repeated_leaf() {
     );
 }
 
-/// Repeats in one branch layer are reported in declaration order: the key column
-/// first, then the members.
 #[test]
 fn branch_layer_repeats_are_reported_in_declaration_order() {
     let source = format!(
@@ -260,8 +256,8 @@ fn branch_layer_repeats_are_reported_in_declaration_order() {
     );
 }
 
-/// A root key and a resource field may share a spelling, but an index component
-/// naming that spelling resolves neither.
+/// A root key and a resource field may share a spelling, so an index component naming that
+/// spelling resolves neither.
 #[test]
 fn an_index_component_naming_both_a_key_and_a_field_is_refused() {
     let source = format!(

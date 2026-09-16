@@ -18,8 +18,8 @@ fn first_of(diagnostics: &[SourceDiagnostic], code: Code) -> SourceDiagnostic {
         .clone()
 }
 
-/// A local list bracket read and a map bracket read both type as the presence-typed
-/// optional, consumed by `??`, `if const`, let-else, and an `else` clause.
+/// Both bracket reads type as the presence-typed optional, consumed by `??`, `if const`,
+/// let-else, and an `else` clause.
 #[test]
 fn a_bracket_read_yields_the_optional_consumed_by_the_presence_family() {
     compile_ok(&wrap(
@@ -46,8 +46,7 @@ pub fn else_clause(m: Map<string, int>): int {
     ));
 }
 
-/// The literal dead indexes `xs[0]` and `xs[-1]` are refused with a `check.type`
-/// teaching diagnostic: list positions count from 1.
+/// List positions count from 1, so `xs[0]` and `xs[-1]` are statically dead.
 #[test]
 fn a_literal_dead_list_index_is_a_teaching_check_type() {
     for index in ["0", "-1"] {
@@ -55,8 +54,8 @@ fn a_literal_dead_list_index_is_a_teaching_check_type() {
             "pub fn f(xs: List<int>): int {{\n    return xs[{index}] ?? 0\n}}"
         )));
         let diagnostic = first_of(&diagnostics, Code::CheckType);
-        // Fact-first (voice standard, rule 1): the source spelling of the dead index
-        // leads, the governing law follows, the canonical first position closes.
+        // The source spelling of the dead index leads, the rule follows, the canonical
+        // first position closes.
         assert!(
             diagnostic
                 .message()
@@ -73,8 +72,8 @@ fn a_literal_dead_list_index_is_a_teaching_check_type() {
     }
 }
 
-/// A positive literal past the end is not statically dead — the length is a runtime
-/// fact — so `xs[100]` compiles and reads absent rather than being refused.
+/// A list's length is a runtime fact, so a positive literal past the end compiles and reads
+/// absent rather than being refused.
 #[test]
 fn a_positive_literal_index_is_not_a_dead_index() {
     compile_ok(&wrap(
@@ -117,8 +116,8 @@ fn a_list_keyed_write_is_a_teaching_check_type() {
         "pub fn f(): int {\n    var xs: List<int> = List()\n    xs = append(xs, 1)\n    xs[1] = 9\n    return 0\n}",
     ));
     let diagnostic = first_of(&diagnostics, Code::CheckType);
-    // Fact-first: the list is named in source spelling, the law follows, and the fix
-    // names the user's own right-hand side (`9`) with the canonical spellings.
+    // The list is named in source spelling, the rule follows, and the fix names the user's
+    // own right-hand side (`9`) with the canonical spellings.
     assert!(
         diagnostic.message().starts_with("`xs` is a list"),
         "{}",
@@ -198,10 +197,8 @@ fn get_and_insert_are_deleted_but_shadowable() {
     ));
 }
 
-/// `optional == absent` / `!= absent` is not a presence form: presence is asked with
-/// `if const`, `??`, or `exists(...)`. The equality is refused with a steering `check.type`
-/// at the `absent` operand naming the canonical presence forms, rather than the bare
-/// "the type of `absent` cannot be inferred here".
+/// Presence is asked with `if const`, `??`, or `exists(...)`, so the equality is refused at
+/// the `absent` operand with a steer to those forms rather than a bare inference failure.
 #[test]
 fn equality_against_absent_steers_to_the_presence_forms() {
     for op in ["==", "!="] {
@@ -209,8 +206,8 @@ fn equality_against_absent_steers_to_the_presence_forms() {
             "pub fn f(xs: List<int>): bool {{\n    return xs[1] {op} absent\n}}"
         )));
         let diagnostic = first_of(&diagnostics, Code::CheckType);
-        // Voice: `absent` in source spelling leads, the presence rule follows, and the fix
-        // names the canonical presence forms.
+        // `absent` in source spelling leads, the presence rule follows, and the fix names
+        // the canonical presence forms.
         assert!(
             diagnostic
                 .message()

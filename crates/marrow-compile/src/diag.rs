@@ -5,15 +5,13 @@
 //! Consumers read the frozen accessor set; construction is crate-private.
 //!
 //! Every production compiler diagnostic flows through the private
-//! [`DiagnosticCollector`]: producers `push` rows, the drive's syntax bridge
-//! `absorb_syntax`es one parsed file's terminal at a time, finished terminals
-//! merge through `absorb`, and `finish` seals the owner into a
-//! [`BoundedDiagnostics`] terminal exactly once. Retention is bounded by the
-//! typed Count/OwnedBytes ceilings — equal to the syntax collector's ceilings,
-//! drift-pinned below — with count-before-bytes precedence; crossing a ceiling
-//! discards the payload destructively (prefix included) while the saturated
-//! totals keep accumulating, an OwnedBytes limit may strengthen to Count, and
-//! a discarded payload never re-materializes.
+//! [`DiagnosticCollector`], which `finish` seals into a [`BoundedDiagnostics`]
+//! terminal exactly once. Retention is bounded by the typed Count/OwnedBytes
+//! ceilings — equal to the syntax collector's ceilings, drift-pinned below —
+//! with count-before-bytes precedence. Crossing a ceiling discards the payload
+//! destructively, prefix included, while the saturated totals keep
+//! accumulating; an OwnedBytes limit may strengthen to Count, and a discarded
+//! payload never re-materializes.
 
 use crate::bounded::{Bounded, Ceiling};
 use crate::decl::{DeclarationNamespace, RefusalReport};
@@ -25,14 +23,13 @@ use marrow_syntax::{
 
 /// The most diagnostic rows the compiler collector retains before it discards
 /// the payload and reports [`CompileDiagnosticLimit::Count`]. Equal to
-/// [`marrow_syntax::SYNTAX_DIAGNOSTIC_COUNT_LIMIT`] (A7): the syntax bridge's
-/// Limited composition law depends on the equality, which the drift test below
-/// pins. Any later divergence is an observable contract change.
+/// [`marrow_syntax::SYNTAX_DIAGNOSTIC_COUNT_LIMIT`]: the syntax bridge's Limited
+/// composition law depends on that equality, which the drift test below pins.
 pub(crate) const MAX_DIAGNOSTIC_COUNT: usize = 4096;
 
 /// The most retained owned payload bytes the compiler collector holds before
 /// it discards the payload and reports [`CompileDiagnosticLimit::OwnedBytes`].
-/// Equal to [`marrow_syntax::SYNTAX_DIAGNOSTIC_OWNED_BYTES_LIMIT`] (A7). The
+/// Equal to [`marrow_syntax::SYNTAX_DIAGNOSTIC_OWNED_BYTES_LIMIT`]. The
 /// budget is the logical initialized payload measured by
 /// [`SourceDiagnostic::retained_owned_bytes`] — never a bound on `Vec` or
 /// `String` allocation capacity.
@@ -52,10 +49,9 @@ const INVALID_UTF8_SPAN: SourceSpan = SourceSpan {
 };
 
 /// A single source diagnostic: the captured file it points into and its opaque
-/// payload. A syntax finding is retained whole — original code, reason,
-/// severity, message, help, and span, never flattened — and a compiler finding
-/// carries its rendered form, its typed identity gap, or the typed
-/// invalid-UTF-8 facts.
+/// payload. A syntax finding is retained whole — code, reason, severity,
+/// message, help, and span, never flattened — and a compiler finding carries its
+/// rendered form, its typed identity gap, or the typed invalid-UTF-8 facts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceDiagnostic {
     file: FileIdentity,
@@ -94,9 +90,9 @@ enum CompilerDiagnostic {
         message: String,
         refused: RefusedDeclaration,
     },
-    /// A file the drive could not decode: the typed `Utf8Error` facts. The
-    /// message is the central static and the span is the fixed file-start
-    /// point, so this variant owns only the numeric facts.
+    /// A file the drive could not decode. The message is the central static and
+    /// the span the fixed file-start point, so this variant owns only the
+    /// typed `Utf8Error` numbers.
     InvalidUtf8 {
         valid_up_to: usize,
         error_len: Option<usize>,
@@ -122,11 +118,10 @@ impl IdentityGap {
 /// The typed facts of a steer to a refused declaration.
 ///
 /// A steer and a row about a name that was never declared are both `check.*` rows at
-/// the use span, and a steer reuses the *declaring* code rather than minting one of
-/// its own — so `(code, line, column)` cannot tell them apart, and an assertion that
-/// tried was left discriminating on prose. These facts are what a consumer reads
-/// instead: which ledger holds the refusal, the declaring diagnostic's code, and
-/// where the report carrying the cause actually sits.
+/// the use span, and a steer reuses the *declaring* code rather than minting one of its
+/// own, so `(code, line, column)` cannot tell them apart. A consumer reads these facts
+/// instead: which ledger holds the refusal, the declaring diagnostic's code, and where
+/// the report carrying the cause sits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RefusedDeclaration {
     /// The ledger holding the refusal. `None` only for a summary that has not been
@@ -173,10 +168,10 @@ impl SourceDiagnostic {
     /// A steer to a refused declaration, carrying the typed facts beside its
     /// rendered form.
     ///
-    /// `code` is the row's own code and `refused.declaring_code` the code of the
-    /// report the reader is sent to. They are the same for every steer that reuses
-    /// the declaring row, and differ for the identity class, whose cause is a report
-    /// *family* the steer names under its own `check.type`.
+    /// `code` is the row's own code and `refused.declaring_code` the code of the report
+    /// the reader is sent to. They match for every steer that reuses the declaring row,
+    /// and differ for the identity class, whose cause is a report *family* the steer
+    /// names under its own `check.type`.
     pub(crate) fn with_refused_declaration(
         code: Code,
         file: &FileIdentity,
@@ -290,11 +285,9 @@ impl SourceDiagnostic {
     /// The typed facts behind a steer to a refused declaration, `None` for every
     /// other payload.
     ///
-    /// A causality assertion reads these instead of the rendered prose: a steer and a
-    /// row about a genuinely absent name are `(code, line, column)`-identical, because
-    /// the steer deliberately reuses the declaring code rather than minting one of its
-    /// own. Without a typed fact the only discriminator left is the sentence, which is
-    /// not a contract.
+    /// A causality assertion reads these instead of the rendered prose, which is not a
+    /// contract: a steer and a row about a genuinely absent name are
+    /// `(code, line, column)`-identical.
     pub fn refused_declaration(&self) -> Option<&RefusedDeclaration> {
         match &self.payload {
             SourceDiagnosticPayload::Compiler(CompilerDiagnostic::RefusedDeclaration {
@@ -306,8 +299,7 @@ impl SourceDiagnostic {
     }
 
     /// The captured source file this diagnostic points into. Always a canonical
-    /// FIDB01-bounded identity — never empty, a sentinel, or a consumer-chosen
-    /// placeholder.
+    /// bounded identity — never empty, a sentinel, or a consumer-chosen placeholder.
     pub fn file(&self) -> &FileIdentity {
         &self.file
     }
@@ -338,9 +330,8 @@ impl SourceDiagnostic {
     }
 
     /// The typed facts of an invalid-UTF-8 row: how many leading bytes decoded
-    /// and the invalid sequence length `std::str::from_utf8` reported. The
-    /// facts live in the payload for every consumer of the variant; this
-    /// probe pins them in tests until a production reader exists.
+    /// and the invalid sequence length `std::str::from_utf8` reported. This probe
+    /// pins them in tests until a production reader exists.
     #[cfg(test)]
     pub(crate) fn invalid_utf8_facts(&self) -> Option<(usize, Option<usize>)> {
         match &self.payload {
@@ -357,9 +348,8 @@ impl SourceDiagnostic {
     /// syntax help, and identity-gap path bytes. A logical initialized-payload
     /// budget — never `Vec`/`String` capacity or allocator metadata. Static
     /// facts (the invalid-UTF-8 message, codes, spans) charge nothing. Syntax
-    /// reason-owned bytes are charged at the `absorb_syntax` boundary from the
-    /// syntax summary (every current reason variant owns zero), so this per-row
-    /// charge and the batch charge agree.
+    /// reason-owned bytes are charged at the `absorb_syntax` boundary instead,
+    /// so this per-row charge and the batch charge agree.
     pub(crate) fn retained_owned_bytes(&self) -> usize {
         let file = self.file.as_str().len();
         match &self.payload {
@@ -393,9 +383,7 @@ pub(crate) enum CompileDiagnosticLimit {
 }
 
 /// The one live compiler diagnostic owner. Private, concrete, non-`Clone`, and
-/// non-`Default`; its operations are exactly `new`, `push`, logical
-/// `is_empty`, consuming `absorb`, `absorb_syntax`, and total `finish` (plus
-/// whole-owner swap/replace where the generic lifecycle requires them).
+/// non-`Default`, so a collector can only be moved whole.
 #[derive(Debug)]
 pub(crate) struct DiagnosticCollector {
     state: Bounded<DiagnosticCeiling>,
@@ -464,9 +452,8 @@ impl BoundedDiagnostics {
     }
 }
 
-/// A test view of a collector's exact state, for isolation and lifecycle
-/// probes that must compare before/after owners without widening the
-/// production operation set.
+/// A test view of a collector's exact state, so lifecycle probes can compare
+/// owners without widening the production operation set.
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CollectorProbe {
@@ -484,9 +471,7 @@ impl DiagnosticCollector {
     }
 
     /// Logical emptiness: a Limited owner retains no rows but is never empty.
-    ///
-    /// Test-only since the phase-eligibility gates that used to consult it were
-    /// deleted: production code reads emptiness from the finished
+    /// Test-only — production code reads emptiness from the finished
     /// [`BoundedDiagnostics`] terminal, never from a live collector.
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
@@ -502,8 +487,7 @@ impl DiagnosticCollector {
 
     /// Merge a finished terminal into this live owner. A Complete terminal's
     /// rows append in order with their exact totals; a Limited terminal leaves
-    /// this owner Limited unconditionally — its destroyed payload never
-    /// re-materializes.
+    /// this owner Limited unconditionally, its payload gone for good.
     pub(crate) fn absorb(&mut self, finished: BoundedDiagnostics) {
         match finished {
             BoundedDiagnostics::Complete {
@@ -526,10 +510,8 @@ impl DiagnosticCollector {
     }
 
     /// The sole syntax bridge: consume one parsed file's bounded terminal.
-    /// Complete rows move into `Syntax` payloads under `file`; the batch
-    /// charge is the summary's owned bytes — message, help, and reason-owned
-    /// bytes, exact by construction in the syntax owner — plus one file
-    /// spelling per row, which is exactly the per-row
+    /// The batch charge is the summary's owned bytes plus one file spelling per
+    /// row, which is exactly the per-row
     /// [`SourceDiagnostic::retained_owned_bytes`] sum. A Limited terminal
     /// composes the same charge from its saturated summary and leaves this
     /// owner Limited unconditionally, selecting Count when both composed kinds
@@ -548,8 +530,7 @@ impl DiagnosticCollector {
                     .into_iter()
                     .map(|diagnostic| SourceDiagnostic::syntax(file, diagnostic))
                     .collect();
-                // The retained rows are the count, exactly as in `absorb`: the
-                // materialized vector is the one quantity both charges derive from.
+                // The materialized vector is the one quantity both charges derive from.
                 let count = rows.len();
                 self.state
                     .admit((0, 0), count as u64, charge(count), move |retained| {
@@ -616,9 +597,8 @@ mod tests {
     use super::*;
     use marrow_syntax::{SYNTAX_DIAGNOSTIC_COUNT_LIMIT, SYNTAX_DIAGNOSTIC_OWNED_BYTES_LIMIT};
 
-    /// A7: the compiler ceilings equal the syntax ceilings. The syntax
-    /// bridge's Limited composition depends on this equality; a divergence is
-    /// a deliberate contract change that must update both rows together.
+    /// The syntax bridge's Limited composition depends on the two ceiling pairs
+    /// being equal; a divergence is a contract change that must update both.
     #[test]
     fn compiler_ceilings_equal_the_syntax_ceilings() {
         assert_eq!(MAX_DIAGNOSTIC_COUNT, SYNTAX_DIAGNOSTIC_COUNT_LIMIT);
@@ -690,9 +670,8 @@ mod tests {
         assert_eq!(syntax.severity(), Severity::Error);
     }
 
-    /// Exact count edges: the 4096th row retains; the 4097th destroys the
-    /// whole payload (prefix included) for a Count limit with saturated
-    /// totals, and the owner is logically non-empty forever after.
+    /// Exact count edge: the row at the ceiling retains; the next destroys the
+    /// whole payload, prefix included, and the owner stays non-empty after.
     #[test]
     fn count_edge_is_exact_and_discard_is_destructive() {
         let mut collector = DiagnosticCollector::new();
@@ -820,8 +799,7 @@ mod tests {
             file().as_str().len() + 3
         );
 
-        // A Limited terminal forces Limited; with the composed count crossed,
-        // Count is selected over the absorbed OwnedBytes kind.
+        // With the composed count crossed, Count outranks the absorbed kind.
         let mut nearly_full = DiagnosticCollector::new();
         for _ in 0..MAX_DIAGNOSTIC_COUNT {
             nearly_full.push(row_with_message_len(0));
@@ -842,12 +820,10 @@ mod tests {
         assert!(nearly_full.probe_rows().is_empty());
     }
 
-    /// A2's unconditional half: absorbing a Limited terminal whose composed
-    /// totals sit under *both* ceilings still leaves this owner Limited, and
-    /// the absorbed kind is inherited. The absorbed payload was destroyed, so
-    /// admissible-looking totals must never reopen the owner as a complete
-    /// set — a guard that reacted only to a composed crossing would seal a
-    /// silently short diagnostic set as Complete.
+    /// Absorbing a Limited terminal whose composed totals sit under *both*
+    /// ceilings still leaves this owner Limited, with the absorbed kind
+    /// inherited: the absorbed payload was destroyed, so admissible-looking
+    /// totals must never reopen the owner and seal a silently short set.
     #[test]
     fn absorbing_an_under_ceiling_limited_terminal_forces_limited() {
         for inherited in [
@@ -902,12 +878,11 @@ mod tests {
         }
     }
 
-    /// Why the state above is unreachable from production today, and what
-    /// would make it reachable: a sealed Limited terminal always reports at
-    /// least one total past the ceiling it names — on both sides of the bridge
-    /// — so with the A7 ceilings equal, every composed absorption crosses
-    /// again on its own. This equality is the premise; the unconditional guard
-    /// above is what still holds A2 if the premise ever changes.
+    /// Why the state above is unreachable from production: a sealed Limited
+    /// terminal always reports at least one total past the ceiling it names, on
+    /// both sides of the bridge, so while the two ceiling pairs are equal every
+    /// composed absorption crosses again on its own. That equality is the
+    /// premise; the unconditional guard above holds if it ever changes.
     #[test]
     fn a_sealed_limited_terminal_always_reports_a_crossed_total() {
         let mut counted = DiagnosticCollector::new();
@@ -1004,9 +979,9 @@ mod tests {
         assert!(probe.rows.iter().all(|row| row.file() == file()));
     }
 
-    /// A2 at the bridge: absorbing a Limited syntax terminal leaves the
-    /// collector Limited even though it retained nothing itself, and the
-    /// destroyed payload never re-materializes through later input.
+    /// Absorbing a Limited syntax terminal leaves the collector Limited even
+    /// though it retained nothing itself, and the destroyed payload never
+    /// re-materializes through later input.
     #[test]
     fn absorbing_a_limited_syntax_terminal_forces_limited_unconditionally() {
         let dense = "@\n".repeat(SYNTAX_DIAGNOSTIC_COUNT_LIMIT + 1);
