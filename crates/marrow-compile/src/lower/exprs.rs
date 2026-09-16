@@ -1088,6 +1088,19 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 return Err(LoweringFailure::Recoverable);
             }
         }
+        // `alias::Name(...)` constructs a dependency's type. The whole spelling goes
+        // through the same funnel a type annotation uses, so the callee names a type
+        // exactly where an annotation of that text would.
+        if let [_, _] = &segments[..]
+            && let Some(path) = self.type_path(marrow_syntax::name_path_spelling(segments))
+        {
+            if let Some(result) = self.lower_type_construct(&path, args, span) {
+                return result.map(CallResult::Value);
+            }
+            if self.steer_refused_type(path.ty(), span) {
+                return Err(LoweringFailure::Recoverable);
+            }
+        }
         match &segments[..] {
             [prefix @ .., item] => {
                 self.lower_qualified_call(prefix, item.text(), args, span, callee_span)
@@ -1211,28 +1224,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 .lower_conversion(name, args, span)
                 .map(CallResult::Value);
         }
-        if let Some((id, _)) = self.records.nominal_by_name(&self.bare_type(name)) {
-            return self
-                .lower_nominal_construct(id, args, span)
-                .map(CallResult::Value);
-        }
-        if self.records.struct_by_name(&self.bare_type(name)).is_some() {
-            return self
-                .lower_struct_literal(name, args, span)
-                .map(CallResult::Value);
-        }
-        // A generic struct template infers its instantiation from the field values.
-        if let Some(template) = self.records.type_template_by_name(&self.bare_type(name))
-            && !self.records.template_is_enum(template)
+        if let Some(path) = self.type_path(name.to_string())
+            && let Some(result) = self.lower_type_construct(&path, args, span)
         {
-            return self
-                .lower_generic_struct_literal(template, args, span)
-                .map(CallResult::Value);
-        }
-        if self.records.by_name(&self.bare_type(name)).is_some() {
-            return self
-                .lower_constructor(name, args, span)
-                .map(CallResult::Value);
+            return result.map(CallResult::Value);
         }
         let same_module = match self.functions.same_module(self.module, name) {
             Ok(binding) => binding,
@@ -1785,14 +1780,15 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// Lower a record constructor: each field's argument in declaration order.
     fn lower_constructor(
         &mut self,
-        name: &str,
+        path: &TypePath,
         args: &[Argument],
         span: SourceSpan,
     ) -> ConstructResult<LTy> {
+        let name = path.written();
         let record = self
             .accept_resolution(
                 self.records
-                    .static_record_projection(&self.bare_type(name))
+                    .static_record_projection(path.ty())
                     .map_err(ResolveError::Invariant),
                 span,
                 "this record construction",
@@ -1819,7 +1815,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 // A member the compiler refused is declared: it left the record's
                 // accepted set but keeps its name, so the use is steered to the
                 // refusal rather than told the resource has no such field.
-                if !self.steer_refused_member(name, arg_name, argument.value.span()) {
+                if !self.steer_refused_member(path.ty().name(), arg_name, argument.value.span()) {
                     self.fail(SourceDiagnostic::at(
                         Code::CheckType,
                         self.file,
@@ -2129,14 +2125,15 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// product-leaf order owns evaluation.
     fn lower_struct_literal(
         &mut self,
-        name: &str,
+        path: &TypePath,
         args: &[Argument],
         span: SourceSpan,
     ) -> ConstructResult<LTy> {
+        let name = path.written();
         let info = self
             .accept_resolution(
                 self.records
-                    .static_struct_projection(&self.bare_type(name))
+                    .static_struct_projection(path.ty())
                     .map_err(ResolveError::Invariant),
                 span,
                 "this struct construction",
@@ -2536,23 +2533,63 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Some(concrete)
     }
 
-    /// The enum path `segments` spells, or `None` when they spell none.
+    /// Construct a value of the type `path` names: a nominal int, a struct, an
+    /// instantiation of a generic struct template, or a resource record. `None` when
+    /// the type is not one of those, so the caller can go on resolving the spelling
+    /// as something else.
     ///
-    /// This is the one splitter for an enum path in value position, so the head of
-    /// `Enum::member` and of `alias::Enum::member` is resolved exactly as the same
-    /// spelling in a type annotation is. The two-or-three-segment bound is the head's:
-    /// a longer path has no head that names a type, so it stays a module-qualified
-    /// call rather than becoming an enum path with a module in front of it.
+    /// One owner for every constructor call, so a dependency's type is built from the
+    /// consuming tree on exactly the terms its own tree builds it on.
+    fn lower_type_construct(
+        &mut self,
+        path: &TypePath,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> Option<ConstructResult<LTy>> {
+        if let Some((id, _)) = self.records.nominal_by_name(path.ty()) {
+            return Some(self.lower_nominal_construct(id, args, span));
+        }
+        if self.records.struct_by_name(path.ty()).is_some() {
+            return Some(self.lower_struct_literal(path, args, span));
+        }
+        // A generic struct template infers its instantiation from the field values.
+        if let Some(template) = self.records.type_template_by_name(path.ty())
+            && !self.records.template_is_enum(template)
+        {
+            return Some(self.lower_generic_struct_literal(template, args, span));
+        }
+        if self.records.by_name(path.ty()).is_some() {
+            return Some(self.lower_constructor(path, args, span));
+        }
+        None
+    }
+
+    /// The type `segments` name from this body's tree, or `None` when they name none.
+    ///
+    /// This is the one funnel from a value-position name path to a type: a bare name
+    /// resolves in the tree that wrote it, `alias::Name` in the dependency the alias
+    /// declares, and a longer spelling names no tree, so it names no type. Every
+    /// spelling a body resolves to a type — an annotation, a constructor call, an
+    /// enum path's head — passes through it, so the same text cannot mean two types
+    /// in two positions.
+    fn type_path(&self, written: String) -> Option<TypePath> {
+        let ty = self.records.scoped(self.file.origin(), &written)?;
+        Some(TypePath { written, ty })
+    }
+
+    /// The enum path `segments` spell, or `None` when they spell none.
+    ///
+    /// The last segment is the member and the rest are the enum, resolved through
+    /// [`FnLowerer::type_path`]. The two-or-three-segment bound is the head's: a
+    /// longer path has no head that names a type, so it stays a module-qualified call
+    /// rather than becoming an enum path with a module in front of it.
     fn enum_path<'s>(&self, segments: &'s [NameSegment]) -> Option<EnumPath<'s>> {
         let (member, head) = match segments {
             [_, _] | [_, _, _] => segments.split_last()?,
             _ => return None,
         };
-        let written = marrow_syntax::name_path_spelling(head);
-        let enum_ty = self.records.scoped(self.file.origin(), &written)?;
         Some(EnumPath {
-            written,
-            enum_ty,
+            head: self.type_path(marrow_syntax::name_path_spelling(head))?,
             member: member.text(),
         })
     }
@@ -3288,19 +3325,36 @@ fn signature_display(name: &str, params: &[LTy], ret: RetType, records: &TypeReg
     }
 }
 
+/// One `[alias::]Name` type spelling in value position, resolved once by
+/// [`FnLowerer::type_path`].
+struct TypePath {
+    /// The spelling this site wrote, so a report names the type the way the writer
+    /// did rather than in the declaring tree's own terms.
+    written: String,
+    ty: ScopedTypeName,
+}
+
+impl TypePath {
+    /// The type this spelling names, in the tree that declares it.
+    fn ty(&self) -> &ScopedTypeName {
+        &self.ty
+    }
+
+    fn written(&self) -> &str {
+        &self.written
+    }
+}
+
 /// One `[alias::]Enum::member` path, split once by [`FnLowerer::enum_path`].
 struct EnumPath<'a> {
-    /// The head as this site spells it, so a report names the enum the way the
-    /// writer did rather than in the declaring tree's own terms.
-    written: String,
-    enum_ty: ScopedTypeName,
+    head: TypePath,
     member: &'a str,
 }
 
 impl EnumPath<'_> {
     /// The enum the head names, in the tree that declares it.
     fn enum_ty(&self) -> &ScopedTypeName {
-        &self.enum_ty
+        self.head.ty()
     }
 
     fn member(&self) -> &str {
@@ -3308,6 +3362,6 @@ impl EnumPath<'_> {
     }
 
     fn written(&self) -> &str {
-        &self.written
+        self.head.written()
     }
 }

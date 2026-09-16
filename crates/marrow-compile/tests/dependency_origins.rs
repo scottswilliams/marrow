@@ -719,8 +719,8 @@ pub fn run(): string {
 }
 
 /// A payload member crosses the boundary on the same terms: the member is named
-/// through the alias, its payload fields are supplied by name, and an arm in the
-/// consuming tree binds them.
+/// through the alias, each payload field keeps the declaring tree's own type and is
+/// supplied by name, and an arm in the consuming tree binds them.
 #[test]
 fn a_dependency_enum_payload_member_is_constructible() {
     let project = project_capture::project_with_dependency(
@@ -730,13 +730,13 @@ fn a_dependency_enum_payload_member_is_constructible() {
             r#"module main
 
 pub fn run(): int {
-    const cell = graphtext::Cell::filled(x: 1, y: 2)
+    const cell = graphtext::Cell::filled(at: graphtext::Point(x: 1, y: 2))
     match cell {
         empty => {
             return 0
         }
-        filled(x, y) => {
-            return x + y
+        filled(at) => {
+            return at.x + at.y
         }
     }
 }
@@ -746,9 +746,14 @@ pub fn run(): int {
             "src/shapes.mw",
             r#"module shapes
 
+struct Point {
+    x: int
+    y: int
+}
+
 enum Cell {
     empty
-    filled(x: int, y: int)
+    filled(at: Point)
 }
 "#,
         )],
@@ -924,8 +929,27 @@ fn an_imported_enum_costs_the_image_nothing() {
     assert_eq!(imported.image.image_id, renamed.image.image_id);
 }
 
+const CONSTRUCTED_LIBRARY: &str = r#"module text
+
+struct Pair {
+    key: string
+    value: string
+}
+
+struct Boxed<T> {
+    item: T
+}
+
+type Age: int in 0..150
+
+resource Book {
+    required title: string
+}
+"#;
+
 /// A dependency's type is constructed through the same alias that annotates it: a
-/// struct, a nominal int, and a resource record all take their own tree's arguments.
+/// struct, a generic struct template, a nominal int, and a resource record all take
+/// their own tree's arguments.
 #[test]
 fn a_dependency_type_is_constructible_through_its_alias() {
     let project = project_capture::project_with_dependency(
@@ -938,29 +962,128 @@ pub fn run(): string {
     const pair: graphtext::Pair = graphtext::Pair(key: "a", value: "b")
     const age: graphtext::Age = graphtext::Age(7)
     const book: graphtext::Book = graphtext::Book(title: pair.key)
-    if age == graphtext::Age(7) {
+    const boxed: graphtext::Boxed<int> = graphtext::Boxed(item: 1)
+    if age == graphtext::Age(7) and boxed.item == 1 {
         return book.title
     }
     return pair.value
 }
 "#,
         )],
-        &[(
-            "src/text.mw",
-            r#"module text
-
-struct Pair {
-    key: string
-    value: string
+        &[("src/text.mw", CONSTRUCTED_LIBRARY)],
+    );
+    assert_eq!(codes_and_messages(&project), Vec::new());
 }
 
-type Age: int in 0..150
+/// A bare constructor names the consuming tree's own type even where a dependency
+/// declares that name: the two `Pair`s are two types, and the consumer's fields are
+/// the ones its constructor takes.
+#[test]
+fn a_bare_constructor_stays_in_the_tree_that_wrote_it() {
+    let project = project_capture::project_with_dependency(
+        "graphtext",
+        &[(
+            "src/main.mw",
+            r#"module main
 
-resource Book {
-    required title: string
+struct Pair {
+    left: int
+}
+
+pub fn mine(): int {
+    const p = Pair(left: 1)
+    return p.left
+}
+
+pub fn theirs(): string {
+    return graphtext::Pair(key: "a", value: "b").key
+}
+
+pub fn wrong(): int {
+    const p = Pair(key: "a")
+    return p.left
 }
 "#,
         )],
+        &[("src/text.mw", CONSTRUCTED_LIBRARY)],
     );
-    assert_eq!(codes_and_messages(&project), Vec::new());
+    assert_eq!(
+        codes_and_messages(&project),
+        vec![("check.type", "`Pair` has no field `key`".to_string())],
+    );
+}
+
+/// A constructor call resolves its callee as a type exactly where an annotation of
+/// the same text would: through a declared alias, at one or two segments. A report
+/// names the type the way this site spells it.
+#[test]
+fn a_constructor_callee_is_a_type_name_or_nothing() {
+    for (written, expected) in [
+        (
+            r#"graphtext::Pair(key: "a", nope: "b")"#,
+            "`graphtext::Pair` has no field `nope`",
+        ),
+        // Three segments: the head names no type, so this is not a constructor.
+        (
+            r#"graphtext::text::Pair(key: "a", value: "b")"#,
+            "`graphtext::text::Pair` is not in scope",
+        ),
+        // No dependency is declared under `nowhere`.
+        (
+            r#"nowhere::Pair(key: "a", value: "b")"#,
+            "`nowhere::Pair` is not in scope",
+        ),
+        // The alias is declared; the dependency declares no such type.
+        (
+            "graphtext::Missing(item: 1)",
+            "`graphtext::Missing` is not in scope",
+        ),
+    ] {
+        let project = project_capture::project_with_dependency(
+            "graphtext",
+            &[(
+                "src/main.mw",
+                &format!(
+                    "module main\n\npub fn run(): int {{\n    const v = {written}\n    return 1\n}}\n"
+                ),
+            )],
+            &[("src/text.mw", CONSTRUCTED_LIBRARY)],
+        );
+        assert_eq!(
+            codes_and_messages(&project),
+            vec![("check.type", expected.to_string())],
+            "input {written:?}",
+        );
+    }
+}
+
+/// A type the dependency declared and the compiler refused keeps its name, so a
+/// construction of it is steered to that declaration's cause rather than told the
+/// name does not exist.
+#[test]
+fn a_refused_dependency_type_steers_to_its_declaration() {
+    let project = project_capture::project_with_dependency(
+        "graphtext",
+        &[(
+            "src/main.mw",
+            "module main\n\npub fn run(): int {\n    const v = graphtext::Bad(x: 1)\n    return 1\n}\n",
+        )],
+        &[(
+            "src/text.mw",
+            "module text\n\nstruct Bad {\n    x: int\n    x: string\n}\n",
+        )],
+    );
+    assert_eq!(
+        diagnostics(&project)
+            .iter()
+            .map(|row| row.code().as_str())
+            .collect::<Vec<_>>(),
+        vec!["check.name_conflict", "check.name_conflict"],
+    );
+    assert!(
+        diagnostics(&project)[1]
+            .message()
+            .contains("its declaration was refused"),
+        "the use is steered to the refused declaration",
+    );
 }
