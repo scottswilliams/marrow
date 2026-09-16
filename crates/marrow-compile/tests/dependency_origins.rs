@@ -400,3 +400,75 @@ fn a_snapshot_query_keys_on_the_origin_too() {
     assert!(!formatted(&root).contains("22222"));
     assert!(formatted(&dependency).contains("22222"));
 }
+
+const TESTED_LIBRARY: &str = r#"module text
+
+pub fn twice(n: int): int {
+    return n * 2
+}
+
+test "the library checks standalone" {
+    assert twice(2) == 4
+}
+"#;
+
+/// Only the root project's tests are discovered: a dependency's tests run where the
+/// dependency is, so none enters the consuming project's test directory.
+#[test]
+fn only_root_origin_tests_are_discovered() {
+    let project = project_capture::project_with_dependency(
+        "graphtext",
+        &[(
+            "src/main.mw",
+            r#"module main
+
+use graphtext::text
+
+pub fn run(n: int): int {
+    return text::twice(n)
+}
+
+test "the app's own test is discovered" {
+    assert run(3) == 6
+}
+"#,
+        )],
+        &[("src/text.mw", TESTED_LIBRARY)],
+    );
+    let compiled = marrow_compile::check(&project).unwrap_or_else(|failure| {
+        panic!("expected a clean check, got {failure:#?}");
+    });
+    assert_eq!(
+        compiled
+            .tests
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["the app's own test is discovered"],
+    );
+}
+
+/// Only the root project's exports are invocable: a dependency's `pub fn` is callable
+/// from source across the boundary but is not a command-line entry of the consumer.
+#[test]
+fn only_root_origin_exports_are_invocable() {
+    let project = project_capture::project_with_dependency(
+        "graphtext",
+        &[(
+            "src/main.mw",
+            "module main\n\nuse graphtext::text\n\npub fn run(n: int): int {\n    return text::twice(n)\n}\n",
+        )],
+        &[("src/text.mw", TESTED_LIBRARY)],
+    );
+    let compiled = marrow_compile::compile(&project).unwrap_or_else(|failure| {
+        panic!("expected a clean compile, got {failure:#?}");
+    });
+    assert_eq!(
+        compiled
+            .exports
+            .iter()
+            .map(|entry| (entry.module.as_str(), entry.item.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("main", "run")],
+    );
+}

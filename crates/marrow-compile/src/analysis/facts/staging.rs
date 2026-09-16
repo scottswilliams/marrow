@@ -91,7 +91,13 @@ impl<'r, 'd> StagedBodyTxn<'r, 'd> {
             )?
         };
         let export = match &outcome {
-            BodyOutcome::Lowered(lowered) if function.public => {
+            // Only the root project's exports are invocable. A dependency's `pub fn` is
+            // callable from source across the boundary but is not a command-line entry
+            // of the consuming project: a library's exports are run where the library
+            // is, so none enters this image's export table.
+            BodyOutcome::Lowered(lowered)
+                if function.public && *file.origin() == marrow_project::SourceOrigin::Root =>
+            {
                 if valid_export_path(module, &function.name) {
                     let id = ExportId::of_local(module, &function.name);
                     owner.parts().1.add_export(id, lowered.func);

@@ -196,6 +196,8 @@ The library keeps its own unprefixed `module text` header, so it still checks st
 
 A type name carries the alias the same way: `graphtext::Pair` names the library's `Pair`, and a bare `Pair` in the consuming project names the consuming project's own. A type name is one or two segments; a longer path names no type.
 
+Commands act on the project they are invoked on: `marrow run` invokes only the consuming project's own exports and `marrow test` runs only its own tests, so a dependency's exports and tests are run in that dependency's directory even though its functions are callable from source across the boundary.
+
 ## Visibility
 
 `pub fn` is callable from every module and from the command line. A function without `pub` is callable inside its own module; a call from another module is a `check.visibility` error, whether the two modules are in the same tree or not. A top-level constant is visible inside its own module.

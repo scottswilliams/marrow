@@ -23,7 +23,9 @@ test "label joins title and author" {
 
 The title is the report label. Titles are unique within a project; a second
 test with the same title is `check.name_conflict`. A test takes no parameters
-and returns nothing.
+and returns nothing. `marrow test` runs the tests of the project it is invoked
+on; a [dependency](modules-and-functions.md#dependencies)'s tests run when
+`marrow test` is invoked in that dependency's own directory.
 
 `assert` evaluates a `bool` expression. A false condition fails the test, and
 the report names the assertion's source position. A test passes when its body

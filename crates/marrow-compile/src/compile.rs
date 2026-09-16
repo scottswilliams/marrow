@@ -1912,6 +1912,12 @@ fn registry_phases(
     if mode == TestMode::Include {
         let mut txn = admitted(draft);
         for module in parsed {
+            // Only the root project's tests are discovered. A dependency's tests check
+            // and run where that dependency is, so none reserves a slot, lowers a body,
+            // or enters this image's TEST-ENTRY table.
+            if *module.file.origin() != SourceOrigin::Root {
+                continue;
+            }
             for declaration in &module.ast.declarations {
                 if let Declaration::Test(test) = declaration {
                     let func = txn.reserve_function().map_err(|error| {
