@@ -31,3 +31,22 @@ pub use sealed::{
     VerifiedRootOccurrence,
 };
 pub use verify::verify;
+
+/// The machine stack [`verify`] requires, whatever image it is given.
+///
+/// Verification's input is chosen by a hostile producer, so its frame use must be bounded
+/// by the image bounds and nothing else. Every walk over decoded structure drives an
+/// explicit stack except three, which recurse natively at a depth `marrow_image::bounds`
+/// fixes: value-shape decoding and the value-shape/record-type match at
+/// `MAX_DURABLE_VALUE_DEPTH` (32), and branch sealing at `MAX_DURABLE_DEPTH` (16). A frame
+/// count is not a stack bound, so the cost of those depths is measured rather than argued:
+/// `tests/stack_budget.rs` verifies the deepest image the bounds admit on a thread of
+/// exactly this size, and that image needs between 80 and 88 KiB unoptimized. The budget
+/// is set above the measurement with room for the frames a debug build spends, and the
+/// test fails if verification ever needs more.
+///
+/// It is stated here because it is the verifier's requirement, not its callers': a caller
+/// that spawns a thread for verification sizes it from this, and a caller that verifies on
+/// a thread it did not size — a default 2 MiB Rust thread, say — can read whether that is
+/// enough. It is.
+pub const VERIFY_STACK_BYTES: usize = 128 * 1024;
