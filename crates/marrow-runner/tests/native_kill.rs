@@ -1,4 +1,4 @@
-//! The native attached path's death boundary (term 13): a call dispatched to a real
+//! The native attached path's death boundary: a call dispatched to a real
 //! `marrow-runner attach` process whose runner then dies before replying is classified
 //! `OutcomeUnknown` and never replayed.
 //!
@@ -10,11 +10,10 @@
 //! cargo test -p marrow-runner --test native_kill -- --ignored
 //! ```
 //!
-//! The terminal-side classification (a lost reply after dispatch → `CallOutcome::OutcomeUnknown`)
-//! is covered deterministically by the `client` unit tests; this proves the other half — that a
-//! real native runner, killed after it has been handed the request, closes the connection
-//! (end-of-stream) rather than replying, which is exactly the boundary the client maps to
-//! `OutcomeUnknown` for a `Dispatched` handoff stage.
+//! A real native runner killed after it has been handed the request closes the connection
+//! (end-of-stream) rather than replying — the boundary the client maps to `OutcomeUnknown`
+//! for a `Dispatched` handoff stage. The client-side half is covered by the `client` unit
+//! tests.
 
 #[path = "common/program.rs"]
 mod program;

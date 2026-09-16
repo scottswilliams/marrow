@@ -3,10 +3,10 @@
 //! The runner is the server. It creates a mode-0700 temporary directory, binds one
 //! Unix listener inside it before any client connects, and accepts connections until
 //! one authenticates — proving the launch nonce the supervisor issued — or a bounded
-//! attempt count is exhausted (the adjudicated first-connection-wins answer: a
-//! same-uid racer that connects first drives one failed attempt while the real
-//! client is accepted on a later one). On a successful handshake the runner proves
-//! its session token back and pins the served interface identity.
+//! attempt count is exhausted. The budget is what makes first-connection-wins safe: a
+//! same-uid racer that connects first costs one failed attempt, and the real client is
+//! accepted on a later one. On a successful handshake the runner proves its session
+//! token back and pins the served interface identity.
 //!
 //! Two platform disciplines are enforced here:
 //!
@@ -42,9 +42,7 @@ pub(crate) enum PollStop {
 
 /// Absorb one error from a non-blocking operation so its caller can retry. `WouldBlock`
 /// before the deadline sleeps one `interval`; `WouldBlock` after it is [`PollStop::Expired`];
-/// `Interrupted` retries at once; anything else stops. `setsockopt(SO_RCVTIMEO)` is
-/// `EINVAL` on `AF_UNIX` on macOS, so every deadline on both ends of this wire is a poll
-/// against a monotonic clock rather than a socket timeout.
+/// `Interrupted` retries at once; anything else stops.
 pub(crate) fn poll_until(
     error: io::Error,
     deadline: Instant,
@@ -225,9 +223,8 @@ impl Channel {
     /// The handler is built by `make_handler` **after** the handshake proves the launch nonce,
     /// so a resource the handler opens on construction — the ephemeral-memory attachment — never
     /// opens for a peer that has not authenticated. An eager caller (the storeless service, the
-    /// native session whose store must open before the handshake) passes a closure that returns
-    /// an already-built handler; the ordering guarantee is then vacuous but the one discipline is
-    /// shared. Returns once the client hangs up or the session closes fail-closed.
+    /// native session whose store must open before the handshake) passes a closure returning an
+    /// already-built handler. Returns once the client hangs up or the session closes fail-closed.
     pub fn accept_and_serve<H: Handler>(
         &self,
         secrets: &LaunchSecrets,
@@ -310,8 +307,7 @@ pub struct Connection {
 
 impl Connection {
     /// Attend to requests over this connection until the client hangs up or a fault
-    /// closes it. One request is handled at a time (a single serial worker). This is
-    /// the long-lived attached-session loop; it is deliberately not named `serve`.
+    /// closes it. One request is handled at a time (a single serial worker).
     pub fn run_session<H: Handler>(
         &mut self,
         handler: &mut H,

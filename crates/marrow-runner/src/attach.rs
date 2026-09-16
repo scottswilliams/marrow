@@ -22,8 +22,8 @@
 //! verified transfer types, including collections and entry identities. Outbound
 //! framing finishes while the returned value and its image remain borrowed.
 //!
-//! The service takes only the attachment the lifecycle actor returned; no image travels
-//! beside it, so a foreign image cannot be served against an admitted store.
+//! The service takes only the attachment the lifecycle actor returned — no image travels
+//! beside it, so a foreign image cannot be served against an admitted store:
 //!
 //! ```compile_fail
 //! fn foreign_pair(

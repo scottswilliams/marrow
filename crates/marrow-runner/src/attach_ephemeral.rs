@@ -10,14 +10,11 @@
 //! never survives the runner, so a committed write is durable only within the live session.
 //!
 //! The attachment is minted by [`Self::mint`], which the runner calls **after** the handshake
-//! completes — an unauthenticated peer never causes the in-memory store to open (the
-//! `hello`-before-attachment ordering the channel enforces by constructing the handler only once
-//! a client has proven the launch nonce).
+//! completes, so an unauthenticated peer never causes the in-memory store to open.
 //!
 //! Like the native session, the handshake identity is the exact **image identity**
-//! ([`VerifiedImage::image_id`](marrow_verify::VerifiedImage::image_id)) — the client recomputes
-//! it independently from the bytes it spawned the runner with — and the per-call transfer codec
-//! decodes arguments against the image and streams returned values into bounded frames.
+//! ([`VerifiedImage::image_id`](marrow_verify::VerifiedImage::image_id)), which the client
+//! recomputes independently from the bytes it spawned the runner with.
 //!
 //! [`MemoryAttachment`]: marrow_lifecycle::MemoryAttachment
 

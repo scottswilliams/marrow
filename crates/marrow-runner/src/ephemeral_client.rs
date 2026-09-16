@@ -11,10 +11,9 @@
 //! [`HandoffStage`] tracks: before the request is written it is `BeforeSend`; once written it is
 //! `Dispatched`. A before-send failure is `NotStarted`; after dispatch, every failure to accept
 //! one exact valid reply is `OutcomeUnknown` with its typed cause because the call may have run.
-//! Such a call is *not* resubmitted: the session marks itself dead and every later call is `NotStarted` without
-//! touching the wire, so no request is ever silently sent twice. There is no delivery ledger and
-//! no replay path — a lost outcome is unknowable from this side, and for an ephemeral store the
-//! store died with the runner regardless.
+//! Such a call is *not* resubmitted: the session marks itself dead and every later call is
+//! `NotStarted` without touching the wire, so no request is ever silently sent twice. There is
+//! no delivery ledger and no replay path — a lost outcome is unknowable from this side.
 
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -202,9 +201,8 @@ mod tests {
         (session, peer)
     }
 
-    /// The compiled-and-verified bytes of a trivial storeless image. Obtaining the image is the
-    /// sanctioned `bytes → verify` path, spelled inline at each call site (no alternate factory
-    /// that returns a `VerifiedImage`).
+    /// The compiled-and-verified bytes of a trivial storeless image, obtained through the
+    /// ordinary `bytes → verify` path.
     fn echo_bytes() -> Vec<u8> {
         compiled_bytes("pub fn echo(): int {\n    return 7\n}\n")
     }
@@ -474,9 +472,8 @@ mod tests {
     }
 
     /// A transport write failure — the send half is shut down before the request is written —
-    /// is `NotStarted`: the frame provably never reaches the runner, so the call did not run, and
-    /// the session is retired. This exercises the real failing-write arm (an `Io` error from the
-    /// socket), not the pre-set `dead` flag.
+    /// is `NotStarted`: the frame provably never reaches the runner, so the call did not run,
+    /// and the session is retired.
     #[test]
     fn a_failed_write_is_not_started() {
         use std::net::Shutdown;
@@ -527,11 +524,10 @@ mod tests {
         }
     }
 
-    /// Enforcement (no replay machinery, no delivery ledger). The call vocabulary is closed —
-    /// there is a replied outcome and a lost one, and no third "replayed"/"resubmitted" outcome —
-    /// and the session carries no per-request delivery ledger or replay buffer. Adding a replay
-    /// outcome, a new loss class, or a ledger field breaks this exhaustive match/destructure at
-    /// compile time, so a replay path cannot reappear unnoticed.
+    /// The absence test for replay machinery. The call vocabulary is closed — a replied
+    /// outcome and a lost one, with no third "replayed" outcome — and the session carries no
+    /// per-request delivery ledger or replay buffer. Adding a replay outcome, a loss class, or
+    /// a ledger field breaks this exhaustive match at compile time.
     #[test]
     fn the_session_admits_no_replay_or_delivery_ledger() {
         match EphemeralCall::OutcomeUnknown(OutcomeUnknownCause::ReplyDecode) {

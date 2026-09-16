@@ -5,7 +5,7 @@
 //! generous non-regression ceiling so it never flakes, while the completion packet carries
 //! the recorded table.
 //!
-//! Components measured, matching the exit gate (lock, spawn, verification, head commit):
+//! Components measured:
 //!
 //! - **verification** — `marrow_verify::verify` over the Workshop image bytes;
 //! - **open** (lock + decode + admission + engine open) — `marrow_lifecycle::attach` of the

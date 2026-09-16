@@ -1,27 +1,16 @@
 //! The stock Marrow runner binary.
 //!
-//! Entry points include:
+//! Each serving mode verifies a compiled image, binds a private local channel, publishes one
+//! launch-descriptor line (identity, launch nonce, session token, socket path) to stdout, and
+//! admits exactly one authenticated client. The launch nonce is read from
+//! `MARROW_RUNNER_NONCE` (64 lowercase hex) when a supervisor sets it, and minted from OS
+//! entropy otherwise. Teardown of the listener, socket, and temp dir is explicit and runs on
+//! every non-panic exit path.
 //!
-//! - `marrow-runner --image <path>` reads a compiled program image, verifies it, binds a
-//!   private local channel, publishes one launch-descriptor line (interface identity, launch
-//!   nonce, session token, socket path) to stdout for its supervisor, admits one
-//!   authenticated client, and serves that client's storeless calls until it hangs up. The
-//!   launch nonce a client must present is read from the `MARROW_RUNNER_NONCE` environment
-//!   variable (64 lowercase hex) when a supervisor sets it, and minted from OS entropy
-//!   otherwise.
-//! - `marrow-runner provision --image <path> --store <dir> [--yes]` provisions a fresh
-//!   persistent store for the image at the destination. It renders the provision report in
-//!   source vocabulary (destination, durable roots by name, effects and initial ceiling in
-//!   demand terms — never an identity hash); with `--yes` it accepts that exact report and
-//!   publishes the store, printing a one-line JSON receipt naming the store instance;
-//!   without `--yes` it prints the report and exits without writing, so a first provision is
-//!   an explicit, reviewable action.
-//! - `marrow-runner audit --image <path> --store <dir> [--format text|jsonl]` audits the
-//!   store read-only against the image, which must be its active binding, and prints the
-//!   findings and the logical digest; it opens no channel.
-//!
-//! Teardown of the listener, socket, and temp dir is explicit and runs on every
-//! non-panic exit path.
+//! The lifecycle commands (`provision`, `audit`, `recover`, `import`) open no channel. They
+//! render in source vocabulary — destination, durable roots by name, effects and ceiling in
+//! demand terms — never an identity hash, and a first provision writes nothing without the
+//! explicit `--yes` acceptance of the exact report it printed.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -169,10 +158,6 @@ fn read_image_bytes(path: &Path) -> Result<Vec<u8>, ExitCode> {
     Ok(bytes)
 }
 
-/// Provision a persistent store for the image at `store`. Renders the provision report in
-/// source vocabulary; with `accept` (`--yes`) it accepts that exact report and publishes the
-/// store, printing a one-line JSON receipt; otherwise it prints the report and exits without
-/// writing.
 fn provision_command(image_path: &Path, store: &Path, accept: bool) -> ExitCode {
     finish_output(provision_output(image_path, store, accept))
 }
@@ -275,8 +260,7 @@ fn provision_output(image_path: &Path, store: &Path, accept: bool) -> std::io::R
             return Ok(ExitCode::FAILURE);
         }
     };
-    // The report is the guided first-use flow: destination, roots, effects, and initial
-    // ceiling in source vocabulary. Printed for review before any write.
+    // Printed for review before any write.
     let mut stderr = std::io::stderr().lock();
     stderr.write_all(report.render().as_bytes())?;
     stderr.flush()?;
@@ -403,11 +387,11 @@ fn serve(image_path: &Path) -> ExitCode {
 }
 
 /// Attach the image to the persistent store at `store` through the privileged lifecycle
-/// actor and serve its durable and storeless exports over a private local channel (the
-/// `attach` command). The lifecycle actor takes the store's single-owner lock, rereads the
-/// head, and classifies the image: an identical or binding-only-updated image opens; a
-/// contract change is a typed refusal pointing at `marrow apply`. The CLI never opens the
-/// store — it spawns this command and speaks the wire protocol to it.
+/// actor and serve its exports over a private local channel. The actor takes the store's
+/// single-owner lock, rereads the head, and classifies the image: an identical or
+/// binding-only-updated image opens; a contract change is a typed refusal pointing at
+/// `marrow apply`. The CLI never opens the store — it spawns this command and speaks the
+/// wire protocol to it.
 fn attach(image_path: &Path, store: &Path) -> ExitCode {
     let image = match load_image(image_path) {
         Ok(image) => image,
@@ -468,21 +452,16 @@ fn attach(image_path: &Path, store: &Path) -> ExitCode {
     serve_over_channel(identity, move || attached)
 }
 
-/// Attach the image to a fresh process-local in-memory store and serve its durable and storeless
-/// exports over a private local channel (the `attach-ephemeral` command). Unlike the native
-/// `attach`, no persistent store is opened, no single-owner lock is taken, and no lifecycle
-/// classification runs: the store is minted in RAM and discarded when this process exits. The
-/// handshake identity is the exact image identity, computed here before the channel binds; the
-/// in-memory store itself is opened only *after* a client proves the handshake, since the handler
-/// is constructed after the accept. The CLI never opens a store — it spawns this command and
-/// speaks the wire protocol to it.
+/// Attach the image to a fresh process-local in-memory store and serve its exports over a
+/// private local channel. Unlike the native `attach`, no persistent store is opened, no
+/// single-owner lock is taken, and no lifecycle classification runs: the store is minted in
+/// RAM and discarded when this process exits. The handshake identity is the exact image
+/// identity, known without opening the store.
 fn attach_ephemeral(image_path: &Path) -> ExitCode {
     let image = match load_image(image_path) {
         Ok(image) => image,
         Err(code) => return code,
     };
-    // The identity is the image identity, known without opening the in-memory store; the store
-    // is minted inside the handler builder, which runs only after the handshake.
     let identity = Id32::from_bytes(image.image_id().0);
     let prepared = marrow_lifecycle::prepare(image);
     serve_over_channel(identity, move || AttachedEphemeralService::mint(prepared))
@@ -598,9 +577,8 @@ fn with_channel(
 fn parse_args() -> Option<Command> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
-        // `provision`, `attach`, and `attach-ephemeral` branch before the `--image` serve path.
-        // Each launch is a distinct keyword mapping to a distinct `Command` variant, so the four
-        // handshakes can never be confused into one another by flag order or a stray flag.
+        // Each launch is a distinct leading keyword, so no flag order can turn one launch
+        // mode into another.
         Some("provision") => parse_provision(args),
         Some("attach") => parse_attach(args),
         Some("attach-ephemeral") => parse_attach_ephemeral(args),

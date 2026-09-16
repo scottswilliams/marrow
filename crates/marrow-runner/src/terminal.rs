@@ -3,10 +3,8 @@
 //! Both the one-shot native client ([`crate::attach_and_call`]) and the long-lived ephemeral
 //! session ([`crate::EphemeralSession`]) spawn a verified stock runner, read its one launch
 //! descriptor, connect the private socket, prove the launch nonce, and check the runner proves
-//! its session token and served image identity back before any call. Only what happens *after*
-//! that handshake differs — the native client submits exactly one call and hangs up, while the
-//! ephemeral session submits a sequence against one in-memory store — so the spawn, descriptor,
-//! handshake, framing, and reply-decoding live here once rather than per client.
+//! its session token and served image identity back before any call. Only what follows the
+//! handshake differs between them.
 //!
 //! The deadline discipline matches the runner's channel: a non-blocking poll against a monotonic
 //! clock, never `set_read_timeout` (`SO_RCVTIMEO` is `EINVAL` on `AF_UNIX` on macOS), so both
