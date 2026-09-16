@@ -28,7 +28,7 @@ pub use ast::{
     NominalDecl, ParamDecl, ParsedSource, RangeExpr, Recovery, ResourceDecl, ResourceMember,
     SavedRoot, SourceFile, Statement, StoreDecl, StructDecl, SupportSpelling, TestDecl,
     TraversalBound, TypeConstraint, TypeExpr, TypeParamDecl, UnaryOp, UseDecl, field_path_spelling,
-    name_path_spelling, range_expr,
+    name_path_spelling, range_expr, type_name_segments,
 };
 pub use diagnostic::{
     CompleteSyntaxDiagnostics, Diagnose, Diagnostic, DiagnosticReason, ExpectedSyntax,

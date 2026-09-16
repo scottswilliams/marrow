@@ -405,6 +405,16 @@ pub fn name_path_spelling(segments: &[NameSegment]) -> String {
     joined(segments, "::")
 }
 
+/// The `::`-separated segments of a type name or generic head, as the type parser
+/// canonicalizes them: whitespace-free and `::`-joined.
+///
+/// The type parser is the one owner of type-spelling grammar, so a semantic owner
+/// that must address a qualified name's parts — the declaring alias and the name
+/// within it — asks here rather than re-splitting source text of its own.
+pub fn type_name_segments(spelling: &str) -> impl Iterator<Item = &str> {
+    spelling.split("::")
+}
+
 /// The `.`-joined source spelling of a field path, which is how the grammar separates
 /// the segments of one.
 pub fn field_path_spelling(segments: &[NameSegment]) -> String {

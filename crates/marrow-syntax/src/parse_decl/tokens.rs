@@ -558,15 +558,14 @@ fn build_apply(
     span: SourceSpan,
     expected: ExpectedSyntax,
 ) -> ParseResult<Option<TypeExpr>> {
-    let open = 1;
+    let open = name_run_len(tokens);
     let Some(last) = tokens.len().checked_sub(1) else {
         return Ok(None);
     };
-    // An identifier followed by `<` in type position opens a generic application;
-    // `<` has no other meaning here. Anything not opening this way is a plain name.
-    if tokens.first().map(|token| token.kind) != Some(TokenKind::Identifier)
-        || tokens.get(open).map(|token| token.kind) != Some(TokenKind::Less)
-    {
+    // A `::`-separated identifier run followed by `<` in type position opens a generic
+    // application; `<` has no other meaning here. Anything not opening this way is a
+    // plain name.
+    if open == 0 || tokens.get(open).map(|token| token.kind) != Some(TokenKind::Less) {
         return Ok(None);
     }
     // An unclosed or short group is a targeted parse error, not a name absorbing the
@@ -578,7 +577,8 @@ fn build_apply(
             "expected `>` to close the type arguments",
         ));
     }
-    let head = tokens[0].text(source).to_string();
+    let head = type_text(source, &tokens[..open]);
+    let head_span = join_spans(tokens[0].span, tokens[open - 1].span);
     let inner = &tokens[open + 1..last];
     let mut args = Vec::new();
     for part in split_top_level_commas(inner) {
@@ -593,10 +593,27 @@ fn build_apply(
     }
     Ok(Some(TypeExpr::Apply {
         head,
-        head_span: tokens[0].span,
+        head_span,
         args,
         span,
     }))
+}
+
+/// The number of leading tokens forming a `::`-separated identifier run, or 0 when
+/// the slice does not open with an identifier. The run is the head of a generic
+/// application; a qualified head names a type in the tree the first segment's alias
+/// declares.
+fn name_run_len(tokens: &[Token]) -> usize {
+    if tokens.first().map(|token| token.kind) != Some(TokenKind::Identifier) {
+        return 0;
+    }
+    let mut len = 1;
+    while tokens.get(len).map(|token| token.kind) == Some(TokenKind::DoubleColon)
+        && tokens.get(len + 1).map(|token| token.kind) == Some(TokenKind::Identifier)
+    {
+        len += 2;
+    }
+    len
 }
 
 /// Whether a token slice opens as an identity constructor `Id ( ^`. `Id` is reserved, so

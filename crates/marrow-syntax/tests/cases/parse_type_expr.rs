@@ -239,3 +239,52 @@ fn a_malformed_type_span_points_at_the_offending_token() {
         );
     }
 }
+
+#[test]
+fn a_qualified_head_carries_the_whole_name_run() {
+    let source = "resource R {\n    value: shelf::Shelf<int>\n}\n";
+    let parsed = parse_source(source);
+    assert!(!parsed.has_errors(), "{:#?}", parsed.diagnostics);
+    let Some(Declaration::Resource(resource)) = parsed.file.declarations.first() else {
+        panic!("expected a resource declaration");
+    };
+    let Some(marrow_syntax::ResourceMember::Field(field)) = resource.members.first() else {
+        panic!("expected a field");
+    };
+    let TypeExpr::Apply {
+        head,
+        head_span,
+        args,
+        ..
+    } = &field.ty
+    else {
+        panic!("expected a generic application for `shelf::Shelf<int>`");
+    };
+    assert_eq!(head, "shelf::Shelf");
+    // The head span addresses the whole qualified run, not only its first segment.
+    assert_eq!(
+        &source[head_span.start_byte..head_span.end_byte],
+        "shelf::Shelf"
+    );
+    assert!(matches!(args.as_slice(), [TypeExpr::Name { text, .. }] if text == "int"));
+    assert_eq!(
+        marrow_syntax::type_name_segments(head).collect::<Vec<_>>(),
+        ["shelf", "Shelf"]
+    );
+}
+
+/// The canonical render is the inverse of the type parser for a qualified name, so
+/// a formatter pass over a dependency-qualified annotation is byte-identical.
+#[test]
+fn a_qualified_spelling_renders_back_to_itself() {
+    assert_eq!(format!("{}", field_type("shelf::Book")), "shelf::Book");
+    assert_eq!(format!("{}", field_type("shelf::Book?")), "shelf::Book?");
+    assert_eq!(
+        format!("{}", field_type("shelf::Shelf<int>")),
+        "shelf::Shelf<int>"
+    );
+    assert_eq!(
+        format!("{}", field_type("List<shelf::Book>")),
+        "List<shelf::Book>"
+    );
+}

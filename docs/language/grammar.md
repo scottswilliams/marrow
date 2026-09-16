@@ -145,19 +145,23 @@ type_annotation  = ":", base_type ;
 local_annotation = ":", type ;
 
 base_type       = scalar_type
-                | identifier
+                | type_name
                 | identity_type
                 | generic_type ;
+
+type_name       = identifier, ["::", identifier] ;
 
 scalar_type     = "int" | "bool" | "string" | "bytes"
                 | "date" | "instant" | "duration" ;
 
 identity_type   = "Id", "(", durable_root, ")" ;
-generic_type    = identifier, "<", base_type, {",", base_type}, ">" ;
+generic_type    = type_name, "<", base_type, {",", base_type}, ">" ;
 ```
 
 A bare `identifier` names a resource, struct, enum, alias, nominal type, or
-type parameter. `generic_type` applies `Option`, `Result`, `List`, `Map`, or a
+type parameter declared in the same project. A two-segment `type_name` names a
+type of a declared dependency: the first segment is the alias the manifest
+declares it under ([dependencies](modules-and-functions.md#dependencies)). `generic_type` applies `Option`, `Result`, `List`, `Map`, or a
 generic struct or enum to its arguments; arity is checked after parsing. In an
 expression `<` and `>` are comparison operators; a type-argument list appears
 only in a type position. The `?` suffix composes after the close:
