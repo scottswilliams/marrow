@@ -1,4 +1,5 @@
 /target/
+/dist/
 /.idea/
 /.vscode/
 # Project-metadata entries no checkout may carry. The cooperative write lock is
