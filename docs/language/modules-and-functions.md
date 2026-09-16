@@ -206,8 +206,9 @@ names another path is a `check.module_path` error.
 name. Afterwards `books::add(...)` calls `shelf::books::add`. `use` is
 optional: the full path `shelf::books::add(...)` is valid in every module.
 `use` shortens function paths only; types need no import. There are no wildcard
-or explicitly renamed imports. Two imports with the same final segment are a
-`check.import` error.
+or explicitly renamed imports. A `use` naming a module the project does not
+contain is a `check.import` error, as are two imports with the same final
+segment; a call whose path names no declared function is a `check.type` error.
 
 A file without a `module` header is a script. It is checked under its
 path-derived name and cannot be imported.

@@ -244,9 +244,10 @@ The four failure kinds a program can meet are described under
 
 ## No standard library
 
-The current toolchain supplies no `std::` modules. An absent module reports
-`check.import` and an absent function reports `check.type`; a cross-module
-call to a non-public function reports `check.visibility`. A project-declared
+The current toolchain supplies no `std::` modules. A `std::` path resolves, and
+fails to resolve, like any other module path
+([modules and imports](modules-and-functions.md#modules-and-imports),
+[visibility](modules-and-functions.md#visibility)). A project-declared
 `std::` path is project code, not an ambient library. A source standard
 library is future work
 ([general-purpose language](../future/general-purpose-language.md)).

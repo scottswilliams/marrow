@@ -1348,18 +1348,12 @@ pub fn run(): string {
     ));
 
     assert!(standard.contains("The current toolchain supplies no `std::` modules."));
-    assert!(standard.contains(
-        "An absent module reports `check.import` and an absent function reports `check.type`; a cross-module call to a non-public function reports `check.visibility`."
-    ));
     assert!(
         standard
             .contains("A project-declared `std::` path is project code, not an ambient library.")
     );
     assert!(!standard.contains("std::text::trim"));
     assert!(!source.contains("declared library names"));
-    assert!(source.contains(
-        "An absent module reports `check.import` and an absent function reports `check.type`; a cross-module call to a non-public function reports `check.visibility`."
-    ));
     assert!(!source.contains("std::text::contains"));
     assert!(!functions.contains("`std::` operations"));
     assert!(!functions.contains("host-provided standard-library function"));
