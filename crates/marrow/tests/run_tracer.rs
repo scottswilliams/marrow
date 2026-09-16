@@ -1,13 +1,10 @@
 //! Language behavior through the production path, and the `marrow run` command
 //! surface.
 //!
-//! Semantics — control flow, arithmetic, the text floor, interpolation, module
-//! resolution, module constants — compile and run in process through the same
-//! capture -> compile -> verify -> VM pipeline the binary drives, asserting typed
-//! values, fault codes, and diagnostic codes. The tests that spawn the binary are
-//! the ones whose subject is the command surface itself: argument decoding, exit
-//! codes, rendered stdout/stderr shape, the `marrow run` identity mint, and the
-//! durable trough outcome.
+//! Semantics compile and run in process through the same capture -> compile ->
+//! verify -> VM pipeline the binary drives. Only a test whose subject is the
+//! command surface itself — argument decoding, exit codes, rendered stdout/stderr
+//! shape, the identity mint, the durable trough outcome — spawns the binary.
 
 mod common;
 
@@ -1063,8 +1060,7 @@ pub fn f(a: int): int {
 /// does not shadow an outer binding of the same name that the `else` should see.
 #[test]
 fn let_else_binding_is_out_of_scope_in_its_own_else() {
-    // (a) referencing the binding in its own else is a clean check.type unknown
-    // name (a checker rejection), not an image.function artifact rejection.
+    // A checker rejection, not an image.function artifact rejection.
     let scoped = refused(Project::single(
         r#"fn maybe(n: int): int? {
     if n > 0 { return n }
@@ -1086,8 +1082,7 @@ pub fn f(a: int): int {
         "{codes:?}"
     );
 
-    // (b) the else sees the outer binding, not the not-yet-established inner one of
-    // the same name.
+    // The else sees the outer binding, not the not-yet-established inner one.
     let mut session = Project::single(
         r#"fn maybe(n: int): int? {
     if n > 0 { return n }
@@ -1620,9 +1615,7 @@ fn direct_calls_resolve_forward_and_compute() {
 
 #[test]
 fn mutual_recursion_is_a_check_time_diagnostic() {
-    // Recursion is caught at check time as a source diagnostic, before an image is
-    // produced. (The verifier still independently rejects a cyclic image it is
-    // handed; that is covered by the verifier's own hostile suite.)
+    // Recursion is caught at check time, before an image is produced.
     assert!(
         refused(Project::single(
             "pub fn ping(): int {\n    return pong()\n}\n\nfn pong(): int {\n    return ping()\n}\n",

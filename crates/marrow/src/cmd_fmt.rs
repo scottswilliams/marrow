@@ -156,13 +156,9 @@ fn fmt_project(dir: &Path, mode: FmtMode) -> ExitCode {
 /// common in-project spelling identical to the `src/main.mw` that capture and `check`
 /// report.
 ///
-/// This governs formatting findings only. A project-capture refusal is rendered by the
-/// capture presentation facade, which spells a per-file or project-total source bound
-/// root-relative whatever root the caller named, and `fmt` prints that verbatim rather
-/// than re-spelling a path it does not own. So one `marrow fmt --check app` run can
-/// print `app/src/main.mw` for a formatting finding and ``project.capture_limit:
-/// `src/big.mw` `` for a capture refusal; the refusal is byte-identical to the line
-/// `marrow check app` prints for the same project.
+/// This governs formatting findings only. A capture refusal is spelled root-relative
+/// by the capture presentation facade and printed verbatim, so one run can report
+/// `app/src/main.mw` for a finding and `src/big.mw` for a refusal.
 fn captured_module_path(root: &Path, identity: &str) -> PathBuf {
     root.join(identity)
         .components()
@@ -190,8 +186,8 @@ fn render_capture_failure(failure: &crate::project::CaptureFailure) {
 enum SingleFileRefusal {
     /// An existing non-regular target, reported as a located `io.read` error.
     NotRegular(io::Error),
-    /// A regular target larger than the compiler's module byte limit (A9),
-    /// reported under the exact typed code the `ProjectFileBytes` admission uses.
+    /// A regular target larger than the compiler's module byte limit, reported
+    /// under the exact typed code the `ProjectFileBytes` admission uses.
     OverModuleLimit { actual: u64, limit: u64 },
 }
 

@@ -2,27 +2,24 @@
 // `marrow client typescript` beside the generated client; the two are a matched
 // pair with the runner they were built with.
 //
-// This module implements the supervised-channel law with Node built-in modules
-// only (`node:child_process`, `node:net`, `node:crypto`, `node:process`): it
-// spawns the stock runner without a shell, passes a fresh 256-bit launch nonce by
-// environment, reads the runner's one-line launch descriptor from stdout, connects
-// to the private Unix socket the runner bound before printing that line, proves
-// the nonce in `hello`, and verifies the session token and interface identity in
+// Node built-in modules only (`node:child_process`, `node:net`, `node:crypto`,
+// `node:process`). The runner is spawned without a shell and authenticated by a
+// fresh 256-bit launch nonce passed through the environment, proved in `hello`
+// over the private Unix socket the runner bound before printing its one-line
+// launch descriptor, and answered by a session token and interface identity in
 // `ready`. Requests are served by ONE serial worker over a bounded queue; a lost
 // reply is classified — never replayed — into the closed loss classes
 // `not_started` / `interrupted` / `outcome_unknown` by how far the call had
-// progressed when the session failed or its reply became unavailable. Each request
-// gets one non-reused u32 turn that its sole reply must echo, so a delayed old frame
-// cannot settle a queued call.
+// progressed. Each request gets one non-reused u32 turn that its sole reply must
+// echo, so a delayed old frame cannot settle a queued call.
 //
-// The wire grammar here mirrors the single Rust wire owner (`marrow-local-wire`):
+// The wire grammar mirrors the single Rust wire owner (`marrow-local-wire`):
 // length-prefixed frames with a version byte, and canonical JSON — object keys in
 // ascending byte order, no whitespace, minimal integer spellings (JavaScript
-// `bigint`, never a lossy `number`), and the fixed string escapes. This module
-// deliberately never invokes the built-in global JSON codec: that grammar is
-// neither canonical nor integer-exact, and a second wire grammar is forbidden.
-// Client-side validation is a mirror for early failure; the Rust wire owner
-// remains authoritative.
+// `bigint`, never a lossy `number`), and the fixed string escapes. The built-in
+// global JSON codec is never invoked: its grammar is neither canonical nor
+// integer-exact, and a second wire grammar is forbidden. Client-side validation
+// is a mirror for early failure; the Rust wire owner remains authoritative.
 
 import { spawn } from "node:child_process";
 import { createConnection } from "node:net";
@@ -1127,7 +1124,7 @@ function childRetirement(child, native) {
  * with ActivationUncertainError. Missing or untrusted delivery after native spawn
  * rejects with ActivationOutcomeUnknownError, without an instance. A native caller
  * without a pin can accept Ready, but cannot accept reported activation evidence.
- * No invocation is sent during startup; that does not mean attach left the store unchanged.
+ * Startup sends no invocation, yet attach may still have changed the store.
  * Confirmed spawn failure and storeless startup failures remain LaunchError.
  */
 export function launch(options) {
@@ -1512,9 +1509,9 @@ export class Session {
       return;
     }
 
-    // A response is valid only for the exact request turn currently in flight. Without this
-    // echo law, an unsolicited duplicate delivered in a later socket data event could settle a
-    // newly dispatched queued call. Turns never wrap or repeat within a session.
+    // A response is valid only for the exact request turn currently in flight; without the
+    // echo check, an unsolicited duplicate delivered in a later socket data event could settle
+    // a newly dispatched queued call. Turns never wrap or repeat within a session.
     if (!isWireU32(message?.turn) || message.turn !== pending.turn) {
       this.inFlight = null;
       clearTimeout(this.replyDeadline);

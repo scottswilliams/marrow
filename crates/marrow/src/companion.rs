@@ -310,7 +310,7 @@ mod tests {
 
     /// Every installation-damage message is actionable and free of runner/wire/lifecycle
     /// mechanism vocabulary — a user sees an install problem and a repair, never the spawn
-    /// mechanism (exit-gate property: ordinary output and guidance carry no such vocabulary).
+    /// mechanism.
     #[test]
     fn damage_messages_are_actionable_and_free_of_mechanism_vocabulary() {
         let all = [

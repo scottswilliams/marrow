@@ -70,14 +70,13 @@ pub(crate) enum Record {
         cause: marrow_runner::CauseKind,
         cause_code: Code,
     },
-    /// Family 4 specialization: an aggregate compiler resource-limit outcome. Unlike a
-    /// bare operational error it carries the typed kind — which fixed bound was
-    /// exhausted — so a caller (or a bound-raise audit) can bisect which limit fired
-    /// without re-running. Holding the kind rather than one rendering of it lets the
-    /// JSONL surface keep the frozen
+    /// Family 4 specialization: an aggregate compiler resource-limit outcome. It
+    /// carries the typed kind — which fixed bound was exhausted — so a caller or a
+    /// bound-raise audit can bisect which limit fired without re-running. Holding the
+    /// kind rather than one rendering of it lets the JSONL surface keep the frozen
     /// [`detail`](marrow_compile::ResourceLimitKind::detail) identifier while text
-    /// output reads as prose. The record still carries no numeric limit and no source
-    /// location. The code is always `cli.compiler_resource_limit`.
+    /// output reads as prose. No numeric limit and no source location are carried;
+    /// the code is always `cli.compiler_resource_limit`.
     CompilerResourceLimit {
         kind: marrow_compile::ResourceLimitKind,
     },
@@ -86,9 +85,7 @@ pub(crate) enum Record {
 impl Record {
     /// The records a compile failure earns: one per source diagnostic, or the single
     /// typed record an exhausted fixed bound or a failed internal check earns. The
-    /// resource-limit record carries the typed kind — which aggregate bound was
-    /// exhausted — so an operator can bisect it; the numeric bound, any source
-    /// location, and the image stay absent.
+    /// image stays absent.
     pub(crate) fn compile_failure(failure: &marrow_compile::CompileFailure) -> Vec<Record> {
         match failure {
             marrow_compile::CompileFailure::Diagnostics(diagnostics) => {
@@ -830,9 +827,8 @@ mod tests {
 
     /// The compiler resource-limit record projects one typed kind two ways: the frozen
     /// `kind_detail` identifier on the JSONL surface (keys in ascending byte order:
-    /// `code`, `kind`, `kind_detail`, `outcome`), and the kind's own words in text, so
-    /// which aggregate bound fired is legible to a tool and to a person without
-    /// re-running — and no Rust variant name reaches the terminal.
+    /// `code`, `kind`, `kind_detail`, `outcome`), and the kind's own words in text. No
+    /// Rust variant name reaches the terminal.
     #[test]
     fn compiler_resource_limit_projects_the_kind_for_each_surface() {
         let record = Record::CompilerResourceLimit {

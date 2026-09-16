@@ -11,9 +11,6 @@
 //! against the release manifest, spawns it as an attached session, submits one call,
 //! and renders the result ([`run_persistent`]). Without `--store` there is no store
 //! to bind, so a durable export reports the typed `cli.durable_unsupported` outcome.
-//! A fresh durable declaration with no ledger identity is minted only on the
-//! storeless path — the run-mint window is closed for a persistent store; see
-//! [`mint_missing_identities`].
 
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -145,10 +142,7 @@ fn run_inner(args: &RunArgs, image_slot: &mut Option<VerifiedImage>) -> Result<O
         .function(export.function())
         .expect("verified export function");
 
-    // Persistent path: `marrow run … --store <dir>` runs the export against a provisioned
-    // store. The CLI never opens the store — it verifies the companion runner against the
-    // release manifest and spawns it as an attached session (durable or storeless), submits
-    // one call, and renders the result. The spawn is invisible in ordinary output.
+    // The companion spawn is invisible in ordinary output.
     if let Some(store_dir) = &args.store {
         return run_persistent(
             image,
@@ -160,9 +154,8 @@ fn run_inner(args: &RunArgs, image_slot: &mut Option<VerifiedImage>) -> Result<O
         );
     }
 
-    // Durable execution needs a store: the terminal opens none, so a durable export
-    // (nonempty demand) reports the typed trough outcome rather than running. Durable
-    // source tests already run through `marrow test`.
+    // Durable execution needs a store, and the terminal opens none. Durable source
+    // tests run through `marrow test`.
     if !function.demand().is_empty() {
         return Err(Outcome::operational(
             marrow_codes::Code::CliDurableUnsupported,
@@ -186,11 +179,8 @@ fn run_inner(args: &RunArgs, image_slot: &mut Option<VerifiedImage>) -> Result<O
 
 /// Compile the captured project. Family 1 is source diagnostics; when compilation
 /// fails *only* because fresh durable declarations lack ledger identities, storeless
-/// `run` — and only storeless `run` — mints them into `.marrow/ids` and compiles
-/// again. The run-mint window is closed for a persistent store (`--store`): once a
-/// store is bindable, a fresh anchor is a precise `check.durable_identity` failure the
-/// developer resolves deliberately, never an additive auto-mint that could readopt an
-/// orphaned id or diverge from the store's committed ledger.
+/// `run` mints them into `.marrow/ids` and compiles again. `--store` closes that
+/// window; see [`mint_missing_identities`].
 fn compile_or_mint(
     project: &ProjectInput,
     has_store: bool,
@@ -232,21 +222,21 @@ enum MintOutcome {
 /// it against the filesystem and installs it or refuses. The artifact is untouched on
 /// any refusal.
 ///
-/// `run` is the only path that mints: `marrow check`, `marrow test` and every other
-/// command report `check.durable_identity` precisely, so a build never mutates the
-/// tree. The compiler stays a read-only ledger consumer — its typed `IdentityGap`
-/// payloads are the sole input here, and the CLI never classifies durable
-/// declarations itself.
+/// Storeless `run` is the only path that mints: `marrow check`, `marrow test` and
+/// every other command report `check.durable_identity` precisely, so a build never
+/// mutates the tree. Once a store is bindable an additive auto-mint could readopt an
+/// orphaned id or diverge from the store's committed ledger, so `--store` closes the
+/// window too. The compiler stays a read-only ledger consumer: its typed
+/// `IdentityGap` payloads are the sole input here, and the CLI never classifies
+/// durable declarations itself.
 fn mint_missing_identities(
     project: &ProjectInput,
     diagnostics: &[SourceDiagnostic],
 ) -> MintOutcome {
-    // Act when the compile reported at least one mintable identity gap and no
-    // retired anchor. Non-gap diagnostics do not block the mint: an unminted
-    // root cascades (every operation over it reports unsupported), and the gaps
-    // themselves are emitted only for a durable declaration whose shape already
-    // validated — the recompile reports whatever genuinely remains. A retired
-    // anchor is never re-mintable, so its failure stays precise and unminted.
+    // Non-gap diagnostics do not block the mint: an unminted root cascades, and a
+    // gap is emitted only for a durable declaration whose shape already validated,
+    // so the recompile reports whatever genuinely remains. A retired anchor is never
+    // re-mintable, so its failure stays precise and unminted.
     let mut anchors: Vec<IdentityAnchor> = Vec::new();
     for diagnostic in diagnostics {
         match diagnostic.identity_gap() {
