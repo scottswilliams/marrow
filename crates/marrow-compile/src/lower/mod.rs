@@ -1120,8 +1120,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// A construction site and a qualified name resolve through the kind-specific tables
     /// rather than through type-annotation resolution, so this probe is what keeps those
     /// paths from calling a refused type undeclared.
-    fn steer_refused_type(&mut self, name: &str, span: SourceSpan) -> bool {
-        let steer = match self.records.named_type(&self.bare_type(name)) {
+    fn steer_refused_type(&mut self, name: &ScopedTypeName, span: SourceSpan) -> bool {
+        let steer = match self.records.named_type(name) {
             Ok(Binding::Refused(_, summary)) => Ok(Some(self.steer_row(summary, span))),
             Ok(Binding::Accepted(_) | Binding::Absent) => Ok(None),
             Err(drift) => Err(LowerInvariant::from(drift)),

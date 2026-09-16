@@ -213,21 +213,19 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     ));
                     Err(LoweringFailure::Recoverable)
                 }
-                // `Enum::member` for a payloadless member is an enum value.
-                [enum_name, variant]
-                    if self
-                        .records
-                        .enum_by_name(&self.bare_type(enum_name.text()))
-                        .is_some() =>
-                {
-                    self.lower_enum_construct(enum_name.text(), variant.text(), &[], *span)
-                }
-                // A qualified name whose head is a refused enum is that enum's
-                // refusal, not an unsupported spelling.
-                [head, _] if self.steer_refused_type(head.text(), *span) => {
-                    Err(LoweringFailure::Recoverable)
-                }
                 _ => {
+                    if let Some(path) = self.enum_path(segments) {
+                        // `[alias::]Enum::member` for a payloadless member is an enum
+                        // value.
+                        if self.records.enum_by_name(path.enum_ty()).is_some() {
+                            return self.lower_enum_construct(&path, &[], *span);
+                        }
+                        // A path whose head is a refused enum carries that enum's
+                        // refusal, not an unsupported spelling.
+                        if self.steer_refused_type(path.enum_ty(), *span) {
+                            return Err(LoweringFailure::Recoverable);
+                        }
+                    }
                     self.fail(unsupported(self.file, *span, "a qualified name"));
                     Err(LoweringFailure::Recoverable)
                 }
@@ -1056,43 +1054,45 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             self.fail(unsupported(self.file, span, "this call"));
             return Err(LoweringFailure::Recoverable);
         };
-        let generic_enum_template = match &segments[..] {
-            [enum_name, _] => self
-                .records
-                .type_template_by_name(&self.bare_type(enum_name.text()))
-                .filter(|template| self.records.template_is_enum(*template)),
-            _ => None,
-        };
+        let enum_path = self.enum_path(segments);
+        let generic_enum_template = enum_path.as_ref().and_then(|path| {
+            self.records
+                .type_template_by_name(path.enum_ty())
+                .filter(|template| self.records.template_is_enum(*template))
+        });
         // The origin of a definition/hover fact is the callee's leaf name segment, not
         // the whole call. A degenerate empty path falls back to the call span.
         let callee_span = segments.last().map_or(span, NameSegment::span);
-        match (&segments[..], generic_enum_template) {
-            ([name], _) => self.lower_unqualified_call(name.text(), args, span, callee_span),
-            // `Enum::member(payload...)` constructs a payload-carrying enum value.
-            ([enum_name, item], _)
-                if self
-                    .records
-                    .enum_by_name(&self.bare_type(enum_name.text()))
-                    .is_some() =>
-            {
-                self.lower_enum_construct(enum_name.text(), item.text(), args, span)
-                    .map(CallResult::Value)
+        if let [name] = &segments[..] {
+            return self.lower_unqualified_call(name.text(), args, span, callee_span);
+        }
+        if let Some(path) = enum_path {
+            // `[alias::]Enum::member(payload...)` constructs a payload-carrying enum
+            // value.
+            if self.records.enum_by_name(path.enum_ty()).is_some() {
+                return self
+                    .lower_enum_construct(&path, args, span)
+                    .map(CallResult::Value);
             }
             // A generic enum template's variant infers its instantiation from the
             // payload values.
-            ([_, item], Some(template)) => self
-                .lower_generic_enum_construct(template, item.text(), args, span)
-                .map(CallResult::Value),
+            if let Some(template) = generic_enum_template {
+                return self
+                    .lower_generic_enum_construct(template, path.member(), args, span)
+                    .map(CallResult::Value);
+            }
             // The enum table above answers no refused name, so without this a payload
             // construction on a refused enum would fall through to the qualified-call
             // report and call the member out of scope.
-            ([head, _], _) if self.steer_refused_type(head.text(), span) => {
-                Err(LoweringFailure::Recoverable)
+            if self.steer_refused_type(path.enum_ty(), span) {
+                return Err(LoweringFailure::Recoverable);
             }
-            ([prefix @ .., item], _) => {
+        }
+        match &segments[..] {
+            [prefix @ .., item] => {
                 self.lower_qualified_call(prefix, item.text(), args, span, callee_span)
             }
-            ([], _) => {
+            [] => {
                 self.fail(unsupported(self.file, span, "this call"));
                 Err(LoweringFailure::Recoverable)
             }
@@ -1279,7 +1279,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // A construction of a type this project declared and refused is not an
         // unknown callable: the declaration reported the cause, and this site is
         // steered to it rather than told the name does not exist.
-        if self.steer_refused_type(name, span) {
+        if self.steer_refused_type(&self.bare_type(name), span) {
             return Err(LoweringFailure::Recoverable);
         }
         let suggestion = nearest_name(name, self.functions.module_function_names(self.module));
@@ -2536,21 +2536,42 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Some(concrete)
     }
 
-    /// Lower an enum construction `Enum::member` or `Enum::member(field: v, ...)`.
-    /// A payloadless member takes no arguments; a payload member takes the exact
-    /// named payload set, each coerced to its declared leaf type in payload
-    /// declaration order (p0 pushed first), then `EnumConstruct`.
+    /// The enum path `segments` spells, or `None` when they spell none.
+    ///
+    /// This is the one splitter for an enum path in value position, so the head of
+    /// `Enum::member` and of `alias::Enum::member` is resolved exactly as the same
+    /// spelling in a type annotation is. The two-or-three-segment bound is the head's:
+    /// a longer path has no head that names a type, so it stays a module-qualified
+    /// call rather than becoming an enum path with a module in front of it.
+    fn enum_path<'s>(&self, segments: &'s [NameSegment]) -> Option<EnumPath<'s>> {
+        let (member, head) = match segments {
+            [_, _] | [_, _, _] => segments.split_last()?,
+            _ => return None,
+        };
+        let written = marrow_syntax::name_path_spelling(head);
+        let enum_ty = self.records.scoped(self.file.origin(), &written)?;
+        Some(EnumPath {
+            written,
+            enum_ty,
+            member: member.text(),
+        })
+    }
+
+    /// Lower an enum construction `[alias::]Enum::member`, with or without
+    /// `(field: v, ...)`. A payloadless member takes no arguments; a payload member
+    /// takes the exact named payload set, each coerced to its declared leaf type in
+    /// payload declaration order (p0 pushed first), then `EnumConstruct`.
     fn lower_enum_construct(
         &mut self,
-        enum_name: &str,
-        variant_name: &str,
+        path: &EnumPath<'_>,
         args: &[Argument],
         span: SourceSpan,
     ) -> ConstructResult<LTy> {
+        let (enum_name, variant_name) = (path.written(), path.member());
         let info = self
             .accept_resolution(
                 self.records
-                    .static_enum_projection(&self.bare_type(enum_name))
+                    .static_enum_projection(path.enum_ty())
                     .map_err(ResolveError::Invariant),
                 span,
                 "this enum construction",
@@ -3264,5 +3285,29 @@ fn signature_display(name: &str, params: &[LTy], ret: RetType, records: &TypeReg
     match ret {
         RetType::Unit => format!("fn {name}({params})"),
         RetType::Value(ty) => format!("fn {name}({params}): {}", ty.spelling(records)),
+    }
+}
+
+/// One `[alias::]Enum::member` path, split once by [`FnLowerer::enum_path`].
+struct EnumPath<'a> {
+    /// The head as this site spells it, so a report names the enum the way the
+    /// writer did rather than in the declaring tree's own terms.
+    written: String,
+    enum_ty: ScopedTypeName,
+    member: &'a str,
+}
+
+impl EnumPath<'_> {
+    /// The enum the head names, in the tree that declares it.
+    fn enum_ty(&self) -> &ScopedTypeName {
+        &self.enum_ty
+    }
+
+    fn member(&self) -> &str {
+        self.member
+    }
+
+    fn written(&self) -> &str {
+        &self.written
     }
 }
