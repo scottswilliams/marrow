@@ -9,7 +9,7 @@
 //! path — capture -> compile -> verify -> attach -> VM — over one persistent ephemeral
 //! attachment, so a committed write is observable by a later read invocation.
 
-use crate::common::{Diagnostics, Project};
+use crate::common::{Diagnostics, Project, Steer};
 use marrow_vm::Value;
 
 // application, product, the top-level `title` field, the root and its key, then the
@@ -408,11 +408,16 @@ fn chaining_a_subbranch_off_a_materialized_branch_steers_to_the_durable_path() {
     let diagnostics = compile_diags(
         "pub fn tagWeight(id: int, nid: string, tid: int): int? {\n    if const n = ^books[id].notes[nid] {\n        return n.tags[tid].weight\n    }\n    return absent\n}\n",
     );
-    let message = diagnostics.only("check.type").message();
-    assert!(
-        message.contains("`tags` is a keyed branch")
-            && message.contains("distinct durable node")
-            && message.contains("nested `if const`"),
-        "{message}"
+    let diagnostic = diagnostics.only("check.type");
+    // A materialized branch entry is not owned by the resource registry, so the steer
+    // names the branch alone and the renderer gives the generic durable-path fix.
+    assert_eq!(
+        diagnostic.steer(),
+        Some(&Steer::KeyedBranch {
+            branch: "tags".to_string(),
+            resource: None,
+        }),
+        "{}",
+        diagnostic.message()
     );
 }

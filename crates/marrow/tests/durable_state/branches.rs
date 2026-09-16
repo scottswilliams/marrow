@@ -12,7 +12,7 @@
 //! attach -> VM — against one persistent ephemeral attachment, so a committed branch
 //! or root write is observable by a later read invocation.
 
-use crate::common::{Diagnostics, Project};
+use crate::common::{Diagnostics, Project, Steer};
 use marrow_verify::{SealedInstr, VerifiedImage};
 use marrow_vm::Value;
 
@@ -770,26 +770,16 @@ fn chaining_a_branch_off_a_materialized_record_steers_to_the_durable_path() {
         .unwrap_or_else(|| panic!("no check.type diagnostic in {:?}", diagnostics.all()));
     // The span points at the branch name `notes` in `b.notes`.
     assert_eq!(diagnostic.line(), 70, "{}", diagnostic.message());
-    assert!(
-        diagnostic
-            .message()
-            .contains("`notes` is a keyed branch of `Book`"),
+    // Any number of roots may occur over one Product, so the steer names the declaring
+    // resource; the payload has no field for an occurrence, so no store root can leak
+    // into a declaration-level steer.
+    assert_eq!(
+        diagnostic.steer(),
+        Some(&Steer::KeyedBranch {
+            branch: "notes".to_string(),
+            resource: Some("Book".to_string()),
+        }),
         "{}",
-        diagnostic.message()
-    );
-    // Any number of roots may occur over one Product, so the fix names the declaring
-    // resource rather than a store root.
-    assert!(
-        diagnostic.message().contains("distinct durable node")
-            && diagnostic
-                .message()
-                .contains("`^root[key].notes[branchKey]`"),
-        "{}",
-        diagnostic.message()
-    );
-    assert!(
-        !diagnostic.message().contains("^books"),
-        "a declaration-level steer names no occurrence: {}",
         diagnostic.message()
     );
 }

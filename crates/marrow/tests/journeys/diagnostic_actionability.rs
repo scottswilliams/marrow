@@ -7,13 +7,13 @@
 //! `cross_module_roots`), and pins the
 //! *actionable* shape the fix establishes: the typed code, the span at the defect, the
 //! bound cascade count, and the load-bearing steer the diagnostic now carries (an
-//! unclosed-block report, the `at most` bound law, a did-you-mean candidate). The codes
-//! and spans are the contract; a message substring is asserted only where it is the
-//! actionable payload the gate scores, never for prose style.
+//! unclosed-block report, the `at most` bound law, a did-you-mean candidate). The codes,
+//! spans, and typed steer payloads are the contract; a message substring is asserted only
+//! where the clause has no payload of its own, never for prose style.
 
 use std::path::PathBuf;
 
-use crate::common::{Diagnostics, Project};
+use crate::common::{Diagnostics, NameFamily, Project, Steer};
 
 /// The frozen fixture corpus root, resolved from the crate manifest so a mutation reads
 /// the same bytes the ensemble suites check.
@@ -240,10 +240,12 @@ fn d08_a_misspelled_root_suggests_the_nearest_store_root() {
         "at the reference: {:?}",
         diagnostics.all()
     );
-    assert!(
-        unknown
-            .message()
-            .contains("Did you mean the store root `^members`?"),
+    assert_eq!(
+        unknown.steer(),
+        Some(&Steer::DidYouMean {
+            family: NameFamily::Root,
+            candidate: "members".to_string(),
+        }),
         "the root family is named with its nearest candidate: {}",
         unknown.message()
     );
@@ -261,10 +263,12 @@ fn d10_a_misspelled_callee_suggests_the_nearest_function() {
     let project = Project::from_fixture("cross_module_roots").source("src/teller.mw", &mutated);
     let diagnostics = diagnostics(&project);
     let unknown = diagnostics.only("check.type");
-    assert!(
-        unknown
-            .message()
-            .contains("Did you mean the function `openAccount`?"),
+    assert_eq!(
+        unknown.steer(),
+        Some(&Steer::DidYouMean {
+            family: NameFamily::Function,
+            candidate: "openAccount".to_string(),
+        }),
         "the function family is named with its nearest candidate: {}",
         unknown.message()
     );

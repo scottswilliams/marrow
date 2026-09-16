@@ -30,6 +30,12 @@ use marrow_vm::{
     DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
 };
 
+/// The typed steer payload a steering diagnostic carries, re-exported so a suite reads
+/// [`SourceDiagnostic::steer`] instead of the prose one renderer builds from it. A steer
+/// rides the code of the finding it corrects, so `(code, line, column)` cannot say what
+/// it names.
+pub use marrow_compile::{NameFamily, Steer};
+
 /// The built `marrow` binary under test.
 pub const MARROW_BIN: &str = env!("CARGO_BIN_EXE_marrow");
 
@@ -387,8 +393,9 @@ impl Diagnostics {
         first
     }
 
-    /// The rendered messages, in compiler order, for asserting an actionable steer (a
-    /// did-you-mean candidate, a named bound clause) that rides the diagnostic payload.
+    /// The rendered messages, in compiler order, for the few assertions whose subject is
+    /// a clause the renderer builds and no payload names, and for cascade checks that a
+    /// phrase appears nowhere. A typed steer is read with [`SourceDiagnostic::steer`].
     pub fn messages(&self) -> Vec<&str> {
         self.diagnostics.iter().map(|d| d.message()).collect()
     }
