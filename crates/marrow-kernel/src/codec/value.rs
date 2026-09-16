@@ -86,9 +86,9 @@ pub enum ValueError {
     Unstorable,
     /// A composite value nests past [`MAX_DURABLE_VALUE_DEPTH`], refused before any buffer
     /// is built. The size caps cannot stand in for this bound: nesting contributes no bytes,
-    /// so an arbitrarily deep value encodes within any byte cap. This is the encode twin of
-    /// the decode guard, and it makes the two sides accept the same set — a cell no reader
-    /// could read back is never written. Maps to the kernel's `value.range` fault.
+    /// so an arbitrarily deep value encodes within any byte cap. Encode and decode share the
+    /// bound, so a cell no reader could read back is never written. Maps to the kernel's
+    /// `value.range` fault.
     ValueTooDeep,
 }
 
@@ -239,9 +239,9 @@ use crate::equality::ValueDomain;
 
 /// The per-scalar-leaf encoded byte cap (mirrors the VM `run.text_limit`, 64 KiB).
 pub const MAX_LEAF_BYTES: usize = 64 * 1024;
-/// The whole-value encoded byte cap. Chosen (not inherited); it must stay `<=` the engine
-/// `MAX_VALUE_LEN` so a value this codec admits always fits the engine and the codec's own
-/// The limit fault fires first.
+/// The whole-value encoded byte cap. Chosen, not inherited: it must stay `<=` the engine
+/// `MAX_VALUE_LEN`, so a value this codec admits always fits the engine and the codec's
+/// own fault fires first.
 pub const MAX_DURABLE_VALUE_BYTES: usize = 1 << 20;
 /// The value-shape nesting depth cap (mirrors `marrow_image::bounds::MAX_DURABLE_VALUE_DEPTH`),
 /// bounding decoder recursion before allocation.
@@ -256,12 +256,11 @@ pub const MAX_DURABLE_VALUE_DEPTH: usize = 32;
 /// The type is opaque over a private recursive node and a checked depth metric. There is no
 /// public recursive field, variant, struct literal, or `Vec`-taking constructor: the only
 /// way to obtain a composite shape is [`ValueShapeBuilder`], whose flat open/close command
-/// stream refuses a composite opened past [`MAX_DURABLE_VALUE_DEPTH`]. That is a
-/// construction-time bound, not an entry-time one, and the difference is the whole point: a
-/// caller-built recursive shape overflows the stack while it is being built and again while
-/// the refused argument is dropped, so no amount of validation at an entry point can make
-/// one safe. Because every reachable value is bounded, both the codec's recursion and the
-/// implicit recursive `Drop` are bounded by construction.
+/// stream refuses a composite opened past [`MAX_DURABLE_VALUE_DEPTH`]. The bound has to be
+/// construction-time: a caller-built recursive shape overflows the stack while it is built
+/// and again while the refused argument is dropped, so entry-point validation cannot make
+/// one safe. Because every reachable shape is bounded, both the codec's recursion and the
+/// implicit recursive `Drop` are bounded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValueShape {
     node: ShapeNode,
@@ -415,13 +414,11 @@ enum ShapeFrame {
 }
 
 /// The sole minter of a composite [`ValueShape`]: a flat stream of open/leaf/close commands
-/// over an explicit stack, never a recursive value the caller assembles.
-///
-/// The distinction is the invariant. A caller holding a recursive constructor can build a
-/// chain deeper than any machine stack before the callee ever sees it; here the caller holds
-/// only a builder, and the builder refuses the command that would open a composite past
-/// [`MAX_DURABLE_VALUE_DEPTH`]. A hostile loop issuing a million `open_product` commands
-/// costs `O(bound)` memory and returns a typed refusal.
+/// over an explicit stack, never a recursive value the caller assembles. A recursive
+/// constructor would let a caller build a chain deeper than any machine stack before the
+/// callee saw it; here the builder refuses the command that would open a composite past
+/// [`MAX_DURABLE_VALUE_DEPTH`], so a hostile loop of a million `open_product` commands costs
+/// `O(bound)` memory and returns a typed refusal.
 ///
 /// Commands latch the first refusal rather than returning per call, so a projection can emit
 /// its whole stream and read one verdict at [`finish`](Self::finish). Nothing partially built
@@ -704,7 +701,7 @@ pub fn decode_domain(bytes: &[u8], shape: &ValueShape) -> Option<ValueDomain> {
 }
 
 /// Read a composite value of `shape` from the front of `bytes`, returning it and the bytes
-/// consumed. `depth` bounds nesting before allocation (Law 9).
+/// consumed. `depth` bounds nesting before allocation.
 fn read_composite(bytes: &[u8], shape: &ValueShape, depth: usize) -> Option<(ValueDomain, usize)> {
     if depth > MAX_DURABLE_VALUE_DEPTH {
         return None;
@@ -886,7 +883,7 @@ mod composite_codec {
         assert_eq!(decode_domain(&bytes, &shape), Some(value));
     }
 
-    /// A3: nested `Option` is an ordinary sum; `none`, `some(none)`, `some(some(v))` are three
+    /// Nested `Option` is an ordinary sum; `none`, `some(none)`, `some(some(v))` are three
     /// distinct values with three distinct encodings, each round-tripping.
     #[test]
     fn nested_option_is_three_distinct_values() {

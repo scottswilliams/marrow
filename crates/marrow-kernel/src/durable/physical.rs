@@ -306,9 +306,8 @@ mod tests {
 
     // Distinct cell-key numbers standing in for the durable nodes these layout tests
     // exercise. The tests assert byte ordering, containment, and classification, which
-    // depend only on the numbers being distinct and on the structural tag bytes — not on
-    // any particular value — so arbitrary distinct numbers suffice in place of the former
-    // node names.
+    // depend only on the numbers being distinct and on the structural tag bytes, so any
+    // distinct numbers serve.
     const ROOT_COUNTERS: NodeNumber = 0;
     const ROOT_BOOKS: NodeNumber = 1;
     const ROOT_CELLS: NodeNumber = 2;
@@ -802,8 +801,8 @@ mod tests {
     /// projection (the component is the last column, so the cell equals the component
     /// row key) or an incomplete prefix (the cell continues with a further column) — and
     /// strictly below the next distinct component's cells, and is never itself a real
-    /// cell. This is the O(distinct + 1) traversal-skip law for the index family: one
-    /// seek past the cursor passes a whole component's rows regardless of fan-out.
+    /// cell — so one seek past the cursor passes a whole component's rows regardless of
+    /// fan-out, giving `O(distinct + 1)` seeks over the index family.
     #[test]
     fn index_skip_cursor_passes_one_component_and_stops_before_the_next() {
         // `byShelf[shelf, id]` held at `shelf = "a"`: enumerate the `id` component. The

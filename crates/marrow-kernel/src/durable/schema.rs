@@ -2,18 +2,14 @@
 //!
 //! A store schema describes one durable root: its key columns, its top-level fields, its
 //! unkeyed groups, its keyed branches nested to any admitted depth, and its managed
-//! indexes. The shape is recursive, which is exactly why none of these types can be built
-//! by a caller.
-//!
-//! Every type here is opaque over private members and exposes only borrowed views. The one
-//! route to a [`StoreSchema`] is [`StoreSchemaBuilder`], a flat stream of open/close
-//! commands over an explicit stack that refuses a member opened past [`MAX_DURABLE_DEPTH`].
-//! The bound is enforced at construction rather than at the entry points that consume a
-//! schema, because entry-point validation cannot close this class: a caller holding a
-//! recursive constructor overflows the stack while building its argument, and a refused
-//! argument overflows again while it is dropped. A builder the caller drives with flat
-//! commands has neither failure: a hostile stream costs `O(bound)` and returns a typed
-//! refusal.
+//! indexes. The shape is recursive, which is why none of these types can be built by a
+//! caller: every type here is opaque over private members and exposes only borrowed views,
+//! and the one route to a [`StoreSchema`] is [`StoreSchemaBuilder`], a flat stream of
+//! open/close commands over an explicit stack that refuses a member opened past
+//! [`MAX_DURABLE_DEPTH`]. The bound has to be enforced at construction: a caller holding a
+//! recursive constructor overflows the stack while building its argument, and again while
+//! the refused argument is dropped. A hostile command stream instead costs `O(bound)` and
+//! returns a typed refusal.
 
 use crate::codec::value::{ScalarKind, ValueShape};
 
@@ -191,12 +187,12 @@ impl BranchSchema {
     }
 }
 
-/// A position resolved against a completed schema. Each of these is minted only by resolving
-/// a caller-named `u16` against the table that declares it, so the lookup it later performs
-/// is total: [`of`](FieldPos::of) reads any row *parallel to that table* — the schema's own
-/// fields, the numbering that mirrors them, or the resolved record built from both — without
-/// a second bounds question. This is why the site table resolves positions once, at
-/// publication, rather than leaving raw indices for the session-setup resolver to trust.
+/// A position resolved against a completed schema, minted only by resolving a caller-named
+/// `u16` against the table that declares it. The lookup it later performs is therefore
+/// total: [`of`](FieldPos::of) reads any row *parallel to that table* — the schema's own
+/// fields, the numbering that mirrors them, or the resolved record built from both —
+/// without a second bounds question. The site table resolves positions once, at
+/// publication, so no raw index survives for the session-setup resolver to trust.
 macro_rules! schema_position {
     ($(#[$meta:meta])* $name:ident) => {
         $(#[$meta])*

@@ -125,8 +125,8 @@ impl Planner {
     /// The removals that erase the payload of the node with marker `stem` over `fields`
     /// and `groups`: its marker, every own field-leaf cell, and every group-leaf cell. It
     /// enumerates only the node's own cells, so a payload erase
-    /// preserves the node's keyed descendants (the descendant-preserving erase law) while
-    /// dropping its groups' leaves (its own payload, per the exact-replacement law).
+    /// preserves the node's keyed descendants while
+    /// dropping its groups' leaves — its own payload.
     pub(super) fn node_erase(
         &self,
         stem: &[u8],
@@ -157,8 +157,7 @@ impl Planner {
     /// The writes that establish the group whose group stem is `group_stem` from `value`
     /// over `fields`: one leaf per present field, in order — and no marker. Confined to
     /// the group's own leaves by construction, so a group write never touches the entry
-    /// marker, a top-level field leaf, a sibling group, or a branch descendant (the
-    /// group-scoped payload-only law). A value outside its codec range is a
+    /// marker, a top-level field leaf, a sibling group, or a branch descendant. A value outside its codec range is a
     /// [`KernelFault::ValueRange`] and no partial plan is returned.
     pub(super) fn group_write(
         &self,
@@ -182,8 +181,7 @@ impl Planner {
     /// The removals that erase every one of the group's own leaf cells (present or not) —
     /// and nothing else. A group carries no marker, so this removes only the field leaves
     /// under `group_stem`; the entry marker, the entry's top-level fields, its sibling
-    /// groups, and its branch descendants are all preserved (the group-scoped
-    /// payload-only erase law).
+    /// groups, and its branch descendants are all preserved.
     pub(super) fn group_erase(
         &self,
         group_stem: &[u8],

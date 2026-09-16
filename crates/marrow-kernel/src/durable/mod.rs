@@ -363,10 +363,9 @@ mod numbering_tests {
 /// The count of durable nodes [`number_store`] would number under one root: the root
 /// itself, its fields, each group and the group's fields, and each branch with its fields
 /// and sub-branches. Kept beside the walk it mirrors so "node" has one definition; the
-/// projection builder sums it over its roots to refuse a table past [`MAX_STORE_NODES`],
-/// and a test holds it equal to the walk's own output length. Deliberately per-root: a
-/// crate-visible signature over a raw root slice is the intake shape the absence gate
-/// forbids.
+/// projection builder sums it over its roots to refuse a table past [`MAX_STORE_NODES`].
+/// Per-root by design: a crate-visible signature over a raw root slice would be an intake
+/// shape this crate does not offer.
 pub(crate) fn root_node_count(schema: &StoreSchema) -> u64 {
     1 + schema.fields().len() as u64
         + schema
@@ -424,11 +423,10 @@ pub(super) struct ResolvedGroup {
 }
 
 /// The read/write coverage of a durable demand: whether it observes or mutates the
-/// store at all. This is the projection of the compiler-side
-/// `marrow_image::ExportDemand` atom set (its `reads()`/`writes()`) that the
-/// store ceiling checks; the store ceiling is read/write granular, so a
-/// path-granular ceiling reserves finer intersection for a later lane. An input to
-/// the authority check, never a source of rights.
+/// store at all. The projection of the compiler-side `marrow_image::ExportDemand` atom
+/// set (its `reads()`/`writes()`) that the store ceiling checks, which is read/write
+/// granular rather than path granular. An input to the authority check, never a source
+/// of rights.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DemandCoverage {
     pub read: bool,
@@ -453,34 +451,24 @@ impl InvocationGrant {
     }
 }
 
-/// The reserved fourth term of the authority intersection: a typed predicate a future
-/// authenticated principal would further intersect with the effective authority, after
-/// `demand ∩ ceiling ∩ grant` is resolved. Reserving the *place* in the order is a
-/// cross-cutting invariant (the kernel authority law): the full intersection order is
-/// `demand ∩ ceiling ∩ grant ∩ principal`, with the first three resolved before the first
-/// engine call. This fourth term is a reserved *position*, not yet applied on the live
-/// session path ([`Self::narrow`] exists but is not called by `resolve_authority` today);
-/// because the only variant is ⊤ it would narrow nothing, so leaving it unapplied changes
-/// no authority.
+/// The fourth term of the authority intersection, reserved for an authenticated
+/// principal: the full order is `demand ∩ ceiling ∩ grant ∩ principal`, with the first
+/// three resolved before the first engine call. Every variant may only narrow — a
+/// principal can restrict the effective authority to a subset, never widen it, and never
+/// admits an atom the earlier three terms did not already permit. [`Any`] is the only
+/// variant, the ⊤ that narrows nothing.
 ///
-/// [`Any`](Self::Any) is the only variant today — the ⊤ predicate that narrows nothing, so
-/// the reserved term is the identity of the intersection (`X ∩ ⊤ = X`) and adds no authority.
-/// A future authenticated-principal design adds only *narrowing* variants: a principal
-/// predicate can restrict the effective authority to a subset, never widen it, and never adds
-/// an atom the earlier three terms did not already permit. This is a reserved slot, not a
-/// compatibility promise; no principal system exists yet (no framework on credit).
+/// [`Any`]: Self::Any
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrincipalPredicate {
-    /// The reserved ⊤: admits exactly what `demand ∩ ceiling ∩ grant` already permits, adding
-    /// nothing and removing nothing.
+    /// The ⊤: admits exactly what `demand ∩ ceiling ∩ grant` already permits.
     Any,
 }
 
 impl PrincipalPredicate {
-    /// Narrow the already-resolved effective authority by this principal predicate — the fourth
-    /// and last intersection term. [`Any`](Self::Any) returns the effective authority unchanged
-    /// (⊤ ∩ X = X): the reserved term never adds authority and, today, removes none. A future
-    /// narrowing variant can only clear bits, never set them.
+    /// Narrow the already-resolved effective authority by this principal predicate — the
+    /// fourth and last intersection term. [`Any`](Self::Any) returns it unchanged
+    /// (`⊤ ∩ X = X`); a narrowing variant may only clear bits, never set them.
     pub fn narrow(self, effective: DemandCoverage) -> DemandCoverage {
         match self {
             PrincipalPredicate::Any => effective,
@@ -499,12 +487,10 @@ pub enum SessionError {
     /// The export's demand exceeds ceiling ∩ grant (`run.authority`).
     Denied,
     /// The handle was poisoned by an earlier indeterminate commit: its durability is
-    /// unknown, so no further session or audit may open on it until the opaque recovery fact is
-    /// resolved against a freshly opened store. Consulted before reads, writes, and audits
-    /// so a poisoned handle refuses rather than observing an indeterminate
-    /// state. Reachable only on a native handle whose engine can report an indeterminate
-    /// commit; the ephemeral memory engine always confirms, so its handle is never
-    /// poisoned. Renders `run.commit`, matching the execution-time
+    /// unknown, so no further session or audit may open on it until the opaque recovery
+    /// fact is resolved against a freshly opened store. Reachable only on a native handle
+    /// whose engine can report an indeterminate commit; the ephemeral memory engine always
+    /// confirms. Renders `run.commit`, matching the execution-time
     /// [`KernelFault::Poisoned`] the same latch drives at commit.
     Poisoned,
     /// The ordered-byte engine failed while setting up the session.

@@ -1,34 +1,21 @@
-//! The value-equality and collection-key-order owner.
+//! The single owner of two relations over Marrow's closed value domain:
+//! [`value_equality`] (the `==`/`!=` relation and the identity of a stored value) and
+//! [`collection_key_order`] (the total order traversal and keyed collections observe).
+//! Both reuse the scalar equality of [`RuntimeScalar`] and the order-preserving key
+//! order of [`KeyScalar`] rather than restating either; a nominal scalar is `int`
+//! valued, so it enters as [`ValueDomain::Scalar`] and needs no case of its own.
 //!
-//! Marrow's value domain is closed. Two relations over it are load-bearing across
-//! the language: **value equality** (the `==`/`!=` relation and the identity of a
-//! stored value) and **collection key order** (the total order traversal and keyed
-//! collections observe). This module is the single owner of both relations over the
-//! current domain, reusing the scalar equality of [`RuntimeScalar`] and the
-//! order-preserving key order of [`KeyScalar`] rather than restating either.
+//! The VM's `Eq*`/`EqEnum` opcodes compute equality as a structural `Value` derive;
+//! this relation is their specification, agreed by a conformance test rather than
+//! re-derived, since routing every comparison through a domain conversion would only
+//! add cost. No top-level `collection == collection` operator exists — the checker
+//! rejects it — but a collection reached inside a compared product or sum participates
+//! in that aggregate's equality, so equality must recurse through collections to stay a
+//! faithful specification.
 //!
-//! **Value equality** covers the aggregate value domain: `unit`, the admitted
-//! scalars, dense/sparse products (records and structs), closed sums (user `enum`s
-//! and the `Option`/`Result` instantiations), and the finite collections (`List` and
-//! `Map`). A nominal scalar is `int` valued, so it enters as [`ValueDomain::Scalar`]
-//! and its equality is base-`int` equality — it needs no distinct case. Products
-//! compare field-wise in canonical leaf order, with a sparse field's presence part
-//! of the comparison; sums compare by exact `(variant, payload)`; a list compares
-//! element-wise in order; a map compares its `(key, value)` pairs in key order. The
-//! VM's `Eq*`/`EqEnum` opcodes compute equality as a structural `Value == Value`
-//! derive; this relation is their specification, agreed by a conformance test rather
-//! than re-derived (routing every comparison through a domain conversion would only
-//! add cost). No top-level `collection == collection` operator exists — the checker
-//! rejects it — but a collection reached inside a compared product or sum (a struct
-//! field or an enum/`Option` payload) participates in that aggregate's equality, so
-//! this relation must recurse through collections to stay a faithful specification.
-//!
-//! **Collection key order** admits only the closed orderable durable-key scalar
-//! set — `int`, `string`, `bool`, and `bytes` (a nominal key is `int` valued, so it
-//! too enters as a scalar). A product, a sum, or a collection is never an orderable
-//! key: durable keys are single ordered scalar columns, so [`KeyDomain`] gains no
-//! aggregate case, and a map's key is a [`KeyScalar`] here, not a nested
-//! [`ValueDomain`]. C03 extends it lexicographically to composite key tuples.
+//! A product, a sum, or a collection is never an orderable key: durable keys are single
+//! ordered scalar columns, so [`KeyDomain`] gains no aggregate case, and a map's key is
+//! a [`KeyScalar`] here, not a nested [`ValueDomain`].
 
 use std::cmp::Ordering;
 
@@ -93,8 +80,7 @@ pub enum ValueDomain {
 pub struct RootId(pub u16);
 
 /// A value in the collection-key-order domain: `unit`, or one admitted key scalar.
-/// Products and sums are not orderable durable keys, so they have no case here; C03
-/// extends this with composite key tuples.
+/// Products and sums are not orderable durable keys, so they have no case here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyDomain {
     Unit,
@@ -181,8 +167,7 @@ fn payload_equal(a: &[ValueDomain], b: &[ValueDomain]) -> bool {
 /// The collection-key-order relation: a total order over the key domain. Scalars
 /// order by the order-preserving [`KeyScalar`] order (the same order the durable
 /// store observes); `unit` is a single value that sorts before every scalar. This
-/// is the one owner of key order; C03 extends it lexicographically to composite
-/// keys.
+/// is the one owner of key order.
 pub fn collection_key_order(a: &KeyDomain, b: &KeyDomain) -> Ordering {
     match (a, b) {
         (KeyDomain::Unit, KeyDomain::Unit) => Ordering::Equal,

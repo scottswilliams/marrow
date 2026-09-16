@@ -78,8 +78,7 @@ impl<E: ByteEngine> DurableStore<E> {
     /// the ceiling by the image's demand union, so authority never exceeds what the
     /// compiler described even when the backing engine is unconditionally writable. A
     /// site's root position indexes the projection's roots; every root shares this one
-    /// engine, so a
-    /// transaction spanning several roots commits atomically.
+    /// engine, so a transaction spanning several roots commits atomically.
     pub fn from_projection_with_ceiling(
         engine: E,
         projection: StoreProjection,
@@ -224,12 +223,9 @@ impl<E: ByteEngine> DurableStore<E> {
         })
     }
 
-    /// Refuse a session or audit on a poisoned handle. An earlier indeterminate commit sets
-    /// the latch (its durability is unknown), and the handle then refuses every further
-    /// read or write until the opaque recovery fact is resolved against a freshly opened
-    /// store. Consulted before sessions and audits so a poisoned handle never opens a
-    /// view or transaction that would observe an indeterminate state. Reachable only on a
-    /// native handle whose engine can report
+    /// Refuse a session or audit on a poisoned handle, before any view or transaction
+    /// opens, so nothing observes the indeterminate state an earlier commit left. Reachable
+    /// only on a native handle whose engine can report
     /// [`CommitOutcome::Indeterminate`](marrow_store::CommitOutcome); the ephemeral memory
     /// engine always confirms, so its handle is never poisoned.
     fn check_poison(&self) -> Result<(), SessionError> {
@@ -464,13 +460,11 @@ mod tests {
         txn.commit()
     }
 
-    /// The poison-latch consult at session open: a poisoned handle refuses every
-    /// further read and write session with [`SessionError::Poisoned`], before any view or
-    /// transaction opens, until the store is reopened and the interrupted commit
-    /// reclassified. The latch is set here directly because the ephemeral memory engine
-    /// never reports an indeterminate commit (the state is reachable only on the native
-    /// path), so this owner-local unit test drives the consult the persistent lifecycle
-    /// relies on.
+    /// A poisoned handle refuses every further read and write session with
+    /// [`SessionError::Poisoned`] until the store is reopened and the interrupted commit
+    /// reclassified. The latch is set directly here: the ephemeral memory engine never
+    /// reports an indeterminate commit, so only a set latch reaches the consult the
+    /// persistent lifecycle relies on.
     #[test]
     fn a_poisoned_handle_refuses_every_session_open() {
         let mut store = store();

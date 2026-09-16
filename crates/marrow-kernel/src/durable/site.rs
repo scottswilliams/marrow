@@ -11,8 +11,7 @@
 //! [`StoreProjection`] closes that: it is minted only by [`StoreProjectionBuilder`], which
 //! resolves every site against the **completed** root table before publication and stores
 //! the resolved positions in typed form. A published projection therefore carries schemas
-//! and sites that are known to describe each other — they cannot be separated and re-paired,
-//! which is what made an entry-time check unable to close this class.
+//! and sites that are known to describe each other; they cannot be separated and re-paired.
 
 use super::schema::{BranchPos, FieldPos, GroupPos, IndexPos, RootPos, StoreSchema};
 
@@ -21,7 +20,7 @@ use super::schema::{BranchPos, FieldPos, GroupPos, IndexPos, RootPos, StoreSchem
 ///
 /// Opaque and minted only by [`StoreProjectionBuilder`]. The roots are in declaration
 /// (image) order and the sites in image site-index order, so `Durable::site` resolves by
-/// image site index exactly as before.
+/// image site index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreProjection {
     roots: Vec<StoreSchema>,

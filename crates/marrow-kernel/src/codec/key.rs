@@ -108,11 +108,8 @@ pub(crate) const KEY_INT: u8 = 0x02;
 pub(crate) const KEY_DATE: u8 = 0x03;
 pub(crate) const KEY_INSTANT: u8 = 0x04;
 pub(crate) const KEY_DURATION: u8 = 0x05;
-// 0x06 is intentionally left unassigned: it was reserved for a decimal value
-// type that was removed at B00 and may return later, and holding the slot keeps
-// the relative tag order of the other kinds stable. Pre-beta there is no stored
-// data and no compatibility promise; the durable-key contract that freezes
-// these tags is established by the lane that first writes data under them.
+// 0x06 is left unassigned to hold the slot a decimal key type would take, so
+// adding one later does not shift the relative tag order of the other kinds.
 pub(crate) const KEY_STR: u8 = 0x07;
 pub(crate) const KEY_BYTES: u8 = 0x08;
 
