@@ -120,8 +120,7 @@ fn workspace_edges() -> Vec<PackageEdges> {
 /// Trust-boundary Cargo-DAG gates: the VM never decodes the image
 /// container, the compiler cannot reach the verifier/VM/kernel/store (it opens
 /// no store and mints no VerifiedImage), and the raw byte engine is consumed
-/// only through the path kernel. These edges are architecture, not convenience;
-/// this test exists to make a regression conspicuous.
+/// only through the path kernel.
 #[test]
 fn cargo_dag_respects_the_trust_boundaries() {
     let packages = workspace_edges();
@@ -211,9 +210,7 @@ fn cargo_dag_respects_the_trust_boundaries() {
 
     // marrow-local-wire is the pure protocol owner: framing, limits, the closed
     // grammar, and canonical JSON with no execution, storage, or process edge. Its
-    // only internal dependency is the diagnostic-code registry, so a regression that
-    // reached the VM, verifier, kernel, image, or store from the wire crate — the
-    // exact coupling the pure-crate boundary forbids — is conspicuous here.
+    // only internal dependency is the diagnostic-code registry.
     let wire = find("marrow-local-wire");
     for (dep, _) in &wire.edges {
         assert_eq!(

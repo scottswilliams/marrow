@@ -8,22 +8,12 @@
 //! links are checked for syntactic sanity only: the battery is offline and must
 //! stay offline.
 //!
-//! The scan reads one blanked text, produced by [`blank_literals`]. Blanking
-//! replaces fenced code, inline code spans, and HTML comments with spaces while
-//! preserving every byte offset, so a scan over the blanked text addresses the
-//! same positions as the file.
-//!
 //! Literal blindness is the failure this gate is most exposed to, so every way a
-//! literal could swallow the rest of a file is loud rather than silent: an
-//! unterminated HTML comment or code fence panics with the file and the byte
-//! offset of the opener, and one state machine decides comment/fence precedence
-//! so a `<!--` inside a fence cannot govern blanking outside it and a fence line
-//! inside a comment cannot open a fence.
-//!
-//! Two Markdown constructs are deliberately unmodelled and fail loudly rather
-//! than passing unchecked: setext headings (`===`/`---` underlines) and explicit
-//! HTML or attribute anchors (`<a name=`, `<a id=`, `{#slug}`). Both would create
-//! anchors this gate cannot see; a file that introduces one must extend the gate.
+//! literal could swallow the rest of a file is loud rather than silent (see
+//! [`blank_literals`]). Two Markdown constructs are deliberately unmodelled and
+//! panic rather than passing unchecked: setext headings (`===`/`---` underlines)
+//! and explicit HTML or attribute anchors (`<a name=`, `<a id=`, `{#slug}`). Both
+//! create anchors this gate cannot see; a file introducing one must extend it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -551,8 +541,7 @@ fn normalize(path: &Path) -> Option<String> {
         match component {
             Component::CurDir => {}
             Component::ParentDir => {
-                // A link that climbs above the repository root names no tracked
-                // path, and saying so is the honest verdict.
+                // A link that climbs above the repository root names no tracked path.
                 out.pop()?;
             }
             other => out.push(other.as_os_str().to_string_lossy().into_owned()),
