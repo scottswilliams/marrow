@@ -112,6 +112,55 @@ pub fn driver(): int {\n    const ignored = deepen(1)\n    return 0\n}\n";
     );
 }
 
+/// A finite chain of `links` generic structs, `Link0<T>` through `Link{links-1}<T>`,
+/// each holding the next. The chain is resolved by a concrete function's parameter
+/// annotation rather than by a call, so nothing constructs a value of it and the mint
+/// nesting bound is the only bound the corpus can reach.
+fn nested_chain_fixture(links: usize) -> String {
+    let mut source = String::from("module main\n\n");
+    for link in 0..links - 1 {
+        writeln!(
+            source,
+            "struct Link{link}<T> {{ next: Link{}<T> }}",
+            link + 1
+        )
+        .expect("write a chain link");
+    }
+    writeln!(source, "struct Link{}<T> {{ leaf: T }}", links - 1).expect("write the chain leaf");
+    source.push_str(
+        "\nfn sink(x: Link0<int>): int { return 0 }\n\npub fn driver(): int { return 0 }\n",
+    );
+    source
+}
+
+/// `MINT_DEPTH_LIMIT` bounds the nesting depth of a mint and nothing else: a chain
+/// exactly that many links deep resolves, and one link more is refused. Filling is
+/// iterative, so the depth a row is reserved at travels with its queued fill; a bound
+/// read off the queue's length instead would refuse a wide shallow program and admit a
+/// narrow deep one.
+#[test]
+fn the_mint_bound_admits_its_full_nesting_depth_and_refuses_one_link_more() {
+    use marrow_codes::Code;
+
+    use crate::compile::CompileFailure;
+    use crate::types::MINT_DEPTH_LIMIT;
+
+    compile(&project(nested_chain_fixture(MINT_DEPTH_LIMIT)))
+        .expect("a chain as deep as the mint bound resolves");
+
+    let Err(CompileFailure::Diagnostics(rows)) =
+        compile(&project(nested_chain_fixture(MINT_DEPTH_LIMIT + 1)))
+    else {
+        panic!("one link past the mint bound must be refused");
+    };
+    assert_eq!(rows.as_slice().len(), 1);
+    assert_eq!(rows.as_slice()[0].code(), Code::CheckInstantiationLimit);
+    assert_eq!(
+        rows.as_slice()[0].message(),
+        "generic type instantiation reached the nesting limit of 256"
+    );
+}
+
 #[test]
 fn generic_struct_fields_keep_declared_order_and_types() {
     let source = r#"module main
