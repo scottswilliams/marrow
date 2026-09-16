@@ -218,6 +218,41 @@ added via run
 `marrow run --store` reads `.marrow/ids` and leaves it unchanged; a missing
 identity is reported as `check.durable_identity`.
 
+## Using a local library
+
+Source that several projects share lives in its own project directory, and a
+consumer names it in `marrow.toml` under an alias it chooses:
+
+```toml
+edition = "2026"
+
+[dependencies]
+graphtext = { path = "../graphtext" }
+```
+
+The alias roots every module the library contributes, so a library file
+`src/text.mw` whose own header reads `module text` is `graphtext::text` here,
+and a type it declares is written `graphtext::Pair`:
+
+```text
+use graphtext::text
+
+pub fn key(line: string): string {
+    const pair: graphtext::Pair = text::parsePair(line)
+    return pair.key
+}
+```
+
+A dependency is read, never written:
+`marrow fmt` leaves its files alone, its identities come from its own
+`.marrow/ids`, and `marrow run` and `marrow test` act on the project they are
+invoked on, so the library's exports and tests run in the library's directory.
+[Graph Report](../fixtures/v01/conformance/graph_report) and its
+[text library](../fixtures/v01/conformance/graph_report_lib) are a worked pair.
+[Projects](tools/projects.md#dependencies) states the manifest rules and
+[modules and functions](language/modules-and-functions.md#dependencies) the
+naming.
+
 ## Where next
 
 The [walkthrough](walkthrough.md) reads a complete durable application line by

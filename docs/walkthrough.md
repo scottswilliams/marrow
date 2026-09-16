@@ -250,10 +250,24 @@ pub fn countInCategory(category: string): int {
 The index is a second way to reach an asset, and every write to `^assets` keeps
 it current ([reading an index](language/traversal-and-indexes.md#reading-an-index)).
 
+## Reusing part of a program
+
+The crib is one file, and nothing requires it to stay one. Pure code a second
+project also needs — text helpers, a shared struct — moves into a project
+directory of its own, which each consumer names in `marrow.toml` under an alias
+and then reaches as `graphtext::text` and `graphtext::Pair`
+([quickstart](quickstart.md#using-a-local-library),
+[dependencies](language/modules-and-functions.md#dependencies)).
+
+Durable places do not cross that boundary. A `store` root is addressable only
+inside the project that declares it, so `^assets` and `^tallies` stay in this
+file however much of the rest moves out.
+
 ## Where next
 
 - [Durable places](language/durable-places.md): roots, keys, reads, writes, deletion.
 - [Traversal and indexes](language/traversal-and-indexes.md): bounded `for`, indexes.
 - [Errors and transactions](language/errors-and-transactions.md): commit and rollback.
 - [Tests](language/tests.md#durable-tests): the fresh in-memory store per durable test.
+- [Dependencies](language/modules-and-functions.md#dependencies): a library's modules and types.
 - The [fixture source](../fixtures/v01/conformance/workshop/src/main.mw) with its tests.
