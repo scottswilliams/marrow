@@ -230,8 +230,8 @@ table is the one place to see them together.
 | A resource containing a nominal value bound to a store | `check.unsupported` | [Durable places](durable-places.md) |
 | A nominal type as a store-root key, branch key, or module constant | `check.unsupported` | [Types and values](types-and-values.md#aliases-and-nominal-ints) |
 | A call pairing two scalar names, `int("1")` or `bool(1)` | `check.unsupported` | [Types and values](types-and-values.md) |
-| A type or constructor path longer than `alias::Name`, `graphtext::text::Pair` | `check.unsupported`; a type name is one or two segments | [Modules and functions](modules-and-functions.md#dependencies) |
-| An enum path longer than that name plus one member, `graphtext::text::Color::red` | `check.unsupported` | [Modules and functions](modules-and-functions.md#dependencies) |
+| A type annotation of more than two segments, `graphtext::text::Pair` | `check.unsupported`; a type name is one or two segments | [Modules and functions](modules-and-functions.md#dependencies) |
+| An enum path longer than that type name plus one member, `graphtext::text::Color::red` | `check.unsupported` | [Modules and functions](modules-and-functions.md#dependencies) |
 | An expression, call, `bytes`, or temporal value in a module `const` | `check.unsupported` | [Modules and functions](modules-and-functions.md) |
 | `delete` on a local field | `check.unsupported`; `unset` clears one | [Grammar](grammar.md) |
 | `for` over a composite-keyed root or branch | `check.unsupported`; walk a single-key branch | [Traversal and indexes](traversal-and-indexes.md) |
