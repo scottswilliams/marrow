@@ -334,9 +334,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 Ok(expected) => expected,
                 Err(refusal) => {
                     self.reject_resolution(refusal, annotation.span(), "this type annotation");
-                    // The binding keeps its name. Its annotation reported the
-                    // cause, so a later use reuses it and fails silently — the
-                    // record its two siblings below already keep.
+                    // The binding keeps its name: its annotation reported the cause, so a
+                    // later use reuses it and fails silently.
                     self.poisoned_bindings.insert(name.to_string());
                     return Ok(());
                 }
@@ -1164,9 +1163,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
         }
 
-        // The present path continues past the `else`; the absent edge runs the
-        // diverging `else` block, so control only reaches past the statement with `x`
-        // bound.
+        // The absent edge runs the diverging `else`, so control only reaches past the
+        // statement with `x` bound.
         let to_after = self.push_jump(value.span())?;
         let absent = self.here();
         self.patch_all(fail_jumps, absent);
@@ -1199,13 +1197,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Ok(Flow::Fallthrough)
     }
 
-    /// Lower a `match` over a flat enum scrutinee. The scrutinee is evaluated once into a
-    /// fresh local; the arms dispatch through a branch chain over the enum tag (`EnumTag`
-    /// + `EqInt` + `JumpIfFalse`), the simplest form the verifier admits without a
-    /// tag-switch opcode. The match must cover every member exactly once with no wildcard
-    /// arm; exhaustiveness is a check-time rule, not an image invariant. Because it is
-    /// exhaustive, the last arm in source order runs unconditionally — only its own member
-    /// can reach it, which is what makes its `EnumPayloadGet` reads sound.
+    /// Lower a `match` over a flat enum scrutinee. The scrutinee is evaluated once into
+    /// a fresh local; the arms dispatch through a branch chain over the enum tag
+    /// (`EnumTag`, `EqInt`, `JumpIfFalse`), the simplest form the verifier admits without
+    /// a tag-switch opcode. The match must cover every member exactly once with no
+    /// wildcard arm; exhaustiveness is a check-time rule, not an image invariant. Because
+    /// it is exhaustive, the last arm in source order runs unconditionally — only its own
+    /// member can reach it, which is what makes its `EnumPayloadGet` reads sound.
     pub(super) fn lower_match(
         &mut self,
         scrutinee: &Expression,
@@ -1842,10 +1840,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
     }
 
-    /// Lower a bounded durable traversal `for k in <place> at most N [from f] on more`.
-    /// Freeze the first `N` immediate keys of the traversed layer (after an inclusive
-    /// `from`), run the body once per frozen key in order, then run the `on more` block
-    /// when an `(N+1)`th key existed and every frozen body completed normally.
+    /// Lower a bounded durable traversal `for k in <place> at most N [from f] on more`:
+    /// freeze the first `N` immediate keys of the traversed layer (after an inclusive
+    /// `from`), run the body once per frozen key in order, then run `on more` when an
+    /// `(N+1)`th key existed and every frozen body completed normally.
     fn lower_bounded_traversal(
         &mut self,
         binding: &ForBinding,
@@ -2689,9 +2687,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             self.patch(to_nonzero, nonzero);
         }
 
-        // The checked operation. On the fault edge it transfers to the handler with
-        // the operands already popped (the statement-boundary stack); on success it
-        // pushes the int result.
+        // On the fault edge the checked operation transfers to the handler with the
+        // operands already popped — the statement-boundary stack.
         self.push(Instr::LocalGet(la), span)?;
         if let Some(lb) = lb {
             self.push(Instr::LocalGet(lb), span)?;

@@ -225,7 +225,7 @@ impl AnalysisResourceLimit {
     /// The sentence fragment a person reads for the exhausted bound, lowercase and
     /// unpunctuated. A compile-side bound answers in
     /// [`ResourceLimitKind`](crate::ResourceLimitKind)'s own words, so one bound reads
-    /// the same whichever owner reports it. No Rust variant name reaches a reader.
+    /// the same whichever owner reports it.
     pub fn description(&self) -> &'static str {
         match self {
             AnalysisResourceLimit::Compile(limit) => limit.kind().description(),
@@ -276,9 +276,8 @@ impl AnalysisFailure {
 /// input is the caller's same `Arc<ProjectInput>`, shared not copied, so a clone is O(1)
 /// and the source bytes are charged once.
 ///
-/// Every retained collection is a boxed slice: a snapshot is immutable, so the
-/// growth capacity an amortized `Vec` carries is not part of its retained state and
-/// is not charged to the caller who holds one.
+/// Every retained collection is a boxed slice: a snapshot is immutable, so the growth
+/// capacity an amortized `Vec` carries is not part of its retained state.
 pub struct AnalysisSnapshot {
     input: Arc<ProjectInput>,
     revision: InputRevision,
@@ -291,14 +290,12 @@ pub struct AnalysisSnapshot {
     /// query at one of these positions is [`Unavailability::Dependency`], not `Absent`.
     dependency_gaps: Box<[(FileRef, FactSpan)]>,
     /// The declaration-hierarchy outline of each cleanly-parsed module file, in source
-    /// declaration order. A file that did not parse has no entry — it is in
-    /// `broken_files` — and a `document_symbols` query for it is
-    /// [`Unavailability::Syntax`], not an absent tree.
+    /// declaration order. A file that did not parse has no entry, and a
+    /// `document_symbols` query for it is [`Unavailability::Syntax`], not an absent tree.
     document_symbols: Box<[(FileRef, Box<[DeclSymbol]>)]>,
     /// Files whose outline crossed [`MAX_DOCUMENT_SYMBOLS_PER_FILE`] or
     /// [`MAX_SYMBOL_DEPTH`]. Nothing is retained for such a file, so its
-    /// `document_symbols` is [`Unavailability::Bounded`]; every other query for it, and
-    /// every query for every other file, is unaffected.
+    /// `document_symbols` is [`Unavailability::Bounded`] and no other query is affected.
     symbol_bounded_files: Box<[FileRef]>,
 }
 
@@ -405,9 +402,9 @@ impl AnalysisSnapshot {
     /// position in a module that did not parse is [`Unavailability::Syntax`]; a position
     /// with no callee fact (a local use, a literal, whitespace) is `Absent`.
     ///
-    /// Definition covers source-defined function callees, including a call inside a generic
-    /// template body (collected once at the template); a generic call targets its source
-    /// template. Local/parameter, type, import, and field definitions are not covered.
+    /// Definition covers source-defined function callees, including a call inside a
+    /// generic template body (collected once at the template), and a generic call targets
+    /// its source template. Local, type, import, and field definitions are not covered.
     pub fn definition(
         &self,
         file: &FileIdentity,

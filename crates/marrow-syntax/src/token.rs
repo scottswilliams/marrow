@@ -637,9 +637,9 @@ pub fn is_unfixed_duration_unit(word: &str) -> bool {
     matches!(word, "month" | "months" | "year" | "years")
 }
 
-/// The singular and plural spellings of a fixed duration unit, from either spelling,
-/// or `None` for a non-unit. A duration word literal agrees in number with its count:
-/// the singular for `1`, the plural otherwise.
+/// The singular and plural spellings of a fixed duration unit, from either spelling, or
+/// `None` for a non-unit. A duration word literal agrees in number with its count: the
+/// singular for `1`, the plural otherwise.
 pub fn duration_unit_forms(unit: &str) -> Option<(&'static str, &'static str)> {
     FIXED_DURATION_UNITS
         .iter()
