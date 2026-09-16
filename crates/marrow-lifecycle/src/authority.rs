@@ -1,4 +1,4 @@
-//! The atom-granular deployment-ceiling admission check (G03).
+//! The atom-granular deployment-ceiling admission check.
 //!
 //! A store records a single **accepted deployment ceiling** at provision — the separately
 //! owned standing maximum authority it admits (`crate::image::accepted_ceiling`), persisted
@@ -11,9 +11,8 @@
 //! ceiling to admit exactly the new demand and nothing more.
 //!
 //! Demand never grants. This owner only checks: it computes `demand \ ceiling` over the
-//! canonical atom set and refuses when it is nonempty. The refusal is the term-3 (D08)
-//! effect-ceiling honesty guarantee — a broadened read-only export is refused until the
-//! deployment authority covers it, rather than the write silently landing.
+//! canonical atom set and refuses when it is nonempty. A broadened export is refused
+//! until the deployment authority covers it, rather than its access silently landing.
 //!
 //! Source vocabulary is a projection of published image facts. The exceeding atoms are the
 //! *presented* image's own demand atoms, so the presented image spells them: this module

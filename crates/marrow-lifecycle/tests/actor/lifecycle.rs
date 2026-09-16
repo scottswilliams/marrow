@@ -516,10 +516,10 @@ const PURE_EXPORT: &str = "pub fn two(): int {\n    return 2\n}\n";
 /// another module moves it, while reordering the declarations and *resignaturing* an export
 /// leave it standing.
 ///
-/// The two stillnesses carry the invariant-A claim that the slot is an export-SET identity,
-/// blind to signatures, so each is taken against an image that really differs — asserted
-/// here, because a stillness compared against a repeated derivation of one image would hold
-/// no matter what the fingerprint digested.
+/// The two stillnesses carry the claim that the slot is an export-SET identity, blind to
+/// signatures, so each is taken against an image that really differs — asserted here,
+/// because a stillness compared against a repeated derivation of one image would hold no
+/// matter what the fingerprint digested.
 #[test]
 fn the_persisted_interface_fingerprint_moves_exactly_with_the_export_set() {
     let facts = |image: &VerifiedImage| {
@@ -577,12 +577,10 @@ fn the_persisted_interface_fingerprint_moves_exactly_with_the_export_set() {
 /// the durable graph in the same canonical split pre-order, so position `i` in both walks
 /// must be the *same node* — same kind **and same ledger identity**, resolved here through
 /// [`GRAPH_IDS`]'s explicit anchor table. This is the cross-crate enforcement artifact
-/// against pre-order drift between the two independent numbering owners: a
-/// divergence in the order of, or the fields/groups/branches split within, either walk fails
-/// here — including two same-kind siblings swapped in only one walk, which a kind-only
-/// comparison would miss while the head map bound their ledger ids to each other's numbers.
-/// The fixture drives multi-root order, sibling-field and sibling-group order, and recursive
-/// nested-branch descent — every point where the two independent walks could disagree.
+/// against pre-order drift between the two independent numbering owners, including two
+/// same-kind siblings swapped in only one walk, which a kind-only comparison would miss.
+/// The fixture drives multi-root order, sibling-field and sibling-group order, and
+/// recursive nested-branch descent.
 #[test]
 fn head_map_numbering_agrees_with_the_kernel_node_for_node() {
     use marrow_verify::SemanticNodeKind::{Branch, Field, Group, Root};
@@ -610,11 +608,9 @@ fn head_map_numbering_agrees_with_the_kernel_node_for_node() {
         flatten_branches(root, &mut Vec::new(), schema.branches(), &mut kernel_order);
     }
 
-    // The kernel's own number assignment ties to this same structural order: `number_store`
-    // over the derived projection allocates exactly 0..n-1 when read in the structural walk
-    // (each root, its fields, its groups and their fields, its branches recursively), so the
-    // name-anchored order above is also the kernel's allocation order — the third leg the
-    // runtime pin comparison consumes.
+    // `number_store` over the derived projection allocates exactly 0..n-1 in this same
+    // structural walk, so the name-anchored order above is also the kernel's allocation
+    // order — the third leg the runtime pin comparison consumes.
     let numbering = marrow_kernel::durable::number_store(&projection);
     let mut kernel_numbers: Vec<u32> = Vec::new();
     for root in &numbering {
@@ -691,8 +687,7 @@ fn flatten_branches(
 
 /// Resolve a kernel-walk node — named by its store root and member-name path — to the
 /// ledger id [`GRAPH_IDS`] anchors it to. The store roots are occurrence anchors; their
-/// members are declaration anchors under the occurrence's product. Explicit per fixture, so
-/// a wrong binding cannot hide in a clever shared renderer.
+/// members are declaration anchors under the occurrence's product.
 fn graph_id(segments: &[&str]) -> marrow_image::LedgerIdBytes {
     let byte = match segments {
         ["books"] => 0x0b,

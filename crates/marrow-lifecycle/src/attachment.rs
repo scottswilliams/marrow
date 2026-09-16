@@ -150,9 +150,8 @@ impl NativeAttachment {
 /// Whether a fresh in-memory store could be minted, over whatever its ready arm carries.
 ///
 /// One classification for every mint in this module: the deployment pairing, a fresh test's
-/// owned attachment, and the borrow of that attachment a test executes against. They are the
-/// same four-way fact about one mint, so they are one enum rather than three joined by
-/// hand-written mappings.
+/// owned attachment, and the borrow of that attachment a test executes against are the same
+/// four-way fact about one mint.
 pub enum MintOutcome<T> {
     /// No store was needed: the entry declares no durable demand.
     Storeless,

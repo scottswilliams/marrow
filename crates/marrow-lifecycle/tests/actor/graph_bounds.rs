@@ -13,16 +13,14 @@
 //! it, and only then prints the completion sentinel. The parent requires *both* a clean exit
 //! status *and* that sentinel: a stack overflow aborts the process (no sentinel, nonzero
 //! status), a panic fails the child test (no sentinel), and a journey that silently returned
-//! early would print no sentinel while exiting cleanly. Neither signal alone is sufficient,
-//! which is why both are checked.
+//! early would print no sentinel while exiting cleanly.
 //!
 //! **This is the whole specified journey.** It runs from maximum construction through
 //! publication, clone/debug/equality, the contract and body codecs, verification, the
 //! VM→kernel schema projection, the current-order numbering, the store intake, early
-//! return, unwind, and drop. It is the one harness for that claim. It lives in the
-//! lifecycle crate because its existing dependencies reach every current leg (image,
-//! verifier, VM, kernel) without adding a workspace edge, and because the store legs end
-//! here: a persistent-store leg (provision, import) extends this file, not a new harness.
+//! return, unwind, and drop. It lives in the lifecycle crate because its existing
+//! dependencies reach every leg (image, verifier, VM, kernel) without adding a workspace
+//! edge; a persistent-store leg (provision, import) extends this file, not a new harness.
 //!
 //! A failure here is a representation finding, never a licence for a custom `Drop`, a second
 //! arena, `ManuallyDrop`, `mem::forget`, or `unsafe`.
@@ -60,9 +58,8 @@ const PRODUCT_ID: [u8; 16] = [0x0d; 16];
 /// the journey short of its last two legs. A quarter of the bound encodes with room, so the
 /// journey runs end to end; the encode leg asserts the fit rather than assuming it.
 ///
-/// The depth this stack is really being asked about is not this width, though. A member run
-/// is walked by an explicit stack of runs whatever its length, so what a wider run buys is
-/// wire bytes, not frames.
+/// Width is not what this stack is asked about: a member run is walked by an explicit stack
+/// of runs whatever its length, so a wider run buys wire bytes, not frames.
 const MEMBERS: usize = 2048;
 
 /// Root occurrences over the one Product declaration. Several, so the publication leg
@@ -421,11 +418,6 @@ fn falsifier_starved_child() {
 /// unconditionally after joining, ignoring the worker's outcome — so the probe proves the
 /// exit-status half of the check is load-bearing on its own. An overflow aborts the process
 /// before that line is reached, or the join returns an error the status still reflects.
-///
-/// This is also what couples the sentinel to the journey. A child that stopped after its
-/// first leg, or a harness that printed the sentinel unconditionally, is refused *here*, by
-/// running such a child and watching the parent's check refuse it — not by reading this
-/// file's own text and asserting where its `println!` sits relative to its `join`.
 #[test]
 fn the_parent_check_detects_a_child_that_cannot_finish() {
     let exe = std::env::current_exe().expect("the test binary's own path");

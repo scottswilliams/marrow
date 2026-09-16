@@ -29,8 +29,7 @@ use crate::store_dir;
 ///
 /// One enum for both strictnesses: the ceiling and pin facts are the same
 /// whichever gate ran, and the binding arms differ only in which comparison
-/// reached them. Callers render it into their own reported error; none re-wraps
-/// it in a parallel refusal type.
+/// reached them.
 pub(crate) enum AdmissionRefusal {
     /// The image's demand exceeds the accepted ceiling — a typed authority refusal.
     Exceeds(DemandExceedsCeiling),
@@ -201,12 +200,10 @@ pub enum AttachOutcome {
 
 /// What a binding-only rebind reports: the store instance and the newly active image
 /// identity, returned only after Pending, head and final Active directory barriers.
-/// Reading one from an
-/// [`AttachOutcome::Rebound`] therefore means "the active code was updated, the durable
-/// contract unchanged" — that is the actor's guarantee about the value it returned, not a
-/// property of the value itself. The fields are public and `StoreInstanceId::from_bytes` is
-/// public, so an equal value is constructible without any rebind: this is a record, not an
-/// unforgeable token, and nothing may authorize on having one.
+///
+/// The fields are public and `StoreInstanceId::from_bytes` is public, so an equal value
+/// is constructible without any rebind: this is a record, not an unforgeable token, and
+/// nothing may authorize on having one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RebindReceipt {
     pub instance: crate::instance::StoreInstanceId,
