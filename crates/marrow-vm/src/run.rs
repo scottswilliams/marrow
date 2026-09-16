@@ -280,55 +280,6 @@ fn execute_frame<'s>(
             SealedInstr::Unreachable(idx) => return Err(frame.unreachable_fault(*idx)),
             SealedInstr::Todo(idx) => return Err(frame.todo_fault(*idx)),
             SealedInstr::Assert => frame.assert_condition()?,
-            SealedInstr::Call(target) => {
-                frame.call(*target, depth, state, &mut session, &mut driver)?
-            }
-            // The session's engine transaction is already open; Begin is the
-            // verifier's flow marker, a runtime no-op.
-            SealedInstr::TxnBegin => frame.pc += 1,
-            SealedInstr::TxnCommit => frame.txn_commit(&mut session, state)?,
-            SealedInstr::DurExists(site) => {
-                frame.dur_exists(require_session(&mut session), *site)?
-            }
-            SealedInstr::DurFamilyExists(site) => {
-                frame.dur_family_exists(require_session(&mut session), *site)?
-            }
-            SealedInstr::DurReadField(site) => {
-                frame.dur_read_field(require_session(&mut session), *site)?
-            }
-            SealedInstr::DurReadFieldPresent { site, key_slots } => {
-                frame.dur_read_field_present(require_session(&mut session), *site, key_slots)?
-            }
-            SealedInstr::DurReadEntry(site) => {
-                frame.dur_read_entry(require_session(&mut session), *site)?
-            }
-            SealedInstr::DurSetField { site, key_slots } => {
-                frame.dur_set_field(require_session(&mut session), *site, key_slots)?
-            }
-            SealedInstr::DurCreateEntry(site) => {
-                frame.dur_create_entry(require_session(&mut session), *site)?
-            }
-            SealedInstr::DurReplaceEntry(site) => {
-                frame.dur_replace_entry(require_session(&mut session), *site)?
-            }
-            SealedInstr::DurEraseField(site) => {
-                frame.dur_erase_field(require_session(&mut session), *site)?
-            }
-            SealedInstr::DurEraseEntry(site) => {
-                frame.dur_erase_entry(require_session(&mut session), *site)?
-            }
-            SealedInstr::DurReadGroup(site) => {
-                frame.dur_read_group(require_session(&mut session), *site)?
-            }
-            SealedInstr::DurReadGroupPresent { site, key_slots } => {
-                frame.dur_read_group_present(require_session(&mut session), *site, key_slots)?
-            }
-            SealedInstr::DurReplaceGroup { site, key_slots } => {
-                frame.dur_replace_group(require_session(&mut session), *site, key_slots)?
-            }
-            SealedInstr::DurEraseGroup(site) => {
-                frame.dur_erase_group(require_session(&mut session), *site)?
-            }
             SealedInstr::ListNew(idx) => frame.list_new(*idx),
             SealedInstr::ListAppend => frame.list_append()?,
             SealedInstr::ListLen => frame.list_len(),
@@ -341,35 +292,28 @@ fn execute_frame<'s>(
             SealedInstr::MapLen => frame.map_len(),
             SealedInstr::MapKeyAt => frame.map_key_at()?,
             SealedInstr::MapValueAt => frame.map_value_at()?,
-            SealedInstr::DurIterateBounded {
-                site,
-                limit,
-                from,
-                list_ty,
-            } => frame.dur_iterate_bounded(
-                require_session(&mut session),
-                *site,
-                *limit,
-                *from,
-                *list_ty,
-            )?,
-            SealedInstr::DurIndexScan {
-                site,
-                limit,
-                from,
-                list_ty,
-            } => frame.dur_index_scan(
-                require_session(&mut session),
-                *site,
-                *limit,
-                *from,
-                *list_ty,
-            )?,
-            SealedInstr::DurIndexLookup(site) => {
-                frame.dur_index_lookup(require_session(&mut session), *site)?
-            }
-            SealedInstr::DurIndexExists(site) => {
-                frame.dur_index_exists(require_session(&mut session), *site)?
+            SealedInstr::Call(_)
+            | SealedInstr::TxnBegin
+            | SealedInstr::TxnCommit
+            | SealedInstr::DurExists(_)
+            | SealedInstr::DurFamilyExists(_)
+            | SealedInstr::DurReadField(_)
+            | SealedInstr::DurReadFieldPresent { .. }
+            | SealedInstr::DurReadEntry(_)
+            | SealedInstr::DurSetField { .. }
+            | SealedInstr::DurCreateEntry(_)
+            | SealedInstr::DurReplaceEntry(_)
+            | SealedInstr::DurEraseField(_)
+            | SealedInstr::DurEraseEntry(_)
+            | SealedInstr::DurReadGroup(_)
+            | SealedInstr::DurReadGroupPresent { .. }
+            | SealedInstr::DurReplaceGroup { .. }
+            | SealedInstr::DurEraseGroup(_)
+            | SealedInstr::DurIterateBounded { .. }
+            | SealedInstr::DurIndexScan { .. }
+            | SealedInstr::DurIndexLookup(_)
+            | SealedInstr::DurIndexExists(_) => {
+                frame.durable_step(instr, depth, state, &mut session, &mut driver)?;
             }
         }
     }
@@ -396,6 +340,92 @@ struct Frame<'i> {
 }
 
 impl<'i> Frame<'i> {
+    /// Dispatch one durable or call opcode. These are the opcodes that need the
+    /// session, the driver, or the caller's depth, and each already crosses the path
+    /// kernel or a frame boundary, so the second switch here costs nothing measurable
+    /// beside that work — while the arithmetic and collection opcodes keep the one
+    /// jump table of the main loop.
+    fn durable_step<'s>(
+        &mut self,
+        instr: &SealedInstr,
+        depth: u32,
+        state: &mut ExecutionState<'_>,
+        session: &mut Option<&mut (dyn Durable + 's)>,
+        driver: &mut Option<&mut dyn DriverDispatch>,
+    ) -> Result<(), DurableExecutionFault> {
+        match instr {
+            SealedInstr::Call(target) => self.call(*target, depth, state, session, driver)?,
+            // The session's engine transaction is already open; Begin is the
+            // verifier's flow marker, a runtime no-op.
+            SealedInstr::TxnBegin => self.pc += 1,
+            SealedInstr::TxnCommit => self.txn_commit(session, state)?,
+            SealedInstr::DurExists(site) => self.dur_exists(require_session(session), *site)?,
+            SealedInstr::DurFamilyExists(site) => {
+                self.dur_family_exists(require_session(session), *site)?
+            }
+            SealedInstr::DurReadField(site) => {
+                self.dur_read_field(require_session(session), *site)?
+            }
+            SealedInstr::DurReadFieldPresent { site, key_slots } => {
+                self.dur_read_field_present(require_session(session), *site, key_slots)?
+            }
+            SealedInstr::DurReadEntry(site) => {
+                self.dur_read_entry(require_session(session), *site)?
+            }
+            SealedInstr::DurSetField { site, key_slots } => {
+                self.dur_set_field(require_session(session), *site, key_slots)?
+            }
+            SealedInstr::DurCreateEntry(site) => {
+                self.dur_create_entry(require_session(session), *site)?
+            }
+            SealedInstr::DurReplaceEntry(site) => {
+                self.dur_replace_entry(require_session(session), *site)?
+            }
+            SealedInstr::DurEraseField(site) => {
+                self.dur_erase_field(require_session(session), *site)?
+            }
+            SealedInstr::DurEraseEntry(site) => {
+                self.dur_erase_entry(require_session(session), *site)?
+            }
+            SealedInstr::DurReadGroup(site) => {
+                self.dur_read_group(require_session(session), *site)?
+            }
+            SealedInstr::DurReadGroupPresent { site, key_slots } => {
+                self.dur_read_group_present(require_session(session), *site, key_slots)?
+            }
+            SealedInstr::DurReplaceGroup { site, key_slots } => {
+                self.dur_replace_group(require_session(session), *site, key_slots)?
+            }
+            SealedInstr::DurEraseGroup(site) => {
+                self.dur_erase_group(require_session(session), *site)?
+            }
+            SealedInstr::DurIterateBounded {
+                site,
+                limit,
+                from,
+                list_ty,
+            } => {
+                self.dur_iterate_bounded(require_session(session), *site, *limit, *from, *list_ty)?
+            }
+            SealedInstr::DurIndexScan {
+                site,
+                limit,
+                from,
+                list_ty,
+            } => self.dur_index_scan(require_session(session), *site, *limit, *from, *list_ty)?,
+            SealedInstr::DurIndexLookup(site) => {
+                self.dur_index_lookup(require_session(session), *site)?
+            }
+            SealedInstr::DurIndexExists(site) => {
+                self.dur_index_exists(require_session(session), *site)?
+            }
+            // The main loop lists exactly the variants below in the arm that calls
+            // here, and its own match stays exhaustive, so a new opcode reaches this
+            // arm only by being routed here without a handler.
+            _ => unreachable!("a durable opcode reached dispatch with no handler"),
+        }
+        Ok(())
+    }
     fn fault(&self, code: Code) -> DurableExecutionFault {
         fault(self.function, self.pc, code)
     }

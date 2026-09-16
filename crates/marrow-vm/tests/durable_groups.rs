@@ -25,6 +25,7 @@ use marrow_vm::{
 
 #[path = "../../marrow-image/tests/common/site_seam.rs"]
 mod site_seam;
+use marrow_image::PlannedSiteRef;
 use site_seam::site;
 
 #[path = "../../marrow-image/tests/common/admitted_plan.rs"]
@@ -181,37 +182,7 @@ fn groups_image() -> VerifiedImage {
     let book_ty_idx = book_record;
     let details_ty_idx = details_record;
 
-    // seed(): create book 1 with title "hi" and details{pages:384}.
-    {
-        let name = draft.intern_string("seed").expect("a within-domain mint");
-        let key = draft.intern_int(1).expect("a within-domain mint");
-        let title_const = draft.intern_text("hi").expect("a within-domain mint");
-        let pages_const = draft.intern_int(384).expect("a within-domain mint");
-        let code = vec![
-            Instr::TxnBegin,
-            Instr::ConstLoad(key),         // root key
-            Instr::ConstLoad(title_const), // Book.title
-            Instr::ConstLoad(pages_const), // details.pages value
-            Instr::SomeWrap,               // -> Some(384) for the sparse leaf
-            Instr::RecordNew(details_record),
-            Instr::RecordNew(book_record),
-            Instr::DurCreateEntry(root_entry.clone()),
-            Instr::TxnCommit,
-            Instr::Return,
-        ];
-        let func = draft
-            .add_function(FunctionDef {
-                name,
-                source: src,
-                params: Vec::new(),
-                ret: ImageType::Unit,
-                local_count: 0,
-                spans: spans(&code),
-                code,
-            })
-            .expect("every site operand is live");
-        draft.add_export(export_id("seed"), func);
-    }
+    add_seed(&mut draft, src, &root_entry, details_record, book_record);
 
     // readEntry(): read the whole ^books[1] entry.
     add_read(
@@ -230,76 +201,131 @@ fn groups_image() -> VerifiedImage {
         details_ty_idx,
     );
 
-    // replaceGroup(): replace ^books[1].details with {pages:500}.
-    {
-        let name = draft
-            .intern_string("replaceGroup")
-            .expect("a within-domain mint");
-        let key = draft.intern_int(1).expect("a within-domain mint");
-        let pages_const = draft.intern_int(500).expect("a within-domain mint");
-        let code = vec![
-            Instr::TxnBegin,
-            Instr::ConstLoad(key),
-            Instr::LocalSet(0),
-            Instr::LocalGet(0),
-            Instr::DurExists(root_entry.clone()),
-            Instr::JumpIfFalse(10),
-            Instr::ConstLoad(pages_const),
-            Instr::SomeWrap,
-            Instr::RecordNew(details_record),
-            Instr::DurReplaceGroup {
-                site: group_entry.clone(),
-                key_slots: vec![0],
-            },
-            Instr::TxnCommit,
-            Instr::Return,
-        ];
-        let func = draft
-            .add_function(FunctionDef {
-                name,
-                source: src,
-                params: Vec::new(),
-                ret: ImageType::Unit,
-                local_count: 1,
-                spans: spans(&code),
-                code,
-            })
-            .expect("every site operand is live");
-        draft.add_export(export_id("replaceGroup"), func);
-    }
+    add_replace_group(&mut draft, src, &root_entry, &group_entry, details_record);
 
-    // eraseGroup(): erase ^books[1].details (clears the group's leaves).
-    {
-        let name = draft
-            .intern_string("eraseGroup")
-            .expect("a within-domain mint");
-        let key = draft.intern_int(1).expect("a within-domain mint");
-        let code = vec![
-            Instr::TxnBegin,
-            Instr::ConstLoad(key),
-            Instr::DurEraseGroup(group_entry),
-            Instr::TxnCommit,
-            Instr::Return,
-        ];
-        let func = draft
-            .add_function(FunctionDef {
-                name,
-                source: src,
-                params: Vec::new(),
-                ret: ImageType::Unit,
-                local_count: 0,
-                spans: spans(&code),
-                code,
-            })
-            .expect("every site operand is live");
-        draft.add_export(export_id("eraseGroup"), func);
-    }
+    add_erase_group(&mut draft, src, group_entry);
 
     verify(&draft.encode().expect("encode").bytes).expect("image verifies")
 }
 
 /// Add a read-only export that pushes the root key `1`, runs `op`, and returns the
 /// optional record it leaves on the stack.
+/// `seed()`: create `^books[1]` with `title: "hi"` and `details{pages: 384}` in one
+/// whole-entry write.
+fn add_seed(
+    draft: &mut DraftTxn<'_>,
+    src: marrow_image::StrId,
+    root_entry: &PlannedSiteRef,
+    details_record: marrow_image::TypeId,
+    book_record: marrow_image::TypeId,
+) {
+    let name = draft.intern_string("seed").expect("a within-domain mint");
+    let key = draft.intern_int(1).expect("a within-domain mint");
+    let title_const = draft.intern_text("hi").expect("a within-domain mint");
+    let pages_const = draft.intern_int(384).expect("a within-domain mint");
+    let code = vec![
+        Instr::TxnBegin,
+        Instr::ConstLoad(key),         // root key
+        Instr::ConstLoad(title_const), // Book.title
+        Instr::ConstLoad(pages_const), // details.pages value
+        Instr::SomeWrap,               // -> Some(384) for the sparse leaf
+        Instr::RecordNew(details_record),
+        Instr::RecordNew(book_record),
+        Instr::DurCreateEntry(root_entry.clone()),
+        Instr::TxnCommit,
+        Instr::Return,
+    ];
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
+    draft.add_export(export_id("seed"), func);
+}
+
+/// `replaceGroup()`: replace `^books[1].details` with `{pages: 500}` behind the
+/// entry-presence guard the group-scoped write requires.
+fn add_replace_group(
+    draft: &mut DraftTxn<'_>,
+    src: marrow_image::StrId,
+    root_entry: &PlannedSiteRef,
+    group_entry: &PlannedSiteRef,
+    details_record: marrow_image::TypeId,
+) {
+    let name = draft
+        .intern_string("replaceGroup")
+        .expect("a within-domain mint");
+    let key = draft.intern_int(1).expect("a within-domain mint");
+    let pages_const = draft.intern_int(500).expect("a within-domain mint");
+    let code = vec![
+        Instr::TxnBegin,
+        Instr::ConstLoad(key),
+        Instr::LocalSet(0),
+        Instr::LocalGet(0),
+        Instr::DurExists(root_entry.clone()),
+        Instr::JumpIfFalse(10),
+        Instr::ConstLoad(pages_const),
+        Instr::SomeWrap,
+        Instr::RecordNew(details_record),
+        Instr::DurReplaceGroup {
+            site: group_entry.clone(),
+            key_slots: vec![0],
+        },
+        Instr::TxnCommit,
+        Instr::Return,
+    ];
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 1,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
+    draft.add_export(export_id("replaceGroup"), func);
+}
+
+/// `eraseGroup()`: erase `^books[1].details`, clearing the group's leaves and leaving
+/// the entry and its top-level field present.
+fn add_erase_group(
+    draft: &mut DraftTxn<'_>,
+    src: marrow_image::StrId,
+    group_entry: PlannedSiteRef,
+) {
+    let name = draft
+        .intern_string("eraseGroup")
+        .expect("a within-domain mint");
+    let key = draft.intern_int(1).expect("a within-domain mint");
+    let code = vec![
+        Instr::TxnBegin,
+        Instr::ConstLoad(key),
+        Instr::DurEraseGroup(group_entry),
+        Instr::TxnCommit,
+        Instr::Return,
+    ];
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
+    draft.add_export(export_id("eraseGroup"), func);
+}
+
 fn add_read(
     draft: &mut DraftTxn<'_>,
     src: marrow_image::StrId,

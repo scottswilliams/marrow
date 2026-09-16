@@ -60,12 +60,16 @@ struct Fixture {
     strict_pc: u32,
 }
 
-fn fixture(target: Target) -> Fixture {
-    let mut owner = ImageDraft::new();
-    let savepoint = owner.savepoint();
-    let mut draft = owner.begin_transaction(savepoint).expect("fresh draft");
-    let record = required_int_record(&mut draft, "Counter");
-    let child_record = required_int_record(&mut draft, "Counter.children");
+/// Declare `^counters` with its `children` branch and bind the three sites the read
+/// export addresses: the whole root entry it replaces first, the entry the guard tests,
+/// and the required leaf the strict read names. `target` chooses whether those last two
+/// are the root's own or the branch's.
+fn declare_counters(
+    draft: &mut marrow_image::DraftTxn<'_>,
+    target: Target,
+) -> (marrow_image::TypeId, Vec<marrow_image::PlannedSiteRef>) {
+    let record = required_int_record(draft, "Counter");
+    let child_record = required_int_record(draft, "Counter.children");
     let root_name = draft.intern_string("counters").expect("root name");
     let child_name = draft.intern_string("children").expect("branch name");
     let int = draft.value_scalar(Scalar::Int).expect("int shape");
@@ -144,6 +148,14 @@ fn fixture(target: Target) -> Fixture {
             .expect("canonical published path");
         sites.push(draft.request_site(&handle).expect("live binding"));
     }
+    (record, sites)
+}
+
+fn fixture(target: Target) -> Fixture {
+    let mut owner = ImageDraft::new();
+    let savepoint = owner.savepoint();
+    let mut draft = owner.begin_transaction(savepoint).expect("fresh draft");
+    let (record, sites) = declare_counters(&mut draft, target);
     let earlier_key = draft.intern_text("earlier").expect("earlier key");
     let target_key = draft.intern_text("target").expect("target key");
     let new_value = draft.intern_int(NEW).expect("replacement value");

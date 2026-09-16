@@ -63,15 +63,28 @@ fn export_id(name: &str) -> ExportId {
     ExportId::of_local("", name)
 }
 
-/// Build the `^books(id: int): Book { title: string required }` graph with a
-/// single-level `notes(pos: int): Note { text: string required }` branch, a mutating
-/// `seed` export that creates three books (ids 1,2,3) and two notes under book 1
-/// (positions 10,20), and the read-only iterate exports the tests drive. The root and
-/// branch keys are both `int`, so the frozen key list is `List[int]`.
-fn traversal_image() -> VerifiedImage {
-    let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+/// What a traversal export's single `int` parameter supplies, if any.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Walk {
+    /// A root traversal from the first key; the export takes no parameter.
+    Root,
+    /// A root traversal starting at or after the `from` key in the parameter.
+    RootFrom,
+    /// A branch traversal under the ancestor key in the parameter.
+    Branch,
+}
 
+/// Declare `^books(id: int): Book { title: string required }` with its single-level
+/// `notes(pos: int): Note { text: string required }` branch, returning the two record
+/// types and the admitted root.
+fn declare_books_with_notes(
+    draft: &mut DraftTxn<'_>,
+) -> (
+    marrow_image::TypeId,
+    marrow_image::TypeId,
+    marrow_image::AdmittedRoot,
+    LedgerIdBytes,
+) {
     let book = draft.intern_string("Book").expect("a within-domain mint");
     let title = draft.intern_string("title").expect("a within-domain mint");
     let book_record = draft
@@ -156,6 +169,19 @@ fn traversal_image() -> VerifiedImage {
             },
         )
         .expect("the Product is declared");
+    (book_record, note_record, books, product)
+}
+
+/// Build the `^books(id: int): Book { title: string required }` graph with a
+/// single-level `notes(pos: int): Note { text: string required }` branch, a mutating
+/// `seed` export that creates three books (ids 1,2,3) and two notes under book 1
+/// (positions 10,20), and the read-only iterate exports the tests drive. The root and
+/// branch keys are both `int`, so the frozen key list is `List[int]`.
+fn traversal_image() -> VerifiedImage {
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
+
+    let (book_record, note_record, books, product) = declare_books_with_notes(&mut draft);
 
     let members = draft.product_members(product).expect("declared");
     let root_entry = site(
@@ -180,143 +206,222 @@ fn traversal_image() -> VerifiedImage {
         .intern_string("src/main.mw")
         .expect("a within-domain mint");
 
-    // The mutating seed: create three books and two notes under book 1. Its write
-    // demand widens the attachment ceiling so the store can be populated.
-    {
-        let name = draft.intern_string("seed").expect("a within-domain mint");
-        let title_const = draft.intern_text("t").expect("a within-domain mint");
-        let mut code = vec![Instr::TxnBegin];
-        for id in [1i64, 2, 3] {
-            let key = draft.intern_int(id).expect("a within-domain mint");
-            code.push(Instr::ConstLoad(key)); // root key
-            code.push(Instr::ConstLoad(title_const)); // title (a string const)
-            code.push(Instr::RecordNew(book_record));
-            code.push(Instr::DurCreateEntry(root_entry.clone()));
-        }
-        let book_one = draft.intern_int(1).expect("a within-domain mint");
-        for pos in [10i64, 20] {
-            let branch_key = draft.intern_int(pos).expect("a within-domain mint");
-            code.push(Instr::ConstLoad(book_one)); // root key
-            code.push(Instr::ConstLoad(branch_key)); // branch key
-            code.push(Instr::ConstLoad(title_const)); // text
-            code.push(Instr::RecordNew(note_record));
-            code.push(Instr::DurCreateEntry(branch_entry.clone()));
-        }
-        code.push(Instr::TxnCommit);
-        code.push(Instr::Return);
-        let func = draft
-            .add_function(FunctionDef {
-                name,
-                source: src,
-                params: Vec::new(),
-                ret: ImageType::Unit,
-                local_count: 0,
-                spans: spans(&code),
-                code,
-            })
-            .expect("every site operand is live");
-        draft.add_export(export_id("seed"), func);
-    }
+    add_seed(
+        &mut draft,
+        src,
+        &root_entry,
+        &branch_entry,
+        book_record,
+        note_record,
+    );
 
+    add_keys_export(
+        &mut draft,
+        src,
+        list_int,
+        "rootKeys2",
+        &root_entry,
+        2,
+        Walk::Root,
+    );
+    add_keys_export(
+        &mut draft,
+        src,
+        list_int,
+        "rootKeys5",
+        &root_entry,
+        5,
+        Walk::Root,
+    );
+    add_keys_export(
+        &mut draft,
+        src,
+        list_int,
+        "rootFrom",
+        &root_entry,
+        5,
+        Walk::RootFrom,
+    );
+    add_keys_export(
+        &mut draft,
+        src,
+        list_int,
+        "branchKeys",
+        &branch_entry,
+        5,
+        Walk::Branch,
+    );
+
+    add_more_export(
+        &mut draft,
+        src,
+        list_int,
+        "rootMore2",
+        &root_entry,
+        2,
+        Walk::Root,
+    );
+    add_more_export(
+        &mut draft,
+        src,
+        list_int,
+        "rootMore5",
+        &root_entry,
+        5,
+        Walk::Root,
+    );
+    add_more_export(
+        &mut draft,
+        src,
+        list_int,
+        "branchMore",
+        &branch_entry,
+        5,
+        Walk::Branch,
+    );
+    verify(&draft.encode().expect("encode").bytes).expect("image verifies")
+}
+
+/// The mutating seed: create three books (ids 1, 2, 3) and two notes (positions 10, 20)
+/// under book 1. Its write demand widens the attachment ceiling so the store can be
+/// populated.
+fn add_seed(
+    draft: &mut DraftTxn<'_>,
+    src: marrow_image::StrId,
+    root_entry: &PlannedSiteRef,
+    branch_entry: &PlannedSiteRef,
+    book_record: marrow_image::TypeId,
+    note_record: marrow_image::TypeId,
+) {
+    let name = draft.intern_string("seed").expect("a within-domain mint");
+    let title_const = draft.intern_text("t").expect("a within-domain mint");
+    let mut code = vec![Instr::TxnBegin];
+    for id in [1i64, 2, 3] {
+        let key = draft.intern_int(id).expect("a within-domain mint");
+        code.push(Instr::ConstLoad(key)); // root key
+        code.push(Instr::ConstLoad(title_const)); // title (a string const)
+        code.push(Instr::RecordNew(book_record));
+        code.push(Instr::DurCreateEntry(root_entry.clone()));
+    }
+    let book_one = draft.intern_int(1).expect("a within-domain mint");
+    for pos in [10i64, 20] {
+        let branch_key = draft.intern_int(pos).expect("a within-domain mint");
+        code.push(Instr::ConstLoad(book_one)); // root key
+        code.push(Instr::ConstLoad(branch_key)); // branch key
+        code.push(Instr::ConstLoad(title_const)); // text
+        code.push(Instr::RecordNew(note_record));
+        code.push(Instr::DurCreateEntry(branch_entry.clone()));
+    }
+    code.push(Instr::TxnCommit);
+    code.push(Instr::Return);
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
+    draft.add_export(export_id("seed"), func);
+}
+
+/// A read-only export returning the frozen `List[int]` of the traversal over `site`
+/// with the given `limit`. `ancestor` names the local slot holding the parent key a
+/// branch site pops (root site: none). `from` reads the from key from the first param.
+fn add_keys_export(
+    draft: &mut DraftTxn<'_>,
+    src: marrow_image::StrId,
+    list_int: marrow_image::CollTypeId,
+    name: &str,
+    site: &PlannedSiteRef,
+    limit: u32,
+    walk: Walk,
+) {
+    let from = walk == Walk::RootFrom;
     let list_ret = ImageType::Collection {
         idx: list_int,
         optional: false,
     };
-
-    // A read-only export returning the frozen `List[int]` of the traversal over `site`
-    // with the given `limit`. `ancestor` names the local slot holding the parent key a
-    // branch site pops (root site: none). `from` reads the from key from the first
-    // param.
-    let add_keys_export = |draft: &mut DraftTxn<'_>,
-                           name: &str,
-                           site: &PlannedSiteRef,
-                           limit: u32,
-                           from: bool,
-                           ancestor: bool| {
-        let name_id = draft.intern_string(name).expect("a within-domain mint");
-        let mut code = Vec::new();
-        let params = if from || ancestor {
-            vec![ImageType::scalar(Scalar::Int)]
-        } else {
-            Vec::new()
-        };
-        if from || ancestor {
-            code.push(Instr::LocalGet(0));
-        }
-        code.push(Instr::DurIterateBounded {
-            site: site.clone(),
-            limit,
-            from,
-            list_ty: list_int,
-        });
-        code.push(Instr::Pop); // discard the on-more Bool; the list is returned
-        code.push(Instr::Return);
-        let local_count = params.len() as u16;
-        let func = draft
-            .add_function(FunctionDef {
-                name: name_id,
-                source: src,
-                params,
-                ret: list_ret,
-                local_count,
-                spans: spans(&code),
-                code,
-            })
-            .expect("every site operand is live");
-        draft.add_export(export_id(name), func);
+    let name_id = draft.intern_string(name).expect("a within-domain mint");
+    let mut code = Vec::new();
+    let params = if walk == Walk::Root {
+        Vec::new()
+    } else {
+        vec![ImageType::scalar(Scalar::Int)]
     };
+    if walk != Walk::Root {
+        code.push(Instr::LocalGet(0));
+    }
+    code.push(Instr::DurIterateBounded {
+        site: site.clone(),
+        limit,
+        from,
+        list_ty: list_int,
+    });
+    code.push(Instr::Pop); // discard the on-more Bool; the list is returned
+    code.push(Instr::Return);
+    let local_count = params.len() as u16;
+    let func = draft
+        .add_function(FunctionDef {
+            name: name_id,
+            source: src,
+            params,
+            ret: list_ret,
+            local_count,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
+    draft.add_export(export_id(name), func);
+}
 
-    add_keys_export(&mut draft, "rootKeys2", &root_entry, 2, false, false);
-    add_keys_export(&mut draft, "rootKeys5", &root_entry, 5, false, false);
-    add_keys_export(&mut draft, "rootFrom", &root_entry, 5, true, false);
-    add_keys_export(&mut draft, "branchKeys", &branch_entry, 5, false, true);
-
-    // A read-only export returning the on-more `Bool` of the traversal over `site`.
-    let add_more_export = |draft: &mut DraftTxn<'_>,
-                           name: &str,
-                           site: &PlannedSiteRef,
-                           limit: u32,
-                           ancestor: bool| {
-        let name_id = draft.intern_string(name).expect("a within-domain mint");
-        let mut code = Vec::new();
-        let params = if ancestor {
-            vec![ImageType::scalar(Scalar::Int)]
-        } else {
-            Vec::new()
-        };
-        let bool_slot = params.len() as u16;
-        if ancestor {
-            code.push(Instr::LocalGet(0));
-        }
-        code.push(Instr::DurIterateBounded {
-            site: site.clone(),
-            limit,
-            from: false,
-            list_ty: list_int,
-        });
-        code.push(Instr::LocalSet(bool_slot)); // stash the on-more Bool
-        code.push(Instr::Pop); // discard the frozen list
-        code.push(Instr::LocalGet(bool_slot));
-        code.push(Instr::Return);
-        let func = draft
-            .add_function(FunctionDef {
-                name: name_id,
-                source: src,
-                params,
-                ret: ImageType::scalar(Scalar::Bool),
-                local_count: bool_slot + 1,
-                spans: spans(&code),
-                code,
-            })
-            .expect("every site operand is live");
-        draft.add_export(export_id(name), func);
+/// A read-only export returning the on-more `Bool` of the traversal over `site`.
+fn add_more_export(
+    draft: &mut DraftTxn<'_>,
+    src: marrow_image::StrId,
+    list_int: marrow_image::CollTypeId,
+    name: &str,
+    site: &PlannedSiteRef,
+    limit: u32,
+    walk: Walk,
+) {
+    let ancestor = walk == Walk::Branch;
+    let name_id = draft.intern_string(name).expect("a within-domain mint");
+    let mut code = Vec::new();
+    let params = if ancestor {
+        vec![ImageType::scalar(Scalar::Int)]
+    } else {
+        Vec::new()
     };
-
-    add_more_export(&mut draft, "rootMore2", &root_entry, 2, false);
-    add_more_export(&mut draft, "rootMore5", &root_entry, 5, false);
-    add_more_export(&mut draft, "branchMore", &branch_entry, 5, true);
-
-    verify(&draft.encode().expect("encode").bytes).expect("image verifies")
+    let bool_slot = params.len() as u16;
+    if ancestor {
+        code.push(Instr::LocalGet(0));
+    }
+    code.push(Instr::DurIterateBounded {
+        site: site.clone(),
+        limit,
+        from: false,
+        list_ty: list_int,
+    });
+    code.push(Instr::LocalSet(bool_slot)); // stash the on-more Bool
+    code.push(Instr::Pop); // discard the frozen list
+    code.push(Instr::LocalGet(bool_slot));
+    code.push(Instr::Return);
+    let func = draft
+        .add_function(FunctionDef {
+            name: name_id,
+            source: src,
+            params,
+            ret: ImageType::scalar(Scalar::Bool),
+            local_count: bool_slot + 1,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
+    draft.add_export(export_id(name), func);
 }
 
 /// Mint a fresh attachment and run the seed export against it, leaving a populated
