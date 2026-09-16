@@ -2027,10 +2027,11 @@ fn concurrent_acquisitions_write_one_ignore_entry() {
         let attempted = Barrier::new(THREADS);
         let contended = AtomicUsize::new(0);
         let root = project.path();
+        let (start, attempted, contended) = (&start, &attempted, &contended);
 
         std::thread::scope(|scope| {
             for seat in 0..THREADS {
-                scope.spawn(|| {
+                scope.spawn(move || {
                     start.wait();
                     match ProjectMetadataWriteGuard::acquire(root) {
                         Ok(guard) => {
