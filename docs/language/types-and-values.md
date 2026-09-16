@@ -625,8 +625,7 @@ Alias, nominal, struct, enum, and resource names share one namespace per
 project; a collision is a `check.name_conflict`. The namespace belongs to the
 tree that declares the name: a bare name is the declaring project's own, and a
 type of a declared dependency is written `alias::Name`
-([dependencies](modules-and-functions.md#dependencies)). A type name is one or
-two segments; a longer path names no type. A nominal int type is
+([dependencies](modules-and-functions.md#dependencies)). A nominal int type is
 admitted as a local resource field. Binding a resource containing a nominal
 value to a store reports `check.unsupported`, including nested and sparse
 fields and bindings with no durable operations. Nominal types are not admitted as store-root keys, branch

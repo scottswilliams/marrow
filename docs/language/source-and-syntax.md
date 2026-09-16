@@ -214,11 +214,10 @@ reads and writes.
 ## Declarations and statements
 
 A file declares `module`, `use`, `const`, `fn` and `pub fn`, `alias`, `type`,
-`struct`, `enum`, `resource`, `store` with its indexes, and `test`. An absent module reports
-`check.import` and an absent function reports `check.type`; a cross-module call
-to a non-public function reports `check.visibility`. Each form is defined by
-[modules and functions](modules-and-functions.md), [types and values](types-and-values.md),
-[resources](resources.md), [durable places](durable-places.md),
+`struct`, `enum`, `resource`, `store` with its indexes, and `test`. Each form
+is defined by [modules and functions](modules-and-functions.md),
+[types and values](types-and-values.md), [resources](resources.md),
+[durable places](durable-places.md),
 [traversal and indexes](traversal-and-indexes.md), or [tests](tests.md).
 
 A statement is a `const` or `var` binding, an assignment, an expression, `if`
