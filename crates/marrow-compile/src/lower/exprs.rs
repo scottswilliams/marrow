@@ -1003,7 +1003,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     && let [type_name] = &segments[..]
                     && let Some((id, _)) = self
                         .records
-                        .nominal_by_name(&self.bare_type(type_name.text()))
+                        .nominal_by_name(&self.scoped_name(type_name.text()))
                 {
                     return self
                         .lower_checked_nominal(id, args, span)
@@ -1027,7 +1027,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     if let [group_name] = path.as_slice()
                         && self
                             .records
-                            .by_name(&self.bare_type(resource))
+                            .by_name(&self.scoped_name(resource))
                             .is_some_and(|record| record.group(group_name).is_some())
                     {
                         return self
@@ -1037,7 +1037,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     // The store this resource backs was refused, so its branch tree was
                     // never built and whether `Resource.member(…)` names one of its
                     // branches is not knowable here.
-                    let backing = match self.durable.product(&self.durable_name(resource)) {
+                    let backing = match self.durable.product(&self.scoped_name(resource)) {
                         Ok(binding) => binding,
                         Err(drift) => {
                             self.ledger_drift::<()>(drift);
@@ -1287,7 +1287,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // A construction of a type this project declared and refused is not an
         // unknown callable: the declaration reported the cause, and this site is
         // steered to it rather than told the name does not exist.
-        if self.steer_refused_type(&self.bare_type(name), span) {
+        if self.steer_refused_type(&self.scoped_name(name), span) {
             return Err(LoweringFailure::Recoverable);
         }
         let suggestion = nearest_name(name, self.functions.module_function_names(self.module));
@@ -1962,7 +1962,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         path: &[&str],
     ) -> Option<&'a crate::durable::BranchRecordShape> {
         self.durable
-            .branch_record_at(&self.durable_name(resource), path)
+            .branch_record_at(&self.scoped_name(resource), path)
     }
 
     /// Lower a keyed branch entry constructor `Resource.branch(field: value, …)`. The
@@ -2079,12 +2079,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             ));
             return Err(LoweringFailure::Recoverable);
         }
-        let anchor = self.bare_type(resource).group_anchor(group_name);
+        let anchor = self.scoped_name(resource).below(group_name);
         let display = anchor.name().to_string();
         let group = self
             .accept_resolution(
                 self.records
-                    .static_group_projection(&self.bare_type(resource), group_name)
+                    .static_group_projection(&self.scoped_name(resource), group_name)
                     .map_err(ResolveError::Invariant),
                 span,
                 "this resource-group construction",
@@ -3190,8 +3190,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                             .record_by_type(ty)
                             .map(|info| info.name.clone())
                         {
-                            let backing = match self.durable.product(&self.durable_name(&resource))
-                            {
+                            let backing = match self.durable.product(&self.scoped_name(&resource)) {
                                 Ok(binding) => binding,
                                 Err(drift) => return self.ledger_drift(drift),
                             };
@@ -3202,7 +3201,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                                 ProductBinding::Declared
                                     if self
                                         .durable
-                                        .declares_branch(&self.durable_name(&resource), name) =>
+                                        .declares_branch(&self.scoped_name(&resource), name) =>
                                 {
                                     self.fail(branch_not_a_field(
                                         self.file,
@@ -3370,12 +3369,12 @@ struct TypePath {
     /// The spelling this site wrote, so a report names the type the way the writer
     /// did rather than in the declaring tree's own terms.
     written: String,
-    ty: ScopedTypeName,
+    ty: ScopedName,
 }
 
 impl TypePath {
     /// The type this spelling names, in the tree that declares it.
-    fn ty(&self) -> &ScopedTypeName {
+    fn ty(&self) -> &ScopedName {
         &self.ty
     }
 
@@ -3392,7 +3391,7 @@ struct EnumPath<'a> {
 
 impl EnumPath<'_> {
     /// The enum the head names, in the tree that declares it.
-    fn enum_ty(&self) -> &ScopedTypeName {
+    fn enum_ty(&self) -> &ScopedName {
         self.head.ty()
     }
 

@@ -22,7 +22,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::source::ProjectFile;
+use crate::source::{ProjectFile, ScopedName};
 use marrow_codes::Code;
 use marrow_image::{
     CanonicalDeclarationPathSelector, CollTypeId, DraftTxn, EnumId, FuncId, FunctionDef,
@@ -49,9 +49,8 @@ use crate::scalar::ScalarType;
 use crate::types::{
     CollSpec, EnumVariantSelection, GArg, GenericDiagnostics, GenericInvariant as LowerInvariant,
     MintSite, NominalId, OPTION_NONE, OPTION_SOME, ProductFieldProjection, RESULT_ERR, RESULT_OK,
-    ReservedEnumArgs, ResolveError, ResolveRefusal, ScopedTypeName, StaticNamedType,
-    StructFieldProjection, SupportSet, TypeConstraint, TypeInstId, TypeMetadataSession,
-    TypeParamIndex, TypeRegistry,
+    ReservedEnumArgs, ResolveError, ResolveRefusal, StaticNamedType, StructFieldProjection,
+    SupportSet, TypeConstraint, TypeInstId, TypeMetadataSession, TypeParamIndex, TypeRegistry,
 };
 use marrow_project::SourceOrigin;
 
@@ -1098,20 +1097,16 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
     }
 
-    /// The origin-scoped name a bare type spelling addresses from this body's tree.
+    /// The origin-scoped key a bare spelling written in this body addresses: a type
+    /// at a construction site, qualified name or steer, or the `^root` placement,
+    /// resource spelling, or branch path of a durable reference.
     ///
-    /// Construction sites, qualified names and steers name a type by a bare
-    /// identifier, which resolves in the tree that wrote it: a dependency's `Pair`
-    /// and the root's `Pair` are two types, and neither answers the other's name.
-    fn bare_type(&self, name: &str) -> ScopedTypeName {
-        ScopedTypeName::new(self.file.origin(), name)
-    }
-
-    /// The origin-scoped durable name a `^root` reference, a resource spelling, or a
-    /// branch path written in this body addresses. Durable namespaces are scoped to
-    /// the declaring tree, so a reference reaches only its own tree's declarations.
-    fn durable_name(&self, name: &str) -> crate::durable::ScopedDurableName {
-        crate::durable::ScopedDurableName::new(self.file.origin(), name)
+    /// Both namespaces are scoped to the declaring tree, so a bare spelling resolves
+    /// in the tree that wrote it: a dependency's `Pair` and the root's `Pair` are two
+    /// types, and neither answers the other's name. Which namespace a key reaches is
+    /// decided by the registry it is handed to.
+    fn scoped_name(&self, name: &str) -> ScopedName {
+        ScopedName::new(self.file.origin(), name)
     }
 
     /// Steer a use that named a refused type to that declaration's cause, if the name is
@@ -1120,7 +1115,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// A construction site and a qualified name resolve through the kind-specific tables
     /// rather than through type-annotation resolution, so this probe is what keeps those
     /// paths from calling a refused type undeclared.
-    fn steer_refused_type(&mut self, name: &ScopedTypeName, span: SourceSpan) -> bool {
+    fn steer_refused_type(&mut self, name: &ScopedName, span: SourceSpan) -> bool {
         let steer = match self.records.named_type(name) {
             Ok(Binding::Refused(_, summary)) => Ok(Some(self.steer_row(summary, span))),
             Ok(Binding::Accepted(_) | Binding::Absent) => Ok(None),
@@ -1143,12 +1138,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// `owner` is the record's scoped name, or the `Record.group` anchor of an unkeyed
     /// group. `false` means the owner never declared the member, which is the one case
     /// a "has no field" report may describe.
-    fn steer_refused_member(
-        &mut self,
-        owner: &ScopedTypeName,
-        member: &str,
-        span: SourceSpan,
-    ) -> bool {
+    fn steer_refused_member(&mut self, owner: &ScopedName, member: &str, span: SourceSpan) -> bool {
         let steer = match self.records.member(owner, member) {
             Ok(Binding::Refused(_, summary)) => Ok(Some(self.steer_row(summary, span))),
             Ok(Binding::Accepted(_) | Binding::Absent) => Ok(None),
@@ -1303,7 +1293,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         span: SourceSpan,
     ) -> Option<&'a crate::durable::DurableRoot> {
         let durable: &'a DurableRegistry = self.durable;
-        let binding = match durable.root(&self.durable_name(name)) {
+        let binding = match durable.root(&self.scoped_name(name)) {
             Ok(binding) => binding,
             Err(drift) => return self.ledger_drift(drift),
         };

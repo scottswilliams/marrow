@@ -25,13 +25,13 @@ struct AliasDenotation {
 /// terminates in the consumer's namespace.
 #[derive(Default)]
 pub(super) struct AliasTable {
-    terminals: Vec<ScopedTypeName>,
-    bindings: BTreeMap<ScopedTypeName, AliasDenotation>,
+    terminals: Vec<ScopedName>,
+    bindings: BTreeMap<ScopedName, AliasDenotation>,
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct GlobalAliasTarget<'a> {
-    pub(crate) terminal: &'a ScopedTypeName,
+    pub(crate) terminal: &'a ScopedName,
     pub(crate) presence: AliasPresence,
 }
 
@@ -41,12 +41,12 @@ pub(super) struct AliasInput<'a> {
     pub(super) decl: &'a AliasDecl,
     /// Where the written target resolves, or `None` when the spelling names no
     /// tree — a qualified target whose first segment is not a declared dependency.
-    pub(super) target: Option<ScopedTypeName>,
+    pub(super) target: Option<ScopedName>,
     pub(super) presence: AliasPresence,
 }
 
 impl AliasTable {
-    pub(super) fn get(&self, scope: &ScopedTypeName) -> Option<GlobalAliasTarget<'_>> {
+    pub(super) fn get(&self, scope: &ScopedName) -> Option<GlobalAliasTarget<'_>> {
         let binding = self.bindings.get(scope)?;
         Some(GlobalAliasTarget {
             terminal: &self.terminals[binding.terminal.0],
@@ -54,17 +54,17 @@ impl AliasTable {
         })
     }
 
-    pub(super) fn contains_key(&self, scope: &ScopedTypeName) -> bool {
+    pub(super) fn contains_key(&self, scope: &ScopedName) -> bool {
         self.bindings.contains_key(scope)
     }
 
-    pub(super) fn remove(&mut self, scope: &ScopedTypeName) {
+    pub(super) fn remove(&mut self, scope: &ScopedName) {
         self.bindings.remove(scope);
     }
 
     pub(super) fn normalize(
-        named: &mut DeclarationLedger<ScopedTypeName, NamedTypeKind>,
-        inputs: BTreeMap<ScopedTypeName, AliasInput<'_>>,
+        named: &mut DeclarationLedger<ScopedName, NamedTypeKind>,
+        inputs: BTreeMap<ScopedName, AliasInput<'_>>,
         diagnostics: &mut DiagnosticCollector,
     ) -> Result<Self, DeclareError> {
         let rows: Vec<_> = inputs.into_iter().collect();

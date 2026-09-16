@@ -132,7 +132,7 @@ pub(super) fn register_type_templates(
     // A pending declaration holds a name only in its own tree: type namespaces are
     // origin-scoped, so a dependency's `Pair` never conflicts with the root's.
     let taken = |registry: &TypeRegistry, declared: &DeclarationSite<'_>| {
-        let scope = ScopedTypeName::declared(declared);
+        let scope = ScopedName::declared(declared);
         let origin = scope.origin();
         Ok::<_, DeclarationIndexDrift>(registry.name_conflict(&scope)?.or_else(|| {
             pending_name(
@@ -249,7 +249,7 @@ fn claim_template_name(
             reserved_name(declared.file, declared.span, declared.name),
         );
         registry.named.declare(
-            ScopedTypeName::declared(&declared),
+            ScopedName::declared(&declared),
             DeclarationOccurrence::Refused(refusal),
         )?;
         return Ok(false);
@@ -282,14 +282,14 @@ fn settle_template(
         (Some(body), None) => body,
         (_, Some(refusal)) => {
             return registry.named.declare(
-                ScopedTypeName::declared(&declared),
+                ScopedName::declared(&declared),
                 DeclarationOccurrence::Refused(refusal),
             );
         }
         (None, None) => return Ok(()),
     };
     registry.named.declare(
-        ScopedTypeName::declared(&declared),
+        ScopedName::declared(&declared),
         DeclarationOccurrence::Accepted(NamedTypeKind::Template),
     )?;
     registry.type_templates.push(TypeTemplate {
@@ -543,7 +543,7 @@ fn template_enum_variants(
 /// `check.name_conflict`; an alias on a cyclic chain is a `check.recursion`
 /// and does not enter the map.
 pub(super) fn build_alias_table(
-    named: &mut DeclarationLedger<ScopedTypeName, NamedTypeKind>,
+    named: &mut DeclarationLedger<ScopedName, NamedTypeKind>,
     origins: &CapturedOrigins,
     aliases: &[(FileRef, ProjectFile, &AliasDecl)],
     resources: &[(FileRef, ProjectFile, &ResourceDecl)],
@@ -559,7 +559,7 @@ pub(super) fn build_alias_table(
             at: *at,
             span: decl.name_span,
         };
-        let scope = ScopedTypeName::declared(&declared);
+        let scope = ScopedName::declared(&declared);
         // A parse error blocks compilation before this runs, so a missing target means
         // the declaration was already reported; skip it quietly.
         let Some(ty) = &decl.ty else { continue };
@@ -616,7 +616,7 @@ pub(super) fn build_alias_table(
             named.declare(scope, DeclarationOccurrence::Refused(refusal))?;
             continue;
         };
-        let target = ScopedTypeName::written(origins, file.origin(), target);
+        let target = ScopedName::written(origins, file.origin(), target);
         raw.insert(
             scope,
             AliasInput {
@@ -639,7 +639,7 @@ pub(super) fn validate_alias_targets(
     aliases: &[(FileRef, ProjectFile, &AliasDecl)],
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<(), DeclareError> {
-    let mut refused: Vec<ScopedTypeName> = Vec::new();
+    let mut refused: Vec<ScopedName> = Vec::new();
     for (at, file, decl) in aliases {
         let declared = DeclarationSite {
             name: &decl.name,
@@ -647,7 +647,7 @@ pub(super) fn validate_alias_targets(
             at: *at,
             span: decl.span,
         };
-        let scope = ScopedTypeName::declared(&declared);
+        let scope = ScopedName::declared(&declared);
         let Some(target) = registry.aliases.get(&scope) else {
             continue; // duplicate or cyclic: already reported
         };
@@ -715,7 +715,7 @@ pub(super) fn build_nominals(
             at: *at,
             span: decl.name_span,
         };
-        let scope = ScopedTypeName::declared(&declared);
+        let scope = ScopedName::declared(&declared);
         // A parse error blocks compilation before this runs, so a missing piece means
         // the declaration was already reported; skip it quietly.
         let (Some(base), Some(interval)) = (&decl.base, &decl.interval) else {
@@ -948,7 +948,7 @@ pub(super) fn declare_structs<'a>(
             at: *at,
             span: decl.name_span,
         };
-        let scope = ScopedTypeName::declared(&declared);
+        let scope = ScopedName::declared(&declared);
         if is_reserved_type_name(&decl.name) {
             let refusal = refuse_row(
                 diagnostics,
@@ -1034,7 +1034,7 @@ pub(super) fn fill_structs(
             info.verdict = DeclarationVerdict::Refused;
         }
         registry.named.declare(
-            ScopedTypeName::new(item.file.origin(), &item.decl.name),
+            ScopedName::new(item.file.origin(), &item.decl.name),
             occurrence,
         )?;
     }
@@ -1149,7 +1149,7 @@ pub(super) fn declare_enums<'a>(
             at: *at,
             span: decl.name_span,
         };
-        let scope = ScopedTypeName::declared(&declared);
+        let scope = ScopedName::declared(&declared);
         if is_reserved_type_name(&decl.name) {
             let refusal = refuse_row(
                 diagnostics,
@@ -1250,7 +1250,7 @@ pub(super) fn fill_enums(
             info.verdict = DeclarationVerdict::Refused;
         }
         registry.named.declare(
-            ScopedTypeName::new(item.file.origin(), &item.decl.name),
+            ScopedName::new(item.file.origin(), &item.decl.name),
             occurrence,
         )?;
     }
@@ -1444,7 +1444,7 @@ pub(super) fn declare_records<'a>(
             at: *at,
             span: resource.name_span,
         };
-        let scope = ScopedTypeName::declared(&declared);
+        let scope = ScopedName::declared(&declared);
         if is_reserved_type_name(&resource.name) {
             let refusal = refuse_row(
                 diagnostics,
@@ -1552,7 +1552,7 @@ fn fill_record(
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<(), BuildError> {
     let file = declared.file;
-    let owner = ScopedTypeName::declared(&declared);
+    let owner = ScopedName::declared(&declared);
     let mut groups = Vec::new();
     let mut group_slot_defs = Vec::new();
     // Fields, groups, and branches share the resource's one member layer: a group or
@@ -1635,14 +1635,14 @@ fn fill_record(
 fn admit_unkeyed_group(
     draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
-    owner: &ScopedTypeName,
+    owner: &ScopedName,
     group: &GroupDecl,
     declared: DeclarationSite<'_>,
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<(GroupInfo, FieldDef), BuildError> {
     let (leaf_fields, leaf_defs) =
         build_group_leaves(draft, registry, owner, group, declared, diagnostics)?;
-    let group_name_id = draft.intern_string(owner.group_anchor(&group.name).name())?;
+    let group_name_id = draft.intern_string(owner.below(&group.name).name())?;
     let group_type_id = draft.add_record_type(RecordTypeDef {
         name: group_name_id,
         fields: leaf_defs,
@@ -1676,7 +1676,7 @@ fn seal_record_slots(
     draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
     index: usize,
-    owner: &ScopedTypeName,
+    owner: &ScopedName,
     groups: Vec<GroupInfo>,
     group_slot_defs: Vec<FieldDef>,
 ) -> Result<(), BuildError> {
@@ -1811,13 +1811,13 @@ fn resource_member(
 fn build_group_leaves(
     draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
-    record: &ScopedTypeName,
+    record: &ScopedName,
     group: &GroupDecl,
     declared: DeclarationSite<'_>,
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<(Vec<FieldInfo>, Vec<FieldDef>), BuildError> {
     let file = declared.file;
-    let anchor = record.group_anchor(&group.name);
+    let anchor = record.below(&group.name);
     let mut names = MemberNamespace::new(anchor.name());
     for member in &group.members {
         let field = match member {

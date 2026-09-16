@@ -13,7 +13,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
-use crate::source::ProjectFile;
+use crate::source::{ProjectFile, ScopedName};
 use marrow_codes::Code;
 use marrow_image::{
     AdmittedGraphInputPlan, CanonicalDeclarationPathSelector, CanonicalValueShapeDag,
@@ -37,8 +37,7 @@ use crate::diag::{DiagnosticCollector, IdentityGap, SourceDiagnostic};
 use crate::scalar::ScalarType;
 use crate::types::{
     BuildError, GArg, GenericInvariant, NominalBoundaryKind, NominalBoundaryRoot,
-    NominalBoundaryValue, RecordInfo, ResolveError, ScopedTypeName, TypeMetadataSession,
-    TypeRegistry,
+    NominalBoundaryValue, RecordInfo, ResolveError, TypeMetadataSession, TypeRegistry,
 };
 
 mod rows;
@@ -257,7 +256,7 @@ pub(crate) struct DurableRoot {
     pub(crate) family: Family,
     /// The resource (product) backing this store, named in the tree that declared it:
     /// the member ledger's owner for this root's fields.
-    pub(crate) resource: ScopedTypeName,
+    pub(crate) resource: ScopedName,
     /// The root's ordered key columns (one or more), the whole composite root key.
     pub(crate) key: Vec<ScalarType>,
     pub(crate) record: marrow_image::TypeId,
@@ -411,43 +410,6 @@ pub(crate) enum ProductBinding<'a> {
     Absent,
 }
 
-/// One declared durable name in the tree that declares it: a store-root placement,
-/// the resource spelling of a Product, or a qualified branch constructor path under
-/// one.
-///
-/// Durable namespaces are origin-scoped for the same reason type namespaces are: two
-/// captured trees may each declare `^books`, or a `Book.notes` branch, and neither
-/// answers the other's name. The pair is built from an origin and a name, never read
-/// back out of one spelling.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub(crate) struct ScopedDurableName {
-    origin: SourceOrigin,
-    name: String,
-}
-
-impl ScopedDurableName {
-    pub(crate) fn new(origin: &SourceOrigin, name: &str) -> Self {
-        Self {
-            origin: origin.clone(),
-            name: name.to_string(),
-        }
-    }
-
-    /// The bare name, as the declaring tree's own source spells it.
-    pub(crate) fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// The same tree's name for one step below this one, as `self.name` extended by
-    /// `step`: the qualified constructor path of a branch under a resource or branch.
-    fn below(&self, step: &str) -> Self {
-        Self {
-            origin: self.origin.clone(),
-            name: format!("{}.{step}", self.name),
-        }
-    }
-}
-
 /// The `store` declarations that bind one resource, in declaration order.
 struct ProductStores {
     /// The placement names of the stores over this resource the compiler admitted.
@@ -470,14 +432,14 @@ struct ProductStores {
 /// the executable list stays declaration-ordered.
 pub(crate) struct DurableRegistry {
     roots: Vec<DurableRoot>,
-    declared: DeclarationLedger<ScopedDurableName, DeclaredRoot>,
+    declared: DeclarationLedger<ScopedName, DeclaredRoot>,
     /// The `store` declarations binding each resource, appended in the same statement
     /// as the ledger entry so the two cannot drift.
     ///
     /// The ledger stays the sole authority for what a placement name binds; this only
     /// lets a resource-keyed lookup reach it. A placement here the ledger does not know
     /// is [`DeclarationIndexDrift`], not a neighbouring root.
-    products: BTreeMap<ScopedDurableName, ProductStores>,
+    products: BTreeMap<ScopedName, ProductStores>,
     /// Every durable Product's materialized branch entry records, keyed by record type
     /// and by the branch's qualified constructor path (`Book.notes.tags`).
     ///
@@ -485,7 +447,7 @@ pub(crate) struct DurableRegistry {
     /// roots project it, so this table is declaration-scoped: it is written once, at
     /// each Product's first executable root, and holds no site, path, or root.
     branch_records: BTreeMap<marrow_image::TypeId, BranchRecordShape>,
-    branch_paths: BTreeMap<ScopedDurableName, marrow_image::TypeId>,
+    branch_paths: BTreeMap<ScopedName, marrow_image::TypeId>,
     /// Every durable Product's declared keyed-branch paths in qualified source spelling
     /// (`Book.notes`, `Book.notes.tags`), written once per Product at its first admitted
     /// root, straight from the resource declaration.
@@ -494,7 +456,7 @@ pub(crate) struct DurableRegistry {
     /// occur over the Product and whichever of them the kernel can serve, so it is
     /// answered here and not from [`Self::branch_paths`], which holds only the branches
     /// of roots inside the executable subset.
-    declared_branch_paths: BTreeSet<ScopedDurableName>,
+    declared_branch_paths: BTreeSet<ScopedName>,
     /// The durable-path naming join for every admitted graph node, `(ledger id, sigil,
     /// simple name)`, accumulated across the project's admitted stores. The
     /// [`DurableNaming`] the demand sentence spells paths through is built from this.
@@ -529,10 +491,7 @@ impl DurableRegistry {
     /// What the placement name `name` resolves to: its executable root, a parked
     /// declaration, the refusal that stands in its place, or a genuine absence. The
     /// one owner of that four-way answer; every other root lookup projects from it.
-    pub(crate) fn root(
-        &self,
-        name: &ScopedDurableName,
-    ) -> Result<RootBinding<'_>, DeclarationIndexDrift> {
+    pub(crate) fn root(&self, name: &ScopedName) -> Result<RootBinding<'_>, DeclarationIndexDrift> {
         Ok(match self.declared.lookup(name)? {
             Binding::Accepted(declared) => match declared.executable {
                 Some(at) => match self.roots.get(at) {
@@ -565,7 +524,7 @@ impl DurableRegistry {
     /// takes [`DurableRegistry::root`] so a refused root is not read as an absent one.
     pub(crate) fn root_by_name(
         &self,
-        name: &ScopedDurableName,
+        name: &ScopedName,
     ) -> Result<Option<&DurableRoot>, DeclarationIndexDrift> {
         Ok(match self.root(name)? {
             RootBinding::Executable(root) => Some(root),
@@ -593,13 +552,13 @@ impl DurableRegistry {
     /// reported rather than answered.
     pub(crate) fn product(
         &self,
-        resource: &ScopedDurableName,
+        resource: &ScopedName,
     ) -> Result<ProductBinding<'_>, DeclarationIndexDrift> {
         let Some(stores) = self.products.get(resource) else {
             return Ok(ProductBinding::Absent);
         };
         for name in &stores.admitted {
-            match self.root(&ScopedDurableName::new(&resource.origin, name))? {
+            match self.root(&ScopedName::new(resource.origin(), name))? {
                 RootBinding::Executable(_) | RootBinding::NotYetExecutable => {}
                 RootBinding::Refused(..) | RootBinding::Absent => {
                     return Err(DeclarationIndexDrift);
@@ -612,7 +571,7 @@ impl DurableRegistry {
         let Some(refused) = &stores.first_refused else {
             return Err(DeclarationIndexDrift);
         };
-        match self.root(&ScopedDurableName::new(&resource.origin, refused))? {
+        match self.root(&ScopedName::new(resource.origin(), refused))? {
             RootBinding::Refused(_, summary) => Ok(ProductBinding::Refused(summary)),
             RootBinding::Executable(_) | RootBinding::NotYetExecutable | RootBinding::Absent => {
                 Err(DeclarationIndexDrift)
@@ -625,7 +584,7 @@ impl DurableRegistry {
     /// facts only: the constructor builds a record, it addresses no durable node.
     pub(crate) fn branch_record_at(
         &self,
-        resource: &ScopedDurableName,
+        resource: &ScopedName,
         path: &[&str],
     ) -> Option<&BranchRecordShape> {
         if path.is_empty() {
@@ -641,7 +600,7 @@ impl DurableRegistry {
     /// Whether `resource` declares a keyed branch named `name` directly below itself — a
     /// Product declaration fact, answered from the declared branch paths rather than from
     /// any one root's built descriptors.
-    pub(crate) fn declares_branch(&self, resource: &ScopedDurableName, name: &str) -> bool {
+    pub(crate) fn declares_branch(&self, resource: &ScopedName, name: &str) -> bool {
         self.declared_branch_paths.contains(&resource.below(name))
     }
 
@@ -674,8 +633,8 @@ impl DurableRegistry {
     ) -> impl Iterator<Item = &'a str> {
         self.declared
             .keys()
-            .filter(move |key| key.origin == *origin)
-            .map(ScopedDurableName::name)
+            .filter(move |key| key.origin() == origin)
+            .map(ScopedName::name)
     }
 
     /// Record one Product declaration's branch entry records from the branch tree of its
@@ -684,11 +643,7 @@ impl DurableRegistry {
     /// Only declaration facts cross: the branch's simple name, key-free field layout, and
     /// materialized record type, plus the names of its own sub-branches. Operation sites
     /// and semantic paths stay on the occurrence that owns them.
-    fn record_branch_declarations(
-        &mut self,
-        container: &ScopedDurableName,
-        branches: &[DurableBranch],
-    ) {
+    fn record_branch_declarations(&mut self, container: &ScopedName, branches: &[DurableBranch]) {
         for branch in branches {
             let qualified = container.below(&branch.name);
             self.branch_paths.insert(qualified.clone(), branch.record);
@@ -736,7 +691,7 @@ impl DurableRegistry {
             }
             self.record_declared_branch_paths(origin, &row.groups);
             self.declared_branch_paths
-                .insert(ScopedDurableName::new(origin, &row.path));
+                .insert(ScopedName::new(origin, &row.path));
         }
     }
 
@@ -806,7 +761,7 @@ impl DurableRegistry {
                 // second DURABLE-table row; reject it and keep the first declaration. A
                 // refused declaration still occupies its name, so the repeat conflicts
                 // whichever of the two the compiler could admit.
-                let placement = ScopedDurableName::new(file.origin(), &store.root.root);
+                let placement = ScopedName::new(file.origin(), &store.root.root);
                 if registry.declared.declared(&placement) {
                     settled.push(SourceDiagnostic::at(
                         Code::CheckType,
@@ -875,7 +830,7 @@ impl DurableRegistry {
                     StoreResourceBinding::Accepted(bound) => directory.row(bound).file.origin(),
                     _ => file.origin(),
                 };
-                let product_key = ScopedDurableName::new(product_origin, row.resource);
+                let product_key = ScopedName::new(product_origin, row.resource);
                 let stores = registry
                     .products
                     .entry(product_key.clone())

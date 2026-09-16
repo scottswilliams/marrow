@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::hash::Hash;
 use std::rc::Rc;
 
-use crate::source::{CapturedOrigins, ProjectFile};
+use crate::source::{CapturedOrigins, ProjectFile, ScopedName};
 use marrow_codes::Code;
 use marrow_image::{
     CollTypeId, CollectionTypeDef, DraftTxn, EnumId, FieldDef, ImageType, RecordTypeDef, Scalar,
@@ -1132,8 +1132,8 @@ pub(crate) struct RecordInfo {
 impl RecordInfo {
     /// This record's name in the tree that declared it: the member ledger's owner
     /// key, and the one place the pair is put back together.
-    pub(crate) fn scoped_name(&self) -> ScopedTypeName {
-        ScopedTypeName::new(&self.origin, &self.name)
+    pub(crate) fn scoped_name(&self) -> ScopedName {
+        ScopedName::new(&self.origin, &self.name)
     }
 
     pub(crate) fn field(&self, name: &str) -> Option<(u16, &FieldInfo)> {
@@ -1273,7 +1273,7 @@ fn field_index<'f>(fields: &'f [FieldInfo], name: &str) -> Option<(u16, &'f Fiel
 /// record and steer a refused member to the wrong declaration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MemberKey {
-    owner: ScopedTypeName,
+    owner: ScopedName,
     member: String,
 }
 
@@ -1297,15 +1297,15 @@ impl PartialOrd for MemberKey {
 
 impl MemberKey {
     /// A member of the resource record `owner`, or a leaf of one of its unkeyed
-    /// groups when `owner` is that group's [anchor](ScopedTypeName::group_anchor).
-    pub(crate) fn new(owner: &ScopedTypeName, member: &str) -> Self {
+    /// groups when `owner` is that group's [anchor](ScopedName::below).
+    pub(crate) fn new(owner: &ScopedName, member: &str) -> Self {
         Self {
             owner: owner.clone(),
             member: member.to_string(),
         }
     }
 
-    fn owns(&self, owner: &ScopedTypeName) -> bool {
+    fn owns(&self, owner: &ScopedName) -> bool {
         self.owner == *owner
     }
 
@@ -1370,75 +1370,6 @@ impl NameHolder {
     }
 }
 
-/// One declared type name in the tree that declares it.
-///
-/// Type namespaces are origin-scoped: a bare name written in one tree names a type
-/// of that tree alone, and a two-segment `alias::Name` names one of the dependency
-/// the alias declares. A key is always built from an origin and a name through
-/// [`TypeRegistry::scoped`], never by reading an origin out of a spelling.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub(crate) struct ScopedTypeName {
-    origin: SourceOrigin,
-    name: String,
-}
-
-impl ScopedTypeName {
-    /// Where a written type spelling resolves from `origin`, given the captured
-    /// trees. A bare name resolves in the tree that wrote it; a two-segment
-    /// `alias::Name` resolves in the dependency the alias declares; any other shape
-    /// names no tree.
-    pub(crate) fn written(
-        origins: &CapturedOrigins,
-        origin: &SourceOrigin,
-        written: &str,
-    ) -> Option<Self> {
-        let mut segments = marrow_syntax::type_name_segments(written);
-        let first = segments.next()?;
-        let Some(name) = segments.next() else {
-            return Some(Self::new(origin, first));
-        };
-        if segments.next().is_some() {
-            return None;
-        }
-        origins
-            .declared(first)
-            .map(|declaring| Self::new(declaring, name))
-    }
-
-    /// The name one declaration takes, scoped to the tree it is written in.
-    pub(crate) fn declared(site: &DeclarationSite<'_>) -> Self {
-        Self::new(site.file.origin(), site.name)
-    }
-
-    pub(crate) fn new(origin: &SourceOrigin, name: &str) -> Self {
-        Self {
-            origin: origin.clone(),
-            name: name.to_string(),
-        }
-    }
-
-    /// The tree this name is declared in.
-    pub(crate) fn origin(&self) -> &SourceOrigin {
-        &self.origin
-    }
-
-    /// The bare name, as the declaring tree's own source spells it.
-    pub(crate) fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// The `Record.group` anchor an unkeyed group's leaves are owned by, in the tree
-    /// that declared the record. It is the spelling the group's image record type
-    /// carries, and no declaration can take it — a declared type name has no dot —
-    /// so a leaf and a top-level member of one name never share a key.
-    pub(crate) fn group_anchor(&self, group: &str) -> Self {
-        Self {
-            origin: self.origin.clone(),
-            name: format!("{}.{group}", self.name),
-        }
-    }
-}
-
 /// The project named-type registry: the transparent aliases, the nominal int
 /// types, the dense struct value types, and the durable-capable record types.
 pub(crate) struct TypeRegistry {
@@ -1450,7 +1381,7 @@ pub(crate) struct TypeRegistry {
     /// table — so no construction or match resolves against a broken type — and retained
     /// here, so the use that can no longer resolve is steered to the cause instead of
     /// being told the name was never written.
-    named: DeclarationLedger<ScopedTypeName, NamedTypeKind>,
+    named: DeclarationLedger<ScopedName, NamedTypeKind>,
     /// The trees this compilation captured, so a qualified annotation's first
     /// segment is resolved to the dependency that declares it.
     origins: CapturedOrigins,
@@ -1655,14 +1586,14 @@ impl TypeRegistry {
 
     pub(crate) fn static_record_projection(
         &self,
-        name: &ScopedTypeName,
+        name: &ScopedName,
     ) -> Result<Option<RecordInfo>, GenericInvariant> {
         self.with_metadata_session(|session| session.static_record_by_name(name))
     }
 
     pub(crate) fn static_group_projection(
         &self,
-        record: &ScopedTypeName,
+        record: &ScopedName,
         group: &str,
     ) -> Result<Option<GroupInfo>, GenericInvariant> {
         self.with_metadata_session(|session| session.static_group_by_name(record, group))
@@ -1670,21 +1601,21 @@ impl TypeRegistry {
 
     pub(crate) fn static_struct_projection(
         &self,
-        name: &ScopedTypeName,
+        name: &ScopedName,
     ) -> Result<Option<StructInfo>, GenericInvariant> {
         self.with_metadata_session(|session| session.static_struct_by_name(name))
     }
 
     pub(crate) fn static_enum_projection(
         &self,
-        name: &ScopedTypeName,
+        name: &ScopedName,
     ) -> Result<Option<EnumInfo>, GenericInvariant> {
         self.with_metadata_session(|session| session.static_enum_by_name(name))
     }
 
     pub(crate) fn static_named_type_projection(
         &self,
-        name: &ScopedTypeName,
+        name: &ScopedName,
     ) -> Result<Option<StaticNamedType>, GenericInvariant> {
         self.with_metadata_session(|session| session.static_named_type(name))
     }
@@ -1882,7 +1813,7 @@ impl TypeRegistry {
 
     /// The template index of a generic value type named `head` (a reserved
     /// `Option`/`Result` or a user `struct`/`enum` template), if one exists.
-    pub(crate) fn type_template_by_name(&self, scope: &ScopedTypeName) -> Option<usize> {
+    pub(crate) fn type_template_by_name(&self, scope: &ScopedName) -> Option<usize> {
         self.type_templates.iter().position(|template| {
             template.name == scope.name()
                 // A reserved toolchain generic belongs to no tree and answers every
@@ -2097,7 +2028,7 @@ impl TypeRegistry {
         }
     }
 
-    fn resolve_global_garg(&self, scope: &ScopedTypeName) -> Result<GArg, ResolveError> {
+    fn resolve_global_garg(&self, scope: &ScopedName) -> Result<GArg, ResolveError> {
         if let Some(scalar) = ScalarType::from_spelling(scope.name()) {
             Ok(GArg::Scalar(scalar))
         } else if let Some((id, _)) = self.nominal_by_name(scope) {
@@ -3327,7 +3258,7 @@ impl TypeRegistry {
         self.coordinates.module_of(type_id)
     }
 
-    pub(crate) fn by_name(&self, scope: &ScopedTypeName) -> Option<&RecordInfo> {
+    pub(crate) fn by_name(&self, scope: &ScopedName) -> Option<&RecordInfo> {
         self.records
             .iter()
             .find(|info| info.origin == *scope.origin() && info.name == scope.name())
@@ -3351,7 +3282,7 @@ impl TypeRegistry {
     /// scanning again. A second scan is a second place to forget the verdict, and a name
     /// answered by a reserved, unfilled row resolves to a live empty struct against
     /// which every later question fabricates an answer.
-    pub(crate) fn struct_by_name(&self, scope: &ScopedTypeName) -> Option<&StructInfo> {
+    pub(crate) fn struct_by_name(&self, scope: &ScopedName) -> Option<&StructInfo> {
         self.structs.iter().find(|info| {
             info.origin == *scope.origin()
                 && info.name == scope.name()
@@ -3365,7 +3296,7 @@ impl TypeRegistry {
 
     /// The accepted enum declared as `name`. A refused row answers no name, for the
     /// reason given at [`Self::struct_by_name`].
-    pub(crate) fn enum_by_name(&self, scope: &ScopedTypeName) -> Option<&EnumInfo> {
+    pub(crate) fn enum_by_name(&self, scope: &ScopedName) -> Option<&EnumInfo> {
         self.enums.iter().find(|info| {
             info.origin == *scope.origin()
                 && info.name == scope.name()
@@ -3387,8 +3318,8 @@ impl TypeRegistry {
     /// Any other shape — an unknown first segment, or more than two segments —
     /// names no tree, so it resolves nowhere and the annotation is refused rather
     /// than silently read as a bare name carrying a `::`.
-    pub(crate) fn scoped(&self, origin: &SourceOrigin, written: &str) -> Option<ScopedTypeName> {
-        ScopedTypeName::written(&self.origins, origin, written)
+    pub(crate) fn scoped(&self, origin: &SourceOrigin, written: &str) -> Option<ScopedName> {
+        ScopedName::written(&self.origins, origin, written)
     }
 
     /// The one conversion from a named-type ledger lookup to a resolution refusal,
@@ -3398,7 +3329,7 @@ impl TypeRegistry {
     /// a `Copy` handle.
     pub(crate) fn unresolved_named_type(
         &self,
-        name: &ScopedTypeName,
+        name: &ScopedName,
     ) -> Result<ResolveRefusal, DeclarationIndexDrift> {
         Ok(match self.named.lookup(name)? {
             Binding::Refused(id, _) => ResolveRefusal::RefusedDeclaration(id),
@@ -3419,7 +3350,7 @@ impl TypeRegistry {
     /// pass two, after pass one reserved its image index.
     pub(super) fn name_conflict(
         &self,
-        scope: &ScopedTypeName,
+        scope: &ScopedName,
     ) -> Result<Option<NameHolder>, DeclarationIndexDrift> {
         if ScalarType::from_spelling(scope.name()).is_some() {
             return Ok(Some(NameHolder::Kind(NamedTypeKind::Scalar)));
@@ -3445,7 +3376,7 @@ impl TypeRegistry {
     /// in its place, or a genuine absence.
     pub(crate) fn named_type(
         &self,
-        name: &ScopedTypeName,
+        name: &ScopedName,
     ) -> Result<Binding<'_, NamedTypeKind>, DeclarationIndexDrift> {
         self.named.lookup(name)
     }
@@ -3494,7 +3425,7 @@ impl TypeRegistry {
     /// `owner` is a resource record's name, or the `Record.group` anchor of one of
     /// its unkeyed groups. This is what a record's field list is built from, so
     /// the record and the ledger cannot disagree about which members survived.
-    fn accepted_members(&self, owner: &ScopedTypeName) -> Vec<FieldInfo> {
+    fn accepted_members(&self, owner: &ScopedName) -> Vec<FieldInfo> {
         self.members
             .accepted()
             .filter(|(key, _)| key.owns(owner))
@@ -3508,7 +3439,7 @@ impl TypeRegistry {
     /// resource's declared members — the durable identity anchors, above all —
     /// reads this beside `accepted_members` rather than narrowing to the accepted
     /// set alone.
-    pub(crate) fn refused_members(&self, owner: &ScopedTypeName) -> Vec<&str> {
+    pub(crate) fn refused_members(&self, owner: &ScopedName) -> Vec<&str> {
         self.members
             .refused()
             .filter(|(key, _)| key.owns(owner))
@@ -3524,7 +3455,7 @@ impl TypeRegistry {
     /// make a false statement about the source.
     pub(crate) fn member(
         &self,
-        owner: &ScopedTypeName,
+        owner: &ScopedName,
         member: &str,
     ) -> Result<Binding<'_, FieldInfo>, DeclarationIndexDrift> {
         self.members.lookup(&MemberKey::new(owner, member))
@@ -3553,10 +3484,7 @@ impl TypeRegistry {
         self.named.refusal(id)
     }
 
-    pub(crate) fn nominal_by_name(
-        &self,
-        scope: &ScopedTypeName,
-    ) -> Option<(NominalId, &NominalInfo)> {
+    pub(crate) fn nominal_by_name(&self, scope: &ScopedName) -> Option<(NominalId, &NominalInfo)> {
         self.nominals
             .iter()
             .position(|info| info.origin == *scope.origin() && info.name == scope.name())
@@ -3570,7 +3498,7 @@ impl TypeRegistry {
     /// An alias terminal is bound once at declaration: it must never re-enter a
     /// caller's parameter environment. The terminal names a type of the tree that
     /// declared the alias, so it is returned already scoped to that tree.
-    pub(crate) fn alias_target(&self, scope: &ScopedTypeName) -> Option<GlobalAliasTarget<'_>> {
+    pub(crate) fn alias_target(&self, scope: &ScopedName) -> Option<GlobalAliasTarget<'_>> {
         self.aliases.get(scope)
     }
 

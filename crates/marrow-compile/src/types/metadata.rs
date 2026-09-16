@@ -1185,7 +1185,7 @@ impl TypeMetadataSession<'_> {
 
     pub(super) fn static_record_by_name(
         &mut self,
-        scope: &ScopedTypeName,
+        scope: &ScopedName,
     ) -> Result<Option<RecordInfo>, GenericInvariant> {
         self.ensure_healthy()?;
         let result = (|| {
@@ -1207,7 +1207,7 @@ impl TypeMetadataSession<'_> {
 
     pub(super) fn static_group_by_name(
         &mut self,
-        record: &ScopedTypeName,
+        record: &ScopedName,
         group: &str,
     ) -> Result<Option<GroupInfo>, GenericInvariant> {
         self.ensure_healthy()?;
@@ -1230,7 +1230,7 @@ impl TypeMetadataSession<'_> {
 
     pub(super) fn static_struct_by_name(
         &mut self,
-        scope: &ScopedTypeName,
+        scope: &ScopedName,
     ) -> Result<Option<StructInfo>, GenericInvariant> {
         self.ensure_healthy()?;
         let result = (|| {
@@ -1247,7 +1247,7 @@ impl TypeMetadataSession<'_> {
 
     pub(super) fn static_enum_by_name(
         &mut self,
-        scope: &ScopedTypeName,
+        scope: &ScopedName,
     ) -> Result<Option<EnumInfo>, GenericInvariant> {
         self.ensure_healthy()?;
         let result = Ok(self.view.registry.enum_by_name(scope).cloned());
@@ -1256,7 +1256,7 @@ impl TypeMetadataSession<'_> {
 
     pub(crate) fn static_named_type(
         &mut self,
-        scope: &ScopedTypeName,
+        scope: &ScopedName,
     ) -> Result<Option<StaticNamedType>, GenericInvariant> {
         self.ensure_healthy()?;
         let registry = self.view.registry;
@@ -1322,7 +1322,7 @@ impl TypeMetadataSession<'_> {
                     let owner = &self.view.registry.records[record];
                     let info = &owner.groups[group];
                     let Some((index, field)) = info.field(name) else {
-                        let anchor = owner.scoped_name().group_anchor(&info.name);
+                        let anchor = owner.scoped_name().below(&info.name);
                         return Ok(match self.view.registry.member(&anchor, name)? {
                             Binding::Refused(id, _) => ProductFieldProjection::RefusedMember(id),
                             Binding::Accepted(_) | Binding::Absent => {

@@ -251,7 +251,7 @@ impl<'a> DurNode<'a> {
     /// The member-ledger owner whose declared members back this node's fields: the
     /// resource record a root materializes. A branch owns no member ledger — its fields
     /// are the keyed layer, where a refused member refuses the whole root.
-    fn member_owner(&self) -> Option<&ScopedTypeName> {
+    fn member_owner(&self) -> Option<&ScopedName> {
         match self {
             DurNode::Root(root) => Some(&root.resource),
             DurNode::Branch { .. } => None,
@@ -376,7 +376,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             Expression::Keyed { base, .. } => match &**base {
                 Expression::SavedRoot { name, .. } => Ok(self
                     .durable
-                    .root_by_name(&self.durable_name(name))?
+                    .root_by_name(&self.scoped_name(name))?
                     .map(DurNode::Root)),
                 Expression::Field {
                     base: parent,
@@ -445,7 +445,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         else {
             return Ok(None);
         };
-        let root_key = self.durable_name(root_name);
+        let root_key = self.scoped_name(root_name);
         let durable: &'a DurableRegistry = self.durable;
         Ok(durable
             .root_by_name(&root_key)?
@@ -583,7 +583,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         field_name: &str,
         name_span: SourceSpan,
     ) {
-        let owner = root.resource.group_anchor(&group.name);
+        let owner = root.resource.below(&group.name);
         if self.steer_refused_member(&owner, field_name, name_span) {
             return;
         }

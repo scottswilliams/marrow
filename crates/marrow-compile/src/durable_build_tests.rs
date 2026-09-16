@@ -3,8 +3,8 @@
 
 /// A root-project durable name, as every single-tree case here means one.
 #[cfg(test)]
-fn root_name(name: &str) -> super::ScopedDurableName {
-    super::ScopedDurableName::new(&marrow_project::SourceOrigin::Root, name)
+fn root_name(name: &str) -> crate::source::ScopedName {
+    crate::source::ScopedName::new(&marrow_project::SourceOrigin::Root, name)
 }
 
 /// A fresh armed transaction over its own leaked owner, for fixtures that never
@@ -277,7 +277,7 @@ store ^holders[id: int]: Holder
         .expect("the test registry stays within the ledger budget");
         assert!(diagnostics.is_empty());
         let option = match records
-            .by_name(&crate::types::ScopedTypeName::new(
+            .by_name(&crate::source::ScopedName::new(
                 &marrow_project::SourceOrigin::Root,
                 "Holder",
             ))
