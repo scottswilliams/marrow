@@ -153,10 +153,10 @@ fn racing_first_acquisitions_report_contention_rather_than_absence() {
     use std::sync::{Barrier, Mutex};
 
     const THREADS: usize = 4;
-    // Contention is reached within the first rounds on both qualified
-    // platforms; the assertion that some acquisition contended is what keeps
-    // the round count honest if that ever stops holding.
-    const ROUNDS: usize = 4;
+    // The winner keeps its lock until every thread has attempted, so each
+    // round produces exactly one holder and THREADS - 1 contentions without
+    // depending on scheduling.
+    const ROUNDS: usize = 2;
 
     let scratch = Scratch::new("lock-first-race");
     let live = AtomicUsize::new(0);
@@ -173,6 +173,7 @@ fn racing_first_acquisitions_report_contention_rather_than_absence() {
             .expect("create the round");
         let entry = name("publish.lock");
         let start = Barrier::new(THREADS);
+        let attempted = Barrier::new(THREADS);
 
         std::thread::scope(|scope| {
             for _ in 0..THREADS {
@@ -184,16 +185,21 @@ fn racing_first_acquisitions_report_contention_rather_than_absence() {
                                 live.fetch_add(1, Ordering::SeqCst) + 1,
                                 Ordering::SeqCst,
                             );
+                            attempted.wait();
                             live.fetch_sub(1, Ordering::SeqCst);
                             drop(lock);
                         }
                         Err(LockError::Held) => {
                             held.fetch_add(1, Ordering::SeqCst);
+                            attempted.wait();
                         }
-                        Err(LockError::Custody(error)) => custody
-                            .lock()
-                            .expect("collect")
-                            .push(format!("round {round}: {error}")),
+                        Err(LockError::Custody(error)) => {
+                            custody
+                                .lock()
+                                .expect("collect")
+                                .push(format!("round {round}: {error}"));
+                            attempted.wait();
+                        }
                     }
                 });
             }
@@ -210,8 +216,9 @@ fn racing_first_acquisitions_report_contention_rather_than_absence() {
         custody.is_empty(),
         "a racing first acquisition reported a custody refusal rather than contention: {custody:?}"
     );
-    assert!(
-        held.load(Ordering::SeqCst) > 0,
-        "no acquisition ever contended, so the race exercised nothing"
+    assert_eq!(
+        held.load(Ordering::SeqCst),
+        ROUNDS * (THREADS - 1),
+        "every acquisition other than the round's holder reports contention"
     );
 }
