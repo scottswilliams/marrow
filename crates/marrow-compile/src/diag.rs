@@ -1078,7 +1078,7 @@ mod tests {
     }
 
     /// The byte-charge law, per payload variant: file spelling plus owned
-    /// message, syntax help, identity-gap path, unresolved-name, and
+    /// message, syntax help, identity-gap path, unresolved-name, type-spelling, and
     /// steer-payload bytes; the static invalid-UTF-8 message charges nothing
     /// beyond the file.
     #[test]
@@ -1135,6 +1135,26 @@ mod tests {
         assert_eq!(
             steered.retained_owned_bytes(),
             file_len + steered.message().len() + "notes".len()
+        );
+
+        let mismatch = SourceDiagnostic::with_type_mismatch(
+            file(),
+            SourceSpan::default(),
+            TypeMismatch::Value {
+                found: TypeSpelling::new("string?".to_string()),
+                expected: TypeSpelling::new("string".to_string()),
+            },
+            Some(Steer::Presence),
+        );
+        assert_eq!(
+            mismatch.message(),
+            "found string? where string is required This value is optional; prove it present by \
+             binding it with `if const x = … { … }`, or supply a fallback with `… ?? default`, \
+             then use the present value.",
+        );
+        assert_eq!(
+            mismatch.retained_owned_bytes(),
+            file_len + mismatch.message().len() + "string?".len() + "string".len()
         );
 
         let utf8 = SourceDiagnostic::invalid_utf8(file(), 3, Some(1));
