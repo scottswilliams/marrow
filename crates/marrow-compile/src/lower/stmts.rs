@@ -949,7 +949,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         )
     }
 
-    /// Lower the general `if const` form (B5): a left-to-right chain of existence
+    /// Lower the general `if const` form: a left-to-right chain of existence
     /// bindings joined by `and` and an optional trailing bare condition, with the
     /// then and `else if`/`else` tails. Each binding's value is proven present
     /// before the next is evaluated (short-circuit), each binding scopes rightward
@@ -1131,7 +1131,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Ok(fail_jumps)
     }
 
-    /// Lower `const x = e else { … }` / `var x = e else { … }` (B6, let-else): bind
+    /// Lower the let-else form `const x = e else { … }` / `var x = e else { … }`: bind
     /// `x` from the present value of the optional `e` and continue with `x` in scope
     /// for the rest of the enclosing block; when `e` is absent, run the `else` block,
     /// which must diverge. Reuses the one-binding `if const` head for the present

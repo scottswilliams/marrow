@@ -6,7 +6,7 @@
 //! the total decode the file boundary uses, so invalid UTF-8 and NUL bytes are
 //! exercised as the replacement-bearing text the parser actually sees. Fixed seeds, a
 //! fixed iteration budget, and a small interesting-byte alphabet keep the pass bounded
-//! and exactly reproducible, so no unbounded campaign runs in CI.
+//! and exactly reproducible, so nothing unbounded runs in CI.
 
 use crate::common;
 use crate::common::CompletePayload;

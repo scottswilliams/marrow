@@ -55,8 +55,8 @@ pub const MAX_SNAPSHOT_FACT_COUNT: u64 = 65_536;
 
 /// The largest total rendered-fact byte footprint a snapshot admits before the
 /// collection is discarded as a [`AnalysisResourceLimit::SnapshotFactBytes`]. A flat
-/// law-9 allocation guard, evidence-widenable; four times the CRES01 diagnostic-byte
-/// ceiling gives headroom for nested-generic type displays without unbounded retention.
+/// flat allocation guard, evidence-widenable; four times the diagnostic-byte ceiling
+/// gives headroom for nested-generic type displays without unbounded retention.
 pub const MAX_SNAPSHOT_FACT_BYTES: u64 = 4 * 1024 * 1024;
 
 /// The largest number of in-scope completion candidates one query assembles before it is
@@ -204,12 +204,12 @@ impl FactSpan {
     }
 }
 
-/// A fixed analysis resource bound that produced no snapshot. It wraps CRES01's shipped
+/// A fixed analysis resource bound that produced no snapshot. It wraps the compiler's
 /// [`CompileResourceLimit`] verbatim for a compile-side aggregate bound, and names the
 /// snapshot fact bounds directly. Closed and exhaustively matchable.
 pub enum AnalysisResourceLimit {
-    /// A compile-side aggregate bound (an image count/byte ceiling, or the CRES01
-    /// diagnostic count/byte ceiling on the complete analysis diagnostic set).
+    /// A compile-side aggregate bound: an image count/byte ceiling, or the diagnostic
+    /// count/byte ceiling on the complete analysis diagnostic set.
     Compile(CompileResourceLimit),
     /// The retained fact count exceeded [`MAX_SNAPSHOT_FACT_COUNT`].
     SnapshotFactCount { limit: u64 },
