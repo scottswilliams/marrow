@@ -7,7 +7,7 @@
 //! capture -> compile -> verify -> attach -> VM — over one persistent ephemeral
 //! attachment, seeding through ordinary writes and reading the traversal back.
 
-use crate::common::{CallOutcome, Project, Session};
+use crate::common::{Project, Session};
 use marrow_codes::Code;
 use marrow_vm::Value;
 
@@ -524,8 +524,8 @@ fn every_abnormal_body_exit_decides_the_on_more_timing() {
     assert_eq!(session.call("returnOnSecond", vec![]), Some(Value::Int(2)));
     // A fault in a body aborts the whole traversal; `on more` is never reached.
     assert_eq!(
-        session.try_call("faultOnSecond", vec![]),
-        CallOutcome::Fault(Code::RunUnreachable)
+        session.try_call("faultOnSecond", vec![]).fault_code(),
+        Some(Code::RunUnreachable)
     );
 }
 
@@ -650,7 +650,7 @@ fn an_inner_abnormal_exit_decides_the_inner_on_more_while_the_outer_is_independe
     // An inner fault aborts the whole traversal: book 1 completes (reaching 103), then
     // book 2's first frozen note faults before any `on more`, inner or outer, is reached.
     assert_eq!(
-        session.try_call("nestedInnerFault", vec![]),
-        CallOutcome::Fault(Code::RunUnreachable),
+        session.try_call("nestedInnerFault", vec![]).fault_code(),
+        Some(Code::RunUnreachable),
     );
 }

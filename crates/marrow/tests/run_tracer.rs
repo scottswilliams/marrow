@@ -29,7 +29,7 @@ fn value(source: &str, export: &str, args: Vec<Value>) -> Option<Value> {
 /// The stable code of the runtime fault one export raises.
 fn fault(source: &str, export: &str, args: Vec<Value>) -> Code {
     match Project::single(source).session().try_call(export, args) {
-        CallOutcome::Fault(code) => code,
+        CallOutcome::Fault { code, .. } => code,
         other => panic!("expected `{export}` to fault, got {other:?}"),
     }
 }

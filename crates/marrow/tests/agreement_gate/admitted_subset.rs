@@ -683,8 +683,10 @@ fn a_faulting_export_invocation_rolls_back_without_disturbing_a_prior_commit() {
     ));
 
     assert_eq!(
-        session.try_call("badUpdate", vec![Value::Int(1), Value::Int(0)]),
-        CallOutcome::Fault(Code::RunDivideByZero),
+        session
+            .try_call("badUpdate", vec![Value::Int(1), Value::Int(0)])
+            .fault_code(),
+        Some(Code::RunDivideByZero),
         "the fault reached the caller"
     );
 

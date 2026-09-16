@@ -267,7 +267,7 @@ impl Session {
         if function.demand().is_empty() {
             return match marrow_vm::run(function, args) {
                 Ok(value) => CallOutcome::Value(value),
-                Err(fault) => CallOutcome::Fault(fault.code()),
+                Err(fault) => CallOutcome::fault(fault.code(), fault.line(), fault.column()),
             };
         }
         let attachment = self
@@ -276,7 +276,9 @@ impl Session {
             .expect("a durable export requires a minted attachment");
         match run_export(attachment, sealed.id(), args).expect("the export is in the image") {
             DurableRun::Ran(Ok(value)) => CallOutcome::Value(value),
-            DurableRun::Ran(Err(fault)) => CallOutcome::Fault(fault.code()),
+            DurableRun::Ran(Err(fault)) => {
+                CallOutcome::fault(fault.code(), fault.line(), fault.column())
+            }
             DurableRun::Parked => CallOutcome::Parked,
             DurableRun::Failed(code) => CallOutcome::Failed(code),
         }
@@ -293,12 +295,27 @@ impl Session {
 pub enum CallOutcome {
     /// The export returned; `None` for a Unit return.
     Value(Option<Value>),
-    /// A source-mapped runtime fault, named by its registered code.
-    Fault(Code),
+    /// A source-mapped runtime fault: its registered code and the source position of the
+    /// faulting instruction, as [`marrow_vm::RuntimeFault`] carries them.
+    Fault { code: Code, line: u32, column: u32 },
     /// The image's durable shape is not executable by the ephemeral kernel.
     Parked,
     /// Minting or opening the session failed operationally, named by its registered code.
     Failed(Code),
+}
+
+impl CallOutcome {
+    fn fault(code: Code, line: u32, column: u32) -> Self {
+        Self::Fault { code, line, column }
+    }
+
+    /// The fault's code, for a case that asserts the code alone.
+    pub fn fault_code(&self) -> Option<Code> {
+        match self {
+            Self::Fault { code, .. } => Some(*code),
+            _ => None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

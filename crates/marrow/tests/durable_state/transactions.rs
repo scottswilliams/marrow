@@ -12,7 +12,7 @@
 //! These tests exercise the same VM transaction semantics directly over an ephemeral
 //! attachment, without process setup.
 
-use crate::common::{CallOutcome, Project};
+use crate::common::Project;
 use marrow_codes::Code;
 use marrow_image::ImageType;
 use marrow_verify::{SealedExport, VerifiedImage};
@@ -642,7 +642,7 @@ fn a_fault_before_commit_rolls_the_transaction_back() {
         "setThenOverflow",
         vec![Value::Int(4), Value::Int(5_000_000_000_000_000_000)],
     );
-    assert_eq!(code, CallOutcome::Fault(Code::RunOverflow));
+    assert_eq!(code.fault_code(), Some(Code::RunOverflow));
 
     // The staged replacement was rolled back; the earlier committed value stands.
     assert_eq!(
@@ -1108,8 +1108,10 @@ pub fn loopExit(id: int, v: int): Result<int, string> {{
     }
     for name in ["catchThenFault", "requireFault", "tryFault"] {
         assert_eq!(
-            session.try_call(name, vec![Value::Int(1), Value::Int(99)]),
-            CallOutcome::Fault(Code::RunDivideByZero),
+            session
+                .try_call(name, vec![Value::Int(1), Value::Int(99)])
+                .fault_code(),
+            Some(Code::RunDivideByZero),
         );
         assert_eq!(
             session.call("getValue", vec![Value::Int(1)]),
@@ -1214,7 +1216,7 @@ fn an_unreachable_fault_inside_a_transaction_rolls_back() {
         "setThenMaybeDiverge",
         vec![Value::Int(6), Value::Int(3), Value::Bool(true)],
     );
-    assert_eq!(code, CallOutcome::Fault(Code::RunUnreachable));
+    assert_eq!(code.fault_code(), Some(Code::RunUnreachable));
     assert_eq!(
         session.call("getValue", vec![Value::Int(6)]),
         Some(Value::Optional(None)),
@@ -1255,7 +1257,7 @@ fn a_budget_exhaustion_inside_a_transaction_rolls_back_without_poisoning() {
     // A transaction stages a replacement, then exhausts the instruction budget before
     // reaching its commit; the terminal observes the typed `run.budget` fault.
     let code = session.try_call("setThenSpin", vec![Value::Int(7), Value::Int(9)]);
-    assert_eq!(code, CallOutcome::Fault(Code::RunBudget));
+    assert_eq!(code.fault_code(), Some(Code::RunBudget));
 
     // The staged replacement rolled back: the earlier committed value stands.
     assert_eq!(
@@ -1285,5 +1287,5 @@ fn a_budget_exhaustion_inside_a_transaction_rolls_back_without_poisoning() {
 fn a_budget_exhaustion_outside_a_region_is_the_plain_fault_death() {
     let mut session = Project::single(SOURCE).ids(IDS).session();
     let code = session.try_call("spinReadOnly", vec![Value::Int(8)]);
-    assert_eq!(code, CallOutcome::Fault(Code::RunBudget));
+    assert_eq!(code.fault_code(), Some(Code::RunBudget));
 }

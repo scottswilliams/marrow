@@ -111,7 +111,7 @@ fn errors(source: &str, ids: &str) -> Diagnostics {
 /// Call `name`, requiring a source-mapped runtime fault, and return its registered code.
 fn fault_code(session: &mut Session, name: &str, args: Vec<Value>) -> Code {
     match session.try_call(name, args) {
-        CallOutcome::Fault(code) => code,
+        CallOutcome::Fault { code, .. } => code,
         other => panic!("{name} did not fault: {other:?}"),
     }
 }

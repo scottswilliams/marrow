@@ -9,12 +9,10 @@
 use marrow_codes::Code;
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_syntax::SourceSpan;
-use marrow_verify::{LedgerIdBytes, SealedInstr, SealedSite, SealedSiteTarget, VerifiedImage};
-use marrow_vm::{
-    DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
-};
+use marrow_verify::{LedgerIdBytes, SealedInstr, SealedSite, SealedSiteTarget};
+use marrow_vm::Value;
 
-use crate::common::{Diagnostics, Project, Session};
+use crate::common::{CallOutcome, Diagnostics, Project, Session};
 
 // `^books[id: int]: Book` with a nonunique `byShelf[shelf, id]` and a unique
 // `byIsbn[isbn]`. The index anchors live at `books.<index name>`.
@@ -112,50 +110,6 @@ fn source_errors(source: &str, ids: &str) -> Diagnostics {
 
 fn has_type_error(diagnostics: &Diagnostics) -> bool {
     diagnostics.has_code("check.type") || diagnostics.has_code("check.unsupported")
-}
-
-// --- Span-pinning support -------------------------------------------------------
-//
-// `CallOutcome::Fault` names a runtime fault by its stable code alone, so the one case
-// that also pins the fault's source span drives its own attachment.
-
-fn attach(image: &VerifiedImage) -> MemoryAttachment {
-    match mint_ephemeral(prepare(image.clone())).into_mint() {
-        MintOutcome::Ready(attachment) => attachment,
-        MintOutcome::Storeless | MintOutcome::Parked => panic!("the items root must be executable"),
-        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {}", cause.as_str()),
-    }
-}
-
-fn export_id(image: &VerifiedImage, name: &str) -> marrow_verify::ExportId {
-    image
-        .exports()
-        .iter()
-        .find(|export| {
-            image
-                .function(export.function())
-                .expect("verified function")
-                .body()
-                .name()
-                == name
-        })
-        .unwrap_or_else(|| panic!("export `{name}` present"))
-        .id()
-}
-
-fn run_ok(
-    image: &VerifiedImage,
-    attachment: &mut MemoryAttachment,
-    name: &str,
-    args: Vec<Value>,
-) -> Option<Value> {
-    match run_export(attachment, export_id(image, name), args).expect("the export is in the image")
-    {
-        DurableRun::Ran(Ok(value)) => value,
-        DurableRun::Ran(Err(fault)) => panic!("{name} faulted: {}", fault.code().as_str()),
-        DurableRun::Parked => panic!("{name} parked"),
-        DurableRun::Failed(code) => panic!("{name} failed: {}", code.as_str()),
-    }
 }
 
 fn s(v: &str) -> Value {
@@ -738,39 +692,37 @@ end\n";
 
 #[test]
 fn key_only_unique_subset_collision_rolls_back_the_complete_transaction() {
-    let image = Project::single(SUBSET_SOURCE).ids(SUBSET_IDS).image();
-    let mut store = attach(&image);
-    match run_export(&mut store, export_id(&image, "collide"), vec![]).expect("export") {
-        DurableRun::Ran(Err(marrow_vm::DurableExecutionFault::Runtime(fault))) => {
-            assert_eq!(fault.code(), Code::RunUniqueIndex);
-            assert_eq!((fault.line(), fault.column()), (35, 9));
-        }
-        DurableRun::Ran(Ok(_)) => panic!("the unique collision must fault"),
-        DurableRun::Ran(Err(other)) => panic!("unexpected durable fault: {other:?}"),
-        DurableRun::Parked => panic!("collide parked"),
-        DurableRun::Failed(code) => panic!("collide failed before execution: {}", code.as_str()),
-    }
+    let mut session = open(SUBSET_SOURCE, SUBSET_IDS);
+    // The fault names the colliding write, not the export or the transaction boundary.
     assert_eq!(
-        run_ok(&image, &mut store, "itemPresent", vec![Value::Int(99)]),
+        session.try_call("collide", vec![]),
+        CallOutcome::Fault {
+            code: Code::RunUniqueIndex,
+            line: 35,
+            column: 9,
+        },
+    );
+    assert_eq!(
+        session.call("itemPresent", vec![Value::Int(99)]),
         Some(Value::Bool(false))
     );
     assert_eq!(
-        run_ok(&image, &mut store, "findItem", vec![Value::Int(99)]),
+        session.call("findItem", vec![Value::Int(99)]),
         Some(Value::Optional(None))
     );
     for slot in [1, 2] {
         assert_eq!(
-            run_ok(&image, &mut store, "slotPresent", vec![Value::Int(slot)]),
+            session.call("slotPresent", vec![Value::Int(slot)]),
             Some(Value::Bool(false))
         );
     }
     assert_eq!(
-        run_ok(&image, &mut store, "findTenant", vec![]),
+        session.call("findTenant", vec![]),
         Some(Value::Optional(None))
     );
-    run_ok(&image, &mut store, "putItem", vec![Value::Int(7)]);
+    session.call("putItem", vec![Value::Int(7)]);
     assert_eq!(
-        run_ok(&image, &mut store, "findItem", vec![Value::Int(7)]),
+        session.call("findItem", vec![Value::Int(7)]),
         Some(Value::Optional(Some(Box::new(Value::Id(
             0,
             [KeyScalar::Int(7)].into()
