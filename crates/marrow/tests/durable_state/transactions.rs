@@ -119,15 +119,10 @@ pub fn getLabel(id: int): string? {
 }
 "#;
 
-/// In-region guard-return exports: a `return` inside the owned region commits
-/// the region's staged writes, then returns. Every export here reuses the `Counter`
-/// schema so the shared identity ledger covers it. `addOnce` is the guard-return
-/// shape the Workshop app teaches: the present path returns `false` (committing an
-/// empty stage), the absent path stages the write and returns `true` at the closing
-/// brace. `setAndReport` returns a value read inside the region on one path.
-/// `setNested` returns from inside two nested guards. `setDoubled` calls a helper
-/// whose own early `return` is not a region exit — only the owning export's returns
-/// commit.
+/// In-region guard-return exports: a `return` inside the owned region commits the
+/// region's staged writes, then returns. Every export here reuses the `Counter` schema
+/// so the shared identity ledger covers it. Each export's own test states what it
+/// proves.
 const GUARD_SOURCE: &str = r#"resource Counter {
     required value: int
     label: string
@@ -635,8 +630,7 @@ fn a_committed_erase_removes_the_entry() {
 }
 
 /// A transaction that faults before its commit rolls back: the staged write is
-/// discarded and a later read observes the pre-transaction state. This is the
-/// late-rollback-restores-state law, observed across sessions on one attachment.
+/// discarded and a later read observes the pre-transaction state.
 #[test]
 fn a_fault_before_commit_rolls_the_transaction_back() {
     let mut session = Project::single(SOURCE).ids(IDS).session();
@@ -658,13 +652,11 @@ fn a_fault_before_commit_rolls_the_transaction_back() {
     );
 }
 
-/// A durable read after the transaction's commit is refused at verify with
-/// The commit consumes the session's engine transaction, so a mutating export observes
-/// the store inside its region and returns values captured there. A read into a local
-/// before the block closes is the supported form; a read after it cannot reach a live
-/// transaction. The checker enforces this law at check time, refusing it at the
-/// read's span (`check.durable_after_commit`), so it never reaches the verifier. A
-/// tampered image is still refused at `image.flow` (see the `marrow-verify` hostiles).
+/// A durable read after the transaction's commit is refused. The commit consumes the
+/// session's engine transaction, so a read after the block closes cannot reach a live
+/// one; reading into a local before the block closes is the supported form. The
+/// checker refuses it at the read's span (`check.durable_after_commit`), so it never
+/// reaches the verifier, and a tampered image is refused at `image.flow`.
 #[test]
 fn a_durable_read_after_commit_is_rejected() {
     let read_after = r#"resource Counter {
@@ -888,9 +880,9 @@ fn a_return_checked_in_region_commits() {
 }
 
 /// Adversarial: `return err(...)` after a staged write COMMITS the write. The
-/// in-region return is a commit site regardless of the returned `Result` tag — the
-/// author-explicit trap the decision of record pins. The over-limit path returns an
-/// `err` value, yet the staged write is durably committed and reads back.
+/// in-region return is a commit site regardless of the returned `Result` tag, so the
+/// over-limit path returns an `err` value and the staged write still commits and
+/// reads back. Staging before an error return is an author-explicit trap.
 #[test]
 fn a_return_err_after_staged_writes_commits_them() {
     let mut session = Project::single(RESULT_SOURCE).ids(IDS).session();
@@ -1244,10 +1236,8 @@ fn an_unreachable_fault_inside_a_transaction_rolls_back() {
 /// transaction is a source-uncatchable `run.budget` fault that rolls the whole
 /// region back and leaves the attachment usable — an abort, never a poison. A value
 /// committed by an earlier invocation survives the faulting one, and a *subsequent*
-/// mutating invocation on the same attachment commits normally. This is the
-/// budget-family instance of the rollback-isolation law already pinned above for
-/// overflow and unreachable faults; it fixes budget exhaustion as
-/// an ordinary rolling-back terminal fault.
+/// mutating invocation on the same attachment commits normally: budget exhaustion is
+/// an ordinary rolling-back terminal fault, like overflow and unreachable.
 ///
 /// Ignored in the default suite: the instruction budget is a private VM constant
 /// (`1 << 26`) with no runner, CLI, or environment override by design, so the

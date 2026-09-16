@@ -124,7 +124,7 @@ fn check_reports_a_clean_two_export_summary_for_two_roots_over_one_resource() {
     );
 }
 
-/// Red R27: each occurrence's demand sentence stays qualified by the root it names.
+/// Each occurrence's demand sentence stays qualified by the root it names.
 ///
 /// The two exports touch the same Product-scoped declaration nodes — `Book.notes` (the
 /// guard's presence probe) and `Book.notes.text` (the field write) carry one ledger

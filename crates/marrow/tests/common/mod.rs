@@ -9,16 +9,11 @@
 //! outcomes, never rendered prose: a [`CallOutcome`] fault carries the stable
 //! `marrow-codes` string and [`Diagnostics`] carries `(code, line, column)`.
 //!
-//! The compiler never mints durable identity. On every path except `marrow run`, a
-//! durable declaration whose ledger row is missing is a hard `check.durable_identity`
-//! diagnostic; `marrow run` mints from OS entropy and rewrites `.marrow/ids`, which
-//! would make a fixture nondeterministic. So every durable fixture ships a complete
-//! fixed-hex ledger with `high-water 0`, and one declaration mints a row for each of:
-//! the application (anchor path `.`), each `resource`, each stored field at its dotted
-//! path (including inside a `branch` or `group`), each keyed placement (a `store` root
-//! and each keyed `branch`) and its key column, each managed index, each
-//! durable-reachable closed enum and each of its variants, and each unkeyed `group`
-//! namespace. Omitting any one row fails the build.
+//! Every durable fixture ships a complete fixed-hex `.marrow/ids` with `high-water 0`,
+//! covering every declaration that mints a row; omitting one fails the build. Only
+//! `marrow run` mints, and it draws from OS entropy and rewrites the ledger, which
+//! would make a fixture nondeterministic — every other path reports
+//! `check.durable_identity` instead.
 
 use std::borrow::Cow;
 use std::fs;
@@ -112,7 +107,6 @@ impl Project {
         }
     }
 
-    /// Replace the manifest.
     pub fn manifest(mut self, manifest: &str) -> Self {
         self.manifest = manifest.as_bytes().to_vec();
         self
@@ -328,7 +322,6 @@ impl Diagnostics {
         self.diagnostics.iter().map(|d| d.code().as_str()).collect()
     }
 
-    /// Whether any diagnostic carries `code`.
     pub fn has_code(&self, code: &str) -> bool {
         self.diagnostics.iter().any(|d| d.code().as_str() == code)
     }
@@ -350,12 +343,10 @@ impl Diagnostics {
             .count()
     }
 
-    /// The total number of diagnostics.
     pub fn len(&self) -> usize {
         self.diagnostics.len()
     }
 
-    /// Whether the set is empty.
     pub fn is_empty(&self) -> bool {
         self.diagnostics.is_empty()
     }
@@ -397,12 +388,10 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    /// The project root.
     pub fn dir(&self) -> &Path {
         &self.root
     }
 
-    /// A path inside the project root.
     pub fn path(&self, relative: &str) -> PathBuf {
         self.root.join(relative)
     }
@@ -414,8 +403,7 @@ impl Workspace {
     }
 
     /// Invoke the `marrow` binary in the project root with `args`, capturing the
-    /// outcome. Runs with `NO_COLOR=1`; the CLI emits no color to a pipe regardless,
-    /// so this is a no-op for piped output and only guards a stray terminal.
+    /// outcome.
     pub fn marrow(&self, args: &[&str]) -> CliOutcome {
         marrow_in(&self.root, args)
     }
@@ -436,7 +424,6 @@ impl Deref for CliOutcome {
 }
 
 impl CliOutcome {
-    /// Whether the command exited successfully.
     pub fn success(&self) -> bool {
         self.output.status.success()
     }

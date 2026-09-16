@@ -8,19 +8,18 @@
 //! generated client (`marrow client typescript`) and this image are a matched pair
 //! built from the same source.
 //!
-//! Composition is deliberately not silent about durable authority. A deployment's
-//! ceiling is the union of what its exports demand (see
+//! A deployment's ceiling is the union of what its exports demand (see
 //! `marrow_image::CeilingDescriptor`), and the store an application provisions
-//! records that ceiling as the maximum authority it will ever admit. So the command
-//! renders each export's demand and requires the owner to name the accepted ceiling
-//! id (`--accept-ceiling`) that matches the image's own demand union before it
-//! writes anything. A missing or mismatched id writes no image and prints the
-//! actual ceiling id to accept: the owner cannot widen (or narrow) a deployment's
-//! durable authority by accident, and there is no target-runtime widening.
+//! records that ceiling as the maximum authority it will ever admit. The command
+//! therefore renders each export's demand and requires the owner to name the
+//! matching ceiling id (`--accept-ceiling`) before it writes anything. A missing or
+//! mismatched id writes no image and prints the actual ceiling id to accept, so a
+//! deployment's durable authority cannot widen or narrow by accident; there is no
+//! target-runtime widening.
 //!
 //! The image bytes are produced through the same compile → verify path
-//! `marrow client typescript` uses; this command does not link the runner (the
-//! CLI→runner Rust edge is a lane absence target) and opens no store.
+//! `marrow client typescript` uses. This command does not link the runner and opens
+//! no store.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

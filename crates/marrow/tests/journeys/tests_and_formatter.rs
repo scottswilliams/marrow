@@ -1,4 +1,4 @@
-//! The frozen gate: the source-test and formatter journeys.
+//! The source-test and formatter journeys.
 //!
 //! Two production-path journeys, driven over on-disk fixtures under
 //! `fixtures/v01/tests_and_formatter/` so each program lives as idiomatic `.mw`

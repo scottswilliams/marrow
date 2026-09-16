@@ -1,10 +1,7 @@
 //! A named `place`/pin composes as a base for group-leaf and branch-entry operations
 //! wherever the equivalent inline `^root…` path is admitted.
 //!
-//! A bound place formerly composed only as a traversal base and for a single
-//! top-level field; a branch-entry write, a branch-field read, or a group-leaf operation
-//! through a place was refused with a message that misnamed the failure ("no field",
-//! "not in scope", "not yet supported"). These tests drive the whole production path
+//! These tests drive the whole production path
 //! (capture -> compile -> verify -> attach -> VM) and prove parity with the inline form by
 //! cross-reading: a write performed through a place is observed through the inline address
 //! and the reverse, so the place-composed operation seals the *same* durable node — the

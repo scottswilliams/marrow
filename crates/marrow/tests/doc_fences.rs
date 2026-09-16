@@ -478,17 +478,14 @@ fn a_source_rejected_fence_is_caught() {
 // follows the region's commit, an ownership law caught at check time
 // (`check.durable_after_commit`). The initial compile stops at `check.durable_identity`
 // (no ledger yet), so the rejection surfaces only after the gate mints identities and
-// retries — the boundary this probe exercises. (This same class of fault once
-// was reported one layer later, at `image.flow`; the independent verifier still rejects
-// a tampered image there, but a compiler now refuses it first.)
+// retries — the boundary this probe exercises. The compiler refuses this class of fault
+// first; the independent verifier still rejects a tampered image at `image.flow`.
 const POST_MINT_REJECTED_DURABLE_BODY: &str = "resource Item {\n    required value: string\n}\n\nstore ^items[id: int]: Item\n\npub fn setAndGet(id: int, value: string): string? {\n    transaction {\n        ^items[id] = Item(value: value)\n    }\n    return ^items[id].value\n}\n";
 
 // The gate's `artifact_rejected` branch (a fence that compiles clean but the independent
-// verifier rejects) is no longer reachable through an honest fence: the
-// `agreement_gate` enforces that no checker-accepted source is verifier-rejected, so a
-// durable ownership fault is caught at check time. That branch is now exercised only by a
-// forged or tampered image, whose coverage lives in the `marrow-verify` hostiles rather
-// than through this source-level fence gate.
+// verifier rejects) is unreachable through an honest fence: the `agreement_gate` enforces
+// that no checker-accepted source is verifier-rejected. Only a forged or tampered image
+// reaches it, and that coverage lives in the `marrow-verify` hostiles.
 fn assert_rejected_after_identity_mint(fence: &DocFence) {
     let failure = verify_fence(fence).expect_err("rejected fence must fail the gate");
     assert!(

@@ -286,8 +286,7 @@ store ^assets[key: int]: Asset
 
 /// A driver `test` drives both roots through export calls — each call its own invocation
 /// boundary — exactly as a terminal drives an application: a mutating export writes both
-/// roots and commits, and later reading exports observe each root's committed value. This
-/// is the two-root shape of the invocation-boundary isolation law.
+/// roots and commits, and later reading exports observe each root's committed value.
 #[test]
 fn a_two_root_driver_test_drives_both_roots_through_exports() {
     let source = format!(
@@ -451,8 +450,8 @@ pub fn setB(id: int, v: int) {
 }
 
 /// Two keyless, never-operated roots over one resource, in a project whose only export
-/// is storeless. The refusal this row removes was never about keys, sites, branches, or
-/// operations: it fired on the repeated Product declaration alone.
+/// is storeless: a repeated Product declaration alone is not a refusal, independent of
+/// keys, sites, branches, and operations.
 #[test]
 fn two_keyless_never_operated_roots_may_share_one_product() {
     let source = r#"resource R {
@@ -562,8 +561,7 @@ const BYTE_ORDER_IDS: &str = "marrow ids v0\n\
 /// move the mint whenever the two orders differ, and every TypeId ordinal after it with
 /// it. This corpus fixes the whole image byte-exactly, so a later owner that moves the
 /// mint point fails here rather than silently re-numbering an accepted image. The pinned
-/// digest is the encoding of this source under the whole-entry branch write; it was
-/// last recorded when the field-write spelling left the language.
+/// digest is the encoding of this source under the whole-entry branch write.
 #[test]
 fn the_fitting_byte_order_corpus_is_byte_exact() {
     let source = r#"resource Alpha {
@@ -1129,9 +1127,8 @@ pub fn setB(id: int, t: string) {
 /// on the first instruction that addresses them.
 ///
 /// `^b` never addresses `Book.tally` or `Book.notes`, so it carries no site for either.
-/// Under the pre-row policy every occurrence pre-seeded every group and branch node of its
-/// Product, so a Product's site cost was `occurrences x declared nodes` whether or not a
-/// program ever named them.
+/// Seeding eagerly instead would cost `occurrences x declared nodes` sites whether or
+/// not a program ever named them.
 #[test]
 fn a_repeated_product_mints_its_member_sites_on_demand() {
     let image = verify(MULTIPLICITY_SOURCE, MULTIPLICITY_IDS);
@@ -1171,8 +1168,7 @@ const MULTIPLICITY_UNIQUE_IDS: &str = "marrow ids v0\n\
 /// A Product with exactly one occurrence pre-seeds its whole member graph, whether or not
 /// a program names it.
 ///
-/// This is the domain every previously accepted image lives in, and its eager set and
-/// order are exactly what they were: the root whole-payload site, then each group entry and
+/// The eager set and its order: the root whole-payload site, then each group entry and
 /// nested branch entry in declaration pre-order. `^a` never writes `tally`, and its group
 /// site is there regardless.
 #[test]
@@ -1225,8 +1221,7 @@ pub fn setA(id: int, t: string) {
 /// compilation produces no image at all.
 ///
 /// Here `^b` has no ledger rows, so `Book` is censused as repeated while only `^a` is
-/// accepted — and the compilation is a diagnostic, not an image whose site ids could differ
-/// from the ones a single-occurrence `Book` would have been given.
+/// accepted, and the compilation is a diagnostic rather than a mis-numbered image.
 #[test]
 fn a_product_whose_second_store_is_refused_produces_no_image() {
     let refused = errors(MULTIPLICITY_SOURCE, MULTIPLICITY_UNIQUE_IDS);

@@ -1,18 +1,12 @@
 //! The CLI's project-capture boundary: a thin delegation to the physical adapter.
 //!
 //! The physical walker lives in [`marrow_project_fs`], the one filesystem owner
-//! below the tool consumers. This module hard-cuts the CLI's capture through its
-//! `capture_project` with an empty overlay and projects the opaque failure into the
-//! CLI's terminal `{ code, message, location }` sink shape through the one
-//! presentation facade. It reconstructs no discovery, identity, code, path, or
-//! message here.
-//!
-//! The same adapter owns `.marrow/ids` publication and its recovery. Capture
-//! refuses while a publication marker is live, so `marrow run` — the one command
-//! that writes the ledger — settles any interrupted publication before it
-//! captures the project or draws entropy, and every other front door reports the
-//! marker. The CLI compares no state, writes no entry, and models no durability
-//! itself.
+//! below the tool consumers, which also owns `.marrow/ids` publication and its
+//! recovery. This module delegates capture to its `capture_project` with an empty
+//! overlay and projects the opaque failure into the CLI's terminal
+//! `{ code, message, location }` sink shape through the one presentation facade.
+//! It reconstructs no discovery, identity, code, path, or message, compares no
+//! state, writes no entry, and models no durability itself.
 
 use std::path::Path;
 use std::process::ExitCode;

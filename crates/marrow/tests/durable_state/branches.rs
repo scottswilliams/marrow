@@ -404,8 +404,8 @@ fn some_bool(b: bool) -> Option<Value> {
     Some(Value::Optional(Some(Box::new(Value::Bool(b)))))
 }
 
-/// The four-state marker/target laws over a branch entry with a required `text` field
-/// and a sparse `pinned` field, read through the materialized record:
+/// The four marker/target states of a branch entry with a required `text` field and a
+/// sparse `pinned` field, read through the materialized record:
 ///
 /// - marker absent: `exists` false, required and sparse reads absent;
 /// - marker present, sparse target absent: required reads present, sparse reads absent;
@@ -537,7 +537,7 @@ fn two_branches_of_different_shape_keep_their_own_fields() {
     );
 }
 
-// --- Field-exact branch operations (E03w slice A). ---
+// --- Field-exact branch operations. ---
 //
 // `^root(k).branch(bk).field = v`, its clear (`delete ^root(k).branch(bk).field`),
 // its read, and its presence test address one leaf of a branch entry directly, one
@@ -770,7 +770,6 @@ fn chaining_a_branch_off_a_materialized_record_steers_to_the_durable_path() {
         .unwrap_or_else(|| panic!("no check.type diagnostic in {:?}", diagnostics.all()));
     // The span points at the branch name `notes` in `b.notes`.
     assert_eq!(diagnostic.line(), 70, "{}", diagnostic.message());
-    // Voice: fact (the branch in source spelling), rule, then the canonical durable-path fix.
     assert!(
         diagnostic
             .message()
@@ -778,10 +777,8 @@ fn chaining_a_branch_off_a_materialized_record_steers_to_the_durable_path() {
         "{}",
         diagnostic.message()
     );
-    // The fix is spelled generically. Which resource declares `notes` is the Product
-    // declaration fact that reaches this report, and any number of roots may occur over one
-    // Product, so the message names the resource and not a store root — the same shape the
-    // sub-branch steer already uses.
+    // Any number of roots may occur over one Product, so the fix names the declaring
+    // resource rather than a store root.
     assert!(
         diagnostic.message().contains("distinct durable node")
             && diagnostic

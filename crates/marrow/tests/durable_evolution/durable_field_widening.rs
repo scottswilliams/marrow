@@ -388,7 +388,7 @@ fn appending_an_enum_member_changes_the_identity_and_mints_a_fresh_id() {
 #[test]
 fn operating_on_a_widened_field_store_compiles_and_verifies() {
     // A read of a widened (enum) field is executable: it compiles, and the sealed image
-    // verifies with a durable read opcode over the field-leaf site (no longer parked).
+    // verifies with a durable read opcode over the field-leaf site.
     let source = r#"resource Account {
     required id: int
     required kind: Access

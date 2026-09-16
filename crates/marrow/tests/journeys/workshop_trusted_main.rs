@@ -607,8 +607,8 @@ function finish() {
 }
 "#;
 
-/// The exit gate: the Workshop journey through the trusted Node main over a real persistent
-/// store, including a restart between two attached sessions.
+/// The Workshop journey through the trusted Node main over a real persistent store,
+/// including a restart between two attached sessions.
 #[test]
 #[ignore = "spawns Node + a runner + Unix sockets; run with the sandbox disabled"]
 fn workshop_journey_through_the_trusted_main() {
@@ -775,13 +775,11 @@ finish();
     ));
 }
 
-/// The G00b/G02c term-10 client-drift transcript: a client generated against one
-/// image, launched against a runner serving a newer image whose export surface has
-/// changed, fails TYPED at the handshake — the generated `launch` refuses a served
-/// identity that is not the one the client was generated for — rather than silently
-/// calling a skewed interface. This is the Marrow analogue of the control's
-/// build-time drift failure. The current identity pinning already produces it, so
-/// this proves it rather than building anew; the driver prints the verbatim message.
+/// Client drift: a client generated against one image, launched against a runner
+/// serving a newer image whose export surface has changed, fails TYPED at the
+/// handshake — the generated `launch` refuses a served identity that is not the one
+/// the client was generated for — rather than silently calling a skewed interface.
+/// The driver prints the verbatim message.
 #[test]
 #[ignore = "spawns Node + a runner + Unix sockets; run with the sandbox disabled"]
 fn a_stale_client_fails_typed_against_a_newer_image() {

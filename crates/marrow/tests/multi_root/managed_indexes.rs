@@ -493,10 +493,10 @@ pub fn label(): string {
 
 #[test]
 fn a_source_index_read_compiles() {
-    // The managed-index read runtime has landed: a bounded scan of a nonunique index
-    // (binding the source `Id(^books)`) and a bracket lookup of a unique index compile
-    // cleanly through the production pipeline. Runtime behavior is exercised end to end
-    // in the VM `index_read` fixtures; this asserts the source forms are admitted.
+    // A bounded scan of a nonunique index (binding the source `Id(^books)`) and a
+    // bracket lookup of a unique index compile cleanly through the production pipeline.
+    // Runtime behavior is exercised in the VM `index_read` fixtures; this asserts only
+    // that the source forms are admitted.
     let source = r#"resource Book {
     required title: string
     shelf: string

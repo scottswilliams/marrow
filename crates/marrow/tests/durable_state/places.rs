@@ -1,4 +1,4 @@
-//! Source-local named `place` bindings and the operand-timing law.
+//! Source-local named `place` bindings and their operand timing.
 //!
 //! A `place p = ^root(key)` binding names one concrete durable entry address. Its
 //! key tuple is evaluated exactly once at the binding; every operation through the
@@ -72,7 +72,7 @@ fn has_function(image: &VerifiedImage, name: &str) -> bool {
         .any(|function| function.name() == name)
 }
 
-// --- The operand-timing law. ---
+// --- Operand timing. ---
 
 /// The key operand of a `place` is lowered exactly once, at the binding, no matter
 /// how many operations flow through the place. Here the key is a call `keyOf(n)`,

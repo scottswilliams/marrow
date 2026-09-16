@@ -244,7 +244,7 @@ pub fn name(): string {
 /// per-member ids) are minted, so a storeless export over the project runs. The
 /// enum-valued field is not part of the kernel-executable flat scalar record, so a
 /// durable operation over the store is a precise `check.unsupported` (covered in the
-/// durable-field widening suite); it is no longer a `check.type` on the declaration.
+/// durable-field widening suite), not a `check.type` on the declaration.
 #[test]
 fn a_stored_resource_with_an_enum_field_is_identity_complete() {
     let workspace = Project::single(

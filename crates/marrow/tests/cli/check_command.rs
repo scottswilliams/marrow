@@ -82,9 +82,9 @@ fn check_demand_prints_the_full_per_export_sentences() {
 }
 
 /// The summary collapses an all-storeless module, de-duplicates a shared demand, rolls
-/// children up to their root, and collapses a storeless export — the three DX fixes, on
-/// one fixture. The frozen snapshot pairs with typed assertions on each collapse so the
-/// contract, not only the bytes, is enforced.
+/// children up to their root, and collapses a storeless export, all on one fixture. The
+/// frozen snapshot pairs with typed assertions on each collapse so the contract, not
+/// only the bytes, is enforced.
 #[test]
 fn check_summary_dedups_collapses_and_rolls_up() {
     let output = Project::from_fixture("demand_summary").run_cli("demand-summary", &["check"]);

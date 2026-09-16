@@ -632,10 +632,9 @@ pub fn title(id: int): string? {
 "#;
 
 /// Renaming a durable field preserves the durable-contract identity when the
-/// ledger anchor moves with it (same id at the new path), and a delete-then-
-/// re-add (a fresh id at the same path) changes it. This is the
-/// property the descriptor-over-ledger-ids payload exists for, observed
-/// through the full production path: capture → compile → verify.
+/// ledger anchor moves with it (same id at the new path), and a delete-then-re-add
+/// (a fresh id at the same path) changes it. This is the property the
+/// descriptor-over-ledger-ids payload exists for.
 #[test]
 fn a_rename_with_a_moved_anchor_preserves_the_contract_id() {
     let base = contract_of(LIBRARY_SOURCE, LIBRARY_IDS);
@@ -706,7 +705,7 @@ fn a_ledger_at_the_retired_root_path_is_refused_with_a_move_steer() {
 /// entries and enumerates the metadata directory nowhere, so an unrelated
 /// sibling — whatever left it there — survives a publication untouched. A
 /// publisher that swept siblings would be removing entries it cannot prove are
-/// its own, which is exactly what the retained manual states exist to avoid.
+/// its own.
 #[test]
 fn a_foreign_metadata_sibling_survives_a_publication_untouched() {
     let workspace = Project::single(COUNTER_SOURCE).materialize("foreign-sibling-retained");

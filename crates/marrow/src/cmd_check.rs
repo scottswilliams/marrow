@@ -5,11 +5,9 @@
 //! including test bodies), and prints each diagnostic with its span. A project that
 //! checks clean has its test-inclusive image encoded from that same drive and verified,
 //! so each exported function's verifier-reconstructed durable **demand** — which durable
-//! places it reads and writes, in source spelling — can be described. The default groups
-//! that demand into a human-shaped per-module summary
-//! ([`crate::demand::demand_summary_lines`]); `--demand` prints the full per-export
-//! sentence form ([`crate::demand::demand_lines`]) unchanged. The demand describes
-//! access and never grants it; `check` opens no store and runs no code.
+//! places it reads and writes, in source spelling — can be described by
+//! [`crate::demand`]. The demand describes access and never grants it; `check` opens no
+//! store and runs no code.
 
 use std::path::PathBuf;
 use std::process::ExitCode;

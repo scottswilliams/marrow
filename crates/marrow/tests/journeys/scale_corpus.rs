@@ -17,10 +17,8 @@
 //!   error-bubbling chain, and a bounded innermost-first purge.
 //!
 //! Assertions are typed VM outcomes (values, faults, Result variants), never rendered
-//! prose. The freeze findings this lane records — the counted-watch numbers, the
-//! keyed-scalar-leaf ceremony tally, and the enum-reuse verification bug — live in the
-//! lane report, and the enforcement artifacts here (the exact site count, the
-//! demand-shape checks) pin them against drift.
+//! prose. The exact site count and the demand-shape checks pin the corpus against
+//! drift.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -132,23 +130,20 @@ fn compile_and_size(name: &str) -> (usize, marrow_verify::VerifiedImage) {
     (bytes, image)
 }
 
-/// The M-shaped counted watch. With lazy field-leaf emission (BND02 C1) the site count
-/// is the eager per-node sites (placements and whole-group sites) plus one field-leaf site
-/// per field the code actually addresses — not one per declared field. This is the
-/// sparse-at-scale win: a 2000-field resource whose code touches a handful of fields emits
-/// a handful of field sites, so the site count and image size collapse. The count is frozen
-/// so a regression back to eager per-declared-field emission is conspicuous.
+/// The counted watch. Field-leaf sites are emitted lazily, so the site count is the
+/// eager per-node sites (placements and whole-group sites) plus one field-leaf site per
+/// field the code actually addresses — not one per declared field. A 2000-field resource
+/// whose code touches a handful of fields therefore emits a handful of field sites. The
+/// count is frozen so a regression to eager per-declared-field emission is conspicuous.
 #[test]
 fn counted_watch_clinical_2000_fields() {
     let (bytes, image) = compile_and_size("scale_corpus/clinical");
     let sites = image.sites().len();
 
-    // Recorded freeze count (BND02 C1 re-baseline): 27 operation sites — the eager
-    // per-node sites (1 root placement + 2 branch placements + 20 whole-group sites) plus
-    // one field-leaf site per field the clinical code addresses. Former eager emission was
-    // 2028 (one leaf per declared field); lazy emission drops it ~98% because the fixture
-    // touches only a handful of its 2000 declared fields, so declared-but-untouched fields
-    // mint no site. The emitted image shrank correspondingly.
+    // Frozen at 27 operation sites: the eager per-node sites (1 root placement + 2 branch
+    // placements + 20 whole-group sites) plus one field-leaf site per field the clinical
+    // code addresses. Declared-but-untouched fields mint no site, so the fixture's 2000
+    // declared fields cost 27 rather than 2028.
     assert_eq!(
         sites, 27,
         "clinical operation-site count is frozen at 27 (lazy field-leaf emission)"
@@ -163,9 +158,8 @@ fn counted_watch_clinical_2000_fields() {
         bytes < MAX_IMAGE_BYTES,
         "image {bytes} bytes clears the {MAX_IMAGE_BYTES}-byte image bound",
     );
-    // The counted watch does not red at 2000 fields: with lazy field-leaf emission the
-    // site count (27) and image size are a small fraction of budget — declared width no
-    // longer drives either.
+    // At 2000 declared fields the site count (27) and image size stay a small fraction
+    // of budget: declared width drives neither.
     assert!(
         bytes < MAX_IMAGE_BYTES / 2,
         "image byte size stays well under budget"

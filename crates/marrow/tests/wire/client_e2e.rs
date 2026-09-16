@@ -1,8 +1,8 @@
 //! Generated strict TypeScript performs a real storeless call against the stock
 //! runner, end to end.
 //!
-//! Node spawns the runner per the channel law (through the pinned supervision
-//! module), calls generated methods, and receives typed results; the child-death
+//! Node spawns the runner through the pinned supervision module, calls generated
+//! methods, and receives typed results; the child-death
 //! boundaries are re-proven through the generated client, with the queued
 //! `interrupted` class exercised for real (one call in flight, one queued, then a
 //! fail-closed terminate in the same synchronous turn — the reply cannot have

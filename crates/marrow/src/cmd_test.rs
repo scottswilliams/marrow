@@ -92,13 +92,10 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
             .find(|test| test.name == entry.name())
             .expect("compiler and image agree on the test set");
 
-        // Family 3: a source-mapped runtime fault, or a pass. The lifecycle selects the
-        // entry from the prepared image and mints what its demand needs: no store for a
-        // storeless test, otherwise a fresh in-memory store. Each call is an invocation
-        // boundary: a mutating export commits, and a later reader observes it.
-        // Every durable test gets its own store, so tests never observe one another's
-        // writes. A durable shape the ephemeral kernel does not yet execute is reported
-        // as the trough.
+        // Family 3: a source-mapped runtime fault, or a pass. Each call is an
+        // invocation boundary: a mutating export commits, and a later reader observes
+        // it. A durable shape the ephemeral kernel does not yet execute is reported as
+        // the trough.
         let test = marrow_vm::fresh_test(&prepared, index)
             .expect("the entry index came from the prepared image's own test table");
         let outcome = durable_outcome(marrow_vm::run_test(test), meta);
