@@ -2680,8 +2680,15 @@ impl TypeRegistry {
         }
     }
 
+    /// Record `dependent` as depending on every provisional row its arguments reach.
+    ///
+    /// Adjacent repeats are collapsed first. Settlement's refusal join is idempotent,
+    /// so a repeated edge changes nothing and costs a lookup here plus a traversal
+    /// there; a wide body names one type in every one of its members, which is where
+    /// the repeats come from and why collapsing them is worth a pass.
     fn record_semantic_dependencies(&self, dependent: usize, args: impl IntoIterator<Item = GArg>) {
         let mut pending: Vec<GArg> = args.into_iter().collect();
+        pending.dedup();
         let mut dependency_ids = Vec::new();
         while let Some(arg) = pending.pop() {
             match arg {
