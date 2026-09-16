@@ -8,12 +8,9 @@
 //!
 //! The behavior group observes the adapter's laws through the production seams:
 //! the real limit-parameterized capture seam driven with tight per-field policies,
-//! and the overlay constructor. Each assertion contrasts the target adapter with a
-//! deliberately insufficient baseline — one enforcing no visited-entry, depth,
-//! spelling, or path-budget bound, following links and hardlinks, and refusing
-//! every nonempty overlay with one coarse bound — so what the assertion message
-//! names is the bound the target adds. They name no owner, counter, lease, frame,
-//! or index type.
+//! and the overlay constructor. Each assertion names the bound or classification it
+//! requires — which role refuses, which typed refusal it carries, and which entry it
+//! indicts — and names no owner, counter, lease, frame, or index type.
 
 use std::fmt;
 use std::fs;
@@ -751,14 +748,14 @@ fn base_limits() -> AdapterLimits {
 fn as_physical(failure: &CaptureFailure) -> &PhysicalFailure {
     match failure.kind() {
         CaptureFailureKind::Physical(physical) => physical,
-        _ => panic!("target produces a physical failure here"),
+        _ => panic!("this refusal must classify as a physical failure"),
     }
 }
 
 fn as_overlay(failure: &CaptureFailure) -> &OverlayFailure {
     match failure.kind() {
         CaptureFailureKind::OverlayInput(overlay) => overlay,
-        _ => panic!("target produces an overlay-input failure here"),
+        _ => panic!("this refusal must classify as an overlay-input failure"),
     }
 }
 
@@ -769,7 +766,7 @@ fn valid_project(temp: &TempDir) {
 // --- Row: physical root producers ---------------------------------------------
 
 #[test]
-fn red_missing_root_is_a_canonicalize_failure_not_a_manifest_failure() {
+fn missing_root_is_a_canonicalize_failure_not_a_manifest_failure() {
     let root = Path::new("/marrow-cap01-red-missing-root-zzz");
     let failure = capture_project_with_limits(root, OverlaySnapshot::empty(), &base_limits())
         .expect_err("a missing root refuses");
@@ -777,14 +774,14 @@ fn red_missing_root_is_a_canonicalize_failure_not_a_manifest_failure() {
     assert_eq!(
         physical.role(),
         PhysicalRole::Root,
-        "target admits the root first; the baseline refuses at the manifest"
+        "a missing root refuses in the root role, before the manifest is read"
     );
     assert_eq!(physical.operation(), PhysicalOperation::Canonicalize);
     assert!(physical.path().is_none(), "a root failure is pathless");
 }
 
 #[test]
-fn red_a_file_root_is_an_unexpected_kind_failure() {
+fn a_file_root_is_an_unexpected_kind_failure() {
     let temp = TempDir::new("file-root");
     let file_root = temp.path().join("not-a-directory");
     fs::write(&file_root, b"x").expect("write file root");
@@ -794,7 +791,7 @@ fn red_a_file_root_is_an_unexpected_kind_failure() {
     assert_eq!(
         physical.role(),
         PhysicalRole::Root,
-        "target rejects a non-directory root; the baseline refuses at the manifest"
+        "a non-directory root refuses in the root role, before the manifest is read"
     );
     assert!(matches!(
         physical.refusal(),
@@ -806,7 +803,7 @@ fn red_a_file_root_is_an_unexpected_kind_failure() {
 
 #[cfg(unix)]
 #[test]
-fn red_a_symlinked_manifest_is_refused_as_a_link() {
+fn a_symlinked_manifest_is_refused_as_a_link() {
     let temp = TempDir::new("symlink-manifest");
     temp.write("real.toml", b"edition = \"2026\"\n");
     std::os::unix::fs::symlink(
@@ -817,7 +814,7 @@ fn red_a_symlinked_manifest_is_refused_as_a_link() {
     let result = capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &base_limits());
     assert!(
         result.is_err(),
-        "target refuses a symlinked manifest; the baseline follows and parses it"
+        "a symlinked manifest refuses; it is never followed and parsed"
     );
     let failure = result.unwrap_err();
     assert!(matches!(
@@ -828,7 +825,7 @@ fn red_a_symlinked_manifest_is_refused_as_a_link() {
 
 #[cfg(unix)]
 #[test]
-fn red_a_hardlinked_manifest_is_refused_as_a_hardlink() {
+fn a_hardlinked_manifest_is_refused_as_a_hardlink() {
     let temp = TempDir::new("hardlink-manifest");
     temp.write("real.toml", b"edition = \"2026\"\n");
     fs::hard_link(
@@ -839,7 +836,7 @@ fn red_a_hardlinked_manifest_is_refused_as_a_hardlink() {
     let result = capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &base_limits());
     assert!(
         result.is_err(),
-        "target refuses a hardlinked manifest; the baseline reads it transparently"
+        "a hardlinked manifest refuses; a second link to it is never read as the manifest"
     );
     assert!(matches!(
         as_physical(&result.unwrap_err()).refusal(),
@@ -849,7 +846,7 @@ fn red_a_hardlinked_manifest_is_refused_as_a_hardlink() {
 
 #[cfg(unix)]
 #[test]
-fn red_a_hardlinked_source_file_is_refused_as_a_hardlink() {
+fn a_hardlinked_source_file_is_refused_as_a_hardlink() {
     let temp = TempDir::new("hardlink-source");
     valid_project(&temp);
     temp.write("src/real.mw", b"pub fn f()\n");
@@ -861,7 +858,7 @@ fn red_a_hardlinked_source_file_is_refused_as_a_hardlink() {
     let result = capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &base_limits());
     assert!(
         result.is_err(),
-        "target refuses a hardlinked source; the baseline accepts it"
+        "a hardlinked source file refuses; a second link to it is never captured"
     );
     assert!(matches!(
         as_physical(&result.unwrap_err()).refusal(),
@@ -888,9 +885,8 @@ fn write_special_file(temp: &TempDir, relative: &str) {
 }
 
 /// Capture the project and require the exact typed terminal-link refusal naming
-/// `spelling`. Before the symlink policy was decided the walk skipped the link
-/// silently, so a `continue`-shaped baseline reports the identities it admitted
-/// instead — the causeless absence this row closes.
+/// `spelling`. A link below `src` must refuse with a cause; it is never skipped,
+/// which would leave the module silently absent from the capture.
 #[cfg(unix)]
 fn expect_link_below_src(temp: &TempDir, spelling: &str) -> CaptureFailure {
     let failure =
@@ -933,7 +929,7 @@ fn expect_link_below_src(temp: &TempDir, spelling: &str) -> CaptureFailure {
 /// downstream as an unexplained missing module; the link now carries the cause.
 #[cfg(unix)]
 #[test]
-fn red_a_module_behind_a_symlinked_directory_refuses_instead_of_vanishing() {
+fn a_module_behind_a_symlinked_directory_refuses_instead_of_vanishing() {
     let temp = TempDir::new("symlink-module");
     valid_project(&temp);
     temp.write("src/main.mw", b"pub fn main()\n");
@@ -949,7 +945,7 @@ fn red_a_module_behind_a_symlinked_directory_refuses_instead_of_vanishing() {
 /// opened at that name, so it refuses like every other aliased role.
 #[cfg(unix)]
 #[test]
-fn red_a_symlinked_source_file_below_src_is_refused_as_a_link() {
+fn a_symlinked_source_file_below_src_is_refused_as_a_link() {
     let temp = TempDir::new("symlink-source");
     valid_project(&temp);
     temp.write("src/main.mw", b"pub fn main()\n");
@@ -966,7 +962,7 @@ fn red_a_symlinked_source_file_below_src_is_refused_as_a_link() {
 /// missing target.
 #[cfg(unix)]
 #[test]
-fn red_a_broken_symlink_below_src_is_refused_as_a_link() {
+fn a_broken_symlink_below_src_is_refused_as_a_link() {
     let temp = TempDir::new("symlink-broken");
     valid_project(&temp);
     temp.write("src/main.mw", b"pub fn main()\n");
@@ -982,7 +978,7 @@ fn red_a_broken_symlink_below_src_is_refused_as_a_link() {
 /// rather than merely unreached.
 #[cfg(unix)]
 #[test]
-fn red_a_symlink_escaping_the_project_root_is_refused_as_a_link() {
+fn a_symlink_escaping_the_project_root_is_refused_as_a_link() {
     let temp = TempDir::new("symlink-escape");
     let root = temp.path().join("project");
     fs::create_dir_all(root.join("src")).expect("create the project");
@@ -1006,7 +1002,7 @@ fn red_a_symlink_escaping_the_project_root_is_refused_as_a_link() {
 /// with no depth bound or visited set standing in for the policy.
 #[cfg(unix)]
 #[test]
-fn red_a_symlink_cycle_below_src_is_refused_as_a_link() {
+fn a_symlink_cycle_below_src_is_refused_as_a_link() {
     let temp = TempDir::new("symlink-cycle");
     valid_project(&temp);
     temp.write("src/main.mw", b"pub fn main()\n");
@@ -1020,7 +1016,7 @@ fn red_a_symlink_cycle_below_src_is_refused_as_a_link() {
 /// kind before opening it, rather than being ignored like a non-source entry.
 #[cfg(unix)]
 #[test]
-fn red_a_special_file_named_mw_below_src_is_refused_as_a_wrong_kind() {
+fn a_special_file_named_mw_below_src_is_refused_as_a_wrong_kind() {
     let temp = TempDir::new("special-source");
     valid_project(&temp);
     write_special_file(&temp, "src/main.mw");
@@ -1075,7 +1071,7 @@ fn a_special_file_below_src_naming_no_module_is_still_ignored() {
 // --- Row: source spelling, retained native paths, aggregate path work ----------
 
 #[test]
-fn red_over_bound_aggregate_path_work_is_refused() {
+fn over_bound_aggregate_path_work_is_refused() {
     let temp = TempDir::new("path-work-bound");
     valid_project(&temp);
     temp.write("src/main.mw", b"pub fn main()\n");
@@ -1084,7 +1080,7 @@ fn red_over_bound_aggregate_path_work_is_refused() {
     let result = capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &limits);
     assert!(
         result.is_err(),
-        "target charges and refuses aggregate path work; the baseline charges nothing"
+        "path work is charged and refuses once the aggregate allowance is spent"
     );
     assert!(matches!(
         as_physical(&result.unwrap_err()).refusal(),
@@ -1096,7 +1092,7 @@ fn red_over_bound_aggregate_path_work_is_refused() {
 }
 
 #[test]
-fn red_over_bound_retained_path_units_is_refused() {
+fn over_bound_retained_path_units_is_refused() {
     let temp = TempDir::new("retained-path-bound");
     valid_project(&temp);
     temp.write("src/main.mw", b"pub fn main()\n");
@@ -1105,7 +1101,7 @@ fn red_over_bound_retained_path_units_is_refused() {
     let result = capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &limits);
     assert!(
         result.is_err(),
-        "target charges and refuses live retained native paths; the baseline retains freely"
+        "live retained native paths are charged and refuse past their allowance"
     );
     assert!(matches!(
         as_physical(&result.unwrap_err()).refusal(),
@@ -1134,7 +1130,7 @@ fn control_an_under_bound_project_captures_its_modules() {
 // --- Row: atomic directory admission ------------------------------------------
 
 #[test]
-fn red_visiting_over_the_entry_bound_is_refused() {
+fn visiting_over_the_entry_bound_is_refused() {
     let temp = TempDir::new("visited-bound");
     valid_project(&temp);
     for name in ["a", "b", "c", "d"] {
@@ -1143,10 +1139,7 @@ fn red_visiting_over_the_entry_bound_is_refused() {
     let mut limits = base_limits();
     limits.visited_entries = 3;
     let result = capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &limits);
-    assert!(
-        result.is_err(),
-        "target refuses the fourth visit; the baseline visits without a bound"
-    );
+    assert!(result.is_err(), "a visit past the entry bound refuses");
     assert!(matches!(
         as_physical(&result.unwrap_err()).refusal(),
         PhysicalRefusal::Bound {
@@ -1157,7 +1150,7 @@ fn red_visiting_over_the_entry_bound_is_refused() {
 }
 
 #[test]
-fn red_descending_past_the_depth_bound_is_refused() {
+fn descending_past_the_depth_bound_is_refused() {
     let temp = TempDir::new("depth-bound");
     valid_project(&temp);
     temp.write("src/a/b/c/deep.mw", b"");
@@ -1166,7 +1159,7 @@ fn red_descending_past_the_depth_bound_is_refused() {
     let result = capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &limits);
     assert!(
         result.is_err(),
-        "target refuses before descending past the depth bound; the baseline recurses freely"
+        "the traversal refuses before descending past the depth bound"
     );
     assert!(matches!(
         as_physical(&result.unwrap_err()).refusal(),
@@ -1201,7 +1194,7 @@ fn control_source_capture_order_is_deterministic() {
 // --- Row: raw overlay constructor ---------------------------------------------
 
 #[test]
-fn red_an_over_count_overlay_is_rejected() {
+fn an_over_count_overlay_is_rejected() {
     let keys: Vec<String> = (0..4097).map(|index| format!("src/f{index}.mw")).collect();
     let entries: Vec<OverlayEntry> = keys
         .iter()
@@ -1210,7 +1203,7 @@ fn red_an_over_count_overlay_is_rejected() {
     let result = OverlaySnapshot::try_new(&entries);
     assert!(
         result.is_err(),
-        "target rejects a 4097-entry overlay; the baseline accepts without validation"
+        "an overlay one entry over the count bound is rejected at construction"
     );
     match result.unwrap_err().reason() {
         OverlayReason::Bound {
@@ -1228,11 +1221,14 @@ fn red_an_over_count_overlay_is_rejected() {
 }
 
 #[test]
-fn red_an_over_long_key_is_rejected() {
+fn an_over_long_key_is_rejected() {
     let key = "s".repeat(4097);
     let entries = [OverlayEntry::new(&key, b"x")];
     let result = OverlaySnapshot::try_new(&entries);
-    assert!(result.is_err(), "target rejects a 4097-byte key");
+    assert!(
+        result.is_err(),
+        "a key one byte over the key bound is rejected at construction"
+    );
     match result.unwrap_err().reason() {
         OverlayReason::Bound {
             bound: OverlayBound::KeyBytes,
@@ -1244,11 +1240,14 @@ fn red_an_over_long_key_is_rejected() {
 }
 
 #[test]
-fn red_an_over_large_body_is_rejected() {
+fn an_over_large_body_is_rejected() {
     let body = vec![0u8; (1 << 20) + 1];
     let entries = [OverlayEntry::new("src/main.mw", &body)];
     let result = OverlaySnapshot::try_new(&entries);
-    assert!(result.is_err(), "target rejects a 1 MiB + 1 body");
+    assert!(
+        result.is_err(),
+        "a body one byte over the per-file bound is rejected at construction"
+    );
     assert!(matches!(
         result.unwrap_err().reason(),
         OverlayReason::Bound {
@@ -1260,7 +1259,7 @@ fn red_an_over_large_body_is_rejected() {
 }
 
 #[test]
-fn red_over_aggregate_body_bytes_are_rejected() {
+fn over_aggregate_body_bytes_are_rejected() {
     // Sixty-five 1 MiB bodies total 65 MiB, over the 64 MiB aggregate, while each
     // stays within the per-body bound.
     let chunk = vec![0u8; 1 << 20];
@@ -1272,7 +1271,7 @@ fn red_over_aggregate_body_bytes_are_rejected() {
     let result = OverlaySnapshot::try_new(&entries);
     assert!(
         result.is_err(),
-        "target rejects over-aggregate overlay bodies"
+        "bodies within the per-file bound still reject once they exceed the aggregate"
     );
     assert!(matches!(
         result.unwrap_err().reason(),
@@ -1284,7 +1283,7 @@ fn red_over_aggregate_body_bytes_are_rejected() {
 }
 
 #[test]
-fn red_lexically_invalid_keys_are_rejected() {
+fn lexically_invalid_keys_are_rejected() {
     for key in [
         "../escape.mw",
         "/absolute.mw",
@@ -1300,7 +1299,7 @@ fn red_lexically_invalid_keys_are_rejected() {
         let result = OverlaySnapshot::try_new(&entries);
         assert!(
             result.is_err(),
-            "target rejects the lexically invalid key {key:?}; the baseline accepts it"
+            "the lexically invalid key {key:?} is rejected at construction"
         );
         assert!(
             matches!(
@@ -1333,13 +1332,16 @@ fn control_the_empty_overlay_constructs_infallibly() {
 // --- Row: overlay provenance and settlement -----------------------------------
 
 #[test]
-fn red_duplicate_overlay_keys_report_both_original_indices() {
+fn duplicate_overlay_keys_report_both_original_indices() {
     let entries = [
         OverlayEntry::new("src/main.mw", b"x"),
         OverlayEntry::new("src/main.mw", b"y"),
     ];
     let result = OverlaySnapshot::try_new(&entries);
-    assert!(result.is_err(), "target rejects duplicate keys");
+    assert!(
+        result.is_err(),
+        "two entries under one key are rejected at construction"
+    );
     match result.unwrap_err().reason() {
         OverlayReason::Duplicate { first, second } => {
             assert_eq!((first.get(), second.get()), (0, 1));
@@ -1349,22 +1351,22 @@ fn red_duplicate_overlay_keys_report_both_original_indices() {
 }
 
 #[test]
-fn red_an_exact_member_overlay_replaces_the_disk_body() {
+fn an_exact_member_overlay_replaces_the_disk_body() {
     let temp = TempDir::new("overlay-replace");
     valid_project(&temp);
     temp.write("src/main.mw", b"disk-body");
     let entries = [OverlayEntry::new("src/main.mw", b"overlay-body")];
-    let snapshot = OverlaySnapshot::try_new(&entries).expect("baseline try_new is infallible");
+    let snapshot = OverlaySnapshot::try_new(&entries).expect("a valid single-entry overlay");
     let result = capture_project_with_limits(temp.path(), snapshot, &base_limits());
     assert!(
         result.is_ok(),
-        "target admits an exact member overlay; the baseline coarsely refuses every nonempty overlay"
+        "an overlay keyed on a captured member is admitted, not refused as nonmember"
     );
     assert_eq!(result.unwrap().modules()[0].source(), b"overlay-body");
 }
 
 #[test]
-fn red_a_nonmember_overlay_reports_its_original_index() {
+fn a_nonmember_overlay_reports_its_original_index() {
     let temp = TempDir::new("overlay-nonmember");
     valid_project(&temp);
     temp.write("src/main.mw", b"pub fn main()\n");
@@ -1374,7 +1376,7 @@ fn red_a_nonmember_overlay_reports_its_original_index() {
         .expect_err("a nonmember overlay refuses");
     match as_overlay(&failure).reason() {
         OverlayReason::Nonmember { entry } => assert_eq!(entry.get(), 0),
-        other => panic!("target reports Nonmember; the baseline coarsely refuses, got {other:?}"),
+        other => panic!("a nonmember overlay key must report Nonmember, got {other:?}"),
     }
 }
 
@@ -1391,8 +1393,8 @@ fn stage_a_missing_manifest_is_the_only_reported_role() {
             .expect_err("a missing manifest refuses");
     let physical = as_physical(&failure);
     assert_eq!(physical.role(), PhysicalRole::Manifest);
-    // An absent required manifest is an I/O refusal; the target may classify it as
-    // the dedicated `Missing` variant, so this control does not exclude it.
+    // An absent required manifest is an I/O refusal, which may also carry the
+    // dedicated `Missing` classification.
     assert!(matches!(
         physical.refusal(),
         PhysicalRefusal::Io { .. } | PhysicalRefusal::Missing { .. }
@@ -1441,8 +1443,6 @@ fn a_ledger_at_both_paths_fails_closed_as_a_reconcile_fault() {
 
 #[test]
 fn stage_b_bounded_traversal_is_enforced() {
-    // The bounded depth-first traversal refuses an over-deep tree; the baseline does
-    // not. This is the stage-B checkpoint red.
     let temp = TempDir::new("stage-b-traversal");
     valid_project(&temp);
     temp.write("src/one/two/three.mw", b"");
@@ -1457,9 +1457,8 @@ fn stage_b_bounded_traversal_is_enforced() {
 
 #[test]
 fn stage_c_pure_refusal_precedes_unmatched_overlay_settlement() {
-    // A colliding project plus a nonmember overlay: the target reports the pure
-    // collision first, before overlay settlement. The baseline refuses the nonempty
-    // overlay before running pure capture at all.
+    // A colliding project plus a nonmember overlay: the pure collision is reported
+    // first, before overlay settlement runs at all.
     let temp = TempDir::new("stage-c-precedence");
     valid_project(&temp);
     temp.write("src/a/b.mw", b"");
