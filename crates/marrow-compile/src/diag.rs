@@ -102,11 +102,16 @@ enum CompilerDiagnostic {
 
 /// Why a durable declaration's identity is incomplete: its ledger anchor has no
 /// row (mintable), or it names a retired anchor that can never be reused.
+///
+/// The gap names the tree that *declares* the anchor, because that is the tree whose
+/// `.marrow/ids` must gain the row. A gap owned by a dependency is not the consuming
+/// project's to mint: the library commits its own ledger in its own directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IdentityGap {
     pub kind: IdentityKind,
     pub path: String,
     pub retired: bool,
+    pub origin: SourceOrigin,
 }
 
 impl IdentityGap {
@@ -373,7 +378,11 @@ impl SourceDiagnostic {
                 message,
                 gap,
                 ..
-            }) => file + message.len() + gap.path.len(),
+            }) => {
+                file + message.len()
+                    + gap.path.len()
+                    + gap.origin.alias().map_or(0, |alias| alias.as_str().len())
+            }
             SourceDiagnosticPayload::Compiler(CompilerDiagnostic::RefusedDeclaration {
                 message,
                 ..
@@ -650,6 +659,7 @@ mod tests {
                 kind: IdentityKind::Root,
                 path: "^books".to_string(),
                 retired: false,
+                origin: SourceOrigin::Root,
             },
         );
         assert_eq!(gap.retained_owned_bytes(), file_len + 7 + "^books".len());

@@ -1090,6 +1090,7 @@ mod tests {
             kind: marrow_project::IdentityKind::Root,
             path: "holders.id".to_string(),
             retired: false,
+            origin: marrow_project::SourceOrigin::Root,
         };
         ledger
             .declare(

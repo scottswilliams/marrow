@@ -186,7 +186,9 @@ pub(super) fn resolve_type(
         // that root's declaration-ordered RootId. An undeclared or not-yet-executable
         // root is an unsupported type, reported by the caller.
         TypeExpr::Identity(identity) => {
-            let root = match durable.root(&identity.root)? {
+            let root_key =
+                crate::durable::ScopedDurableName::new(site.file.origin(), &identity.root);
+            let root = match durable.root(&root_key)? {
                 RootBinding::Executable(root) => root,
                 RootBinding::Refused(id, _) => {
                     return Err(ResolveError::Refusal(ResolveRefusal::RefusedDeclaration(

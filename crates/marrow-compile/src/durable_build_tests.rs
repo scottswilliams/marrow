@@ -1,6 +1,12 @@
 //! The durable registry's build-seam tests: the generic enum shape resolution
 //! seams and the flat declaration-command emission bound.
 
+/// A root-project durable name, as every single-tree case here means one.
+#[cfg(test)]
+fn root_name(name: &str) -> super::ScopedDurableName {
+    super::ScopedDurableName::new(&marrow_project::SourceOrigin::Root, name)
+}
+
 /// A fresh armed transaction over its own leaked owner, for fixtures that never
 /// touch the owner again.
 #[cfg(test)]
@@ -65,10 +71,12 @@ mod generic_enum_shape_tests {
 
         let mut diagnostics = DiagnosticCollector::new();
         let mut reported_identity_gaps = BTreeSet::new();
+        let ledgers = crate::durable::OriginLedgers::root_only(None);
         let mut resolver = IdentityResolver::new(
             test_declared(),
             SourceSpan::default(),
-            None,
+            &ledgers,
+            marrow_project::SourceOrigin::Root,
             &mut reported_identity_gaps,
             &mut diagnostics,
         );
@@ -142,10 +150,12 @@ mod generic_enum_shape_tests {
             .expect("a within-domain mint");
         let mut diagnostics = DiagnosticCollector::new();
         let mut reported_identity_gaps = BTreeSet::new();
+        let ledgers = crate::durable::OriginLedgers::root_only(None);
         let mut resolver = IdentityResolver::new(
             test_declared(),
             SourceSpan::default(),
-            None,
+            &ledgers,
+            marrow_project::SourceOrigin::Root,
             &mut reported_identity_gaps,
             &mut diagnostics,
         );
@@ -205,10 +215,12 @@ mod generic_enum_shape_tests {
         };
         let mut diagnostics = DiagnosticCollector::new();
         let mut reported_identity_gaps = BTreeSet::new();
+        let ledgers = crate::durable::OriginLedgers::root_only(None);
         let mut resolver = IdentityResolver::new(
             test_declared(),
             SourceSpan::default(),
-            None,
+            &ledgers,
+            marrow_project::SourceOrigin::Root,
             &mut reported_identity_gaps,
             &mut diagnostics,
         );
@@ -282,10 +294,12 @@ store ^holders[id: int]: Holder
         };
         let before = draft.encode().expect("seeded draft encodes");
         let mut reported_identity_gaps = BTreeSet::new();
+        let ledgers = crate::durable::OriginLedgers::root_only(None);
         let mut resolver = IdentityResolver::new(
             test_declared(),
             SourceSpan::default(),
-            None,
+            &ledgers,
+            marrow_project::SourceOrigin::Root,
             &mut reported_identity_gaps,
             &mut diagnostics,
         );
@@ -310,7 +324,7 @@ store ^holders[id: int]: Holder
     fn a_projection_naming_an_unknown_placement_is_drift_not_absence() {
         let mut registry = DurableRegistry::empty(DeclarationBudget::default());
         registry.products.insert(
-            "Holder".to_string(),
+            super::root_name("Holder"),
             ProductStores {
                 admitted: vec!["holders".to_string()],
                 first_refused: None,
@@ -318,13 +332,13 @@ store ^holders[id: int]: Holder
             },
         );
         assert!(matches!(
-            registry.product("Holder"),
+            registry.product(&super::root_name("Holder")),
             Err(DeclarationIndexDrift)
         ));
         // A resource whose every store was refused steers to the first cause; a
         // projection recording neither an admitted nor a refused store is incoherent.
         registry.products.insert(
-            "Neither".to_string(),
+            super::root_name("Neither"),
             ProductStores {
                 admitted: Vec::new(),
                 first_refused: None,
@@ -332,13 +346,13 @@ store ^holders[id: int]: Holder
             },
         );
         assert!(matches!(
-            registry.product("Neither"),
+            registry.product(&super::root_name("Neither")),
             Err(DeclarationIndexDrift)
         ));
         // A resource no store binds has no projection entry at all, which is the
         // genuine absence and stays one.
         assert!(matches!(
-            registry.product("Unbound"),
+            registry.product(&super::root_name("Unbound")),
             Ok(ProductBinding::Absent)
         ));
     }
@@ -735,7 +749,7 @@ mod post_staging_custody_tests {
             &records,
             &resources,
             &stores,
-            Some(&ledger),
+            &crate::durable::OriginLedgers::root_only(Some(&ledger)),
             &mut diagnostics,
             DeclarationBudget::default(),
             &mut Vec::new(),

@@ -31,7 +31,7 @@ use crate::demand::DurableNaming;
 use crate::diag::{
     BoundedDiagnostics, CompileDiagnosticLimit, DiagnosticCollector, SourceDiagnostic,
 };
-use crate::durable::{DurableRegistry, Family};
+use crate::durable::{DurableRegistry, Family, OriginLedgers};
 use crate::konst::ConstRegistry;
 use crate::lower::{
     BodyOutcome, DeclaredFn, FnLowerer, FunctionRegistry, GenericRegistry, ModuleBinding,
@@ -1563,7 +1563,7 @@ fn run_semantic(
         &records,
         &resources,
         &stores,
-        project.identity_ledger(),
+        &OriginLedgers::of(project),
         &mut diagnostics,
         budget.clone(),
         &mut boundary_roots,

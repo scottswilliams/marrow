@@ -1107,6 +1107,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         ScopedTypeName::new(self.file.origin(), name)
     }
 
+    /// The origin-scoped durable name a `^root` reference, a resource spelling, or a
+    /// branch path written in this body addresses. Durable namespaces are scoped to
+    /// the declaring tree, so a reference reaches only its own tree's declarations.
+    fn durable_name(&self, name: &str) -> crate::durable::ScopedDurableName {
+        crate::durable::ScopedDurableName::new(self.file.origin(), name)
+    }
+
     /// Steer a use that named a refused type to that declaration's cause, if the name is
     /// one, reporting once per refused key.
     ///
@@ -1291,7 +1298,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         span: SourceSpan,
     ) -> Option<&'a crate::durable::DurableRoot> {
         let durable: &'a DurableRegistry = self.durable;
-        let binding = match durable.root(name) {
+        let binding = match durable.root(&self.durable_name(name)) {
             Ok(binding) => binding,
             Err(drift) => return self.ledger_drift(drift),
         };
@@ -1310,7 +1317,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             RootBinding::Absent => {
                 // A genuinely undeclared root: a plain unknown name, with the nearest
                 // declared store root offered when one is a close misspelling.
-                let suggestion = nearest_name(name, durable.root_names());
+                let suggestion = nearest_name(name, durable.root_names(self.file.origin()));
                 self.fail(name_not_in_scope(
                     self.file,
                     span,

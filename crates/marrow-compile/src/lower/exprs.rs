@@ -1026,7 +1026,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     // The store this resource backs was refused, so its branch tree was
                     // never built and whether `Resource.member(…)` names one of its
                     // branches is not knowable here.
-                    let backing = match self.durable.product(resource) {
+                    let backing = match self.durable.product(&self.durable_name(resource)) {
                         Ok(binding) => binding,
                         Err(drift) => {
                             self.ledger_drift::<()>(drift);
@@ -1930,7 +1930,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         resource: &str,
         path: &[&str],
     ) -> Option<&'a crate::durable::BranchRecordShape> {
-        self.durable.branch_record_at(resource, path)
+        self.durable
+            .branch_record_at(&self.durable_name(resource), path)
     }
 
     /// Lower a keyed branch entry constructor `Resource.branch(field: value, …)`. The
@@ -3095,7 +3096,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                             .record_by_type(ty)
                             .map(|info| info.name.clone())
                         {
-                            let backing = match self.durable.product(&resource) {
+                            let backing = match self.durable.product(&self.durable_name(&resource))
+                            {
                                 Ok(binding) => binding,
                                 Err(drift) => return self.ledger_drift(drift),
                             };
@@ -3104,7 +3106,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                                 // Product declaration fact, asked of the Product and not
                                 // of any one root.
                                 ProductBinding::Declared
-                                    if self.durable.declares_branch(&resource, name) =>
+                                    if self
+                                        .durable
+                                        .declares_branch(&self.durable_name(&resource), name) =>
                                 {
                                     self.fail(branch_not_a_field(
                                         self.file, field_span, name, &resource,

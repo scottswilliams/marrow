@@ -10,6 +10,9 @@ use marrow_project::ProjectInput;
 #[path = "common/project.rs"]
 mod project_capture;
 
+#[path = "common/ledger.rs"]
+mod ledger;
+
 /// The diagnostics a check refused with. A source-triggered refusal stays a
 /// diagnostic failure; any other arm is a compiler-coherence fault.
 fn diagnostics(project: &ProjectInput) -> Vec<SourceDiagnostic> {
@@ -224,5 +227,140 @@ fn a_dependency_private_function_is_not_callable() {
             .map(|row| row.code().as_str())
             .collect::<Vec<_>>(),
         vec!["check.visibility"],
+    );
+}
+
+const NOTES_LIBRARY: &str = r#"module notes
+
+resource Note {
+    required body: string
+}
+
+store ^notes[id: int]: Note
+
+pub fn body(id: int): string? {
+    return ^notes[id].body
+}
+"#;
+
+const NOTES_APP: &str = r#"module main
+
+use graphtext::notes
+
+pub fn label(id: int): string {
+    return notes::body(id) ?? "(none)"
+}
+"#;
+
+/// A durable anchor a dependency declares resolves against that dependency's own
+/// committed ledger, and a gap there is reported as the dependency's to mint.
+#[test]
+fn a_dependency_owns_the_identities_it_declares() {
+    let project = project_capture::project_with_dependency(
+        "graphtext",
+        &[("src/main.mw", NOTES_APP)],
+        &[("src/notes.mw", NOTES_LIBRARY)],
+    );
+    let gaps: Vec<(&'static str, String, bool)> = diagnostics(&project)
+        .iter()
+        .filter_map(|row| {
+            row.identity_gap().map(|gap| {
+                (
+                    row.code().as_str(),
+                    format!(
+                        "{} {} @{}",
+                        gap.kind.keyword(),
+                        gap.path,
+                        gap.origin
+                            .alias()
+                            .map_or("<root>", marrow_project::DependencyAlias::as_str)
+                    ),
+                    gap.retired,
+                )
+            })
+        })
+        .collect();
+    assert_eq!(
+        gaps,
+        vec![
+            (
+                "check.durable_identity",
+                "application . @<root>".to_string(),
+                false
+            ),
+            (
+                "check.durable_identity",
+                "root notes @graphtext".to_string(),
+                false
+            ),
+            (
+                "check.durable_identity",
+                "product Note @graphtext".to_string(),
+                false
+            ),
+            (
+                "check.durable_identity",
+                "key notes.id @graphtext".to_string(),
+                false
+            ),
+            (
+                "check.durable_identity",
+                "field Note.body @graphtext".to_string(),
+                false
+            ),
+        ],
+    );
+    // The report steers the reader to the tree that must commit the row.
+    assert!(
+        diagnostics(&project).iter().any(|row| row
+            .message()
+            .contains("the `graphtext` dependency's .marrow/ids")),
+        "a dependency's gap names the dependency",
+    );
+}
+
+/// Each tree's anchors resolve against its own ledger: the library's ids satisfy the
+/// library's declarations and the root's satisfy the application anchor. Neither
+/// ledger answers for the other, so moving a row between them re-opens the gap.
+#[test]
+fn each_origin_resolves_against_its_own_ledger() {
+    let root_ids = ledger::ledger(&["application ."]);
+    let library_ids = ledger::ledger(&[
+        "root notes",
+        "product Note",
+        "key notes.id",
+        "field Note.body",
+    ]);
+    let together = project_capture::dependency_project(
+        "graphtext",
+        &[("src/main.mw", NOTES_APP)],
+        Some(&root_ids),
+        &[("src/notes.mw", NOTES_LIBRARY)],
+        Some(&library_ids),
+    );
+    assert_eq!(codes_and_messages(&together), Vec::new());
+
+    // One ledger holding every row is not enough: an anchor is looked up only in the
+    // ledger of the tree that declares it.
+    let all_in_root = project_capture::dependency_project(
+        "graphtext",
+        &[("src/main.mw", NOTES_APP)],
+        Some(&ledger::ledger(&[
+            "application .",
+            "root notes",
+            "product Note",
+            "key notes.id",
+            "field Note.body",
+        ])),
+        &[("src/notes.mw", NOTES_LIBRARY)],
+        None,
+    );
+    assert_eq!(
+        diagnostics(&all_in_root)
+            .iter()
+            .filter_map(|row| row.identity_gap())
+            .map(|gap| gap.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["notes", "Note", "notes.id", "Note.body"],
     );
 }

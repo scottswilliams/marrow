@@ -374,9 +374,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 _ => None,
             }),
             Expression::Keyed { base, .. } => match &**base {
-                Expression::SavedRoot { name, .. } => {
-                    Ok(self.durable.root_by_name(name)?.map(DurNode::Root))
-                }
+                Expression::SavedRoot { name, .. } => Ok(self
+                    .durable
+                    .root_by_name(&self.durable_name(name))?
+                    .map(DurNode::Root)),
                 Expression::Field {
                     base: parent,
                     name: branch,
@@ -444,9 +445,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         else {
             return Ok(None);
         };
+        let root_key = self.durable_name(root_name);
         let durable: &'a DurableRegistry = self.durable;
         Ok(durable
-            .root_by_name(root_name)?
+            .root_by_name(&root_key)?
             .and_then(|root| root.index(name).map(|index| (root, index)))
             .map(|(root, index)| IndexRead { index, root, keys }))
     }

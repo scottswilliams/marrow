@@ -454,7 +454,7 @@ mod fact_ledger_tests {
 
     /// The exact accounted worst case. A change to it is an observable-contract
     /// change, so it is asserted rather than only bounded.
-    const ACCOUNTED_WORST_CASE_RETAINED_BYTES: u64 = 11_214_848;
+    const ACCOUNTED_WORST_CASE_RETAINED_BYTES: u64 = 11_247_616;
 
     /// The accounted footprint closes under the exported term.
     ///

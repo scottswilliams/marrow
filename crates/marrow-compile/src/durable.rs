@@ -22,7 +22,7 @@ use marrow_image::{
     LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, RootOccurrenceSelector, Scalar,
     SemanticTarget, ValueShapeNodeId, ValueShapeView, bounds,
 };
-use marrow_project::{IdentityAnchor, IdentityKind, IdentityLedger};
+use marrow_project::{IdentityAnchor, IdentityKind, IdentityLedger, ProjectInput, SourceOrigin};
 use marrow_syntax::{FieldDecl, ResourceDecl, SourceSpan, StoreDecl};
 
 use crate::analysis::FileRef;
@@ -410,6 +410,43 @@ pub(crate) enum ProductBinding<'a> {
     Absent,
 }
 
+/// One declared durable name in the tree that declares it: a store-root placement,
+/// the resource spelling of a Product, or a qualified branch constructor path under
+/// one.
+///
+/// Durable namespaces are origin-scoped for the same reason type namespaces are: two
+/// captured trees may each declare `^books`, or a `Book.notes` branch, and neither
+/// answers the other's name. The pair is built from an origin and a name, never read
+/// back out of one spelling.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub(crate) struct ScopedDurableName {
+    origin: SourceOrigin,
+    name: String,
+}
+
+impl ScopedDurableName {
+    pub(crate) fn new(origin: &SourceOrigin, name: &str) -> Self {
+        Self {
+            origin: origin.clone(),
+            name: name.to_string(),
+        }
+    }
+
+    /// The bare name, as the declaring tree's own source spells it.
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The same tree's name for one step below this one, as `self.name` extended by
+    /// `step`: the qualified constructor path of a branch under a resource or branch.
+    fn below(&self, step: &str) -> Self {
+        Self {
+            origin: self.origin.clone(),
+            name: format!("{}.{step}", self.name),
+        }
+    }
+}
+
 /// The `store` declarations that bind one resource, in declaration order.
 struct ProductStores {
     /// The placement names of the stores over this resource the compiler admitted.
@@ -432,14 +469,14 @@ struct ProductStores {
 /// the executable list stays declaration-ordered.
 pub(crate) struct DurableRegistry {
     roots: Vec<DurableRoot>,
-    declared: DeclarationLedger<String, DeclaredRoot>,
+    declared: DeclarationLedger<ScopedDurableName, DeclaredRoot>,
     /// The `store` declarations binding each resource, appended in the same statement
     /// as the ledger entry so the two cannot drift.
     ///
     /// The ledger stays the sole authority for what a placement name binds; this only
     /// lets a resource-keyed lookup reach it. A placement here the ledger does not know
     /// is [`DeclarationIndexDrift`], not a neighbouring root.
-    products: BTreeMap<String, ProductStores>,
+    products: BTreeMap<ScopedDurableName, ProductStores>,
     /// Every durable Product's materialized branch entry records, keyed by record type
     /// and by the branch's qualified constructor path (`Book.notes.tags`).
     ///
@@ -447,7 +484,7 @@ pub(crate) struct DurableRegistry {
     /// roots project it, so this table is declaration-scoped: it is written once, at
     /// each Product's first executable root, and holds no site, path, or root.
     branch_records: BTreeMap<marrow_image::TypeId, BranchRecordShape>,
-    branch_paths: BTreeMap<String, marrow_image::TypeId>,
+    branch_paths: BTreeMap<ScopedDurableName, marrow_image::TypeId>,
     /// Every durable Product's declared keyed-branch paths in qualified source spelling
     /// (`Book.notes`, `Book.notes.tags`), written once per Product at its first admitted
     /// root, straight from the resource declaration.
@@ -456,7 +493,7 @@ pub(crate) struct DurableRegistry {
     /// occur over the Product and whichever of them the kernel can serve, so it is
     /// answered here and not from [`Self::branch_paths`], which holds only the branches
     /// of roots inside the executable subset.
-    declared_branch_paths: BTreeSet<String>,
+    declared_branch_paths: BTreeSet<ScopedDurableName>,
     /// The durable-path naming join for every admitted graph node, `(ledger id, sigil,
     /// simple name)`, accumulated across the project's admitted stores. The
     /// [`DurableNaming`] the demand sentence spells paths through is built from this.
@@ -491,7 +528,10 @@ impl DurableRegistry {
     /// What the placement name `name` resolves to: its executable root, a parked
     /// declaration, the refusal that stands in its place, or a genuine absence. The
     /// one owner of that four-way answer; every other root lookup projects from it.
-    pub(crate) fn root(&self, name: &str) -> Result<RootBinding<'_>, DeclarationIndexDrift> {
+    pub(crate) fn root(
+        &self,
+        name: &ScopedDurableName,
+    ) -> Result<RootBinding<'_>, DeclarationIndexDrift> {
         Ok(match self.declared.lookup(name)? {
             Binding::Accepted(declared) => match declared.executable {
                 Some(at) => match self.roots.get(at) {
@@ -524,7 +564,7 @@ impl DurableRegistry {
     /// takes [`DurableRegistry::root`] so a refused root is not read as an absent one.
     pub(crate) fn root_by_name(
         &self,
-        name: &str,
+        name: &ScopedDurableName,
     ) -> Result<Option<&DurableRoot>, DeclarationIndexDrift> {
         Ok(match self.root(name)? {
             RootBinding::Executable(root) => Some(root),
@@ -552,13 +592,13 @@ impl DurableRegistry {
     /// reported rather than answered.
     pub(crate) fn product(
         &self,
-        resource: &str,
+        resource: &ScopedDurableName,
     ) -> Result<ProductBinding<'_>, DeclarationIndexDrift> {
         let Some(stores) = self.products.get(resource) else {
             return Ok(ProductBinding::Absent);
         };
         for name in &stores.admitted {
-            match self.root(name)? {
+            match self.root(&ScopedDurableName::new(&resource.origin, name))? {
                 RootBinding::Executable(_) | RootBinding::NotYetExecutable => {}
                 RootBinding::Refused(..) | RootBinding::Absent => {
                     return Err(DeclarationIndexDrift);
@@ -571,7 +611,7 @@ impl DurableRegistry {
         let Some(refused) = &stores.first_refused else {
             return Err(DeclarationIndexDrift);
         };
-        match self.root(refused)? {
+        match self.root(&ScopedDurableName::new(&resource.origin, refused))? {
             RootBinding::Refused(_, summary) => Ok(ProductBinding::Refused(summary)),
             RootBinding::Executable(_) | RootBinding::NotYetExecutable | RootBinding::Absent => {
                 Err(DeclarationIndexDrift)
@@ -584,16 +624,15 @@ impl DurableRegistry {
     /// facts only: the constructor builds a record, it addresses no durable node.
     pub(crate) fn branch_record_at(
         &self,
-        resource: &str,
+        resource: &ScopedDurableName,
         path: &[&str],
     ) -> Option<&BranchRecordShape> {
         if path.is_empty() {
             return None;
         }
-        let mut qualified = String::from(resource);
+        let mut qualified = resource.clone();
         for step in path {
-            qualified.push('.');
-            qualified.push_str(step);
+            qualified = qualified.below(step);
         }
         self.branch_record(*self.branch_paths.get(&qualified)?)
     }
@@ -601,9 +640,8 @@ impl DurableRegistry {
     /// Whether `resource` declares a keyed branch named `name` directly below itself — a
     /// Product declaration fact, answered from the declared branch paths rather than from
     /// any one root's built descriptors.
-    pub(crate) fn declares_branch(&self, resource: &str, name: &str) -> bool {
-        self.declared_branch_paths
-            .contains(&format!("{resource}.{name}"))
+    pub(crate) fn declares_branch(&self, resource: &ScopedDurableName, name: &str) -> bool {
+        self.declared_branch_paths.contains(&resource.below(name))
     }
 
     /// The materialized branch entry record `ty` types, if it is one — the shape a field
@@ -624,11 +662,19 @@ impl DurableRegistry {
         self.roots.get(root_id.index() as usize)
     }
 
-    /// Every declared store-root name — admitted, parked, or refused — so a reference
-    /// to an unknown `^root` can offer the nearest declared root as a did-you-mean. A
-    /// refused root stays in the corpus because the reader can still see it in the source.
-    pub(crate) fn root_names(&self) -> impl Iterator<Item = &str> {
-        self.declared.keys().map(String::as_str)
+    /// Every store-root name `origin` declares — admitted, parked, or refused — so a
+    /// reference to an unknown `^root` can offer the nearest declared root as a
+    /// did-you-mean. A refused root stays in the corpus because the reader can still
+    /// see it in the source; another tree's roots are not offered, because a reference
+    /// could not have meant one.
+    pub(crate) fn root_names<'a>(
+        &'a self,
+        origin: &'a SourceOrigin,
+    ) -> impl Iterator<Item = &'a str> {
+        self.declared
+            .keys()
+            .filter(move |key| key.origin == *origin)
+            .map(ScopedDurableName::name)
     }
 
     /// Record one Product declaration's branch entry records from the branch tree of its
@@ -637,9 +683,13 @@ impl DurableRegistry {
     /// Only declaration facts cross: the branch's simple name, key-free field layout, and
     /// materialized record type, plus the names of its own sub-branches. Operation sites
     /// and semantic paths stay on the occurrence that owns them.
-    fn record_branch_declarations(&mut self, container: &str, branches: &[DurableBranch]) {
+    fn record_branch_declarations(
+        &mut self,
+        container: &ScopedDurableName,
+        branches: &[DurableBranch],
+    ) {
         for branch in branches {
-            let qualified = format!("{container}.{}", branch.name);
+            let qualified = container.below(&branch.name);
             self.branch_paths.insert(qualified.clone(), branch.record);
             self.branch_records.insert(
                 branch.record,
@@ -678,13 +728,14 @@ impl DurableRegistry {
     /// asks only about a resource's own top-level member, which such a branch is not.
     /// Projected from the rows, so the answer is available for every Product with an
     /// admitted root, executable or not.
-    fn record_declared_branch_paths(&mut self, groups: &[GroupRow<'_>]) {
+    fn record_declared_branch_paths(&mut self, origin: &SourceOrigin, groups: &[GroupRow<'_>]) {
         for row in groups {
             if row.keys.is_none() {
                 continue;
             }
-            self.record_declared_branch_paths(&row.groups);
-            self.declared_branch_paths.insert(row.path.clone());
+            self.record_declared_branch_paths(origin, &row.groups);
+            self.declared_branch_paths
+                .insert(ScopedDurableName::new(origin, &row.path));
         }
     }
 
@@ -709,7 +760,7 @@ impl DurableRegistry {
         records: &TypeRegistry,
         resources: &[(FileRef, ProjectFile, &ResourceDecl)],
         stores: &'source [(FileRef, ProjectFile, &StoreDecl)],
-        ledger: Option<&IdentityLedger>,
+        ledgers: &OriginLedgers<'_>,
         diagnostics: &mut DiagnosticCollector,
         budget: DeclarationBudget,
         boundary_roots: &mut Vec<NominalBoundaryRoot<'source>>,
@@ -740,7 +791,7 @@ impl DurableRegistry {
             let mut type_metadata = DurableTypeMetadata { records, metadata };
             let mut reported_identity_gaps = BTreeSet::new();
             let mut identity_build = IdentityBuildState {
-                ledger,
+                ledgers,
                 reported_gaps: &mut reported_identity_gaps,
             };
             for ((at, file, store), row) in stores.iter().zip(&rows) {
@@ -754,7 +805,8 @@ impl DurableRegistry {
                 // second DURABLE-table row; reject it and keep the first declaration. A
                 // refused declaration still occupies its name, so the repeat conflicts
                 // whichever of the two the compiler could admit.
-                if registry.declared.declared(store.root.root.as_str()) {
+                let placement = ScopedDurableName::new(file.origin(), &store.root.root);
+                if registry.declared.declared(&placement) {
                     settled.push(SourceDiagnostic::at(
                         Code::CheckType,
                         file,
@@ -815,9 +867,17 @@ impl DurableRegistry {
                 // The resource projection is appended in the same statement as the
                 // ledger entry, so a store cannot be declared without being reachable
                 // by the resource it binds.
+                // A Product belongs to the tree that declares its resource; a store
+                // whose spelling bound no resource has no Product of another tree to
+                // reach, so it keys under its own.
+                let product_origin = match row.binding {
+                    StoreResourceBinding::Accepted(bound) => directory.row(bound).file.origin(),
+                    _ => file.origin(),
+                };
+                let product_key = ScopedDurableName::new(product_origin, row.resource);
                 let stores = registry
                     .products
-                    .entry(row.resource.to_string())
+                    .entry(product_key.clone())
                     .or_insert_with(|| ProductStores {
                         admitted: Vec::new(),
                         first_refused: None,
@@ -843,16 +903,15 @@ impl DurableRegistry {
                     }
                 }
                 if declare_branch_paths && let StoreResourceBinding::Accepted(bound) = row.binding {
-                    registry.record_declared_branch_paths(&directory.row(bound).groups);
+                    let resource = directory.row(bound);
+                    registry.record_declared_branch_paths(resource.file.origin(), &resource.groups);
                 }
                 if let Some(at) = declare_branches {
                     let branches = std::mem::take(&mut registry.roots[at].branches);
-                    registry.record_branch_declarations(row.resource, &branches);
+                    registry.record_branch_declarations(&product_key, &branches);
                     registry.roots[at].branches = branches;
                 }
-                registry
-                    .declared
-                    .declare(store.root.root.clone(), occurrence)?;
+                registry.declared.declare(placement, occurrence)?;
             }
             diagnostics.absorb(settled.finish());
             Ok(registry)
@@ -889,6 +948,8 @@ enum DurableRefusal<'a> {
         anchor: IdentityAnchor,
         retired: bool,
         report: RefusalReport,
+        /// The tree that declares the anchor, and whose `.marrow/ids` must gain it.
+        origin: SourceOrigin,
     },
     /// A field, group leaf, key tuple, or durable value in the root's stored shape is
     /// outside the closed durable value set.
@@ -922,18 +983,18 @@ fn refuse_store(
             anchor,
             retired,
             report,
+            origin,
         } => {
             let gap = IdentityGap {
                 kind: anchor.kind,
                 path: anchor.path.clone(),
                 retired,
+                origin: origin.clone(),
             };
             let summary = match report {
-                RefusalReport::AtDeclaration => refuse_row(
-                    diagnostics,
-                    at,
-                    identity_gap(at.file, at.span, anchor.kind, &anchor.path, retired),
-                ),
+                RefusalReport::AtDeclaration => {
+                    refuse_row(diagnostics, at, identity_gap(at.file, at.span, &gap))
+                }
                 // Covered by the first store to reach this project-wide anchor, which
                 // pushed the `check.durable_identity` row this refusal names.
                 _ => refuse_covered(at, Code::CheckDurableIdentity),
@@ -974,11 +1035,55 @@ struct DurableTypeMetadata<'registry, 'session> {
     metadata: &'session mut TypeMetadataSession<'registry>,
 }
 
-/// Project-wide identity inputs shared by each store build. The ledger remains
+/// The committed identity ledger of each captured tree, selected by origin.
+///
+/// A durable anchor resolves against the ledger of the tree that *declares* it, so a
+/// library's product, fields, groups, sums, members, branch placements, keys and
+/// indexes keep the ids that library committed and a consuming project inherits them
+/// unchanged. Every ledger here is read-only: the compiler never writes one, and a
+/// dependency's is never merged into the root's.
+pub(crate) struct OriginLedgers<'a> {
+    ledgers: Vec<(SourceOrigin, Option<&'a IdentityLedger>)>,
+}
+
+impl<'a> OriginLedgers<'a> {
+    /// Each captured origin's committed ledger, in canonical order.
+    pub(crate) fn of(project: &'a ProjectInput) -> Self {
+        Self {
+            ledgers: project
+                .origins()
+                .iter()
+                .map(|origin| (origin.clone(), project.identity_ledger_for(origin)))
+                .collect(),
+        }
+    }
+
+    /// A single-tree compilation's ledgers: the root's alone. Test-only, because
+    /// production always reads the captured origin set, which a hand-built pair
+    /// could disagree with.
+    #[cfg(test)]
+    pub(crate) fn root_only(ledger: Option<&'a IdentityLedger>) -> Self {
+        Self {
+            ledgers: vec![(SourceOrigin::Root, ledger)],
+        }
+    }
+
+    /// The ledger `origin` committed, or `None` when that tree committed none — the
+    /// normal state of a storeless project, equivalent to an empty ledger. An origin
+    /// this capture does not hold likewise resolves against no ledger.
+    fn for_origin(&self, origin: &SourceOrigin) -> Option<&'a IdentityLedger> {
+        self.ledgers
+            .iter()
+            .find(|(held, _)| held == origin)
+            .and_then(|(_, ledger)| *ledger)
+    }
+}
+
+/// Project-wide identity inputs shared by each store build. The ledgers remain
 /// read-only while the gap set assigns the first diagnostic for a shared anchor
 /// across all per-store resolvers.
 struct IdentityBuildState<'ledger, 'gaps> {
-    ledger: Option<&'ledger IdentityLedger>,
+    ledgers: &'ledger OriginLedgers<'ledger>,
     reported_gaps: &'gaps mut BTreeSet<IdentityAnchor>,
 }
 
@@ -1340,17 +1445,28 @@ fn build_one(
     let mut resolver = IdentityResolver::new(
         declared,
         store.span,
-        identity_build.ledger,
+        identity_build.ledgers,
+        resource.file.origin().clone(),
         identity_build.reported_gaps,
         diagnostics,
     );
-    let application = resolver.resolve(IdentityKind::Application, APPLICATION_ANCHOR_PATH);
-    let placement = resolver.resolve(IdentityKind::Root, &store.root.root);
+    // The application anchor is the root project's alone: a dependency's `application`
+    // row is never read, merged, or copied, so a library under a consumer contributes
+    // none of its own.
+    let application = resolver.resolve(
+        &SourceOrigin::Root,
+        IdentityKind::Application,
+        APPLICATION_ANCHOR_PATH,
+    );
+    // The root placement and its key tuple are written in the `store` declaration, so
+    // they belong to that declaration's tree, not to the resource's.
+    let store_origin = file.origin().clone();
+    let placement = resolver.resolve(&store_origin, IdentityKind::Root, &store.root.root);
     resolver.name_step(placement, PathSigil::Root, &store.root.root);
-    let product = resolver.resolve(IdentityKind::Product, row.resource);
+    let product = resolver.resolve_declared(IdentityKind::Product, row.resource);
     let key_ids: Vec<LedgerIdBytes> = key_columns
         .iter()
-        .map(|column| resolver.resolve(IdentityKind::Key, &column.anchor))
+        .map(|column| resolver.resolve(&store_origin, IdentityKind::Key, &column.anchor))
         .collect();
 
     // The resource's member tree, in canonical order: its top-level fields
@@ -1540,7 +1656,12 @@ fn build_one(
 struct IdentityResolver<'a> {
     declared: DeclarationSite<'a>,
     span: SourceSpan,
-    ledger: Option<&'a IdentityLedger>,
+    ledgers: &'a OriginLedgers<'a>,
+    /// The tree that declares the resource whose member tree this resolver walks.
+    /// Every anchor of that tree's own declaration — the product, its fields, groups,
+    /// sums, members, branch placements, keys and indexes — resolves against its
+    /// ledger, whichever tree the `store` that reaches it is written in.
+    graph_origin: SourceOrigin,
     refusal: Option<DeclarationRefusalSummary>,
     /// The value shape already built for each concrete durable value type reached by
     /// this resolver. It is what keeps the walk linear in the program's declared types
@@ -1580,14 +1701,16 @@ impl<'a> IdentityResolver<'a> {
     fn new(
         declared: DeclarationSite<'a>,
         span: SourceSpan,
-        ledger: Option<&'a IdentityLedger>,
+        ledgers: &'a OriginLedgers<'a>,
+        graph_origin: SourceOrigin,
         reported_identity_gaps: &'a mut BTreeSet<IdentityAnchor>,
         diagnostics: &'a mut DiagnosticCollector,
     ) -> Self {
         Self {
             declared,
             span,
-            ledger,
+            ledgers,
+            graph_origin,
             refusal: None,
             value_memo: HashMap::new(),
             invariant: None,
@@ -1779,11 +1902,11 @@ impl<'a> IdentityResolver<'a> {
         ) else {
             return self.checked_mint(values.value_scalar(ScalarType::Int.image()));
         };
-        let sum = self.resolve(IdentityKind::Sum, &spelling);
+        let sum = self.resolve_declared(IdentityKind::Sum, &spelling);
         let members = variants
             .iter()
             .map(|(name, payload)| {
-                let id = self.resolve(IdentityKind::Member, &format!("{spelling}.{name}"));
+                let id = self.resolve_declared(IdentityKind::Member, &format!("{spelling}.{name}"));
                 let payload = payload
                     .iter()
                     .map(|arg| self.build_value_shape(values, records, metadata, *arg))
@@ -1864,11 +1987,11 @@ impl<'a> IdentityResolver<'a> {
     /// `(kind, path)` diagnostic, flips `complete` to false, and returns a
     /// placeholder id — the caller discards the whole graph when `complete` is
     /// false, so the placeholder is never encoded.
-    fn resolve(&mut self, kind: IdentityKind, path: &str) -> LedgerIdBytes {
+    fn resolve(&mut self, origin: &SourceOrigin, kind: IdentityKind, path: &str) -> LedgerIdBytes {
         if self.invariant.is_some() {
             return LedgerIdBytes::from_bytes([0u8; 16]);
         }
-        let (live, retired) = match self.ledger {
+        let (live, retired) = match self.ledgers.for_origin(origin) {
             Some(ledger) => (ledger.lookup(kind, path), ledger.is_retired(kind, path)),
             None => (None, false),
         };
@@ -1884,10 +2007,18 @@ impl<'a> IdentityResolver<'a> {
                     anchor,
                     retired,
                     report,
+                    origin: origin.clone(),
                 });
                 LedgerIdBytes::from_bytes([0u8; 16])
             }
         }
+    }
+
+    /// Resolve one anchor of the resource's own declared member tree, against the
+    /// ledger of the tree that declares that resource.
+    fn resolve_declared(&mut self, kind: IdentityKind, path: &str) -> LedgerIdBytes {
+        let origin = self.graph_origin.clone();
+        self.resolve(&origin, kind, path)
     }
 
     /// The Product declaration's canonical member graph: the resource's top-level
@@ -1911,7 +2042,8 @@ impl<'a> IdentityResolver<'a> {
         let mut nodes: Vec<DeclarationDraftNode> = Vec::new();
         for field in &resource.record.fields {
             let shape = DeclarationMemberShape::Field {
-                id: self.resolve(IdentityKind::Field, &format!("{product}.{}", field.name)),
+                id: self
+                    .resolve_declared(IdentityKind::Field, &format!("{product}.{}", field.name)),
                 required: field.required,
                 value: self.build_field_value(draft, records, metadata, field.ty)?,
             };
@@ -1927,7 +2059,7 @@ impl<'a> IdentityResolver<'a> {
         // these reports would write a ledger missing the anchor the corrected program
         // needs.
         for member in records.refused_members(product) {
-            self.resolve(IdentityKind::Field, &format!("{product}.{member}"));
+            self.resolve_declared(IdentityKind::Field, &format!("{product}.{member}"));
         }
         self.build_extras(
             &mut nodes,
@@ -1964,7 +2096,7 @@ impl<'a> IdentityResolver<'a> {
                 // A `group`: an unkeyed static field-path namespace. Its direct fields
                 // flatten into the containing resource's namespace, so it mints no
                 // record type of its own.
-                let id = self.resolve(IdentityKind::Group, path);
+                let id = self.resolve_declared(IdentityKind::Group, path);
                 self.name_step(id, PathSigil::Child, row.name);
                 let at = nodes.len();
                 nodes.push(DeclarationDraftNode::declared(
@@ -1983,7 +2115,7 @@ impl<'a> IdentityResolver<'a> {
                 // the qualified `Resource.branch` path — the branch's constructor
                 // spelling; the branch's own `name` is the simple member name the
                 // physical layer keys its family by.
-                let placement = self.resolve(IdentityKind::Root, path);
+                let placement = self.resolve_declared(IdentityKind::Root, path);
                 self.name_step(placement, PathSigil::Child, row.name);
                 let keys = self.build_branch_keys(branch_keys, cursor.file);
                 // The branch's slot is reserved before its members are walked: its own
@@ -2040,7 +2172,7 @@ impl<'a> IdentityResolver<'a> {
                 .into_iter()
                 .map(|column| KeyColumn {
                     scalar: column.scalar.image(),
-                    id: self.resolve(IdentityKind::Key, &column.anchor),
+                    id: self.resolve_declared(IdentityKind::Key, &column.anchor),
                 })
                 .collect(),
         }
@@ -2129,7 +2261,7 @@ impl<'a> IdentityResolver<'a> {
                 return None;
             }
         };
-        let id = self.resolve(
+        let id = self.resolve_declared(
             IdentityKind::Field,
             &format!("{}.{}", cursor.container, field.name),
         );
@@ -2236,7 +2368,7 @@ impl<'a> IdentityResolver<'a> {
             // two views of the same admitted components, in the same order.
             let components = resolved.iter().map(|item| item.component).collect();
             let projection = resolved.iter().map(|item| item.scalar).collect();
-            let id = self.resolve(IdentityKind::Index, &format!("{root}.{}", index.name));
+            let id = self.resolve_declared(IdentityKind::Index, &format!("{root}.{}", index.name));
             self.name_step(id, PathSigil::Child, index.name);
             shapes.push(BuiltIndex {
                 shape: DurableIndexShape {
@@ -2789,40 +2921,47 @@ fn build_branches(
         .collect()
 }
 
-/// The precise missing/retired-identity diagnostic: the typed `(kind, path)`
-/// gap plus a message naming the identity and the command that mints it.
-fn identity_gap(
-    file: &ProjectFile,
-    span: SourceSpan,
-    kind: IdentityKind,
-    path: &str,
-    retired: bool,
-) -> SourceDiagnostic {
-    let message = if retired {
+/// The precise missing/retired-identity diagnostic: the typed gap plus a message
+/// naming the identity, the tree that owns it, and where it is minted.
+///
+/// A gap the root project declares is minted here; one a dependency declares is
+/// minted in that dependency's own directory, because the library owns the
+/// identities of what it declares and commits its own ledger.
+fn identity_gap(file: &ProjectFile, span: SourceSpan, gap: &IdentityGap) -> SourceDiagnostic {
+    let owner = match gap.origin.alias() {
+        None => ".marrow/ids".to_string(),
+        Some(alias) => format!("the `{}` dependency's .marrow/ids", alias.as_str()),
+    };
+    let message = if gap.retired {
         format!(
-            "durable identity for {} `{}` was retired in .marrow/ids and can never be reused; \
+            "durable identity for {} `{}` was retired in {owner} and can never be reused; \
              declare a fresh name",
-            kind.keyword(),
-            path
+            gap.kind.keyword(),
+            gap.path
         )
     } else {
-        format!(
-            "durable identity for {} `{}` is missing from .marrow/ids; \
-             `marrow run` mints missing identities (commit the updated .marrow/ids)",
-            kind.keyword(),
-            path
-        )
+        match gap.origin.alias() {
+            None => format!(
+                "durable identity for {} `{}` is missing from .marrow/ids; \
+                 `marrow run` mints missing identities (commit the updated .marrow/ids)",
+                gap.kind.keyword(),
+                gap.path
+            ),
+            Some(alias) => format!(
+                "durable identity for {} `{}` is missing from {owner}; run `marrow run` in \
+                 the `{}` directory and commit its updated .marrow/ids",
+                gap.kind.keyword(),
+                gap.path,
+                alias.as_str()
+            ),
+        }
     };
     SourceDiagnostic::with_identity_gap(
         Code::CheckDurableIdentity,
         file,
         span,
         message,
-        IdentityGap {
-            kind,
-            path: path.to_string(),
-            retired,
-        },
+        gap.clone(),
     )
 }
 
