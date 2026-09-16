@@ -33,6 +33,265 @@ enum BestEffortDisplayFrame {
     LeaveCollection(CollTypeId),
 }
 
+/// One best-effort display walk: the metadata it reads, the frames still to expand, the
+/// text produced so far, and the cycle-guard nodes entered but not yet left.
+struct BestEffortDisplayWalk<'a, 'v> {
+    registry: &'a TypeRegistry,
+    view: &'a TypeMetadataView<'v>,
+    metadata: &'a MetadataScratch,
+    display: &'a mut DisplayScratch,
+    frames: Vec<BestEffortDisplayFrame>,
+    output: String,
+    entered: Vec<DisplayNode>,
+}
+
+impl BestEffortDisplayWalk<'_, '_> {
+    /// Seed the stack with the root: an instantiation, or the collection argument that
+    /// names one.
+    fn seed(&mut self, root: BestEffortDisplayRoot) {
+        match root {
+            BestEffortDisplayRoot::Inst { id, generic_parent } => {
+                self.frames.push(BestEffortDisplayFrame::Inst {
+                    id,
+                    generic_parent,
+                    root: true,
+                });
+            }
+            BestEffortDisplayRoot::Collection {
+                index,
+                generic_parent,
+                collection_parent,
+            } => self.frames.push(BestEffortDisplayFrame::Arg {
+                arg: GArg::Collection(index),
+                generic_parent,
+                collection_parent,
+            }),
+        }
+    }
+
+    /// Expand frames until the stack empties. `Ok(None)` is a root that cannot be
+    /// rendered; the caller unwinds whatever was entered on every path.
+    fn run(&mut self) -> Result<Option<String>, GenericInvariant> {
+        while let Some(frame) = self.frames.pop() {
+            match frame {
+                BestEffortDisplayFrame::Text(text) => self.output.push_str(text),
+                BestEffortDisplayFrame::LeaveRow(row) => {
+                    // The pop keeps `entered` in step for the caller's unwind.
+                    self.entered.pop();
+                    self.display.leave_row(row);
+                }
+                BestEffortDisplayFrame::LeaveCollection(index) => {
+                    self.entered.pop();
+                    self.display.leave_collection(index);
+                }
+                BestEffortDisplayFrame::Inst {
+                    id,
+                    generic_parent,
+                    root,
+                } => {
+                    if !self.step_inst(id, generic_parent, root)? {
+                        return Ok(None);
+                    }
+                }
+                BestEffortDisplayFrame::Arg {
+                    arg,
+                    generic_parent,
+                    collection_parent,
+                } => self.step_arg(arg, generic_parent, collection_parent)?,
+            }
+        }
+        Ok(Some(std::mem::take(&mut self.output)))
+    }
+
+    /// Expand one instantiation frame into its template name and argument frames.
+    /// `Ok(false)` is a root whose row is absent, still filling, or already on the
+    /// display path — unrenderable rather than an invariant.
+    fn step_inst(
+        &mut self,
+        id: TypeInstId,
+        generic_parent: Option<usize>,
+        root: bool,
+    ) -> Result<bool, GenericInvariant> {
+        let Some(row) = self.metadata.row(id) else {
+            if root {
+                return Ok(false);
+            }
+            let arg = match id {
+                TypeInstId::Record(id) => GArg::Struct(id),
+                TypeInstId::Enum(id) => GArg::Enum(id),
+            };
+            return Err(GenericInvariant::TypeArgumentTargetMissing(arg));
+        };
+        if let Some(parent) = generic_parent
+            && row >= parent
+        {
+            return Err(GenericInvariant::TypeArgumentOrderViolation {
+                owner: self.view.generics.type_insts[parent].id,
+                target: id,
+            });
+        }
+        let inst = &self.view.generics.type_insts[row];
+        if matches!(inst.state, TypeInstState::Filling { .. }) || !self.display.enter_row(row) {
+            if root {
+                return Ok(false);
+            }
+            let arg = match id {
+                TypeInstId::Record(id) => GArg::Struct(id),
+                TypeInstId::Enum(id) => GArg::Enum(id),
+            };
+            return Err(GenericInvariant::TypeArgumentTargetMissing(arg));
+        }
+        self.entered.push(DisplayNode::Row(row));
+        let template = self.registry.template_for_args(inst.template, &inst.args)?;
+        if let TypeInstState::Ready(body) = &inst.state {
+            self.registry
+                .validate_inst_body_metadata(inst.template, &inst.args, inst.id, body)?;
+        }
+        self.output.push_str(&template.name);
+        self.output.push('<');
+        self.frames.push(BestEffortDisplayFrame::LeaveRow(row));
+        self.frames.push(BestEffortDisplayFrame::Text(">"));
+        for (index, arg) in inst.args.iter().copied().enumerate().rev() {
+            self.frames.push(BestEffortDisplayFrame::Arg {
+                arg,
+                generic_parent: Some(row),
+                collection_parent: None,
+            });
+            if index > 0 {
+                self.frames.push(BestEffortDisplayFrame::Text(", "));
+            }
+        }
+        Ok(true)
+    }
+
+    /// Expand one type-argument frame: a scalar or declared name renders inline, a
+    /// generic row or collection pushes the frames that render it.
+    fn step_arg(
+        &mut self,
+        arg: GArg,
+        generic_parent: Option<usize>,
+        collection_parent: Option<CollTypeId>,
+    ) -> Result<(), GenericInvariant> {
+        match arg {
+            GArg::Scalar(scalar) => self.output.push_str(scalar.spelling()),
+            GArg::Nominal(id) => self.output.push_str(
+                &self
+                    .registry
+                    .nominals
+                    .get(id.0 as usize)
+                    .ok_or(GenericInvariant::TypeArgumentTargetMissing(arg))?
+                    .name,
+            ),
+            GArg::Struct(id) => match self.metadata.record_owner(id) {
+                Some(RecordMetadataOwner::GenericRow(_)) => {
+                    self.frames.push(BestEffortDisplayFrame::Inst {
+                        id: TypeInstId::Record(id),
+                        generic_parent,
+                        root: false,
+                    });
+                }
+                Some(RecordMetadataOwner::DeclaredStruct(row)) => self.output.push_str(
+                    &self
+                        .registry
+                        .structs
+                        .get(row)
+                        .ok_or(GenericInvariant::TypeArgumentTargetMissing(arg))?
+                        .name,
+                ),
+                Some(RecordMetadataOwner::ResourceRecord(_) | RecordMetadataOwner::Group(_, _))
+                | None => return Err(GenericInvariant::TypeArgumentTargetMissing(arg)),
+            },
+            GArg::Group(id) => match self.metadata.record_owner(id) {
+                Some(RecordMetadataOwner::Group(record, group)) => self.output.push_str(
+                    &self
+                        .registry
+                        .records
+                        .get(record)
+                        .and_then(|record| record.groups.get(group))
+                        .ok_or(GenericInvariant::TypeArgumentTargetMissing(arg))?
+                        .name,
+                ),
+                Some(
+                    RecordMetadataOwner::ResourceRecord(_)
+                    | RecordMetadataOwner::DeclaredStruct(_)
+                    | RecordMetadataOwner::GenericRow(_),
+                )
+                | None => return Err(GenericInvariant::TypeArgumentTargetMissing(arg)),
+            },
+            GArg::Enum(id) => match self.metadata.enum_owner(id) {
+                Some(EnumMetadataOwner::GenericRow(_)) => {
+                    self.frames.push(BestEffortDisplayFrame::Inst {
+                        id: TypeInstId::Enum(id),
+                        generic_parent,
+                        root: false,
+                    });
+                }
+                Some(EnumMetadataOwner::DeclaredEnum(row)) => self.output.push_str(
+                    &self
+                        .registry
+                        .enums
+                        .get(row)
+                        .ok_or(GenericInvariant::TypeArgumentTargetMissing(arg))?
+                        .name,
+                ),
+                None => return Err(GenericInvariant::TypeArgumentTargetMissing(arg)),
+            },
+            GArg::Collection(index) => {
+                if collection_parent.is_some_and(|parent| index >= parent)
+                    || !self.display.enter_collection(index)
+                {
+                    return Err(GenericInvariant::TypeArgumentTargetMissing(arg));
+                }
+                self.entered.push(DisplayNode::Collection(index));
+                let spec = self
+                    .view
+                    .collections
+                    .get(index.index() as usize)
+                    .copied()
+                    .ok_or(GenericInvariant::TypeArgumentTargetMissing(arg))?;
+                self.frames
+                    .push(BestEffortDisplayFrame::LeaveCollection(index));
+                self.frames.push(BestEffortDisplayFrame::Text(">"));
+                match spec {
+                    CollSpec::List { elem } => {
+                        self.output.push_str("List<");
+                        self.frames.push(BestEffortDisplayFrame::Arg {
+                            arg: elem,
+                            generic_parent,
+                            collection_parent: Some(index),
+                        });
+                    }
+                    CollSpec::Map { key, value } => {
+                        self.output.push_str("Map<");
+                        self.frames.push(BestEffortDisplayFrame::Arg {
+                            arg: value,
+                            generic_parent,
+                            collection_parent: Some(index),
+                        });
+                        self.frames.push(BestEffortDisplayFrame::Text(", "));
+                        self.frames.push(BestEffortDisplayFrame::Arg {
+                            arg: key,
+                            generic_parent,
+                            collection_parent: Some(index),
+                        });
+                    }
+                }
+            }
+            GArg::Param(index) => {
+                self.output.push_str(&format!("<type parameter {index}>"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Leave every node this walk entered, in reverse order, whatever its outcome.
+    fn unwind(&mut self) {
+        while let Some(node) = self.entered.pop() {
+            self.display.leave(node);
+        }
+    }
+}
+
 fn render_best_effort_display(
     registry: &TypeRegistry,
     view: &TypeMetadataView<'_>,
@@ -40,218 +299,18 @@ fn render_best_effort_display(
     root: BestEffortDisplayRoot,
     display: &mut DisplayScratch,
 ) -> Result<Option<String>, GenericInvariant> {
-    let mut frames = Vec::new();
-    match root {
-        BestEffortDisplayRoot::Inst { id, generic_parent } => {
-            frames.push(BestEffortDisplayFrame::Inst {
-                id,
-                generic_parent,
-                root: true,
-            });
-        }
-        BestEffortDisplayRoot::Collection {
-            index,
-            generic_parent,
-            collection_parent,
-        } => frames.push(BestEffortDisplayFrame::Arg {
-            arg: GArg::Collection(index),
-            generic_parent,
-            collection_parent,
-        }),
-    }
-    let mut output = String::new();
-    let mut entered = Vec::new();
-    let result = (|| {
-        while let Some(frame) = frames.pop() {
-            match frame {
-                BestEffortDisplayFrame::Text(text) => output.push_str(text),
-                BestEffortDisplayFrame::LeaveRow(row) => {
-                    // The pop keeps `entered` in step for the unwind path below.
-                    entered.pop();
-                    display.leave_row(row);
-                }
-                BestEffortDisplayFrame::LeaveCollection(index) => {
-                    entered.pop();
-                    display.leave_collection(index);
-                }
-                BestEffortDisplayFrame::Inst {
-                    id,
-                    generic_parent,
-                    root,
-                } => {
-                    let Some(row) = metadata.row(id) else {
-                        if root {
-                            return Ok(None);
-                        }
-                        let arg = match id {
-                            TypeInstId::Record(id) => GArg::Struct(id),
-                            TypeInstId::Enum(id) => GArg::Enum(id),
-                        };
-                        return Err(GenericInvariant::TypeArgumentTargetMissing(arg));
-                    };
-                    if let Some(parent) = generic_parent
-                        && row >= parent
-                    {
-                        return Err(GenericInvariant::TypeArgumentOrderViolation {
-                            owner: view.generics.type_insts[parent].id,
-                            target: id,
-                        });
-                    }
-                    let inst = &view.generics.type_insts[row];
-                    if matches!(inst.state, TypeInstState::Filling { .. })
-                        || !display.enter_row(row)
-                    {
-                        if root {
-                            return Ok(None);
-                        }
-                        let arg = match id {
-                            TypeInstId::Record(id) => GArg::Struct(id),
-                            TypeInstId::Enum(id) => GArg::Enum(id),
-                        };
-                        return Err(GenericInvariant::TypeArgumentTargetMissing(arg));
-                    }
-                    entered.push(DisplayNode::Row(row));
-                    let template = registry.template_for_args(inst.template, &inst.args)?;
-                    if let TypeInstState::Ready(body) = &inst.state {
-                        registry.validate_inst_body_metadata(
-                            inst.template,
-                            &inst.args,
-                            inst.id,
-                            body,
-                        )?;
-                    }
-                    output.push_str(&template.name);
-                    output.push('<');
-                    frames.push(BestEffortDisplayFrame::LeaveRow(row));
-                    frames.push(BestEffortDisplayFrame::Text(">"));
-                    for (index, arg) in inst.args.iter().copied().enumerate().rev() {
-                        frames.push(BestEffortDisplayFrame::Arg {
-                            arg,
-                            generic_parent: Some(row),
-                            collection_parent: None,
-                        });
-                        if index > 0 {
-                            frames.push(BestEffortDisplayFrame::Text(", "));
-                        }
-                    }
-                }
-                BestEffortDisplayFrame::Arg {
-                    arg,
-                    generic_parent,
-                    collection_parent,
-                } => match arg {
-                    GArg::Scalar(scalar) => output.push_str(scalar.spelling()),
-                    GArg::Nominal(id) => output.push_str(
-                        &registry
-                            .nominals
-                            .get(id.0 as usize)
-                            .ok_or(GenericInvariant::TypeArgumentTargetMissing(arg))?
-                            .name,
-                    ),
-                    GArg::Struct(id) => match metadata.record_owner(id) {
-                        Some(RecordMetadataOwner::GenericRow(_)) => {
-                            frames.push(BestEffortDisplayFrame::Inst {
-                                id: TypeInstId::Record(id),
-                                generic_parent,
-                                root: false,
-                            });
-                        }
-                        Some(RecordMetadataOwner::DeclaredStruct(row)) => output.push_str(
-                            &registry
-                                .structs
-                                .get(row)
-                                .ok_or(GenericInvariant::TypeArgumentTargetMissing(arg))?
-                                .name,
-                        ),
-                        Some(
-                            RecordMetadataOwner::ResourceRecord(_)
-                            | RecordMetadataOwner::Group(_, _),
-                        )
-                        | None => return Err(GenericInvariant::TypeArgumentTargetMissing(arg)),
-                    },
-                    GArg::Group(id) => match metadata.record_owner(id) {
-                        Some(RecordMetadataOwner::Group(record, group)) => output.push_str(
-                            &registry
-                                .records
-                                .get(record)
-                                .and_then(|record| record.groups.get(group))
-                                .ok_or(GenericInvariant::TypeArgumentTargetMissing(arg))?
-                                .name,
-                        ),
-                        Some(
-                            RecordMetadataOwner::ResourceRecord(_)
-                            | RecordMetadataOwner::DeclaredStruct(_)
-                            | RecordMetadataOwner::GenericRow(_),
-                        )
-                        | None => return Err(GenericInvariant::TypeArgumentTargetMissing(arg)),
-                    },
-                    GArg::Enum(id) => match metadata.enum_owner(id) {
-                        Some(EnumMetadataOwner::GenericRow(_)) => {
-                            frames.push(BestEffortDisplayFrame::Inst {
-                                id: TypeInstId::Enum(id),
-                                generic_parent,
-                                root: false,
-                            });
-                        }
-                        Some(EnumMetadataOwner::DeclaredEnum(row)) => output.push_str(
-                            &registry
-                                .enums
-                                .get(row)
-                                .ok_or(GenericInvariant::TypeArgumentTargetMissing(arg))?
-                                .name,
-                        ),
-                        None => return Err(GenericInvariant::TypeArgumentTargetMissing(arg)),
-                    },
-                    GArg::Collection(index) => {
-                        if collection_parent.is_some_and(|parent| index >= parent)
-                            || !display.enter_collection(index)
-                        {
-                            return Err(GenericInvariant::TypeArgumentTargetMissing(arg));
-                        }
-                        entered.push(DisplayNode::Collection(index));
-                        let spec = view
-                            .collections
-                            .get(index.index() as usize)
-                            .copied()
-                            .ok_or(GenericInvariant::TypeArgumentTargetMissing(arg))?;
-                        frames.push(BestEffortDisplayFrame::LeaveCollection(index));
-                        frames.push(BestEffortDisplayFrame::Text(">"));
-                        match spec {
-                            CollSpec::List { elem } => {
-                                output.push_str("List<");
-                                frames.push(BestEffortDisplayFrame::Arg {
-                                    arg: elem,
-                                    generic_parent,
-                                    collection_parent: Some(index),
-                                });
-                            }
-                            CollSpec::Map { key, value } => {
-                                output.push_str("Map<");
-                                frames.push(BestEffortDisplayFrame::Arg {
-                                    arg: value,
-                                    generic_parent,
-                                    collection_parent: Some(index),
-                                });
-                                frames.push(BestEffortDisplayFrame::Text(", "));
-                                frames.push(BestEffortDisplayFrame::Arg {
-                                    arg: key,
-                                    generic_parent,
-                                    collection_parent: Some(index),
-                                });
-                            }
-                        }
-                    }
-                    GArg::Param(index) => {
-                        output.push_str(&format!("<type parameter {index}>"));
-                    }
-                },
-            }
-        }
-        Ok(Some(output))
-    })();
-    while let Some(node) = entered.pop() {
-        display.leave(node);
-    }
+    let mut walk = BestEffortDisplayWalk {
+        registry,
+        view,
+        metadata,
+        display,
+        frames: Vec::new(),
+        output: String::new(),
+        entered: Vec::new(),
+    };
+    walk.seed(root);
+    let result = walk.run();
+    walk.unwind();
     result
 }
 
