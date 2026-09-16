@@ -1,6 +1,6 @@
-//! The provision report and approval over a real compiled durable image: the report carries
-//! no identity hash, provision refuses without a matching approval, and an accepted
-//! provision round-trips through open.
+//! The provision report and approval over a real compiled durable image: the report names
+//! the destination and the roots, carries no identity hash, provision refuses without a
+//! matching approval, and an accepted provision round-trips through open.
 
 use std::path::Path;
 
@@ -11,12 +11,33 @@ use marrow_lifecycle::{
 use marrow_verify::VerifiedImage;
 
 use crate::support::Scratch;
-use crate::support::ceiling::{image as compile, source_read_only};
+use crate::support::ceiling::{image as compile, source_broadened, source_read_only};
 
 fn prepared(image: &VerifiedImage) -> PreparedImage {
     let prepared = prepare(image.clone());
     assert!(prepared.projection().is_some(), "flat-executable");
     prepared
+}
+
+/// The report carries the destination and the durable roots as typed values, and the
+/// effects it presents are the image's demand: the read-only program reads and does not
+/// write, the broadened one does both.
+#[test]
+fn the_report_names_the_destination_the_roots_and_the_effects() {
+    let dest = Path::new("/tmp/notes-store");
+
+    let read_only = compile(&source_read_only());
+    let report = ProvisionReport::new(dest, &prepared(&read_only)).expect("report");
+    assert_eq!(report.destination(), dest);
+    assert_eq!(report.roots(), ["counters"]);
+    assert!(report.reads());
+    assert!(!report.writes());
+
+    let broadened = compile(&source_broadened());
+    let report = ProvisionReport::new(dest, &prepared(&broadened)).expect("report");
+    assert_eq!(report.roots(), ["counters"]);
+    assert!(report.reads());
+    assert!(report.writes());
 }
 
 /// The absence gate for the "never a raw hash a human would retype" rule: nothing the report

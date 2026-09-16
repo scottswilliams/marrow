@@ -9,7 +9,7 @@
 //! scripted flow), and [`provision_image`] refuses to write a store without one that matches
 //! the report it would provision.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use marrow_kernel::durable::NATIVE_ENGINE_FORMAT_VERSION;
 use marrow_verify::CeilingDescriptor;
@@ -31,7 +31,7 @@ use marrow_codes::Code;
 /// never an identity hash, witness, or ceiling id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProvisionReport {
-    destination: String,
+    destination: PathBuf,
     roots: Vec<String>,
     reads: bool,
     writes: bool,
@@ -48,7 +48,7 @@ impl ProvisionReport {
             .ok_or(ProvisionImageError::NotExecutable)?;
         let ceiling = CeilingDescriptor::from_demand_union(prepared.image().demand_union());
         Ok(Self {
-            destination: destination.display().to_string(),
+            destination: destination.to_path_buf(),
             roots: projection
                 .roots()
                 .iter()
@@ -59,13 +59,39 @@ impl ProvisionReport {
         })
     }
 
+    /// The directory the store would be provisioned into.
+    pub fn destination(&self) -> &Path {
+        &self.destination
+    }
+
+    /// The durable roots the store would hold, in source spelling and projection order.
+    pub fn roots(&self) -> &[String] {
+        &self.roots
+    }
+
+    /// Whether the program reads durable data, and so whether the initial ceiling admits
+    /// observing access.
+    pub fn reads(&self) -> bool {
+        self.reads
+    }
+
+    /// Whether the program writes durable data, and so whether the initial ceiling admits
+    /// mutating access.
+    pub fn writes(&self) -> bool {
+        self.writes
+    }
+
     /// The human-readable report, in source vocabulary. Presented to the owner before a first
     /// provision; contains no identity hash, witness, or ceiling id — only the destination,
     /// the roots by name, and the effects and ceiling in demand terms.
     pub fn render(&self) -> String {
         use std::fmt::Write;
         let mut out = String::new();
-        let _ = writeln!(out, "Provision a new durable store at {}", self.destination);
+        let _ = writeln!(
+            out,
+            "Provision a new durable store at {}",
+            self.destination.display()
+        );
         out.push_str("Durable roots:\n");
         if self.roots.is_empty() {
             out.push_str("  (none)\n");
