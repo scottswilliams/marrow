@@ -324,6 +324,7 @@ argument every later argument is named. Precedence and operand types are under
 ```ebnf
 primary_expr    = literal
                 | "true" | "false" | "absent"
+                | enum_path
                 | qualified_name
                 | durable_root
                 | constructor_call
@@ -338,14 +339,19 @@ constructor_call = ("string" | "bytes" | "date" | "instant" | "duration"),
 
 identity_value  = "Id", "(", durable_root, {",", expression}, ")" ;
 
+enum_path       = type_name, "::", identifier ;
+
 path_expr       = (durable_root | identifier), {path_suffix} ;
 path_suffix     = "[", expression, {",", expression}, "]"
                 | ".", identifier ;
 ```
 
-A `qualified_name` is a local name, a function path (`shelf::books::add`), or
-an enum member (`Color::red`); a constructor is a name followed by a
-parenthesized argument list. `^books[id].title` is a durable path and
+A `qualified_name` is a local name or a function path (`shelf::books::add`).
+An `enum_path` names one member of an enum; its head is the same `type_name` a
+type annotation uses, so `Color::red` names a member of an enum this project
+declares and `graphtext::Color::red` one of a declared dependency's
+([dependencies](modules-and-functions.md#dependencies)). A longer path is not an
+enum path. A constructor is a name followed by a parenthesized argument list. `^books[id].title` is a durable path and
 `book.title` a local one. `Id(^books)` in a type position is an identity type;
 `Id(^books, id)` in an expression is an identity value
 ([entry identity](types-and-values.md#entry-identity)).

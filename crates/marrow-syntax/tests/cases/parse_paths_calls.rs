@@ -299,6 +299,47 @@ fn parses_calls_paths_and_field_access() {
     );
 }
 
+/// An enum path in value position carries its head as ordinary name segments, and
+/// the head renders back to the spelling the type parser splits. The two positions
+/// therefore address one enum by one spelling: a semantic owner joins the head with
+/// `name_path_spelling` and splits it with `type_name_segments`, never by re-reading
+/// source text of its own.
+#[test]
+fn an_enum_path_head_renders_back_to_its_type_spelling() {
+    for (source, segments) in [
+        ("const C = Color::red\n", &["Color", "red"][..]),
+        (
+            "const C = graphtext::Color::red\n",
+            &["graphtext", "Color", "red"][..],
+        ),
+    ] {
+        let parsed = parse_source(source);
+        assert!(
+            parsed.diagnostics.complete().is_empty(),
+            "{:#?}",
+            parsed.diagnostics
+        );
+        let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+            panic!("expected const declaration");
+        };
+        let Some(Expression::Name {
+            segments: parsed_segments,
+            ..
+        }) = &decl.value
+        else {
+            panic!("expected a name path, got {:?}", decl.value);
+        };
+        assert_eq!(common::segment_texts(parsed_segments), segments);
+        let (member, head) = parsed_segments.split_last().expect("a head and a member");
+        assert_eq!(member.text(), *segments.last().expect("a member"));
+        let head_spelling = marrow_syntax::name_path_spelling(head);
+        assert_eq!(
+            marrow_syntax::type_name_segments(&head_spelling).collect::<Vec<_>>(),
+            &segments[..segments.len() - 1],
+        );
+    }
+}
+
 #[test]
 fn absent_is_a_value_keyword_not_a_path_segment() {
     // `absent` is the empty-optional primary value, so it cannot also stand as a

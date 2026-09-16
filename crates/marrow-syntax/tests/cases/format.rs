@@ -118,6 +118,11 @@ fn formats_expressions_to_canonical_source() {
         "true",
         "name",
         "std::math::PI",
+        // An enum path in value position, local and through a dependency alias.
+        "Color::red",
+        "graphtext::Color::red",
+        "Shape::rect(w: 2, h: 3)",
+        "graphtext::Shape::rect(w: 2, h: 3)",
         "^books",
         // Keyed durable access uses square brackets; a call keeps parentheses.
         "^books[id].title",
