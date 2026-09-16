@@ -13,6 +13,12 @@ struct ForLoop<'a> {
     span: SourceSpan,
 }
 
+/// The operation a `checked` form wraps: a single int `+`/`-`/`*`/`/`/`%` or negation.
+enum Wrapped<'e> {
+    Binary(BinaryOp, &'e Expression, &'e Expression),
+    Neg(&'e Expression),
+}
+
 impl<'a, 'd> FnLowerer<'a, 'd> {
     // --- statements ---
 
@@ -58,88 +64,19 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Ok(flow)
     }
 
-    /// Lower one statement.
+    /// Lower one statement that carries a block or leaves this block.
     ///
     /// Every arm names every field of its variant, binding unread ones to `_` rather than
     /// covering them with `..`, so a field added to an existing statement stops the build
-    /// here. The trailing arm cannot catch that case: a new block-bearing field on `if`,
-    /// `while`, `for`, or `match` would otherwise leave its statements never lowered and
-    /// never diagnosed.
+    /// here, or in [`Self::lower_straight_line_statement`], which walks the rest. A
+    /// trailing arm cannot catch that case: a new block-bearing field on `if`, `while`,
+    /// `for`, or `match` would otherwise leave its statements never lowered and never
+    /// diagnosed.
     pub(super) fn lower_statement(&mut self, statement: &Statement) -> ConstructResult<Flow> {
         match statement {
-            Statement::Const {
-                name,
-                name_span: _,
-                ty,
-                value,
-                span: _,
-            } => {
-                self.lower_binding(name, ty.as_deref(), value, false)?;
-                Ok(Flow::Fallthrough)
-            }
-            Statement::Var {
-                name,
-                name_span: _,
-                keys,
-                ty,
-                value,
-                span,
-            } => {
-                if !keys.is_empty() {
-                    self.fail(unsupported(self.file, *span, "a keyed local"));
-                    return Ok(Flow::Fallthrough);
-                }
-                let Some(value) = value else {
-                    self.fail(unsupported(
-                        self.file,
-                        *span,
-                        "a `var` without an initializer",
-                    ));
-                    return Ok(Flow::Fallthrough);
-                };
-                self.lower_binding(name, ty.as_deref(), value, true)?;
-                Ok(Flow::Fallthrough)
-            }
-            Statement::Assign {
-                target,
-                value,
-                span: _,
-            } => {
-                self.lower_assign(target, value)?;
-                Ok(Flow::Fallthrough)
-            }
-            Statement::CompoundAssign {
-                target,
-                op,
-                op_span: _,
-                value,
-                span: _,
-            } => {
-                self.lower_compound_assign(target, op.binary(), value)?;
-                Ok(Flow::Fallthrough)
-            }
             Statement::Return { value, span } => self.lower_return(value.as_ref(), *span),
             Statement::Break { span } => self.lower_break(*span),
             Statement::Continue { span } => self.lower_continue(*span),
-            Statement::Expr { value, span: _ } => {
-                // A call statement may return nothing (no `Pop`); any other expression
-                // statement produces a value that is discarded.
-                if let Expression::Call {
-                    callee, args, span, ..
-                } = value
-                {
-                    match self.lower_call_core(callee, args, *span) {
-                        Ok(CallResult::Value(_)) => self.push(Instr::Pop, value.span())?,
-                        Ok(CallResult::Diverges) => return Ok(Flow::Terminates),
-                        Ok(CallResult::Unit) => {}
-                        Err(failure) => return Err(failure),
-                    }
-                } else {
-                    self.lower_expr(value)?;
-                    self.push(Instr::Pop, value.span())?;
-                }
-                Ok(Flow::Fallthrough)
-            }
             Statement::If {
                 condition,
                 then_block,
@@ -256,6 +193,90 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 }
                 Ok(body_flow)
             }
+            Statement::Match {
+                scrutinee,
+                arms,
+                span,
+            } => self.lower_match(scrutinee, arms, *span),
+            _ => self.lower_straight_line_statement(statement),
+        }
+    }
+
+    /// Lower one statement that neither carries a block nor leaves this block: a
+    /// binding, an assignment, a discarded expression, or a durable write. The trailing
+    /// arm refuses a form the lowerer does not support.
+    fn lower_straight_line_statement(&mut self, statement: &Statement) -> ConstructResult<Flow> {
+        match statement {
+            Statement::Const {
+                name,
+                name_span: _,
+                ty,
+                value,
+                span: _,
+            } => {
+                self.lower_binding(name, ty.as_deref(), value, false)?;
+                Ok(Flow::Fallthrough)
+            }
+            Statement::Var {
+                name,
+                name_span: _,
+                keys,
+                ty,
+                value,
+                span,
+            } => {
+                if !keys.is_empty() {
+                    self.fail(unsupported(self.file, *span, "a keyed local"));
+                    return Ok(Flow::Fallthrough);
+                }
+                let Some(value) = value else {
+                    self.fail(unsupported(
+                        self.file,
+                        *span,
+                        "a `var` without an initializer",
+                    ));
+                    return Ok(Flow::Fallthrough);
+                };
+                self.lower_binding(name, ty.as_deref(), value, true)?;
+                Ok(Flow::Fallthrough)
+            }
+            Statement::Assign {
+                target,
+                value,
+                span: _,
+            } => {
+                self.lower_assign(target, value)?;
+                Ok(Flow::Fallthrough)
+            }
+            Statement::CompoundAssign {
+                target,
+                op,
+                op_span: _,
+                value,
+                span: _,
+            } => {
+                self.lower_compound_assign(target, op.binary(), value)?;
+                Ok(Flow::Fallthrough)
+            }
+            Statement::Expr { value, span: _ } => {
+                // A call statement may return nothing (no `Pop`); any other expression
+                // statement produces a value that is discarded.
+                if let Expression::Call {
+                    callee, args, span, ..
+                } = value
+                {
+                    match self.lower_call_core(callee, args, *span) {
+                        Ok(CallResult::Value(_)) => self.push(Instr::Pop, value.span())?,
+                        Ok(CallResult::Diverges) => return Ok(Flow::Terminates),
+                        Ok(CallResult::Unit) => {}
+                        Err(failure) => return Err(failure),
+                    }
+                } else {
+                    self.lower_expr(value)?;
+                    self.push(Instr::Pop, value.span())?;
+                }
+                Ok(Flow::Fallthrough)
+            }
             Statement::Delete { path, span } => {
                 self.lower_durable_delete(path, *span)?;
                 Ok(Flow::Fallthrough)
@@ -277,11 +298,6 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 self.lower_assert(value, *span)?;
                 Ok(Flow::Fallthrough)
             }
-            Statement::Match {
-                scrutinee,
-                arms,
-                span,
-            } => self.lower_match(scrutinee, arms, *span),
             other => {
                 self.fail(unsupported(self.file, other.span(), "this statement"));
                 Ok(Flow::Fallthrough)
@@ -1206,6 +1222,87 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Ok(Flow::Fallthrough)
     }
 
+    /// The scrutinee enum's variants: member name plus payload type list, owned so the
+    /// arm loop can borrow `self` mutably while resolving each arm. `None` is a reported
+    /// rejection.
+    fn match_variants(
+        &mut self,
+        enum_id: EnumId,
+        at: SourceSpan,
+    ) -> Option<Vec<(String, Vec<LTy>)>> {
+        let variants = match self.records.enum_variants(enum_id) {
+            Ok(Some(variants)) => variants,
+            Ok(None) => {
+                self.reject_resolution(
+                    ResolveError::Invariant(LowerInvariant::ReadyBodyMissing(TypeInstId::Enum(
+                        enum_id,
+                    ))),
+                    at,
+                    "this enum match",
+                );
+                return None;
+            }
+            Err(invariant) => {
+                self.reject_resolution(ResolveError::Invariant(invariant), at, "this enum match");
+                return None;
+            }
+        };
+        Some(
+            variants
+                .into_iter()
+                .map(|(name, payload)| (name, payload.into_iter().map(garg_to_lty).collect()))
+                .collect(),
+        )
+    }
+
+    /// Report the members no arm covered, and answer whether the `match` was exhaustive.
+    /// A match covers every member exactly once and admits no wildcard arm.
+    fn report_missing_arms(
+        &mut self,
+        enum_name: &str,
+        variants: &[(String, Vec<LTy>)],
+        covered: &[bool],
+        span: SourceSpan,
+    ) -> bool {
+        let missing: Vec<(&str, usize)> = variants
+            .iter()
+            .zip(covered)
+            .filter(|(_, covered)| !**covered)
+            .map(|((name, payload), _)| (name.as_str(), payload.len()))
+            .collect();
+        if missing.is_empty() {
+            return true;
+        }
+        let names = missing
+            .iter()
+            .map(|(name, _)| format!("`{name}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        // The canonical arm head each missing member needs: a payloadless member takes
+        // `member =>`; a member with an N-value payload takes N positional bindings,
+        // spelled `member(_, …) =>` with author-neutral `_` placeholders.
+        let arms = missing
+            .iter()
+            .map(|(name, arity)| match arity {
+                0 => format!("`{name} =>`"),
+                n => format!("`{name}({}) =>`", vec!["_"; *n].join(", ")),
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let arm_word = if missing.len() == 1 { "arm" } else { "arms" };
+        self.fail(SourceDiagnostic::at(
+            Code::CheckMatchNonexhaustive,
+            self.file,
+            span,
+            format!(
+                "the `match` on `{enum_name}` does not cover {names}. A match covers every \
+                 member of an enum exactly once and admits no wildcard arm. Add the missing \
+                 {arm_word}: {arms}."
+            ),
+        ));
+        false
+    }
+
     /// Lower a `match` over a flat enum scrutinee. The scrutinee is evaluated once into
     /// a fresh local; the arms dispatch through a branch chain over the enum tag
     /// (`EnumTag`, `EqInt`, `JumpIfFalse`), the simplest form the verifier admits without
@@ -1238,34 +1335,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             ));
             return Ok(Flow::Fallthrough);
         };
-        // The scrutinee's variants: member name plus payload type list, owned so the arm
-        // loop can borrow `self` mutably while resolving each arm.
-        let variants = match self.records.enum_variants(enum_id) {
-            Ok(Some(variants)) => variants,
-            Ok(None) => {
-                self.reject_resolution(
-                    ResolveError::Invariant(LowerInvariant::ReadyBodyMissing(TypeInstId::Enum(
-                        enum_id,
-                    ))),
-                    scrutinee.span(),
-                    "this enum match",
-                );
-                return Ok(Flow::Rejected);
-            }
-            Err(invariant) => {
-                self.reject_resolution(
-                    ResolveError::Invariant(invariant),
-                    scrutinee.span(),
-                    "this enum match",
-                );
-                return Ok(Flow::Rejected);
-            }
+        let Some(variants) = self.match_variants(enum_id, scrutinee.span()) else {
+            return Ok(Flow::Rejected);
         };
         let enum_name = scrut_ty.spelling(self.records);
-        let variants: Vec<(String, Vec<LTy>)> = variants
-            .into_iter()
-            .map(|(name, payload)| (name, payload.into_iter().map(garg_to_lty).collect()))
-            .collect();
 
         let Some(scrut_slot) = self.alloc_slot(span) else {
             return Ok(Flow::Rejected);
@@ -1377,48 +1450,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
         }
 
-        // Exhaustiveness: every member covered exactly once, no wildcard arm.
-        let missing: Vec<(&str, usize)> = variants
-            .iter()
-            .zip(&covered)
-            .filter(|(_, covered)| !**covered)
-            .map(|((name, payload), _)| (name.as_str(), payload.len()))
-            .collect();
-        if !missing.is_empty() {
-            let names = missing
-                .iter()
-                .map(|(name, _)| format!("`{name}`"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            // The canonical arm head each missing member needs: a payloadless member
-            // takes `member =>`; a member with an N-value payload takes N positional
-            // bindings, spelled `member(_, …) =>` with author-neutral `_` placeholders.
-            let arms = missing
-                .iter()
-                .map(|(name, arity)| match arity {
-                    0 => format!("`{name} =>`"),
-                    n => format!("`{name}({}) =>`", vec!["_"; *n].join(", ")),
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            let arm_word = if missing.len() == 1 { "arm" } else { "arms" };
-            self.fail(SourceDiagnostic::at(
-                Code::CheckMatchNonexhaustive,
-                self.file,
-                span,
-                format!(
-                    "the `match` on `{enum_name}` does not cover {names}. A match covers every \
-                     member of an enum exactly once and admits no wildcard arm. Add the missing \
-                     {arm_word}: {arms}."
-                ),
-            ));
-        }
+        let exhaustive = self.report_missing_arms(&enum_name, &variants, &covered, span);
 
         let end = self.here();
         self.patch_all(end_jumps, end);
         // The match terminates only when it is exhaustive (so the unconditional last
         // arm is reached) and every arm diverges.
-        if any_arm && missing.is_empty() && all_terminate {
+        if any_arm && exhaustive && all_terminate {
             Ok(Flow::Terminates)
         } else {
             Ok(Flow::Fallthrough)
@@ -2041,6 +2079,48 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Ok(Flow::Fallthrough)
     }
 
+    /// The `at most N` clause of an index scan and its `on more` overflow arm. A `for`
+    /// head over a managed index is always bounded, always states its overflow behavior,
+    /// and admits no `from` cursor; `None` is a reported refusal.
+    fn index_scan_bound<'b>(
+        &mut self,
+        bound: Option<&'b TraversalBound>,
+        span: SourceSpan,
+    ) -> Option<(&'b Expression, &'b Block)> {
+        let Some(bound) = bound else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType,
+                self.file,
+                span,
+                "this index scan is unbounded. A `for` head over a managed index is always \
+                 bounded and states its overflow behavior. Add `at most N` and an \
+                 `on more { … }` block."
+                    .to_string(),
+            ));
+            return None;
+        };
+        let Some(on_more) = &bound.on_more else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType,
+                self.file,
+                span,
+                "this bounded scan has no overflow arm. A bounded `for` head states its \
+                 overflow behavior in a trailing `on more` block. Add an `on more { … }` block."
+                    .to_string(),
+            ));
+            return None;
+        };
+        if bound.from.is_some() {
+            self.fail(unsupported(
+                self.file,
+                span,
+                "a `from` cursor on an index scan",
+            ));
+            return None;
+        }
+        Some((&bound.limit, on_more))
+    }
+
     /// Lower a bounded scan of a nonunique managed index `^root.index[prefix…]`. The scan
     /// holds the index's leading field components as a prefix and yields the trailing
     /// identity component as the source `Id(^root)`: the frozen raw identity keys
@@ -2068,37 +2148,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 return Ok(Flow::Fallthrough);
             }
         };
-        let Some(bound) = bound else {
-            self.fail(SourceDiagnostic::at(
-                Code::CheckType,
-                self.file,
-                span,
-                "this index scan is unbounded. A `for` head over a managed index is always \
-                 bounded and states its overflow behavior. Add `at most N` and an \
-                 `on more { … }` block."
-                    .to_string(),
-            ));
+        let Some((limit, on_more)) = self.index_scan_bound(bound, span) else {
             return Ok(Flow::Fallthrough);
         };
-        let Some(on_more) = &bound.on_more else {
-            self.fail(SourceDiagnostic::at(
-                Code::CheckType,
-                self.file,
-                span,
-                "this bounded scan has no overflow arm. A bounded `for` head states its \
-                 overflow behavior in a trailing `on more` block. Add an `on more { … }` block."
-                    .to_string(),
-            ));
-            return Ok(Flow::Fallthrough);
-        };
-        if bound.from.is_some() {
-            self.fail(unsupported(
-                self.file,
-                span,
-                "a `from` cursor on an index scan",
-            ));
-            return Ok(Flow::Fallthrough);
-        }
         // The scan yields a whole source identity, so the root's identity is a single key
         // column and the scanned (trailing) projection component is that key.
         let root = read.root;
@@ -2141,7 +2193,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             ));
             return Ok(Flow::Fallthrough);
         }
-        let Some(limit) = self.traversal_limit(&bound.limit) else {
+        let Some(limit) = self.traversal_limit(limit) else {
             return Ok(Flow::Fallthrough);
         };
         // The frozen keys are the raw identity scalars; they materialize as `List[K]`.
@@ -2534,6 +2586,74 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Ok(Flow::Fallthrough)
     }
 
+    /// Classify the operation a `checked` form wraps. `None` is a reported refusal.
+    fn classify_checked_op<'e>(&mut self, op: &'e Expression) -> Option<Wrapped<'e>> {
+        match op {
+            Expression::Binary {
+                op:
+                    bop @ (BinaryOp::Add
+                    | BinaryOp::Subtract
+                    | BinaryOp::Multiply
+                    | BinaryOp::Divide
+                    | BinaryOp::Remainder),
+                operands,
+                ..
+            } => Some(Wrapped::Binary(*bop, &operands.left, &operands.right)),
+            Expression::Unary {
+                op: UnaryOp::Neg,
+                operand,
+                ..
+            } => Some(Wrapped::Neg(operand)),
+            _ => {
+                self.fail(unsupported(
+                    self.file,
+                    op.span(),
+                    "a checked form wrapping anything but one int `+`, `-`, `*`, `/`, `%`, or negation",
+                ));
+                None
+            }
+        }
+    }
+
+    /// The `on` arms a checked operation requires: `out_of_range` is always possible; a
+    /// zero divisor is possible only for a `/`/`%` whose divisor is not a provably-nonzero
+    /// literal. Returns the required `out_of_range` arm; `None` is a reported refusal.
+    fn require_checked_arms<'b>(
+        &mut self,
+        out_of_range: Option<&'b Block>,
+        zero_divisor: Option<&Block>,
+        is_div: bool,
+        can_zero_fault: bool,
+        span: SourceSpan,
+    ) -> Option<&'b Block> {
+        let Some(out_of_range) = out_of_range else {
+            self.fail(checked_arm_error(
+                self.file,
+                span,
+                "requires an `on out_of_range` arm",
+            ));
+            return None;
+        };
+        if can_zero_fault && zero_divisor.is_none() {
+            self.fail(checked_arm_error(
+                self.file,
+                span,
+                "a checked `/` or `%` requires an `on zero_divisor` arm",
+            ));
+            return None;
+        }
+        if !can_zero_fault && zero_divisor.is_some() {
+            let reason = if is_div {
+                "the divisor is a nonzero literal, so this checked operation cannot fault with a zero divisor and takes no `on zero_divisor` arm"
+            } else {
+                "this checked operation cannot fault with a zero divisor, so it takes no `on zero_divisor` arm"
+            };
+            self.fail(checked_arm_error(self.file, span, reason));
+            return None;
+        }
+        Some(out_of_range)
+    }
+
     /// Lower the adjacent single-operation checked-arithmetic form. It wraps one int
     /// arithmetic operation; on a fault the diverging `on` arms run instead of the runtime
     /// raising `run.*`. The zero divisor is tested by an explicit branch before a checked
@@ -2554,35 +2674,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         if self.terminal_rejection() {
             return Ok(Flow::Rejected);
         }
-        // The wrapped operation: a single int `+`/`-`/`*`/`/`/`%` or negation.
-        enum Wrapped<'e> {
-            Binary(BinaryOp, &'e Expression, &'e Expression),
-            Neg(&'e Expression),
-        }
-        let wrapped = match op {
-            Expression::Binary {
-                op:
-                    bop @ (BinaryOp::Add
-                    | BinaryOp::Subtract
-                    | BinaryOp::Multiply
-                    | BinaryOp::Divide
-                    | BinaryOp::Remainder),
-                operands,
-                ..
-            } => Wrapped::Binary(*bop, &operands.left, &operands.right),
-            Expression::Unary {
-                op: UnaryOp::Neg,
-                operand,
-                ..
-            } => Wrapped::Neg(operand),
-            _ => {
-                self.fail(unsupported(
-                    self.file,
-                    op.span(),
-                    "a checked form wrapping anything but one int `+`, `-`, `*`, `/`, `%`, or negation",
-                ));
-                return Ok(Flow::Fallthrough);
-            }
+        let Some(wrapped) = self.classify_checked_op(op) else {
+            return Ok(Flow::Fallthrough);
         };
         let is_div = matches!(
             wrapped,
@@ -2597,33 +2690,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         );
         let can_zero_fault = is_div && !divisor_provably_nonzero;
 
-        // Arm requirements: out_of_range is always possible; a zero divisor is possible
-        // only for a `/`/`%` whose divisor is not a provably-nonzero literal.
-        let Some(out_of_range) = out_of_range else {
-            self.fail(checked_arm_error(
-                self.file,
-                span,
-                "requires an `on out_of_range` arm",
-            ));
+        let Some(out_of_range) =
+            self.require_checked_arms(out_of_range, zero_divisor, is_div, can_zero_fault, span)
+        else {
             return Ok(Flow::Fallthrough);
         };
-        if can_zero_fault && zero_divisor.is_none() {
-            self.fail(checked_arm_error(
-                self.file,
-                span,
-                "a checked `/` or `%` requires an `on zero_divisor` arm",
-            ));
-            return Ok(Flow::Fallthrough);
-        }
-        if !can_zero_fault && zero_divisor.is_some() {
-            let reason = if is_div {
-                "the divisor is a nonzero literal, so this checked operation cannot fault with a zero divisor and takes no `on zero_divisor` arm"
-            } else {
-                "this checked operation cannot fault with a zero divisor, so it takes no `on zero_divisor` arm"
-            };
-            self.fail(checked_arm_error(self.file, span, reason));
-            return Ok(Flow::Fallthrough);
-        }
 
         let int = LTy::bare_scalar(ScalarType::Int);
         // Evaluate the operands into fresh locals.
