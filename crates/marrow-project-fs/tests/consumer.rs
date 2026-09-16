@@ -1,48 +1,12 @@
 //! Positive external consumer test for the capture entry point and presentation
 //! facade, importing only `marrow_project_fs` and the standard library.
 
-use std::fs;
-use std::path::{Path, PathBuf};
-
 use marrow_project_fs::{Code, OverlayEntry, OverlaySnapshot, capture_project};
 
-/// A temporary directory removed on drop.
-struct TempDir {
-    root: PathBuf,
-}
+#[path = "common/scratch.rs"]
+mod scratch;
 
-impl TempDir {
-    fn new(tag: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "marrow-project-fs-consumer-{tag}-{}-{nanos}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&root).expect("create temp dir");
-        Self { root }
-    }
-
-    fn path(&self) -> &Path {
-        &self.root
-    }
-
-    fn write(&self, relative: &str, contents: &[u8]) {
-        let path = self.root.join(relative);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("create parent");
-        }
-        fs::write(path, contents).expect("write fixture");
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).ok();
-    }
-}
+use scratch::TempDir;
 
 #[test]
 fn a_consumer_presents_a_capture_failure_through_the_public_facade() {

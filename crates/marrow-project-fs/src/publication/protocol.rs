@@ -1244,69 +1244,30 @@ mod tests {
 
     use super::*;
     use crate::publication::IdsPublication;
+    use crate::scratch::TempDir;
 
-    /// A scratch project with a write owner, removed when the test ends.
+    /// A scratch project with a write owner.
     ///
-    /// Teardown is a `Drop` guard rather than trailing statements, so a failing
-    /// assertion leaves no directory behind for the next run to trip over. It
-    /// removes only the fixed names this owner writes, because the owner
-    /// enumerates no directory and neither does its fixture.
+    /// The guard is declared before the directory, so it releases the owner lock
+    /// before the fixture removes the tree under it.
     struct Scratch {
-        root: std::path::PathBuf,
-        guard: Option<ProjectMetadataWriteGuard>,
+        guard: ProjectMetadataWriteGuard,
+        dir: TempDir,
     }
 
     impl Scratch {
         fn new(tag: &str) -> Self {
-            let root = std::env::temp_dir().join(format!(
-                "marrow-idpub01-{tag}-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .expect("clock after epoch")
-                    .as_nanos()
-            ));
-            std::fs::create_dir_all(&root).expect("create the scratch project");
-            let guard = ProjectMetadataWriteGuard::acquire(&root).expect("the write owner");
-            Self {
-                root,
-                guard: Some(guard),
-            }
+            let dir = TempDir::new(tag);
+            let guard = ProjectMetadataWriteGuard::acquire(dir.path()).expect("the write owner");
+            Self { guard, dir }
         }
 
         fn guard(&self) -> &ProjectMetadataWriteGuard {
-            self.guard.as_ref().expect("the guard lives until drop")
+            &self.guard
         }
 
         fn meta_path(&self) -> std::path::PathBuf {
-            self.root.join(marrow_project::META_DIR)
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let names: Vec<String> = {
-                let guard = self.guard();
-                [
-                    guard.ledger_name().as_str(),
-                    guard.stage_name().as_str(),
-                    guard.quarantine_name().as_str(),
-                    guard.journal_names().claim().as_str(),
-                    guard.journal_names().pending().as_str(),
-                    crate::publication::LOCK_NAME,
-                    crate::publication::ignore::IGNORE_NAME,
-                ]
-                .iter()
-                .map(|name| (*name).to_owned())
-                .collect()
-            };
-            let meta = self.meta_path();
-            self.guard = None;
-            for name in names {
-                std::fs::remove_file(meta.join(name)).ok();
-            }
-            std::fs::remove_dir(&meta).ok();
-            std::fs::remove_dir(&self.root).ok();
+            self.dir.path().join(marrow_project::META_DIR)
         }
     }
 

@@ -17,7 +17,7 @@ use marrow_fs_journal::{
     AdmittedDir, CustodyError, CustodyOp, EntryName, FsIdentity, JournalKind, PendingName,
     encode_header, encode_record,
 };
-use marrow_project::{IdentityAnchor, IdentityKind, LedgerPublicationPlan};
+use marrow_project::{IdentityAnchor, IdentityKind, LedgerPublicationPlan, META_DIR};
 
 use crate::capture::capture_project;
 use crate::overlay::OverlaySnapshot;
@@ -26,8 +26,7 @@ use crate::publication::{
     IdsPublication, IdsPublicationError, IdsPublicationMarker, IdsPublishOutcome, IdsRefusal,
     ProjectMetadataWriteGuard, ids_publication_marker,
 };
-
-const MANIFEST: &[u8] = b"edition = \"2026\"\n";
+use crate::scratch::TempDir;
 
 fn serialized() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -42,33 +41,24 @@ fn assert_settled(project: &Project, expected: IdsPublication) {
     assert_eq!(settled, Some(expected));
 }
 
-/// A temporary project root removed on drop.
+/// A temporary project root, over the crate's one scratch fixture.
 struct Project {
-    root: PathBuf,
+    dir: TempDir,
 }
 
 impl Project {
     fn new(tag: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "marrow-idpub01-{tag}-{}-{nanos}",
-            std::process::id()
-        ));
-        fs::create_dir_all(root.join("src")).expect("create temp project");
-        fs::write(root.join("marrow.toml"), MANIFEST).expect("write manifest");
-        fs::write(root.join("src/main.mw"), b"").expect("write source");
-        Self { root }
+        Self {
+            dir: TempDir::project(tag),
+        }
     }
 
     fn path(&self) -> &Path {
-        &self.root
+        self.dir.path()
     }
 
     fn meta(&self) -> PathBuf {
-        self.root.join(".marrow")
+        self.dir.path().join(META_DIR)
     }
 
     fn write_meta(&self, name: &str, bytes: &[u8]) {
@@ -123,12 +113,6 @@ impl Project {
 
     fn guard(&self) -> ProjectMetadataWriteGuard {
         ProjectMetadataWriteGuard::acquire(self.path()).expect("the write guard is acquired")
-    }
-}
-
-impl Drop for Project {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).ok();
     }
 }
 

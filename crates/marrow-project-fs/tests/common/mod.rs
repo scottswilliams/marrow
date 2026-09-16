@@ -5,7 +5,6 @@
 //! later test in the same process. The fixture is the same in both, so it lives
 //! once.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use marrow_project::{
@@ -13,35 +12,28 @@ use marrow_project::{
 };
 use marrow_project_fs::{OverlaySnapshot, capture_project};
 
-const MANIFEST: &[u8] = b"edition = \"2026\"\n";
+mod scratch;
 
-/// A temporary project root removed on drop.
+use scratch::TempDir;
+
+/// A temporary project root, over the crate's one scratch fixture.
 pub struct Project {
-    root: PathBuf,
+    dir: TempDir,
 }
 
 impl Project {
     pub fn new(tag: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "marrow-idpub01-{tag}-{}-{nanos}",
-            std::process::id()
-        ));
-        fs::create_dir_all(root.join("src")).expect("create temp project");
-        fs::write(root.join("marrow.toml"), MANIFEST).expect("write manifest");
-        fs::write(root.join("src/main.mw"), b"").expect("write source");
-        Self { root }
+        Self {
+            dir: TempDir::project(tag),
+        }
     }
 
     pub fn path(&self) -> &Path {
-        &self.root
+        self.dir.path()
     }
 
     pub fn meta(&self) -> PathBuf {
-        self.root.join(META_DIR)
+        self.dir.path().join(META_DIR)
     }
 
     /// One publication plan minting `anchor`, admitted against whatever the
@@ -67,11 +59,5 @@ impl Project {
                 },
             )
             .expect("the mint is admitted")
-    }
-}
-
-impl Drop for Project {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).ok();
     }
 }

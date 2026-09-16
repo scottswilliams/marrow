@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::SystemTime;
 
 use marrow_codes::Code;
@@ -17,42 +17,7 @@ use crate::failure::{
 };
 use crate::limits::AdapterLimits;
 use crate::overlay::{OverlayEntry, OverlaySnapshot};
-
-/// A temporary directory holding one or more project trees, removed on drop.
-struct TempDir {
-    root: PathBuf,
-}
-
-impl TempDir {
-    fn new(tag: &str) -> Self {
-        let nanos = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("marrow-dep01-{tag}-{}-{nanos}", std::process::id()));
-        fs::create_dir_all(&root).expect("create temp dir");
-        Self { root }
-    }
-
-    fn path(&self) -> &Path {
-        &self.root
-    }
-
-    fn write(&self, relative: &str, contents: &[u8]) {
-        let path = self.root.join(relative);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("create parent");
-        }
-        fs::write(path, contents).expect("write fixture");
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).ok();
-    }
-}
+use crate::scratch::TempDir;
 
 fn base_limits() -> AdapterLimits {
     let default = &AdapterLimits::DEFAULT;

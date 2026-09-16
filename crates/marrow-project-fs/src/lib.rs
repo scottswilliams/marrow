@@ -74,6 +74,11 @@ mod path;
 mod presentation;
 mod publication;
 
+/// The crate's one temporary-directory fixture, shared with the integration suites.
+#[cfg(test)]
+#[path = "../tests/common/scratch.rs"]
+mod scratch;
+
 #[cfg(test)]
 mod dependency_kats;
 #[cfg(test)]
