@@ -181,8 +181,6 @@ fn explicit_recovery_preserves_populated_program_data() {
 
 #[test]
 fn accepted_numbering_preserves_values_after_field_insertion() {
-    use marrow_vm::{DurableRun, Value, run_export};
-
     let source = format!(
         "{BASE_SOURCE}\npub fn setValue(n: int, v: int) {{ transaction {{ ^counters[n] = Counter(value: v) }} }}\n"
     );
@@ -203,155 +201,227 @@ fn accepted_numbering_preserves_values_after_field_insertion() {
         ),
         ("label: string", "label: string\n    extra: int", 3),
     ] {
-        let inserted_source = source.replace(anchor, replacement)
-            + r#"
+        an_inserted_field_preserves_the_old_values(
+            &source,
+            &old_ids,
+            &old,
+            anchor,
+            replacement,
+            fresh_extra_number,
+        );
+    }
+}
+
+/// A store carrying an accepted numbering backs up and restores byte-identically: the
+/// restored copy is a distinct instance with the same digest, index cells and head map,
+/// and both copies still read the preserved values.
+fn the_accepted_store_backs_up_and_restores(
+    store: &std::path::Path,
+    inserted: &VerifiedImage,
+    inserted_bytes: &[u8],
+    head: &LogicalHead,
+    recovered: &marrow_lifecycle::StoreAudit,
+) {
+    use marrow_vm::{DurableRun, Value, run_export};
+    let export = |image: &VerifiedImage, name: &str| {
+        image
+            .exports()
+            .iter()
+            .find(|export| {
+                image
+                    .function(export.function())
+                    .expect("verified function")
+                    .body()
+                    .name()
+                    == name
+            })
+            .expect("declared export")
+            .id()
+    };
+    let parent = store.parent().expect("scratch parent");
+    let backup_path = parent.join("backup.mwb");
+    let backup =
+        marrow_lifecycle::backup(store, inserted_bytes, &backup_path).expect("accepted-map backup");
+    assert_eq!(backup.audit.digest, recovered.digest);
+    let restored_path = parent.join("restored");
+    let restored = marrow_lifecycle::restore(
+        &mut std::fs::File::open(&backup_path).expect("backup input"),
+        &restored_path,
+    )
+    .expect("accepted-map restore");
+    assert_eq!(restored.audit.digest, recovered.digest);
+    assert_ne!(restored.audit.instance, recovered.instance);
+    assert_eq!(restored.audit.summary.index_cells, 1);
+    for path in [store, restored_path.as_path()] {
+        let AttachOutcome::AlreadyActive(mut attachment) =
+            attach(path, prepare(inserted.clone())).expect("reconstructed attachment")
+        else {
+            panic!("reconstruction keeps accepted binding")
+        };
+        assert_eq!(attachment.head().head_map, head.head_map);
+        for (name, expected) in [("readValue", 42), ("readExtra", 77)] {
+            assert!(
+                matches!(run_export(&mut attachment, export(inserted, name), vec![Value::Int(7)]), Some(DurableRun::Ran(Ok(Some(Value::Int(value))))) if value == expected)
+            );
+        }
+    }
+}
+
+/// The accepted numbering keeps every ledger id at the number the old program gave it and
+/// appends the inserted field at the next free number, which a fresh compile would not
+/// have chosen.
+fn the_accepted_map_keeps_every_old_number(
+    old_head: &LogicalHead,
+    inserted: &VerifiedImage,
+    fresh_extra_number: u32,
+) -> marrow_lifecycle::HeadMap {
+    let extra_id = marrow_image::LedgerIdBytes::from_bytes([0x10; 16]);
+    let mut ids: Vec<_> = old_head
+        .head_map
+        .entries()
+        .iter()
+        .map(|entry| entry.ledger_id)
+        .collect();
+    ids.push(extra_id);
+    let accepted = marrow_lifecycle::HeadMap::assign(&ids).expect("extended bijection");
+    for entry in old_head.head_map.entries() {
+        assert_eq!(accepted.number_of(&entry.ledger_id), Some(entry.number));
+    }
+    assert_eq!(
+        accepted.number_of(&extra_id),
+        Some(old_head.head_map.next_number())
+    );
+    assert_eq!(
+        head_map(inserted).expect("fresh map").number_of(&extra_id),
+        Some(fresh_extra_number)
+    );
+    accepted
+}
+
+/// Insert `replacement` at `anchor` in the shared source, apply the inserted program over
+/// a populated store, and assert that every old value, group and index entry survives the
+/// accepted physical numbering while the new field reads absent until it is written.
+fn an_inserted_field_preserves_the_old_values(
+    source: &str,
+    old_ids: &str,
+    old: &VerifiedImage,
+    anchor: &str,
+    replacement: &str,
+    fresh_extra_number: u32,
+) {
+    use marrow_vm::{DurableRun, Value, run_export};
+    let inserted_source = source.replace(anchor, replacement)
+        + r#"
 pub fn readExtra(n: int): int {
-    return ^counters[n].extra ?? -1
+return ^counters[n].extra ?? -1
 }
 pub fn setExtra(n: int, v: int): bool {
-    transaction {
-        place counter = ^counters[n]
-        if not exists(counter) {
-            return false
-        }
-        counter.extra = v
+transaction {
+    place counter = ^counters[n]
+    if not exists(counter) {
+        return false
     }
-    return true
+    counter.extra = v
+}
+return true
 }
 "#;
-        let inserted_ids = old_ids.replace(
-            "high-water 0",
-            "id field Counter.extra 10101010101010101010101010101010\nhigh-water 0",
-        );
-        let inserted_bytes = compile_files(&[("src/main.mw", &inserted_source)], &inserted_ids);
-        let inserted = verify(&inserted_bytes).expect("verify inserted program");
-        let export = |image: &VerifiedImage, name: &str| {
-            image
-                .exports()
-                .iter()
-                .find(|export| {
-                    image
-                        .function(export.function())
-                        .expect("verified function")
-                        .body()
-                        .name()
-                        == name
-                })
-                .expect("declared export")
-                .id()
-        };
-        // Retain the original store on a failed assertion for independent byte inspection.
-        let scratch = std::mem::ManuallyDrop::new(Scratch::new("accepted-numbering"));
-        eprintln!("accepted-numbering scratch: {}", scratch.dir().display());
-        provision_from(scratch.dir(), &old);
-        {
-            let AttachOutcome::AlreadyActive(mut attachment) =
-                attach(scratch.dir(), prepare(old.clone())).expect("old attach")
-            else {
-                panic!("provisioned binding")
-            };
-            assert!(matches!(
-                run_export(
-                    &mut attachment,
-                    export(&old, "setValue"),
-                    vec![Value::Int(7), Value::Int(42)]
-                ),
-                Some(DurableRun::Ran(Ok(None)))
-            ));
-        }
-        let old_head = open_head(scratch.dir(), &old);
-        let extra_id = marrow_image::LedgerIdBytes::from_bytes([0x10; 16]);
-        let mut ids: Vec<_> = old_head
-            .head_map
-            .entries()
+    let inserted_ids = old_ids.replace(
+        "high-water 0",
+        "id field Counter.extra 10101010101010101010101010101010\nhigh-water 0",
+    );
+    let inserted_bytes = compile_files(&[("src/main.mw", &inserted_source)], &inserted_ids);
+    let inserted = verify(&inserted_bytes).expect("verify inserted program");
+    let export = |image: &VerifiedImage, name: &str| {
+        image
+            .exports()
             .iter()
-            .map(|entry| entry.ledger_id)
-            .collect();
-        ids.push(extra_id);
-        let accepted = marrow_lifecycle::HeadMap::assign(&ids).expect("extended bijection");
-        for entry in old_head.head_map.entries() {
-            assert_eq!(accepted.number_of(&entry.ledger_id), Some(entry.number));
-        }
-        assert_eq!(
-            accepted.number_of(&extra_id),
-            Some(old_head.head_map.next_number())
-        );
-        assert_eq!(
-            head_map(&inserted).expect("fresh map").number_of(&extra_id),
-            Some(fresh_extra_number)
-        );
-        // Assemble the prospective accepted state without claiming update publication.
-        // Only Head changes; existing value cells stay exactly where the old program put them.
-        let head = LogicalHead::provision(
-            active_binding(&inserted),
-            marrow_lifecycle::accepted_ceiling(&inserted),
-            accepted,
-        );
-        std::fs::write(scratch.dir().join(HEAD_FILE), head.encode()).expect("accepted head");
+            .find(|export| {
+                image
+                    .function(export.function())
+                    .expect("verified function")
+                    .body()
+                    .name()
+                    == name
+            })
+            .expect("declared export")
+            .id()
+    };
+    // Retain the original store on a failed assertion for independent byte inspection.
+    let scratch = std::mem::ManuallyDrop::new(Scratch::new("accepted-numbering"));
+    eprintln!("accepted-numbering scratch: {}", scratch.dir().display());
+    provision_from(scratch.dir(), old);
+    {
         let AttachOutcome::AlreadyActive(mut attachment) =
-            attach(scratch.dir(), prepare(inserted.clone())).expect("accepted-map attach")
+            attach(scratch.dir(), prepare(old.clone())).expect("old attach")
         else {
-            panic!("accepted image is already active")
+            panic!("provisioned binding")
         };
-        for (name, expected) in [("readValue", 42), ("readExtra", -1)] {
-            assert!(matches!(
-                run_export(&mut attachment, export(&inserted, name), vec![Value::Int(7)]),
-                Some(DurableRun::Ran(Ok(Some(Value::Int(value))))) if value == expected
-            ));
-        }
         assert!(matches!(
             run_export(
                 &mut attachment,
-                export(&inserted, "setExtra"),
-                vec![Value::Int(7), Value::Int(77)]
+                export(old, "setValue"),
+                vec![Value::Int(7), Value::Int(42)]
             ),
-            Some(DurableRun::Ran(Ok(Some(Value::Bool(true)))))
+            Some(DurableRun::Ran(Ok(None)))
         ));
-        for (name, expected) in [("readValue", 42), ("readExtra", 77)] {
-            assert!(matches!(
-                run_export(&mut attachment, export(&inserted, name), vec![Value::Int(7)]),
-                Some(DurableRun::Ran(Ok(Some(Value::Int(value))))) if value == expected
-            ));
-        }
-        drop(attachment);
-        let before_recovery = marrow_lifecycle::audit(scratch.dir(), prepare(inserted.clone()))
-            .expect("accepted-map audit");
-        assert!(before_recovery.is_clean());
-        assert_eq!(before_recovery.summary.index_cells, 1);
-        marrow_lifecycle::recover(scratch.dir(), prepare(inserted.clone()))
-            .expect("accepted-map recovery");
-        let recovered = marrow_lifecycle::audit(scratch.dir(), prepare(inserted.clone()))
-            .expect("recovered audit");
-        assert_eq!(recovered.digest, before_recovery.digest);
-        let parent = scratch.dir().parent().expect("scratch parent");
-        let backup_path = parent.join("backup.mwb");
-        let backup = marrow_lifecycle::backup(scratch.dir(), &inserted_bytes, &backup_path)
-            .expect("accepted-map backup");
-        assert_eq!(backup.audit.digest, recovered.digest);
-        let restored_path = parent.join("restored");
-        let restored = marrow_lifecycle::restore(
-            &mut std::fs::File::open(&backup_path).expect("backup input"),
-            &restored_path,
-        )
-        .expect("accepted-map restore");
-        assert_eq!(restored.audit.digest, recovered.digest);
-        assert_ne!(restored.audit.instance, recovered.instance);
-        assert_eq!(restored.audit.summary.index_cells, 1);
-        for path in [scratch.dir(), restored_path.as_path()] {
-            let AttachOutcome::AlreadyActive(mut attachment) =
-                attach(path, prepare(inserted.clone())).expect("reconstructed attachment")
-            else {
-                panic!("reconstruction keeps accepted binding")
-            };
-            assert_eq!(attachment.head().head_map, head.head_map);
-            for (name, expected) in [("readValue", 42), ("readExtra", 77)] {
-                assert!(
-                    matches!(run_export(&mut attachment, export(&inserted, name), vec![Value::Int(7)]), Some(DurableRun::Ran(Ok(Some(Value::Int(value))))) if value == expected)
-                );
-            }
-        }
-        drop(std::mem::ManuallyDrop::into_inner(scratch));
     }
+    let accepted = the_accepted_map_keeps_every_old_number(
+        &open_head(scratch.dir(), old),
+        &inserted,
+        fresh_extra_number,
+    );
+    // Assemble the prospective accepted state without claiming update publication.
+    // Only Head changes; existing value cells stay exactly where the old program put them.
+    let head = LogicalHead::provision(
+        active_binding(&inserted),
+        marrow_lifecycle::accepted_ceiling(&inserted),
+        accepted,
+    );
+    std::fs::write(scratch.dir().join(HEAD_FILE), head.encode()).expect("accepted head");
+    let AttachOutcome::AlreadyActive(mut attachment) =
+        attach(scratch.dir(), prepare(inserted.clone())).expect("accepted-map attach")
+    else {
+        panic!("accepted image is already active")
+    };
+    for (name, expected) in [("readValue", 42), ("readExtra", -1)] {
+        assert!(matches!(
+            run_export(&mut attachment, export(&inserted, name), vec![Value::Int(7)]),
+            Some(DurableRun::Ran(Ok(Some(Value::Int(value))))) if value == expected
+        ));
+    }
+    assert!(matches!(
+        run_export(
+            &mut attachment,
+            export(&inserted, "setExtra"),
+            vec![Value::Int(7), Value::Int(77)]
+        ),
+        Some(DurableRun::Ran(Ok(Some(Value::Bool(true)))))
+    ));
+    for (name, expected) in [("readValue", 42), ("readExtra", 77)] {
+        assert!(matches!(
+            run_export(&mut attachment, export(&inserted, name), vec![Value::Int(7)]),
+            Some(DurableRun::Ran(Ok(Some(Value::Int(value))))) if value == expected
+        ));
+    }
+    drop(attachment);
+    let before_recovery = marrow_lifecycle::audit(scratch.dir(), prepare(inserted.clone()))
+        .expect("accepted-map audit");
+    assert!(before_recovery.is_clean());
+    assert_eq!(before_recovery.summary.index_cells, 1);
+    marrow_lifecycle::recover(scratch.dir(), prepare(inserted.clone()))
+        .expect("accepted-map recovery");
+    let recovered =
+        marrow_lifecycle::audit(scratch.dir(), prepare(inserted.clone())).expect("recovered audit");
+    assert_eq!(recovered.digest, before_recovery.digest);
+    the_accepted_store_backs_up_and_restores(
+        scratch.dir(),
+        &inserted,
+        &inserted_bytes,
+        &head,
+        &recovered,
+    );
+    drop(std::mem::ManuallyDrop::into_inner(scratch));
 }
 
 #[cfg(unix)]

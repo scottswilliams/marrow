@@ -338,7 +338,7 @@ fn sparse_apply_preserves_populated_irregular_addresses_and_refuses_exhaustion()
 
 #[test]
 fn interrupted_sparse_apply_recovers_only_the_actual_head() {
-    use crate::store_dir::barrier_fault::{self, Point};
+    use crate::store_dir::barrier_fault::Point;
     let (old, new) = sparse_images();
     let old = marrow_verify::verify(&old).expect("old image");
     let new = marrow_verify::verify(&new).expect("new image");
@@ -356,101 +356,127 @@ fn interrupted_sparse_apply_recovers_only_the_actual_head() {
         Point::RebindHead,
         Point::RebindActive,
     ] {
-        let scratch = Scratch::new("apply");
-        let instance = StoreInstanceId::draw().expect("instance");
-        provision(&scratch.store(), request(&old, instance)).expect("provision");
-        populate_counter(&scratch.store(), &old);
-        let before =
-            crate::audit(&scratch.store(), prepare(old.clone())).expect("old logical contents");
-        let error = barrier_fault::with_failure(&scratch.store(), point, || {
-            apply(
-                &scratch.store(),
-                prepare(old.clone()),
-                prepare(new.clone()),
-                Some(ceiling),
-            )
-        })
-        .expect_err("publication barrier fails");
-        let record = EnvelopeRecord::decode(
-            &std::fs::read(scratch.store().join(crate::ENVELOPE_FILE)).expect("actual envelope"),
-        )
-        .expect("envelope");
-        if point == Point::RebindActive {
-            assert_eq!(record.state, EnvelopeState::Active);
-            assert!(
-                matches!(error, ApplyError::Lifecycle(LifecycleError::ActivationUncertain { instance: found, .. }) if found == instance)
-            );
-        } else {
-            assert!(matches!(record.state, EnvelopeState::Rebind { .. }));
-            assert!(matches!(
-                error,
-                ApplyError::Lifecycle(LifecycleError::Metadata(_))
-            ));
-        }
-        let (selected, other) = if matches!(
-            point,
-            Point::RebindPending | Point::ReplacementBody(Artifact::Head)
-        ) {
-            (&old, &new)
-        } else {
-            (&new, &old)
-        };
-        let head = std::fs::read(scratch.store().join(crate::HEAD_FILE)).expect("actual Head");
-        let replacement = if point == Point::ReplacementBody(Artifact::Head) {
-            let bytes = std::fs::read(scratch.store().join("head.replacing"))
-                .expect("retained replacement");
-            assert_eq!(
-                LogicalHead::decode(&bytes)
-                    .expect("replacement Head")
-                    .binding,
-                active_binding(&new)
-            );
-            Some(bytes)
-        } else {
-            None
-        };
-        assert_eq!(
-            LogicalHead::decode(&head).expect("Head").binding,
-            active_binding(selected)
-        );
-        let rejected =
-            recover(&scratch.store(), prepare(other.clone())).expect_err("wrong selected image");
-        assert!(matches!(
-            rejected.fault,
-            RecoveryFault::Validation(AuditError::ContractChanged(_))
-        ));
-        assert!(rejected.preserved.is_empty());
-        if let Some(bytes) = &replacement {
-            assert_eq!(
-                &std::fs::read(scratch.store().join("head.replacing"))
-                    .expect("wrong image preserves replacement"),
-                bytes
-            );
-        }
-        let recovered =
-            recover(&scratch.store(), prepare(selected.clone())).expect("recover actual image");
-        assert_eq!(recovered.instance, instance);
-        assert_eq!(recovered.image_id, selected.image_id());
-        if let Some(bytes) = replacement {
-            assert_eq!(recovered.preserved.len(), 1);
-            assert_eq!(
-                std::fs::read(scratch.store().join(&recovered.preserved[0]))
-                    .expect("preserved replacement"),
-                bytes
-            );
-        } else {
-            assert!(recovered.preserved.is_empty());
-        }
-        assert_eq!(
-            std::fs::read(scratch.store().join(crate::HEAD_FILE)).expect("Head not replayed"),
-            head
-        );
-        let after =
-            crate::audit(&scratch.store(), prepare(selected.clone())).expect("recovered contents");
-        assert!(after.is_clean());
-        assert_eq!(after.summary.entries, 1);
-        assert_eq!(after.digest, before.digest);
+        an_interrupted_sparse_apply_recovers_its_actual_head(point, &old, &new, ceiling);
     }
+}
+
+/// The envelope state and typed error an interrupted apply reports depend on where the
+/// barrier cut it: past the active write the envelope is already active and the failure
+/// is an uncertain activation; before it the envelope is still rebinding.
+fn the_barrier_point_names_its_state(
+    point: crate::store_dir::barrier_fault::Point,
+    record: &EnvelopeRecord,
+    error: &ApplyError,
+    instance: StoreInstanceId,
+) {
+    use crate::store_dir::barrier_fault::Point;
+    if point == Point::RebindActive {
+        assert_eq!(record.state, EnvelopeState::Active);
+        assert!(
+            matches!(error, ApplyError::Lifecycle(LifecycleError::ActivationUncertain { instance: found, .. }) if *found == instance)
+        );
+    } else {
+        assert!(matches!(record.state, EnvelopeState::Rebind { .. }));
+        assert!(matches!(
+            error,
+            ApplyError::Lifecycle(LifecycleError::Metadata(_))
+        ));
+    }
+}
+
+/// One interrupted-apply prefix: the envelope stops where the barrier cut it, recovery
+/// refuses the image the head does not name, and the head that actually reached the disk
+/// recovers with its sparse data intact.
+fn an_interrupted_sparse_apply_recovers_its_actual_head(
+    point: crate::store_dir::barrier_fault::Point,
+    old: &marrow_verify::VerifiedImage,
+    new: &marrow_verify::VerifiedImage,
+    ceiling: marrow_image::CeilingId,
+) {
+    use crate::store_dir::barrier_fault::{self, Point};
+    let scratch = Scratch::new("apply");
+    let instance = StoreInstanceId::draw().expect("instance");
+    provision(&scratch.store(), request(old, instance)).expect("provision");
+    populate_counter(&scratch.store(), old);
+    let before =
+        crate::audit(&scratch.store(), prepare(old.clone())).expect("old logical contents");
+    let error = barrier_fault::with_failure(&scratch.store(), point, || {
+        apply(
+            &scratch.store(),
+            prepare(old.clone()),
+            prepare(new.clone()),
+            Some(ceiling),
+        )
+    })
+    .expect_err("publication barrier fails");
+    let record = EnvelopeRecord::decode(
+        &std::fs::read(scratch.store().join(crate::ENVELOPE_FILE)).expect("actual envelope"),
+    )
+    .expect("envelope");
+    the_barrier_point_names_its_state(point, &record, &error, instance);
+    let (selected, other) = if matches!(
+        point,
+        Point::RebindPending | Point::ReplacementBody(Artifact::Head)
+    ) {
+        (old, new)
+    } else {
+        (new, old)
+    };
+    let head = std::fs::read(scratch.store().join(crate::HEAD_FILE)).expect("actual Head");
+    let replacement = if point == Point::ReplacementBody(Artifact::Head) {
+        let bytes =
+            std::fs::read(scratch.store().join("head.replacing")).expect("retained replacement");
+        assert_eq!(
+            LogicalHead::decode(&bytes)
+                .expect("replacement Head")
+                .binding,
+            active_binding(new)
+        );
+        Some(bytes)
+    } else {
+        None
+    };
+    assert_eq!(
+        LogicalHead::decode(&head).expect("Head").binding,
+        active_binding(selected)
+    );
+    let rejected =
+        recover(&scratch.store(), prepare(other.clone())).expect_err("wrong selected image");
+    assert!(matches!(
+        rejected.fault,
+        RecoveryFault::Validation(AuditError::ContractChanged(_))
+    ));
+    assert!(rejected.preserved.is_empty());
+    if let Some(bytes) = &replacement {
+        assert_eq!(
+            &std::fs::read(scratch.store().join("head.replacing"))
+                .expect("wrong image preserves replacement"),
+            bytes
+        );
+    }
+    let recovered =
+        recover(&scratch.store(), prepare(selected.clone())).expect("recover actual image");
+    assert_eq!(recovered.instance, instance);
+    assert_eq!(recovered.image_id, selected.image_id());
+    if let Some(bytes) = replacement {
+        assert_eq!(recovered.preserved.len(), 1);
+        assert_eq!(
+            std::fs::read(scratch.store().join(&recovered.preserved[0]))
+                .expect("preserved replacement"),
+            bytes
+        );
+    } else {
+        assert!(recovered.preserved.is_empty());
+    }
+    assert_eq!(
+        std::fs::read(scratch.store().join(crate::HEAD_FILE)).expect("Head not replayed"),
+        head
+    );
+    let after =
+        crate::audit(&scratch.store(), prepare(selected.clone())).expect("recovered contents");
+    assert!(after.is_clean());
+    assert_eq!(after.summary.entries, 1);
+    assert_eq!(after.digest, before.digest);
 }
 
 #[test]

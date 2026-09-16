@@ -379,104 +379,124 @@ mod tests {
 
     #[test]
     fn failed_replacement_prefixes_preserve_pending_authority_and_actual_bytes() {
-        use crate::provision::publication_sync_fault;
-        use crate::store_dir::barrier_fault::{self, Point};
+        use crate::store_dir::barrier_fault::Point;
         for point in [
             Point::ReplacementPartial(Artifact::Envelope),
             Point::ReplacementBody(Artifact::Envelope),
             Point::ReplacementRename(Artifact::Envelope),
         ] {
-            let scratch = std::mem::ManuallyDrop::new(Scratch::new("recovery"));
-            eprintln!("replacement-prefix fixture: {}", scratch.base().display());
-            let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
-            let instance = StoreInstanceId::draw().expect("instance");
-            assert!(matches!(
-                publication_sync_fault::with_failure(
-                    &scratch.store(),
-                    publication_sync_fault::Point::Publication,
-                    || provision(&scratch.store(), request(&image, instance)),
-                ),
-                Err(crate::ProvisionError {
-                    fault: crate::ProvisionFault::PublicationUncertain { .. },
-                    ..
-                })
-            ));
-            let envelope = std::fs::read(scratch.store().join(crate::ENVELOPE_FILE))
-                .expect("pending envelope");
-            let head = std::fs::read(scratch.store().join(crate::HEAD_FILE)).expect("head");
-            let mut active = EnvelopeRecord::decode(&envelope).expect("pending record");
-            assert!(matches!(active.state, EnvelopeState::Provision { .. }));
-            active.state = EnvelopeState::Active;
-            let mut active_bytes = active.encode().expect("expected active record");
-            if point == Point::ReplacementPartial(Artifact::Envelope) {
-                active_bytes.truncate(active_bytes.len() / 2);
-            }
-            std::fs::write(
-                scratch.store().join("head.replacing"),
-                b"prior interrupted head",
-            )
-            .expect("prior debris");
-            let error = barrier_fault::with_failure(&scratch.store(), point, || {
-                recover(&scratch.store(), prepare(image.clone()))
-            })
-            .expect_err("unsynced replacement cannot finish activation");
-            assert_eq!(error.code(), Code::StoreActivationUncertain);
-            assert!(
-                matches!(error.fault, RecoveryFault::Completion { instance: found, .. } if found == instance)
-            );
-            assert_eq!(error.preserved.len(), 1);
-            let prior = scratch.store().join(&error.preserved[0]);
-            assert_eq!(
-                std::fs::read(&prior).expect("earlier preservation retained"),
-                b"prior interrupted head"
-            );
-            assert_eq!(
-                std::fs::read(scratch.store().join(crate::ENVELOPE_FILE))
-                    .expect("authoritative envelope"),
-                envelope
-            );
-            assert_eq!(
-                std::fs::read(scratch.store().join(crate::HEAD_FILE)).expect("authoritative head"),
-                head
-            );
-            assert_eq!(
-                std::fs::read(scratch.store().join("envelope.replacing"))
-                    .expect("actual failed replacement"),
-                active_bytes
-            );
-            assert!(matches!(
-                crate::attach(&scratch.store(), prepare(image.clone())),
-                Err(crate::LifecycleError::Open(
-                    OpenError::ActivationRequired { .. }
-                ))
-            ));
-            let receipt =
-                recover(&scratch.store(), prepare(image.clone())).expect("fresh explicit recovery");
-            assert_eq!(receipt.instance, instance);
-            assert_eq!(receipt.image_id, image.image_id());
-            assert_eq!(receipt.preserved.len(), 1);
-            assert_ne!(receipt.preserved, error.preserved);
-            assert_eq!(
-                std::fs::read(scratch.store().join(&receipt.preserved[0]))
-                    .expect("preserved actual replacement"),
-                active_bytes
-            );
-            assert_eq!(
-                std::fs::read(&prior).expect("earlier preservation unchanged"),
-                b"prior interrupted head"
-            );
-            assert_eq!(
-                std::fs::read(scratch.store().join(crate::HEAD_FILE)).expect("head not replayed"),
-                head
-            );
-            assert!(!scratch.store().join("envelope.replacing").exists());
-            assert!(
-                crate::audit(&scratch.store(), prepare(image))
-                    .expect("ordinary audit after recovery")
-                    .is_clean()
-            );
-            drop(std::mem::ManuallyDrop::into_inner(scratch));
+            a_failed_replacement_prefix_preserves_authority_and_bytes(point);
         }
+    }
+
+    /// After a failed replacement the authoritative envelope and head are exactly the
+    /// bytes the interrupted publication left, the partial replacement stands as written,
+    /// and the store still refuses to open without activation.
+    fn the_pending_authority_survives(
+        store: &std::path::Path,
+        image: &marrow_verify::VerifiedImage,
+        envelope: &[u8],
+        head: &[u8],
+        replacement: &[u8],
+    ) {
+        assert_eq!(
+            std::fs::read(store.join(crate::ENVELOPE_FILE)).expect("authoritative envelope"),
+            envelope
+        );
+        assert_eq!(
+            std::fs::read(store.join(crate::HEAD_FILE)).expect("authoritative head"),
+            head
+        );
+        assert_eq!(
+            std::fs::read(store.join("envelope.replacing")).expect("actual failed replacement"),
+            replacement
+        );
+        assert!(matches!(
+            crate::attach(store, prepare(image.clone())),
+            Err(crate::LifecycleError::Open(
+                OpenError::ActivationRequired { .. }
+            ))
+        ));
+    }
+
+    /// One failed-replacement prefix: the authoritative envelope and head are untouched, the
+    /// partial replacement is kept as written, and a fresh recovery preserves it in turn.
+    fn a_failed_replacement_prefix_preserves_authority_and_bytes(
+        point: crate::store_dir::barrier_fault::Point,
+    ) {
+        use crate::provision::publication_sync_fault;
+        use crate::store_dir::barrier_fault::{self, Point};
+        let scratch = std::mem::ManuallyDrop::new(Scratch::new("recovery"));
+        eprintln!("replacement-prefix fixture: {}", scratch.base().display());
+        let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
+        let instance = StoreInstanceId::draw().expect("instance");
+        assert!(matches!(
+            publication_sync_fault::with_failure(
+                &scratch.store(),
+                publication_sync_fault::Point::Publication,
+                || provision(&scratch.store(), request(&image, instance)),
+            ),
+            Err(crate::ProvisionError {
+                fault: crate::ProvisionFault::PublicationUncertain { .. },
+                ..
+            })
+        ));
+        let envelope =
+            std::fs::read(scratch.store().join(crate::ENVELOPE_FILE)).expect("pending envelope");
+        let head = std::fs::read(scratch.store().join(crate::HEAD_FILE)).expect("head");
+        let mut active = EnvelopeRecord::decode(&envelope).expect("pending record");
+        assert!(matches!(active.state, EnvelopeState::Provision { .. }));
+        active.state = EnvelopeState::Active;
+        let mut active_bytes = active.encode().expect("expected active record");
+        if point == Point::ReplacementPartial(Artifact::Envelope) {
+            active_bytes.truncate(active_bytes.len() / 2);
+        }
+        std::fs::write(
+            scratch.store().join("head.replacing"),
+            b"prior interrupted head",
+        )
+        .expect("prior debris");
+        let error = barrier_fault::with_failure(&scratch.store(), point, || {
+            recover(&scratch.store(), prepare(image.clone()))
+        })
+        .expect_err("unsynced replacement cannot finish activation");
+        assert_eq!(error.code(), Code::StoreActivationUncertain);
+        assert!(
+            matches!(error.fault, RecoveryFault::Completion { instance: found, .. } if found == instance)
+        );
+        assert_eq!(error.preserved.len(), 1);
+        let prior = scratch.store().join(&error.preserved[0]);
+        assert_eq!(
+            std::fs::read(&prior).expect("earlier preservation retained"),
+            b"prior interrupted head"
+        );
+        the_pending_authority_survives(&scratch.store(), &image, &envelope, &head, &active_bytes);
+        let receipt =
+            recover(&scratch.store(), prepare(image.clone())).expect("fresh explicit recovery");
+        assert_eq!(receipt.instance, instance);
+        assert_eq!(receipt.image_id, image.image_id());
+        assert_eq!(receipt.preserved.len(), 1);
+        assert_ne!(receipt.preserved, error.preserved);
+        assert_eq!(
+            std::fs::read(scratch.store().join(&receipt.preserved[0]))
+                .expect("preserved actual replacement"),
+            active_bytes
+        );
+        assert_eq!(
+            std::fs::read(&prior).expect("earlier preservation unchanged"),
+            b"prior interrupted head"
+        );
+        assert_eq!(
+            std::fs::read(scratch.store().join(crate::HEAD_FILE)).expect("head not replayed"),
+            head
+        );
+        assert!(!scratch.store().join("envelope.replacing").exists());
+        assert!(
+            crate::audit(&scratch.store(), prepare(image))
+                .expect("ordinary audit after recovery")
+                .is_clean()
+        );
+        drop(std::mem::ManuallyDrop::into_inner(scratch));
     }
 
     #[test]
@@ -754,7 +774,7 @@ mod tests {
 
     #[test]
     fn interrupted_rebind_adopts_actual_head_and_preserves_populated_data() {
-        use crate::store_dir::barrier_fault::{self, Point};
+        use crate::store_dir::barrier_fault::Point;
 
         let source = format!(
             "{SOURCE}\npub fn setValue(n: int, v: int) {{ transaction {{ ^counters[n] = Counter(value: v) }} }}\n"
@@ -767,103 +787,133 @@ mod tests {
             Point::ReplacementBody(Artifact::Head),
             Point::RebindHead,
         ] {
-            let scratch = std::mem::ManuallyDrop::new(Scratch::new("recovery"));
-            eprintln!("rebind-prefix fixture: {}", scratch.base().display());
-            let instance = StoreInstanceId::draw().expect("instance");
-            provision(&scratch.store(), request(&old, instance)).expect("provision");
-            populate_counter(&scratch.store(), &old);
-            let before = crate::audit(&scratch.store(), prepare(old.clone())).expect("before");
-            assert_eq!(before.summary.entries, 1);
-            let error = match barrier_fault::with_failure(&scratch.store(), point, || {
-                crate::attach(&scratch.store(), prepare(new.clone()))
-            }) {
-                Err(error) => error,
-                Ok(_) => panic!("failed barrier must not return an attachment"),
-            };
-            assert!(matches!(error, crate::LifecycleError::Metadata(_)));
-            let record = EnvelopeRecord::decode(
-                &std::fs::read(scratch.store().join(crate::ENVELOPE_FILE)).expect("pending"),
-            )
-            .expect("record");
-            assert!(matches!(record.state, EnvelopeState::Rebind { .. }));
-            let replacement = if point == Point::ReplacementBody(Artifact::Head) {
-                let bytes = std::fs::read(scratch.store().join("head.replacing"))
-                    .expect("unsynced replacement retained");
-                assert_eq!(
-                    LogicalHead::decode(&bytes)
-                        .expect("real replacement head")
-                        .binding,
-                    active_binding(&new)
-                );
-                Some(bytes)
-            } else {
-                None
-            };
-            let (actual_image, other_image) = if point != Point::RebindHead {
-                (&old, &new)
-            } else {
-                (&new, &old)
-            };
-            let head = std::fs::read(scratch.store().join(crate::HEAD_FILE)).expect("actual head");
+            an_interrupted_rebind_adopts_the_actual_head(point, &old, &new);
+        }
+    }
+
+    /// One interrupted-rebind prefix: recovery adopts whichever head actually reached the
+    /// disk and the populated data survives either way.
+    fn an_interrupted_rebind_adopts_the_actual_head(
+        point: crate::store_dir::barrier_fault::Point,
+        old: &marrow_verify::VerifiedImage,
+        new: &marrow_verify::VerifiedImage,
+    ) {
+        use crate::store_dir::barrier_fault::{self, Point};
+        let scratch = std::mem::ManuallyDrop::new(Scratch::new("recovery"));
+        eprintln!("rebind-prefix fixture: {}", scratch.base().display());
+        let instance = StoreInstanceId::draw().expect("instance");
+        provision(&scratch.store(), request(old, instance)).expect("provision");
+        populate_counter(&scratch.store(), old);
+        let before = crate::audit(&scratch.store(), prepare(old.clone())).expect("before");
+        assert_eq!(before.summary.entries, 1);
+        let error = match barrier_fault::with_failure(&scratch.store(), point, || {
+            crate::attach(&scratch.store(), prepare(new.clone()))
+        }) {
+            Err(error) => error,
+            Ok(_) => panic!("failed barrier must not return an attachment"),
+        };
+        assert!(matches!(error, crate::LifecycleError::Metadata(_)));
+        let record = EnvelopeRecord::decode(
+            &std::fs::read(scratch.store().join(crate::ENVELOPE_FILE)).expect("pending"),
+        )
+        .expect("record");
+        assert!(matches!(record.state, EnvelopeState::Rebind { .. }));
+        let replacement = if point == Point::ReplacementBody(Artifact::Head) {
+            let bytes = std::fs::read(scratch.store().join("head.replacing"))
+                .expect("unsynced replacement retained");
             assert_eq!(
-                LogicalHead::decode(&head).expect("head").binding,
-                active_binding(actual_image)
+                LogicalHead::decode(&bytes)
+                    .expect("real replacement head")
+                    .binding,
+                active_binding(new)
             );
-            assert!(matches!(
-                crate::attach(&scratch.store(), prepare(actual_image.clone())),
-                Err(crate::LifecycleError::Open(
-                    OpenError::ActivationRequired { .. }
-                ))
-            ));
-            let rejected = recover(&scratch.store(), prepare(other_image.clone()))
-                .expect_err("recovery cannot replay a different head");
-            assert!(matches!(
-                rejected.fault,
-                RecoveryFault::Validation(AuditError::ImageNotActive)
-            ));
-            assert!(rejected.preserved.is_empty());
-            if let Some(bytes) = &replacement {
-                assert_eq!(
-                    &std::fs::read(scratch.store().join("head.replacing"))
-                        .expect("rejected recovery leaves replacement"),
-                    bytes
-                );
-            }
-            let receipt =
-                recover(&scratch.store(), prepare(actual_image.clone())).expect("recover");
-            assert_eq!(receipt.instance, instance);
-            assert_eq!(receipt.image_id, actual_image.image_id());
-            if let Some(bytes) = replacement {
+            Some(bytes)
+        } else {
+            None
+        };
+        let (actual_image, other_image) = if point == Point::RebindHead {
+            (new, old)
+        } else {
+            (old, new)
+        };
+        let head = std::fs::read(scratch.store().join(crate::HEAD_FILE)).expect("actual head");
+        assert_eq!(
+            LogicalHead::decode(&head).expect("head").binding,
+            active_binding(actual_image)
+        );
+        assert!(matches!(
+            crate::attach(&scratch.store(), prepare(actual_image.clone())),
+            Err(crate::LifecycleError::Open(
+                OpenError::ActivationRequired { .. }
+            ))
+        ));
+        let rejected = recover(&scratch.store(), prepare(other_image.clone()))
+            .expect_err("recovery cannot replay a different head");
+        assert!(matches!(
+            rejected.fault,
+            RecoveryFault::Validation(AuditError::ImageNotActive)
+        ));
+        assert!(rejected.preserved.is_empty());
+        if let Some(bytes) = &replacement {
+            assert_eq!(
+                &std::fs::read(scratch.store().join("head.replacing"))
+                    .expect("rejected recovery leaves replacement"),
+                bytes
+            );
+        }
+        the_actual_head_recovers_intact(
+            &scratch.store(),
+            actual_image,
+            instance,
+            replacement.as_deref(),
+            &head,
+            before.digest,
+        );
+        drop(std::mem::ManuallyDrop::into_inner(scratch));
+    }
+
+    /// A fresh recovery over the head that actually reached the disk: it preserves the
+    /// unsynced replacement rather than replaying it, leaves the authoritative head
+    /// alone, and reopens the store on the same data it held before the interruption.
+    fn the_actual_head_recovers_intact(
+        store: &std::path::Path,
+        image: &marrow_verify::VerifiedImage,
+        instance: StoreInstanceId,
+        replacement: Option<&[u8]>,
+        head: &[u8],
+        digest_before: marrow_image::StoreDataDigest,
+    ) {
+        let receipt = recover(store, prepare(image.clone())).expect("recover");
+        assert_eq!(receipt.instance, instance);
+        assert_eq!(receipt.image_id, image.image_id());
+        match replacement {
+            Some(bytes) => {
                 assert_eq!(receipt.preserved.len(), 1);
                 assert_eq!(
-                    std::fs::read(scratch.store().join(&receipt.preserved[0]))
+                    std::fs::read(store.join(&receipt.preserved[0]))
                         .expect("fresh recovery preserves actual head bytes"),
                     bytes
                 );
-            } else {
-                assert!(receipt.preserved.is_empty());
             }
-            assert_eq!(
-                std::fs::read(scratch.store().join(crate::HEAD_FILE)).expect("head not replayed"),
-                head
-            );
-            let after =
-                crate::audit(&scratch.store(), prepare(actual_image.clone())).expect("after");
-            assert!(after.is_clean());
-            assert_eq!(after.summary.entries, 1);
-            assert_eq!(after.digest, before.digest);
-            assert!(matches!(
-                crate::attach(&scratch.store(), prepare(actual_image.clone())).expect("recovered"),
-                crate::AttachOutcome::AlreadyActive(_)
-            ));
-            drop(std::mem::ManuallyDrop::into_inner(scratch));
+            None => assert!(receipt.preserved.is_empty()),
         }
+        assert_eq!(
+            std::fs::read(store.join(crate::HEAD_FILE)).expect("head not replayed"),
+            head
+        );
+        let after = crate::audit(store, prepare(image.clone())).expect("after");
+        assert!(after.is_clean());
+        assert_eq!(after.summary.entries, 1);
+        assert_eq!(after.digest, digest_before);
+        assert!(matches!(
+            crate::attach(store, prepare(image.clone())).expect("recovered"),
+            crate::AttachOutcome::AlreadyActive(_)
+        ));
     }
 
     #[test]
     fn interrupted_recovery_preserves_known_moves_and_requires_fresh_completion() {
-        use crate::provision::publication_sync_fault;
-        use crate::store_dir::barrier_fault::{self, Point};
+        use crate::store_dir::barrier_fault::Point;
 
         let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
         for point in [
@@ -871,94 +921,130 @@ mod tests {
             Point::RecoveryParent,
             Point::RecoveryActive,
         ] {
-            let scratch = Scratch::new("recovery");
-            let instance = StoreInstanceId::draw().expect("instance");
-            assert!(matches!(
-                publication_sync_fault::with_failure(
-                    &scratch.store(),
-                    publication_sync_fault::Point::Publication,
-                    || provision(&scratch.store(), request(&image, instance))
-                ),
-                Err(crate::ProvisionError {
-                    fault: crate::ProvisionFault::PublicationUncertain { .. },
-                    ..
-                })
-            ));
-            let head = std::fs::read(scratch.store().join(crate::HEAD_FILE)).expect("head");
-            std::fs::write(
-                scratch.store().join("envelope.replacing"),
-                b"first interrupted bytes",
-            )
-            .expect("first debris");
-            let error = barrier_fault::with_failure(&scratch.store(), point, || {
-                recover(&scratch.store(), prepare(image.clone()))
-            })
-            .expect_err("barrier failure cannot return recovery success");
-            if point == Point::RecoveryActive {
+            an_interrupted_recovery_preserves_its_known_moves(point, &image);
+        }
+    }
+
+    /// The typed fault an interrupted recovery reports depends on where the barrier cut
+    /// it: past the active write it is an uncertain activation; before that it is I/O.
+    fn the_barrier_point_names_its_fault(
+        point: crate::store_dir::barrier_fault::Point,
+        error: &crate::RecoveryError,
+        instance: StoreInstanceId,
+    ) {
+        use crate::store_dir::barrier_fault::Point;
+        match point {
+            Point::RecoveryActive => {
                 assert!(
                     matches!(error.fault, RecoveryFault::Completion { instance: found, .. } if found == instance)
                 );
                 assert_eq!(error.code(), Code::StoreActivationUncertain);
-            } else if point == Point::RecoveryParent {
+            }
+            Point::RecoveryParent => {
                 assert!(matches!(error.fault, RecoveryFault::Io(_)));
                 assert_eq!(error.code(), Code::StoreIo);
-            } else {
+            }
+            _ => {
                 assert!(matches!(error.fault, RecoveryFault::Metadata(_)));
                 assert_eq!(error.code(), Code::StoreIo);
             }
-            assert_eq!(error.preserved.len(), 1);
-            let first = scratch.store().join(&error.preserved[0]);
-            assert_eq!(
-                std::fs::read(&first).expect("known first move"),
-                b"first interrupted bytes"
-            );
-            let record = EnvelopeRecord::decode(
-                &std::fs::read(scratch.store().join(crate::ENVELOPE_FILE))
-                    .expect("actual envelope"),
-            )
-            .expect("record");
-            let digest = LogicalHead::decode_with_digest(&head).expect("head").1;
-            assert_eq!(
-                record.state,
-                if point == Point::RecoveryActive {
-                    EnvelopeState::Active
-                } else {
-                    EnvelopeState::Provision { head: digest }
-                }
-            );
-            if point != Point::RecoveryActive {
-                assert!(matches!(
-                    crate::attach(&scratch.store(), prepare(image.clone())),
-                    Err(crate::LifecycleError::Open(
-                        OpenError::ActivationRequired { .. }
-                    ))
-                ));
-            }
-            std::fs::write(
-                scratch.store().join("envelope.replacing"),
-                b"second interrupted bytes",
-            )
-            .expect("new debris before fresh attempt");
-            let receipt =
-                recover(&scratch.store(), prepare(image.clone())).expect("fresh recovery");
-            assert_eq!(receipt.instance, instance);
-            assert_eq!(receipt.image_id, image.image_id());
-            assert_eq!(receipt.preserved.len(), 1);
-            assert_ne!(receipt.preserved, error.preserved);
-            assert_eq!(
-                std::fs::read(&first).expect("first preserved bytes retained"),
-                b"first interrupted bytes"
-            );
-            assert_eq!(
-                std::fs::read(scratch.store().join(&receipt.preserved[0]))
-                    .expect("second preserved bytes"),
-                b"second interrupted bytes"
-            );
-            assert_eq!(
-                std::fs::read(scratch.store().join(crate::HEAD_FILE)).expect("head never replayed"),
-                head
-            );
         }
+    }
+
+    /// The envelope carries the state the interrupted recovery actually reached, and a
+    /// store short of the active write still refuses to open.
+    fn the_envelope_stopped_where_the_barrier_did(
+        point: crate::store_dir::barrier_fault::Point,
+        store: &std::path::Path,
+        image: &marrow_verify::VerifiedImage,
+        head: &[u8],
+    ) {
+        use crate::store_dir::barrier_fault::Point;
+        let record = EnvelopeRecord::decode(
+            &std::fs::read(store.join(crate::ENVELOPE_FILE)).expect("actual envelope"),
+        )
+        .expect("record");
+        let digest = LogicalHead::decode_with_digest(head).expect("head").1;
+        assert_eq!(
+            record.state,
+            if point == Point::RecoveryActive {
+                EnvelopeState::Active
+            } else {
+                EnvelopeState::Provision { head: digest }
+            }
+        );
+        if point != Point::RecoveryActive {
+            assert!(matches!(
+                crate::attach(store, prepare(image.clone())),
+                Err(crate::LifecycleError::Open(
+                    OpenError::ActivationRequired { .. }
+                ))
+            ));
+        }
+    }
+
+    /// One interrupted-recovery prefix: the moves already made stay preserved, the store
+    /// still demands activation, and only a fresh recovery completes it.
+    fn an_interrupted_recovery_preserves_its_known_moves(
+        point: crate::store_dir::barrier_fault::Point,
+        image: &marrow_verify::VerifiedImage,
+    ) {
+        use crate::provision::publication_sync_fault;
+        use crate::store_dir::barrier_fault;
+        let scratch = Scratch::new("recovery");
+        let instance = StoreInstanceId::draw().expect("instance");
+        assert!(matches!(
+            publication_sync_fault::with_failure(
+                &scratch.store(),
+                publication_sync_fault::Point::Publication,
+                || provision(&scratch.store(), request(image, instance))
+            ),
+            Err(crate::ProvisionError {
+                fault: crate::ProvisionFault::PublicationUncertain { .. },
+                ..
+            })
+        ));
+        let head = std::fs::read(scratch.store().join(crate::HEAD_FILE)).expect("head");
+        std::fs::write(
+            scratch.store().join("envelope.replacing"),
+            b"first interrupted bytes",
+        )
+        .expect("first debris");
+        let error = barrier_fault::with_failure(&scratch.store(), point, || {
+            recover(&scratch.store(), prepare(image.clone()))
+        })
+        .expect_err("barrier failure cannot return recovery success");
+        the_barrier_point_names_its_fault(point, &error, instance);
+        assert_eq!(error.preserved.len(), 1);
+        let first = scratch.store().join(&error.preserved[0]);
+        assert_eq!(
+            std::fs::read(&first).expect("known first move"),
+            b"first interrupted bytes"
+        );
+        the_envelope_stopped_where_the_barrier_did(point, &scratch.store(), image, &head);
+        std::fs::write(
+            scratch.store().join("envelope.replacing"),
+            b"second interrupted bytes",
+        )
+        .expect("new debris before fresh attempt");
+        let receipt = recover(&scratch.store(), prepare(image.clone())).expect("fresh recovery");
+        assert_eq!(receipt.instance, instance);
+        assert_eq!(receipt.image_id, image.image_id());
+        assert_eq!(receipt.preserved.len(), 1);
+        assert_ne!(receipt.preserved, error.preserved);
+        assert_eq!(
+            std::fs::read(&first).expect("first preserved bytes retained"),
+            b"first interrupted bytes"
+        );
+        assert_eq!(
+            std::fs::read(scratch.store().join(&receipt.preserved[0]))
+                .expect("second preserved bytes"),
+            b"second interrupted bytes"
+        );
+        assert_eq!(
+            std::fs::read(scratch.store().join(crate::HEAD_FILE)).expect("head never replayed"),
+            head
+        );
     }
 
     #[test]
