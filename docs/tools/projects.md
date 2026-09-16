@@ -52,20 +52,52 @@ my_app/
 
 ## Manifest
 
-`marrow.toml` holds one required key, `edition`, which fixes the language edition the project targets:
+`marrow.toml` holds one required key, `edition`, which fixes the language edition the project targets, and the optional `[dependencies]` table:
 
 ```toml
 edition = "2026"
+
+[dependencies]
+graphtext = { path = "../graphtext" }
 ```
 
-The schema is closed. An unknown key, a missing or non-string `edition`, an edition other than `2026`, or malformed TOML is a `config.invalid` error:
+The schema is closed. An unknown key, a missing or non-string `edition`, an edition other than `2026`, a dependency entry that is not a table or declares a key other than `path`, or malformed TOML is a `config.invalid` error:
 
 ```text
 $ marrow check .
-config.invalid: unknown manifest key `name`; the only supported key is `edition`
+config.invalid: unknown manifest key `name`; the supported keys are `edition` and `dependencies`
 ```
 
 The manifest carries no store, entry point, source root, test, or client settings.
+
+## Dependencies
+
+A project may name other local directories of Marrow source. Each `[dependencies]` entry maps an alias to a location:
+
+| Part | Value |
+|---|---|
+| The entry name | The alias. A single identifier — a letter or `_` followed by letters, digits, or `_` — of at most 64 bytes. The consuming project chooses it; the dependency's directory name and its own manifest supply no name. |
+| `path` | The only key an entry admits. A relative forward-slash path of at most 4,096 bytes, resolved from the consuming project's root. A `..` segment may appear only in the leading run, so a path steps out of the project and then only descends. |
+
+The alias roots every module the dependency contributes. A library file `src/text.mw` whose own header reads `module text` is `graphtext.text` in the consumer. The library keeps its unprefixed header, so it still checks on its own, and the prefix never appears in its source.
+
+```text
+workspace/
+  my_app/
+    marrow.toml    declares graphtext = { path = "../graphtext" }
+    src/
+      main.mw      module `main`
+  graphtext/
+    marrow.toml
+    .marrow/
+      ids          the library's own identity ledger
+    src/
+      text.mw      module `text` here, `graphtext.text` in my_app
+```
+
+A dependency directory is an ordinary project: a `marrow.toml` and a `src` tree. It is read, never written. Its `.marrow/ids` supplies the identities of the declarations it makes, so a library-declared resource keeps the ids the library committed, and no command run in the consuming project edits, mints into, or formats a file under it.
+
+A `project.dependency_path` error names a path that cannot be used: an absolute path, a path with an empty, `.`, or trailing `..` segment, a path reaching its target through a symbolic link, a directory that is absent or holds no `marrow.toml` and `src`, the consuming project itself, or a dependency that declares `[dependencies]` of its own. A dependency graph is one edge deep in this build, which is why a cycle cannot be expressed. A `project.dependency_alias` error names an alias that is not an identifier, or that is already the first segment of a module name the consuming project declares.
 
 ## Modules
 
@@ -127,4 +159,4 @@ Source discovery is deterministic: files are ordered by their names, whatever or
 | Manifest | 1 MiB | `io.read` |
 | Identity ledger | 8,192 lines, 1 MiB | `project.ids_corrupt` |
 
-These limits are fixed. Every code is listed in the [error code reference](../error-codes.md).
+These limits are fixed, and a project and its dependencies are captured together against one set of them: the source-file, per-file, total-byte, visited-entry and depth counts span every tree the capture reads, and none of them restarts at a dependency. The identity-ledger limits are per artifact, so each project's own `.marrow/ids` is bounded separately. Every code is listed in the [error code reference](../error-codes.md).
