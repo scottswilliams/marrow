@@ -1499,6 +1499,65 @@ fn build_type_registry(
     Ok(records)
 }
 
+/// Build the function signature table under one generic owner transaction.
+///
+/// The table is always built. A refused signature is a refused ledger entry, so every
+/// phase below still resolves call sites — a call to the refused function reuses its
+/// declaration's cause, and every unrelated body lowers and reports its own errors
+/// instead of being silenced by one bad annotation.
+fn build_signature_table<'source>(
+    records: &mut TypeRegistry,
+    draft: &mut ImageDraft,
+    durable: &DurableRegistry,
+    functions: &'source [DeclaredFn<'_>],
+    scope: ModuleScope,
+    diagnostics: &mut DiagnosticCollector,
+    boundary_roots: &mut Vec<NominalBoundaryRoot<'source>>,
+) -> Result<FunctionRegistry, SemanticOutcome> {
+    let mut batch = match GenericOwnerTxn::begin(records, draft) {
+        Ok(batch) => batch,
+        Err(invariant) => {
+            return Err(SemanticOutcome::Invariant(InvariantCause::Generic(
+                invariant,
+            )));
+        }
+    };
+    let signatures = {
+        let (records, txn) = batch.parts();
+        match FunctionRegistry::build(
+            records,
+            txn,
+            durable,
+            functions,
+            scope,
+            diagnostics,
+            boundary_roots,
+        ) {
+            Ok(signatures) => signatures,
+            Err(error) => return Err(error.into()),
+        }
+    };
+    batch.commit();
+    Ok(signatures)
+}
+
+/// Every module-private constant declaration, paired with its module, in declaration
+/// order.
+fn module_const_decls(parsed: &[Module]) -> Vec<(String, FileRef, ProjectFile, &ConstDecl)> {
+    parsed
+        .iter()
+        .flat_map(|module| {
+            module.ast.declarations.iter().filter_map(|decl| {
+                if let Declaration::Const(konst) = decl {
+                    Some((module.name.clone(), module.at, module.file.clone(), konst))
+                } else {
+                    None
+                }
+            })
+        })
+        .collect()
+}
+
 /// Analyze the cleanly-parsed modules: build the named types and function signatures,
 /// lower every body, and validate the whole, or return the accumulated failure tagged
 /// with the stage that produced it. Editor hover facts from each monomorphic function and
@@ -1572,39 +1631,22 @@ fn run_semantic(
         Err(error) => return error.into(),
     };
 
-    // The signature table is always built. A refused signature is a refused ledger
-    // entry, so every phase below still resolves call sites — a call to the refused
-    // function reuses its declaration's cause, and every unrelated body lowers and
-    // reports its own errors instead of being silenced by one bad annotation.
-    let signatures = {
-        let mut batch = match GenericOwnerTxn::begin(&mut records, &mut draft) {
-            Ok(batch) => batch,
-            Err(invariant) => {
-                return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
-            }
-        };
-        let signatures = {
-            let (records, txn) = batch.parts();
-            match FunctionRegistry::build(
-                records,
-                txn,
-                &durable,
-                &functions,
-                ModuleScope {
-                    modules,
-                    imports,
-                    origins: origins.clone(),
-                    budget: budget.clone(),
-                },
-                &mut diagnostics,
-                &mut boundary_roots,
-            ) {
-                Ok(signatures) => signatures,
-                Err(error) => return error.into(),
-            }
-        };
-        batch.commit();
-        signatures
+    let signatures = match build_signature_table(
+        &mut records,
+        &mut draft,
+        &durable,
+        &functions,
+        ModuleScope {
+            modules,
+            imports,
+            origins: origins.clone(),
+            budget: budget.clone(),
+        },
+        &mut diagnostics,
+        &mut boundary_roots,
+    ) {
+        Ok(signatures) => signatures,
+        Err(outcome) => return outcome,
     };
     let signatures_complete = signatures.every_signature_accepted();
     if let Err(invariant) = report_nominal_boundary(&mut records, &boundary_roots, &mut diagnostics)
@@ -1619,18 +1661,7 @@ fn run_semantic(
 
     // Module-private constants, evaluated before body lowering so a reference folds
     // to its value.
-    let const_decls: Vec<(String, FileRef, ProjectFile, &ConstDecl)> = parsed
-        .iter()
-        .flat_map(|module| {
-            module.ast.declarations.iter().filter_map(|decl| {
-                if let Declaration::Const(konst) = decl {
-                    Some((module.name.clone(), module.at, module.file.clone(), konst))
-                } else {
-                    None
-                }
-            })
-        })
-        .collect();
+    let const_decls = module_const_decls(parsed);
     let constants = match ConstRegistry::build(&const_decls, &records, &mut diagnostics, budget) {
         Ok(constants) => constants,
         Err(full) => return full.into(),
