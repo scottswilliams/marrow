@@ -91,13 +91,15 @@ fn the_application_reaches_the_library_through_its_alias() {
 /// `graphtext:src/text.mw`. Identities stay root-relative, so the origin is a prefix the
 /// renderer adds and never part of the identity itself.
 #[test]
-#[ignore = "needs the compiler half of local dependencies"]
 fn a_dependency_diagnostic_names_its_alias() {
     let scratch = two_trees("dependency-diagnostic");
     let helper = scratch.join(LIB).join("src/text.mw");
     let source = fs::read_to_string(&helper).expect("read the library helper");
-    fs::write(&helper, source.replace("return m[key] ?? fallback", "return m[key]"))
-        .expect("write the broken library helper");
+    fs::write(
+        &helper,
+        source.replace("return m[key] ?? fallback", "return m[key]"),
+    )
+    .expect("write the broken library helper");
 
     let output = marrow_in(&scratch.join(APP), &["check"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -158,7 +160,10 @@ fn a_dependency_owned_identity_gap_is_not_minted_from_the_application() {
     )
     .expect("write the durable library helper");
 
-    let output = marrow_in(&scratch.join(APP), &["run", "graph_report.report", "--", ""]);
+    let output = marrow_in(
+        &scratch.join(APP),
+        &["run", "graph_report.report", "--", ""],
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "{stderr}");
     assert!(

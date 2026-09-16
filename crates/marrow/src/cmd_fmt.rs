@@ -100,7 +100,7 @@ directory, no flag checks without writing. `marrow fmt` does not read from stdin
             return ExitCode::FAILURE;
         }
     };
-    match fmt_one(&target, &source, mode) {
+    match fmt_one(&target, &source, mode, FileAuthority::Owned) {
         Ok(FmtOutcome::Formatted) | Ok(FmtOutcome::Unchanged) => ExitCode::SUCCESS,
         Ok(FmtOutcome::NeedsFormatting) | Err(()) => ExitCode::FAILURE,
     }
@@ -127,15 +127,24 @@ fn fmt_project(dir: &Path, mode: FmtMode) -> ExitCode {
     let mut any_error = false;
     let mut any_needs_formatting = false;
     for module in input.modules() {
-        let label = captured_module_path(dir, module.identity().as_str())
-            .display()
-            .to_string();
+        let (label, authority) = match module.origin().alias() {
+            None => (
+                captured_module_path(dir, module.identity().as_str())
+                    .display()
+                    .to_string(),
+                FileAuthority::Owned,
+            ),
+            Some(alias) => (
+                format!("{}:{}", alias.as_str(), module.identity().as_str()),
+                FileAuthority::Dependency,
+            ),
+        };
         let Ok(source) = std::str::from_utf8(module.source()) else {
             report_simple_error(Code::IoRead, &format!("{label}: source is not valid UTF-8"));
             any_error = true;
             continue;
         };
-        match fmt_one(&label, source, mode) {
+        match fmt_one(&label, source, mode.under(authority), authority) {
             Ok(FmtOutcome::Formatted | FmtOutcome::Unchanged) => {}
             Ok(FmtOutcome::NeedsFormatting) => any_needs_formatting = true,
             Err(()) => any_error = true,
@@ -149,12 +158,26 @@ fn fmt_project(dir: &Path, mode: FmtMode) -> ExitCode {
     }
 }
 
+/// Who owns a captured file on disk, and therefore whether `--write` may rewrite it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FileAuthority {
+    /// A source file of the root project `fmt` was invoked on.
+    Owned,
+    /// A source file of a declared dependency. It is reported and never rewritten: the
+    /// project that declares a file is the project that formats and commits it, so a
+    /// consumer that rewrote one would change a tree it does not own and leave that
+    /// tree's own `fmt --check` disagreeing with its committed source.
+    Dependency,
+}
+
 /// The path a captured module is reported and written under: the capture root joined
 /// to the module's project-relative identity, with `.` components dropped. The join is
 /// what keeps `--write` and the `--write` hint correct for a root named from elsewhere
 /// (`marrow fmt --check app` reports `app/src/main.mw`); dropping `.` is what keeps the
 /// common in-project spelling identical to the `src/main.mw` that capture and `check`
-/// report.
+/// report. A dependency file is reported under its alias instead
+/// (`graphtext:src/text.mw`), which names the tree that owns it and is deliberately not
+/// a path in the consuming tree.
 ///
 /// This governs formatting findings only. A capture refusal is spelled root-relative
 /// by the capture presentation facade and printed verbatim, so one run can report
@@ -233,8 +256,15 @@ enum FmtOutcome {
 /// Format one file's `source` in `mode`, reporting parse errors, `--check`
 /// findings, and `--write` I/O failures. Source that does not parse is left
 /// untouched and reported (`Err`). The `Print` mode writes to stdout (only valid
-/// for a single file).
-fn fmt_one(file: &str, source: &str, mode: FmtMode) -> Result<FmtOutcome, ()> {
+/// for a single file). `authority` selects the steer a `--check` finding carries; a
+/// dependency file never reaches `FmtMode::Write`, because [`FmtMode::under`] demotes
+/// it first.
+fn fmt_one(
+    file: &str,
+    source: &str,
+    mode: FmtMode,
+    authority: FileAuthority,
+) -> Result<FmtOutcome, ()> {
     // The checked-format policy (parse, format, refuse on parse failure or comment
     // loss) is owned once by the syntax crate; this command only routes its outcome to
     // the terminal and, in `--write`, to disk.
@@ -279,7 +309,14 @@ fn fmt_one(file: &str, source: &str, mode: FmtMode) -> Result<FmtOutcome, ()> {
             if source == formatted {
                 Ok(FmtOutcome::Unchanged)
             } else {
-                eprintln!("{file}: not formatted; run marrow fmt --write {file} to format it");
+                match authority {
+                    FileAuthority::Owned => eprintln!(
+                        "{file}: not formatted; run marrow fmt --write {file} to format it"
+                    ),
+                    FileAuthority::Dependency => eprintln!(
+                        "{file}: not formatted; format it in the project that declares it"
+                    ),
+                }
                 Ok(FmtOutcome::NeedsFormatting)
             }
         }
@@ -301,6 +338,18 @@ enum FmtMode {
     Print,
     Check,
     Write,
+}
+
+impl FmtMode {
+    /// The mode one file is actually formatted under. A dependency file is only ever
+    /// reported: `--write` demotes to `--check` there, so no write path exists for a
+    /// tree this project does not own.
+    fn under(self, authority: FileAuthority) -> FmtMode {
+        match authority {
+            FileAuthority::Owned => self,
+            FileAuthority::Dependency => FmtMode::Check,
+        }
+    }
 }
 
 fn write_formatted_source(file: &str, formatted: &str) -> io::Result<()> {

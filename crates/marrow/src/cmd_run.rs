@@ -27,7 +27,7 @@ use marrow_verify::{
 use marrow_vm::Value;
 
 use crate::outcome::{MAX_TEXT_BYTES, Record};
-use crate::project::capture_project;
+use crate::project::{ProjectOrigins, capture_project};
 
 /// The output format for `marrow run`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -229,6 +229,11 @@ enum MintOutcome {
 /// window too. The compiler stays a read-only ledger consumer: its typed
 /// `IdentityGap` payloads are the sole input here, and the CLI never classifies
 /// durable declarations itself.
+///
+/// Minting is the root project's alone. A dependency commits its own ledger in its own
+/// tree, so a gap a dependency declares is left to its own `check.durable_identity`
+/// report, which steers the developer to run `marrow run` in the library and commit the
+/// ledger it publishes there. Only the root path ever reaches the publication guard.
 fn mint_missing_identities(
     project: &ProjectInput,
     diagnostics: &[SourceDiagnostic],
@@ -237,9 +242,11 @@ fn mint_missing_identities(
     // gap is emitted only for a durable declaration whose shape already validated,
     // so the recompile reports whatever genuinely remains. A retired anchor is never
     // re-mintable, so its failure stays precise and unminted.
+    let origins = ProjectOrigins::of(project);
     let mut anchors: Vec<IdentityAnchor> = Vec::new();
     for diagnostic in diagnostics {
         match diagnostic.identity_gap() {
+            Some(_) if !origins.is_root(diagnostic.file()) => {}
             Some(gap) if gap.retired => return MintOutcome::NotApplicable,
             Some(gap) => anchors.push(gap.anchor()),
             None => {}

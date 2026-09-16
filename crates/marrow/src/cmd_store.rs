@@ -112,7 +112,7 @@ pub(crate) fn run(operation: Operation, rest: &[String]) -> ExitCode {
         compile,
         Some("the project does not compile; run `marrow check` before accessing a store"),
     ) {
-        Ok(compiled) => compiled,
+        Ok((compiled, _)) => compiled,
         Err(code) => return code,
     };
 
