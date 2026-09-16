@@ -16,7 +16,7 @@ use marrow_compile::{DurableNaming, ExportEntry};
 use marrow_verify::VerifiedImage;
 
 use crate::demand::{demand_lines, demand_summary_lines};
-use crate::project::{ProjectOrigins, compile_project};
+use crate::project::compile_project;
 use crate::report_simple_error;
 
 const HELP: &str = "\
@@ -67,7 +67,7 @@ pub(crate) fn check(rest: &[String]) -> ExitCode {
     // One drive, tests included: the complete diagnostic set, then the test-inclusive
     // image it checked. The image is verified so each export's demand is the verifier's
     // reconstruction, not a compiler claim.
-    let (compiled, origins) = match compile_project(&root, marrow_compile::check, None) {
+    let compiled = match compile_project(&root, marrow_compile::check, None) {
         Ok(compiled) => compiled,
         Err(code) => return code,
     };
@@ -79,31 +79,24 @@ pub(crate) fn check(rest: &[String]) -> ExitCode {
         }
     };
 
-    describe_exports(
-        &compiled.exports,
-        &compiled.naming,
-        &image,
-        &origins,
-        full_demand,
-    )
+    describe_exports(&compiled.exports, &compiled.naming, &image, full_demand)
 }
 
 /// Describe the checked project's durable demand and exit success. The default is the
-/// human-shaped summary grouped by module and attributed to the tree that declares it;
-/// `--demand` prints the full per-export atom form instead, whose alias-rooted module
-/// path already names the declaring tree. Both render from the same demand facts through
-/// the shared owner.
+/// human-shaped summary grouped by module; `--demand` prints the full per-export atom
+/// form instead. Both render from the same demand facts through the shared owner. Every
+/// export listed is the project's own: a dependency's `pub fn` takes no export slot here
+/// and is run where the dependency is.
 fn describe_exports(
     exports: &[ExportEntry],
     naming: &DurableNaming,
     image: &VerifiedImage,
-    origins: &ProjectOrigins,
     full_demand: bool,
 ) -> ExitCode {
     let rendered = if full_demand {
         demand_lines(exports, naming, image)
     } else {
-        demand_summary_lines(exports, naming, image, origins)
+        demand_summary_lines(exports, naming, image)
     };
     match rendered {
         Ok(lines) => {

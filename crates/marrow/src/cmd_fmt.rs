@@ -134,8 +134,10 @@ fn fmt_project(dir: &Path, mode: FmtMode) -> ExitCode {
                     .to_string(),
                 FileAuthority::Owned,
             ),
-            Some(alias) => (
-                format!("{}:{}", alias.as_str(), module.identity().as_str()),
+            // A dependency's file is named by the compiler's one address spelling, so a
+            // formatting finding and a diagnostic agree on how to name it.
+            Some(_) => (
+                marrow_compile::ProjectFile::from(module).spelling(),
                 FileAuthority::Dependency,
             ),
         };

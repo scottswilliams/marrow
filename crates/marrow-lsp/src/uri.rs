@@ -109,6 +109,11 @@ impl DocumentKey {
         &self.relative
     }
 
+    /// The tree this document belongs to.
+    pub(crate) fn origin(&self) -> &SourceOrigin {
+        &self.origin
+    }
+
     /// The document key for one captured file: the tree it came from and its identity
     /// there.
     pub(crate) fn captured(origin: &SourceOrigin, identity: &FileIdentity) -> Self {

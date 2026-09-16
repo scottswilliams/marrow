@@ -37,7 +37,7 @@ pub(crate) fn import(rest: &[String]) -> ExitCode {
         compile,
         Some("the project does not compile; run `marrow check` before importing"),
     ) {
-        Ok((compiled, _)) => compiled,
+        Ok(compiled) => compiled,
         Err(code) => return code,
     };
 

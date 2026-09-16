@@ -12,7 +12,8 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use marrow_codes::Code;
-use marrow_project::{FileIdentity, LedgerPublicationPlan, ProjectInput, SourceOrigin};
+use marrow_compile::ProjectFile;
+use marrow_project::{LedgerPublicationPlan, ProjectInput};
 use marrow_project_fs::{
     CaptureFailure as PhysicalCaptureFailure, IdsPublication, IdsPublicationError,
     IdsPublishOutcome, OverlaySnapshot, ProjectMetadataWriteGuard,
@@ -127,122 +128,31 @@ fn terminal_projection(root: &Path, failure: &PhysicalCaptureFailure) -> Capture
     }
 }
 
-/// Which tree each captured module came from, keyed by the two spellings the CLI's
-/// renderers hold: the [`FileIdentity`] a diagnostic carries and the dotted module name
-/// an export entry carries.
-///
-/// A [`FileIdentity`] is relative to its own tree's root, so two origins may hold the
-/// same one and it does not name a tree by itself. The origin is the sibling fact that
-/// does, and the renderer — never the identity string — joins the two.
-pub(crate) struct ProjectOrigins {
-    /// The captured trees in canonical order, the root first.
-    origins: Vec<SourceOrigin>,
-    modules: Vec<CapturedModule>,
-}
-
-struct CapturedModule {
-    identity: String,
-    module: String,
-    origin: SourceOrigin,
-}
-
-impl ProjectOrigins {
-    pub(crate) fn of(project: &ProjectInput) -> Self {
-        Self {
-            origins: project.origins().to_vec(),
-            modules: project
-                .modules()
-                .iter()
-                .map(|module| CapturedModule {
-                    identity: module.identity().as_str().to_owned(),
-                    module: module.module().as_str().to_owned(),
-                    origin: module.origin().clone(),
-                })
-                .collect(),
-        }
-    }
-
-    /// The captured trees in canonical order: the root, then each declared dependency.
-    pub(crate) fn origins(&self) -> &[SourceOrigin] {
-        &self.origins
-    }
-
-    /// The tree that declares the module named `module`. Module names are unique across
-    /// a capture, so this join is exact.
-    pub(crate) fn of_module(&self, module: &str) -> Option<&SourceOrigin> {
-        self.modules
-            .iter()
-            .find(|held| held.module == module)
-            .map(|held| &held.origin)
-    }
-
-    /// Whether the root project declares `identity`. An identity no single origin
-    /// claims is not the root's, so a caller that may only act on the root project's
-    /// own files fails closed.
-    pub(crate) fn is_root(&self, identity: &FileIdentity) -> bool {
-        matches!(self.origin_of(identity), Some(SourceOrigin::Root))
-    }
-
-    /// The spelling a file is reported under: `<alias>:<identity>` for a dependency
-    /// file, and the bare identity for the root project's own.
-    fn spell(&self, identity: &FileIdentity) -> String {
-        match self.origin_of(identity).and_then(SourceOrigin::alias) {
-            Some(alias) => format!("{}:{}", alias.as_str(), identity.as_str()),
-            None => identity.as_str().to_owned(),
-        }
-    }
-
-    /// The one tree holding `identity`, or `None` when two trees hold it. An identity
-    /// is relative to its own tree's root, so it does not name a tree by itself.
-    //
-    // Recovering the origin from the module list is exact only while no two trees hold
-    // the same identity. Replace this with the `SourceOrigin` the compiler carries on
-    // `SourceDiagnostic` once that field exists.
-    fn origin_of(&self, identity: &FileIdentity) -> Option<&SourceOrigin> {
-        let mut matching = self
-            .modules
-            .iter()
-            .filter(|held| held.identity == identity.as_str());
-        match (matching.next(), matching.next()) {
-            (Some(held), None) => Some(&held.origin),
-            _ => None,
-        }
-    }
-}
-
 /// Capture the project at `root` and compile it with `compile`, reporting a capture
 /// failure or a compile failure on standard error. `hint` is one extra line printed
-/// after source diagnostics, naming what the operator should do first. The captured
-/// origins are returned with the compiler's result so a caller can attribute an export
-/// or a file to the tree that declares it.
+/// after source diagnostics, naming what the operator should do first.
 pub(crate) fn compile_project<T>(
     root: &Path,
     compile: impl FnOnce(&ProjectInput) -> Result<T, marrow_compile::CompileFailure>,
     hint: Option<&str>,
-) -> Result<(T, ProjectOrigins), ExitCode> {
+) -> Result<T, ExitCode> {
     let project = capture_project(root).map_err(|failure| {
         crate::report_simple_error(failure.code, &failure.message);
         ExitCode::FAILURE
     })?;
-    let origins = ProjectOrigins::of(&project);
-    let compiled = compile(&project).map_err(|failure| {
-        report_compile_failure(&failure, &origins, hint);
+    compile(&project).map_err(|failure| {
+        report_compile_failure(&failure, hint);
         ExitCode::FAILURE
-    })?;
-    Ok((compiled, origins))
+    })
 }
 
 /// Report a compile failure on standard error: every source diagnostic with its span,
 /// or the one fixed code line an exhausted bound or a failed internal check earns.
-fn report_compile_failure(
-    failure: &marrow_compile::CompileFailure,
-    origins: &ProjectOrigins,
-    hint: Option<&str>,
-) {
+fn report_compile_failure(failure: &marrow_compile::CompileFailure, hint: Option<&str>) {
     match failure {
         marrow_compile::CompileFailure::Diagnostics(diagnostics) => {
             for diagnostic in diagnostics {
-                eprintln!("{}", diagnostic_line(diagnostic, origins));
+                eprintln!("{}", diagnostic_line(diagnostic));
             }
             if let Some(hint) = hint {
                 eprintln!("{hint}");
@@ -260,14 +170,13 @@ fn report_compile_failure(
 }
 
 /// One diagnostic rendered as `file:line:column: code: message`, painted for a terminal.
-/// A file a dependency declares carries that dependency's alias: `graphtext:src/text.mw`.
-fn diagnostic_line(
-    diagnostic: &marrow_compile::SourceDiagnostic,
-    origins: &ProjectOrigins,
-) -> String {
+/// The file spelling is the compiler's own, so a file a dependency declares carries that
+/// dependency's alias: `graphtext:src/text.mw`.
+fn diagnostic_line(diagnostic: &marrow_compile::SourceDiagnostic) -> String {
+    let file = ProjectFile::new(diagnostic.origin().clone(), diagnostic.file().clone());
     format!(
         "{}:{}:{}: {}: {}",
-        paint(Style::Muted, &origins.spell(diagnostic.file())),
+        paint(Style::Muted, &file.spelling()),
         diagnostic.line(),
         diagnostic.column(),
         paint(Style::Code, diagnostic.code().as_str()),

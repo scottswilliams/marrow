@@ -27,7 +27,7 @@ use lsp_types::{
     ServerCapabilities, ServerInfo, SignatureHelpOptions, SignatureHelpParams,
     TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
 };
-use marrow_compile::{AnalysisResourceLimit, AnalysisSnapshot, InputRevision};
+use marrow_compile::{AnalysisResourceLimit, AnalysisSnapshot, InputRevision, ProjectFile};
 
 use crate::analysis::{
     AnalysisOutcome, CaptureRejection, OverlayInput, run_analysis, validate_overlay,
@@ -45,8 +45,6 @@ use crate::lifecycle::{
 };
 use crate::outbound::{MessageType, Outbound, encode};
 use crate::protocol::{Inbound, InvalidReason, Reject, RequestId, decode};
-use marrow_project_fs::SourceOrigin;
-
 use crate::uri::{DocumentKey, OriginRoots, SelectedRoot, UriError};
 
 /// A unit of capture/analyze work handed to the worker.
@@ -734,26 +732,8 @@ impl Coordinator {
                 result: facts::hover(snapshot, &identity, &source, *position),
             }),
             HeldKind::Definition(position) => {
-                let source_lookup = |file: &marrow_project_fs::FileIdentity| self.file_source(file);
-                // The snapshot's definition target carries no origin yet, so a target is
-                // resolved in the root project's tree. Key it on the target's own origin
-                // once the compiler reports one, and a definition across a dependency
-                // boundary resolves through this same fact with no new one.
-                let uri_lookup = |file: &marrow_project_fs::FileIdentity| {
-                    lsp_uri(
-                        root,
-                        &self.origins,
-                        &DocumentKey::captured(&SourceOrigin::Root, file),
-                    )
-                };
-                match facts::definition(
-                    snapshot,
-                    &identity,
-                    &source,
-                    source_lookup,
-                    uri_lookup,
-                    *position,
-                ) {
+                let uri_lookup = |file: &ProjectFile| lsp_uri(root, &self.origins, &key_of(file));
+                match facts::definition(snapshot, &identity, &source, uri_lookup, *position) {
                     Ok(result) => SemanticAnswer::Reply(Outbound::Definition { id, result }),
                     Err(_) => SemanticAnswer::Internal,
                 }
@@ -783,26 +763,18 @@ impl Coordinator {
 
     /// The file identity and current open text for a document key, if it is still an open
     /// text document.
-    fn resolve_by_key(
-        &self,
-        key: &DocumentKey,
-    ) -> Option<(marrow_project_fs::FileIdentity, String)> {
+    fn resolve_by_key(&self, key: &DocumentKey) -> Option<(ProjectFile, String)> {
         match self.ledger.get(key) {
             Some(DocumentState::OpenText { text, .. }) => {
                 let (identity, _) =
                     marrow_project_fs::FileIdentity::validate(key.relative()).ok()?;
-                Some((identity, text.clone()))
+                Some((
+                    ProjectFile::new(key.origin().clone(), identity),
+                    text.clone(),
+                ))
             }
             _ => None,
         }
-    }
-
-    fn file_source(&self, file: &marrow_project_fs::FileIdentity) -> Option<String> {
-        let key = DocumentKey::captured(&SourceOrigin::Root, file);
-        self.ledger
-            .text_entries()
-            .find(|(open_key, _)| **open_key == key)
-            .map(|(_, text)| text.to_owned())
     }
 
     fn on_notification(&mut self, method: &str, params: Option<Box<serde_json::value::RawValue>>) {
@@ -1156,6 +1128,7 @@ impl Coordinator {
         for module in snapshot.input().modules() {
             let identity = module.identity();
             let key = DocumentKey::captured(module.origin(), identity);
+            let file = ProjectFile::from(module);
             // Only the root project's files are ever open, so a dependency file is
             // always published unversioned.
             let version = self.ledger.get(&key).map(DocumentState::version);
@@ -1163,7 +1136,7 @@ impl Coordinator {
                 continue;
             };
             if let Ok(params) =
-                facts::diagnostics_for_file(snapshot, uri, identity, module.source(), version)
+                facts::diagnostics_for_file(snapshot, uri, &file, module.source(), version)
             {
                 let has = !params.diagnostics.is_empty();
                 frames.push(Outbound::PublishDiagnostics(Box::new(params)));
@@ -1557,6 +1530,11 @@ fn select_root(params: &InitializeParams) -> Result<Option<SelectedRoot>, RootEr
 /// A rejected initialize leaves the lifecycle in its initial `AwaitInitialize` phase.
 fn restore_after_rejected_initialize() -> Lifecycle {
     Lifecycle::new()
+}
+
+/// The document key naming one captured file.
+fn key_of(file: &ProjectFile) -> DocumentKey {
+    DocumentKey::captured(file.origin(), file.identity())
 }
 
 fn lsp_uri(
@@ -2744,7 +2722,7 @@ mod tests {
         let (identity, _) = marrow_project_fs::FileIdentity::validate("src/main.mw")
             .expect("fixture file identity");
         assert!(matches!(
-            facts::completion(&snapshot, &identity, &main, position),
+            facts::completion(&snapshot, &ProjectFile::root(identity), &main, position),
             Err(facts::ResourceLimited)
         ));
 

@@ -213,13 +213,6 @@ impl ProjectInput {
         self.paths.get(index.checked_sub(1)?)
     }
 
-    /// The root project's parsed durable-identity ledger, when it committed a
-    /// `.marrow/ids` artifact. `None` means the artifact is absent — the normal
-    /// state of a storeless project, equivalent to an empty ledger.
-    pub fn identity_ledger(&self) -> Option<&IdentityLedger> {
-        self.root_ledger().present_ledger()
-    }
-
     /// The parsed durable-identity ledger of one captured origin, or `None` when
     /// that tree committed no artifact. A durable declaration resolves against the
     /// ledger of the tree that declares it, so a dependency's declarations keep the

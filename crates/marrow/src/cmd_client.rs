@@ -37,7 +37,7 @@ pub(crate) fn client(rest: &[String]) -> ExitCode {
     // Family 1: source diagnostics. Unlike `run`, the generator never mints
     // identities — a project with unminted durable declarations fails precisely.
     let compiled = match compile_project(Path::new("."), marrow_compile::compile, None) {
-        Ok((compiled, _)) => compiled,
+        Ok(compiled) => compiled,
         Err(code) => return code,
     };
 

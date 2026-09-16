@@ -406,7 +406,7 @@ fn a_dependency_ledger_is_captured_and_left_byte_identical() {
         "the dependency's committed ledger is read"
     );
     assert!(
-        input.identity_ledger().is_none(),
+        input.identity_ledger_for(&SourceOrigin::Root).is_none(),
         "the root committed none of its own"
     );
 

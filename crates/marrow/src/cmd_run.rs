@@ -19,7 +19,7 @@ use std::rc::Rc;
 
 use marrow_codes::Code;
 use marrow_compile::{CompileFailure, ExportEntry, ExportId, SourceDiagnostic, compile};
-use marrow_project::{DurableIdentityId, IdentityAnchor, ProjectInput};
+use marrow_project::{DurableIdentityId, IdentityAnchor, ProjectInput, SourceOrigin};
 use marrow_project_fs::IdsPublication;
 use marrow_verify::{
     ImageType, Scalar, SealedEnumType, SealedRecordType, VerifiedFunction, VerifiedImage,
@@ -27,7 +27,7 @@ use marrow_verify::{
 use marrow_vm::Value;
 
 use crate::outcome::{MAX_TEXT_BYTES, Record};
-use crate::project::{ProjectOrigins, capture_project};
+use crate::project::capture_project;
 
 /// The output format for `marrow run`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,11 +242,10 @@ fn mint_missing_identities(
     // gap is emitted only for a durable declaration whose shape already validated,
     // so the recompile reports whatever genuinely remains. A retired anchor is never
     // re-mintable, so its failure stays precise and unminted.
-    let origins = ProjectOrigins::of(project);
     let mut anchors: Vec<IdentityAnchor> = Vec::new();
     for diagnostic in diagnostics {
         match diagnostic.identity_gap() {
-            Some(_) if !origins.is_root(diagnostic.file()) => {}
+            Some(gap) if gap.origin != SourceOrigin::Root => {}
             Some(gap) if gap.retired => return MintOutcome::NotApplicable,
             Some(gap) => anchors.push(gap.anchor()),
             None => {}

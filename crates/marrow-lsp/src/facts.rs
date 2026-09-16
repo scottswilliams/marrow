@@ -19,7 +19,6 @@ use marrow_compile::{
     ActiveCall, ActiveCallOutcome, AnalysisSnapshot, Candidate, CandidateKind, CompletionOutcome,
     Completions, DeclKind, DeclSymbol, Fact, FormatOutcome,
 };
-use marrow_project_fs::FileIdentity;
 use marrow_syntax::{Severity, SourceSpan};
 
 use crate::position::{LineMap, Position, Range};
@@ -45,6 +44,18 @@ fn to_lsp_range(range: Range) -> LspRange {
 
 /// The LSP severity of a diagnostic, projected from the payload's typed severity —
 /// the one severity owner — never reconstructed by classifying the code.
+/// The snapshot's own bytes for one captured file, decoded. A fact's spans index the
+/// exact source the snapshot was computed from, so a range projects through these bytes
+/// and never through an open buffer that may already have moved past them.
+fn captured_source(snapshot: &AnalysisSnapshot, file: &ProjectFile) -> Option<String> {
+    let module = snapshot
+        .input()
+        .modules()
+        .iter()
+        .find(|module| ProjectFile::from(*module) == *file)?;
+    std::str::from_utf8(module.source()).ok().map(str::to_owned)
+}
+
 fn to_lsp_severity(severity: Severity) -> DiagnosticSeverity {
     match severity {
         Severity::Error => DiagnosticSeverity::ERROR,
@@ -59,14 +70,14 @@ fn to_lsp_severity(severity: Severity) -> DiagnosticSeverity {
 pub(crate) fn diagnostics_for_file(
     snapshot: &AnalysisSnapshot,
     uri: Uri,
-    file: &FileIdentity,
+    file: &ProjectFile,
     source: &[u8],
     version: Option<i32>,
 ) -> Result<PublishDiagnosticsParams, ProjectionRefusal> {
     let source = std::str::from_utf8(source).map_err(|_| ProjectionRefusal::NotUtf8)?;
     let map = LineMap::new(source);
     let diagnostics = snapshot
-        .diagnostics_for(&ProjectFile::root(file.clone()))
+        .diagnostics_for(file)
         .map(|diagnostic| {
             let span = diagnostic.span();
             let range = to_lsp_range(map.range_of(span.start_byte, span.end_byte));
@@ -97,7 +108,7 @@ pub(crate) fn diagnostics_for_file(
 /// the LSP `null` hover result. The type display comes verbatim from the compiler.
 pub(crate) fn hover(
     snapshot: &AnalysisSnapshot,
-    file: &FileIdentity,
+    file: &ProjectFile,
     source: &str,
     position: LspPosition,
 ) -> Option<Hover> {
@@ -105,7 +116,7 @@ pub(crate) fn hover(
         line: position.line,
         character: position.character,
     });
-    match snapshot.hover(&ProjectFile::root(file.clone()), offset) {
+    match snapshot.hover(file, offset) {
         Ok(Fact::Present(hover)) => Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::PlainText,
@@ -120,20 +131,20 @@ pub(crate) fn hover(
 /// The definition location at an LSP position, or `None` (LSP `null`). The target file,
 /// selection range, and source are the snapshot's; the range projects through the
 /// target file's own source bytes, and `target_uri` resolves the target against the tree
-/// it belongs to.
+/// the snapshot says it belongs to. The target need not be an open document — a callee
+/// declared in another file, or in a dependency, is an ordinary target.
 pub(crate) fn definition(
     snapshot: &AnalysisSnapshot,
-    file: &FileIdentity,
+    file: &ProjectFile,
     source: &str,
-    target_source: impl Fn(&FileIdentity) -> Option<String>,
-    target_uri: impl Fn(&FileIdentity) -> Option<Uri>,
+    target_uri: impl Fn(&ProjectFile) -> Option<Uri>,
     position: LspPosition,
 ) -> Result<Option<Location>, ProjectionRefusal> {
     let offset = LineMap::new(source).byte_at(Position {
         line: position.line,
         character: position.character,
     });
-    let target = match snapshot.definition(&ProjectFile::root(file.clone()), offset) {
+    let target = match snapshot.definition(file, offset) {
         Ok(Fact::Present(definition)) => definition,
         Ok(Fact::Absent | Fact::Unavailable(_)) | Err(_) => return Ok(None),
     };
@@ -141,13 +152,17 @@ pub(crate) fn definition(
     // is no UTF-16 projection, and a range rebuilt from the compiler's 1-based line and
     // byte column would misplace every non-ASCII line, so the definition is refused.
     let name_span = target.name_span();
-    let Some(text) = target_source(target.file()) else {
+    // The target names its own tree, so a definition that crosses a dependency boundary
+    // resolves through this same fact: the address below is the library's, not the
+    // consuming project's.
+    let target_file = ProjectFile::new(target.origin().clone(), target.file().clone());
+    let Some(text) = captured_source(snapshot, &target_file) else {
         return Ok(None);
     };
     let range =
         to_lsp_range(LineMap::new(&text).range_of(name_span.start_byte, name_span.end_byte));
     Ok(Some(Location {
-        uri: target_uri(target.file()).ok_or(ProjectionRefusal::Uri)?,
+        uri: target_uri(&target_file).ok_or(ProjectionRefusal::Uri)?,
         range,
     }))
 }
@@ -158,10 +173,10 @@ pub(crate) fn definition(
 /// whole-document replacement edit.
 pub(crate) fn formatting(
     snapshot: &AnalysisSnapshot,
-    file: &FileIdentity,
+    file: &ProjectFile,
     source: &str,
 ) -> Option<Vec<TextEdit>> {
-    match snapshot.format(&ProjectFile::root(file.clone())) {
+    match snapshot.format(file) {
         Ok(FormatOutcome::Formatted(formatted)) => {
             if formatted == source {
                 // Already formatted: no edit.
@@ -190,7 +205,7 @@ pub(crate) struct ResourceLimited;
 /// complete in-scope namespace, never filtered, ranked, or truncated here.
 pub(crate) fn completion(
     snapshot: &AnalysisSnapshot,
-    file: &FileIdentity,
+    file: &ProjectFile,
     source: &str,
     position: LspPosition,
 ) -> Result<Option<CompletionResponse>, ResourceLimited> {
@@ -198,7 +213,7 @@ pub(crate) fn completion(
         line: position.line,
         character: position.character,
     });
-    match snapshot.completions(&ProjectFile::root(file.clone()), offset) {
+    match snapshot.completions(file, offset) {
         Ok(CompletionOutcome::Ready(Fact::Present(completions))) => {
             Ok(Some(to_completion_response(&completions)))
         }
@@ -250,7 +265,7 @@ fn completion_item_kind(kind: CandidateKind) -> CompletionItemKind {
 /// substring-searches the rendered signature.
 pub(crate) fn signature_help(
     snapshot: &AnalysisSnapshot,
-    file: &FileIdentity,
+    file: &ProjectFile,
     source: &str,
     position: LspPosition,
 ) -> Result<Option<SignatureHelp>, ResourceLimited> {
@@ -258,7 +273,7 @@ pub(crate) fn signature_help(
         line: position.line,
         character: position.character,
     });
-    match snapshot.active_call(&ProjectFile::root(file.clone()), offset) {
+    match snapshot.active_call(file, offset) {
         Ok(ActiveCallOutcome::Ready(Fact::Present(active))) => Ok(Some(to_signature_help(&active))),
         Ok(ActiveCallOutcome::Ready(Fact::Absent | Fact::Unavailable(_))) | Err(_) => Ok(None),
         Ok(ActiveCallOutcome::Refused(_)) => Err(ResourceLimited),
@@ -295,11 +310,11 @@ fn to_signature_help(active: &ActiveCall) -> SignatureHelp {
 /// query here carries no resource refusal and no other file is affected.
 pub(crate) fn document_symbols(
     snapshot: &AnalysisSnapshot,
-    file: &FileIdentity,
+    file: &ProjectFile,
     source: &str,
 ) -> Option<DocumentSymbolResponse> {
     let map = LineMap::new(source);
-    match snapshot.document_symbols(&ProjectFile::root(file.clone())) {
+    match snapshot.document_symbols(file) {
         Ok(Fact::Present(symbols)) => Some(DocumentSymbolResponse::Nested(
             symbols
                 .iter()
@@ -358,10 +373,16 @@ mod tests {
     use crate::analysis::{AnalysisOutcome, OverlayInput, run_analysis};
     use crate::uri::{DocumentKey, OriginRoots, SelectedRoot, document_uri};
     use marrow_compile::InputRevision;
+    use marrow_project_fs::FileIdentity;
     use marrow_project_fs::SourceOrigin;
 
     fn identity(path: &str) -> FileIdentity {
         FileIdentity::validate(path).unwrap().0
+    }
+
+    /// The address of one of the root project's own files.
+    fn main_file() -> ProjectFile {
+        ProjectFile::root(identity("src/main.mw"))
     }
 
     fn temp_project(tag: &str, main: &str) -> (std::path::PathBuf, SelectedRoot) {
@@ -425,7 +446,7 @@ mod tests {
         let params = diagnostics_for_file(
             &snapshot,
             uri.clone(),
-            &identity("src/main.mw"),
+            &main_file(),
             main.as_bytes(),
             Some(3),
         )
@@ -448,7 +469,7 @@ mod tests {
         let params = diagnostics_for_file(
             &snapshot,
             main_uri(&root),
-            &identity("src/main.mw"),
+            &main_file(),
             main.as_bytes(),
             Some(1),
         )
@@ -466,7 +487,7 @@ mod tests {
         let map = LineMap::new(main);
         let pos = map.position_at(call);
         let lsp_pos = LspPosition::new(pos.line, pos.character);
-        let result = hover(&snapshot, &identity("src/main.mw"), main, lsp_pos);
+        let result = hover(&snapshot, &main_file(), main, lsp_pos);
         // Hover may be present (a function signature) or absent depending on fact
         // coverage; when present it carries a nonempty display.
         if let Some(hover) = result {
@@ -482,7 +503,7 @@ mod tests {
     fn formatting_returns_whole_document_edit_for_unformatted() {
         let main = "module main\n\npub fn f():int{\n return 1\n}\n";
         let (snapshot, _root, base) = analyze_source("fmt", main);
-        let edits = formatting(&snapshot, &identity("src/main.mw"), main).unwrap();
+        let edits = formatting(&snapshot, &main_file(), main).unwrap();
         assert_eq!(edits.len(), 1, "one whole-document replacement");
         assert_eq!(edits[0].range.start, LspPosition::new(0, 0));
         std::fs::remove_dir_all(&base).ok();
@@ -492,7 +513,7 @@ mod tests {
     fn formatting_refuses_unparseable_with_none() {
         let main = "module main\n\npub fn f(: {\n";
         let (snapshot, _root, base) = analyze_source("fmtbad", main);
-        assert!(formatting(&snapshot, &identity("src/main.mw"), main).is_none());
+        assert!(formatting(&snapshot, &main_file(), main).is_none());
         std::fs::remove_dir_all(&base).ok();
     }
 }

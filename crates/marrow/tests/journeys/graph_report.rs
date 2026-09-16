@@ -37,7 +37,6 @@ const CHAIN_REPORT: &str = "Graph Report\n\
 /// reachability fixpoint, a layered topological order, and cycle detection all report
 /// `passed` through the production `marrow test` path.
 #[test]
-#[ignore = "needs the compiler half of local dependencies"]
 fn graph_report_conformance_fixture_passes_on_the_production_path() {
     let output = marrow_in(
         &conformance_dir("graph_report"),
@@ -54,7 +53,8 @@ fn graph_report_conformance_fixture_passes_on_the_production_path() {
         .unwrap_or_else(|| panic!("no summary record: {stdout}"));
     assert!(summary.contains(r#""failed":0"#), "{summary}");
     assert!(summary.contains(r#""errored":0"#), "{summary}");
-    assert!(summary.contains(r#""total":13"#), "{summary}");
+    // Ten: the three tests that moved to the library run where the library is.
+    assert!(summary.contains(r#""total":10"#), "{summary}");
 }
 
 /// The frozen `report(Text)` export travels the full production path under `marrow
@@ -62,7 +62,6 @@ fn graph_report_conformance_fixture_passes_on_the_production_path() {
 /// report and a trailing newline; JSONL carries the identical text as the `data`
 /// field of a `value` outcome, so the two renderings agree on the same bytes.
 #[test]
-#[ignore = "needs the compiler half of local dependencies"]
 fn report_renders_a_deterministic_multiline_report_through_run() {
     let dir = conformance_dir("graph_report");
     let input = "-> a\na -> b\nb -> c";
@@ -102,7 +101,6 @@ fn report_renders_a_deterministic_multiline_report_through_run() {
 /// nodes are named on the `-- cycle --` line, evidencing the bounded Kahn traversal
 /// runs on the real VM, not only under `marrow test`.
 #[test]
-#[ignore = "needs the compiler half of local dependencies"]
 fn report_detects_a_cycle_through_run() {
     let dir = conformance_dir("graph_report");
     let input = "a -> b\nb -> c\nc -> a\nd -> a";
@@ -188,7 +186,6 @@ fn run_with_stdin(dir: &Path, args: &[&str], input: &[u8]) -> Output {
 }
 
 #[test]
-#[ignore = "needs the compiler half of local dependencies"]
 fn report_accepts_a_multiline_string_from_stdin() {
     let dir = conformance_dir("graph_report");
     let escaped = CHAIN_REPORT.replace('\n', "\\n");

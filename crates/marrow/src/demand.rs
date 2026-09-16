@@ -17,8 +17,6 @@ use std::collections::BTreeMap;
 use marrow_compile::{DemandSummary, DurableNaming, ExportEntry, RootDemand};
 use marrow_verify::VerifiedImage;
 
-use crate::project::ProjectOrigins;
-
 /// A coherence failure building the demand lines: the compiler's export directory
 /// and the verified image disagree, or a demanded node is unnameable. Both are
 /// compiler-coherence failures (the same compilation produced both), never a user
@@ -86,16 +84,12 @@ struct ExportRecord {
 
 /// Build the human-shaped default `marrow check` summary. Modules and exports are
 /// ordered by spelling and grouping is a pure function of the demand facts, so the
-/// output is byte-stable across runs. Each module is attributed to the tree that
-/// declares it: the root project's modules come first unlabeled, and each dependency's
-/// follow under one divider naming the alias the project reaches it by. The full
-/// per-export atom sentences stay available through [`demand_lines`]
-/// (`marrow check --demand`).
+/// output is byte-stable across runs. The full per-export atom sentences stay available
+/// through [`demand_lines`] (`marrow check --demand`).
 pub(crate) fn demand_summary_lines(
     exports: &[ExportEntry],
     naming: &DurableNaming,
     image: &VerifiedImage,
-    origins: &ProjectOrigins,
 ) -> Result<Vec<String>, DemandNamingError> {
     let records = collect_records(exports, naming, image)?;
     let mut by_module: BTreeMap<&str, Vec<&ExportRecord>> = BTreeMap::new();
@@ -111,22 +105,9 @@ pub(crate) fn demand_summary_lines(
         count(records.len(), "export"),
         count(by_module.len(), "module"),
     )];
-    for origin in origins.origins() {
-        let declared: Vec<(&&str, &Vec<&ExportRecord>)> = by_module
-            .iter()
-            .filter(|(module, _)| origins.of_module(module) == Some(origin))
-            .collect();
-        if declared.is_empty() {
-            continue;
-        }
-        if let Some(alias) = origin.alias() {
-            lines.push(String::new());
-            lines.push(format!("-- dependency {} --", alias.as_str()));
-        }
-        for (module, module_records) in declared {
-            lines.push(String::new());
-            render_module(&mut lines, module, module_records);
-        }
+    for (module, module_records) in &by_module {
+        lines.push(String::new());
+        render_module(&mut lines, module, module_records);
     }
     Ok(lines)
 }

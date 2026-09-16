@@ -149,26 +149,10 @@ docs.cli.shelf: 3 exports
   storeless: greet
 ```
 
-Each module is listed under the project that declares it. The project's own modules
-come first; a dependency's follow under one divider naming its alias, so a reader can
-see at a glance which demand the project owns and which it inherits:
-
-```text
-$ marrow check .
-5 exports across 2 modules
-
-docs.cli.shelf: 3 exports
-  lookup
-    reads ^books (+2 places)
-  put
-    reads ^books
-    writes ^books
-  storeless: greet
-
--- dependency graphtext --
-
-graphtext.text: 2 exports, all storeless
-```
+Every export listed is the project's own. A dependency's `pub fn` is callable from
+source across the boundary but takes no export slot here, so it appears in no demand
+listing and `marrow run` does not name it; a library's exports are run where the
+library is.
 
 `--demand` names every place, one line per export:
 

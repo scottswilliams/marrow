@@ -525,7 +525,6 @@ fn opening_a_dependency_file_leaves_the_workspace_analysing() {
 /// file URI. The target resolves through the existing definition fact: the boundary needs
 /// no new canonical fact, only the origin the snapshot will carry.
 #[test]
-#[ignore = "needs the compiler half of local dependencies"]
 fn definition_across_a_dependency_boundary_names_the_library_file() {
     let main = "module main\n\nuse graphtext::text\n\npub fn f(): bool {\n    return text::startsWith(\"ab\", \"a\")\n}\n";
     let dir = temp_dependency_project("dependency-definition", main);

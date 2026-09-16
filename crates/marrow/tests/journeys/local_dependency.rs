@@ -69,7 +69,6 @@ fn the_library_checks_and_tests_standalone() {
 /// differently: the alias roots the library's module path, and the library's own source
 /// carries no prefix.
 #[test]
-#[ignore = "needs the compiler half of local dependencies"]
 fn the_application_reaches_the_library_through_its_alias() {
     let dir = conformance_dir(APP);
     let check = marrow_in(&dir, &["check"]);
@@ -149,7 +148,6 @@ fn fmt_reports_but_never_rewrites_a_dependency_file() {
 /// identity the application may draw: `marrow run` reports the gap and steers the
 /// developer to the library, and the library's tree is untouched.
 #[test]
-#[ignore = "needs the compiler half of local dependencies"]
 fn a_dependency_owned_identity_gap_is_not_minted_from_the_application() {
     let scratch = two_trees("dependency-mint");
     let helper = scratch.join(LIB).join("src/text.mw");
@@ -160,18 +158,29 @@ fn a_dependency_owned_identity_gap_is_not_minted_from_the_application() {
     )
     .expect("write the durable library helper");
 
-    let output = marrow_in(
+    // The report steers to the tree that owns the declaration.
+    let check = marrow_in(&scratch.join(APP), &["check"]);
+    let reported = String::from_utf8_lossy(&check.stderr);
+    assert!(!check.status.success(), "{reported}");
+    assert!(
+        reported.contains(
+            "run `marrow run` in the `graphtext` directory and commit its updated .marrow/ids"
+        ),
+        "the gap steers to the library: {reported}"
+    );
+
+    let run = marrow_in(
         &scratch.join(APP),
         &["run", "graph_report.report", "--", ""],
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!output.status.success(), "{stderr}");
+    let records = String::from_utf8_lossy(&run.stdout);
+    assert!(!run.status.success(), "{records}");
     assert!(
-        stderr.contains("check.durable_identity"),
-        "the gap is reported, not minted: {stderr}"
+        records.contains("check.durable_identity"),
+        "the gap is reported, not minted: {records}"
     );
     assert!(
-        !scratch.join(LIB).join(".marrow/ids").exists(),
+        !scratch.join(LIB).join(".marrow").exists(),
         "the application must not publish a ledger into a dependency tree",
     );
 }

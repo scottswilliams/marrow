@@ -44,7 +44,7 @@ pub(crate) fn image(rest: &[String]) -> ExitCode {
     // precisely rather than composing an image the store could not admit.
     let compiled =
         match crate::project::compile_project(Path::new("."), marrow_compile::compile, None) {
-            Ok((compiled, _)) => compiled,
+            Ok(compiled) => compiled,
             Err(code) => return code,
         };
 

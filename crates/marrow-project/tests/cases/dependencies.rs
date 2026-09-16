@@ -403,13 +403,8 @@ fn each_tree_keeps_its_own_identity_ledger() {
     .expect("a two-ledger capture");
 
     let root = input
-        .identity_ledger()
+        .identity_ledger_for(&SourceOrigin::Root)
         .expect("the root committed an artifact");
-    assert_eq!(
-        input.identity_ledger_for(&SourceOrigin::Root),
-        Some(root),
-        "the root accessor and the per-origin accessor name one ledger"
-    );
     let library = input
         .identity_ledger_for(&SourceOrigin::Dependency(graphtext))
         .expect("the dependency committed an artifact");
