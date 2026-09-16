@@ -24,6 +24,9 @@ marrow-image = { path = "../marrow-image" }
 # The byte-engine traits the private commit-fault tests implement their injecting engine
 # double against; production execution reaches the engine only through the kernel.
 marrow-store = { path = "../marrow-store" }
+# The image fixtures more than one crate's tests build over: the admitted plan, the
+# armed draft transaction, the site seam, and the container byte forger.
+marrow-test-support = { path = "../marrow-test-support" }
 
 [lints]
 workspace = true

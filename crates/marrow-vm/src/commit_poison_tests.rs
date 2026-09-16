@@ -23,7 +23,7 @@ use crate::fault::{DurableExecutionFault, IncompleteDisposition};
 use crate::run::run_durable;
 use crate::value::Value;
 
-use crate::admitted_plan::admitted_plan;
+use marrow_test_support::admitted_plan;
 
 #[path = "../../marrow-kernel/tests/common/fault_engine.rs"]
 mod fault_engine;

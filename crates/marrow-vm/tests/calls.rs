@@ -1,12 +1,10 @@
 //! Checked function selection, direct calls, cycle rejection and call depth.
 
 use marrow_image::{ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry};
+use marrow_test_support::admitted;
 use marrow_verify::{FunctionIndex, VerifiedImage, verify};
 use marrow_vm::{Value, run};
 
-#[path = "common/admitted.rs"]
-mod admitted_helper;
-use admitted_helper::admitted;
 use marrow_codes::Code;
 
 fn spans(code: &[Instr]) -> Vec<SpanEntry> {

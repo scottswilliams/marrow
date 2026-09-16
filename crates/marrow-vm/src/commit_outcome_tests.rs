@@ -17,8 +17,8 @@ use crate::fault::DurableExecutionFault;
 use crate::run::run_durable;
 use crate::value::Value;
 
-use crate::admitted_plan::admitted_plan;
 use marrow_codes::Code;
+use marrow_test_support::admitted_plan;
 
 const APPLICATION_ID: [u8; 16] = [0x81; 16];
 const ROOT_PLACEMENT_ID: [u8; 16] = [0x82; 16];

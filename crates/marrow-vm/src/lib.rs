@@ -11,9 +11,6 @@
 //! fresh test it minted ([`run_test`]); the preparation and mint types are re-exported
 //! for the CLI, which reaches them through this crate alone.
 
-#[cfg(test)]
-#[path = "../../marrow-image/tests/common/admitted_plan.rs"]
-mod admitted_plan;
 mod attach;
 #[cfg(test)]
 mod commit_outcome_tests;

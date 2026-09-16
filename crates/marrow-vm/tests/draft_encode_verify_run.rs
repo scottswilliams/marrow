@@ -6,12 +6,10 @@
 use marrow_image::{
     CollectionTypeDef, ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry,
 };
+use marrow_test_support::admitted;
 use marrow_verify::verify;
 use marrow_vm::{Value, run};
 
-#[path = "common/admitted.rs"]
-mod admitted_helper;
-use admitted_helper::admitted;
 use marrow_codes::Code;
 
 /// The synthetic export id these draft-level tests bind and look up by.

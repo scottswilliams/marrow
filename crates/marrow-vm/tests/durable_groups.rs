@@ -11,26 +11,18 @@
 //! leaving the entry and its top-level field present.
 //!
 //! Every site named here is minted through the construction seam's bind-then-request
-//! protocol, included from its single owner rather than copied.
+//! protocol, taken from its single owner rather than copied.
 
 use marrow_image::{
     DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId, FieldDef, FunctionDef,
-    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef,
-    Scalar, SemanticTarget, SpanEntry,
+    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, PlannedSiteRef, RecordTypeDef,
+    RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry,
 };
+use marrow_test_support::{admitted_plan, site};
 use marrow_verify::{VerifiedImage, verify};
 use marrow_vm::{
     DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
 };
-
-#[path = "../../marrow-image/tests/common/site_seam.rs"]
-mod site_seam;
-use marrow_image::PlannedSiteRef;
-use site_seam::site;
-
-#[path = "../../marrow-image/tests/common/admitted_plan.rs"]
-mod admitted_plan;
-use admitted_plan::admitted_plan;
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 const ROOT_PLACEMENT_ID: [u8; 16] = [0x0b; 16];

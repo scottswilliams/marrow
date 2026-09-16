@@ -10,7 +10,7 @@
 //! parent entry, and the frozen list obeys the single collection aggregate ceiling.
 //!
 //! Every site named here is minted through the construction seam's bind-then-request
-//! protocol, included from its single owner rather than copied.
+//! protocol, taken from its single owner rather than copied.
 
 use marrow_image::{
     CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId, FieldDef,
@@ -21,22 +21,12 @@ use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::RuntimeScalar;
 use marrow_kernel::durable::{CommitResult, DemandCoverage, Durable, EntryValue, InvocationGrant};
 use marrow_kernel::equality::ValueDomain;
+use marrow_test_support::{admitted, admitted_plan, site};
 use marrow_verify::{VerifiedImage, verify};
 use marrow_vm::{
     DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
 };
 
-#[path = "../../marrow-image/tests/common/site_seam.rs"]
-mod site_seam;
-use site_seam::site;
-
-#[path = "../../marrow-image/tests/common/admitted_plan.rs"]
-mod admitted_plan;
-use admitted_plan::admitted_plan;
-
-#[path = "common/admitted.rs"]
-mod admitted_helper;
-use admitted_helper::admitted;
 use marrow_codes::Code;
 
 // The tracer graph's fixed ledger ids.
