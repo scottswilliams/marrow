@@ -402,29 +402,9 @@ impl IdentityLedger {
                 }
                 Some("retired") => {
                     rows += 1;
-                    let (anchor, id) = parse_row(&mut fields, line)?;
-                    let row_water = fields
-                        .next()
-                        .and_then(|word| word.parse::<u64>().ok())
-                        .filter(|_| fields.next().is_none())
-                        .ok_or_else(|| malformed_line(line))?;
-                    if row_water == 0 {
-                        return Err(IdsError::new(
-                            IdsErrorKind::HighWater,
-                            "a retirement high-water is at least 1",
-                        ));
-                    }
-                    if ids.insert(id, ()).is_some() {
-                        return Err(IdsError::new(
-                            IdsErrorKind::DuplicateId,
-                            format!("retired id `{}` appears twice", id.to_hex()),
-                        ));
-                    }
-                    ledger.tombstones.push(IdentityTombstone {
-                        anchor,
-                        id,
-                        high_water: row_water,
-                    });
+                    ledger
+                        .tombstones
+                        .push(parse_retired_row(&mut fields, line, &mut ids)?);
                 }
                 Some("high-water") => {
                     let value = fields
@@ -461,47 +441,84 @@ impl IdentityLedger {
                 "high-water cannot be advanced",
             ));
         }
-        // Cross-row invariants: a retired anchor or id must not also be live,
-        // and no tombstone can record a retirement past the ledger high-water.
-        let mut reserved_anchors: BTreeSet<&IdentityAnchor> = BTreeSet::new();
-        for tombstone in &ledger.tombstones {
-            if tombstone.high_water > ledger.high_water {
-                return Err(IdsError::new(
-                    IdsErrorKind::HighWater,
-                    format!(
-                        "retired id `{}` records high-water {} past the ledger's {}",
-                        tombstone.id.to_hex(),
-                        tombstone.high_water,
-                        ledger.high_water
-                    ),
-                ));
-            }
-            if ledger.entries.contains_key(&tombstone.anchor) {
-                return Err(IdsError::new(
-                    IdsErrorKind::RetiredReuse,
-                    format!(
-                        "retired anchor `{} {}` also has a live row",
-                        tombstone.anchor.kind.keyword(),
-                        tombstone.anchor.path
-                    ),
-                ));
-            }
-            if !reserved_anchors.insert(&tombstone.anchor) {
-                return Err(IdsError::new(
-                    IdsErrorKind::RetiredReuse,
-                    format!(
-                        "anchor `{} {}` is retired twice",
-                        tombstone.anchor.kind.keyword(),
-                        tombstone.anchor.path
-                    ),
-                ));
-            }
-        }
+        check_retirements(&ledger)?;
         // Only the admitted semantic state is normalized; the parser's input-order
         // rejection precedence above must survive unchanged.
         ledger.tombstones.sort_by(canonical_tombstone_order);
         Ok(ledger)
     }
+}
+
+/// Cross-row invariants: a retired anchor or id must not also be live,
+/// and no tombstone can record a retirement past the ledger high-water.
+fn check_retirements(ledger: &IdentityLedger) -> Result<(), IdsError> {
+    let mut reserved_anchors: BTreeSet<&IdentityAnchor> = BTreeSet::new();
+    for tombstone in &ledger.tombstones {
+        if tombstone.high_water > ledger.high_water {
+            return Err(IdsError::new(
+                IdsErrorKind::HighWater,
+                format!(
+                    "retired id `{}` records high-water {} past the ledger's {}",
+                    tombstone.id.to_hex(),
+                    tombstone.high_water,
+                    ledger.high_water
+                ),
+            ));
+        }
+        if ledger.entries.contains_key(&tombstone.anchor) {
+            return Err(IdsError::new(
+                IdsErrorKind::RetiredReuse,
+                format!(
+                    "retired anchor `{} {}` also has a live row",
+                    tombstone.anchor.kind.keyword(),
+                    tombstone.anchor.path
+                ),
+            ));
+        }
+        if !reserved_anchors.insert(&tombstone.anchor) {
+            return Err(IdsError::new(
+                IdsErrorKind::RetiredReuse,
+                format!(
+                    "anchor `{} {}` is retired twice",
+                    tombstone.anchor.kind.keyword(),
+                    tombstone.anchor.path
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// One `retired` row: its anchor, id, and the high-water the retirement witnessed.
+/// The id joins `ids` so a reissue anywhere in the artifact is caught.
+fn parse_retired_row(
+    fields: &mut std::str::Split<'_, char>,
+    line: &str,
+    ids: &mut BTreeMap<DurableIdentityId, ()>,
+) -> Result<IdentityTombstone, IdsError> {
+    let (anchor, id) = parse_row(fields, line)?;
+    let row_water = fields
+        .next()
+        .and_then(|word| word.parse::<u64>().ok())
+        .filter(|_| fields.next().is_none())
+        .ok_or_else(|| malformed_line(line))?;
+    if row_water == 0 {
+        return Err(IdsError::new(
+            IdsErrorKind::HighWater,
+            "a retirement high-water is at least 1",
+        ));
+    }
+    if ids.insert(id, ()).is_some() {
+        return Err(IdsError::new(
+            IdsErrorKind::DuplicateId,
+            format!("retired id `{}` appears twice", id.to_hex()),
+        ));
+    }
+    Ok(IdentityTombstone {
+        anchor,
+        id,
+        high_water: row_water,
+    })
 }
 
 fn canonical_tombstone_order(left: &IdentityTombstone, right: &IdentityTombstone) -> Ordering {

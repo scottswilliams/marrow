@@ -1085,6 +1085,118 @@ fn compound_assign_fold<'a>(
     Some((left_name, compound, &operands.right))
 }
 
+/// Render one statement that owns a brace-delimited body. Each of these lays its own
+/// header, body and continuation out across lines and places the comments itself, so
+/// none returns through the trailing-comment append the one-line statements use. The
+/// caller's match lists exactly the variants below, and stays exhaustive over
+/// [`Statement`], so a new variant is a compile error there rather than a panic here.
+fn format_block_statement(
+    ctx: StatementFormatContext<'_, '_>,
+    statement: &Statement,
+    pad: &str,
+) -> String {
+    let StatementFormatContext { level, .. } = ctx;
+    match statement {
+        Statement::If {
+            condition,
+            then_block,
+            else_ifs,
+            else_block,
+            span: _,
+        } => format_if(ctx, condition, then_block, else_ifs, else_block.as_ref()),
+        Statement::IfConst {
+            name,
+            ty,
+            value,
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => format_if_const(
+            ctx,
+            name,
+            ty.as_deref(),
+            value,
+            then_block,
+            else_ifs,
+            else_block.as_ref(),
+        ),
+        Statement::While {
+            condition,
+            body,
+            span: _,
+        } => {
+            let header = format!("{pad}while {}", format_expression_at(condition, level));
+            format_header_block(ctx, header, body)
+        }
+        Statement::For {
+            binding,
+            order,
+            iterable,
+            step,
+            bound,
+            body,
+            span: _,
+        } => format_for(
+            ctx,
+            binding,
+            *order,
+            iterable,
+            step.as_ref(),
+            bound.as_deref(),
+            body,
+        ),
+        Statement::Transaction { body, span: _ } => {
+            format_header_block(ctx, format!("{pad}transaction"), body)
+        }
+        Statement::Match {
+            scrutinee,
+            arms,
+            span: _,
+        } => format_match(ctx, scrutinee, arms),
+        Statement::Checked {
+            bind,
+            op,
+            out_of_range,
+            zero_divisor,
+            span,
+        } => format_checked(
+            ctx,
+            bind,
+            op,
+            out_of_range.as_ref(),
+            zero_divisor.as_ref(),
+            *span,
+        ),
+        // Parse-only, but rendered canonically so `format` is idempotent over it.
+        Statement::IfConstChain {
+            bindings,
+            condition,
+            then_block,
+            else_ifs,
+            else_block,
+            span: _,
+        } => format_if_const_chain(
+            ctx,
+            bindings,
+            condition.as_ref(),
+            then_block,
+            else_ifs,
+            else_block.as_ref(),
+        ),
+        // Parse-only, but rendered canonically so `format` is idempotent over it.
+        Statement::LetElse {
+            is_var,
+            name,
+            ty,
+            value,
+            else_block,
+            ..
+        } => format_let_else(ctx, *is_var, name, ty.as_deref(), value, else_block),
+        _ => unreachable!("the caller routes only brace-bodied statements here"),
+    }
+}
+
 fn format_statement_with_comments(
     source: &str,
     statement: &Statement,
@@ -1092,6 +1204,11 @@ fn format_statement_with_comments(
     level: usize,
 ) -> String {
     let pad = INDENT.repeat(level);
+    let ctx = StatementFormatContext {
+        source,
+        comments,
+        level,
+    };
     let mut text = match statement {
         Statement::Const {
             name, ty, value, ..
@@ -1165,161 +1282,15 @@ fn format_statement_with_comments(
             format_expression_at(condition, level),
             format_expression_at(value, level)
         ),
-        Statement::If {
-            condition,
-            then_block,
-            else_ifs,
-            else_block,
-            span: _,
-        } => {
-            let ctx = StatementFormatContext {
-                source,
-                comments,
-                level,
-            };
-            return format_if(ctx, condition, then_block, else_ifs, else_block.as_ref());
-        }
-        Statement::IfConst {
-            name,
-            ty,
-            value,
-            then_block,
-            else_ifs,
-            else_block,
-            ..
-        } => {
-            let ctx = StatementFormatContext {
-                source,
-                comments,
-                level,
-            };
-            return format_if_const(
-                ctx,
-                name,
-                ty.as_deref(),
-                value,
-                then_block,
-                else_ifs,
-                else_block.as_ref(),
-            );
-        }
-        Statement::While {
-            condition,
-            body,
-            span: _,
-        } => {
-            let header = format!("{pad}while {}", format_expression_at(condition, level));
-            let ctx = StatementFormatContext {
-                source,
-                comments,
-                level,
-            };
-            return format_header_block(ctx, header, body);
-        }
-        Statement::For {
-            binding,
-            order,
-            iterable,
-            step,
-            bound,
-            body,
-            span: _,
-        } => {
-            let ctx = StatementFormatContext {
-                source,
-                comments,
-                level,
-            };
-            return format_for(
-                ctx,
-                binding,
-                *order,
-                iterable,
-                step.as_ref(),
-                bound.as_deref(),
-                body,
-            );
-        }
-        Statement::Transaction { body, span: _ } => {
-            let ctx = StatementFormatContext {
-                source,
-                comments,
-                level,
-            };
-            return format_header_block(ctx, format!("{pad}transaction"), body);
-        }
-        Statement::Match {
-            scrutinee,
-            arms,
-            span: _,
-        } => {
-            let ctx = StatementFormatContext {
-                source,
-                comments,
-                level,
-            };
-            return format_match(ctx, scrutinee, arms);
-        }
-        Statement::Checked {
-            bind,
-            op,
-            out_of_range,
-            zero_divisor,
-            span,
-        } => {
-            let ctx = StatementFormatContext {
-                source,
-                comments,
-                level,
-            };
-            return format_checked(
-                ctx,
-                bind,
-                op,
-                out_of_range.as_ref(),
-                zero_divisor.as_ref(),
-                *span,
-            );
-        }
-        // Parse-only, but rendered canonically so `format` is idempotent over it.
-        Statement::IfConstChain {
-            bindings,
-            condition,
-            then_block,
-            else_ifs,
-            else_block,
-            span: _,
-        } => {
-            let ctx = StatementFormatContext {
-                source,
-                comments,
-                level,
-            };
-            return format_if_const_chain(
-                ctx,
-                bindings,
-                condition.as_ref(),
-                then_block,
-                else_ifs,
-                else_block.as_ref(),
-            );
-        }
-        // Parse-only, but rendered canonically so `format` is idempotent over it.
-        Statement::LetElse {
-            is_var,
-            name,
-            ty,
-            value,
-            else_block,
-            ..
-        } => {
-            let ctx = StatementFormatContext {
-                source,
-                comments,
-                level,
-            };
-            return format_let_else(ctx, *is_var, name, ty.as_deref(), value, else_block);
-        }
+        Statement::If { .. }
+        | Statement::IfConst { .. }
+        | Statement::While { .. }
+        | Statement::For { .. }
+        | Statement::Transaction { .. }
+        | Statement::Match { .. }
+        | Statement::Checked { .. }
+        | Statement::IfConstChain { .. }
+        | Statement::LetElse { .. } => return format_block_statement(ctx, statement, &pad),
         // Reachable only in a best-effort `format_source` over input that failed to
         // parse (emission is gated on `!has_errors`). Echo the unstructured span
         // verbatim rather than dropping it, so no source is silently lost.
