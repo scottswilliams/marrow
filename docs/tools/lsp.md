@@ -33,6 +33,22 @@ At initialization the server takes one workspace root: a single
 folders, or a malformed root, are a `-32602` error and initialization does not
 complete.
 
+## Dependencies
+
+A workspace is one project, and the server analyzes it with its [declared
+dependencies](projects.md#dependencies). A dependency's file is read exactly as it
+is committed: it is never overlaid with an editor buffer and is never formatted,
+because the project that declares a file is the project that edits it. Only the
+workspace project's own files under `src` are opened, synchronized, and formatted;
+a `didOpen` for any other file is ignored, which leaves the project analyzing
+rather than refusing a capture over a file it does not declare.
+
+Diagnostics for a dependency's file are published at that file's own location: the
+dependency's declared relative path applied to the workspace root. Since no open
+document names it, the publication carries no version. A definition that crosses
+the boundary returns the library's own file location through the same definition
+capability; no separate request or fact is involved.
+
 ## Capabilities
 
 The server advertises these capabilities:

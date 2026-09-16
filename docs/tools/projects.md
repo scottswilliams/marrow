@@ -128,6 +128,8 @@ end
 
 Stored data is bound to these ids, so a declaration keeps its identity through edits, moves, and clones as long as the ledger travels with the source. Commit the file. The tools write it; a developer never edits, copies, or cites its contents. The file is line-diffable, and parallel branches merge it textually. A merge that leaves two lines claiming one identity, a truncated file, or any other damage is a `project.ids_corrupt` error; restore the file from version control.
 
+Each project's ledger is its own. A declaration a dependency makes resolves against the dependency's ledger, so a library-declared resource keeps the ids the library committed and the consuming project inherits them unchanged. A dependency's `application` line is ignored.
+
 The first storeless [`marrow run`](cli.md) of an export mints every missing id and writes the ledger. Until then, `marrow check` and `marrow test` report `check.durable_identity` for each missing declaration:
 
 ```text
@@ -140,6 +142,8 @@ $ marrow check .
 ```
 
 The run mints and then stops, because a durable export needs a store; `marrow run --store` runs it against one and never mints ([operations](../operations/README.md)). Inside a Git repository whose index lacks `.marrow/ids`, the mint prints a one-line reminder to commit it.
+
+The mint covers the project's own declarations. A missing id for a declaration a dependency makes is reported, not minted: run `marrow run` in the library directory and commit the ledger it writes there.
 
 The mint is additive. It adds a line for each missing declaration and keeps every existing line. Renaming a field mints a new id for the new name, and the old line stays. Deleting a declaration and adding it back under the same name readopts its old id. A `retired` line and the retirement high-water are part of the ledger's grammar and are enforced when the ledger is read. No command writes one today.
 

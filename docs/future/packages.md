@@ -1,38 +1,45 @@
 # Packages
 
-Source reuse lets a program import a library without copying it or granting it
-host or store access.
+Remote acquisition would let a program depend on source it does not have a copy
+of, without a registry, a version solver, or a package identity in the image.
 
 ## Today
 
-A project is one `marrow.toml` manifest and the modules under `src/`
-([projects](../tools/projects.md)). There are no dependency edges or package
-cache.
+A project names other local directories of Marrow source by relative path under
+a consumer-chosen alias ([projects](../tools/projects.md#dependencies)). Both
+trees are captured together under one set of bounds and compiled by one
+compiler; a dependency is pure source, read and never written, and supplies no
+initializer, build script, or host access. Nothing is fetched, cached, or
+resolved over a network.
 
-## Beta direction
+## Direction
 
-Support an explicit local-path dependency on ordinary Marrow source. Resolve
-names within modules and dependencies so two libraries need not rename their
-private helpers to coexist. Checking, compiling, formatting, testing and running
-consume one captured, bounded source graph without opening the network.
+Acquire a dependency's source from a remote location by exact revision, and
+verify what was acquired against that revision before it is captured. The
+acquired tree then enters the same capture and the same bounds as a local one,
+so acquisition is the only new step.
 
-Importing source runs no initializer, build script or compiler plugin and grants
-no filesystem, network, clock or durable access. Dependencies are pure source;
-the application declares its store. Preserve the existing project identity and
-publication owners where a dependency reaches an identity-bearing boundary.
+Acquisition is an explicit operation, never a side effect of checking,
+compiling, formatting, testing, or running: a build with its sources already
+present is offline and reproducible. A verified cache is content-addressed and
+is read like any other local tree.
+
+A dependency graph deeper than one edge waits for evidence from a real caller.
+Admitted later, it stays bounded and acyclic under the same single capture
+budget.
 
 ## Deferred
 
-Remote acquisition may later use exact Git revisions and verified cached
-content. It needs a maintained caller, reproducible offline behavior, explicit
-network operations, integrity checks and a bounded dependency graph. A registry,
-version-range solver, durable package mounting, package lineage machinery and
-new manifest or lock formats are not beta requirements.
+A registry, a version-range solver, a lock file, durable package mounting, and
+package lineage in the program image are not beta requirements. The image's
+reserved package lineage stays reserved: a local dependency's modules are
+alias-rooted, which already tells two exports apart, and a package identity
+exists only where acquisition establishes one.
 
 ## Evidence
 
-Graph Report uses one separately located library, changes it, diagnoses a
-missing or conflicting dependency and rebuilds offline without a store.
-Repeated capture of identical inputs produces identical images. Missing,
-cyclic, escaping or overlarge inputs fail with bounded work and useful
-diagnostics. The library uses the same compiler and verifier as the application.
+A project acquires a library by exact revision, rebuilds offline from the
+verified cache with no network operation, and produces the same image bytes as a
+build from a local copy of that revision. A revision that does not verify, is
+absent, or is mutated under the cache fails with bounded work and a diagnostic
+naming the dependency.

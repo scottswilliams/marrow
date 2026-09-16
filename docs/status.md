@@ -10,8 +10,8 @@ Native opening, recovery and fresh restore retain the accepted Head's physical
 addresses. Explicit apply preserves those addresses while adding sparse scalar
 fields; it does not implement general schema evolution.
 
-Local source reuse and full application-lifetime qualification still require
-work. Broader future features are not prerequisites.
+Full application-lifetime qualification still requires work. Broader future
+features are not prerequisites.
 
 ## What works
 
@@ -24,8 +24,9 @@ work. Broader future features are not prerequisites.
 | Transactions | One `transaction` block per mutating export. Every normal function exit inside it commits, including `try` and `require` failure; a fault before commit rolls the block back. | [Errors and transactions](language/errors-and-transactions.md) |
 | Traversal and indexes | `for ... at most N { } on more { }` over a root, a branch, or an index; root and branch key acquisition uses at most `N + 1` bounded scans, independent of child populations; up to 8 indexes per root; a `unique` index lookup yields `Id(^root)?`. | [Traversal and indexes](language/traversal-and-indexes.md) |
 | Tests | `marrow test` runs `test` blocks through ordinary function calls. Each durable test has a fresh in-memory store; transaction-owning calls commit setup, and private readers can observe it. Direct durable operations and calls to mutating non-owner helpers are refused in test bodies. | [Tests](language/tests.md) |
-| CLI | `init`, `fmt`, `check`, `run`, `test`, `import`, `doctor`, `apply`, `recover`, `backup`, `restore`, `image`, and `client typescript`. `run --stdin` supplies one bounded UTF-8 string argument; bare-string results are bounded, JSON data construction checks its byte limit before appending, and rendering or result-delivery failures fail the command. | [CLI](tools/cli.md) |
-| Editor server | `marrow-lsp` serves diagnostics, formatting, hover, definition, completion, signature help, and document symbols over stdio. Whole-analysis resource stops complete the affected revision with request refusals, an unlocated explanation, and retractions of prior diagnostics. A later edit that permits project capture and analysis can recover. | [Language server](tools/lsp.md) |
+| Project dependencies | A `[dependencies]` entry names one local directory of Marrow source by relative path under a consumer-chosen alias, which roots every module it contributes. Both trees are captured together under one set of bounds. A dependency is read, never written: it supplies its own identity ledger, and no command run in the consuming project mints into, formats, or overlays a file under it. | [Projects](tools/projects.md#dependencies) |
+| CLI | `init`, `fmt`, `check`, `run`, `test`, `import`, `doctor`, `apply`, `recover`, `backup`, `restore`, `image`, and `client typescript`. A file a dependency declares is reported under that dependency's alias, and `check` attributes each module's demand to the project that declares it. `run --stdin` supplies one bounded UTF-8 string argument; bare-string results are bounded, JSON data construction checks its byte limit before appending, and rendering or result-delivery failures fail the command. | [CLI](tools/cli.md) |
+| Editor server | `marrow-lsp` serves diagnostics, formatting, hover, definition, completion, signature help, and document symbols over stdio. A dependency's file is read-only: it is published at its own location and is never opened, overlaid, or formatted. Whole-analysis resource stops complete the affected revision with request refusals, an unlocated explanation, and retractions of prior diagnostics. A later edit that permits project capture and analysis can recover. | [Language server](tools/lsp.md) |
 | Store lifecycle | `marrow import` provisions or populates a store under its active program; `marrow run --store` runs through the admitted companion. Explicit `marrow apply` preserves old representations and adds absent sparse scalar fields using verified OLD and NEW images; authority expansion requires the exact standing-ceiling union. Pending activation blocks ordinary access. `marrow recover --store` validates the exact stored image, physical integrity and logical contents, then establishes fresh activation barriers without replaying a missing head update. `marrow doctor --store` remains read-only logical inspection without physical verification. Doctor and backup preserve source artifacts, including ownership-marker bytes and absence. Logical backup carries the exact image, head and complete entry/index families; restore validates a fresh store without compiling current source. | [Operations](operations/README.md) |
 | TypeScript client | A generated strict client and a Node supervision module over a private local channel. The runner checks List/Map length and aggregate structural size before execution, normalizes unique Map argument pairs to ascending typed key order, and bounds outbound frame construction before appending. Provision records retain publication/activation uncertainty or primary failure plus failed cleanup. Authenticated native startup distinguishes activation uncertainty from invocation outcomes. Missing delivery remains uncertain. | [TypeScript client](tools/typescript-client.md) |
 
@@ -76,7 +77,9 @@ missing or cyclic bodies and their callers; an unfilled function slot cannot enc
 
 ## Not yet available
 
-- Third-party packages ([packages](future/packages.md)).
+- Remote acquisition of source: Git revisions, a registry, a cache, a lock file,
+  and version ranges. Local-path dependencies are current
+  ([packages](future/packages.md)).
 - Closures ([general-purpose language](future/general-purpose-language.md)).
 - Public aggregate inputs and bound durable values containing nominal integers;
   compilation reports `check.unsupported`. Guarded bare nominal inputs and local

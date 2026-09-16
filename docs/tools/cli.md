@@ -3,6 +3,13 @@
 `marrow` creates, formats, checks, runs, and tests a [project](projects.md),
 audits or recovers a store bound to it, and writes the artifacts a deployment ships.
 
+Every command that reads a project reads its [declared
+dependencies](projects.md#dependencies) with it. A file one of them declares is
+reported under the alias the project reaches it by rather than under a path in the
+project's own tree, as in `graphtext:src/text.mw:9:5`. Identities stay relative to
+their own project, so the alias is a prefix the report adds, never part of the file's
+name.
+
 ```text
 marrow init <projectdir>
 marrow fmt [--check | --write] <file.mw | projectdir>
@@ -97,6 +104,15 @@ pub fn add(a: int, b: int): int {
 A file that does not parse is left as it is and reported with `parse.syntax`.
 `fmt` does not read standard input.
 
+A project target formats the project's own files. A dependency's file is reported
+when it is not canonical and is never rewritten, under `--write` as under `--check`:
+the project that declares a file is the project that formats and commits it.
+
+```text
+$ marrow fmt --write .
+graphtext:src/text.mw: not formatted; format it in the project that declares it
+```
+
 ## marrow check
 
 `marrow check` type-checks the project and prints every diagnostic with its
@@ -131,6 +147,27 @@ docs.cli.shelf: 3 exports
     reads ^books
     writes ^books
   storeless: greet
+```
+
+Each module is listed under the project that declares it. The project's own modules
+come first; a dependency's follow under one divider naming its alias, so a reader can
+see at a glance which demand the project owns and which it inherits:
+
+```text
+$ marrow check .
+5 exports across 2 modules
+
+docs.cli.shelf: 3 exports
+  lookup
+    reads ^books (+2 places)
+  put
+    reads ^books
+    writes ^books
+  storeless: greet
+
+-- dependency graphtext --
+
+graphtext.text: 2 exports, all storeless
 ```
 
 `--demand` names every place, one line per export:
@@ -231,6 +268,11 @@ observation, not authority to signal a later process reusing that number. See
 
 The first storeless `marrow run` of a project with durable declarations also
 writes `.marrow/ids`; commit that file. `marrow run --store` leaves it as it is.
+
+The mint is the project's own. A durable declaration a dependency makes belongs to
+that dependency's ledger, so `run` reports its `check.durable_identity` instead of
+minting: run `marrow run` in the library directory and commit the `.marrow/ids` it
+writes there. No command run in a consuming project writes into a dependency's tree.
 
 ## marrow test
 
