@@ -39,7 +39,7 @@ fn borrowed_bodies_require_the_actual_function_and_every_instruction_span() {
     txn.commit();
     let mut function = super::LoweredFn {
         func,
-        file: crate::test_main_file_identity().clone(),
+        file: crate::test_file("src/main.mw").clone(),
         name: "body".to_string(),
         span: SourceSpan::default(),
         callees: Vec::new(),
@@ -107,7 +107,7 @@ fn export_path_validation_guards_the_id_payload() {
 fn diagnostic(code: Code, line: u32) -> SourceDiagnostic {
     SourceDiagnostic::at(
         code,
-        crate::test_main_file_identity(),
+        crate::test_file("src/main.mw"),
         SourceSpan {
             line,
             column: 7,
@@ -285,7 +285,7 @@ fn signature_registry(functions: &[crate::lower::DeclaredFn<'_>]) -> FunctionReg
     let mut diagnostics = DiagnosticCollector::new();
     let mut records = crate::types::TypeRegistry::build(
         &mut draft,
-        crate::test_origins(),
+        crate::source::CapturedOrigins::of(crate::test_input()),
         &[],
         &[],
         &[],
@@ -301,7 +301,7 @@ fn signature_registry(functions: &[crate::lower::DeclaredFn<'_>]) -> FunctionReg
         &records,
         &[],
         &[],
-        &crate::durable::OriginLedgers::root_only(None),
+        &crate::durable::OriginLedgers::of(crate::test_input()),
         &mut diagnostics,
         budget.clone(),
         &mut Vec::new(),
@@ -343,7 +343,7 @@ fn a_refusal_behind_an_accepted_duplicate_leaves_the_signature_table_incomplete(
         .iter()
         .filter_map(|decl| match decl {
             Declaration::Function(function) => Some(crate::lower::DeclaredFn {
-                file: crate::test_file_identity("src/main.mw"),
+                file: crate::test_file("src/main.mw").clone(),
                 at: crate::analysis::FileRef::admitted(0),
                 module: "main".to_string(),
                 decl: function,
@@ -624,20 +624,22 @@ fn a_store_refused_after_real_staging_rolls_back_to_the_unstaged_image() {
         "field Note.sub.v",
     ];
 
-    let ledger = {
+    // The corpus's own project, captured with the ledger it needs: the build reads its
+    // ledgers out of a capture exactly as production does.
+    let committed = {
         let mut text = String::from("marrow ids v0\nmachine-written by marrow; do not edit\n");
         for (seed, anchor) in ANCHORS.iter().enumerate() {
             use std::fmt::Write as _;
             let _ = writeln!(text, "id {anchor} {:032x}", seed as u128 + 1);
         }
         text.push_str("high-water 0\nend\n");
-        marrow_project::IdentityLedger::parse(text.as_bytes()).expect("the ledger parses")
+        crate::test_project::project_with_ids(&[("src/main.mw", "")], Some(text.as_bytes()))
     };
 
     let build = |source: &str| {
         let parsed = marrow_syntax::parse_source(source);
         assert!(!parsed.has_errors(), "the corpus parses");
-        let file = crate::test_file_identity("src/main.mw");
+        let file = crate::test_file("src/main.mw").clone();
         let at = crate::analysis::FileRef::admitted(0);
         let mut resources = Vec::new();
         let mut stores = Vec::new();
@@ -654,7 +656,7 @@ fn a_store_refused_after_real_staging_rolls_back_to_the_unstaged_image() {
         let mut diagnostics = DiagnosticCollector::new();
         let records = crate::types::TypeRegistry::build(
             &mut draft,
-            crate::test_origins(),
+            crate::source::CapturedOrigins::of(crate::test_input()),
             &[],
             &[],
             &[],
@@ -671,7 +673,7 @@ fn a_store_refused_after_real_staging_rolls_back_to_the_unstaged_image() {
             &records,
             &resources,
             &stores,
-            &crate::durable::OriginLedgers::root_only(Some(&ledger)),
+            &crate::durable::OriginLedgers::of(&committed),
             &mut diagnostics,
             budget,
             &mut Vec::new(),
@@ -723,7 +725,7 @@ fn a_registry_slice_drift_is_a_typed_invariant_not_a_user_error() {
                   store ^r[id: int]: R\n\nfn main() {\n}\n";
     let parsed = marrow_syntax::parse_source(source);
     assert!(!parsed.has_errors(), "the corpus parses");
-    let file = crate::test_file_identity("src/main.mw");
+    let file = crate::test_file("src/main.mw").clone();
     let at = crate::analysis::FileRef::admitted(0);
     let mut resources = Vec::new();
     let mut stores = Vec::new();
@@ -740,7 +742,7 @@ fn a_registry_slice_drift_is_a_typed_invariant_not_a_user_error() {
     let mut diagnostics = DiagnosticCollector::new();
     let records = crate::types::TypeRegistry::build(
         &mut draft,
-        crate::test_origins(),
+        crate::source::CapturedOrigins::of(crate::test_input()),
         &[],
         &[],
         &[],
@@ -758,7 +760,7 @@ fn a_registry_slice_drift_is_a_typed_invariant_not_a_user_error() {
         &records,
         &[],
         &stores,
-        &crate::durable::OriginLedgers::root_only(None),
+        &crate::durable::OriginLedgers::of(crate::test_input()),
         &mut diagnostics,
         budget,
         &mut Vec::new(),

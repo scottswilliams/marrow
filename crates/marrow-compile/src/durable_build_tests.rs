@@ -28,7 +28,7 @@ mod generic_enum_shape_tests {
     fn test_declared() -> DeclarationSite<'static> {
         DeclarationSite {
             name: "probe",
-            file: crate::test_main_file_identity(),
+            file: crate::test_file("src/main.mw"),
             at: FileRef::admitted(0),
             span: SourceSpan::default(),
         }
@@ -43,7 +43,7 @@ mod generic_enum_shape_tests {
         let mut build_diagnostics = DiagnosticCollector::new();
         let mut records = TypeRegistry::build(
             &mut draft,
-            crate::test_origins(),
+            crate::source::CapturedOrigins::of(crate::test_input()),
             &[],
             &[],
             &[],
@@ -59,7 +59,7 @@ mod generic_enum_shape_tests {
                 &mut draft,
                 GArg::Scalar(ScalarType::Int),
                 MintSite {
-                    file: crate::test_main_file_identity(),
+                    file: crate::test_file("src/main.mw"),
                     span: SourceSpan {
                         line: 1,
                         column: 1,
@@ -71,7 +71,7 @@ mod generic_enum_shape_tests {
 
         let mut diagnostics = DiagnosticCollector::new();
         let mut reported_identity_gaps = BTreeSet::new();
-        let ledgers = crate::durable::OriginLedgers::root_only(None);
+        let ledgers = crate::durable::OriginLedgers::of(crate::test_input());
         let mut resolver = IdentityResolver::new(
             test_declared(),
             SourceSpan::default(),
@@ -128,7 +128,7 @@ mod generic_enum_shape_tests {
         let mut build_diagnostics = DiagnosticCollector::new();
         let records = TypeRegistry::build(
             &mut draft,
-            crate::test_origins(),
+            crate::source::CapturedOrigins::of(crate::test_input()),
             &[],
             &[],
             &[],
@@ -150,7 +150,7 @@ mod generic_enum_shape_tests {
             .expect("a within-domain mint");
         let mut diagnostics = DiagnosticCollector::new();
         let mut reported_identity_gaps = BTreeSet::new();
-        let ledgers = crate::durable::OriginLedgers::root_only(None);
+        let ledgers = crate::durable::OriginLedgers::of(crate::test_input());
         let mut resolver = IdentityResolver::new(
             test_declared(),
             SourceSpan::default(),
@@ -189,7 +189,7 @@ mod generic_enum_shape_tests {
         let mut build_diagnostics = DiagnosticCollector::new();
         let mut records = TypeRegistry::build(
             &mut draft,
-            crate::test_origins(),
+            crate::source::CapturedOrigins::of(crate::test_input()),
             &[],
             &[],
             &[],
@@ -204,7 +204,7 @@ mod generic_enum_shape_tests {
                 &mut draft,
                 GArg::Scalar(ScalarType::Int),
                 MintSite {
-                    file: crate::test_main_file_identity(),
+                    file: crate::test_file("src/main.mw"),
                     span: SourceSpan::default(),
                 },
             )
@@ -215,7 +215,7 @@ mod generic_enum_shape_tests {
         };
         let mut diagnostics = DiagnosticCollector::new();
         let mut reported_identity_gaps = BTreeSet::new();
-        let ledgers = crate::durable::OriginLedgers::root_only(None);
+        let ledgers = crate::durable::OriginLedgers::of(crate::test_input());
         let mut resolver = IdentityResolver::new(
             test_declared(),
             SourceSpan::default(),
@@ -258,14 +258,14 @@ store ^holders[id: int]: Holder
             .expect("resource parses");
         let resources = vec![(
             FileRef::admitted(0),
-            crate::test_file_identity("src/main.mw"),
+            crate::test_file("src/main.mw").clone(),
             resource,
         )];
         let mut draft = fresh_draft();
         let mut diagnostics = DiagnosticCollector::new();
         let records = TypeRegistry::build(
             &mut draft,
-            crate::test_origins(),
+            crate::source::CapturedOrigins::of(crate::test_input()),
             &[],
             &[],
             &[],
@@ -294,7 +294,7 @@ store ^holders[id: int]: Holder
         };
         let before = draft.encode().expect("seeded draft encodes");
         let mut reported_identity_gaps = BTreeSet::new();
-        let ledgers = crate::durable::OriginLedgers::root_only(None);
+        let ledgers = crate::durable::OriginLedgers::of(crate::test_input());
         let mut resolver = IdentityResolver::new(
             test_declared(),
             SourceSpan::default(),
@@ -554,7 +554,6 @@ mod declaration_command_bound_tests {
 mod post_staging_custody_tests {
     use super::super::*;
     use marrow_image::DurableContractId;
-    use marrow_project::IdentityLedger;
     use marrow_syntax::{Declaration, parse_source};
     use std::fmt::Write as _;
 
@@ -650,7 +649,9 @@ mod post_staging_custody_tests {
     }
 
     /// The committed identity ledger the corpus resolves against.
-    fn corpus_ledger(roots: usize) -> IdentityLedger {
+    /// The corpus's project, captured with the ledger the corpus needs, so the build
+    /// reads its ledgers out of a capture exactly as production does.
+    fn corpus_project(roots: usize) -> marrow_project::ProjectInput {
         let mut text = String::from("marrow ids v0\nmachine-written by marrow; do not edit\n");
         for (position, anchor) in corpus_anchors(roots).iter().enumerate() {
             let _ = write!(text, "id {anchor} ");
@@ -660,7 +661,7 @@ mod post_staging_custody_tests {
             text.push('\n');
         }
         text.push_str("high-water 0\nend\n");
-        IdentityLedger::parse(text.as_bytes()).expect("the corpus ledger parses")
+        crate::test_project::project_with_ids(&[("src/main.mw", "")], Some(text.as_bytes()))
     }
 
     /// Everything a store's staging can change that a draft the encoder refuses still
@@ -713,7 +714,7 @@ mod post_staging_custody_tests {
         let source = corpus_source(roots, last);
         let parsed = parse_source(&source);
         assert!(!parsed.has_errors(), "the corpus parses");
-        let file = crate::test_file_identity("src/main.mw");
+        let file = crate::test_file("src/main.mw").clone();
         let at = FileRef::admitted(0);
         let mut resources = Vec::new();
         let mut stores = Vec::new();
@@ -730,7 +731,7 @@ mod post_staging_custody_tests {
         let mut diagnostics = DiagnosticCollector::new();
         let records = TypeRegistry::build(
             &mut draft,
-            crate::test_origins(),
+            crate::source::CapturedOrigins::of(crate::test_input()),
             &[],
             &[],
             &[],
@@ -743,13 +744,13 @@ mod post_staging_custody_tests {
         assert!(diagnostics.is_empty(), "the corpus types check clean");
         draft.commit();
 
-        let ledger = corpus_ledger(roots);
+        let committed = corpus_project(roots);
         let outcome = DurableRegistry::build(
             &mut draft_owner,
             &records,
             &resources,
             &stores,
-            &crate::durable::OriginLedgers::root_only(Some(&ledger)),
+            &crate::durable::OriginLedgers::of(&committed),
             &mut diagnostics,
             DeclarationBudget::default(),
             &mut Vec::new(),

@@ -2,8 +2,9 @@
 // field reads, value/copy semantics, and struct/enum-typed nested fields behind the
 // value-graph acyclicity proof). Struct declarations are beta-only syntax
 // absent from the frozen tag, so this fixture is not in the preserved-semantics
-// manifest and has no oracle pairing. Type names are project-global, so a struct
-// is referenced by its bare name; only functions take a module qualifier.
+// manifest and has no oracle pairing. A type name belongs to the project that
+// declares it, so a struct of this project is referenced by its bare name from any
+// of its modules; only functions take a module qualifier.
 module struct_checks
 
 test "a struct literal reads its fields back in declaration order" {

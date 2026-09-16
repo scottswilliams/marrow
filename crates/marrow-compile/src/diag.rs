@@ -626,7 +626,7 @@ mod tests {
     }
 
     fn file() -> &'static ProjectFile {
-        crate::test_main_file_identity()
+        crate::test_file("src/main.mw")
     }
 
     /// A rendered compiler row whose retained owned bytes are exactly
@@ -940,8 +940,8 @@ mod tests {
     fn absorb_syntax_multiplies_the_file_spelling_by_the_row_count() {
         let source = "@\n@\n@\n@\n";
         let summary = marrow_syntax::parse_source(source).diagnostics.summary();
-        let short = crate::test_file_identity("src/a.mw");
-        let long = crate::test_file_identity("src/abcdefgh.mw");
+        let short = crate::test_file("src/a.mw");
+        let long = crate::test_file("src/abcdefgh.mw");
         assert_eq!(
             long.retained_owned_bytes(),
             short.retained_owned_bytes() + 7

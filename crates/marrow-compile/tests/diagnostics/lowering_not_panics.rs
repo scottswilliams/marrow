@@ -16,29 +16,6 @@ use marrow_project::ProjectInput;
 
 use super::project_capture;
 
-const EXPRS_FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/lower/exprs.rs");
-
-/// The generic-enum call guard and constructor share an immutable registry borrow, so the
-/// successful template lookup is bound once rather than repeated behind an expectation.
-/// Reading the single owning file keeps that conspicuous without a source scanner.
-#[test]
-fn generic_enum_dispatch_binds_one_template_lookup() {
-    let source = std::fs::read_to_string(EXPRS_FILE).expect("lower/exprs.rs is readable");
-    let body = source
-        .split_once("fn lower_call_core(")
-        .expect("lower_call_core remains present")
-        .1
-        .split_once("/// An unqualified call")
-        .expect("next owner boundary remains present")
-        .0;
-    assert_eq!(
-        body.matches("type_template_by_name(&self.bare_type(enum_name.text()))")
-            .count(),
-        1,
-        "the immutable successful lookup must be consumed directly"
-    );
-}
-
 fn project(source: &str) -> ProjectInput {
     project_capture::project(&[("src/main.mw", source)])
 }

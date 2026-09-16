@@ -68,31 +68,42 @@ pub use marrow_syntax::FormatRefusal;
 pub use scalar::ScalarType;
 pub use source::ProjectFile;
 
-/// The canonical root-project [`ProjectFile`] for a test source path, so tests
-/// attribute diagnostics through the same address the production capture path
-/// produces rather than a bare string.
+/// The in-crate tests' project, taken once through the production capture path.
+///
+/// Every file address, origin set and identity ledger a test needs is read out of a
+/// capture rather than assembled beside one, so no fixture can hold a value
+/// `capture_origins` would not have produced. A test that needs another path adds it
+/// to this listing.
 #[cfg(test)]
-pub(crate) fn test_file_identity(path: &str) -> ProjectFile {
-    ProjectFile::root(
-        marrow_project::FileIdentity::validate(path)
-            .expect("test source path is a canonical identity")
-            .0,
-    )
+pub(crate) fn test_input() -> &'static marrow_project::ProjectInput {
+    static INPUT: std::sync::OnceLock<marrow_project::ProjectInput> = std::sync::OnceLock::new();
+    INPUT.get_or_init(|| {
+        test_project::project(&[
+            ("src/a.mw", ""),
+            ("src/abcdefgh.mw", ""),
+            ("src/first.mw", ""),
+            ("src/later.mw", ""),
+            ("src/main.mw", ""),
+        ])
+    })
 }
 
-/// The captured origins of a single-tree test project: the root alone, taken from a
-/// real capture so a test reads the same value the production path builds.
+/// The address [`test_input`]'s capture gave `path`.
 #[cfg(test)]
-pub(crate) fn test_origins() -> source::CapturedOrigins {
-    source::CapturedOrigins::of(&test_project::project(&[("src/main.mw", "module main\n")]))
-}
-
-/// A `'static` reference to the canonical root-project `src/main.mw` address, for
-/// test sites that borrow or return a `&'static ProjectFile`.
-#[cfg(test)]
-pub(crate) fn test_main_file_identity() -> &'static ProjectFile {
-    static ID: std::sync::OnceLock<ProjectFile> = std::sync::OnceLock::new();
-    ID.get_or_init(|| test_file_identity("src/main.mw"))
+#[track_caller]
+pub(crate) fn test_file(path: &str) -> &'static ProjectFile {
+    static FILES: std::sync::OnceLock<Vec<ProjectFile>> = std::sync::OnceLock::new();
+    FILES
+        .get_or_init(|| {
+            test_input()
+                .modules()
+                .iter()
+                .map(ProjectFile::from)
+                .collect()
+        })
+        .iter()
+        .find(|file| file.identity().as_str() == path)
+        .expect("the captured test fixture holds this path")
 }
 
 #[cfg(doctest)]

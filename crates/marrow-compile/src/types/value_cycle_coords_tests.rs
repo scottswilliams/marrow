@@ -108,8 +108,8 @@ fn a_repeated_declaration_keeps_its_first_coordinate() {
 
     let mut coordinates = super::decl_coords::DeclarationCoordinates::default();
     let ty = TypeId::from_index(7);
-    let first_file = crate::test_file_identity("src/first.mw");
-    let later_file = crate::test_file_identity("src/later.mw");
+    let first_file = crate::test_file("src/first.mw").clone();
+    let later_file = crate::test_file("src/later.mw").clone();
     let first_span = SourceSpan {
         start_byte: 10,
         end_byte: 14,

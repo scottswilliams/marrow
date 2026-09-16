@@ -15,7 +15,7 @@ fn handles() -> (ResolveRefusal, ResolveRefusal) {
         DeclarationBudget::default(),
     );
     let mut refusal = |name: &str| {
-        let identity = crate::test_file_identity("src/main.mw");
+        let identity = crate::test_file("src/main.mw").clone();
         let declared = DeclarationSite {
             name,
             file: &identity,
@@ -81,7 +81,7 @@ fn handles_from_two_namespaces_never_merge() {
         DeclarationNamespace::DurableRoot,
         DeclarationBudget::default(),
     );
-    let identity = crate::test_file_identity("src/main.mw");
+    let identity = crate::test_file("src/main.mw").clone();
     let declared = DeclarationSite {
         name: "x",
         file: &identity,

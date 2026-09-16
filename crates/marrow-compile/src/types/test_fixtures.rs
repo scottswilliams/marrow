@@ -36,7 +36,7 @@ pub(super) fn apply(head: &str, args: Vec<TypeExpr>) -> TypeExpr {
 pub(super) fn template(name: &str, fields: Vec<(&str, TypeExpr)>) -> TypeTemplate {
     TypeTemplate {
         name: name.to_string(),
-        file: Some(crate::test_file_identity("src/main.mw")),
+        file: Some(crate::test_file("src/main.mw").clone()),
         name_span: SourceSpan::default(),
         reserved: None,
         type_params: vec![("T".to_string(), None)],
@@ -53,7 +53,7 @@ pub(super) fn template(name: &str, fields: Vec<(&str, TypeExpr)>) -> TypeTemplat
 pub(super) fn enum_template(name: &str, payload: TypeExpr) -> TypeTemplate {
     TypeTemplate {
         name: name.to_string(),
-        file: Some(crate::test_file_identity("src/main.mw")),
+        file: Some(crate::test_file("src/main.mw").clone()),
         name_span: SourceSpan::default(),
         reserved: None,
         type_params: vec![("T".to_string(), None)],
@@ -73,7 +73,7 @@ pub(super) fn enum_template(name: &str, payload: TypeExpr) -> TypeTemplate {
 /// An empty registry carrying `templates` and nothing else.
 pub(super) fn test_registry(templates: Vec<TypeTemplate>) -> TypeRegistry {
     TypeRegistry {
-        origins: crate::test_origins(),
+        origins: crate::source::CapturedOrigins::of(crate::test_input()),
         named: DeclarationLedger::new(
             DeclarationNamespace::NamedType,
             DeclarationBudget::default(),
@@ -99,7 +99,7 @@ pub(super) fn test_registry(templates: Vec<TypeTemplate>) -> TypeRegistry {
 /// A mint site in the one test file, at `line`.
 pub(super) fn site(line: u32) -> MintSite<'static> {
     MintSite {
-        file: crate::test_main_file_identity(),
+        file: crate::test_file("src/main.mw"),
         span: SourceSpan {
             line,
             column: 9,

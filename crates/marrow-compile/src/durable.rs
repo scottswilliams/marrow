@@ -1058,16 +1058,6 @@ impl<'a> OriginLedgers<'a> {
         }
     }
 
-    /// A single-tree compilation's ledgers: the root's alone. Test-only, because
-    /// production always reads the captured origin set, which a hand-built pair
-    /// could disagree with.
-    #[cfg(test)]
-    pub(crate) fn root_only(ledger: Option<&'a IdentityLedger>) -> Self {
-        Self {
-            ledgers: vec![(SourceOrigin::Root, ledger)],
-        }
-    }
-
     /// The ledger `origin` committed, or `None` when that tree committed none — the
     /// normal state of a storeless project, equivalent to an empty ledger. An origin
     /// this capture does not hold likewise resolves against no ledger.

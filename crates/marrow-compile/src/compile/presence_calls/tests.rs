@@ -175,7 +175,7 @@ fn named_functions(names: &[&str]) -> Vec<Option<LoweredFn>> {
                 .expect("a body without sites");
             Some(LoweredFn {
                 func,
-                file: crate::test_main_file_identity().clone(),
+                file: crate::test_file("src/main.mw").clone(),
                 name: name.to_string(),
                 span: SourceSpan::default(),
                 callees: vec![0, 1],
@@ -295,7 +295,7 @@ fn sparse_presence_reports_only_callee_closed_available_functions() {
         "the caller of the missing body must not be reported"
     );
     assert_eq!(rows[0].code(), Code::CheckRequiresPresence);
-    assert_eq!(rows[0].file(), crate::test_main_file_identity().identity());
+    assert_eq!(rows[0].file(), crate::test_file("src/main.mw").identity());
     assert_eq!(rows[0].span(), use_span);
     assert!(
         rows[0].message().contains("`eraser`"),

@@ -841,7 +841,7 @@ mod tests {
     }
 
     fn refused(name: &str, diagnostics: &mut DiagnosticCollector) -> DeclarationRefusalSummary {
-        let identity = crate::test_file_identity("src/main.mw");
+        let identity = crate::test_file("src/main.mw").clone();
         refuse(
             diagnostics,
             DeclarationSite {
