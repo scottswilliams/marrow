@@ -23,8 +23,8 @@ fn index_target(site: &AuthorizedSite) -> Result<(&[u8; 16], bool, &[ScalarKind]
 /// component, holding the leading `prefix`, and report whether a further distinct value
 /// existed. Acquires at most `limit + 1` distinct component values through the index cell
 /// family, costing `O(limit + 1)` seeks: one prefix-successor seek past each yielded
-/// value passes its whole run of rows regardless of fan-out (the index traversal-skip
-/// law). An index scan reads only the derived index and establishes no source presence.
+/// value passes its whole run of rows regardless of fan-out. An index scan reads only
+/// the derived index and establishes no source presence.
 pub(super) fn op_index_scan<V: ReadView>(
     cells: &V,
     site: &AuthorizedSite,

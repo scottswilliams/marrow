@@ -221,8 +221,8 @@ fn a_corrupt_projected_leaf_faults_corruption() {
     let leaf = physical::stem_field_leaf(&marker, field_num(&schema(), 1));
     {
         let mut txn = store.engine.begin().expect("begin");
-        // Bytes no value codec decodes (decimal to avoid spelling a structural tag
-        // literal the layout-owner gate reserves for physical.rs).
+        // Bytes no value codec decodes, spelled decimal: a structural tag literal
+        // belongs to physical.rs alone.
         txn.put(&leaf, vec![255, 255, 255]).expect("put garbage");
         assert_eq!(txn.commit(), CommitOutcome::Confirmed);
     }
@@ -278,12 +278,11 @@ fn index_maintenance_agrees_across_engines() {
     );
 }
 
-// ---- Durable groups (GR01 session 1): the group-scoped payload-only law ----
+// ---- Durable groups: payload-only, group-scoped ----
 //
-// These drive the kernel's group ops through directly-constructed group sites (the
-// verifier emits them in session 2). A group is part of the entry's payload — no
-// marker, no key — so its whole read follows the entry's presence and its whole
-// replace/erase confine to the group's own leaves.
+// These drive the kernel's group ops through directly-constructed group sites. A group
+// is part of the entry's payload — no marker, no key — so its whole read follows the
+// entry's presence and its whole replace/erase confine to the group's own leaves.
 
 /// A group-bearing root: `books`(Str) with a required `title` and a sparse `summary`,
 /// two unkeyed groups `details {pages, language}` and `credits {author}` (all sparse),
@@ -361,12 +360,11 @@ fn entry_siblings(
         .collect()
 }
 
-/// The exit-gate proof: a whole-group write — replace or erase, through the production
-/// transaction pipeline — provably disturbs no sibling cell. Every cell outside the
-/// `details` group's own prefix (the entry marker, the entry's top-level fields, the
-/// sibling `credits` group's leaves, and a branch note's cells) is byte-identical
-/// before and after, while the group itself is exactly replaced (omitted leaves drop)
-/// and then erased.
+/// A whole-group write — replace or erase, through the production transaction pipeline
+/// — disturbs no sibling cell. Every cell outside the `details` group's own prefix (the
+/// entry marker, the entry's top-level fields, the sibling `credits` group's leaves, and
+/// a branch note's cells) is byte-identical before and after, while the group itself is
+/// exactly replaced (omitted leaves drop) and then erased.
 #[test]
 fn a_group_write_never_disturbs_siblings() {
     let mut store = group_store();
@@ -712,10 +710,9 @@ fn a_forged_markerless_group_leaf_cell_reads_as_corruption() {
 
 /// A whole-entry value carries its groups. A create that supplies the group
 /// sub-records writes their leaves as the entry's own payload, and a whole-entry read
-/// materializes them back aligned to the schema's groups — the round-trip that unparks
-/// durable group execution. It kills the corruption trap the handoff named: a
-/// group-bearing entry now reads its group through the whole entry, not only the
-/// group-scoped op, so `node_write`/`node_cells`/`op_read_entry` are group-inclusive.
+/// materializes them back aligned to the schema's groups. A group-bearing entry reads
+/// its group through the whole entry as well as the group-scoped op, so
+/// `node_write`/`node_cells`/`op_read_entry` are all group-inclusive.
 #[test]
 fn a_whole_entry_create_writes_and_reads_back_its_groups() {
     let mut store = group_store();

@@ -50,9 +50,8 @@ pub(super) fn resolve_site(
             AuthTarget::index(*index.id(), index.unique(), projection),
         );
     }
-    // A root-level group addresses the root entry (empty branch path); it carries the
-    // group's own numbered record. Group-in-branch is durable-only future work, so a group
-    // site is root-level.
+    // A group site is root-level: it addresses the root entry (empty branch path) and
+    // carries the group's own numbered record. Group-in-branch is not executable.
     if let CheckedTarget::GroupEntry(position) = target {
         let group = position.of(schema.groups());
         let group_numbering = position.of(numbering.groups());
@@ -87,8 +86,7 @@ pub(super) fn resolve_site(
     // A whole-entry site enumerates the container's footprint, so it carries the
     // container's numbered record and its numbered groups; a field-target site carries its
     // field plus the container record so a field write can maintain the node's indexes. A
-    // root entry's footprint includes its groups (its own payload); a branch entry carries
-    // none, since group-in-branch is not yet executable.
+    // root entry's footprint includes its groups (its own payload); a branch entry has none.
     let target = match target {
         CheckedTarget::WholePayload => AuthTarget::Entry {
             fields: container_fields,

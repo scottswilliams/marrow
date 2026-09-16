@@ -270,8 +270,8 @@ fn a_witness_put_failure_is_known_old_and_leaves_the_handle_usable() {
     assert_eq!(read_value(&mut store, "b"), None);
 }
 
-/// An `apply` put or remove that fails mid-plan (`store.rs` ~646-660) faults the durable
-/// op with `KernelFault::Engine` and does not commit, so the still-live transaction aborts
+/// An `apply` put or remove that fails mid-plan faults the durable op with
+/// `KernelFault::Engine` and does not commit, so the still-live transaction aborts
 /// on drop and the prior committed state is intact. Exercises both the `Put` arm (a
 /// partly-applied create) and the `Remove` arm (a partly-applied erase); in each the
 /// second write of the plan fails, leaving one cell already staged in the working copy

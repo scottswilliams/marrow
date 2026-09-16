@@ -3,10 +3,9 @@
 //! `marrow-kernel` keeps **no production dependency** on `marrow-image`: the kernel
 //! must bound its own recursion without an image in hand, so the value-shape depth
 //! cap is spelled in `codec::value` and the member-tree depth cap in
-//! `durable::schema`. Each spelling was a hand-copy — two constants stating one
-//! contract with nothing tying them together, so either could move and leave the
-//! other silently behind. The image is a **dev** dependency, which is enough to
-//! close the copies here without adding an edge to the shipped crate.
+//! `durable::schema`. Two constants state one contract, so either could move and
+//! leave the other silently behind. The image is a **dev** dependency, which ties
+//! them together here without adding an edge to the shipped crate.
 //!
 //! Each coupling is a `const` assertion, so a divergence fails the build rather than
 //! a run: there is no way to land a moved bound and read a green suite.
@@ -17,14 +16,13 @@ use marrow_image::bounds::{
 use marrow_kernel::codec::value::MAX_DURABLE_VALUE_DEPTH as KERNEL_VALUE_DEPTH;
 use marrow_kernel::durable::MAX_DURABLE_DEPTH as KERNEL_MEMBER_DEPTH;
 
-/// The hand-copy, closed at compile time. Moving either constant without the other
-/// fails this crate's test build.
+/// Moving either constant without the other fails this crate's test build.
 const _: () = assert!(
     KERNEL_VALUE_DEPTH == IMAGE_VALUE_DEPTH,
     "the kernel's value-shape depth cap must equal the image bound it mirrors",
 );
 
-/// The member-tree hand-copy, closed the same way. The kernel's store-schema builder
+/// The member-tree bound, coupled the same way. The kernel's store-schema builder
 /// bounds branch and group nesting with its own constant; the image's decoder bounds
 /// the member rows that projection is derived from. One contract, so one value.
 const _: () = assert!(

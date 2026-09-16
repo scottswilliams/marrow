@@ -17,9 +17,8 @@
 //!
 //! Three of the ordered classes are unrepresentable rather than tested: a verified image
 //! names only sealed sites, an attachment cannot be minted from an unverified image, and a
-//! read-only session has no mutation op to call. The three this harness witnesses are the
-//! ones a running kernel can get wrong: typed operands, address derivation, and the
-//! demand/ceiling/grant/budget gate.
+//! read-only session has no mutation op to call. This harness witnesses the other three:
+//! typed operands, address derivation, and the demand/ceiling/grant/budget gate.
 //!
 //! The boundary: a permitted session opens the engine (a read view or a write
 //! transaction) as its *first* engine access. The zero-call property covers exactly the
@@ -234,10 +233,10 @@ fn an_in_range_write_advances_the_write_counter() {
 
 // --- The layer-walk bound class: a family walk costs its bound, not its population. ---
 //
-// These witnesses specify the deferred presence-seek bounds. The current marker walk
-// seeks past each descendant-only sibling, so acquisition costs O(limit + 1 + d)
-// seeks and family presence costs O(1 + d), where d counts skipped descendant-only
-// siblings. A bound on frozen keys does not establish the stronger seek bound.
+// The marker walk seeks past each descendant-only sibling, so acquisition costs
+// O(limit + 1 + d) seeks and family presence O(1 + d), where d counts skipped
+// descendant-only siblings. A bound on frozen keys does not establish that seek bound,
+// so it is witnessed here.
 
 /// A `books` root keyed by string with a required `title`, and a `notes` branch keyed by
 /// int with a required `text`. Site 0 is the root entry, site 1 the branch entry.

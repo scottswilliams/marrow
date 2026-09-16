@@ -496,9 +496,8 @@ fn family_populated_skips_descendant_only_children_and_empty_families() {
 /// `layer_of`'s hard backstop over the trust boundary (matching `node_stem`): a branch
 /// layer's ancestor key-path must be the root key then one key per parent hop. A wrong
 /// ancestor arity or a wrong ancestor key kind faults `Corruption` rather than
-/// mis-layering the traversal to the root entry family (which would leak the wrong
-/// layer's keys). The verifier proves the arity and kinds, so this is the release
-/// backstop a forged image cannot slip past.
+/// mis-layering the traversal to the root entry family, which would leak the wrong
+/// layer's keys. The verifier proves the arity and kinds; this is the backstop below it.
 #[test]
 fn a_branch_layer_traversal_with_a_wrong_ancestor_key_path_faults() {
     let (schema, sites) = branch_schema();

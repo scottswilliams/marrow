@@ -23,8 +23,8 @@ use super::{
 /// A persistent native store whose semantic handle, engine, and process owner
 /// lock cannot be separated by safe dependents.
 ///
-/// The former path-plus-instance constructor is absent; only the opaque owner
-/// composition can mint a persistent recovery scope.
+/// Only the opaque owner composition can mint a persistent recovery scope; there is
+/// no path-plus-instance constructor.
 ///
 /// ```compile_fail
 /// use marrow_kernel::durable::NativeStore;

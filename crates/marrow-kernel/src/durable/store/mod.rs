@@ -79,7 +79,7 @@ pub trait Durable {
     /// present (an absent marker is [`KernelFault::Corruption`]) and `value` must supply
     /// every required leaf ([`KernelFault::Incomplete`] otherwise), both checked before
     /// any engine write; the entry marker, its top-level fields, its sibling groups, and
-    /// its branches are all left intact (the group-scoped payload-only law).
+    /// its branches are all left intact.
     fn replace_group(
         &mut self,
         site: &AuthorizedSite,

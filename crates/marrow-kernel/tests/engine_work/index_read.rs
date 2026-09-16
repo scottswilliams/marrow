@@ -2,8 +2,8 @@
 //!
 //! A nonunique index scan enumerates the *distinct* values of the next projected
 //! component. Rows sharing one component value are passed by a single prefix-successor
-//! seek — the index traversal-skip law — so the engine work is one seek per distinct
-//! value plus one boundary probe, regardless of how many rows share each value. This
+//! seek, so the engine work is one seek per distinct value plus one boundary probe,
+//! regardless of how many rows share each value. This
 //! measures it through the counting engine: scanning the same distinct labels costs the
 //! same seeks whether each label carries two rows or fifty, a bounded `at most N` scan
 //! costs `N + 1` seeks, and a unique lookup is one probe.

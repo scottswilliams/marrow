@@ -76,8 +76,7 @@ pub(super) fn op_read_entry<V: ReadView>(
     let values = read_record_leaves(cells, &stem, fields)?;
     // A present entry materializes each of its groups (its own payload) under the group
     // prefix, in schema order — a group's presence is the entry's, so a present entry
-    // always yields every group sub-record. A present entry missing a required group leaf
-    // is the same marker/payload mismatch as a missing required top-level field.
+    // always yields every group sub-record.
     let mut group_values = Vec::with_capacity(groups.len());
     for group in groups {
         let group_stem = physical::group_stem(&stem, group.number);

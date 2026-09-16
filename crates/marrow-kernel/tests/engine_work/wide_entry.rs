@@ -61,10 +61,9 @@ fn write() -> DemandCoverage {
     }
 }
 
-/// One whole-entry read measured two ways at the "exact-field work vs declaration
-/// width and present count" tier: `reads` is the deterministic counting-engine read
-/// count (engine scan calls); `value_len` is the materialized value size (the length
-/// of the dense schema-aligned `EntryValue.fields`).
+/// One whole-entry read measured two ways: `reads` is the deterministic
+/// counting-engine read count (engine scan calls); `value_len` is the materialized
+/// value size (the length of the dense schema-aligned `EntryValue.fields`).
 struct Measured {
     reads: usize,
     value_len: usize,
@@ -166,13 +165,9 @@ fn whole_entry_read_engine_work_grows_with_the_populated_count() {
 
 /// The materialized value size is O(declared): the whole-entry read yields a dense
 /// schema-aligned `EntryValue.fields` with one slot per *declared* field, so its
-/// length tracks the declared width and is independent of the present count. This is
-/// the accepted, measured O(declared) value-size seam recorded and deferred: the
-/// engine work is already O(populated+1) (above), but the value shape stays dense.
-/// The named seam a later lane can take to make value size O(populated) is sparse
-/// sorted (field-index, value) slots (which the field-leaf scan already yields in
-/// order) versus an Rc-COW record backing. This law fails if a future change alters
-/// the value shape, so the seam is flipped deliberately, not by accident.
+/// length tracks the declared width and is independent of the present count. Engine
+/// work is already O(populated + 1) (above); the dense value shape is the remaining
+/// O(declared) term. Pinning it here means a change to the value shape is deliberate.
 #[test]
 fn whole_entry_read_value_size_is_the_declared_width() {
     // Value size tracks the declared width, not the present count.

@@ -55,11 +55,11 @@ fn layer_step<V: ReadView>(
 /// no ancestor key; a branch site traverses its branch family beneath the parent entry
 /// named by the concatenated declared key columns of the root and parent hops above
 /// the traversed branch. The single owner of the site-to-traversed-layer mapping.
-/// The verifier proves the ancestor arity and each key's scalar kind against the site's
-/// declared root and hop kinds, but this is the trust boundary the independently verified image crosses into
-/// the kernel, so a mismatch faults [`KernelFault::Corruption`] — matching [`node_stem`]'s
-/// hard backstop — rather than mis-layering the traversal to a shallower or wrong parent
-/// node.
+///
+/// The verifier proves the ancestor arity and each key's scalar kind, but this is the
+/// trust boundary a verified image crosses into the kernel, so a mismatch faults
+/// [`KernelFault::Corruption`] — matching [`node_stem`]'s backstop — rather than
+/// mis-layering the traversal to a shallower or wrong parent node.
 fn layer_of(
     site: &AuthorizedSite,
     ancestor_keys: &[KeyScalar],

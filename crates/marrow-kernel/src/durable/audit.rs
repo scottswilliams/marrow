@@ -1,23 +1,17 @@
 //! One bounded, read-only walk over every cell of a store against its admitted projection.
 //!
-//! The walk reads the whole key space forward, one engine page at a time, and parses the
-//! cell stream in the order the layout (`physical.rs`) sorts it: each declared root or
-//! branch entry family — every entry's marker, then its own field and group leaves —
-//! then the managed-index families and metadata. Its retained state is one open entry,
-//! fixed per-schema tables and a capped finding list; nothing grows with the number of
-//! stored entries. Key-kind paths borrow at most one slice per root and branch hop from
-//! the projection, so no ancestor key schema is copied per descendant. Every cell is
-//! classified exactly once, and a cell that belongs to no declared node or index is a
-//! typed finding rather than a skipped byte. A required leaf that is absent is found when
-//! the node it belongs to closes, so a missing cell is reported as precisely as a present
-//! one. Managed-index cells are checked against their source entries by point reads, and
-//! every present root entry with a complete projection is checked for its index cell, so the
-//! walk's engine work is one page per engine scan batch plus a bounded number of point
-//! reads per index cell and per indexed entry — never a read per declared field.
+//! Cells are parsed in the order the layout (`physical.rs`) sorts them. Retained state is
+//! one open entry, fixed per-schema tables and a capped finding list; nothing grows with
+//! the number of stored entries, and key-kind paths borrow at most one slice per root and
+//! branch hop from the projection rather than copying an ancestor key schema per
+//! descendant. Every cell is classified exactly once; a cell belonging to no declared node
+//! or index is a typed finding, never a skipped byte. A required leaf that is absent is
+//! found when its node closes, so a missing cell is reported as precisely as a present one.
+//! Engine work is one page per scan batch plus a bounded number of point reads per index
+//! cell and per indexed entry — never a read per declared field.
 //!
-//! The logical content the walk sees — every cell of a declared entry family, in
-//! key order — is handed to a caller-supplied [`ContentDigest`] one cell at a time, so the
-//! digest is computed in the same single pass with the same bounded memory.
+//! The logical content the walk sees is handed to a caller-supplied [`ContentDigest`] one
+//! cell at a time, so the digest costs the same single pass and the same bounded memory.
 
 use std::collections::HashMap;
 

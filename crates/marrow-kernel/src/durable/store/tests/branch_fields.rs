@@ -34,8 +34,8 @@ fn wide_branch_schema() -> (StoreSchema, Vec<SiteTarget>) {
 /// A field-exact set on a present wide-record branch entry writes exactly one new
 /// leaf cell, independent of the branch record's width, and leaves every other cell
 /// (the marker, the required `text`, and the untouched sparse fields) byte-identical.
-/// This is the branch wide-resource evidence: field-exact write work is O(1) plus the
-/// node's own incident cells, not proportional to the record width.
+/// Field-exact write work is O(1) plus the node's own incident cells, not proportional
+/// to the record width.
 #[test]
 fn a_field_exact_branch_set_writes_one_leaf_regardless_of_branch_width() {
     let (schema, sites) = wide_branch_schema();

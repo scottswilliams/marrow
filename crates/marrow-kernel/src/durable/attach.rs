@@ -9,10 +9,8 @@
 //! [`AttachmentId`] from process entropy, and each invocation opens its own session
 //! bounded by `demand ∩ ceiling ∩ grant`.
 //!
-//! This is the store session machinery generalized, not a second kernel: an
-//! attachment owns exactly one [`DurableStore`] and delegates every session open to
-//! it. The persistent native attachment reuses the same session machinery
-//! over a durable engine.
+//! An attachment owns exactly one [`DurableStore`] and delegates every session open to
+//! it; the persistent native attachment reuses the same machinery over a durable engine.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -65,16 +63,10 @@ impl CeilingIdToken {
 
 /// The deployment ceiling an ephemeral attachment is bounded by: the read/write
 /// coverage the path kernel admits before intersecting the per-invocation grant,
-/// carried alongside the [`CeilingIdToken`] binding token minted by the image-side
-/// ceiling-descriptor owner (`marrow_image::CeilingDescriptor`). The kernel treats
-/// the id as opaque — it never recomputes it and needs no image dependency — but
-/// records it so a minted attachment is bound to the exact ceiling it was minted
-/// under. The attach path derives both the coverage and the id from the verified
-/// image's demand union and binds them together, so widening the coverage would
-/// change the id. Comparing the token against an independently supplied ceiling
-/// arrives with the persistent native attachment. The read/write coverage is
-/// the projection the store ceiling checks; a path-granular atom-level ceiling
-/// is a later lane.
+/// carried alongside the [`CeilingIdToken`] binding token. The attach path derives
+/// both the coverage and the id from the verified image's demand union and binds them
+/// together, so widening the coverage would change the id. The coverage is the
+/// projection the store ceiling checks; the ceiling is not path-granular.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeploymentCeiling {
     coverage: DemandCoverage,

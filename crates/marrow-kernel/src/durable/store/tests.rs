@@ -249,8 +249,7 @@ fn a_branch_field_write_with_a_root_only_key_path_faults() {
     // A branch-field site addresses the two-element key-path [root_key, branch_key].
     // A forged image that drives the field set over it with a single-element
     // key path must fault at the trust boundary rather than drop the branch hop and
-    // mis-address the write to the root node. This is the release backstop over
-    // `node_stem`'s key-path arity that the verifier's proof stands on.
+    // mis-address the write to the root node.
     let mut builder = StoreSchemaBuilder::root("counters", vec![ScalarKind::Str]);
     builder.scalar_field("value", ScalarKind::Int, true);
     builder.open_branch("notes", vec![ScalarKind::Str]);

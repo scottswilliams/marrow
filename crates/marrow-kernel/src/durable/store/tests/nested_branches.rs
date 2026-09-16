@@ -1,12 +1,10 @@
-//! Nested (multi-level) branches: multi-hop stems, the four-state probe at depth, the
-//! sub-branch uniform payload-only law, and bounded traversal over an inner layer.
+//! Nested (multi-level) branches: multi-hop stems, the four-state probe at depth,
+//! payload-only replace/erase at a sub-branch, and bounded traversal over an inner
+//! layer. These pin level independence — a sub-branch node's marker/field/cursor
+//! topology, slot classification, and replace/erase confinement behave at depth
+//! exactly as at the root.
 
 use super::*;
-
-// These tests build a multi-level schema and multi-hop sites and drive the public
-// store API directly. They pin the level independence of the durable laws: a
-// sub-branch node's marker/field/cursor topology, slot classification, and whole-entry
-// replace/erase confinement behave at depth exactly as they do at the root.
 
 /// A four-level nested-branch schema: root `books`(Str) → branch `notes`(Int) →
 /// sub-branch `tags`(Str) → sub-sub-branch `links`(Int). Each branch level carries a
@@ -577,8 +575,7 @@ fn iterate_over_a_composite_keyed_root_layer_faults_corruption() {
 
 /// A single-column branch layer beneath a COMPOSITE-keyed root traverses normally: the
 /// ancestor key-path locating the parent entry is the root's whole two-column tuple, so
-/// `layer_of` consumes it via `take_columns` over multiple ancestor columns. This is the
-/// works-side counterpart to the composite-layer traversal park.
+/// `layer_of` consumes it via `take_columns` over multiple ancestor columns.
 #[test]
 fn iterate_a_single_column_branch_under_a_composite_root_consumes_multi_column_ancestors() {
     let mut builder = StoreSchemaBuilder::root("grid", vec![ScalarKind::Int, ScalarKind::Int]);
