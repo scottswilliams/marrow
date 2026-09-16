@@ -4,9 +4,10 @@
 //! envelope and head admitted under it — but through the exact-binding gate the importer
 //! uses: the presented image must be the store's active binding, never rebound. It then
 //! opens the engine read-only and runs the kernel's bounded logical walk
-//! ([`marrow_kernel::durable::DurableStore::logical_audit`]), and returns the
-//! typed findings in source vocabulary together with a digest over the store's logical
-//! content. No session opens, no authority resolves, and no data write happens; the lock is
+//! ([`marrow_kernel::durable::DurableStore::logical_audit`]), and returns the typed
+//! findings — each a stable code and the kernel's position, rendered in source vocabulary
+//! only at a reporting boundary — together with a digest over the store's logical content.
+//! No session opens, no authority resolves, and no data write happens; the lock is
 //! released when the audit returns. Physical checksums are not verified, and an
 //! inherited physical-recovery obligation is not discharged.
 //!
@@ -36,11 +37,13 @@ use crate::image::HeadMapPinMismatch;
 use crate::instance::StoreInstanceId;
 use crate::provision::{AdmitError, OpenError, open_admitted};
 
-/// One finding in source vocabulary: its stable code and the place it names.
+/// One finding: its stable code and the kernel's typed position, so a caller can name the
+/// exact node, field, index cell, or raw cell the walk faulted on. [`StoreAudit::place`]
+/// spells the site in source vocabulary for a human reader.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Finding {
     pub code: Code,
-    pub place: String,
+    pub site: AuditSite,
 }
 
 /// A completed logical inspection under one store's exact active binding.
@@ -52,12 +55,40 @@ pub struct StoreAudit {
     pub summary: AuditSummary,
     pub findings: Vec<Finding>,
     pub digest: StoreDataDigest,
+    /// The projection's source spellings, retained so a finding's typed site can be
+    /// rendered on demand at a reporting boundary rather than at the walk.
+    names: Names,
 }
 
 impl StoreAudit {
+    /// The report of one completed walk: the kernel's counts and findings under the
+    /// projection's names, with the content digest the same pass streamed.
+    pub(crate) fn from_walk(
+        instance: StoreInstanceId,
+        image_id: ImageId,
+        report: &marrow_kernel::durable::AuditReport,
+        digest: StoreDataDigest,
+        names: &Names,
+    ) -> Self {
+        Self {
+            instance,
+            image_id,
+            summary: report.summary,
+            findings: report.findings.iter().map(finding).collect(),
+            digest,
+            names: names.clone(),
+        }
+    }
+
     /// Whether the logical walk found no inconsistency. Physical integrity is untested.
     pub fn is_clean(&self) -> bool {
         self.summary.findings == 0
+    }
+
+    /// `site` in source vocabulary — `^root[k].branch[k].field`, `^root.index(id)[k]`, or a
+    /// raw cell key in hex. For presentation only; a test asserts the site itself.
+    pub fn place(&self, site: &AuditSite) -> String {
+        self.names.place(site)
     }
 }
 
@@ -207,17 +238,22 @@ pub(crate) fn inspect(
     let report = opened
         .logical_audit(&mut digest)
         .map_err(AuditError::Read)?;
-    Ok(StoreAudit {
+    Ok(StoreAudit::from_walk(
         instance,
         image_id,
-        summary: report.summary,
-        findings: report
-            .findings
-            .iter()
-            .map(|finding| names.finding(finding))
-            .collect(),
-        digest: digest.finish(),
-    })
+        &report,
+        digest.finish(),
+        names,
+    ))
+}
+
+/// The lifecycle's projection of one kernel finding: the stable code its fault maps to,
+/// carrying the kernel's typed site unchanged.
+fn finding(found: &AuditFinding) -> Finding {
+    Finding {
+        code: fault_code(found.fault),
+        site: found.site.clone(),
+    }
 }
 
 /// The hash chain over the kernel's canonical cell stream (see the module documentation).
@@ -252,6 +288,7 @@ impl ContentDigest for ChainDigest {
 /// group, and field names, and each index's ledger identity (the image carries no index
 /// name, so an index cell is named by the identity `.marrow/ids` records for it). Raw
 /// bytes — an identity or an unplaceable key — render as lowercase hex.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Names {
     roots: Vec<StoreSchema>,
 }
@@ -260,13 +297,6 @@ impl Names {
     pub(crate) fn new(projection: &StoreProjection) -> Self {
         Self {
             roots: projection.roots().to_vec(),
-        }
-    }
-
-    pub(crate) fn finding(&self, finding: &AuditFinding) -> Finding {
-        Finding {
-            code: fault_code(finding.fault),
-            place: self.place(&finding.site),
         }
     }
 

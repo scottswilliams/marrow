@@ -247,17 +247,13 @@ pub fn restore(input: &mut dyn Read, destination: &Path) -> Result<RestoredStore
         head_digest,
     )
     .map_err(|source| RestoreFault::Completion { instance, source })?;
-    let audit = StoreAudit {
+    let audit = StoreAudit::from_walk(
         instance,
-        image_id: image.image_id(),
-        summary: report.summary,
-        findings: report
-            .findings
-            .iter()
-            .map(|finding| names.finding(finding))
-            .collect(),
-        digest: content.finish(),
-    };
+        image.image_id(),
+        &report,
+        content.finish(),
+        &names,
+    );
     drop(owner);
     Ok(RestoredStore { audit })
 }

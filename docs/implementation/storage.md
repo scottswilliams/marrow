@@ -257,9 +257,9 @@ residency and full peak-allocation qualification remain open.
 `marrow-lifecycle`'s `audit.rs` uses the existing exact-binding admission gate
 and selects `NativeOpenAccess::ReadOnly` through the native opening path. It
 runs no repairing integrity check, changes no engine, head, or envelope bytes,
-and does not discharge an inherited unclean-shutdown obligation. The lifecycle
-maps findings to source names using the projection's schema and index
-identities. The owner lock is released before the runner renders the report.
+and does not discharge an inherited unclean-shutdown obligation. A finding carries the kernel's typed
+position; the lifecycle renders it in source names on request, using the
+projection's schema and index identities. The owner lock is released before the runner renders the report.
 
 The digest is a hash chain over declared static entry-family cells in key
 order. It starts from the store-data digest of an empty payload; each step

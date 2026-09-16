@@ -1012,7 +1012,12 @@ fn render_audit(audit: &marrow_lifecycle::StoreAudit, store: &Path) -> String {
     } else {
         let _ = writeln!(out, "findings {}", summary.findings);
         for finding in findings {
-            let _ = writeln!(out, "  {} at {}", finding.code.as_str(), finding.place);
+            let _ = writeln!(
+                out,
+                "  {} at {}",
+                finding.code.as_str(),
+                audit.place(&finding.site)
+            );
         }
         let unlisted = summary.findings - findings.len() as u64;
         if unlisted > 0 {
@@ -1062,7 +1067,7 @@ fn audit_records(audit: &marrow_lifecycle::StoreAudit, store: String) -> Vec<Jso
         records.push(Json::Object(vec![
             ("kind".to_string(), text("finding")),
             ("code".to_string(), text(finding.code.as_str())),
-            ("place".to_string(), Json::Str(finding.place.clone())),
+            ("place".to_string(), Json::Str(audit.place(&finding.site))),
         ]));
     }
     records

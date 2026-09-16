@@ -9,7 +9,8 @@ use marrow_kernel::codec::value::RuntimeScalar;
 use marrow_kernel::durable::{DemandCoverage, Durable, EntryValue, InvocationGrant};
 use marrow_kernel::equality::ValueDomain;
 use marrow_lifecycle::{
-    AttachOutcome, AuditError, ChangedFact, ENGINE_FILE, active_binding, attach, audit, prepare,
+    AttachOutcome, AuditError, AuditSite, ChangedFact, ENGINE_FILE, active_binding, attach, audit,
+    prepare,
 };
 use marrow_verify::{VerifiedImage, verify};
 
@@ -317,6 +318,35 @@ fn a_populated_store_audits_clean_with_a_stable_digest_that_tracks_writes() {
     assert!(attach(&store, prepare(image.clone())).is_ok());
 }
 
+/// The two findings a store audits with when its engine was populated under a ledger that
+/// keys `people.byEmail` by another identity: the index cell the present entry's projection
+/// requires is missing, and the cells the other ledger wrote sit outside the schema.
+fn assert_swapped_index_findings(findings: &[marrow_lifecycle::Finding]) {
+    assert_eq!(findings.len(), 2, "{findings:?}");
+    assert_eq!(
+        findings[0],
+        marrow_lifecycle::Finding {
+            code: marrow_codes::Code::StoreAuditIndexMissing,
+            site: AuditSite::IndexCell {
+                root: 0,
+                index: 0,
+                values: vec![KeyScalar::Str("ada@example.org".into())],
+            },
+        },
+    );
+    assert_eq!(
+        findings[1],
+        marrow_lifecycle::Finding {
+            code: marrow_codes::Code::StoreAuditOutsideSchema,
+            // `id index people.byEmail` in `IDS`, which the other ledger does not declare.
+            site: AuditSite::UndeclaredIndex {
+                root: 0,
+                id: [0x1c; 16],
+            },
+        },
+    );
+}
+
 /// The same program under another ledger numbers its cells identically but keys its index
 /// cells by a different identity, so an engine swapped under the other provision's head
 /// audits with one index's cells outside the schema and the other's cells missing.
@@ -337,17 +367,7 @@ fn an_engine_swapped_under_another_provisions_head_is_reported() {
     std::fs::copy(populated.join(ENGINE_FILE), other.join(ENGINE_FILE)).expect("swap engine");
     let (swapped, findings) = walked(&other, &other_image);
     assert!(!swapped.is_clean());
-    assert_eq!(findings.len(), 2, "{findings:?}");
-    assert_eq!(
-        findings
-            .iter()
-            .map(|finding| finding.code)
-            .collect::<Vec<_>>(),
-        vec![
-            marrow_codes::Code::StoreAuditIndexMissing,
-            marrow_codes::Code::StoreAuditOutsideSchema,
-        ],
-    );
+    assert_swapped_index_findings(&findings);
     // The digest is over the logical entries, which the swap carried across unchanged.
     let (source, _) = walked(&populated, &image);
     assert_eq!(digest_of(&source), digest_of(&swapped));
@@ -378,19 +398,7 @@ fn backup_rejects_inconsistent_source_indexes_without_publishing() {
     let marrow_lifecycle::BackupFault::Invalid(report) = error.fault else {
         panic!("expected completed non-clean audit: {error:?}");
     };
-    assert_eq!(report.findings.len(), 2);
-    assert!(
-        report
-            .findings
-            .iter()
-            .any(|finding| finding.code == marrow_codes::Code::StoreAuditIndexMissing)
-    );
-    assert!(
-        report
-            .findings
-            .iter()
-            .any(|finding| finding.code == marrow_codes::Code::StoreAuditOutsideSchema)
-    );
+    assert_swapped_index_findings(&report.findings);
     assert!(error.unpublished.is_none());
     assert!(error.cleanup.is_none());
     assert!(!destination.exists());
@@ -427,19 +435,7 @@ fn rebind_rejects_inconsistent_indexes_without_changing_store_artifacts() {
     let marrow_lifecycle::LifecycleError::Invalid(report) = error else {
         panic!("expected completed logical refusal: {error:?}");
     };
-    assert_eq!(report.findings.len(), 2);
-    assert!(
-        report
-            .findings
-            .iter()
-            .any(|finding| finding.code == marrow_codes::Code::StoreAuditIndexMissing)
-    );
-    assert!(
-        report
-            .findings
-            .iter()
-            .any(|finding| finding.code == marrow_codes::Code::StoreAuditOutsideSchema)
-    );
+    assert_swapped_index_findings(&report.findings);
     assert!(
         store_files(&destination) == before,
         "refusal changed store bytes or membership"

@@ -220,17 +220,13 @@ fn write_backup(
             ExportError::Read(error) => BackupFault::Audit(AuditError::Read(error)),
             ExportError::Output(error) => BackupFault::Io(error),
         })?;
-    let audit = StoreAudit {
-        instance: opened.envelope.instance,
+    let audit = StoreAudit::from_walk(
+        opened.envelope.instance,
         image_id,
-        summary: report.summary,
-        findings: report
-            .findings
-            .iter()
-            .map(|finding| names.finding(finding))
-            .collect(),
-        digest: content.finish(),
-    };
+        &report,
+        content.finish(),
+        names,
+    );
     if !audit.is_clean() {
         return Err(BackupFault::Invalid(Box::new(audit)));
     }
