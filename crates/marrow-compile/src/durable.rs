@@ -52,11 +52,9 @@ use staging::StagedStoreTxn;
 /// project, so the anchor is the project itself.
 const APPLICATION_ANCHOR_PATH: &str = ".";
 
-/// The most managed indexes one `store` root may declare. The checker owns this product
-/// limit; it sits well below the image's structural `MAX_INDEXES` decode bound (32), which
-/// stays as headroom. `8` keeps a root's per-write index maintenance bounded and small while
-/// comfortably covering the identity-plus-a-few-secondary-orderings shape narrow indexes are
-/// for.
+/// The most managed indexes one `store` root may declare, well below the image's
+/// structural `MAX_INDEXES` decode bound (32), which stays as headroom. Each index is
+/// compiler-maintained on every write to the root, so this caps write amplification.
 const MAX_STORE_INDEXES: usize = 8;
 
 /// One top-level stored field as an index-projection candidate: its source name, its
@@ -398,10 +396,8 @@ impl BranchRecordShape {
 /// known.
 ///
 /// Unlike [`RootBinding`] there is no `NotYetExecutable` answer and `Declared` carries no
-/// root. Whether the kernel can serve a root is a fact about that occurrence; a Product's
-/// declared members, branches, and entry records are the same either way, so splitting the
-/// admitted answer on executability made a declaration query report an occurrence scan's
-/// result — a Product whose stores are all keyless answered as though it declared nothing.
+/// root: whether the kernel can serve a root is a fact about that occurrence, while a
+/// Product's declared members, branches, and entry records are the same either way.
 pub(crate) enum ProductBinding<'a> {
     /// At least one store over this resource was admitted, so the Product's declaration
     /// facts are available.
@@ -455,15 +451,10 @@ pub(crate) struct DurableRegistry {
     /// (`Book.notes`, `Book.notes.tags`), written once per Product at its first admitted
     /// root, straight from the resource declaration.
     ///
-    /// Whether a Product declares a branch named `n` is a *declaration* question, and it
-    /// has one answer however many roots occur over the Product and whichever of them the
-    /// kernel can serve. Reading it out of [`Self::branch_paths`] answered it from an
-    /// executable-occurrence scan instead: that table is written from a root's built branch
-    /// descriptors, which exist only for a root inside the executable subset, so a Product
-    /// whose stores are all keyless carries a complete declared branch tree and still
-    /// answered "no branch". Materialized-record shape stays keyed by record type — a
-    /// materialized branch entry value only arises from an executable branch — but the
-    /// declared-name question is answered here.
+    /// Whether a Product declares a branch named `n` has one answer however many roots
+    /// occur over the Product and whichever of them the kernel can serve, so it is
+    /// answered here and not from [`Self::branch_paths`], which holds only the branches
+    /// of roots inside the executable subset.
     declared_branch_paths: BTreeSet<String>,
     /// The durable-path naming join for every admitted graph node, `(ledger id, sigil,
     /// simple name)`, accumulated across the project's admitted stores. The
@@ -615,12 +606,9 @@ impl DurableRegistry {
     }
 
     /// The materialized branch entry record `ty` types, if it is one — the shape a field
-    /// read of a bound `if const n = ^root(k).branch(bk)` value projects.
-    ///
-    /// One Product declaration mints one such record however many roots project it, so
-    /// this answers a record-shape question and never names an occurrence. The durable
-    /// node an operation addresses comes from the address that was resolved, not from the
-    /// type of a value it materialized.
+    /// read of a bound `if const n = ^root(k).branch(bk)` value projects. A record-shape
+    /// question naming no occurrence: the durable node an operation addresses comes from
+    /// the resolved address, not from the type of a value it materialized.
     pub(crate) fn branch_record(&self, ty: marrow_image::TypeId) -> Option<&BranchRecordShape> {
         self.branch_records.get(&ty)
     }
@@ -637,8 +625,7 @@ impl DurableRegistry {
 
     /// Every declared store-root name — admitted, parked, or refused — so a reference
     /// to an unknown `^root` can offer the nearest declared root as a did-you-mean. A
-    /// refused root is in the corpus because it is in the source: dropping it would
-    /// leave a near miss on a name the reader can see with no correction at all.
+    /// refused root stays in the corpus because the reader can still see it in the source.
     pub(crate) fn root_names(&self) -> impl Iterator<Item = &str> {
         self.declared.keys().map(String::as_str)
     }
@@ -688,10 +675,8 @@ impl DurableRegistry {
     /// keyed branch beneath one. An unkeyed group ends the walk, so a keyed branch
     /// declared under it records no path; the one consumer, [`Self::declares_branch`],
     /// asks only about a resource's own top-level member, which such a branch is not.
-    /// The rows carry each branch's path and keyedness, so this projection reads no
-    /// declaration syntax and re-derives neither; the answer is available for every
-    /// Product with an admitted root, whether or not that root reached the executable
-    /// subset.
+    /// Projected from the rows, so the answer is available for every Product with an
+    /// admitted root, executable or not.
     fn record_declared_branch_paths(&mut self, groups: &[GroupRow<'_>]) {
         for row in groups {
             if row.keys.is_none() {
@@ -731,29 +716,25 @@ impl DurableRegistry {
         if stores.is_empty() {
             return Ok(Self::empty(budget));
         }
-        // Decide every Product's occurrence multiplicity before the first store is built,
-        // so no root emits a site under a policy a later store would change. A Product's
-        // multiplicity is a property of the whole declaration set, not of the store being
-        // built, and a per-store decision would give the roots of one Product two policies.
-        // Resolve every store's resource spelling once, against both of a resource's
-        // owners at the same site, before either the census or the first build reads it.
+        // A Product's occurrence multiplicity is a property of the whole declaration set,
+        // so it is decided before the first store is built and no root emits a site under
+        // a policy a later store would change. Every store's resource spelling resolves
+        // once, against both of a resource's owners at the same site.
         let directory = ResourceDirectory::take(resources, records)?;
         let rows: Vec<StoreRow<'_>> = stores
             .iter()
             .map(|(_, file, store)| StoreRow::resolve(&directory, store, records, file))
             .collect::<Result<_, _>>()?;
         let census = ProductOccurrenceCensus::take(stores, &rows);
-        // The census is the admission owner for durable graph input: it is the one place
-        // that knows the whole declaration set before any of it reaches the draft, so it
-        // is where the construction budget is frozen.
+        // The census knows the whole declaration set before any of it reaches the draft,
+        // so it is where the construction budget is frozen.
         let plan = census.plan();
         records.with_metadata_session(|metadata| {
             let mut registry = Self::empty(budget.clone());
-            // Whole-build custody: every store's settled rows land here, and this
-            // collector reaches the caller's only after the last store has been built.
-            // A store that returns an invariant leaves through `?` with this collector
-            // still owned by the build, so an earlier store's rows are dropped with it
-            // rather than published beside a build that produced no registry.
+            // Whole-build custody: a store that returns an invariant leaves through `?`
+            // with this collector still owned by the build, so an earlier store's rows are
+            // dropped with it rather than published beside a build that produced no
+            // registry.
             let mut settled = DiagnosticCollector::new();
             let mut type_metadata = DurableTypeMetadata { records, metadata };
             let mut reported_identity_gaps = BTreeSet::new();
@@ -787,12 +768,9 @@ impl DurableRegistry {
                 }
                 // One admitted transaction per store: an accepted store commits its
                 // interned spelling, root, sites, and application identity as one unit,
-                // and an ordinary checked refusal runs the guard's total inverse, so a
-                // refused store leaves no orphan row behind.
-                //
-                // The diagnostic custody seam: this aggregate owns the armed transaction
-                // and its private rows together. An invariant abort drops both; a checked
-                // outcome consumes this exact producer before releasing its rows.
+                // and a checked refusal runs the guard's total inverse, so a refused store
+                // leaves no orphan row behind. The aggregate owns the armed transaction
+                // and its private rows together: an invariant abort drops both.
                 let staged = StagedStoreTxn::new(draft);
                 let (built, released) = staged.build_one(
                     &plan,
@@ -850,11 +828,9 @@ impl DurableRegistry {
                     DeclarationOccurrence::Accepted(DeclaredRoot { executable }) => {
                         declare_branch_paths = stores.admitted.is_empty();
                         stores.admitted.push(store.root.root.clone());
-                        // A Product declaration mints one materialized entry record per
-                        // declared branch however many roots project it, so its branch
-                        // record table is written at that Product's first executable root
-                        // and never again. Every later occurrence carries the identical
-                        // declaration and its own operation sites, and no site is here.
+                        // A Product mints one materialized entry record per declared
+                        // branch however many roots project it, so the branch record
+                        // table is written at its first executable root and never again.
                         if let Some(at) = executable
                             && !std::mem::replace(&mut stores.declared_branches, true)
                         {
@@ -877,8 +853,6 @@ impl DurableRegistry {
                     .declared
                     .declare(store.root.root.clone(), occurrence)?;
             }
-            // Every store settled; only now does the whole build's custody reach the
-            // caller.
             diagnostics.absorb(settled.finish());
             Ok(registry)
         })
@@ -891,19 +865,18 @@ enum StoreBuild {
     /// descriptor) entered the draft. Boxed: the descriptor carries the root's whole
     /// member tree, while a refusal is a small summary.
     Admitted(Box<BuiltRoot>),
-    /// The store was refused, with the cause its declaration reported. There is one
-    /// refusal outcome and no silent one: a store that leaves no trace in the registry
-    /// is what makes every later `^name` reference read as a name never written.
+    /// The store was refused, with the cause its declaration reported. There is no silent
+    /// refusal: a store that left no trace would make every later `^name` reference read
+    /// as a name never written.
     Refused(DeclarationRefusalSummary),
 }
 
 /// Why one `store` declaration was refused.
 ///
 /// Grouped by what a later `^root` reference must be told, not one variant per site:
-/// only the identity class has a report *family* to send the reader to, and every
-/// other class reuses the single declaring row it pushed. Nine of the ten sites that
-/// mark a durable graph incomplete are not identity gaps, and this is what keeps them
-/// from claiming to be.
+/// only the identity class has a report *family* to send the reader to, and every other
+/// class reuses the single declaring row it pushed. Most sites that mark a durable graph
+/// incomplete are not identity gaps, and this is what keeps them from claiming to be.
 enum DurableRefusal<'a> {
     /// A durable anchor has no live row in the committed ledger. The one class
     /// entitled to send a use to the `check.durable_identity` reports.
@@ -1045,8 +1018,7 @@ impl ProductDeclarationSource {
 enum ProductOccurrenceMultiplicity {
     /// Exactly one root occurs over this Product. Its occurrence pre-seeds the root
     /// whole-payload site, then every group-entry and nested-branch whole-payload site of
-    /// the member graph in declaration pre-order, then its root-scoped index sites — the
-    /// exact order and set every previously accepted image was written with.
+    /// the member graph in declaration pre-order, then its root-scoped index sites.
     Unique,
     /// More than one root occurs over this Product. Each occurrence pre-seeds only its own
     /// root whole-payload and root-scoped index sites; the Product's group and nested-branch
@@ -1062,12 +1034,11 @@ enum ProductOccurrenceMultiplicity {
 /// The per-Product occurrence census, taken over the complete store-declaration set before
 /// any store is built and so before any site is emitted.
 ///
-/// The census is taken over the declarations that reach admission, which over-approximates
-/// the accepted set by exactly the stores that fail admission. That over-approximation
-/// cannot reach an encoded image: a store that fails admission pushes its diagnostic, and a
-/// non-empty diagnostic terminal is the compilation's outcome — the draft is never encoded.
-/// So for every image that is produced, this census is the accepted root/Product census,
-/// and a Product's multiplicity is decided once, before its first occurrence emits a site.
+/// It counts the declarations that reach admission, over-approximating the accepted set by
+/// exactly the stores that fail admission. That over-approximation cannot reach an encoded
+/// image: a failing store pushes a diagnostic, and a non-empty diagnostic terminal is the
+/// compilation's outcome. So for every image produced this is the accepted census, and a
+/// Product's multiplicity is decided once, before its first occurrence emits a site.
 struct ProductOccurrenceCensus<'stores> {
     /// The keys named by more than one admissible store declaration; only a bound key is a Product.
     repeated: BTreeSet<ProductKey<'stores>>,
@@ -1110,17 +1081,15 @@ impl<'stores> ProductOccurrenceCensus<'stores> {
         }
     }
 
-    /// The construction budget this compile's durable graph is admitted for.
+    /// The construction budget this compile's durable graph is admitted for: an upper
+    /// bound on what the draft can be handed, never a refusal of a compile that produces
+    /// an image.
     ///
-    /// The census over-approximates the accepted set by exactly the stores that fail
-    /// admission, so the budget never binds a compile that produces an image; it bounds
-    /// what the draft can be handed.
-    ///
-    /// A census larger than any image could carry saturates rather than refusing: this
+    /// A census larger than any image could carry saturates rather than refusing. This
     /// pass reports source problems as typed diagnostics and never aborts, and the overrun
-    /// already has an owner — the encoder's
-    /// [`marrow_image::ImageBuildError::TooManyRoots`], reported over a complete graph.
-    /// Saturating the counted terms is what leaves that graph complete.
+    /// already has an owner in the encoder's
+    /// [`marrow_image::ImageBuildError::TooManyRoots`], which needs a complete graph to
+    /// report over.
     fn plan(&self) -> AdmittedGraphInputPlan {
         AdmittedGraphInputPlan::admit(
             self.products,
@@ -1213,8 +1182,8 @@ fn resolve_root_indexes(
 
 /// One read site per managed index: a nonunique index is a progressive-prefix scan, a
 /// unique index a complete-key exact lookup. There is deliberately no index-write site —
-/// maintenance is compiler-owned. Every index site seals as parked (an index node is
-/// never a flat-executable node).
+/// maintenance is compiler-owned. Every index site seals as parked, because an index node
+/// is never a flat-executable node.
 fn request_index_sites(
     draft: &mut DraftTxn<'_>,
     admitted: &marrow_image::AdmittedRoot,
@@ -1275,8 +1244,7 @@ fn root_is_executable(
 /// Resolve one store declaration's root tuple and the resource it binds.
 ///
 /// The root tuple was taken and resolved once, when the store's row was taken; a refusal
-/// is rendered here, at the same position it always held, width cap first. A singleton
-/// root has no columns.
+/// is rendered here, width cap first. A singleton root has no columns.
 ///
 /// The record and its projected member rows are read from one row the directory join
 /// built, so a store cannot reach a record the join paired with no declaration. The
@@ -1394,11 +1362,10 @@ fn build_one(
     // reachable enum contributes its own sum/member identities. `has_extras`
     // records whether the resource declares any group or branch.
     //
-    // A Product is a declaration and a root is an occurrence of it, so the graph is
-    // built **once**, at this Product's first root in canonical store-traversal order:
-    // a later root over the same Product references the declaration the draft already
-    // holds, resolving no anchor a second time and — decisively — minting no second
-    // entry record type for its nested branches.
+    // The graph is built once, at this Product's first root in canonical store-traversal
+    // order: a later root over the same Product references the declaration the draft
+    // already holds, resolving no anchor a second time and minting no second entry record
+    // type for its nested branches.
     //
     // The declaration is only *admitted* into the draft once this store's identity is
     // known complete (below). A graph with an unresolved anchor carries placeholder ids,
@@ -1414,8 +1381,7 @@ fn build_one(
         return Err(invariant);
     }
     // An abandoned build records its builder-domain refusal before returning, so the
-    // check above is the exit that carries it. The arm below keeps that reasoning a
-    // typed fact rather than an assumption the reader has to re-derive.
+    // check above is the exit that carries it.
     let Some(source) = built else {
         return Err(GenericInvariant::BuilderDomain(
             marrow_image::DraftStateError::CarrierDomain,
@@ -1435,12 +1401,11 @@ fn build_one(
         row,
     );
 
-    // Every identity must resolve before the graph enters the image; a single
-    // gap already reported precisely leaves the durable graph absent, so an
-    // operation over it is not additionally mislabelled "not yet executable"
-    // (the identity gap is the diagnosis, whatever the shape). The placement name
-    // is retained so a reference to `^name` steers to those identity reports
-    // rather than reading as an unknown name.
+    // Every identity must resolve before the graph enters the image. One precisely
+    // reported gap leaves the durable graph absent, so an operation over it is not
+    // additionally mislabelled "not yet executable": the identity gap is the diagnosis,
+    // whatever the shape. The placement name is retained so a reference to `^name` steers
+    // to those identity reports rather than reading as an unknown name.
     if let Some(refusal) = resolver.refusal.take() {
         return Ok(StoreBuild::Refused(refusal));
     }
@@ -1466,10 +1431,8 @@ fn build_one(
         })
         .collect();
 
-    // Admit the root occurrence over its Product declaration. It mints no site, and the
-    // encoder sorts the string pool, so admitting the occurrence — and interning its
-    // spelling — before the eager sites below leaves the wire unchanged while giving the
-    // sites the occurrence they are qualified by.
+    // Admit the root occurrence over its Product declaration, before the eager sites
+    // below, so each site has the occurrence it is qualified by.
     let indexes: Rc<[DurableIndexShape]> = built_indexes
         .iter()
         .map(|built| built.shape.clone())
@@ -1504,11 +1467,6 @@ fn build_one(
         SemanticTarget::WholePayload,
     )?;
     let captured = emit_root_member_sites(draft, admitted.occurrence(), &members, multiplicity)?;
-    // One read site per managed index: a nonunique index is a progressive-prefix
-    // scan, a unique index a complete-key exact lookup. There is deliberately no
-    // index-write site — maintenance is compiler-owned. Every index site seals as
-    // parked (an index node is never a flat-executable node); runtime traversal and
-    // lookup land at E05.
     let lowered_indexes = request_index_sites(draft, &admitted, &built_indexes)?;
 
     // Decide executability and capture the executable branch descriptors from the Product
@@ -1576,10 +1534,8 @@ fn build_one(
 /// this graph, if any; the caller discards the graph when it is set, so an id
 /// resolved to a placeholder on a gap never reaches the image.
 ///
-/// The refusal *is* the incompleteness — a graph with none is complete. The bare
-/// flag this replaces recorded that a graph was refused while forgetting why, which
-/// left every later `^root` reference to guess, and every one of them guessed
-/// "identity gap".
+/// The refusal *is* the incompleteness: a graph with none is complete, and a later
+/// `^root` reference is steered by the recorded cause rather than guessing one.
 struct IdentityResolver<'a> {
     declared: DeclarationSite<'a>,
     span: SourceSpan,
@@ -1760,19 +1716,13 @@ impl<'a> IdentityResolver<'a> {
     ///
     /// Depth is a property of the field's value, not of any type inside it: the value
     /// occupies levels `1..=depth(node)`, whatever depth a shape it shares reaches under
-    /// some other field. Deciding it once, at the root, is what lets the walk below visit
-    /// each distinct type once — and it is why one over-deep field draws one located
-    /// refusal rather than one per leaf of the expansion it never builds.
+    /// some other field. Deciding it once, at the root, lets the walk visit each distinct
+    /// type once and draws one located refusal per over-deep field rather than one per
+    /// leaf of the expansion it never builds.
     ///
-    /// The depth decision does not short-circuit the walk and does not replace what the
-    /// walk found. The walk runs first and records every refusal it meets — an over-wide
-    /// struct, a value type outside the durable set — and this adds the depth row on top
-    /// of them. A field that is both over-deep and over-wide therefore draws both rows,
-    /// and a value type the durable set excludes still draws its own `check.unsupported`
-    /// beneath an over-deep field. Each row is a distinct true fact about the same
-    /// declaration, and reporting the shallowest one alone would mean fixing the depth
-    /// only to be told about the width. The rows are a superset of what the per-leaf
-    /// accounting reported, never a substitute for one of them.
+    /// The depth decision runs after the walk and adds to it: a field that is both
+    /// over-deep and over-wide draws both rows, so fixing the depth does not then reveal
+    /// the width.
     fn build_field_value(
         &mut self,
         draft: &mut DraftTxn<'_>,
@@ -1794,18 +1744,14 @@ impl<'a> IdentityResolver<'a> {
     /// Record `node` as the shape of `ty`, so a type reached again from another field —
     /// or from another level of the same value — is a lookup rather than a second walk.
     ///
-    /// This is what makes the value graph a graph: a struct whose four fields are all the
-    /// enclosing level's type is walked once, not four times, so a shape whose expansion
-    /// is exponential in its declared levels costs one visit per declared level.
+    /// This is what makes the value graph a graph: a shape whose expansion is exponential
+    /// in its declared levels costs one visit per declared level.
     ///
-    /// A directly self-referential type never reaches here: its own walk refuses at the
-    /// back edge and returns before remembering anything. Mutual recursion does — walking
-    /// `A → B → A` refuses at the back edge, and `B`'s walk then completes over the
-    /// placeholder that refusal returned and is remembered under `B`. That memo is
-    /// truthful about nothing, and it does not have to be: the refusal is already
-    /// recorded, so the whole graph is discarded and no image is built from it. Declining
-    /// to remember after a refusal instead would return the walk to exponential cost on
-    /// exactly the corpora that refuse, which is the cost this memo exists to remove.
+    /// A mutually recursive type can be remembered under a placeholder the back-edge
+    /// refusal returned. That memo is not truthful, and need not be: the refusal is
+    /// already recorded, so the whole graph is discarded and no image is built from it.
+    /// Skipping the memo after a refusal would restore exponential cost on exactly the
+    /// corpora that refuse.
     fn remember(&mut self, ty: GArg, node: ValueShapeNodeId) -> ValueShapeNodeId {
         self.value_memo.insert(ty, node);
         node
@@ -1951,10 +1897,8 @@ impl<'a> IdentityResolver<'a> {
     /// one), the field anchoring the ledger id while nested product leaves are shape
     /// bytes and each durable-reachable enum contributes its own sum/member identities.
     ///
-    /// It is built once per Product, at that Product's first root in canonical
-    /// store-traversal order: a later root over the same Product reads the declaration
-    /// the draft already holds, resolving no anchor a second time and minting no second
-    /// entry record type for the Product's nested branches.
+    /// Built once per Product, at that Product's first root in canonical store-traversal
+    /// order.
     fn build_product_graph(
         &mut self,
         draft: &mut DraftTxn<'_>,
@@ -1976,13 +1920,11 @@ impl<'a> IdentityResolver<'a> {
                 shape,
             ));
         }
-        // A member the type registry refused is still a member this resource declares,
-        // so its identity anchor belongs to the resource's anchor set. It is resolved
-        // here and contributes no node to the member tree, whose typed invariant stays
-        // "built members only" — a refused member has no value shape to encode. Without
-        // it the anchor set narrows exactly where a program is already wrong, and the
-        // mint action that consumes these reports would write a ledger that is missing
-        // the anchor the corrected program needs.
+        // A member the type registry refused is still a member this resource declares, so
+        // its identity anchor belongs to the resource's anchor set even though it has no
+        // value shape and contributes no node. Without it the mint action that consumes
+        // these reports would write a ledger missing the anchor the corrected program
+        // needs.
         for member in records.refused_members(product) {
             self.resolve(IdentityKind::Field, &format!("{product}.{member}"));
         }
@@ -2110,12 +2052,10 @@ impl<'a> IdentityResolver<'a> {
     /// nodes.
     ///
     /// A body one level past [`bounds::MAX_DURABLE_DEPTH`] is refused here, at its first
-    /// member, and none of it is built. The bound is a property of the container, not of
-    /// any one member it holds — every member of an over-deep body is over-deep, and
-    /// every member below them — so one row at the first member states the whole fact,
-    /// where a row per member would restate it once per leaf of the subtree the walk
-    /// then declines to build. This is the source precheck for a bound the encoder
-    /// otherwise reaches with no span to report it at.
+    /// member, and none of it is built: the bound is a property of the container, so one
+    /// row states the whole fact where a row per member would restate it once per leaf of
+    /// the subtree the walk then declines to build. This is the source precheck for a
+    /// bound the encoder otherwise reaches with no span to report it at.
     fn build_member_tree(
         &mut self,
         nodes: &mut Vec<DeclarationDraftNode>,
@@ -2229,11 +2169,6 @@ impl<'a> IdentityResolver<'a> {
         fields: &[IndexFieldLeaf],
         indexes: &IndexTable<'_>,
     ) -> Vec<BuiltIndex> {
-        // The checker caps the per-root index count well below the image's structural
-        // decode bound (`marrow_image::bounds::MAX_INDEXES`): each declared index is
-        // compiler-maintained on every write to the root, so the cap bounds a root's write
-        // amplification. The tighter checker limit is a product choice; the image bound
-        // remains as headroom for a later increase without an image-format change.
         let declared = indexes.rows();
         if declared.len() > MAX_STORE_INDEXES {
             // The count itself is malformed, so report it and discard the graph rather than
@@ -2470,10 +2405,9 @@ enum DeclarationWireClass {
 ///
 /// The traversal order and the wire order deliberately differ. Identity resolution, string
 /// interning, and entry-record minting are order-sensitive side effects — a branch's entry
-/// record type is assigned by call order — so the walk runs once in source order and its
-/// buffer position *is* the traversal sequence, while `class` carries where the node
-/// belongs on the wire. [`declaration_commands`] projects the two into the flat command
-/// vector the draft admits.
+/// record type is assigned by call order — so the walk runs once in source order, its
+/// buffer position *is* the traversal sequence, and `class` carries where the node belongs
+/// on the wire. [`declaration_commands`] projects the two into the draft's command vector.
 struct DeclarationDraftNode {
     parent: Option<usize>,
     class: DeclarationWireClass,
@@ -2614,9 +2548,8 @@ fn request_eager_site(
 /// site resolves against the verifier's independently reconstructed node set.
 ///
 /// A [`ProductOccurrenceMultiplicity::Shared`] Product emits none of them: its member nodes
-/// are minted on first reference, like a field leaf. The capture is unaffected — a
-/// descriptor holds selectors, never site ids — so the lowerer resolves the same place
-/// either way and the only difference is when its site is minted.
+/// are minted on first reference, like a field leaf. A descriptor holds selectors, never
+/// site ids, so the lowerer resolves the same place either way.
 fn emit_root_member_sites(
     draft: &mut DraftTxn<'_>,
     occurrence: &RootOccurrenceSelector,
