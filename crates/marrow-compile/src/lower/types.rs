@@ -135,8 +135,16 @@ pub(super) fn resolve_type(
             let Some(written) = records.scoped(site.file.origin(), text) else {
                 return Err(ResolveError::Refusal(ResolveRefusal::Unsupported));
             };
-            let target = records.alias_target(&written);
-            let scope = target.map_or(&written, |target| target.terminal).clone();
+            // The alias hop is taken once, before the borrow it needs is released:
+            // an alias's terminal is scoped to the tree that bound it, and its
+            // optionality composes onto whatever that terminal resolves to.
+            let (scope, optional) = match records.alias_target(&written) {
+                Some(target) => (
+                    target.terminal.clone(),
+                    target.presence == crate::types::AliasPresence::Optional,
+                ),
+                None => (written, false),
+            };
             let resolved = if let Some(scalar) = ScalarType::from_spelling(scope.name()) {
                 Ok(LTy::bare_scalar(scalar))
             } else if let Some((id, _)) = records.nominal_by_name(&scope) {
@@ -166,9 +174,6 @@ pub(super) fn resolve_type(
                     )),
                 }
             };
-            let optional = records
-                .alias_target(&written)
-                .is_some_and(|target| target.presence == crate::types::AliasPresence::Optional);
             resolved.map(|ty| if optional { ty.to_optional() } else { ty })
         }
         TypeExpr::Optional { inner, .. } => {
@@ -605,8 +610,13 @@ fn named_type(
     let Some(written) = records.scoped(origin, text) else {
         return Ok(None);
     };
-    let target = records.alias_target(&written);
-    let scope = target.map_or(&written, |target| target.terminal).clone();
+    let (scope, optional) = match records.alias_target(&written) {
+        Some(target) => (
+            target.terminal.clone(),
+            target.presence == crate::types::AliasPresence::Optional,
+        ),
+        None => (written, false),
+    };
     let resolved = if let Some(scalar) = ScalarType::from_spelling(scope.name()) {
         Ok(Some(LTy::bare_scalar(scalar)))
     } else if let Some((id, _)) = records.nominal_by_name(&scope) {
@@ -631,16 +641,7 @@ fn named_type(
             None => None,
         })
     };
-    resolved.map(|ty| {
-        ty.map(|ty| {
-            if target.is_some_and(|target| target.presence == crate::types::AliasPresence::Optional)
-            {
-                ty.to_optional()
-            } else {
-                ty
-            }
-        })
-    })
+    resolved.map(|ty| ty.map(|ty| if optional { ty.to_optional() } else { ty }))
 }
 
 /// The instruction an int ordering comparison lowers to, shared by the bare-int
