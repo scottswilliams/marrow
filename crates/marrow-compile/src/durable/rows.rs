@@ -578,7 +578,7 @@ fn resolve_key_columns<'a>(
         {
             return Ok(Err(Box::new(row)));
         }
-        let key = match records.scalar_annotation(&column.ty) {
+        let key = match records.scalar_annotation(file.origin(), &column.ty) {
             Ok(key) => key,
             Err(ResolveError::Refusal(refusal)) => {
                 let span = match refusal {

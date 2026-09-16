@@ -285,6 +285,7 @@ fn signature_registry(functions: &[crate::lower::DeclaredFn<'_>]) -> FunctionReg
     let mut diagnostics = DiagnosticCollector::new();
     let mut records = crate::types::TypeRegistry::build(
         &mut draft,
+        crate::test_origins(),
         &[],
         &[],
         &[],
@@ -653,6 +654,7 @@ fn a_store_refused_after_real_staging_rolls_back_to_the_unstaged_image() {
         let mut diagnostics = DiagnosticCollector::new();
         let records = crate::types::TypeRegistry::build(
             &mut draft,
+            crate::test_origins(),
             &[],
             &[],
             &[],
@@ -738,6 +740,7 @@ fn a_registry_slice_drift_is_a_typed_invariant_not_a_user_error() {
     let mut diagnostics = DiagnosticCollector::new();
     let records = crate::types::TypeRegistry::build(
         &mut draft,
+        crate::test_origins(),
         &[],
         &[],
         &[],

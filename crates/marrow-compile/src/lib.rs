@@ -80,6 +80,13 @@ pub(crate) fn test_file_identity(path: &str) -> ProjectFile {
     )
 }
 
+/// The captured origins of a single-tree test project: the root alone, taken from a
+/// real capture so a test reads the same value the production path builds.
+#[cfg(test)]
+pub(crate) fn test_origins() -> source::CapturedOrigins {
+    source::CapturedOrigins::of(&test_project::project(&[("src/main.mw", "module main\n")]))
+}
+
 /// A `'static` reference to the canonical root-project `src/main.mw` address, for
 /// test sites that borrow or return a `&'static ProjectFile`.
 #[cfg(test)]

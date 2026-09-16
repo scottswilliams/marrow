@@ -49,9 +49,11 @@ use crate::scalar::ScalarType;
 use crate::types::{
     CollSpec, EnumVariantSelection, GArg, GenericDiagnostics, GenericInvariant as LowerInvariant,
     MintSite, NominalId, OPTION_NONE, OPTION_SOME, ProductFieldProjection, RESULT_ERR, RESULT_OK,
-    ReservedEnumArgs, ResolveError, ResolveRefusal, StaticNamedType, StructFieldProjection,
-    SupportSet, TypeConstraint, TypeInstId, TypeMetadataSession, TypeParamIndex, TypeRegistry,
+    ReservedEnumArgs, ResolveError, ResolveRefusal, ScopedTypeName, StaticNamedType,
+    StructFieldProjection, SupportSet, TypeConstraint, TypeInstId, TypeMetadataSession,
+    TypeParamIndex, TypeRegistry,
 };
+use marrow_project::SourceOrigin;
 
 /// Whether control continues past a statement or block, leaves it (via `return`,
 /// `break`, or `continue`), or is terminally rejected. `Rejected` is propagated by every
@@ -1096,6 +1098,15 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
     }
 
+    /// The origin-scoped name a bare type spelling addresses from this body's tree.
+    ///
+    /// Construction sites, qualified names and steers name a type by a bare
+    /// identifier, which resolves in the tree that wrote it: a dependency's `Pair`
+    /// and the root's `Pair` are two types, and neither answers the other's name.
+    fn bare_type(&self, name: &str) -> ScopedTypeName {
+        ScopedTypeName::new(self.file.origin(), name)
+    }
+
     /// Steer a use that named a refused type to that declaration's cause, if the name is
     /// one, reporting once per refused key.
     ///
@@ -1103,7 +1114,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// rather than through type-annotation resolution, so this probe is what keeps those
     /// paths from calling a refused type undeclared.
     fn steer_refused_type(&mut self, name: &str, span: SourceSpan) -> bool {
-        let steer = match self.records.named_type(name) {
+        let steer = match self.records.named_type(&self.bare_type(name)) {
             Ok(Binding::Refused(_, summary)) => Ok(Some(self.steer_row(summary, span))),
             Ok(Binding::Accepted(_) | Binding::Absent) => Ok(None),
             Err(drift) => Err(LowerInvariant::from(drift)),

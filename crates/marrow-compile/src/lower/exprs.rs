@@ -214,7 +214,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     Err(LoweringFailure::Recoverable)
                 }
                 // `Enum::member` for a payloadless member is an enum value.
-                [enum_name, variant] if self.records.enum_by_name(enum_name.text()).is_some() => {
+                [enum_name, variant]
+                    if self
+                        .records
+                        .enum_by_name(&self.bare_type(enum_name.text()))
+                        .is_some() =>
+                {
                     self.lower_enum_construct(enum_name.text(), variant.text(), &[], *span)
                 }
                 // A qualified name whose head is a refused enum is that enum's
@@ -985,7 +990,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 if &**name == "checked"
                     && let Expression::Name { segments, .. } = &**base
                     && let [type_name] = &segments[..]
-                    && let Some((id, _)) = self.records.nominal_by_name(type_name.text())
+                    && let Some((id, _)) = self
+                        .records
+                        .nominal_by_name(&self.bare_type(type_name.text()))
                 {
                     return self
                         .lower_checked_nominal(id, args, span)
@@ -1009,7 +1016,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     if let [group_name] = path.as_slice()
                         && self
                             .records
-                            .by_name(resource)
+                            .by_name(&self.bare_type(resource))
                             .is_some_and(|record| record.group(group_name).is_some())
                     {
                         return self
@@ -1052,7 +1059,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let generic_enum_template = match &segments[..] {
             [enum_name, _] => self
                 .records
-                .type_template_by_name(enum_name.text())
+                .type_template_by_name(&self.bare_type(enum_name.text()))
                 .filter(|template| self.records.template_is_enum(*template)),
             _ => None,
         };
@@ -1062,9 +1069,15 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         match (&segments[..], generic_enum_template) {
             ([name], _) => self.lower_unqualified_call(name.text(), args, span, callee_span),
             // `Enum::member(payload...)` constructs a payload-carrying enum value.
-            ([enum_name, item], _) if self.records.enum_by_name(enum_name.text()).is_some() => self
-                .lower_enum_construct(enum_name.text(), item.text(), args, span)
-                .map(CallResult::Value),
+            ([enum_name, item], _)
+                if self
+                    .records
+                    .enum_by_name(&self.bare_type(enum_name.text()))
+                    .is_some() =>
+            {
+                self.lower_enum_construct(enum_name.text(), item.text(), args, span)
+                    .map(CallResult::Value)
+            }
             // A generic enum template's variant infers its instantiation from the
             // payload values.
             ([_, item], Some(template)) => self
@@ -1198,25 +1211,25 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 .lower_conversion(name, args, span)
                 .map(CallResult::Value);
         }
-        if let Some((id, _)) = self.records.nominal_by_name(name) {
+        if let Some((id, _)) = self.records.nominal_by_name(&self.bare_type(name)) {
             return self
                 .lower_nominal_construct(id, args, span)
                 .map(CallResult::Value);
         }
-        if self.records.struct_by_name(name).is_some() {
+        if self.records.struct_by_name(&self.bare_type(name)).is_some() {
             return self
                 .lower_struct_literal(name, args, span)
                 .map(CallResult::Value);
         }
         // A generic struct template infers its instantiation from the field values.
-        if let Some(template) = self.records.type_template_by_name(name)
+        if let Some(template) = self.records.type_template_by_name(&self.bare_type(name))
             && !self.records.template_is_enum(template)
         {
             return self
                 .lower_generic_struct_literal(template, args, span)
                 .map(CallResult::Value);
         }
-        if self.records.by_name(name).is_some() {
+        if self.records.by_name(&self.bare_type(name)).is_some() {
             return self
                 .lower_constructor(name, args, span)
                 .map(CallResult::Value);
@@ -1492,6 +1505,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             let got = self.lower_expr(&argument.value)?;
             if let Err(error) = unify_type_param(
                 self.records,
+                template.file.origin(),
                 &template.type_params,
                 &param.ty,
                 got,
@@ -1778,7 +1792,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let record = self
             .accept_resolution(
                 self.records
-                    .static_record_projection(name)
+                    .static_record_projection(&self.bare_type(name))
                     .map_err(ResolveError::Invariant),
                 span,
                 "this record construction",
@@ -2037,7 +2051,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let group = self
             .accept_resolution(
                 self.records
-                    .static_group_projection(resource, group_name)
+                    .static_group_projection(&self.bare_type(resource), group_name)
                     .map_err(ResolveError::Invariant),
                 span,
                 "this resource-group construction",
@@ -2121,7 +2135,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let info = self
             .accept_resolution(
                 self.records
-                    .static_struct_projection(name)
+                    .static_struct_projection(&self.bare_type(name))
                     .map_err(ResolveError::Invariant),
                 span,
                 "this struct construction",
@@ -2248,7 +2262,14 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 return Err(LoweringFailure::Recoverable);
             };
             let got = self.lower_expr(&argument.value)?;
-            if let Err(error) = unify_type_param(self.records, &params, field_ty, got, &mut subst) {
+            if let Err(error) = unify_type_param(
+                self.records,
+                self.records.template_origin(template),
+                &params,
+                field_ty,
+                got,
+                &mut subst,
+            ) {
                 self.reject_unification(
                     error,
                     argument.value.span(),
@@ -2346,7 +2367,14 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 return Err(LoweringFailure::Recoverable);
             };
             let got = self.lower_expr(&argument.value)?;
-            if let Err(error) = unify_type_param(self.records, &params, field_ty, got, &mut subst) {
+            if let Err(error) = unify_type_param(
+                self.records,
+                self.records.template_origin(template),
+                &params,
+                field_ty,
+                got,
+                &mut subst,
+            ) {
                 self.reject_unification(
                     error,
                     argument.value.span(),
@@ -2521,7 +2549,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let info = self
             .accept_resolution(
                 self.records
-                    .static_enum_projection(enum_name)
+                    .static_enum_projection(&self.bare_type(enum_name))
                     .map_err(ResolveError::Invariant),
                 span,
                 "this enum construction",

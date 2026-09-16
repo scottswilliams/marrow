@@ -37,6 +37,7 @@ mod generic_enum_shape_tests {
         let mut build_diagnostics = DiagnosticCollector::new();
         let mut records = TypeRegistry::build(
             &mut draft,
+            crate::test_origins(),
             &[],
             &[],
             &[],
@@ -119,6 +120,7 @@ mod generic_enum_shape_tests {
         let mut build_diagnostics = DiagnosticCollector::new();
         let records = TypeRegistry::build(
             &mut draft,
+            crate::test_origins(),
             &[],
             &[],
             &[],
@@ -177,6 +179,7 @@ mod generic_enum_shape_tests {
         let mut build_diagnostics = DiagnosticCollector::new();
         let mut records = TypeRegistry::build(
             &mut draft,
+            crate::test_origins(),
             &[],
             &[],
             &[],
@@ -250,6 +253,7 @@ store ^holders[id: int]: Holder
         let mut diagnostics = DiagnosticCollector::new();
         let records = TypeRegistry::build(
             &mut draft,
+            crate::test_origins(),
             &[],
             &[],
             &[],
@@ -260,7 +264,15 @@ store ^holders[id: int]: Holder
         )
         .expect("the test registry stays within the ledger budget");
         assert!(diagnostics.is_empty());
-        let option = match records.by_name("Holder").expect("record exists").fields[0].ty {
+        let option = match records
+            .by_name(&crate::types::ScopedTypeName::new(
+                &marrow_project::SourceOrigin::Root,
+                "Holder",
+            ))
+            .expect("record exists")
+            .fields[0]
+            .ty
+        {
             GArg::Enum(id) => id,
             _ => panic!("resource field resolves to Option"),
         };
@@ -704,6 +716,7 @@ mod post_staging_custody_tests {
         let mut diagnostics = DiagnosticCollector::new();
         let records = TypeRegistry::build(
             &mut draft,
+            crate::test_origins(),
             &[],
             &[],
             &[],

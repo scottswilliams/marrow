@@ -73,6 +73,7 @@ pub(super) fn enum_template(name: &str, payload: TypeExpr) -> TypeTemplate {
 /// An empty registry carrying `templates` and nothing else.
 pub(super) fn test_registry(templates: Vec<TypeTemplate>) -> TypeRegistry {
     TypeRegistry {
+        origins: crate::test_origins(),
         named: DeclarationLedger::new(
             DeclarationNamespace::NamedType,
             DeclarationBudget::default(),

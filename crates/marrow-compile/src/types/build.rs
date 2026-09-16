@@ -20,6 +20,17 @@ fn name_conflict(
     ));
 }
 
+/// The declarations of one tree, for a name-conflict probe scoped to that tree.
+fn in_origin<'a, T>(
+    declarations: &'a [(FileRef, ProjectFile, &'a T)],
+    origin: &'a SourceOrigin,
+) -> impl Iterator<Item = &'a T> {
+    declarations
+        .iter()
+        .filter(move |(_, file, _)| file.origin() == origin)
+        .map(|(_, _, decl)| *decl)
+}
+
 /// What a declaration pass that has not run yet will bind `name` to.
 ///
 /// The passes run alias, nominal, template, record, struct, enum, and each holds its
@@ -118,19 +129,21 @@ pub(super) fn register_type_templates(
 ) -> Result<(), DeclareError> {
     // Templates yield to the concrete declarations of the same name; the generic rows
     // of these lists are this pass's own, held by the ledger as it declares them.
-    let taken = |registry: &TypeRegistry, name: &str| {
-        Ok::<_, DeclarationIndexDrift>(registry.name_conflict(name)?.or_else(|| {
+    // A pending declaration holds a name only in its own tree: type namespaces are
+    // origin-scoped, so a dependency's `Pair` never conflicts with the root's.
+    let taken = |registry: &TypeRegistry, declared: &DeclarationSite<'_>| {
+        let scope = ScopedTypeName::declared(declared);
+        let origin = scope.origin();
+        Ok::<_, DeclarationIndexDrift>(registry.name_conflict(&scope)?.or_else(|| {
             pending_name(
-                name,
-                resources.iter().map(|(_, _, r)| r.name.as_str()),
-                structs
-                    .iter()
-                    .filter(|(_, _, d)| d.type_params.is_empty())
-                    .map(|(_, _, d)| d.name.as_str()),
-                enums
-                    .iter()
-                    .filter(|(_, _, d)| d.type_params.is_empty())
-                    .map(|(_, _, d)| d.name.as_str()),
+                declared.name,
+                in_origin(resources, origin).map(|r| r.name.as_str()),
+                in_origin(structs, origin)
+                    .filter(|d| d.type_params.is_empty())
+                    .map(|d| d.name.as_str()),
+                in_origin(enums, origin)
+                    .filter(|d| d.type_params.is_empty())
+                    .map(|d| d.name.as_str()),
             )
         }))
     };
@@ -144,12 +157,7 @@ pub(super) fn register_type_templates(
             at: *at,
             span: decl.name_span,
         };
-        if !claim_template_name(
-            registry,
-            declared,
-            taken(registry, &decl.name)?,
-            diagnostics,
-        )? {
+        if !claim_template_name(registry, declared, taken(registry, &declared)?, diagnostics)? {
             continue;
         }
         let mut refusal = None;
@@ -190,12 +198,7 @@ pub(super) fn register_type_templates(
             at: *at,
             span: decl.name_span,
         };
-        if !claim_template_name(
-            registry,
-            declared,
-            taken(registry, &decl.name)?,
-            diagnostics,
-        )? {
+        if !claim_template_name(registry, declared, taken(registry, &declared)?, diagnostics)? {
             continue;
         }
         let mut refusal = None;
@@ -246,7 +249,7 @@ fn claim_template_name(
             reserved_name(declared.file, declared.span, declared.name),
         );
         registry.named.declare(
-            declared.name.to_string(),
+            ScopedTypeName::declared(&declared),
             DeclarationOccurrence::Refused(refusal),
         )?;
         return Ok(false);
@@ -279,14 +282,14 @@ fn settle_template(
         (Some(body), None) => body,
         (_, Some(refusal)) => {
             return registry.named.declare(
-                declared.name.to_string(),
+                ScopedTypeName::declared(&declared),
                 DeclarationOccurrence::Refused(refusal),
             );
         }
         (None, None) => return Ok(()),
     };
     registry.named.declare(
-        declared.name.to_string(),
+        ScopedTypeName::declared(&declared),
         DeclarationOccurrence::Accepted(NamedTypeKind::Template),
     )?;
     registry.type_templates.push(TypeTemplate {
@@ -342,19 +345,22 @@ fn unknown_template_member(
     ty: &TypeExpr,
     file: &ProjectFile,
 ) -> Option<SourceDiagnostic> {
-    let declares = |name: &str| {
-        params.iter().any(|param| param.name == name)
-            || ScalarType::from_spelling(name).is_some()
-            || registry.aliases.contains_key(name)
-            || registry.nominal_by_name(name).is_some()
-            || resources.iter().any(|(_, _, decl)| decl.name == name)
-            || structs.iter().any(|(_, _, decl)| decl.name == name)
-            || enums.iter().any(|(_, _, decl)| decl.name == name)
-            || registry
-                .type_templates
-                .iter()
-                .any(|template| template.name == name)
-            || matches!(name, "List" | "Map")
+    let declares = |written: &str| {
+        if params.iter().any(|param| param.name == written) || matches!(written, "List" | "Map") {
+            return true;
+        }
+        let Some(scope) = registry.scoped(file.origin(), written) else {
+            return false;
+        };
+        let origin = scope.origin();
+        let name = scope.name();
+        ScalarType::from_spelling(name).is_some()
+            || registry.aliases.contains_key(&scope)
+            || registry.nominal_by_name(&scope).is_some()
+            || in_origin(resources, origin).any(|decl| decl.name == name)
+            || in_origin(structs, origin).any(|decl| decl.name == name)
+            || in_origin(enums, origin).any(|decl| decl.name == name)
+            || registry.type_template_by_name(&scope).is_some()
     };
     match ty {
         TypeExpr::Name { text, span, .. } => (!declares(text)).then(|| {
@@ -537,7 +543,8 @@ fn template_enum_variants(
 /// `check.name_conflict`; an alias on a cyclic chain is a `check.recursion`
 /// and does not enter the map.
 pub(super) fn build_alias_table(
-    named: &mut DeclarationLedger<String, NamedTypeKind>,
+    named: &mut DeclarationLedger<ScopedTypeName, NamedTypeKind>,
+    origins: &CapturedOrigins,
     aliases: &[(FileRef, ProjectFile, &AliasDecl)],
     resources: &[(FileRef, ProjectFile, &ResourceDecl)],
     structs: &[(FileRef, ProjectFile, &StructDecl)],
@@ -552,6 +559,7 @@ pub(super) fn build_alias_table(
             at: *at,
             span: decl.name_span,
         };
+        let scope = ScopedTypeName::declared(&declared);
         // A parse error blocks compilation before this runs, so a missing target means
         // the declaration was already reported; skip it quietly.
         let Some(ty) = &decl.ty else { continue };
@@ -561,10 +569,10 @@ pub(super) fn build_alias_table(
                 declared,
                 reserved_name(file, decl.name_span, &decl.name),
             );
-            named.declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
+            named.declare(scope, DeclarationOccurrence::Refused(refusal))?;
             continue;
         }
-        if raw.contains_key(&decl.name) || named.declared(&decl.name) {
+        if raw.contains_key(&scope) || named.declared(&scope) {
             diagnostics.push(SourceDiagnostic::at(
                 Code::CheckNameConflict,
                 file,
@@ -577,9 +585,9 @@ pub(super) fn build_alias_table(
         // here and an alias yields its name to all of them.
         if let Some(holder) = pending_name(
             &decl.name,
-            resources.iter().map(|(_, _, r)| r.name.as_str()),
-            structs.iter().map(|(_, _, d)| d.name.as_str()),
-            enums.iter().map(|(_, _, d)| d.name.as_str()),
+            in_origin(resources, scope.origin()).map(|r| r.name.as_str()),
+            in_origin(structs, scope.origin()).map(|d| d.name.as_str()),
+            in_origin(enums, scope.origin()).map(|d| d.name.as_str()),
         ) {
             name_conflict(diagnostics, file, decl.name_span, &decl.name, holder);
             continue;
@@ -605,11 +613,12 @@ pub(super) fn build_alias_table(
                     &format!("the target type of alias `{}`", decl.name),
                 ),
             );
-            named.declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
+            named.declare(scope, DeclarationOccurrence::Refused(refusal))?;
             continue;
         };
+        let target = ScopedTypeName::written(origins, file.origin(), target);
         raw.insert(
-            decl.name.clone(),
+            scope,
             AliasInput {
                 at: *at,
                 file,
@@ -630,25 +639,27 @@ pub(super) fn validate_alias_targets(
     aliases: &[(FileRef, ProjectFile, &AliasDecl)],
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<(), DeclareError> {
-    let mut refused: Vec<String> = Vec::new();
+    let mut refused: Vec<ScopedTypeName> = Vec::new();
     for (at, file, decl) in aliases {
-        let Some(target) = registry.aliases.get(&decl.name) else {
-            continue; // duplicate or cyclic: already reported
-        };
         let declared = DeclarationSite {
             name: &decl.name,
             file,
             at: *at,
             span: decl.span,
         };
-        let text = target.name;
+        let scope = ScopedTypeName::declared(&declared);
+        let Some(target) = registry.aliases.get(&scope) else {
+            continue; // duplicate or cyclic: already reported
+        };
+        let terminal = target.terminal.clone();
+        let text = terminal.name();
         let refusal = if ScalarType::from_spelling(text).is_none()
-            && registry.by_name(text).is_none()
-            && registry.nominal_by_name(text).is_none()
-            && registry.struct_by_name(text).is_none()
-            && registry.enum_by_name(text).is_none()
+            && registry.by_name(&terminal).is_none()
+            && registry.nominal_by_name(&terminal).is_none()
+            && registry.struct_by_name(&terminal).is_none()
+            && registry.enum_by_name(&terminal).is_none()
         {
-            Some(match registry.named.lookup(text)? {
+            Some(match registry.named.lookup(&terminal)? {
                 Binding::Refused(_, summary) => refuse_row(
                     diagnostics,
                     declared,
@@ -666,17 +677,17 @@ pub(super) fn validate_alias_targets(
         };
         let occurrence = match refusal {
             Some(refusal) => {
-                refused.push(decl.name.clone());
+                refused.push(scope.clone());
                 DeclarationOccurrence::Refused(refusal)
             }
             None => DeclarationOccurrence::Accepted(NamedTypeKind::Alias),
         };
-        registry.named.declare(decl.name.clone(), occurrence)?;
+        registry.named.declare(scope, occurrence)?;
     }
     // Uses of a refused alias reach its own ledger cause, preserving the name the
     // annotation wrote rather than blaming the terminal spelling.
-    for name in refused {
-        registry.aliases.remove(&name);
+    for scope in refused {
+        registry.aliases.remove(&scope);
     }
     Ok(())
 }
@@ -704,6 +715,7 @@ pub(super) fn build_nominals(
             at: *at,
             span: decl.name_span,
         };
+        let scope = ScopedTypeName::declared(&declared);
         // A parse error blocks compilation before this runs, so a missing piece means
         // the declaration was already reported; skip it quietly.
         let (Some(base), Some(interval)) = (&decl.base, &decl.interval) else {
@@ -717,24 +729,24 @@ pub(super) fn build_nominals(
             );
             registry
                 .named
-                .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
+                .declare(scope, DeclarationOccurrence::Refused(refusal))?;
             continue;
         }
         // Nominals yield to every declaration form the later passes bind, and a nominal
         // this pass already refused holds its name too.
-        let holder = registry.name_conflict(&decl.name)?.or_else(|| {
+        let holder = registry.name_conflict(&scope)?.or_else(|| {
             pending_name(
                 &decl.name,
-                resources.iter().map(|(_, _, r)| r.name.as_str()),
-                structs.iter().map(|(_, _, d)| d.name.as_str()),
-                enums.iter().map(|(_, _, d)| d.name.as_str()),
+                in_origin(resources, scope.origin()).map(|r| r.name.as_str()),
+                in_origin(structs, scope.origin()).map(|d| d.name.as_str()),
+                in_origin(enums, scope.origin()).map(|d| d.name.as_str()),
             )
         });
         if let Some(holder) = holder {
             name_conflict(diagnostics, file, decl.name_span, &decl.name, holder);
             continue;
         }
-        let refused = match registry.scalar_annotation(base) {
+        let refused = match registry.scalar_annotation(file.origin(), base) {
             Ok(ScalarType::Int) => None,
             Ok(other) => Some(refuse_row(
                 diagnostics,
@@ -760,7 +772,7 @@ pub(super) fn build_nominals(
         if let Some(refusal) = refused {
             registry
                 .named
-                .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
+                .declare(scope, DeclarationOccurrence::Refused(refusal))?;
             continue;
         }
         let interval = match nominal_interval(file, interval) {
@@ -772,7 +784,7 @@ pub(super) fn build_nominals(
             Err(refusal) => {
                 registry
                     .named
-                    .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
+                    .declare(scope.clone(), DeclarationOccurrence::Refused(refusal))?;
                 continue;
             }
         };
@@ -782,15 +794,16 @@ pub(super) fn build_nominals(
                 let refusal = refuse_row(diagnostics, declared, *row);
                 registry
                     .named
-                    .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
+                    .declare(scope.clone(), DeclarationOccurrence::Refused(refusal))?;
                 continue;
             }
         };
         registry.named.declare(
-            decl.name.clone(),
+            scope.clone(),
             DeclarationOccurrence::Accepted(NamedTypeKind::Nominal),
         )?;
         built.push(NominalInfo {
+            origin: file.origin().clone(),
             name: decl.name.clone(),
             lo,
             hi,
@@ -935,6 +948,7 @@ pub(super) fn declare_structs<'a>(
             at: *at,
             span: decl.name_span,
         };
+        let scope = ScopedTypeName::declared(&declared);
         if is_reserved_type_name(&decl.name) {
             let refusal = refuse_row(
                 diagnostics,
@@ -943,10 +957,10 @@ pub(super) fn declare_structs<'a>(
             );
             registry
                 .named
-                .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
+                .declare(scope, DeclarationOccurrence::Refused(refusal))?;
             continue;
         }
-        if let Some(holder) = registry.name_conflict(&decl.name)? {
+        if let Some(holder) = registry.name_conflict(&scope)? {
             name_conflict(diagnostics, file, decl.name_span, &decl.name, holder);
             continue;
         }
@@ -957,6 +971,7 @@ pub(super) fn declare_structs<'a>(
             .declare(type_id, *at, file, decl.name_span);
         registry.structs.push(StructInfo {
             type_id,
+            origin: file.origin().clone(),
             name: decl.name.clone(),
             fields: Vec::new(),
             verdict: DeclarationVerdict::Accepted,
@@ -1018,7 +1033,10 @@ pub(super) fn fill_structs(
         {
             info.verdict = DeclarationVerdict::Refused;
         }
-        registry.named.declare(item.decl.name.clone(), occurrence)?;
+        registry.named.declare(
+            ScopedTypeName::new(item.file.origin(), &item.decl.name),
+            occurrence,
+        )?;
     }
     Ok(())
 }
@@ -1066,7 +1084,7 @@ fn struct_fields(
                     refused,
                     file,
                     field.ty.span(),
-                    if registry.optional_annotation(&field.ty) {
+                    if registry.optional_annotation(file.origin(), &field.ty) {
                         "an optional struct field type"
                     } else {
                         "this struct field type"
@@ -1131,6 +1149,7 @@ pub(super) fn declare_enums<'a>(
             at: *at,
             span: decl.name_span,
         };
+        let scope = ScopedTypeName::declared(&declared);
         if is_reserved_type_name(&decl.name) {
             let refusal = refuse_row(
                 diagnostics,
@@ -1139,10 +1158,10 @@ pub(super) fn declare_enums<'a>(
             );
             registry
                 .named
-                .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
+                .declare(scope, DeclarationOccurrence::Refused(refusal))?;
             continue;
         }
-        if let Some(holder) = registry.name_conflict(&decl.name)? {
+        if let Some(holder) = registry.name_conflict(&scope)? {
             name_conflict(diagnostics, file, decl.name_span, &decl.name, holder);
             continue;
         }
@@ -1159,7 +1178,7 @@ pub(super) fn declare_enums<'a>(
             );
             registry
                 .named
-                .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
+                .declare(scope, DeclarationOccurrence::Refused(refusal))?;
             continue;
         }
         let name_id = draft.intern_string(&decl.name)?;
@@ -1169,6 +1188,7 @@ pub(super) fn declare_enums<'a>(
             .declare_enum(enum_id, *at, file, decl.name_span);
         registry.enums.push(EnumInfo {
             enum_id,
+            origin: file.origin().clone(),
             name: decl.name.clone(),
             variants: Vec::new(),
             verdict: DeclarationVerdict::Accepted,
@@ -1229,7 +1249,10 @@ pub(super) fn fill_enums(
         {
             info.verdict = DeclarationVerdict::Refused;
         }
-        registry.named.declare(item.decl.name.clone(), occurrence)?;
+        registry.named.declare(
+            ScopedTypeName::new(item.file.origin(), &item.decl.name),
+            occurrence,
+        )?;
     }
     Ok(())
 }
@@ -1367,7 +1390,9 @@ fn enum_payload(
             file,
             span: field.ty.span(),
         };
-        let ty = match registry.enum_payload_leaf(draft, &field.ty, &[], site) {
+        // A payload annotation is written in the tree that declares the enum, so it
+        // resolves in that tree's namespace.
+        let ty = match registry.enum_payload_leaf(draft, file.origin(), &field.ty, &[], site) {
             Ok((ty, None)) => ty,
             Ok((_, Some(coll))) => {
                 let row =
@@ -1377,7 +1402,7 @@ fn enum_payload(
                 continue;
             }
             Err(ResolveError::Refusal(refused)) => {
-                let subject = if registry.optional_annotation(&field.ty) {
+                let subject = if registry.optional_annotation(file.origin(), &field.ty) {
                     "an optional enum payload field type"
                 } else {
                     "this enum payload field type"
@@ -1419,19 +1444,19 @@ pub(super) fn declare_records<'a>(
             at: *at,
             span: resource.name_span,
         };
+        let scope = ScopedTypeName::declared(&declared);
         if is_reserved_type_name(&resource.name) {
             let refusal = refuse_row(
                 diagnostics,
                 declared,
                 reserved_name(file, resource.name_span, &resource.name),
             );
-            registry.named.declare(
-                resource.name.clone(),
-                DeclarationOccurrence::Refused(refusal),
-            )?;
+            registry
+                .named
+                .declare(scope, DeclarationOccurrence::Refused(refusal))?;
             continue;
         }
-        match registry.name_conflict(&resource.name)? {
+        match registry.name_conflict(&scope)? {
             // Two resources of the same name have no unambiguous record identity,
             // so a repeat is a precise typed rejection and the first stands.
             Some(NameHolder::Kind(NamedTypeKind::Resource)) => {
@@ -1465,6 +1490,7 @@ pub(super) fn declare_records<'a>(
         registry.records.admit(
             RecordInfo {
                 type_id,
+                origin: file.origin().clone(),
                 name: resource.name.clone(),
                 fields: Vec::new(),
                 groups: Vec::new(),
@@ -1472,7 +1498,7 @@ pub(super) fn declare_records<'a>(
             ordinal,
         );
         registry.named.declare(
-            resource.name.clone(),
+            scope,
             DeclarationOccurrence::Accepted(NamedTypeKind::Resource),
         )?;
         survivors.push((*at, file.clone(), *resource));

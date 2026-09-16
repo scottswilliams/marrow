@@ -151,7 +151,7 @@ fn evaluate(
         Err(refusal) => return Ok(DeclarationOccurrence::Refused(refusal)),
     };
     if let Some(annotation) = &decl.ty {
-        match types.scalar_annotation(annotation) {
+        match types.scalar_annotation(declared.file.origin(), annotation) {
             Ok(scalar) if scalar == value.scalar() => {}
             Ok(scalar) => {
                 return Ok(DeclarationOccurrence::Refused(refuse(

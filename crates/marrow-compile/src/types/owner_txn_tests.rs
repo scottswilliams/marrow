@@ -657,7 +657,13 @@ fn template_proof_savepoint_isolates_a_failed_proof_and_transfers_once() {
         // A collection payload leaf is refused by the shared enum-payload rule; the
         // proof mints its own collection row along the way.
         let (_, refused) = registry
-            .enum_payload_leaf(proof_draft, &list_of("string"), &[], site(29))
+            .enum_payload_leaf(
+                proof_draft,
+                &marrow_project::SourceOrigin::Root,
+                &list_of("string"),
+                &[],
+                site(29),
+            )
             .expect("a collection resolves as a payload leaf");
         assert_eq!(
             registry.collections.borrow().len(),

@@ -18,12 +18,13 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::hash::Hash;
 use std::rc::Rc;
 
-use crate::source::ProjectFile;
+use crate::source::{CapturedOrigins, ProjectFile};
 use marrow_codes::Code;
 use marrow_image::{
     CollTypeId, CollectionTypeDef, DraftTxn, EnumId, FieldDef, ImageType, RecordTypeDef, Scalar,
     TypeId, VariantDef,
 };
+use marrow_project::SourceOrigin;
 use marrow_syntax::{
     AliasDecl, EnumDecl, EnumMember, Expression, FieldDecl, GroupDecl, LiteralKind, NominalDecl,
     ResourceDecl, ResourceMember, SourceSpan, StructDecl, TypeExpr, UnaryOp, range_expr,
@@ -1063,6 +1064,7 @@ pub(crate) struct SupportSet {
 /// inclusive interval `[lo, hi]`.
 #[derive(Clone)]
 pub(crate) struct NominalInfo {
+    pub(crate) origin: SourceOrigin,
     pub(crate) name: String,
     pub(crate) lo: i64,
     pub(crate) hi: i64,
@@ -1106,6 +1108,7 @@ impl GroupInfo {
 #[derive(Clone)]
 pub(crate) struct RecordInfo {
     pub(crate) type_id: TypeId,
+    pub(crate) origin: SourceOrigin,
     pub(crate) name: String,
     pub(crate) fields: Vec<FieldInfo>,
     pub(crate) groups: Vec<GroupInfo>,
@@ -1136,6 +1139,7 @@ impl RecordInfo {
 #[derive(Clone)]
 pub(crate) struct StructInfo {
     pub(crate) type_id: TypeId,
+    pub(crate) origin: SourceOrigin,
     pub(crate) name: String,
     pub(crate) fields: Vec<FieldInfo>,
     pub(crate) verdict: DeclarationVerdict,
@@ -1194,6 +1198,7 @@ pub(crate) struct VariantInfo {
 #[derive(Clone)]
 pub(crate) struct EnumInfo {
     pub(crate) enum_id: EnumId,
+    pub(crate) origin: SourceOrigin,
     pub(crate) name: String,
     pub(crate) variants: Vec<VariantInfo>,
     pub(crate) verdict: DeclarationVerdict,
@@ -1332,6 +1337,64 @@ impl NameHolder {
     }
 }
 
+/// One declared type name in the tree that declares it.
+///
+/// Type namespaces are origin-scoped: a bare name written in one tree names a type
+/// of that tree alone, and a two-segment `alias::Name` names one of the dependency
+/// the alias declares. A key is always built from an origin and a name through
+/// [`TypeRegistry::scoped`], never by reading an origin out of a spelling.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub(crate) struct ScopedTypeName {
+    origin: SourceOrigin,
+    name: String,
+}
+
+impl ScopedTypeName {
+    /// Where a written type spelling resolves from `origin`, given the captured
+    /// trees. A bare name resolves in the tree that wrote it; a two-segment
+    /// `alias::Name` resolves in the dependency the alias declares; any other shape
+    /// names no tree.
+    pub(crate) fn written(
+        origins: &CapturedOrigins,
+        origin: &SourceOrigin,
+        written: &str,
+    ) -> Option<Self> {
+        let mut segments = marrow_syntax::type_name_segments(written);
+        let first = segments.next()?;
+        let Some(name) = segments.next() else {
+            return Some(Self::new(origin, first));
+        };
+        if segments.next().is_some() {
+            return None;
+        }
+        origins
+            .declared(first)
+            .map(|declaring| Self::new(declaring, name))
+    }
+
+    /// The name one declaration takes, scoped to the tree it is written in.
+    pub(crate) fn declared(site: &DeclarationSite<'_>) -> Self {
+        Self::new(site.file.origin(), site.name)
+    }
+
+    pub(crate) fn new(origin: &SourceOrigin, name: &str) -> Self {
+        Self {
+            origin: origin.clone(),
+            name: name.to_string(),
+        }
+    }
+
+    /// The tree this name is declared in.
+    pub(crate) fn origin(&self) -> &SourceOrigin {
+        &self.origin
+    }
+
+    /// The bare name, as the declaring tree's own source spells it.
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+}
+
 /// The project named-type registry: the transparent aliases, the nominal int
 /// types, the dense struct value types, and the durable-capable record types.
 pub(crate) struct TypeRegistry {
@@ -1343,7 +1406,10 @@ pub(crate) struct TypeRegistry {
     /// table — so no construction or match resolves against a broken type — and retained
     /// here, so the use that can no longer resolve is steered to the cause instead of
     /// being told the name was never written.
-    named: DeclarationLedger<String, NamedTypeKind>,
+    named: DeclarationLedger<ScopedTypeName, NamedTypeKind>,
+    /// The trees this compilation captured, so a qualified annotation's first
+    /// segment is resolved to the dependency that declares it.
+    origins: CapturedOrigins,
     /// Every member declared by a resource record or one of its unkeyed groups,
     /// accepted or refused, in declaration order.
     ///
@@ -1545,14 +1611,14 @@ impl TypeRegistry {
 
     pub(crate) fn static_record_projection(
         &self,
-        name: &str,
+        name: &ScopedTypeName,
     ) -> Result<Option<RecordInfo>, GenericInvariant> {
         self.with_metadata_session(|session| session.static_record_by_name(name))
     }
 
     pub(crate) fn static_group_projection(
         &self,
-        record: &str,
+        record: &ScopedTypeName,
         group: &str,
     ) -> Result<Option<GroupInfo>, GenericInvariant> {
         self.with_metadata_session(|session| session.static_group_by_name(record, group))
@@ -1560,21 +1626,21 @@ impl TypeRegistry {
 
     pub(crate) fn static_struct_projection(
         &self,
-        name: &str,
+        name: &ScopedTypeName,
     ) -> Result<Option<StructInfo>, GenericInvariant> {
         self.with_metadata_session(|session| session.static_struct_by_name(name))
     }
 
     pub(crate) fn static_enum_projection(
         &self,
-        name: &str,
+        name: &ScopedTypeName,
     ) -> Result<Option<EnumInfo>, GenericInvariant> {
         self.with_metadata_session(|session| session.static_enum_by_name(name))
     }
 
     pub(crate) fn static_named_type_projection(
         &self,
-        name: &str,
+        name: &ScopedTypeName,
     ) -> Result<Option<StaticNamedType>, GenericInvariant> {
         self.with_metadata_session(|session| session.static_named_type(name))
     }
@@ -1700,7 +1766,7 @@ impl TypeRegistry {
         inner: GArg,
         site: MintSite<'_>,
     ) -> Result<EnumId, ResolveError> {
-        let template = self.application_template("Option")?;
+        let template = self.reserved_template(Reserved::Option)?;
         match self.mint_type_instance(draft, template, &[inner], site) {
             Ok(TypeInstId::Enum(id)) => Ok(id),
             Ok(TypeInstId::Record(_)) => Err(ResolveError::Invariant(
@@ -1717,50 +1783,71 @@ impl TypeRegistry {
     /// Select the compiler-owned template for one generic application. Reserved
     /// applications resolve by their reserved identity, never by a same-spelled
     /// user row, and both reserved templates are required to remain enums.
-    pub(crate) fn application_template(&self, head: &str) -> Result<usize, ResolveError> {
-        let reserved = match head {
-            "Option" => Some(Reserved::Option),
-            "Result" => Some(Reserved::Result),
-            _ => None,
+    pub(crate) fn application_template(
+        &self,
+        origin: &SourceOrigin,
+        head: &str,
+    ) -> Result<usize, ResolveError> {
+        match head {
+            "Option" => return self.reserved_template(Reserved::Option),
+            "Result" => return self.reserved_template(Reserved::Result),
+            _ => {}
+        }
+        // A head that names no tree, or one no template answers, is either genuinely
+        // undeclared or a template this project declared and the compiler refused.
+        let Some(scope) = self.scoped(origin, head) else {
+            return Err(ResolveError::Refusal(ResolveRefusal::Unsupported));
         };
-        let template = if let Some(reserved) = reserved {
-            self.type_templates
-                .iter()
-                .position(|template| template.reserved == Some(reserved))
-                .ok_or(ResolveError::Invariant(
-                    GenericInvariant::ReservedTemplateMissing(reserved),
-                ))?
-        } else {
-            // A head no template answers is either genuinely undeclared or a
-            // template this project declared and the compiler refused.
-            match self.type_template_by_name(head) {
-                Some(template) => template,
-                None => {
-                    return Err(ResolveError::Refusal(self.unresolved_named_type(head)?));
-                }
-            }
-        };
-        if reserved.is_some() {
-            let actual = self.type_templates[template].body.kind();
-            if actual != TypeInstKind::Enum {
-                return Err(ResolveError::Invariant(
-                    GenericInvariant::TemplateKindMismatch {
-                        template,
-                        expected: TypeInstKind::Enum,
-                        actual,
-                    },
-                ));
-            }
+        match self.type_template_by_name(&scope) {
+            Some(template) => Ok(template),
+            None => Err(ResolveError::Refusal(self.unresolved_named_type(&scope)?)),
+        }
+    }
+
+    /// The compiler-owned template for one reserved toolchain generic, which
+    /// belongs to no tree and must remain an enum.
+    fn reserved_template(&self, reserved: Reserved) -> Result<usize, ResolveError> {
+        let template = self
+            .type_templates
+            .iter()
+            .position(|template| template.reserved == Some(reserved))
+            .ok_or(ResolveError::Invariant(
+                GenericInvariant::ReservedTemplateMissing(reserved),
+            ))?;
+        let actual = self.type_templates[template].body.kind();
+        if actual != TypeInstKind::Enum {
+            return Err(ResolveError::Invariant(
+                GenericInvariant::TemplateKindMismatch {
+                    template,
+                    expected: TypeInstKind::Enum,
+                    actual,
+                },
+            ));
         }
         Ok(template)
     }
 
+    /// The tree a generic type template was declared in. A reserved toolchain
+    /// generic belongs to none, so its parameter annotations resolve in the root.
+    pub(crate) fn template_origin(&self, template: usize) -> &SourceOrigin {
+        self.type_templates
+            .get(template)
+            .and_then(|template| template.file.as_ref())
+            .map_or(&SourceOrigin::Root, ProjectFile::origin)
+    }
+
     /// The template index of a generic value type named `head` (a reserved
     /// `Option`/`Result` or a user `struct`/`enum` template), if one exists.
-    pub(crate) fn type_template_by_name(&self, head: &str) -> Option<usize> {
-        self.type_templates
-            .iter()
-            .position(|template| template.name == head)
+    pub(crate) fn type_template_by_name(&self, scope: &ScopedTypeName) -> Option<usize> {
+        self.type_templates.iter().position(|template| {
+            template.name == scope.name()
+                // A reserved toolchain generic belongs to no tree and answers every
+                // origin; a user template answers only the tree that declared it.
+                && template
+                    .file
+                    .as_ref()
+                    .is_none_or(|file| file.origin() == scope.origin())
+        })
     }
 
     /// Whether a generic type template's head names an enum (versus a struct).
@@ -1858,11 +1945,12 @@ impl TypeRegistry {
     fn enum_payload_leaf(
         &mut self,
         draft: &mut DraftTxn<'_>,
+        origin: &SourceOrigin,
         ty: &TypeExpr,
         subst: &[(String, GArg)],
         site: MintSite<'_>,
     ) -> Result<(GArg, Option<CollTypeId>), ResolveError> {
-        let arg = self.resolve_garg_annotation(draft, ty, subst, site)?;
+        let arg = self.resolve_garg_annotation(draft, origin, ty, subst, site)?;
         Ok(match arg {
             GArg::Collection(coll) => (arg, Some(coll)),
             _ => (arg, None),
@@ -1905,39 +1993,43 @@ impl TypeRegistry {
         annotation: &TypeExpr,
         site: MintSite<'_>,
     ) -> Result<GArg, ResolveError> {
-        self.resolve_garg_annotation(draft, annotation, &[], site)
+        self.resolve_garg_annotation(draft, site.file.origin(), annotation, &[], site)
     }
 
     /// Resolve a type expression under a substitution environment (`param name ->
     /// concrete argument`), used when a generic template body is monomorphized. The
-    /// expression is the template's written syntax.
+    /// expression is the template's written syntax, so its names resolve in the tree
+    /// that declared the template — never in the tree of the use site that mints
+    /// this instance.
     fn resolve_garg_env(
         &mut self,
         draft: &mut DraftTxn<'_>,
+        origin: &SourceOrigin,
         ty: &TypeExpr,
         subst: &[(String, GArg)],
         site: MintSite<'_>,
     ) -> Result<GArg, ResolveError> {
-        self.resolve_garg_annotation(draft, ty, subst, site)
+        self.resolve_garg_annotation(draft, origin, ty, subst, site)
     }
 
     fn resolve_garg_annotation(
         &mut self,
         draft: &mut DraftTxn<'_>,
+        origin: &SourceOrigin,
         ty: &TypeExpr,
         subst: &[(String, GArg)],
         site: MintSite<'_>,
     ) -> Result<GArg, ResolveError> {
         match ty {
-            TypeExpr::Name { text, .. } => self.resolve_garg_name(text, subst),
+            TypeExpr::Name { text, .. } => self.resolve_garg_name(origin, text, subst),
             TypeExpr::Apply { head, args, .. } if head == "List" => {
-                self.resolve_list_garg(draft, args, subst, site)
+                self.resolve_list_garg(draft, origin, args, subst, site)
             }
             TypeExpr::Apply { head, args, .. } if head == "Map" => {
-                self.resolve_map_garg(draft, args, subst, site)
+                self.resolve_map_garg(draft, origin, args, subst, site)
             }
             TypeExpr::Apply { head, args, .. } => {
-                self.resolve_template_garg(draft, head, args, subst, site)
+                self.resolve_template_garg(draft, origin, head, args, subst, site)
             }
             _ => Err(ResolveError::Refusal(ResolveRefusal::Unsupported)),
         }
@@ -1945,43 +2037,49 @@ impl TypeRegistry {
 
     fn resolve_garg_name(
         &self,
+        origin: &SourceOrigin,
         text: &str,
         subst: &[(String, GArg)],
     ) -> Result<GArg, ResolveError> {
         if let Some((_, arg)) = subst.iter().find(|(name, _)| name == text) {
-            Ok(*arg)
-        } else if let Some(target) = self.alias_target(text) {
-            let arg = self.resolve_global_garg(target.name)?;
+            return Ok(*arg);
+        }
+        let Some(written) = self.scoped(origin, text) else {
+            return Err(ResolveRefusal::Unsupported.into());
+        };
+        if let Some(target) = self.alias_target(&written) {
+            let arg = self.resolve_global_garg(target.terminal)?;
             if target.presence == AliasPresence::Optional {
                 return Err(ResolveRefusal::Unsupported.into());
             }
             Ok(arg)
         } else {
-            self.resolve_global_garg(text)
+            self.resolve_global_garg(&written)
         }
     }
 
-    fn resolve_global_garg(&self, text: &str) -> Result<GArg, ResolveError> {
-        if let Some(scalar) = ScalarType::from_spelling(text) {
+    fn resolve_global_garg(&self, scope: &ScopedTypeName) -> Result<GArg, ResolveError> {
+        if let Some(scalar) = ScalarType::from_spelling(scope.name()) {
             Ok(GArg::Scalar(scalar))
-        } else if let Some((id, _)) = self.nominal_by_name(text) {
+        } else if let Some((id, _)) = self.nominal_by_name(scope) {
             Ok(GArg::Nominal(id))
-        } else if let Some(info) = self.struct_by_name(text) {
+        } else if let Some(info) = self.struct_by_name(scope) {
             Ok(GArg::Struct(info.type_id))
-        } else if let Some(info) = self.enum_by_name(text) {
+        } else if let Some(info) = self.enum_by_name(scope) {
             Ok(GArg::Enum(info.enum_id))
         } else {
             // A name no table answers is either genuinely undeclared or a declaration
             // this project refused; the ledger tells them apart. Answering `Unsupported`
             // for both would let a member position describe a refused sibling as a
             // language form the beta line does not admit.
-            Err(ResolveError::Refusal(self.unresolved_named_type(text)?))
+            Err(ResolveError::Refusal(self.unresolved_named_type(scope)?))
         }
     }
 
     fn resolve_list_garg(
         &mut self,
         draft: &mut DraftTxn<'_>,
+        origin: &SourceOrigin,
         args: &[TypeExpr],
         subst: &[(String, GArg)],
         site: MintSite<'_>,
@@ -1989,13 +2087,14 @@ impl TypeRegistry {
         let [elem] = args else {
             return Err(ResolveError::Refusal(ResolveRefusal::Unsupported));
         };
-        let elem = self.resolve_garg_annotation(draft, elem, subst, site)?;
+        let elem = self.resolve_garg_annotation(draft, origin, elem, subst, site)?;
         Ok(GArg::Collection(self.instantiate_list(draft, elem)?))
     }
 
     fn resolve_map_garg(
         &mut self,
         draft: &mut DraftTxn<'_>,
+        origin: &SourceOrigin,
         args: &[TypeExpr],
         subst: &[(String, GArg)],
         site: MintSite<'_>,
@@ -2003,24 +2102,25 @@ impl TypeRegistry {
         let [key, value] = args else {
             return Err(ResolveError::Refusal(ResolveRefusal::Unsupported));
         };
-        let key = self.resolve_garg_annotation(draft, key, subst, site)?;
+        let key = self.resolve_garg_annotation(draft, origin, key, subst, site)?;
         self.check_map_key_admissibility(key)?;
-        let value = self.resolve_garg_annotation(draft, value, subst, site)?;
+        let value = self.resolve_garg_annotation(draft, origin, value, subst, site)?;
         Ok(GArg::Collection(self.instantiate_map(draft, key, value)?))
     }
 
     fn resolve_template_garg(
         &mut self,
         draft: &mut DraftTxn<'_>,
+        origin: &SourceOrigin,
         head: &str,
         args: &[TypeExpr],
         subst: &[(String, GArg)],
         site: MintSite<'_>,
     ) -> Result<GArg, ResolveError> {
-        let template = self.application_template(head)?;
+        let template = self.application_template(origin, head)?;
         let mut resolved = Vec::with_capacity(args.len());
         for arg in args {
-            resolved.push(self.resolve_garg_annotation(draft, arg, subst, site)?);
+            resolved.push(self.resolve_garg_annotation(draft, origin, arg, subst, site)?);
         }
         if resolved.len() != self.type_templates[template].type_params.len() {
             return Err(ResolveError::Refusal(ResolveRefusal::Unsupported));
@@ -2420,6 +2520,7 @@ impl TypeRegistry {
         args: &[GArg],
         site: MintSite<'_>,
     ) -> Result<InstBody, ResolveError> {
+        let origin = self.template_origin(template).clone();
         let (subst, fields) = {
             let template_info = self.template_for_args(template, args)?;
             let subst: Vec<(String, GArg)> = template_info
@@ -2445,7 +2546,7 @@ impl TypeRegistry {
         // Keep one pending representation across recursive field resolution.
         let mut pending = Vec::with_capacity(fields.len());
         for (fname, fty) in fields.iter() {
-            let arg = self.resolve_garg_env(draft, fty, &subst, site)?;
+            let arg = self.resolve_garg_env(draft, &origin, fty, &subst, site)?;
             let name = draft.intern_string(fname)?;
             pending.push((name, arg));
         }
@@ -2488,6 +2589,7 @@ impl TypeRegistry {
         args: &[GArg],
         site: MintSite<'_>,
     ) -> Result<InstBody, ResolveError> {
+        let origin = self.template_origin(template).clone();
         let (subst, variants, enum_name) = {
             let template_info = self.template_for_args(template, args)?;
             let subst: Vec<(String, GArg)> = template_info
@@ -2517,7 +2619,8 @@ impl TypeRegistry {
             let mut payload = Vec::with_capacity(variant.payload.len());
             let mut leaves = Vec::with_capacity(variant.payload.len());
             for field in &variant.payload {
-                let (arg, refused) = self.enum_payload_leaf(draft, &field.ty, &subst, site)?;
+                let (arg, refused) =
+                    self.enum_payload_leaf(draft, &origin, &field.ty, &subst, site)?;
                 // The instantiation still fills its body so the shared instance
                 // cache stays consistent; the non-empty pending queue makes the
                 // driver reject before the image is encoded, so the collection leaf
@@ -3128,8 +3231,10 @@ impl TypeRegistry {
         self.coordinates.module_of(type_id)
     }
 
-    pub(crate) fn by_name(&self, name: &str) -> Option<&RecordInfo> {
-        self.records.iter().find(|info| info.name == name)
+    pub(crate) fn by_name(&self, scope: &ScopedTypeName) -> Option<&RecordInfo> {
+        self.records
+            .iter()
+            .find(|info| info.origin == *scope.origin() && info.name == scope.name())
     }
 
     /// The resource record whose image record type is `ty`, if `ty` is one — the
@@ -3150,10 +3255,12 @@ impl TypeRegistry {
     /// scanning again. A second scan is a second place to forget the verdict, and a name
     /// answered by a reserved, unfilled row resolves to a live empty struct against
     /// which every later question fabricates an answer.
-    pub(crate) fn struct_by_name(&self, name: &str) -> Option<&StructInfo> {
-        self.structs
-            .iter()
-            .find(|info| info.name == name && info.verdict.is_accepted())
+    pub(crate) fn struct_by_name(&self, scope: &ScopedTypeName) -> Option<&StructInfo> {
+        self.structs.iter().find(|info| {
+            info.origin == *scope.origin()
+                && info.name == scope.name()
+                && info.verdict.is_accepted()
+        })
     }
 
     pub(crate) fn struct_by_type(&self, ty: TypeId) -> Option<&StructInfo> {
@@ -3162,10 +3269,12 @@ impl TypeRegistry {
 
     /// The accepted enum declared as `name`. A refused row answers no name, for the
     /// reason given at [`Self::struct_by_name`].
-    pub(crate) fn enum_by_name(&self, name: &str) -> Option<&EnumInfo> {
-        self.enums
-            .iter()
-            .find(|info| info.name == name && info.verdict.is_accepted())
+    pub(crate) fn enum_by_name(&self, scope: &ScopedTypeName) -> Option<&EnumInfo> {
+        self.enums.iter().find(|info| {
+            info.origin == *scope.origin()
+                && info.name == scope.name()
+                && info.verdict.is_accepted()
+        })
     }
 
     pub(crate) fn enum_by_id(&self, id: EnumId) -> Option<&EnumInfo> {
@@ -3174,6 +3283,18 @@ impl TypeRegistry {
 
     /// Why an annotation naming `name` could not resolve.
     ///
+    /// Where a written type spelling resolves from `origin`.
+    ///
+    /// A bare name resolves in the tree that wrote it: type namespaces are
+    /// origin-scoped, so a dependency's `Pair` and the root's `Pair` are two types.
+    /// A two-segment `alias::Name` resolves in the dependency the alias declares.
+    /// Any other shape — an unknown first segment, or more than two segments —
+    /// names no tree, so it resolves nowhere and the annotation is refused rather
+    /// than silently read as a bare name carrying a `::`.
+    pub(crate) fn scoped(&self, origin: &SourceOrigin, written: &str) -> Option<ScopedTypeName> {
+        ScopedTypeName::written(&self.origins, origin, written)
+    }
+
     /// The one conversion from a named-type ledger lookup to a resolution refusal,
     /// so `Unsupported` keeps meaning *genuinely outside the admitted subset* and
     /// is never the answer for a type this project declared. A name the ledger
@@ -3181,7 +3302,7 @@ impl TypeRegistry {
     /// a `Copy` handle.
     pub(crate) fn unresolved_named_type(
         &self,
-        name: &str,
+        name: &ScopedTypeName,
     ) -> Result<ResolveRefusal, DeclarationIndexDrift> {
         Ok(match self.named.lookup(name)? {
             Binding::Refused(id, _) => ResolveRefusal::RefusedDeclaration(id),
@@ -3202,20 +3323,20 @@ impl TypeRegistry {
     /// pass two, after pass one reserved its image index.
     pub(super) fn name_conflict(
         &self,
-        name: &str,
+        scope: &ScopedTypeName,
     ) -> Result<Option<NameHolder>, DeclarationIndexDrift> {
-        if ScalarType::from_spelling(name).is_some() {
+        if ScalarType::from_spelling(scope.name()).is_some() {
             return Ok(Some(NameHolder::Kind(NamedTypeKind::Scalar)));
         }
-        Ok(match self.named.lookup(name)? {
+        Ok(match self.named.lookup(scope)? {
             Binding::Accepted(kind) => Some(NameHolder::Kind(*kind)),
             Binding::Refused(..) => Some(NameHolder::Refused),
             Binding::Absent => {
-                if self.aliases.contains_key(name) {
+                if self.aliases.contains_key(scope) {
                     Some(NameHolder::Kind(NamedTypeKind::Alias))
-                } else if self.struct_by_name(name).is_some() {
+                } else if self.struct_by_name(scope).is_some() {
                     Some(NameHolder::Kind(NamedTypeKind::Struct))
-                } else if self.enum_by_name(name).is_some() {
+                } else if self.enum_by_name(scope).is_some() {
                     Some(NameHolder::Kind(NamedTypeKind::Enum))
                 } else {
                     None
@@ -3228,7 +3349,7 @@ impl TypeRegistry {
     /// in its place, or a genuine absence.
     pub(crate) fn named_type(
         &self,
-        name: &str,
+        name: &ScopedTypeName,
     ) -> Result<Binding<'_, NamedTypeKind>, DeclarationIndexDrift> {
         self.named.lookup(name)
     }
@@ -3336,10 +3457,13 @@ impl TypeRegistry {
         self.named.refusal(id)
     }
 
-    pub(crate) fn nominal_by_name(&self, name: &str) -> Option<(NominalId, &NominalInfo)> {
+    pub(crate) fn nominal_by_name(
+        &self,
+        scope: &ScopedTypeName,
+    ) -> Option<(NominalId, &NominalInfo)> {
         self.nominals
             .iter()
-            .position(|info| info.name == name)
+            .position(|info| info.origin == *scope.origin() && info.name == scope.name())
             .map(|index| (NominalId(index as u32), &self.nominals[index]))
     }
 
@@ -3347,31 +3471,41 @@ impl TypeRegistry {
         &self.nominals[id.0 as usize]
     }
 
-    /// An alias terminal is global: it must never re-enter a caller's parameter environment.
-    pub(crate) fn alias_target(&self, name: &str) -> Option<GlobalAliasTarget<'_>> {
-        self.aliases.get(name)
+    /// An alias terminal is bound once at declaration: it must never re-enter a
+    /// caller's parameter environment. The terminal names a type of the tree that
+    /// declared the alias, so it is returned already scoped to that tree.
+    pub(crate) fn alias_target(&self, scope: &ScopedTypeName) -> Option<GlobalAliasTarget<'_>> {
+        self.aliases.get(scope)
     }
 
-    pub(crate) fn scalar_annotation(&self, ty: &TypeExpr) -> Result<ScalarType, ResolveError> {
+    pub(crate) fn scalar_annotation(
+        &self,
+        origin: &SourceOrigin,
+        ty: &TypeExpr,
+    ) -> Result<ScalarType, ResolveError> {
         let TypeExpr::Name { text, .. } = ty else {
             return Err(ResolveRefusal::Unsupported.into());
         };
-        let target = self.alias_target(text);
-        let name = target.map_or(text.as_str(), |target| target.name);
-        if let Binding::Refused(id, _) = self.named.lookup(name)? {
+        let Some(written) = self.scoped(origin, text) else {
+            return Err(ResolveRefusal::Unsupported.into());
+        };
+        let target = self.alias_target(&written);
+        let scope = target.map_or(&written, |target| target.terminal);
+        if let Binding::Refused(id, _) = self.named.lookup(scope)? {
             return Err(ResolveRefusal::RefusedDeclaration(id).into());
         }
         if target.is_some_and(|target| target.presence == AliasPresence::Optional) {
             return Err(ResolveRefusal::Unsupported.into());
         }
-        ScalarType::from_spelling(name).ok_or_else(|| ResolveRefusal::Unsupported.into())
+        ScalarType::from_spelling(scope.name()).ok_or_else(|| ResolveRefusal::Unsupported.into())
     }
 
-    fn optional_annotation(&self, ty: &TypeExpr) -> bool {
+    fn optional_annotation(&self, origin: &SourceOrigin, ty: &TypeExpr) -> bool {
         match ty {
             TypeExpr::Optional { .. } => true,
             TypeExpr::Name { text, .. } => self
-                .alias_target(text)
+                .scoped(origin, text)
+                .and_then(|scope| self.alias_target(&scope))
                 .is_some_and(|target| target.presence == AliasPresence::Optional),
             _ => false,
         }
@@ -3392,6 +3526,7 @@ impl TypeRegistry {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn build(
         draft: &mut DraftTxn<'_>,
+        origins: CapturedOrigins,
         aliases: &[(FileRef, ProjectFile, &AliasDecl)],
         nominals: &[(FileRef, ProjectFile, &NominalDecl)],
         structs: &[(FileRef, ProjectFile, &StructDecl)],
@@ -3401,10 +3536,18 @@ impl TypeRegistry {
         budget: DeclarationBudget,
     ) -> Result<Self, BuildError> {
         let mut named = DeclarationLedger::new(DeclarationNamespace::NamedType, budget.clone());
-        let aliases_table =
-            build_alias_table(&mut named, aliases, resources, structs, enums, diagnostics)?;
+        let aliases_table = build_alias_table(
+            &mut named,
+            &origins,
+            aliases,
+            resources,
+            structs,
+            enums,
+            diagnostics,
+        )?;
         let mut registry = Self {
             named,
+            origins,
             members: DeclarationLedger::new(DeclarationNamespace::ResourceMember, budget),
             aliases: aliases_table,
             nominals: Vec::new(),

@@ -2106,7 +2106,7 @@ impl<'a> IdentityResolver<'a> {
             });
             return None;
         }
-        let scalar = match records.scalar_annotation(&field.ty) {
+        let scalar = match records.scalar_annotation(cursor.file.origin(), &field.ty) {
             Ok(scalar) => scalar,
             Err(ResolveError::Refusal(refusal)) => {
                 let span = match refusal {

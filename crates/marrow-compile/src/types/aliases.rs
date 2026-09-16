@@ -20,16 +20,18 @@ struct AliasDenotation {
     presence: AliasPresence,
 }
 
-/// Chains share a terminal spelling; no alias owns expanded syntax.
+/// Chains share a terminal name; no alias owns expanded syntax. A terminal is
+/// scoped to the tree whose alias chain bound it, so a dependency's alias never
+/// terminates in the consumer's namespace.
 #[derive(Default)]
 pub(super) struct AliasTable {
-    terminals: Vec<Box<str>>,
-    bindings: BTreeMap<String, AliasDenotation>,
+    terminals: Vec<ScopedTypeName>,
+    bindings: BTreeMap<ScopedTypeName, AliasDenotation>,
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct GlobalAliasTarget<'a> {
-    pub(crate) name: &'a str,
+    pub(crate) terminal: &'a ScopedTypeName,
     pub(crate) presence: AliasPresence,
 }
 
@@ -37,47 +39,55 @@ pub(super) struct AliasInput<'a> {
     pub(super) at: FileRef,
     pub(super) file: &'a ProjectFile,
     pub(super) decl: &'a AliasDecl,
-    pub(super) target: &'a str,
+    /// Where the written target resolves, or `None` when the spelling names no
+    /// tree — a qualified target whose first segment is not a declared dependency.
+    pub(super) target: Option<ScopedTypeName>,
     pub(super) presence: AliasPresence,
 }
 
 impl AliasTable {
-    pub(super) fn get(&self, name: &str) -> Option<GlobalAliasTarget<'_>> {
-        let binding = self.bindings.get(name)?;
+    pub(super) fn get(&self, scope: &ScopedTypeName) -> Option<GlobalAliasTarget<'_>> {
+        let binding = self.bindings.get(scope)?;
         Some(GlobalAliasTarget {
-            name: &self.terminals[binding.terminal.0],
+            terminal: &self.terminals[binding.terminal.0],
             presence: binding.presence,
         })
     }
 
-    pub(super) fn contains_key(&self, name: &str) -> bool {
-        self.bindings.contains_key(name)
+    pub(super) fn contains_key(&self, scope: &ScopedTypeName) -> bool {
+        self.bindings.contains_key(scope)
     }
 
-    pub(super) fn remove(&mut self, name: &str) {
-        self.bindings.remove(name);
+    pub(super) fn remove(&mut self, scope: &ScopedTypeName) {
+        self.bindings.remove(scope);
     }
 
     pub(super) fn normalize(
-        named: &mut DeclarationLedger<String, NamedTypeKind>,
-        inputs: BTreeMap<String, AliasInput<'_>>,
+        named: &mut DeclarationLedger<ScopedTypeName, NamedTypeKind>,
+        inputs: BTreeMap<ScopedTypeName, AliasInput<'_>>,
         diagnostics: &mut DiagnosticCollector,
     ) -> Result<Self, DeclareError> {
         let rows: Vec<_> = inputs.into_iter().collect();
         let index: BTreeMap<_, _> = rows
             .iter()
             .enumerate()
-            .map(|(index, (name, _))| (name.as_str(), index))
+            .map(|(index, (scope, _))| (scope.clone(), index))
             .collect();
         let edges: Vec<_> = rows
             .iter()
-            .map(|(_, input)| index.get(input.target).copied())
+            .map(|(_, input)| {
+                input
+                    .target
+                    .as_ref()
+                    .and_then(|target| index.get(target).copied())
+            })
             .collect();
         let (order, cyclic) = dependency_order(&edges);
-        for (node, (name, input)) in rows.iter().enumerate() {
+        for (node, (scope, input)) in rows.iter().enumerate() {
             if !cyclic[node] {
                 continue;
             }
+            let name = scope.name();
             let refusal = refuse(
                 diagnostics,
                 DeclarationSite {
@@ -89,7 +99,7 @@ impl AliasTable {
                 Code::CheckRecursion,
                 format!("alias `{name}` is part of a cyclic alias chain"),
             );
-            named.declare(name.clone(), DeclarationOccurrence::Refused(refusal))?;
+            named.declare(scope.clone(), DeclarationOccurrence::Refused(refusal))?;
         }
         let mut table = Self::default();
         let mut denotations: Vec<Option<AliasDenotation>> = vec![None; rows.len()];
@@ -97,7 +107,8 @@ impl AliasTable {
             if cyclic[node] {
                 continue;
             }
-            let (name, input) = &rows[node];
+            let (scope, input) = &rows[node];
+            let name = scope.name();
             let declared = DeclarationSite {
                 name,
                 file: input.file,
@@ -105,12 +116,20 @@ impl AliasTable {
                 span: input.decl.span,
             };
             let inherited = edges[node].and_then(|dependency| denotations[dependency]);
-            let refusal = match named.lookup(input.target)? {
+            // A target that names no tree is outside the admitted set, for the same
+            // reason an unknown bare name is: nothing declares it.
+            let target_binding = match &input.target {
+                Some(target) => named.lookup(target)?,
+                None => Binding::Absent,
+            };
+            let refusal = match target_binding {
                 Binding::Refused(_, summary) => {
                     Some(declaration_refused(input.file, input.decl.span, summary))
                 }
-                _ if inherited.is_some_and(|target| target.presence == AliasPresence::Optional)
-                    && input.presence == AliasPresence::Optional =>
+                _ if input.target.is_none()
+                    || (inherited
+                        .is_some_and(|target| target.presence == AliasPresence::Optional)
+                        && input.presence == AliasPresence::Optional) =>
                 {
                     Some(unsupported(
                         input.file,
@@ -122,7 +141,7 @@ impl AliasTable {
             };
             if let Some(row) = refusal {
                 let refusal = refuse_row(diagnostics, declared, row);
-                named.declare(name.clone(), DeclarationOccurrence::Refused(refusal))?;
+                named.declare(scope.clone(), DeclarationOccurrence::Refused(refusal))?;
                 continue;
             }
             let target = match inherited {
@@ -134,7 +153,11 @@ impl AliasTable {
                 }
                 None => {
                     let terminal = AliasTerminalId(table.terminals.len());
-                    table.terminals.push(input.target.into());
+                    // The refusal arm above returned for every `None` target.
+                    let Some(written) = input.target.clone() else {
+                        continue;
+                    };
+                    table.terminals.push(written);
                     AliasDenotation {
                         terminal,
                         presence: input.presence,
@@ -142,7 +165,7 @@ impl AliasTable {
                 }
             };
             denotations[node] = Some(target);
-            table.bindings.insert(name.clone(), target);
+            table.bindings.insert(scope.clone(), target);
         }
         Ok(table)
     }

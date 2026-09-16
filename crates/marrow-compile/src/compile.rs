@@ -1451,6 +1451,7 @@ fn report_nominal_boundary(
 /// admitted transaction — the first owned mutation of the compile.
 fn build_type_registry(
     parsed: &[Module],
+    origins: &CapturedOrigins,
     resources: &[(FileRef, ProjectFile, &ResourceDecl)],
     draft: &mut ImageDraft,
     budget: &DeclarationBudget,
@@ -1476,6 +1477,7 @@ fn build_type_registry(
         let mut txn = admitted(draft);
         let records = TypeRegistry::build(
             &mut txn,
+            origins.clone(),
             &aliases,
             &nominals,
             &structs,
@@ -1540,11 +1542,17 @@ fn run_semantic(
         Declaration::Resource(resource) => Some(resource),
         _ => None,
     });
-    let mut records =
-        match build_type_registry(parsed, &resources, &mut draft, &budget, &mut diagnostics) {
-            Ok(records) => records,
-            Err(stop) => return stop.into_outcome(diagnostics),
-        };
+    let mut records = match build_type_registry(
+        parsed,
+        &origins,
+        &resources,
+        &mut draft,
+        &budget,
+        &mut diagnostics,
+    ) {
+        Ok(records) => records,
+        Err(stop) => return stop.into_outcome(diagnostics),
+    };
     let stores = declared_items(parsed, |decl| match decl {
         Declaration::Store(store) => Some(store),
         _ => None,

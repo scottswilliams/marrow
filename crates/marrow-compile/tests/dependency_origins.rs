@@ -120,3 +120,109 @@ fn a_dependency_header_is_checked_unprefixed() {
         )],
     );
 }
+
+/// Each tree owns its type namespace: the two `Pair` declarations are two types,
+/// and a consumer names the dependency's through the alias.
+#[test]
+fn a_qualified_type_name_resolves_through_the_alias() {
+    let project = project_capture::project_with_dependency(
+        "graphtext",
+        &[(
+            "src/main.mw",
+            r#"module main
+
+use graphtext::text
+
+struct Pair {
+    left: int
+}
+
+pub fn run(line: string): string {
+    const parsed: graphtext::Pair = text::parsePair(line)
+    const mine = Pair(left: 1)
+    if mine.left == 0 {
+        return ""
+    }
+    return parsed.key
+}
+"#,
+        )],
+        &[("src/text.mw", TEXT_LIBRARY)],
+    );
+    assert_eq!(codes_and_messages(&project), Vec::new());
+}
+
+/// A bare name resolves in the tree that wrote it. The consumer declares its own
+/// `Pair`, so the name binds that one and the dependency's fields are not its.
+#[test]
+fn a_bare_type_name_does_not_reach_across_origins() {
+    let project = project_capture::project_with_dependency(
+        "graphtext",
+        &[(
+            "src/main.mw",
+            r#"module main
+
+struct Pair {
+    left: int
+}
+
+pub fn run(): int {
+    const p = Pair(key: "a", value: "b")
+    return p.left
+}
+"#,
+        )],
+        &[("src/text.mw", TEXT_LIBRARY)],
+    );
+    assert_eq!(
+        diagnostics(&project)
+            .iter()
+            .map(|row| row.code().as_str())
+            .collect::<Vec<_>>(),
+        vec!["check.type", "check.type"],
+    );
+}
+
+/// A qualified name whose first segment names no declared dependency is outside the
+/// admitted set, not a bare name carrying a `::`.
+#[test]
+fn an_unknown_qualifier_names_no_type() {
+    let project = project_capture::project_with_dependency(
+        "graphtext",
+        &[(
+            "src/main.mw",
+            "module main\n\npub fn run(p: nowhere::Pair): int {\n    return 1\n}\n",
+        )],
+        &[("src/text.mw", TEXT_LIBRARY)],
+    );
+    assert_eq!(
+        diagnostics(&project)
+            .iter()
+            .map(|row| row.code().as_str())
+            .collect::<Vec<_>>(),
+        vec!["check.unsupported"],
+    );
+}
+
+/// A private function of a dependency is not callable from the consuming project.
+#[test]
+fn a_dependency_private_function_is_not_callable() {
+    let project = project_capture::project_with_dependency(
+        "graphtext",
+        &[(
+            "src/main.mw",
+            "module main\n\nuse graphtext::text\n\npub fn run(line: string): string {\n    return text::secret(line)\n}\n",
+        )],
+        &[(
+            "src/text.mw",
+            "module text\n\nfn secret(line: string): string {\n    return line\n}\n",
+        )],
+    );
+    assert_eq!(
+        diagnostics(&project)
+            .iter()
+            .map(|row| row.code().as_str())
+            .collect::<Vec<_>>(),
+        vec!["check.visibility"],
+    );
+}

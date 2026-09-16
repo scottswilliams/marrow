@@ -129,17 +129,23 @@ pub(super) fn resolve_type(
                     ParamBinding::Concrete(arg) => garg_to_lty(arg),
                 });
             }
-            let target = records.alias_target(text);
-            let text = target.map_or(text.as_str(), |target| target.name);
-            let resolved = if let Some(scalar) = ScalarType::from_spelling(text) {
+            // A name resolves in the tree that wrote it; a two-segment name resolves
+            // in the dependency its alias declares. A spelling that names no tree is
+            // outside the admitted set, like any other unknown name.
+            let Some(written) = records.scoped(site.file.origin(), text) else {
+                return Err(ResolveError::Refusal(ResolveRefusal::Unsupported));
+            };
+            let target = records.alias_target(&written);
+            let scope = target.map_or(&written, |target| target.terminal).clone();
+            let resolved = if let Some(scalar) = ScalarType::from_spelling(scope.name()) {
                 Ok(LTy::bare_scalar(scalar))
-            } else if let Some((id, _)) = records.nominal_by_name(text) {
+            } else if let Some((id, _)) = records.nominal_by_name(&scope) {
                 Ok(LTy::Nominal {
                     id,
                     optional: false,
                 })
             } else {
-                match records.static_named_type_projection(text)? {
+                match records.static_named_type_projection(&scope)? {
                     Some(StaticNamedType::Struct(ty)) => Ok(LTy::Struct {
                         ty,
                         optional: false,
@@ -155,18 +161,15 @@ pub(super) fn resolve_type(
                     // A name no table answers is either genuinely undeclared or a
                     // declaration this project refused; the ledger tells them apart,
                     // and only the first may be reported as an unsupported form.
-                    None => Err(ResolveError::Refusal(records.unresolved_named_type(text)?)),
+                    None => Err(ResolveError::Refusal(
+                        records.unresolved_named_type(&scope)?,
+                    )),
                 }
             };
-            resolved.map(|ty| {
-                if target
-                    .is_some_and(|target| target.presence == crate::types::AliasPresence::Optional)
-                {
-                    ty.to_optional()
-                } else {
-                    ty
-                }
-            })
+            let optional = records
+                .alias_target(&written)
+                .is_some_and(|target| target.presence == crate::types::AliasPresence::Optional);
+            resolved.map(|ty| if optional { ty.to_optional() } else { ty })
         }
         TypeExpr::Optional { inner, .. } => {
             let inner = resolve_type(records, draft, durable, inner, env, site)?;
@@ -251,7 +254,7 @@ fn resolve_generic(
             })
         }
         _ => {
-            let template = records.application_template(head)?;
+            let template = records.application_template(site.file.origin(), head)?;
             let params = records.template_type_params(template);
             if args.len() != params.len() {
                 return Err(ResolveError::Refusal(ResolveRefusal::Unsupported));
@@ -324,6 +327,7 @@ impl From<LowerInvariant> for UnifyError {
 /// inferred type, binding each type parameter to the value type filling its position.
 pub(super) fn unify_type_param(
     records: &TypeRegistry,
+    origin: &SourceOrigin,
     type_params: &[(String, Option<TypeConstraint>)],
     annotation: &TypeExpr,
     got: LTy,
@@ -333,13 +337,26 @@ pub(super) fn unify_type_param(
         if let Some(arg) = got.to_bare().as_garg() {
             metadata.validate_type_arguments(&[arg])?;
         }
-        unify_type_param_with(records, metadata, type_params, annotation, got, subst)
+        unify_type_param_with(
+            records,
+            metadata,
+            origin,
+            type_params,
+            annotation,
+            got,
+            subst,
+        )
     })
 }
 
+/// The template's annotations are written in the tree that declares it, so every
+/// name in them resolves in `origin` — never in the tree of the call site that
+/// instantiates the template.
+#[allow(clippy::too_many_arguments)]
 fn unify_type_param_with(
     records: &TypeRegistry,
     metadata: &mut TypeMetadataSession<'_>,
+    origin: &SourceOrigin,
     type_params: &[(String, Option<TypeConstraint>)],
     annotation: &TypeExpr,
     got: LTy,
@@ -374,7 +391,7 @@ fn unify_type_param_with(
                 }
                 Ok(())
             } else {
-                match named_type(records, metadata, text)? {
+                match named_type(records, metadata, origin, text)? {
                     Some(expected) if expected == got => Ok(()),
                     Some(expected) => Err(UnifyError::Mismatch(format!(
                         "expected `{}`, found `{}`",
@@ -394,11 +411,26 @@ fn unify_type_param_with(
                     got.spelling_in(records, metadata)?
                 )));
             }
-            unify_type_param_with(records, metadata, type_params, inner, got.to_bare(), subst)
+            unify_type_param_with(
+                records,
+                metadata,
+                origin,
+                type_params,
+                inner,
+                got.to_bare(),
+                subst,
+            )
         }
-        TypeExpr::Apply { head, args, .. } => {
-            unify_apply_with(records, metadata, type_params, head, args, got, subst)
-        }
+        TypeExpr::Apply { head, args, .. } => unify_apply_with(
+            records,
+            metadata,
+            origin,
+            type_params,
+            head,
+            args,
+            got,
+            subst,
+        ),
         _ => Err(UnifyError::Mismatch(
             "this parameter type is not supported for generic inference".to_string(),
         )),
@@ -408,9 +440,11 @@ fn unify_type_param_with(
 /// Unify a built-in generic parameter application (`List`/`Map`/`Option`/`Result`)
 /// against an argument, recursing into the argument's element/key/value/payload
 /// types.
+#[allow(clippy::too_many_arguments)]
 fn unify_apply_with(
     records: &TypeRegistry,
     metadata: &mut TypeMetadataSession<'_>,
+    origin: &SourceOrigin,
     type_params: &[(String, Option<TypeConstraint>)],
     head: &str,
     args: &[TypeExpr],
@@ -438,6 +472,7 @@ fn unify_apply_with(
                 CollSpec::List { elem: got_elem } => unify_type_param_with(
                     records,
                     metadata,
+                    origin,
                     type_params,
                     elem,
                     garg_to_lty(got_elem),
@@ -473,6 +508,7 @@ fn unify_apply_with(
                     unify_type_param_with(
                         records,
                         metadata,
+                        origin,
                         type_params,
                         key,
                         garg_to_lty(got_key),
@@ -481,6 +517,7 @@ fn unify_apply_with(
                     unify_type_param_with(
                         records,
                         metadata,
+                        origin,
                         type_params,
                         value,
                         garg_to_lty(got_value),
@@ -497,11 +534,14 @@ fn unify_apply_with(
         // instantiation of the same template, and each type argument unifies
         // positionally against its parameter.
         _ => {
-            let template = records.type_template_by_name(head).ok_or_else(|| {
-                UnifyError::Mismatch(format!(
-                    "`{head}` is not a generic type usable in a parameter"
-                ))
-            })?;
+            let template = records
+                .scoped(origin, head)
+                .and_then(|scope| records.type_template_by_name(&scope))
+                .ok_or_else(|| {
+                    UnifyError::Mismatch(format!(
+                        "`{head}` is not a generic type usable in a parameter"
+                    ))
+                })?;
             if args.len() != records.template_type_params(template).len() {
                 return Err(UnifyError::Mismatch(format!(
                     "`{head}` takes {} type argument(s)",
@@ -540,6 +580,7 @@ fn unify_apply_with(
                 unify_type_param_with(
                     records,
                     metadata,
+                    origin,
                     type_params,
                     arg,
                     garg_to_lty(*got_arg),
@@ -556,19 +597,23 @@ fn unify_apply_with(
 fn named_type(
     records: &TypeRegistry,
     metadata: &mut TypeMetadataSession<'_>,
+    origin: &SourceOrigin,
     text: &str,
 ) -> Result<Option<LTy>, LowerInvariant> {
-    let target = records.alias_target(text);
-    let text = target.map_or(text, |target| target.name);
-    let resolved = if let Some(scalar) = ScalarType::from_spelling(text) {
+    let Some(written) = records.scoped(origin, text) else {
+        return Ok(None);
+    };
+    let target = records.alias_target(&written);
+    let scope = target.map_or(&written, |target| target.terminal).clone();
+    let resolved = if let Some(scalar) = ScalarType::from_spelling(scope.name()) {
         Ok(Some(LTy::bare_scalar(scalar)))
-    } else if let Some((id, _)) = records.nominal_by_name(text) {
+    } else if let Some((id, _)) = records.nominal_by_name(&scope) {
         Ok(Some(LTy::Nominal {
             id,
             optional: false,
         }))
     } else {
-        Ok(match metadata.static_named_type(text)? {
+        Ok(match metadata.static_named_type(&scope)? {
             Some(StaticNamedType::Struct(ty)) => Some(LTy::Struct {
                 ty,
                 optional: false,

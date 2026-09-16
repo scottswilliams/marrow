@@ -164,11 +164,43 @@ A file without a `module` header is a script. It is checked under its path-deriv
 
 On the command line an export is named with dots: `marrow run shelf.books.add` runs `shelf::books::add`, and a script's exports are named the same way. Running an export that touches a store needs a store and the companion layout ([install](../install.md#running-against-a-store)).
 
+## Dependencies
+
+A project may depend on other local directories of Marrow source, each under an alias its own `marrow.toml` chooses ([projects](../tools/projects.md#dependencies)). The dependency's modules join the consuming project's module namespace rooted at that alias: a library file `src/text.mw` whose header reads `module text` is `graphtext::text` in a project that declares `graphtext = { path = "../graphtext" }`.
+
+```text
+// ../graphtext/src/text.mw
+module text
+
+struct Pair {
+    key: string
+    value: string
+}
+
+pub fn parsePair(line: string): Pair {
+    return Pair(key: line, value: line)
+}
+
+// src/main.mw
+module main
+
+use graphtext::text
+
+pub fn key(line: string): string {
+    const pair: graphtext::Pair = text::parsePair(line)
+    return pair.key
+}
+```
+
+The library keeps its own unprefixed `module text` header, so it still checks standalone; the alias is applied when the consuming project captures it, and is never written in the library's source. `use graphtext::text` binds `text` as it binds any final segment, and the full path `graphtext::text::parsePair(...)` works without the `use`. An alias names no module of its own, and a `use` or a call whose first segment is a declared dependency reports against that dependency rather than against the consuming project.
+
+A type name carries the alias the same way: `graphtext::Pair` names the library's `Pair`, and a bare `Pair` in the consuming project names the consuming project's own. A type name is one or two segments; a longer path names no type.
+
 ## Visibility
 
-`pub fn` is callable from every module and from the command line. A function without `pub` is callable inside its own module; a call from another module is a `check.visibility` error. A top-level constant is visible inside its own module.
+`pub fn` is callable from every module and from the command line. A function without `pub` is callable inside its own module; a call from another module is a `check.visibility` error, whether the two modules are in the same tree or not. A top-level constant is visible inside its own module.
 
-Types are project-wide. A resource, struct, or enum declared in any module is used by its bare name everywhere, and two modules cannot declare the same type name. `pub` applies to functions only. A store root is likewise project-wide: any module may read or write `^books`, and `marrow check` reports which exports do.
+Types belong to the tree that declares them. A resource, struct, or enum declared in any module of one project is used by its bare name throughout that project, two modules of one project cannot declare the same type name, and a dependency's type is named through its alias. `pub` applies to functions only. A store root is likewise project-wide: any module of the project may read or write `^books`, and `marrow check` reports which exports do.
 
 ## Constants
 

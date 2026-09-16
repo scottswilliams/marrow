@@ -837,6 +837,9 @@ impl TypeMetadataView<'_> {
         scratch: &MetadataScratch,
     ) -> Result<(), GenericInvariant> {
         let template = self.registry.template_for_args(inst.template, &inst.args)?;
+        // The template's body is written in the tree that declares it, so its names
+        // resolve there and not in the tree of whatever minted this instance.
+        let origin = self.registry.template_origin(inst.template).clone();
         let mismatch = || GenericInvariant::ReadyBodyShapeMismatch(inst.id);
         let mut param_indices = HashMap::with_capacity(template.type_params.len());
         for (index, (name, _)) in template.type_params.iter().enumerate() {
@@ -852,6 +855,7 @@ impl TypeMetadataView<'_> {
                 {
                     if expected_name != actual_name
                         || !self.ready_body_arg_matches(
+                            &origin,
                             expected_ty,
                             *actual_arg,
                             &inst.args,
@@ -878,6 +882,7 @@ impl TypeMetadataView<'_> {
                     {
                         if expected_field.name != *actual_name
                             || !self.ready_body_arg_matches(
+                                &origin,
                                 &expected_field.ty,
                                 *actual_arg,
                                 &inst.args,
@@ -898,6 +903,7 @@ impl TypeMetadataView<'_> {
 
     fn ready_body_arg_matches<'a>(
         &'a self,
+        origin: &SourceOrigin,
         expected: &'a TypeExpr,
         actual: GArg,
         args: &[GArg],
@@ -914,11 +920,15 @@ impl TypeMetadataView<'_> {
                         }
                         continue;
                     }
-                    let alias = self.registry.alias_target(text);
+                    let Some(written) = self.registry.scoped(origin, text) else {
+                        return Ok(false);
+                    };
+                    let alias = self.registry.alias_target(&written);
                     if alias.is_some_and(|target| target.presence == AliasPresence::Optional) {
                         return Ok(false);
                     }
-                    let text = alias.map_or(text.as_str(), |target| target.name);
+                    let scope = alias.map_or(&written, |target| target.terminal);
+                    let text = scope.name();
                     if let Some(scalar) = ScalarType::from_spelling(text) {
                         if actual != GArg::Scalar(scalar) {
                             return Ok(false);
@@ -1175,17 +1185,11 @@ impl TypeMetadataSession<'_> {
 
     pub(super) fn static_record_by_name(
         &mut self,
-        name: &str,
+        scope: &ScopedTypeName,
     ) -> Result<Option<RecordInfo>, GenericInvariant> {
         self.ensure_healthy()?;
         let result = (|| {
-            let Some(info) = self
-                .view
-                .registry
-                .records
-                .iter()
-                .find(|info| info.name == name)
-            else {
+            let Some(info) = self.view.registry.by_name(scope) else {
                 return Ok(None);
             };
             let args = info
@@ -1203,7 +1207,7 @@ impl TypeMetadataSession<'_> {
 
     pub(super) fn static_group_by_name(
         &mut self,
-        record: &str,
+        record: &ScopedTypeName,
         group: &str,
     ) -> Result<Option<GroupInfo>, GenericInvariant> {
         self.ensure_healthy()?;
@@ -1211,9 +1215,7 @@ impl TypeMetadataSession<'_> {
             let Some(info) = self
                 .view
                 .registry
-                .records
-                .iter()
-                .find(|info| info.name == record)
+                .by_name(record)
                 .and_then(|info| info.groups.iter().find(|info| info.name == group))
             else {
                 return Ok(None);
@@ -1228,11 +1230,11 @@ impl TypeMetadataSession<'_> {
 
     pub(super) fn static_struct_by_name(
         &mut self,
-        name: &str,
+        scope: &ScopedTypeName,
     ) -> Result<Option<StructInfo>, GenericInvariant> {
         self.ensure_healthy()?;
         let result = (|| {
-            let Some(info) = self.view.registry.struct_by_name(name) else {
+            let Some(info) = self.view.registry.struct_by_name(scope) else {
                 return Ok(None);
             };
             let args = info.fields.iter().map(|field| field.ty).collect::<Vec<_>>();
@@ -1245,26 +1247,26 @@ impl TypeMetadataSession<'_> {
 
     pub(super) fn static_enum_by_name(
         &mut self,
-        name: &str,
+        scope: &ScopedTypeName,
     ) -> Result<Option<EnumInfo>, GenericInvariant> {
         self.ensure_healthy()?;
-        let result = Ok(self.view.registry.enum_by_name(name).cloned());
+        let result = Ok(self.view.registry.enum_by_name(scope).cloned());
         self.remember(result)
     }
 
     pub(crate) fn static_named_type(
         &mut self,
-        name: &str,
+        scope: &ScopedTypeName,
     ) -> Result<Option<StaticNamedType>, GenericInvariant> {
         self.ensure_healthy()?;
         let registry = self.view.registry;
-        let result = Ok(if let Some(info) = registry.struct_by_name(name) {
+        let result = Ok(if let Some(info) = registry.struct_by_name(scope) {
             Some(StaticNamedType::Struct(info.type_id))
-        } else if let Some(info) = registry.enum_by_name(name) {
+        } else if let Some(info) = registry.enum_by_name(scope) {
             Some(StaticNamedType::Enum(info.enum_id))
         } else {
             registry
-                .by_name(name)
+                .by_name(scope)
                 .map(|info| StaticNamedType::Record(info.type_id))
         });
         self.remember(result)
