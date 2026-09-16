@@ -232,8 +232,9 @@ Configuration faults, including an invalid project manifest.
         r#"
 ### `project.*`
 
-Faults from discovering a project's sources under `src` and reading its
-identity ledger `.marrow/ids`.
+Faults from discovering a project's sources under `src`, resolving the local
+dependencies its manifest declares, and reading its identity ledger
+`.marrow/ids`.
 
 | Code | Meaning |
 |---|---|"#
@@ -242,6 +243,8 @@ identity ledger `.marrow/ids`.
             Code::ProjectSourcePath,
             Code::ProjectModuleCollision,
             Code::ProjectCaptureLimit,
+            Code::ProjectDependencyAlias,
+            Code::ProjectDependencyPath,
             Code::ProjectIdsCorrupt,
             Code::ProjectIdsMint,
             Code::ProjectIdsLocation,

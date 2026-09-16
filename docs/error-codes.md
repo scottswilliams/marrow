@@ -180,14 +180,17 @@ Configuration faults, including an invalid project manifest.
 
 ### `project.*`
 
-Faults from discovering a project's sources under `src` and reading its
-identity ledger `.marrow/ids`.
+Faults from discovering a project's sources under `src`, resolving the local
+dependencies its manifest declares, and reading its identity ledger
+`.marrow/ids`.
 
 | Code | Meaning |
 |---|---|
 | `project.source_path` | A source file path is not a valid module identity: it is absolute, escapes `src` with `..`, is not a canonical forward-slash path, contains a NUL or control character, lives outside `src`, is not a `.mw` file with a non-empty name, or exceeds 4096 bytes. A project whose `src` is a symlink reports this before discovery. |
 | `project.module_collision` | Two source files collide on module identity: they derive the same module name, or their paths differ only in case and would name the same file on a case-insensitive filesystem. The message names both files. |
 | `project.capture_limit` | A project capture exceeded a fixed bound: too many source files, one source file too large, or the source files together too large. |
+| `project.dependency_alias` | A `[dependencies]` alias cannot name a dependency: it is not an identifier (a letter or `_` followed by letters, digits, or `_`), it is longer than 64 bytes, or it collides with the first segment of a module the root project already declares. The consumer chooses the alias; the dependency's directory name and its own manifest supply none. |
+| `project.dependency_path` | A `[dependencies]` path does not name a usable local project: it is absolute, not a canonical relative path, or longer than 4096 bytes; it is absent, is not a directory, or holds no `marrow.toml`; it reaches through a symbolic link; it names the consuming project itself; or it declares `[dependencies]` of its own, which this build does not admit. |
 | `project.ids_corrupt` | `.marrow/ids` is corrupt and is rejected whole: unresolved Git conflict markers, a malformed or duplicate line, two lines claiming one `(kind, path)` or one id (a double mint on parallel branches), a retired id reissued, an inconsistent retirement high-water, a truncated file missing its end marker, or a size past the fixed bound. Restore the file from version control. |
 | `project.ids_mint` | `marrow run` could not mint missing identities: an anchor was invalid, duplicated, live, or retired; the ledger would exceed its fixed size; the entropy source failed; or a candidate id collided. `.marrow/ids` is unchanged. Fix the source or the ledger state, then run again; an entropy failure or a collision may pass on another attempt. |
 | `project.ids_location` | The identity ledger was found at the retired path `marrow.ids`. Its home is `.marrow/ids`: move it with `git mv marrow.ids .marrow/ids` and commit the move. When both exist, keep `.marrow/ids` and delete the root file; a project has exactly one ledger. |
