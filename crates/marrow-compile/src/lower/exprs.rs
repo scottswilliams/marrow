@@ -790,7 +790,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// `left ?? right`: yield the present value of the optional `left`, else `right`.
-    /// Lowered to the atomic present-branch (design §D), so no unchecked unwrap.
+    /// Lowered to the atomic present-branch, so there is no unchecked unwrap.
     fn lower_coalesce(&mut self, left: &Expression, right: &Expression) -> ConstructResult<LTy> {
         let left_ty = self.lower_expr(left)?;
         if !left_ty.is_optional() {
