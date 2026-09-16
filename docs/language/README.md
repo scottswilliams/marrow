@@ -80,8 +80,8 @@ pub fn label(id: int): string {
     return "no such book"
 }
 
-pub fn isDone(id: int): bool {
-    return ^books[id].done ?? false
+pub fn isRead(id: int): bool {
+    return ^books[id].read ?? false
 }
 ```
 
@@ -136,7 +136,7 @@ creates it and each later call replaces it. A fault before the block ends rolls 
 inside the block commits what was written before it, so `add` in the first look
 leaves a duplicate key untouched. A durable write in an export body outside a
 `transaction` block is a compile error, `check.requires_transaction`; a test
-body writes durable data directly ([tests](tests.md)).
+body reaches durable data only through the exports it calls ([tests](tests.md)).
 
 ## Traversal states its bound
 
@@ -175,8 +175,10 @@ test "so does this one" {
 ```
 
 Both pass. A test needs no fixture and no
-cleanup, and no test observes another's writes. A body either touches `^`
-itself or drives exports that own a `transaction` ([tests](tests.md)).
+cleanup, and no test observes another's writes. A body sets data up through
+exports that own a `transaction` and observes it through ordinary read
+functions; a durable operation written in the body itself is
+`check.test_durable_operation` ([tests](tests.md)).
 `marrow test` runs every test in the project:
 
 ```text
@@ -228,6 +230,8 @@ table is the one place to see them together.
 | A resource containing a nominal value bound to a store | `check.unsupported` | [Durable places](durable-places.md) |
 | A nominal type as a store-root key, branch key, or module constant | `check.unsupported` | [Types and values](types-and-values.md#aliases-and-nominal-ints) |
 | A call pairing two scalar names, `int("1")` or `bool(1)` | `check.unsupported` | [Types and values](types-and-values.md) |
+| A type or constructor path longer than `alias::Name`, `graphtext::text::Pair` | `check.unsupported`; a type name is one or two segments | [Modules and functions](modules-and-functions.md#dependencies) |
+| An enum path longer than that name plus one member, `graphtext::text::Color::red` | `check.unsupported` | [Modules and functions](modules-and-functions.md#dependencies) |
 | An expression, call, `bytes`, or temporal value in a module `const` | `check.unsupported` | [Modules and functions](modules-and-functions.md) |
 | `delete` on a local field | `check.unsupported`; `unset` clears one | [Grammar](grammar.md) |
 | `for` over a composite-keyed root or branch | `check.unsupported`; walk a single-key branch | [Traversal and indexes](traversal-and-indexes.md) |
