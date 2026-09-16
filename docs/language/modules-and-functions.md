@@ -280,7 +280,13 @@ exactly as one over a local enum.
 Commands act on the project they are invoked on: `marrow run` invokes only the
 consuming project's own exports and `marrow test` runs only its own tests, so a
 dependency's exports and tests are run in that dependency's directory even
-though its functions are callable from source across the boundary.
+though its functions are callable from source across the boundary. A
+dependency's `pub fn` is therefore an ordinary function in the consuming
+project — a helper that runs inside the region of the consuming export that
+calls it — so one that owns a `transaction` block of its own is a
+`check.transaction_misplaced` there, and a library offers durable work a
+consumer commits as a helper that carries no block ([errors and
+transactions](errors-and-transactions.md#transactions)).
 
 ## Visibility
 
