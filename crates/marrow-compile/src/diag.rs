@@ -13,6 +13,8 @@
 //! accumulating; an OwnedBytes limit may strengthen to Count, and a discarded
 //! payload never re-materializes.
 
+use std::fmt;
+
 use crate::bounded::{Bounded, Ceiling};
 use crate::decl::{DeclarationNamespace, RefusalReport};
 use crate::source::ProjectFile;
@@ -91,6 +93,14 @@ enum CompilerDiagnostic {
         message: String,
         refused: RefusedDeclaration,
     },
+    /// A finding whose message ends in a steer, carrying the typed target the
+    /// steer names beside the rendered form.
+    Steered {
+        code: Code,
+        span: SourceSpan,
+        message: String,
+        steer: Steer,
+    },
     /// A file the drive could not decode. The message is the central static and
     /// the span the fixed file-start point, so this variant owns only the
     /// typed `Utf8Error` numbers.
@@ -139,6 +149,94 @@ pub struct RefusedDeclaration {
     /// Where that report was made: at the declaration, by a covering pass, or by an
     /// earlier stage that refused the whole source.
     pub report: RefusalReport,
+}
+
+/// The family a name was looked up in, so a did-you-mean spells its candidate the way
+/// that family is written: a store root reads back with its `^` sigil, a function or a
+/// value reads back plainly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameFamily {
+    Root,
+    Function,
+    Value,
+}
+
+/// Where a steering diagnostic sends the reader.
+///
+/// A steer reuses the code of the finding it rides — today every one of these is a
+/// `check.type` — so the code and span cannot say what it names. These are the typed
+/// facts: the candidate spelling a did-you-mean offers, and the branch a keyed-branch
+/// steer points at. [`Display`](std::fmt::Display) is the one renderer; the prose lives
+/// nowhere else, so payload and message cannot drift.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Steer {
+    /// The nearest declared identifier to an unresolved name, offered as a single
+    /// unambiguous candidate in its family's spelling.
+    DidYouMean {
+        family: NameFamily,
+        candidate: String,
+    },
+    /// A keyed branch named where a field of a materialized entry record was expected.
+    /// `resource` names the declaring resource when the bound value is a whole-entry
+    /// record; a materialized *branch* entry value is not owned by the resource
+    /// registry, so a sub-branch steer has none and renders generically. No store root
+    /// is ever named: several roots may occur over one resource, so naming one would
+    /// answer a declaration question with an occurrence.
+    KeyedBranch {
+        branch: String,
+        resource: Option<String>,
+    },
+}
+
+impl Steer {
+    /// The owned payload bytes this steer charges against the diagnostic byte ceiling.
+    fn retained_owned_bytes(&self) -> usize {
+        match self {
+            Self::DidYouMean { candidate, .. } => candidate.len(),
+            Self::KeyedBranch { branch, resource } => {
+                branch.len() + resource.as_ref().map_or(0, String::len)
+            }
+        }
+    }
+}
+
+impl fmt::Display for Steer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DidYouMean {
+                family: NameFamily::Root,
+                candidate,
+            } => write!(f, "Did you mean the store root `^{candidate}`?"),
+            Self::DidYouMean {
+                family: NameFamily::Function,
+                candidate,
+            } => write!(f, "Did you mean the function `{candidate}`?"),
+            Self::DidYouMean {
+                family: NameFamily::Value,
+                candidate,
+            } => write!(f, "Did you mean `{candidate}`?"),
+            Self::KeyedBranch {
+                branch,
+                resource: Some(resource),
+            } => write!(
+                f,
+                "`{branch}` is a keyed branch of `{resource}`, not a field of the bound entry \
+                 value. A keyed branch is a distinct durable node reached through a store path, \
+                 not projected from a materialized record. Read it directly with \
+                 `^root[key].{branch}[branchKey]`, or bind the branch with a nested `if const`."
+            ),
+            Self::KeyedBranch {
+                branch,
+                resource: None,
+            } => write!(
+                f,
+                "`{branch}` is a keyed branch, not a field of the bound entry value. A keyed \
+                 branch is a distinct durable node reached through a store path, not projected \
+                 from a materialized record. Read it through its durable path, or bind it with a \
+                 nested `if const`."
+            ),
+        }
+    }
 }
 
 impl SourceDiagnostic {
@@ -196,6 +294,32 @@ impl SourceDiagnostic {
         }
     }
 
+    /// A finding whose message ends in a steer. `prefix` is the part of the message the
+    /// steer does not own — empty when the steer is the whole message — and the steer
+    /// renders the rest, so the typed payload and the prose are one construction.
+    pub(crate) fn with_steer(
+        code: Code,
+        file: &ProjectFile,
+        span: SourceSpan,
+        prefix: &str,
+        steer: Steer,
+    ) -> Self {
+        let message = if prefix.is_empty() {
+            steer.to_string()
+        } else {
+            format!("{prefix}. {steer}")
+        };
+        Self {
+            file: file.clone(),
+            payload: SourceDiagnosticPayload::Compiler(CompilerDiagnostic::Steered {
+                code,
+                span,
+                message,
+                steer,
+            }),
+        }
+    }
+
     pub(crate) fn invalid_utf8(
         file: &ProjectFile,
         valid_up_to: usize,
@@ -227,7 +351,8 @@ impl SourceDiagnostic {
             SourceDiagnosticPayload::Compiler(
                 CompilerDiagnostic::Rendered { code, .. }
                 | CompilerDiagnostic::IdentityGap { code, .. }
-                | CompilerDiagnostic::RefusedDeclaration { code, .. },
+                | CompilerDiagnostic::RefusedDeclaration { code, .. }
+                | CompilerDiagnostic::Steered { code, .. },
             ) => *code,
             SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8 { .. }) => {
                 Code::CheckUnsupported
@@ -242,7 +367,8 @@ impl SourceDiagnostic {
             SourceDiagnosticPayload::Compiler(
                 CompilerDiagnostic::Rendered { message, .. }
                 | CompilerDiagnostic::IdentityGap { message, .. }
-                | CompilerDiagnostic::RefusedDeclaration { message, .. },
+                | CompilerDiagnostic::RefusedDeclaration { message, .. }
+                | CompilerDiagnostic::Steered { message, .. },
             ) => message,
             SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8 { .. }) => {
                 INVALID_UTF8_MESSAGE
@@ -304,6 +430,20 @@ impl SourceDiagnostic {
         }
     }
 
+    /// The typed target of a steering diagnostic, `None` for every other payload.
+    ///
+    /// A steer rides the code of the finding it corrects, so `(code, line, column)` says
+    /// only that something is ill-typed. A test that means to pin the steer reads this
+    /// instead of the rendered prose, which is not a contract.
+    pub fn steer(&self) -> Option<&Steer> {
+        match &self.payload {
+            SourceDiagnosticPayload::Compiler(CompilerDiagnostic::Steered { steer, .. }) => {
+                Some(steer)
+            }
+            _ => None,
+        }
+    }
+
     /// The captured source file this diagnostic points into. Always a canonical
     /// bounded identity — never empty, a sentinel, or a consumer-chosen placeholder.
     /// It is relative to the root of [`Self::origin`]'s tree, so a renderer that
@@ -325,7 +465,8 @@ impl SourceDiagnostic {
             SourceDiagnosticPayload::Compiler(
                 CompilerDiagnostic::Rendered { span, .. }
                 | CompilerDiagnostic::IdentityGap { span, .. }
-                | CompilerDiagnostic::RefusedDeclaration { span, .. },
+                | CompilerDiagnostic::RefusedDeclaration { span, .. }
+                | CompilerDiagnostic::Steered { span, .. },
             ) => *span,
             SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8 { .. }) => {
                 INVALID_UTF8_SPAN
@@ -387,6 +528,11 @@ impl SourceDiagnostic {
                 message,
                 ..
             }) => file + message.len(),
+            SourceDiagnosticPayload::Compiler(CompilerDiagnostic::Steered {
+                message,
+                steer,
+                ..
+            }) => file + message.len() + steer.retained_owned_bytes(),
             SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8 { .. }) => file,
         }
     }

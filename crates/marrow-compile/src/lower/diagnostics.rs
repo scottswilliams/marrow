@@ -2,7 +2,7 @@
 //! through.
 
 use super::*;
-use crate::diag::RefusedDeclaration;
+use crate::diag::{RefusedDeclaration, Steer};
 
 /// Whether `ty` is a value that renders to canonical text — a bare scalar, enum, or
 /// entry identity. A record, collection, or optional is not renderable; those are not
@@ -204,48 +204,25 @@ pub(super) fn not_yet_executable(
 }
 
 /// A keyed branch named where a field of a materialized entry record is expected — the
-/// `b.notes[…]` chain off `if const b = ^root(k)`. A branch is a distinct durable node, not
-/// a projection of the whole-entry value, so the message steers to the durable-path form.
-/// No store root is named: several roots may occur over one resource, so naming one would
-/// answer a declaration question with an occurrence.
+/// `b.notes[…]` chain off `if const b = ^root(k)`, or the `n.tags[…]` chain off a
+/// materialized branch entry, which carries no declaring resource. A branch is a distinct
+/// durable node, not a projection of the bound value, so the row steers to the
+/// durable-path form.
 pub(super) fn branch_not_a_field(
     file: &ProjectFile,
     span: SourceSpan,
     branch: &str,
-    resource: &str,
+    resource: Option<&str>,
 ) -> SourceDiagnostic {
-    SourceDiagnostic::at(
+    SourceDiagnostic::with_steer(
         Code::CheckType,
         file,
         span,
-        format!(
-            "`{branch}` is a keyed branch of `{resource}`, not a field of the bound entry \
-             value. A keyed branch is a distinct durable node reached through a store path, \
-             not projected from a materialized record. Read it directly with \
-             `^root[key].{branch}[branchKey]`, or bind the branch with a nested `if const`."
-        ),
-    )
-}
-
-/// A keyed sub-branch named on a materialized branch entry value (the `n.replies[…]` chain
-/// off `if const n = ^root(k).notes(nk)`). Like a top-level branch it is a distinct durable
-/// node, not a field; the concrete root spelling is not in hand, so the message steers to
-/// the durable-path form generically.
-pub(super) fn subbranch_not_a_field(
-    file: &ProjectFile,
-    span: SourceSpan,
-    branch: &str,
-) -> SourceDiagnostic {
-    SourceDiagnostic::at(
-        Code::CheckType,
-        file,
-        span,
-        format!(
-            "`{branch}` is a keyed branch, not a field of the bound entry value. A keyed \
-             branch is a distinct durable node reached through a store path, not projected \
-             from a materialized record. Read it through its durable path, or bind it with a \
-             nested `if const`."
-        ),
+        "",
+        Steer::KeyedBranch {
+            branch: branch.to_string(),
+            resource: resource.map(str::to_string),
+        },
     )
 }
 
@@ -279,36 +256,31 @@ pub(super) fn name_error(file: &ProjectFile, span: SourceSpan, name: &str) -> So
     )
 }
 
-/// Which family an unresolved name was looked up in, so a did-you-mean names the kind
-/// of thing the suggested identifier is: a store root reads back with its `^` sigil, a
-/// function or a value reads back plainly.
-#[derive(Clone, Copy)]
-pub(super) enum NameKind {
-    Root,
-    Function,
-    Value,
-}
-
 /// An unresolved name, offering the nearest declared identifier of the same family when
 /// one is a close misspelling. Without a suggestion this is exactly [`name_error`]; a
-/// suggestion spells the candidate in its family's form, so the fix is a single edit.
+/// suggestion rides a typed [`Steer::DidYouMean`] that spells the candidate in its
+/// family's form, so the fix is a single edit.
 pub(super) fn name_not_in_scope(
     file: &ProjectFile,
     span: SourceSpan,
     name: &str,
     suggestion: Option<&str>,
-    kind: NameKind,
+    family: NameFamily,
 ) -> SourceDiagnostic {
-    let mut message = format!("`{name}` is not in scope");
-    if let Some(candidate) = suggestion {
-        let hint = match kind {
-            NameKind::Root => format!(". Did you mean the store root `^{candidate}`?"),
-            NameKind::Function => format!(". Did you mean the function `{candidate}`?"),
-            NameKind::Value => format!(". Did you mean `{candidate}`?"),
-        };
-        message.push_str(&hint);
+    let scope = format!("`{name}` is not in scope");
+    match suggestion {
+        Some(candidate) => SourceDiagnostic::with_steer(
+            Code::CheckType,
+            file,
+            span,
+            &scope,
+            Steer::DidYouMean {
+                family,
+                candidate: candidate.to_string(),
+            },
+        ),
+        None => SourceDiagnostic::at(Code::CheckType, file, span, scope),
     }
-    SourceDiagnostic::at(Code::CheckType, file, span, message)
 }
 
 /// The single declared name within edit distance two of `target`, or `None` when none

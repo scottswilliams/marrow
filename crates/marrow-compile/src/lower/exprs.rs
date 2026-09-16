@@ -209,7 +209,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         *span,
                         name,
                         suggestion.as_deref(),
-                        NameKind::Value,
+                        NameFamily::Value,
                     ));
                     Err(LoweringFailure::Recoverable)
                 }
@@ -1283,7 +1283,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             span,
             name,
             suggestion.as_deref(),
-            NameKind::Function,
+            NameFamily::Function,
         ));
         Err(LoweringFailure::Recoverable)
     }
@@ -1401,7 +1401,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     span,
                     &path,
                     suggestion.as_deref(),
-                    NameKind::Function,
+                    NameFamily::Function,
                 ));
                 Err(LoweringFailure::Recoverable)
             }
@@ -3169,7 +3169,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                                         .declares_branch(&self.durable_name(&resource), name) =>
                                 {
                                     self.fail(branch_not_a_field(
-                                        self.file, field_span, name, &resource,
+                                        self.file,
+                                        field_span,
+                                        name,
+                                        Some(&resource),
                                     ));
                                     return None;
                                 }
@@ -3217,7 +3220,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         // node, not a field: steer to the durable-path form, the same as a
                         // top-level branch off a whole-entry record.
                         if branch.declares_branch(name) {
-                            self.fail(subbranch_not_a_field(self.file, field_span, name));
+                            self.fail(branch_not_a_field(self.file, field_span, name, None));
                             return None;
                         }
                         self.fail(SourceDiagnostic::at(

@@ -42,7 +42,7 @@ use crate::decl::{
     Binding, DeclarationIndexDrift, DeclarationNamespace, DeclarationRefusalId,
     DeclarationRefusalSummary, MemberNamespace, declaration_refused,
 };
-use crate::diag::{DiagnosticCollector, SourceDiagnostic};
+use crate::diag::{DiagnosticCollector, NameFamily, SourceDiagnostic};
 use crate::durable::{DurableRegistry, Family, ProductBinding, RootBinding};
 use crate::konst::{ConstRegistry, ConstScalar};
 use crate::scalar::ScalarType;
@@ -1323,7 +1323,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     span,
                     name,
                     suggestion.as_deref(),
-                    NameKind::Root,
+                    NameFamily::Root,
                 ));
                 None
             }

@@ -62,7 +62,7 @@ pub use compile::{
 };
 pub use decl::{DeclarationNamespace, RefusalReport, SourceStage};
 pub use demand::{DemandSummary, DurableNaming, RootDemand};
-pub use diag::{IdentityGap, RefusedDeclaration, SourceDiagnostic};
+pub use diag::{IdentityGap, NameFamily, RefusedDeclaration, SourceDiagnostic, Steer};
 pub use marrow_image::ExportId;
 pub use marrow_syntax::FormatRefusal;
 pub use scalar::ScalarType;
