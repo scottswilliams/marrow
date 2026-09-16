@@ -65,8 +65,6 @@ A source helper is proven when two maintained callers reuse it with fewer
 duplicated rules and unchanged behavior, compiling and testing through ordinary
 tooling with no privileged initialization or host authority.
 
-Ordinary enum payloads should follow the supported value types they contain,
-without declaration-order or generic-substitution exceptions.
 Each widening requires production compiler, verifier, runtime and client
 agreement. Nominal-bearing public aggregates and durable values remain refused
 until their constraints survive those boundaries; general nominal transport is

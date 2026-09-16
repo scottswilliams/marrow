@@ -269,8 +269,14 @@ A value is written `Shape::dot` for a bare member and
 once and binds a payload positionally; it is described under
 [control flow](control-flow.md#match).
 
-A declared payload field is a scalar. A struct or enum reaches a payload through
-a type parameter of a [generic enum](#generic-types). An enum declares each
+A payload field carries a bare value: a scalar, a nominal int, a struct, another
+enum, or an application of a [generic type](#generic-types) that resolves to one
+of those. An optional payload field, and one that resolves to a collection such
+as `List<int>` or `Option<List<int>>`, is a `check.unsupported`; wrap the
+collection in a struct and carry the struct. A payload whose leaf contains the
+enum itself is a `check.recursion`. Comparing two enum values whose payload is a
+struct compares that struct structurally, although a struct has no `==` of its
+own. An enum declares each
 member once, and a member declares each payload field once; a repeat is a
 `check.name_conflict` at the repeated name. An enum name is project-wide, like a
 struct name. An enum refused for exceeding the member limit retains its name:
@@ -504,8 +510,8 @@ admits `==` and `!=`, or the comparisons as well, over the parameter. An
 argument that lacks the capability is a `check.type` at the construction. An
 unconstrained parameter admits neither.
 
-A payload that resolves to a collection, such as `Option<List<int>>`, is a
-`check.unsupported`; wrap the collection in a struct. Acyclicity applies per
+A generic enum's payload admits exactly what a declared enum's does, described
+under [enums](#enums). Acyclicity applies per
 application: `Tree<int>` whose `child` is a `Tree<int>` is a `check.recursion`,
 and `kids: List<Tree<T>>` is finite. `Option`, `Result`, `List`, and `Map` are
 the toolchain's generic types over this mechanism, and their names are reserved.

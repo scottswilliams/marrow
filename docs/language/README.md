@@ -220,7 +220,8 @@ table is the one place to see them together.
 | A struct, list, map, or optional in an interpolation hole | `check.unsupported` | [Source and syntax](source-and-syntax.md) |
 | A computed argument to a temporal literal | `check.unsupported`; the argument is a literal | [Types and values](types-and-values.md) |
 | A nested bracket write, `outer[k1][k2] = value` | `check.unsupported` | [Types and values](types-and-values.md) |
-| A collection payload such as `Option<List<int>>` | `check.unsupported`; wrap the collection in a struct | [Types and values](types-and-values.md) |
+| A collection enum payload, `Option<List<int>>` or `m(v: List<int>)` | `check.unsupported`; wrap the collection in a struct | [Types and values](types-and-values.md#enums) |
+| An optional enum payload, `m(v: int?)` | `check.unsupported` | [Types and values](types-and-values.md#enums) |
 | A resource as a type argument, `Option<Book>` or `List<Book>` | `check.unsupported` | [Resources](resources.md) |
 | An optional parameter, `book: Book?` | `check.unsupported` | [Resources](resources.md) |
 | A public aggregate parameter containing a nominal int | `check.unsupported` | [Types and values](types-and-values.md#aliases-and-nominal-ints) |

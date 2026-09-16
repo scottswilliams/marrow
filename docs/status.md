@@ -10,9 +10,8 @@ Native opening, recovery and fresh restore retain the accepted Head's physical
 addresses. Explicit apply preserves those addresses while adding sparse scalar
 fields; it does not implement general schema evolution.
 
-Ordinary enum composition, local source reuse and full
-application-lifetime qualification still require work. Broader future features are not
-prerequisites.
+Local source reuse and full application-lifetime qualification still require
+work. Broader future features are not prerequisites.
 
 ## What works
 

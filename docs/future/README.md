@@ -8,7 +8,7 @@ not implemented and the evidence that would make it current. The
 
 [Beta scope](../vision.md#beta-scope) selects the immediate product boundary.
 Presence in this directory does not make a capability a beta prerequisite.
-Local source reuse, bounded terminal text I/O, ordinary enum composition, coherent tests,
+Local source reuse, bounded terminal text I/O, coherent tests,
 additive local updates and complete backup/restore belong to that boundary.
 Remote packages, a source-library portfolio, implicit presence proofs and served
 execution remain deferred.
