@@ -513,16 +513,15 @@ mod fact_ledger_tests {
     /// an arithmetic property of its own ceilings, not a property of the workload that
     /// filled it.
     ///
-    /// This is what keeps `MAX_ANALYSIS_FACT_TRANSIENT_BYTES` from being hostage to
-    /// fixture choice. Admission stops at [`MAX_SNAPSHOT_FACT_COUNT`] and
+    /// This keeps `MAX_ANALYSIS_FACT_TRANSIENT_BYTES` from being hostage to fixture
+    /// choice. Admission stops at [`MAX_SNAPSHOT_FACT_COUNT`] and
     /// [`MAX_SNAPSHOT_FACT_BYTES`] at the push that produced each fact, so no body,
-    /// however wide, can make the payload larger than this; a denser fixture can only
-    /// reach the ceiling sooner. Every charged spelling is held in an exactly sized
-    /// `Box<str>`, so the byte ceiling is the physical figure and not only a logical one.
+    /// however wide, can make the payload larger; a denser fixture only reaches the
+    /// ceiling sooner. Every charged spelling is held in an exactly sized `Box<str>`, so
+    /// the byte ceiling is the physical figure and not only a logical one.
     ///
-    /// What it does **not** cover, and what the lane's measured differential does: the
-    /// producer-side rendering of one display at a time, which is built and freed as it
-    /// is charged, and the checker's own working set, which is not fact state.
+    /// It does **not** cover the producer-side rendering of one display at a time, built
+    /// and freed as it is charged, nor the checker's working set, which is not fact state.
     #[test]
     fn the_live_fact_payload_is_bounded_by_the_ledger_ceilings() {
         // Every counted family shares one ceiling, so charging the whole ceiling at the
@@ -552,13 +551,10 @@ mod fact_ledger_tests {
         );
     }
 
-    /// The compaction is load-bearing, not cosmetic: the same accounting against the
-    /// representation this row replaced does **not** close.
-    ///
-    /// That representation retained, per hover fact, an owned `FileIdentity` (24 bytes
-    /// plus up to 4096 bytes of spelling, charged by neither ceiling) and a definition
-    /// target holding a second one — a 144-byte fact struct against today's 80 — and
-    /// grew every collection as a `Vec` whose amortized capacity was retained with it.
+    /// The compact retained representation is load-bearing, not cosmetic: the same
+    /// accounting against a fact that held owned `FileIdentity` spellings inline — 144
+    /// bytes against today's 80, with the spelling charged by neither ceiling — does
+    /// **not** close under the exported term.
     #[test]
     fn the_superseded_representation_does_not_close() {
         const SUPERSEDED_HOVER_FACT: u64 = 144;
@@ -663,8 +659,7 @@ mod fact_ledger_tests {
     }
 
     /// A hover fact charges its display plus the file spelling of its optional
-    /// definition target — the logical charge, unchanged by the compact representation
-    /// that no longer stores that spelling per fact.
+    /// definition target — a logical charge, since no spelling is stored per fact.
     #[test]
     fn a_hover_fact_charges_its_display_and_its_target_spelling() {
         let input = project(&[("src/main.mw", "")]);
@@ -723,9 +718,8 @@ mod fact_ledger_tests {
         );
     }
 
-    /// One admitted count charges exactly one retained fact, whether or not the fact
-    /// names a definition target: the target is carried inside the fact, so no second
-    /// retained row and no second maximum exists for the exported term to charge.
+    /// One admitted count charges exactly one retained fact: a definition target is
+    /// carried inside the fact, so the exported term has no second maximum to charge.
     #[test]
     fn a_hover_fact_carries_its_definition_target() {
         let input = project(&[("src/main.mw", "")]);
@@ -869,10 +863,9 @@ mod fact_ledger_tests {
 
     /// A body that never settles leaves the ledger exactly as it found it.
     ///
-    /// This is the inverse, and it is structural rather than arithmetic: the staged owner
-    /// holds both the rows and the charge, so dropping it un-charges the body completely.
-    /// The comparison is against a ledger that never saw the body at all, so a charge that
-    /// leaked through in either direction shows as a terminal difference.
+    /// The inverse is structural rather than arithmetic: the staged owner holds both the
+    /// rows and the charge, so dropping it un-charges the body completely. The comparison
+    /// is against a ledger that never saw the body, so any leak shows as a difference.
     #[test]
     fn an_abandoned_body_leaves_the_ledger_exactly_as_it_found_it() {
         let input = project(&[("src/main.mw", "")]);
@@ -920,12 +913,10 @@ mod fact_ledger_tests {
 
     /// A body that crossed the ceiling and was then abandoned does not limit the snapshot.
     ///
-    /// This is the case an arithmetic un-charge cannot serve. Latching the crossing on the
-    /// ledger discards its whole retained payload, and subtracting the abandoned body's
-    /// count back out afterwards cannot re-materialize what was discarded — so the ledger
-    /// would report a limit, and lose every earlier fact, on account of a body whose facts
-    /// never entered the snapshot. Staging the crossing with the body is what makes the
-    /// inverse total.
+    /// The case an arithmetic un-charge cannot serve: latching the crossing on the ledger
+    /// discards its whole retained payload, and subtracting the abandoned body's count
+    /// back out cannot re-materialize it, so the ledger would report a limit and lose
+    /// every earlier fact for a body whose facts never entered the snapshot.
     #[test]
     fn a_body_that_crossed_the_ceiling_and_was_abandoned_limits_nothing() {
         let input = project(&[("src/main.mw", "")]);
@@ -970,8 +961,7 @@ mod fact_ledger_tests {
 
     /// Every retained fact's span indexes only the snapshot's own bytes for the file it
     /// names, and every retained coordinate resolves to a module of that same input.
-    /// A coordinate is validated against those bytes and nothing else; agreement with an
-    /// editor's live document text is a separate owner's obligation and is not claimed.
+    /// Agreement with an editor's live document text is a separate owner's obligation.
     #[test]
     fn every_retained_span_lies_inside_its_own_file() {
         let source = "module main\n\n\

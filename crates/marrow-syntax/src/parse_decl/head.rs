@@ -589,12 +589,10 @@ pub(super) fn parse_field_or_group_tokens(
         Some(token) if token.kind == TokenKind::Identifier => {
             (token.text(source).to_string(), token.span)
         }
-        // A line that begins with a keyed-layer clause spelling such as `unique`
-        // — a keyword that does not go on to name a field (`:`) or keyed field
-        // (`[`) — is a malformed member, not a missing name. Report the
-        // member-shape rule naming what is allowed here, the same diagnostic a
-        // non-keyword junk word reaches. A keyword followed by `:`/`[` is instead
-        // a reserved word used as a member name, which keeps the member-name rule.
+        // A keyword that does not go on to name a field (`:`) or keyed field (`[`) — a
+        // stray clause word such as `unique` — is a malformed member, not a missing name,
+        // so it reports the member-shape rule. A keyword followed by `:`/`[` is instead a
+        // reserved word used as a member name, which keeps the member-name rule.
         Some(token)
             if matches!(token.kind, TokenKind::Keyword(_))
                 && !matches!(

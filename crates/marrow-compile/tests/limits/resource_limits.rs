@@ -52,15 +52,13 @@ fn assert_aggregate_resource_limit(result: Result<impl std::fmt::Debug, CompileF
 
 // ---- Per-function source precheck: total local-slot allocation.
 
-/// One unit function containing `binding_count` explicit bindings. Reusing the
-/// spelling is intentional: shadowing still consumes a fresh monotone frame slot,
-/// and the short line keeps the 65,537-binding totality case below the 1 MiB source
-/// capture bound. The returned span is the 257th initializer when present.
 /// A function of `binding_count` `const` bindings, each line prefixed by `indent`.
 ///
-/// The prefix is a parameter because the widest fixture here has to fit one admitted
-/// file: 65,537 bindings at the canonical four-space indent do not, and what a file may
-/// be is a consequence of the heap ceiling rather than a round number to spend freely.
+/// One spelling is reused throughout: shadowing still consumes a fresh monotone frame
+/// slot. The indent is a parameter because the widest fixture has to fit one admitted
+/// file, and 65,537 bindings at the canonical four-space indent do not.
+///
+/// The returned span is the 257th initializer when present.
 fn local_binding_program(binding_count: usize, indent: &str) -> (String, Option<SourceSpan>) {
     let mut source = String::from("module main\n\npub fn locals() {\n");
     let mut first_rejected = None;
@@ -149,8 +147,8 @@ fn exactly_256_explicit_bindings_compile_with_stable_image_bytes() {
     );
 }
 
-/// Request 257 is refused at its initializer before the image builder sees an
-/// over-wide frame; the former locationless aggregate `Locals` outcome is forbidden.
+/// Request 257 is refused at its initializer before the image builder sees an over-wide
+/// frame, never as a locationless aggregate `Locals` outcome.
 #[test]
 fn the_257th_explicit_binding_is_one_source_limited_diagnostic() {
     let (source, rejected) = local_binding_program(marrow_image::bounds::MAX_LOCALS + 1, "    ");
@@ -225,18 +223,14 @@ fn over_deep_durable_value_reports_resource_limit_not_a_silent_drop() {
     assert_source_resource_limit(compile(&project(&source, Some(&ids))));
 }
 
-// ---- Long-cycle double-report: the depth bound and the value-cycle
-// pass are distinct owners in separate compile stages. The over-deep depth report
-// is emitted by the durable value-shape builder (before the value graph exists);
-// the cycle report is emitted later by the independent `reject_value_cycles` graph
-// pass. A value-containment cycle whose distinct prefix crosses
-// `MAX_DURABLE_VALUE_DEPTH` therefore truthfully draws BOTH, and that pair is the
-// pinned law — not a redundancy to suppress. Suppressing the depth report for such
-// a cycle would require the durable-identity stage to consult the later type-cycle
-// graph (a cross-stage coupling and a second cycle-membership owner), and the only
-// stage-local signal — a global "any cycle exists" flag — would wrongly silence the
-// finite acyclic over-deep case whenever an unrelated cycle sat elsewhere in the
-// program. The three sibling cases below fix the law in place.
+// ---- Long-cycle double-report: the depth bound and the value-cycle pass are distinct
+// owners in separate stages. The durable value-shape builder emits the depth report
+// before the value graph exists; the independent `reject_value_cycles` pass emits the
+// cycle report later. A cycle whose distinct prefix crosses `MAX_DURABLE_VALUE_DEPTH`
+// therefore truthfully draws BOTH, and that pair is the pinned law. Suppressing the
+// depth report would need the durable-identity stage to consult the later type-cycle
+// graph, and the only stage-local signal — a global "any cycle exists" flag — would
+// wrongly silence the finite acyclic over-deep case. The three siblings below fix that.
 
 /// The stable diagnostic codes of a failed compile, in report order. Panics if the
 /// project compiled or failed at the aggregate/invariant arm. Also asserts no
@@ -388,11 +382,10 @@ fn struct_chain_to_leaf(struct_count: usize, leaf: &str) -> ProjectInput {
 }
 
 /// The terminating scalar occupies a level of its own, so a value whose enclosing
-/// structs all fit the bound can still be over-deep at its leaf. The compiler
-/// checked the depth only where it descended — at a struct or an enum — while the
-/// image encoder measures the whole shape including its leaf, so the two disagreed:
-/// a leaf one level past the bound left the source diagnostic unreported and the
-/// program failing at the image invariant instead. Both leaf kinds are checked.
+/// structs all fit the bound can still be over-deep at its leaf. The image encoder
+/// measures the whole shape including its leaf, so a compiler that checked depth only
+/// where it descends would leave the source diagnostic unreported and the program
+/// failing at the image invariant instead. Both leaf kinds are checked.
 #[test]
 fn a_scalar_leaf_one_level_past_the_bound_reports_the_source_limit() {
     assert_source_resource_limit(compile(&struct_chain_to_leaf(32, "int")));
@@ -598,10 +591,9 @@ fn one_member_past_the_depth_bound_reports_a_located_resource_limit() {
 }
 
 /// The same corpus before its identity ledger is minted. A fresh project's located
-/// `check.durable_identity` rows once masked this bound entirely — the depth refusal
-/// arrived only through the encoder, which a project without ids never reaches — so a
-/// corpus checked on a fresh project alone proves nothing about it. The precheck runs
-/// in the same walk that resolves anchors, so both facts are reported together.
+/// `check.durable_identity` rows can mask this bound if the depth refusal arrives only
+/// through the encoder, which a project without ids never reaches. The precheck runs in
+/// the same walk that resolves anchors, so both facts are reported together.
 #[test]
 fn the_depth_refusal_is_located_before_the_ledger_is_minted() {
     let past_bound = marrow_image::bounds::MAX_DURABLE_DEPTH;
@@ -767,11 +759,9 @@ fn image_too_large_is_an_aggregate_resource_limit() {
 }
 
 /// Every fixed bound projects two ways from one typed kind: `detail` is the frozen
-/// machine identifier a tool bisects on, `description` is the sentence fragment a
-/// person reads. Rendering the identifier into terminal prose is the defect this
-/// pins — no CLI surface may put a Rust variant name in front of a reader, such as
-/// a silent `Functions`-shaped word on stderr. The match below is exhaustive over
-/// the kind, so adding a bound is a compile error until its arm is written here.
+/// machine identifier a tool bisects on, `description` is the sentence fragment a person
+/// reads. No CLI surface may put a Rust variant name in front of a reader. The match
+/// below is exhaustive, so adding a bound is a compile error until its arm is written.
 #[test]
 fn every_resource_limit_kind_describes_itself_without_its_variant_name() {
     use marrow_compile::ResourceLimitKind as Kind;
@@ -798,10 +788,9 @@ fn every_resource_limit_kind_describes_itself_without_its_variant_name() {
     ];
 
     for kind in EVERY_KIND {
-        // Exhaustiveness anchor: adding a bound makes this match non-exhaustive, so
-        // a new kind cannot land without an arm here. The arm is where a maintainer
-        // meets this test, not a proof that the list is complete — Rust cannot
-        // enumerate variants, so `EVERY_KIND` is extended by the same hand.
+        // Exhaustiveness anchor: a new kind cannot land without an arm here. It is not
+        // a proof that `EVERY_KIND` is complete — Rust cannot enumerate variants, so
+        // that list is extended by the same hand.
         match kind {
             Kind::Strings
             | Kind::Consts
@@ -874,10 +863,9 @@ const POLICY_FIELDS: usize = 64;
 /// `8_192 * 72 = 589_824` bytes, above the 524,288-byte ceiling: **no image with a full
 /// site table fits**.
 ///
-/// These are compile-time assertions rather than a test body: they are arithmetic over
-/// published constants, so a drift in either constant must fail the build, not a run.
-/// The conclusion survives a floor a third of this one, so it does not rest on the exact
-/// per-row terms.
+/// These are compile-time assertions rather than a test body: arithmetic over published
+/// constants, so a drift in either must fail the build rather than a run. The conclusion
+/// survives a floor a third of this one, so it does not rest on the exact per-row terms.
 const ROOT_SITE_FLOOR: usize = 36 + 42;
 const OTHER_SITE_FLOOR: usize = 53 + 19;
 const _: () = assert!(ROOT_SITE_FLOOR == 78);

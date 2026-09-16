@@ -59,15 +59,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// Lower `expr`, emitting code that pushes its value and returning its type.
     ///
-    /// Unlike the statement walker, the arms here cover unread fields with `..` rather
-    /// than binding each to `_`. The statement rule exists for one defect: a new
-    /// block-bearing field on an existing variant would leave its statements never
-    /// lowered and never diagnosed, which a trailing arm cannot catch because the
-    /// variant is not new. No `Expression` variant carries a block or a statement — an
-    /// expression's operands are expressions, which every arm already walks — so the
-    /// defect has no shape here. That is a property of the syntax tree, not a promise:
-    /// `no_expression_variant_carries_a_block` fails the moment one does, and the arms
-    /// must then name their fields as the statement walker's do.
+    /// The arms here cover unread fields with `..` rather than binding each to `_` as the
+    /// statement walker does: no `Expression` variant carries a block or a statement, so
+    /// no field can hold statements this walker would silently skip.
+    /// `no_expression_variant_carries_a_block` fails the moment one does.
     pub(super) fn lower_expr(&mut self, expr: &Expression) -> ConstructResult<LTy> {
         // A read through a declared managed index: a unique index is an exact
         // complete-key lookup yielding the optional `Id(^root)`; a nonunique index is read
@@ -96,9 +91,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             return Err(LoweringFailure::Recoverable);
         }
         // Inline addresses and composed reads off a named place or pin use the same
-        // durable resolver. Required fields and group leaves have their declared type
-        // when presence is proved. A bare place name is a durable designation, not a
-        // value, and falls through to its own diagnostic below.
+        // durable resolver. A bare place name is a durable designation, not a value, and
+        // falls through to its own diagnostic below.
         let durable_here = match self.durable_shape_here(expr) {
             Ok(shape) => shape,
             Err(drift) => {
@@ -139,9 +133,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 [name] => {
                     let name = name.text();
                     // An integer-bound value built-in (`maxInt`/`minInt`) folds to a
-                    // constant `int` load. It is reserved, so no local, parameter, or
-                    // constant can shadow it; resolving it first keeps a bare use of the
-                    // bound unambiguous.
+                    // constant `int` load. It is reserved, so resolving it first keeps a
+                    // bare use of the bound unambiguous.
                     if let Some(value) = builtin_const_int(name) {
                         let const_id = self
                             .checked_mint(|draft| draft.intern_int(value))
@@ -151,12 +144,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     }
                     if let Some(local) = self.lookup(name) {
                         let (slot, ty) = (local.slot, local.ty);
-                        // Record the resolved local/parameter type at this use site for
-                        // editor hover, before emitting the load. A local use has no
-                        // definition target. Rendered only for a body whose facts are
-                        // retained: the type spelling is O(type depth), and a divergent
-                        // monomorphization would otherwise render it for each of O(N)
-                        // discarded instances (Σ = O(N²)).
+                        // Record the resolved local/parameter type for editor hover; a
+                        // local use has no definition target. Guarded because the
+                        // spelling is O(type depth) — see `collects_hover`.
                         if self.collects_hover() {
                             let display = self.hover_type_display(ty);
                             self.record_hover(*span, display.into(), None);
@@ -179,10 +169,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         ));
                         return Err(LoweringFailure::Recoverable);
                     }
-                    // A module-private constant, folded to a constant load. Locals
-                    // and parameters shadow it (checked first). A constant the
-                    // declaration pass refused still holds its name here, so the use
-                    // is steered to that cause rather than told the name is unknown.
+                    // A module-private constant, folded to a constant load. A constant the
+                    // declaration pass refused still holds its name here, so the use is
+                    // steered to that cause rather than told the name is unknown.
                     let consts = self.consts;
                     let constant = match consts.lookup(self.module, name) {
                         Ok(binding) => binding,
@@ -359,12 +348,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             BinaryOp::And | BinaryOp::Or => self.lower_short_circuit(op, left, right),
             BinaryOp::Coalesce => self.lower_coalesce(left, right),
             _ => {
-                // `absent` is not an equality operand: presence has one canonical vocabulary
-                // (`if const` / `??` / `exists`), and a second equality spelling for the same
-                // question is not admitted. Steer before generic operand typing, so the
-                // message names the presence forms rather than the uninferable-`absent` error.
-                // The left operand is lowered first so a genuinely ill-typed left still errors
-                // at its own site.
+                // `absent` is not an equality operand (see `absent_not_operand`). Steered
+                // before generic operand typing, but with the left operand lowered first
+                // so a genuinely ill-typed left still errors at its own site.
                 if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
                     if let Expression::Absent { span } = left {
                         self.fail(absent_not_operand(self.file, *span, op));
@@ -404,10 +390,6 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         );
         let right_ty = self.lower_expr(right)?;
         let span = right.span();
-        // An abstract type parameter (template pass only) admits `==`/`!=` when it
-        // supports equality and `<`/`<=`/`>`/`>=` when it supports order; every other
-        // operator over it is rejected. An unconstrained parameter admits neither, so
-        // it falls through to the standard operator error.
         if left_ty.bare_param().is_some() || right_ty.bare_param().is_some() {
             return self.lower_param_binary(op, left_ty, right_ty, span);
         }
@@ -456,10 +438,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             (BinaryOp::LessEqual, Bytes, Bytes) => (Instr::BytesLe, Bool),
             (BinaryOp::Greater, Bytes, Bytes) => (Instr::BytesGt, Bool),
             (BinaryOp::GreaterEqual, Bytes, Bytes) => (Instr::BytesGe, Bool),
-            // Temporal order (same-type only). The closed arithmetic floor: a
-            // duration sums/differences with a duration, and a duration shifts an
-            // instant; there is no `date +/- int` operator (use `addDays`), no
-            // `duration * int`, and no calendar-month arithmetic.
+            // Temporal order (same-type only). The closed arithmetic floor: a duration
+            // sums/differences with a duration, and a duration shifts an instant; there is
+            // no `date +/- int` (use `addDays`), no `duration * int`, no month arithmetic.
             #[expect(
                 clippy::expect_used,
                 reason = "match-arm narrowing: the arm guard tested `temporal_comparison(op).is_some()`, which holds exactly when `date_comparison(op)` is `Some`"
@@ -518,9 +499,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// - `scale`: `N * int` and `int * N`, guarded to `N`;
     /// - `step`: `N + 1` and `N - 1` (the int literal `1`), guarded to `N`.
     ///
-    /// Every operator that produces a nominal value re-guards the result, so no
-    /// path constructs an out-of-interval value. A missing capability is a typed
-    /// diagnostic naming it.
+    /// Every operator that produces a nominal value re-guards the result, so no path
+    /// constructs an out-of-interval value.
     fn lower_nominal_binary(
         &mut self,
         op: BinaryOp,
@@ -672,9 +652,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Lower `==`/`!=` between two entry identities of the same store root — the only
-    /// operators identities admit. Equality is key-tuple equality; a mismatched root
-    /// (impossible with one declared root, but kept as the general rule) or any other
-    /// operator is the standard binary error.
+    /// operators identities admit. Equality is key-tuple equality; a mismatched root or
+    /// any other operator is the standard binary error.
     fn lower_identity_binary(
         &mut self,
         op: BinaryOp,
@@ -710,14 +689,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Lower `==`/`!=` and the ordering operators over an abstract type parameter,
-    /// reached only in the template pass. Both operands must be the same type
-    /// parameter (two distinct parameters are distinct opaque types). Equality is
-    /// admitted when the parameter's constraint licenses it (`supports equality`, or
-    /// `supports order`, which subsumes equality); ordering requires `supports
-    /// order`. Any other operator, an unconstrained parameter, or a mismatch is the
-    /// standard operator error. The emitted instruction is a stack-shape placeholder:
-    /// the template pass discards its code, and a monomorphized instance re-lowers
-    /// the body over the concrete type, emitting the real comparison.
+    /// reached only in the template pass. Both operands must be the same type parameter
+    /// (two distinct parameters are distinct opaque types). Equality needs `supports
+    /// equality` (or `supports order`, which subsumes it); ordering needs `supports
+    /// order`; an unconstrained parameter admits neither. The emitted instruction is a
+    /// stack-shape placeholder: the template pass discards its code, and a monomorphized
+    /// instance re-lowers the body over the concrete type.
     fn lower_param_binary(
         &mut self,
         op: BinaryOp,
@@ -914,10 +891,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Lower interval membership `value in lo..hi` / `value not in lo..=hi` to a bool.
-    /// The value is evaluated once into a slot and tested against both bounds:
-    /// `lo <= value` and `value < hi` (exclusive) or `value <= hi` (inclusive), joined
-    /// with the short-circuit `and`; `not in` negates the result. The range is over
-    /// integers — a temporal range is not current behavior.
+    /// The value is evaluated once into a slot and tested against both bounds, joined
+    /// with the short-circuit `and`. The range is over integers — a temporal range is not
+    /// current behavior.
     fn lower_membership(
         &mut self,
         value: &Expression,
@@ -1016,9 +992,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         .map(CallResult::Value);
                 }
                 // `Resource.branch.…(field: value, …)`: a keyed branch entry constructor at
-                // any depth, symmetric with the root constructor `Resource(field: value, …)`
-                // and resolved through the one type-namespace owner (the store's resource and
-                // its executable branch tree).
+                // any depth, symmetric with the root constructor.
                 if let Some((resource, head_span, mut path)) = split_dotted_head(base) {
                     path.push(&**name);
                     if let Some(branch) = self.declared_branch_record(resource, &path) {
@@ -1029,10 +1003,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                             )
                             .map(CallResult::Value);
                     }
-                    // `Resource.group(field: value, …)`: a group value constructor,
-                    // symmetric with the branch entry constructor one level down. A
-                    // group is an unkeyed single-level namespace, so its qualified head
-                    // is the resource then the group name.
+                    // `Resource.group(field: value, …)`: a group value constructor. A group
+                    // is an unkeyed single-level namespace, so its qualified head is the
+                    // resource then the group name.
                     if let [group_name] = path.as_slice()
                         && self
                             .records
@@ -1043,11 +1016,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                             .lower_group_constructor(resource, group_name, head_span, args, span)
                             .map(CallResult::Value);
                     }
-                    // The store this resource backs was declared and refused, so its
-                    // branch tree was never built: whether `Resource.member(…)` names
-                    // one of its branches is not knowable here, and calling the form
-                    // unsupported would blame the language for the store's own
-                    // reported defect.
+                    // The store this resource backs was refused, so its branch tree was
+                    // never built and whether `Resource.member(…)` names one of its
+                    // branches is not knowable here.
                     let backing = match self.durable.product(resource) {
                         Ok(binding) => binding,
                         Err(drift) => {
@@ -1060,10 +1031,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         return Err(LoweringFailure::Recoverable);
                     }
                 }
-                // A method-shaped call on a value: `s.trim()`. Member syntax reaches
-                // fields and constructor paths only, so this is not a call the subset
-                // admits; the teaching form is the free-function spelling of the same
-                // call, written with the receiver as the first argument.
+                // A method-shaped call on a value: `s.trim()`. Member syntax reaches fields
+                // and constructor paths only, so this is not a call the subset admits.
                 self.fail(SourceDiagnostic::at(
                     Code::CheckUnsupported,
                     self.file,
@@ -1101,10 +1070,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             ([_, item], Some(template)) => self
                 .lower_generic_enum_construct(template, item.text(), args, span)
                 .map(CallResult::Value),
-            // The enum table above answers no refused name, so a payload construction
-            // on a refused enum would fall through to the qualified-call report and
-            // call the member out of scope. Its bare `Enum::member` sibling steers;
-            // both spellings are one use of one refused declaration.
+            // The enum table above answers no refused name, so without this a payload
+            // construction on a refused enum would fall through to the qualified-call
+            // report and call the member out of scope.
             ([head, _], _) if self.steer_refused_type(head.text(), span) => {
                 Err(LoweringFailure::Recoverable)
             }

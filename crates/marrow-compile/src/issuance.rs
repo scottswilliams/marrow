@@ -12,11 +12,10 @@
 //!
 //! The two multiply. Interning is keyed, so instances lowering the same body share its
 //! values, but filling an instance materializes the template's *declared* shape into
-//! per-instance rows keying cannot absorb — one entry per declared field, one leaf per
-//! declared variant and payload; `List<T>`/`Map<K,V>` dedup by source element type, and a
-//! divergent instance carries a different element type at every step. One instance's
-//! width is at most [`MAX_PARSED_FILE_BYTES`], since its template belongs to one admitted
-//! file and materializes into syntax there, giving
+//! per-instance rows keying cannot absorb, and a divergent collection instance carries a
+//! different element type at every step. One instance's width is at most
+//! [`MAX_PARSED_FILE_BYTES`], since its template belongs to one admitted file and
+//! materializes into syntax there, giving
 //!
 //! ```text
 //! rows(kind) <= MAX_ADMITTED_SOURCE_BYTES
@@ -24,11 +23,10 @@
 //! ```
 //!
 //! The `const` assert below holds that against the `u32` domain using the live capture,
-//! parse, and instantiation owners, so widening any one of them past the carrier breaks
-//! the build. It bounds the carrier only: per-kind image-admission ceilings stay policy
+//! parse, and instantiation owners, so widening any one past the carrier breaks the
+//! build. It bounds the carrier only: per-kind image-admission ceilings stay policy
 //! verdicts applied after construction, and function instructions lie outside this
-//! population — lowering checks each encoded width before retaining the crossing
-//! instruction and reports `check.resource_limit` at that construct.
+//! population — lowering checks each encoded width and reports `check.resource_limit`.
 
 use marrow_project::CaptureLimits;
 

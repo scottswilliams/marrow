@@ -22,11 +22,10 @@ fn name_conflict(
 
 /// What a declaration pass that has not run yet will bind `name` to.
 ///
-/// The passes run alias, nominal, template, record, struct, enum, and each holds
-/// its names against the later ones; once a pass has run,
-/// [`TypeRegistry::name_conflict`] is the authority. Callers pass the source lists
-/// their own pass yields to, so the rule is the same predicate in every pass
-/// rather than a hand-written scan per pass.
+/// The passes run alias, nominal, template, record, struct, enum, and each holds its
+/// names against the later ones; once a pass has run, [`TypeRegistry::name_conflict`]
+/// is the authority. Callers pass the source lists their own pass yields to, so this
+/// one predicate serves every pass.
 fn pending_name<'a>(
     name: &str,
     resources: impl IntoIterator<Item = &'a str>,
@@ -45,12 +44,11 @@ fn pending_name<'a>(
     Some(NameHolder::Kind(kind))
 }
 
-/// The reserved toolchain generic templates, in fixed order (`Option` then
-/// `Result`), registered before any user template. They are ordinary generic enums
-/// defined here rather than by user source: the `some`/`none`/`ok`/`err` payload
-/// leaves reference the templates' own type parameters, so instantiation
-/// monomorphizes them exactly like a user generic enum, and the lowerer recovers
-/// their reserved constructor/`try`/spelling behavior from the minting template.
+/// The reserved toolchain generic templates, in fixed order (`Option` then `Result`),
+/// registered before any user template. They are ordinary generic enums defined here
+/// rather than by user source: their payload leaves reference the templates' own type
+/// parameters, so instantiation monomorphizes them exactly like a user generic enum,
+/// and the lowerer recovers their reserved behavior from the minting template.
 pub(super) fn reserved_templates() -> Vec<TypeTemplate> {
     let param = |name: &str| TypeExpr::Name {
         text: name.to_string(),
@@ -107,11 +105,10 @@ pub(super) fn reserved_templates() -> Vec<TypeTemplate> {
 
 /// Register every generic `struct`/`enum` (one carrying type parameters) as a
 /// value-type template, after the reserved toolchain generics. A template mints no
-/// concrete image type; a name collision with a scalar, reserved name, alias,
-/// nominal, resource, or another declared type is a `check.name_conflict`, and a
-/// structurally unadmitted member (a group, key, `required` keyword, optional field,
-/// or category/nested enum member) is a `check.unsupported`; a defective template is
-/// dropped so no `Name<Args>` use resolves against it.
+/// concrete image type; a name collision with a scalar, reserved name, alias, nominal,
+/// resource, or another declared type is a `check.name_conflict`, and a structurally
+/// unadmitted member is a `check.unsupported`. A defective template is dropped so no
+/// `Name<Args>` use resolves against it.
 pub(super) fn register_type_templates(
     registry: &mut TypeRegistry,
     structs: &[(FileRef, FileIdentity, &StructDecl)],
@@ -269,9 +266,8 @@ fn claim_template_name(
 
 /// Record this template's verdict: its refusal, or the accepted body.
 ///
-/// Every arm that drops the members, and every member type that names nothing
-/// declared, reports through the refusal accumulator, so a refused template always
-/// carries the cause a use is steered to.
+/// Every arm that drops the members reports through the refusal accumulator, so a
+/// refused template always carries the cause a use is steered to.
 fn settle_template(
     registry: &mut TypeRegistry,
     declared: DeclarationSite<'_>,
@@ -332,12 +328,11 @@ fn refuse_repeated_type_params(
 /// The row refusing a generic template's member type that names nothing this
 /// project declares, or `None` when the spelling is resolvable.
 ///
-/// A template's member types are resolved per instantiation, so without this check
-/// a template whose member names an undeclared type is registered whole and its
-/// defect is first reported at a *construction* site — blaming the construction for
-/// a declaration's error, and never reporting the declaration at all. The
-/// declaration set is read raw because templates register before the concrete types
-/// reserve, which is also what lets one template name another declared later.
+/// A template's member types are resolved per instantiation, so without this check a
+/// template naming an undeclared type is registered whole and its defect is first
+/// reported at a *construction* site, blaming the construction for a declaration's
+/// error. The declaration set is read raw because templates register before the
+/// concrete types reserve, which also lets one template name another declared later.
 fn unknown_template_member(
     registry: &TypeRegistry,
     structs: &[(FileRef, FileIdentity, &StructDecl)],
@@ -402,9 +397,9 @@ fn unknown_template_member(
 /// field types themselves are resolved per instantiation).
 /// Admit one struct member as the bare `name: Type` form, or report why it is not.
 ///
-/// The single owner of which members a struct declaration may carry. The template
-/// pass and the concrete fill pass differ only in what they do with an admitted
-/// field's type, so a refusal spelled here is the one a reader sees from both.
+/// The single owner of which members a struct declaration may carry. The template pass
+/// and the concrete fill pass differ only in what they do with an admitted field's
+/// type, so a refusal spelled here is the one a reader sees from both.
 fn admit_struct_member<'a>(
     member: &'a ResourceMember,
     file: &FileIdentity,
@@ -807,13 +802,11 @@ pub(super) fn build_nominals(
     Ok(built)
 }
 
-/// Evaluate a nominal `in` range to its inclusive `[lo, hi]` bounds. The range
-/// follows the language's range operators — `lo..hi` excludes the end, `lo..=hi`
-/// includes it — with int-literal bounds (a leading `-` allowed), no step, and
-/// at least one admitted value.
-/// The interval's inclusive bounds, or the row that refuses it. The row is
-/// returned rather than pushed so the caller can retain it as the declaration's
-/// cause in the same statement that reports it.
+/// Evaluate a nominal `in` range to its inclusive `[lo, hi]` bounds. The range follows
+/// the language's range operators — `lo..hi` excludes the end, `lo..=hi` includes it —
+/// with int-literal bounds (a leading `-` allowed), no step, and at least one admitted
+/// value. The refusal row is returned rather than pushed, so the caller retains it as
+/// the declaration's cause in the same statement that reports it.
 fn nominal_interval(
     file: &FileIdentity,
     interval: &Expression,
@@ -841,9 +834,9 @@ fn nominal_interval(
     let (Some(lo), Some(end_value)) = (literal_int(start), literal_int(end)) else {
         return error(range.span, "a nominal interval's bounds are int literals");
     };
-    // Normalize the end-exclusive spelling to the inclusive upper bound. A
-    // literal never spells `i64::MIN`, so the exclusive form always has a
-    // representable predecessor; the checked form keeps that self-evident.
+    // Normalize the end-exclusive spelling to the inclusive upper bound. A literal
+    // never spells `i64::MIN`, so the exclusive form always has a representable
+    // predecessor; the checked form keeps that self-evident.
     let hi = if range.inclusive_end {
         Some(end_value)
     } else {
@@ -980,17 +973,15 @@ pub(super) fn declare_structs<'a>(
     Ok(reserved)
 }
 
-/// Pass two for the dense struct types: resolve each reserved struct's fields
-/// against the full registry and fill both the registry info and the image record.
-/// A struct field is the bare `name: Type` form over any value type — a scalar,
-/// nominal, another struct, or a closed enum (`Option`/`Result`/a user `enum`);
-/// a group, keyed field, the `required` keyword, an optional type, or an unknown
-/// type is `check.unsupported`. A declaration with a member defect is refused whole
-/// (its reserved image record stays empty and its name leaves the accepted set) so
-/// a later construction or match cannot resolve against a broken struct. Its
-/// reserved row stays in place carrying [`DeclarationVerdict::Refused`], so a
-/// reference an earlier fill pass minted against the reservation addresses a
-/// refused declaration rather than dangling.
+/// Pass two for the dense struct types: resolve each reserved struct's fields against
+/// the full registry and fill both the registry info and the image record. A struct
+/// field is the bare `name: Type` form over any value type — a scalar, nominal, another
+/// struct, or a closed enum; anything else is `check.unsupported`. A declaration with a
+/// member defect is refused whole (its reserved image record stays empty and its name
+/// leaves the accepted set) so a later construction or match cannot resolve against a
+/// broken struct. Its reserved row stays in place carrying
+/// [`DeclarationVerdict::Refused`], so a reference an earlier fill pass minted against
+/// the reservation addresses a refused declaration rather than dangling.
 pub(super) fn fill_structs(
     draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
@@ -1192,15 +1183,14 @@ pub(super) fn declare_enums<'a>(
     Ok(reserved)
 }
 
-/// Pass two for the closed flat enum types: resolve each reserved enum's variants
-/// and fill both the registry info and the image ENUMS entry. Hierarchy is
-/// deferred: a `category` member or a member with nested members is
-/// `check.unsupported`. A member's payload is the dense `name: Type` form over bare
-/// scalars; an optional or non-scalar payload type is `check.unsupported`. A
-/// declaration with a defect is refused whole (its reserved image entry stays empty
-/// and its name leaves the accepted set) so a later match cannot resolve against a
-/// broken enum. Its reserved row stays in place carrying
-/// [`DeclarationVerdict::Refused`], for the reason given at [`fill_structs`].
+/// Pass two for the closed flat enum types: resolve each reserved enum's variants and
+/// fill both the registry info and the image ENUMS entry. Hierarchy is deferred: a
+/// `category` member or a member with nested members is `check.unsupported`. A member's
+/// payload is the dense `name: Type` form over bare scalars. A declaration with a
+/// defect is refused whole (its reserved image entry stays empty and its name leaves
+/// the accepted set) so a later match cannot resolve against a broken enum. Its
+/// reserved row stays in place carrying [`DeclarationVerdict::Refused`], for the reason
+/// given at [`fill_structs`].
 pub(super) fn fill_enums(
     draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,

@@ -128,14 +128,14 @@ impl NonEmptyCompleteSyntaxDiagnostics {
     }
 }
 
-/// A finalized syntax finding: message, help, and reason are fixed at
-/// construction (A8) and the sole constructor fixes [`Severity::Error`], so a
-/// collector payload is provably error-only without a severity check.
+/// A finalized syntax finding. Message, help, and reason are fixed at construction and
+/// the sole constructor fixes [`Severity::Error`], so a collector payload is provably
+/// error-only without a severity check.
 pub(crate) struct SyntaxError(Diagnostic);
 
 impl SyntaxError {
-    /// The code is derived from the typed reason, never passed beside it: the
-    /// reason owns the mapping, so a code/reason mismatch is unrepresentable.
+    /// The code is derived from the typed reason, never passed beside it, so a
+    /// code/reason mismatch is unrepresentable.
     pub(crate) fn new(
         reason: DiagnosticReason,
         message: impl Into<String>,
@@ -162,9 +162,9 @@ impl SyntaxError {
 }
 
 impl DiagnosticReason {
-    /// The dotted code a diagnostic carrying this reason renders under. Every
-    /// lexical finding is `parse.syntax`; a declaration-parser reason maps
-    /// through [`ParseDiagnosticReason::code`].
+    /// The dotted code a diagnostic carrying this reason renders under. Every lexical
+    /// finding is `parse.syntax`; a parser reason maps through
+    /// [`ParseDiagnosticReason::code`].
     fn code(&self) -> &'static str {
         self.typed_code().as_str()
     }
@@ -178,9 +178,9 @@ impl DiagnosticReason {
         }
     }
 
-    /// Heap bytes owned by the reason payload. Every current variant carries
-    /// only `Copy` data, so the charge is zero; the exhaustive matches force a
-    /// future owning variant to declare its charge here.
+    /// Heap bytes owned by the reason payload. Every variant carries only `Copy` data, so
+    /// the charge is zero; the exhaustive matches force a future owning variant to
+    /// declare its charge here.
     fn owned_bytes(&self) -> usize {
         match self {
             Self::Lexer(reason) => match reason {
@@ -250,13 +250,12 @@ struct SyntaxRow {
     error: SyntaxError,
 }
 
-/// The one live diagnostic owner of a syntax entry point. Producers write
-/// through scoped [`SyntaxSink`] borrows; `finish` consumes the owner exactly
-/// once into the opaque bounded result. Retention is bounded by the typed
-/// Count/OwnedBytes ceilings with count-before-bytes precedence; crossing a
-/// ceiling discards the payload destructively while the saturated totals keep
-/// accumulating (a Bytes limit may strengthen to Count, never the reverse, and
-/// the payload never re-materializes).
+/// The one live diagnostic owner of a syntax entry point. Producers write through scoped
+/// [`SyntaxSink`] borrows; `finish` consumes the owner exactly once into the opaque
+/// bounded result. Retention is bounded by the typed Count/OwnedBytes ceilings, count
+/// taking precedence; crossing a ceiling discards the payload destructively while the
+/// saturated totals keep accumulating. A Bytes limit may strengthen to Count, never the
+/// reverse, and the payload never re-materializes.
 pub(crate) struct SyntaxDiagnosticCollector {
     state: CollectorState,
     /// Per-producer ordinals, advanced on every push — even after Limited — so
@@ -287,8 +286,8 @@ impl SyntaxDiagnosticCollector {
         }
     }
 
-    /// A scoped sink for lexer-produced rows; the borrow must end before a
-    /// parser sink is taken.
+    /// A scoped sink for lexer-produced rows; the borrow must end before a parser sink is
+    /// taken.
     pub(crate) fn lexer_sink(&mut self) -> SyntaxSink<'_> {
         SyntaxSink {
             collector: self,
@@ -314,9 +313,8 @@ impl SyntaxDiagnosticCollector {
                 let new_count = rows.len() + 1;
                 let new_bytes = owned_bytes.saturating_add(row_bytes);
                 if new_count > SYNTAX_DIAGNOSTIC_COUNT_LIMIT {
-                    // Count is checked first, so it wins a simultaneous
-                    // crossing. The discard is destructive: the rows drop here
-                    // and never re-materialize.
+                    // Count is checked first, so it wins a simultaneous crossing. The
+                    // discard is destructive: the rows never re-materialize.
                     self.state = CollectorState::Limited {
                         count: new_count.min(SYNTAX_DIAGNOSTIC_COUNT_LIMIT + 1),
                         owned_bytes: new_bytes.min(SYNTAX_DIAGNOSTIC_OWNED_BYTES_LIMIT + 1),
@@ -361,12 +359,10 @@ impl SyntaxDiagnosticCollector {
         }
     }
 
-    /// Consume the owner into its bounded result: the stable
-    /// `(line, start, producer rank, ordinal)` sort makes position dominate
-    /// with lexer-first ties, and unwraps each row's error-fixed diagnostic.
-    /// This is the one ordering owner for every entry point, so a lexing-only
-    /// entry point reports position order too: raw emission order is not
-    /// observable anywhere on the public surface.
+    /// Consume the owner into its bounded result. The stable
+    /// `(line, start, producer rank, ordinal)` sort makes position dominate with
+    /// lexer-first ties. This is the one ordering owner for every entry point, so raw
+    /// emission order is not observable anywhere on the public surface.
     pub(crate) fn finish(self) -> SyntaxDiagnostics {
         match self.state {
             CollectorState::Retaining {
@@ -429,8 +425,7 @@ impl SyntaxErrorSink for SyntaxSink<'_> {
     }
 }
 
-/// The sink a silent probe writes to: rows vanish without touching any
-/// collector total. Never a dummy vector.
+/// The sink a silent probe writes to: rows vanish without touching any collector total.
 pub(crate) struct DiscardingSyntaxErrorSink;
 
 impl SyntaxErrorSink for DiscardingSyntaxErrorSink {
@@ -484,13 +479,11 @@ pub enum ParseDiagnosticReason {
     EmptyKeyParameters,
     EnumMemberMustBeBareName,
     EnumNeedsMember,
-    /// A compound-assign operator (`+=`, `-=`, `*=`, `/=`, `%=`) reached in
-    /// expression position, as in `a += b += c`: assignment does not chain and
-    /// is not an expression.
+    /// A compound-assign operator (`+=`, `-=`, `*=`, `/=`, `%=`) reached in expression
+    /// position, as in `a += b += c`: assignment does not chain and is not an expression.
     CompoundAssignInExpression,
-    /// A compound-assign operator written with a space before the `=`
-    /// (`x * = y`). Each compound operator is a single token, so the split
-    /// spelling is rejected; write it compact (`x *= y`).
+    /// A compound-assign operator written with a space before the `=` (`x * = y`). Each
+    /// compound operator is a single token, so the split spelling is rejected.
     SplitCompoundAssign,
     /// A bare `=` left in expression position, the common `=`-for-`==` mistake.
     EqualsInExpression,
@@ -507,8 +500,7 @@ pub enum ParseDiagnosticReason {
     CheckedArm,
     MatchArmMemberPath,
     /// A named argument inside a keyed-access bracket group (`^books[id: 3]`). Key
-    /// arguments are an ordered positional tuple; a keyed access takes no named
-    /// argument.
+    /// arguments are an ordered positional tuple.
     NamedKeyArgument,
     NestingLimit,
     /// A second operator on a non-associative level (`==`/`!=`/`</`is`/`??`),
@@ -517,8 +509,8 @@ pub enum ParseDiagnosticReason {
     PositionalArgumentAfterNamed,
     Reserved(ReservedSyntax),
     ResourceMemberInStoreBody,
-    /// A `{ … }` block appears where the grammar admits none — only compound
-    /// statements and body-bearing declarations introduce blocks.
+    /// A `{ … }` block where the grammar admits none: only compound statements and
+    /// body-bearing declarations introduce blocks.
     UnexpectedBlock,
     /// A duration word literal spelled with a month or year (`1 month`, `2 years`),
     /// which have no fixed span. The fixed-unit set runs second(s) through week(s).
@@ -527,10 +519,9 @@ pub enum ParseDiagnosticReason {
 }
 
 impl ParseDiagnosticReason {
-    /// The dotted code a declaration-parser diagnostic carrying this reason
-    /// renders under. Nesting overflow is a `check.nesting_limit` finding
-    /// wherever the front end raises it, so it surfaces alongside the type-check
-    /// findings the operator reads; every other declaration parse error is
+    /// The dotted code a parser diagnostic carrying this reason renders under. Nesting
+    /// overflow is a `check.nesting_limit` finding wherever the front end raises it, so it
+    /// surfaces alongside the type-check findings; every other parse error is
     /// `parse.syntax`.
     pub(crate) fn code(&self) -> marrow_codes::Code {
         match self {
@@ -611,20 +602,20 @@ pub enum UnsupportedSyntax {
     ParameterDefaults,
     QuotedFieldSegments,
     UserDefinedGenerics,
-    /// A `throw` statement: the throw/catch channel was removed. A recoverable
-    /// failure is a `Result<T, E>` value returned with `err(...)`.
+    /// A `throw` statement. Marrow has no throw/catch channel: a recoverable failure is a
+    /// `Result<T, E>` value returned with `err(...)`.
     ThrowStatement,
-    /// A block-form `try`/`catch`: removed in favour of prefix `try <expr>`
-    /// propagation over a `Result<T, E>`.
+    /// A block-form `try`/`catch`, where the language spells propagation as prefix
+    /// `try <expr>` over a `Result<T, E>`.
     TryCatchBlock,
-    /// A stray `catch` clause with no `try`: the throw/catch channel was removed.
+    /// A stray `catch` clause with no `try`.
     CatchClause,
 }
 
 impl Diagnostic {
-    /// The typed identity of this row's code. The wire string on [`Diagnostic::code`] is
-    /// [`marrow_codes::Code::as_str`] of exactly this value, so a consumer that keeps the
-    /// identity typed never recovers it from the spelling.
+    /// The typed identity of this row's code. [`Diagnostic::code`] is
+    /// [`marrow_codes::Code::as_str`] of exactly this value, so a consumer keeping the
+    /// identity typed never has to recover it from the spelling.
     pub fn typed_code(&self) -> marrow_codes::Code {
         self.reason.typed_code()
     }

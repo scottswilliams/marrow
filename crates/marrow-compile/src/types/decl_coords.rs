@@ -20,17 +20,15 @@ use marrow_syntax::SourceSpan;
 use super::RecordInfo;
 use crate::analysis::FileRef;
 
-/// The admitted `resource` records, each with the position of the declaration it was
-/// built from in the resource slice the declare pass was given.
+/// The admitted `resource` records, each paired with the position of the declaration it
+/// was built from in the resource slice the declare pass was given: index `i` of one
+/// addresses index `i` of the other, and the durable build reads that pairing rather
+/// than rebuilding one from resource name spellings.
 ///
-/// Index `i` of one addresses index `i` of the other, and the type enforces that no
-/// record can move: [`Self::admit`] is the only append and appends to both vectors,
+/// No record can move: [`Self::admit`] is the only append and appends to both vectors,
 /// and no route hands out a `&mut [RecordInfo]`, so `swap`, `sort`, `reverse`,
 /// `truncate` and slice assignment do not compile against this type. Positions are
 /// stable by construction; contents are not authenticated.
-///
-/// The durable build reads this pairing — the record slice and [`Self::ordinals`] —
-/// rather than rebuilding one from resource name spellings.
 #[derive(Default)]
 pub(crate) struct AdmittedRecords {
     records: Vec<RecordInfo>,
@@ -49,10 +47,9 @@ impl AdmittedRecords {
         &self.declarations
     }
 
-    /// The record at `index`, for the reserve-then-fill pass to fill in place. Lending one
-    /// record rather than a `&mut [RecordInfo]` keeps a caller from reordering records
-    /// while the ordinals stay put; it still permits replacing the record at a fixed
-    /// index, so the mutable surface is position-preserving, not authenticated.
+    /// The record at `index`, for the reserve-then-fill pass to fill in place. Lending
+    /// one record rather than a `&mut [RecordInfo]` is what keeps a caller from
+    /// reordering records while the ordinals stay put.
     pub(super) fn at_mut(&mut self, index: usize) -> &mut RecordInfo {
         &mut self.records[index]
     }
@@ -108,12 +105,10 @@ impl DeclarationCoordinates {
     }
 
     /// The module position and span `type_id` was declared at, or `None` when this pass
-    /// minted no coordinate for it.
-    ///
-    /// Distinct from [`resolve`](Self::resolve), which answers with the module's spelling
-    /// for a diagnostic to print. A position is unique within one admitted project where
-    /// a spelling need not be, but every parse of a project repeats it: this locates a
-    /// declaration, it does not authenticate one.
+    /// minted no coordinate for it. Distinct from [`resolve`](Self::resolve), which
+    /// answers with the module's spelling for a diagnostic to print. A position is
+    /// unique within one admitted project where a spelling need not be, but every parse
+    /// repeats it: this locates a declaration, it does not authenticate one.
     pub(super) fn module_of(&self, type_id: TypeId) -> Option<(FileRef, SourceSpan)> {
         let coordinate = self.declarations.get(&type_id)?;
         Some((coordinate.at, coordinate.span))

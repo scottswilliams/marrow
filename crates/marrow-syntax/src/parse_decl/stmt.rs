@@ -1,8 +1,7 @@
-//! The statement parser: a recursive-descent parser for a function body over
-//! the file-wide token stream. It frames compound statements (`if`, `while`,
-//! `for`, `try`, `match`) and their `{ … }` blocks; statements end at a `NEWLINE`
-//! or `}`, and a trailing clause (`else`, `on more`, a checked arm, a match arm)
-//! takes either a braced block or a single inline statement.
+//! Recursive-descent parser for a function body over the file-wide token stream. It
+//! frames compound statements and their `{ … }` blocks; statements end at a `NEWLINE`
+//! or `}`, and a trailing clause (`else`, `on more`, a checked arm, a match arm) takes
+//! either a braced block or a single inline statement.
 
 use super::head::arm_pattern;
 use super::statement_capacity::StatementCapacity;
@@ -30,8 +29,8 @@ enum IfHead {
         ty: Option<TypeExpr>,
         value: Expression,
     },
-    /// B5: `if const a = e1 and const b = e2 and cond` — a chain of existence
-    /// bindings joined by `and`, with an optional trailing bare condition.
+    /// `if const a = e1 and const b = e2 and cond` — a chain of existence bindings
+    /// joined by `and`, with an optional trailing bare condition.
     Chain {
         bindings: Vec<IfConstBinding>,
         condition: Option<Expression>,
@@ -58,12 +57,11 @@ impl CheckedFault {
     }
 }
 
-/// A block-introducing keyword that has no statement of its own and only ever
-/// appears as a clause of one (`else`). Standing alone it cannot be structured, so
-/// the statement parser swallows it and its nested block, reporting the stray
-/// keyword so the following statements still parse. The keywords with dedicated
-/// statement parsers (`if`, `while`, …) are matched before this guard and never
-/// reach it.
+/// A block-introducing keyword that has no statement of its own and only appears as a
+/// clause of one (`else`). Standing alone it cannot be structured, so the parser
+/// swallows it and its nested block, reporting the stray keyword so the following
+/// statements still parse. Keywords with dedicated statement parsers are matched first
+/// and never reach this guard.
 fn is_stray_block_clause_keyword(keyword: Keyword) -> bool {
     matches!(keyword, Keyword::Else)
 }
@@ -87,18 +85,17 @@ pub(super) struct StmtParser<'a, 'c> {
     /// The declaration parser's scoped sink, reborrowed for the body's duration
     /// so a malformed statement line reports directly to the one live collector.
     sink: &'a mut SyntaxSink<'c>,
-    /// How many statement bodies deep the descent currently sits.
+    /// How many statement bodies deep the descent currently sits — a different question
+    /// from which blocks the tree holds, which [`StatementCapacity`] owns.
     ///
-    /// This is a different question from which blocks the tree holds, and needs its own
-    /// answer. [`StatementCapacity`] owns the second: it is keyed on a `{`, so it can only
-    /// refuse a body that opens one. A trailing clause takes a *single inline statement*
-    /// in place of a block (`else`\n`if …`, `b => match …`), and that statement may open
-    /// a clause of its own, so a nest can recurse to any depth the file's length admits
-    /// without ever opening a brace for the measurement to see. Bounding the native stack
-    /// therefore means counting frames, which is what this counts. Every descent goes
-    /// through [`StmtParser::descend`], which stops at [`crate::NESTING_DEPTH_LIMIT`], so
-    /// the typed limit trips before the native stack does on every path rather than only
-    /// on the braced ones.
+    /// That measurement is keyed on a `{`, so it can only refuse a body that opens one.
+    /// A trailing clause takes a *single inline statement* in place of a block
+    /// (`else`\n`if …`, `b => match …`), and that statement may open a clause of its
+    /// own, so a nest can recurse as deep as the file is long without ever opening a
+    /// brace for the measurement to see. Bounding the native stack therefore means
+    /// counting frames. Every descent goes through [`StmtParser::descend`], which stops
+    /// at [`crate::NESTING_DEPTH_LIMIT`], so the typed limit trips first on every path
+    /// rather than only on the braced ones.
     depth: usize,
 }
 
@@ -118,10 +115,8 @@ impl<'a, 'c> StmtParser<'a, 'c> {
     /// Run `body` one statement-body level deeper, or refuse without running it when that
     /// level would pass [`crate::NESTING_DEPTH_LIMIT`].
     ///
-    /// The sole place the descent deepens. A caller that reaches a nested body any other
-    /// way is unbounded by construction, which is why all three that exist —
-    /// [`StmtParser::parse_braced_block`], [`StmtParser::match_body`], and
-    /// [`StmtParser::inline_statement_block`] — come through here.
+    /// The sole place the descent deepens; a caller that reaches a nested body any other
+    /// way is unbounded by construction.
     fn descend<T>(&mut self, body: impl FnOnce(&mut Self) -> T) -> Option<T> {
         if self.depth >= crate::NESTING_DEPTH_LIMIT {
             return None;
@@ -132,12 +127,10 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         Some(value)
     }
 
-    /// Report the refusal to descend past [`crate::NESTING_DEPTH_LIMIT`].
-    ///
-    /// The lexer reports the same finding for a brace nest, which it sees as depth in the
-    /// token stream. A clause that recurses through an inline statement opens no brace,
-    /// so for that shape this is the only reporter and the refusal would otherwise be a
-    /// silent truncation.
+    /// Report the refusal to descend past [`crate::NESTING_DEPTH_LIMIT`]. The lexer
+    /// reports the same finding for a brace nest; a clause recursing through an inline
+    /// statement opens no brace, so for that shape this is the only reporter and the
+    /// refusal would otherwise be a silent truncation.
     fn report_nesting_limit(&mut self, span: SourceSpan) {
         self.error_span_reason(
             span,
@@ -165,13 +158,11 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         }
     }
 
-    /// Sole owner of the line-comment decision: a `///` doc comment in statement
-    /// position has no declaration to attach to, so it is reported rather than
-    /// retained — a swallowed doc comment is one the formatter cannot place,
-    /// breaking the check-run-format round trip — while an ordinary `//` comment
-    /// becomes trivia for the current block at the given placement. Returns the
-    /// retained comment for callers that place it conditionally; `None` when the
-    /// token was a doc comment that has been reported.
+    /// Sole owner of the line-comment decision. A `///` doc comment in statement
+    /// position has no declaration to attach to, so it is reported rather than retained:
+    /// a swallowed doc comment is one the formatter cannot place, breaking the
+    /// check-run-format round trip. An ordinary `//` comment becomes trivia for the
+    /// current block and is returned for callers that place it conditionally.
     fn classify_line_comment(
         &mut self,
         token: Token,
@@ -198,13 +189,11 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         }
     }
 
-    /// Detach a comment that trails this construct's header — recorded while taking
-    /// the header line, so it is the most recent comment and starts after
-    /// `header_start` — and hand it back reclassified as an own-line comment. The
-    /// block that follows adopts it as its first leading comment, so the `{`-cuddled,
-    /// next-line-`{`, and own-line spellings of a header comment all parse to one tree
-    /// and format to one fixed point. A trailing comment on an earlier sibling starts
-    /// before `header_start` and is left in place.
+    /// Detach a comment trailing this construct's header and hand it back reclassified
+    /// as an own-line comment, so the block that follows adopts it as its first leading
+    /// comment and the `{`-cuddled, next-line-`{`, and own-line spellings of a header
+    /// comment all parse to one tree and format to one fixed point. A trailing comment
+    /// on an earlier sibling starts before `header_start` and is left in place.
     fn detach_header_comment(&mut self, header_start: usize) -> Option<Comment> {
         if !self.header_comment_pending(header_start) {
             return None;
@@ -312,9 +301,9 @@ impl<'a, 'c> StmtParser<'a, 'c> {
                 self.skip_compound();
                 return None;
             }
-            // `throw`/`catch` are no longer keywords: the throw/catch channel was
-            // removed. A statement that begins with one is the removed form; report
-            // it as unsupported and point at `Result`, keeping the parse total.
+            // `throw`/`catch`/`finally` are ordinary identifiers; a statement that
+            // begins with one is the removed throw/catch form. Report it as
+            // unsupported and point at `Result`, keeping the parse total.
             TokenKind::Identifier if self.tokens[self.pos].text(self.source) == "throw" => {
                 return self.recover_removed_throw();
             }
@@ -334,15 +323,13 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         }
 
         // The checked-arithmetic form binds through `const`/`var`/`return`, so its
-        // header token is not a distinguishing keyword. Detect it on the header line
-        // — its `on` arms live on the following indented lines that `take_line` does
-        // not see — before the generic line-based simple-statement path.
+        // header token is not a distinguishing keyword. It must be detected on the
+        // header line, before the generic line-based simple-statement path, because its
+        // `on` arms live on following lines that `take_line` does not see.
         if self.at_checked_form() {
             return Some(self.checked_stmt());
         }
 
-        // B6 let-else: a `const`/`var` binding whose line carries a top-level
-        // `else` diverging tail. Parse-only; the checker rejects it until adopted.
         if self.at_let_else() {
             return Some(self.let_else_stmt());
         }
@@ -351,18 +338,17 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         let line = self.take_line();
         let error_span = line_span_or(line, start);
         let statement = parse_simple_statement(self.source, line, self.sink);
-        // Total parsing: a line that did not structure reported its own diagnostic
-        // and becomes an error node carrying its span, so the body is never silently
-        // short a statement.
+        // Total parsing: a line that did not structure already reported its own
+        // diagnostic and becomes an error node carrying its span, so the body is never
+        // silently short a statement.
         Some(statement.unwrap_or(Statement::Error { span: error_span }))
     }
 
-    /// Take the current statement or header line: the content tokens up to the
-    /// token that ends the line, with any trailing comment recorded as block
-    /// trivia. A terminating `NEWLINE` is consumed; a block-opening/closing `{`/`}`
-    /// is left in place for the caller to frame the body. The returned slice
-    /// outlives the advance (it borrows the whole-file token stream), so a caller
-    /// parses it after the cursor has moved past the line content.
+    /// Take the current statement or header line: the content tokens up to the token
+    /// that ends the line, with any trailing comment recorded as block trivia. A
+    /// terminating `NEWLINE` is consumed; a `{`/`}` is left in place for the caller to
+    /// frame the body. The returned slice borrows the whole-file token stream, so it
+    /// outlives the advance and a caller may parse it after the cursor has moved.
     fn take_line(&mut self) -> &'a [Token] {
         let end = self.find_line_end();
         let content_end = self.split_trailing_comment(end);
@@ -402,8 +388,8 @@ impl<'a, 'c> StmtParser<'a, 'c> {
             return;
         }
         let colon = self.tokens[self.pos + 1];
-        // The remedy is part of the finding, finalized before submission (A8):
-        // no site reaches back into the collector to amend a submitted row.
+        // The remedy is part of the finding, finalized before submission: no site
+        // reaches back into the collector to amend a submitted row.
         let reason = ParseDiagnosticReason::Unsupported(UnsupportedSyntax::LoopLabels);
         self.sink.push(SyntaxError::new(
             DiagnosticReason::Parser(reason),
@@ -440,12 +426,10 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         match parsed {
             Some((binding, order, iterable, step, bound_head)) => {
                 let mut end = body.span;
-                // A durable traversal takes a mandatory `on more` block dedented like
-                // `else`; consume it whenever it trails the body so it never desyncs
-                // into a bogus following statement. When the head carried `at most` the
-                // block rides its `TraversalBound` (the checker reports a missing arm);
-                // when it did not, the head is unbounded and the checker reports that at
-                // the head — the trailing block is consumed and dropped either way.
+                // A trailing `on more` block is consumed whenever it appears, so it
+                // never desyncs into a bogus following statement. With `at most` in the
+                // head it rides the `TraversalBound`; without one the head is unbounded
+                // and the block is dropped. Either way the checker reports the fault.
                 let on_more = self.take_on_more_block();
                 if let Some(block) = &on_more {
                     end = block.span;
@@ -502,10 +486,9 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         Some(self.parse_clause_body())
     }
 
-    /// Parse a statement that begins with `try`. Prefix `try <expr>` is a value
-    /// form: it propagates a `Result<T, E>`'s `err` out of the enclosing
-    /// `Result`-returning function, yielding the `ok` value. The removed block form
-    /// (`try` opening an indented body, with `catch`/`finally`) is reported as
+    /// Parse a statement that begins with `try`. Prefix `try <expr>` propagates a
+    /// `Result<T, E>`'s `err` out of the enclosing `Result`-returning function. The
+    /// removed block form (`try` opening a body, with `catch`/`finally`) is reported as
     /// unsupported and its blocks are skipped so the parse stays total.
     fn try_statement(&mut self) -> Option<Statement> {
         let start = self.advance().span; // `try`
@@ -602,9 +585,9 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         let mut else_ifs = Vec::new();
         let mut else_block = None;
 
-        // A trailing `else`/`else if` cuddles the then-block's `}` (`} else {`) or
-        // sits on the next line; look past the separating newlines and restore the
-        // cursor when no `else` follows so the newline still ends the statement.
+        // A trailing `else`/`else if` cuddles the then-block's `}` or sits on the next
+        // line. Restore the cursor when no `else` follows, so the newline still ends
+        // the statement.
         loop {
             let save = self.pos;
             self.skip_newlines();

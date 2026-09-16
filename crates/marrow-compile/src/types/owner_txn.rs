@@ -28,26 +28,20 @@ pub(super) struct RegistryInverse {
     /// extant directory to its captured ceilings is not the inverse of *creating* one:
     /// a batch that opened the first directory must leave the registry with none.
     pub(super) row_directory_present: bool,
-    /// Present only for an isolated template proof: the owners the proof runs without,
-    /// swapped whole out of the registry at admission and re-seated whole when the
-    /// proof's effects are erased. An ordinary batch swaps nothing — the shared
-    /// instantiation-limit owner and the ordered diagnostic buffer belong to the
-    /// diagnostic substrate's custody, never to this inverse.
+    /// Present only for an isolated template proof; see [`ProofIsolation`]. An ordinary
+    /// batch swaps nothing.
     pub(super) isolation: Option<ProofIsolation>,
 }
 
-/// The live owners an isolated template proof runs without.
+/// The live owners an isolated template proof runs without: `Monomorph`'s `limit` and
+/// `collection_payloads`, swapped whole out of the registry at admission so the
+/// throwaway pass cannot reach them, then re-seated whole.
 ///
-/// `Monomorph`'s `limit` and `collection_payloads` — the instantiation-limit terminal
-/// and the ordered collection-payload diagnostic buffer — are never restored by this
-/// inverse. Both are diagnostic payload, which stays in the predecessor substrate's sole
-/// custody; the staged-body guard owns this guard and those still-private payloads
-/// together, and a batch that ends in an invariant drops the aggregate whole.
-///
-/// A template proof does not restore them either: it *swaps them out* at admission so
-/// the throwaway pass cannot reach the live ones, then re-seats the live owners whole.
-/// [`TypeRegistry::admit_generic_owners`] destructures `Monomorph` exhaustively, so a new
-/// owner cannot be added without a decision recorded at one of these two places.
+/// This inverse never *restores* those two. Both are diagnostic payload, which stays in
+/// the predecessor substrate's sole custody; the staged-body guard owns this guard and
+/// those still-private payloads together, and a batch that ends in an invariant drops
+/// the aggregate whole. [`TypeRegistry::admit_generic_owners`] destructures `Monomorph`
+/// exhaustively, so a new owner cannot be added without a decision recorded here.
 pub(super) struct ProofIsolation {
     pub(super) prior_payloads: DiagnosticCollector,
 }

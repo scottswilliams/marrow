@@ -842,8 +842,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         match self.bind_place_address(name, place_expr) {
             Ok(()) => {}
             Err(LoweringFailure::Recoverable) => {
-                // The address did not resolve (a dropped root, a bad key, a non-entry
-                // target); its own diagnostic already fired. Poison the name so its later
+                // The address's own diagnostic already fired; poison the name so its later
                 // uses do not each re-report an unbound place on top of that cause.
                 self.poisoned_bindings.insert(name.to_string());
             }
@@ -966,9 +965,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 ..
             } => {
-                // A group-leaf address: the base resolves to a root-level group, and this
-                // selector names one of its leaves. Resolved before the entry-address forms
-                // because its base is a group address, not an entry address.
+                // Resolved before the entry-address forms because a group leaf's base is a
+                // group address, not an entry address.
                 if let Some((keys, root, group)) = self.resolve_group_address(base, entry) {
                     let Some((slot, leaf)) = group.field_index(field_name) else {
                         self.report_missing_group_leaf(root, group, field_name, *name_span);
@@ -1197,8 +1195,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// The store-root index a key operand names when it is statically an entry identity:
-    /// a binding of identity type (`^root[id]`), or an `Id(^root, …)` constructor call
-    /// (`^root[Id(^root, k)]`). `None` for any other operand — an ordinary scalar key.
+    /// a binding of identity type (`^root[id]`), or an `Id(^root, …)` constructor call.
     /// Non-emitting: it only inspects the binding environment and the call spelling.
     fn identity_operand_root(&self, expr: &Expression) -> Option<RootId> {
         match expr {
@@ -1406,9 +1403,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             self.push(Instr::DurExists(site), place.span)?;
             return Ok(LTy::bare_scalar(ScalarType::Bool));
         }
-        // A bare name whose binding failed to resolve (a poisoned `const`/`place`) is
-        // already reported at the binding; its `exists` use is a consequence, not a
-        // fresh misuse, so it adds no diagnostic.
+        // A poisoned `const`/`place` was already reported at its binding, so its `exists`
+        // use adds no diagnostic.
         if let Expression::Name { segments, .. } = &arg.value
             && let [name] = &segments[..]
             && self.poisoned_bindings.contains(name.text())
