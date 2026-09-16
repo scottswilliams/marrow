@@ -327,7 +327,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         let name = name.text();
         let Some(local) = self.lookup(name) else {
-            self.fail(name_error(self.file, *base_span, name));
+            self.fail(name_not_in_scope(
+                self.file,
+                *base_span,
+                NameFamily::Value,
+                name,
+                None,
+            ));
             return Ok(());
         };
         let (slot, ty, mutable) = (local.slot, local.ty, local.mutable);
@@ -419,7 +425,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         let name = name.text();
         let Some(local) = self.lookup(name) else {
-            self.fail(name_error(self.file, *base_span, name));
+            self.fail(name_not_in_scope(
+                self.file,
+                *base_span,
+                NameFamily::Value,
+                name,
+                None,
+            ));
             return Ok(());
         };
         let (slot, ty, mutable) = (local.slot, local.ty, local.mutable);

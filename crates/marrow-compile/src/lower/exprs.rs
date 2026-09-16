@@ -207,9 +207,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     self.fail(name_not_in_scope(
                         self.file,
                         *span,
+                        NameFamily::Value,
                         name,
                         suggestion.as_deref(),
-                        NameFamily::Value,
                     ));
                     Err(LoweringFailure::Recoverable)
                 }
@@ -1281,9 +1281,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         self.fail(name_not_in_scope(
             self.file,
             span,
+            NameFamily::Function,
             name,
             suggestion.as_deref(),
-            NameFamily::Function,
         ));
         Err(LoweringFailure::Recoverable)
     }
@@ -1399,9 +1399,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 self.fail(name_not_in_scope(
                     self.file,
                     span,
+                    NameFamily::Function,
                     &path,
                     suggestion.as_deref(),
-                    NameFamily::Function,
                 ));
                 Err(LoweringFailure::Recoverable)
             }

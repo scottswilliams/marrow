@@ -1321,9 +1321,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 self.fail(name_not_in_scope(
                     self.file,
                     span,
+                    NameFamily::Root,
                     name,
                     suggestion.as_deref(),
-                    NameFamily::Root,
                 ));
                 None
             }

@@ -3203,8 +3203,7 @@ mod driver_agreement {
         assert!(
             dependent
                 .iter()
-                .all(|d| !d.message().contains("is not in scope")
-                    && !d.message().contains("no module")),
+                .all(|d| d.unresolved().is_none() && !d.message().contains("no module")),
             "the base module is a file of this project; no row may deny it or its \
              callee: {dependent:?}",
         );

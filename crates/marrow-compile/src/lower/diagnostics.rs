@@ -2,7 +2,7 @@
 //! through.
 
 use super::*;
-use crate::diag::{RefusedDeclaration, Steer};
+use crate::diag::{RefusedDeclaration, Steer, Unresolved};
 
 /// Whether `ty` is a value that renders to canonical text — a bare scalar, enum, or
 /// entry identity. A record, collection, or optional is not renderable; those are not
@@ -218,7 +218,6 @@ pub(super) fn branch_not_a_field(
         Code::CheckType,
         file,
         span,
-        "",
         Steer::KeyedBranch {
             branch: branch.to_string(),
             resource: resource.map(str::to_string),
@@ -247,40 +246,31 @@ pub(super) fn absent_not_operand(
     )
 }
 
-pub(super) fn name_error(file: &ProjectFile, span: SourceSpan, name: &str) -> SourceDiagnostic {
-    SourceDiagnostic::at(
-        Code::CheckType,
-        file,
-        span,
-        format!("`{name}` is not in scope"),
-    )
-}
-
-/// An unresolved name, offering the nearest declared identifier of the same family when
-/// one is a close misspelling. Without a suggestion this is exactly [`name_error`]; a
-/// suggestion rides a typed [`Steer::DidYouMean`] that spells the candidate in its
-/// family's form, so the fix is a single edit.
+/// An unresolved name: no declaration of `family` answers `name` here. The nearest
+/// declared identifier of the same family rides along as a typed [`Steer::DidYouMean`]
+/// when one is an unambiguous close misspelling, so the fix is a single edit.
+///
+/// The one writer of the not-in-scope sentence: every site that cannot resolve a name
+/// reports through here, and the prose itself lives on [`Unresolved`].
 pub(super) fn name_not_in_scope(
     file: &ProjectFile,
     span: SourceSpan,
+    family: NameFamily,
     name: &str,
     suggestion: Option<&str>,
-    family: NameFamily,
 ) -> SourceDiagnostic {
-    let scope = format!("`{name}` is not in scope");
-    match suggestion {
-        Some(candidate) => SourceDiagnostic::with_steer(
-            Code::CheckType,
-            file,
-            span,
-            &scope,
-            Steer::DidYouMean {
-                family,
-                candidate: candidate.to_string(),
-            },
-        ),
-        None => SourceDiagnostic::at(Code::CheckType, file, span, scope),
-    }
+    SourceDiagnostic::with_unresolved(
+        file,
+        span,
+        Unresolved {
+            family,
+            name: name.to_string(),
+        },
+        suggestion.map(|candidate| Steer::DidYouMean {
+            family,
+            candidate: candidate.to_string(),
+        }),
+    )
 }
 
 /// The single declared name within edit distance two of `target`, or `None` when none
@@ -348,7 +338,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
 /// each identity gap was reported as `check.durable_identity`, so it dropped from the
 /// registry. A bare not-in-scope name would misdirect toward a typo, so the reference
 /// site names the admission failure instead. A genuinely undeclared root keeps
-/// [`name_error`].
+/// [`name_not_in_scope`].
 pub(super) fn identity_admission_failed(
     file: &ProjectFile,
     span: SourceSpan,

@@ -1187,7 +1187,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         if root.name == name {
             Some(())
         } else {
-            self.fail(name_error(self.file, span, name));
+            self.fail(name_not_in_scope(
+                self.file,
+                span,
+                NameFamily::Root,
+                name,
+                None,
+            ));
             None
         }
     }

@@ -54,7 +54,8 @@ const INVALID_UTF8_SPAN: SourceSpan = SourceSpan {
 /// A single source diagnostic: the captured file it points into and its opaque
 /// payload. A syntax finding is retained whole — code, reason, severity,
 /// message, help, and span, never flattened — and a compiler finding carries its
-/// rendered form, its typed identity gap, or the typed invalid-UTF-8 facts.
+/// rendered form, its typed identity gap, its typed unresolved name, or the
+/// typed invalid-UTF-8 facts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceDiagnostic {
     file: ProjectFile,
@@ -100,6 +101,17 @@ enum CompilerDiagnostic {
         span: SourceSpan,
         message: String,
         steer: Steer,
+    },
+    /// A name no declaration of its family answers, carrying the typed family and
+    /// spelling beside the rendered form, and the did-you-mean when one unambiguous
+    /// candidate was near. Always `check.type`, so the variant owns no code. Most
+    /// unresolved names earn no suggestion, so the rare steer is boxed rather than
+    /// widening every retained row.
+    Unresolved {
+        span: SourceSpan,
+        message: String,
+        unresolved: Unresolved,
+        steer: Option<Box<Steer>>,
     },
     /// A file the drive could not decode. The message is the central static and
     /// the span the fixed file-start point, so this variant owns only the
@@ -159,6 +171,26 @@ pub enum NameFamily {
     Root,
     Function,
     Value,
+}
+
+/// A name the resolver found no declaration for, in the family it was looked up in.
+///
+/// The family and the spelling are the contract; the sentence is not. Several
+/// unrelated resolutions end here — a store root, a callee, a local — and they are
+/// `(code, line, column)`-identical, so a consumer reads these facts rather than
+/// matching prose. [`Display`](std::fmt::Display) is the one renderer of the
+/// not-in-scope sentence; the prose lives nowhere else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unresolved {
+    pub family: NameFamily,
+    /// The name as this site spells it, qualifying segments included.
+    pub name: String,
+}
+
+impl fmt::Display for Unresolved {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "`{}` is not in scope", self.name)
+    }
 }
 
 /// Where a steering diagnostic sends the reader.
@@ -294,28 +326,45 @@ impl SourceDiagnostic {
         }
     }
 
-    /// A finding whose message ends in a steer. `prefix` is the part of the message the
-    /// steer does not own — empty when the steer is the whole message — and the steer
-    /// renders the rest, so the typed payload and the prose are one construction.
+    /// A finding whose whole message is a steer, which renders it, so the typed payload
+    /// and the prose are one construction.
     pub(crate) fn with_steer(
         code: Code,
         file: &ProjectFile,
         span: SourceSpan,
-        prefix: &str,
         steer: Steer,
     ) -> Self {
-        let message = if prefix.is_empty() {
-            steer.to_string()
-        } else {
-            format!("{prefix}. {steer}")
-        };
         Self {
             file: file.clone(),
             payload: SourceDiagnosticPayload::Compiler(CompilerDiagnostic::Steered {
                 code,
                 span,
-                message,
+                message: steer.to_string(),
                 steer,
+            }),
+        }
+    }
+
+    /// A name that resolved to nothing, with the did-you-mean steer when one
+    /// unambiguous candidate was near. Both payloads render their own prose, so the
+    /// typed facts and the message are one construction.
+    pub(crate) fn with_unresolved(
+        file: &ProjectFile,
+        span: SourceSpan,
+        unresolved: Unresolved,
+        steer: Option<Steer>,
+    ) -> Self {
+        let message = match &steer {
+            Some(steer) => format!("{unresolved}. {steer}"),
+            None => unresolved.to_string(),
+        };
+        Self {
+            file: file.clone(),
+            payload: SourceDiagnosticPayload::Compiler(CompilerDiagnostic::Unresolved {
+                span,
+                message,
+                unresolved,
+                steer: steer.map(Box::new),
             }),
         }
     }
@@ -354,6 +403,9 @@ impl SourceDiagnostic {
                 | CompilerDiagnostic::RefusedDeclaration { code, .. }
                 | CompilerDiagnostic::Steered { code, .. },
             ) => *code,
+            SourceDiagnosticPayload::Compiler(CompilerDiagnostic::Unresolved { .. }) => {
+                Code::CheckType
+            }
             SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8 { .. }) => {
                 Code::CheckUnsupported
             }
@@ -368,7 +420,8 @@ impl SourceDiagnostic {
                 CompilerDiagnostic::Rendered { message, .. }
                 | CompilerDiagnostic::IdentityGap { message, .. }
                 | CompilerDiagnostic::RefusedDeclaration { message, .. }
-                | CompilerDiagnostic::Steered { message, .. },
+                | CompilerDiagnostic::Steered { message, .. }
+                | CompilerDiagnostic::Unresolved { message, .. },
             ) => message,
             SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8 { .. }) => {
                 INVALID_UTF8_MESSAGE
@@ -440,6 +493,24 @@ impl SourceDiagnostic {
             SourceDiagnosticPayload::Compiler(CompilerDiagnostic::Steered { steer, .. }) => {
                 Some(steer)
             }
+            SourceDiagnosticPayload::Compiler(CompilerDiagnostic::Unresolved { steer, .. }) => {
+                steer.as_deref()
+            }
+            _ => None,
+        }
+    }
+
+    /// The typed facts behind an unresolved name, `None` for every other payload.
+    ///
+    /// Every not-in-scope row is `check.type` at the use span, so the code and span say
+    /// only that something is ill-typed. A test that means to pin the resolution failure
+    /// — or to prove a declared name is never called out of scope — reads this instead
+    /// of the rendered prose, which is not a contract.
+    pub fn unresolved(&self) -> Option<&Unresolved> {
+        match &self.payload {
+            SourceDiagnosticPayload::Compiler(CompilerDiagnostic::Unresolved {
+                unresolved, ..
+            }) => Some(unresolved),
             _ => None,
         }
     }
@@ -466,7 +537,8 @@ impl SourceDiagnostic {
                 CompilerDiagnostic::Rendered { span, .. }
                 | CompilerDiagnostic::IdentityGap { span, .. }
                 | CompilerDiagnostic::RefusedDeclaration { span, .. }
-                | CompilerDiagnostic::Steered { span, .. },
+                | CompilerDiagnostic::Steered { span, .. }
+                | CompilerDiagnostic::Unresolved { span, .. },
             ) => *span,
             SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8 { .. }) => {
                 INVALID_UTF8_SPAN
@@ -533,6 +605,16 @@ impl SourceDiagnostic {
                 steer,
                 ..
             }) => file + message.len() + steer.retained_owned_bytes(),
+            SourceDiagnosticPayload::Compiler(CompilerDiagnostic::Unresolved {
+                message,
+                unresolved,
+                steer,
+                ..
+            }) => {
+                file + message.len()
+                    + unresolved.name.len()
+                    + steer.as_deref().map_or(0, Steer::retained_owned_bytes)
+            }
             SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8 { .. }) => file,
         }
     }
@@ -787,8 +869,9 @@ mod tests {
     }
 
     /// The byte-charge law, per payload variant: file spelling plus owned
-    /// message, syntax help, identity-gap path, and steer-payload bytes; the
-    /// static invalid-UTF-8 message charges nothing beyond the file.
+    /// message, syntax help, identity-gap path, unresolved-name, and
+    /// steer-payload bytes; the static invalid-UTF-8 message charges nothing
+    /// beyond the file.
     #[test]
     fn retained_owned_bytes_charges_each_payload_component_exactly() {
         let file_len = file().retained_owned_bytes();
@@ -810,23 +893,39 @@ mod tests {
         );
         assert_eq!(gap.retained_owned_bytes(), file_len + 7 + "^books".len());
 
+        let unresolved = SourceDiagnostic::with_unresolved(
+            file(),
+            SourceSpan::default(),
+            Unresolved {
+                family: NameFamily::Root,
+                name: "membrs".to_string(),
+            },
+            Some(Steer::DidYouMean {
+                family: NameFamily::Root,
+                candidate: "members".to_string(),
+            }),
+        );
+        assert_eq!(
+            unresolved.message(),
+            "`membrs` is not in scope. Did you mean the store root `^members`?",
+        );
+        assert_eq!(
+            unresolved.retained_owned_bytes(),
+            file_len + unresolved.message().len() + "membrs".len() + "members".len()
+        );
+
         let steered = SourceDiagnostic::with_steer(
             Code::CheckType,
             file(),
             SourceSpan::default(),
-            "`membrs` is not in scope",
-            Steer::DidYouMean {
-                family: NameFamily::Root,
-                candidate: "members".to_string(),
+            Steer::KeyedBranch {
+                branch: "notes".to_string(),
+                resource: None,
             },
         );
         assert_eq!(
-            steered.message(),
-            "`membrs` is not in scope. Did you mean the store root `^members`?",
-        );
-        assert_eq!(
             steered.retained_owned_bytes(),
-            file_len + steered.message().len() + "members".len()
+            file_len + steered.message().len() + "notes".len()
         );
 
         let utf8 = SourceDiagnostic::invalid_utf8(file(), 3, Some(1));
@@ -1222,3 +1321,4 @@ mod tests {
         );
     }
 }
+
