@@ -325,6 +325,7 @@ argument every later argument is named. Precedence and operand types are under
 primary_expr    = literal
                 | "true" | "false" | "absent"
                 | enum_path
+                | type_ctor_call
                 | qualified_name
                 | durable_root
                 | constructor_call
@@ -340,6 +341,7 @@ constructor_call = ("string" | "bytes" | "date" | "instant" | "duration"),
 identity_value  = "Id", "(", durable_root, {",", expression}, ")" ;
 
 enum_path       = type_name, "::", identifier ;
+type_ctor_call  = type_name, "(", argument_list?, ")" ;
 
 path_expr       = (durable_root | identifier), {path_suffix} ;
 path_suffix     = "[", expression, {",", expression}, "]"
@@ -347,11 +349,13 @@ path_suffix     = "[", expression, {",", expression}, "]"
 ```
 
 A `qualified_name` is a local name or a function path (`shelf::books::add`).
-An `enum_path` names one member of an enum; its head is the same `type_name` a
-type annotation uses, so `Color::red` names a member of an enum this project
-declares and `graphtext::Color::red` one of a declared dependency's
-([dependencies](modules-and-functions.md#dependencies)). A longer path is not an
-enum path. A constructor is a name followed by a parenthesized argument list. `^books[id].title` is a durable path and
+An `enum_path` names one member of an enum and a `type_ctor_call` constructs a
+resource, struct, or nominal type; the head of each is the same `type_name` a
+type annotation uses, so `Color::red` and `Pair(key: k)` name types this project
+declares and `graphtext::Color::red` and `graphtext::Pair(key: k)` name a
+declared dependency's ([dependencies](modules-and-functions.md#dependencies)). A
+longer path names no type, so it is neither. `constructor_call` is the separate
+closed set of scalar conversions. `^books[id].title` is a durable path and
 `book.title` a local one. `Id(^books)` in a type position is an identity type;
 `Id(^books, id)` in an expression is an identity value
 ([entry identity](types-and-values.md#entry-identity)).
