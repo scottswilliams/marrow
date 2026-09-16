@@ -550,6 +550,80 @@ fn pending_function_snapshot(
     (count, draft_fingerprint(&txn))
 }
 
+/// Run a template proof that mints new rows on the real registry and draft, records two
+/// diagnostics, and then fails mid-fill with the transient batch state left dirty. Returns
+/// the diagnostics the proof produced, for the caller to adopt.
+fn run_failing_template_proof(
+    registry: &mut TypeRegistry,
+    draft_owner: &mut ImageDraft,
+) -> GenericDiagnostics {
+    let proof = registry
+        .enter_template_proof(
+            draft_owner.record_type_count(),
+            draft_owner.enum_type_count(),
+        )
+        .expect("a settled open registry admits the proof pass");
+
+    {
+        let mut proof_txn = admitted(draft_owner);
+        let proof_draft = &mut proof_txn;
+        // The proof pass mints and diagnoses directly on the real registry and draft.
+        let text = GArg::Scalar(ScalarType::Text);
+        let proof_row = registry
+            .mint_type_instance(proof_draft, 0, &[text], site(28))
+            .expect("the proof mints a new isolated row on the real registry");
+        assert!(matches!(proof_row, TypeInstId::Record(_)));
+        let marker = proof_draft
+            .intern_string("during-proof")
+            .expect("a within-domain mint");
+        proof_draft
+            .add_record_type(RecordTypeDef {
+                name: marker,
+                fields: Vec::new(),
+            })
+            .expect("a within-domain mint");
+        // A collection payload leaf is refused by the shared enum-payload rule; the
+        // proof mints its own collection row along the way.
+        let (_, refused) = registry
+            .enum_payload_leaf(proof_draft, &ROOT, &list_of("string"), &[], site(29))
+            .expect("a collection resolves as a payload leaf");
+        assert_eq!(
+            registry.collections.borrow().len(),
+            2,
+            "the proof appended its own collection row",
+        );
+        let coll = refused.expect("a collection is not an enum payload type");
+        let refusal = registry.collection_payload_refusal(site(29), "Payload", "value", coll);
+        registry
+            .generics
+            .borrow_mut()
+            .collection_payloads
+            .push(refusal);
+        registry.record_limit(site(30), InstantiationLimit::Count);
+
+        // Simulate a proof that failed mid-fill, leaving the transient batch state dirty:
+        // the guard must still restore the settled owner exactly. The dirty edges
+        // reference only the appended row, which truncation drops.
+        {
+            let mut generics = registry.generics.borrow_mut();
+            let dirty_row = generics.type_insts.len() - 1;
+            let key = TypeInstKey::from(generics.type_insts[dirty_row].id);
+            generics.fill_batch_start = Some(dirty_row);
+            generics.fill_rows.insert(key, dirty_row);
+            generics.filling = Some(PendingFill {
+                index: dirty_row,
+                depth: 0,
+            });
+            generics.type_insts[dirty_row].dependents.push(dirty_row);
+        }
+
+        let outcome = registry.take_generic_diagnostics();
+        registry.restore_generic_owners(proof);
+        outcome
+        // The armed guard drops here, discarding everything the proof appended.
+    }
+}
+
 #[test]
 fn template_proof_savepoint_isolates_a_failed_proof_and_transfers_once() {
     let mut registry = test_registry(vec![
@@ -635,71 +709,7 @@ fn template_proof_savepoint_isolates_a_failed_proof_and_transfers_once() {
     draft.commit();
     let draft_before = pending_function_snapshot(&mut draft_owner, &registry);
 
-    let proof = registry
-        .enter_template_proof(
-            draft_owner.record_type_count(),
-            draft_owner.enum_type_count(),
-        )
-        .expect("a settled open registry admits the proof pass");
-
-    let outcome = {
-        let mut proof_txn = admitted(&mut draft_owner);
-        let proof_draft = &mut proof_txn;
-        // The proof pass mints and diagnoses directly on the real registry and draft.
-        let text = GArg::Scalar(ScalarType::Text);
-        let proof_row = registry
-            .mint_type_instance(proof_draft, 0, &[text], site(28))
-            .expect("the proof mints a new isolated row on the real registry");
-        assert!(matches!(proof_row, TypeInstId::Record(_)));
-        let marker = proof_draft
-            .intern_string("during-proof")
-            .expect("a within-domain mint");
-        proof_draft
-            .add_record_type(RecordTypeDef {
-                name: marker,
-                fields: Vec::new(),
-            })
-            .expect("a within-domain mint");
-        // A collection payload leaf is refused by the shared enum-payload rule; the
-        // proof mints its own collection row along the way.
-        let (_, refused) = registry
-            .enum_payload_leaf(proof_draft, &ROOT, &list_of("string"), &[], site(29))
-            .expect("a collection resolves as a payload leaf");
-        assert_eq!(
-            registry.collections.borrow().len(),
-            2,
-            "the proof appended its own collection row",
-        );
-        let coll = refused.expect("a collection is not an enum payload type");
-        let refusal = registry.collection_payload_refusal(site(29), "Payload", "value", coll);
-        registry
-            .generics
-            .borrow_mut()
-            .collection_payloads
-            .push(refusal);
-        registry.record_limit(site(30), InstantiationLimit::Count);
-
-        // Simulate a proof that failed mid-fill, leaving the transient batch state dirty:
-        // the guard must still restore the settled owner exactly. The dirty edges
-        // reference only the appended row, which truncation drops.
-        {
-            let mut generics = registry.generics.borrow_mut();
-            let dirty_row = generics.type_insts.len() - 1;
-            let key = TypeInstKey::from(generics.type_insts[dirty_row].id);
-            generics.fill_batch_start = Some(dirty_row);
-            generics.fill_rows.insert(key, dirty_row);
-            generics.filling = Some(PendingFill {
-                index: dirty_row,
-                depth: 0,
-            });
-            generics.type_insts[dirty_row].dependents.push(dirty_row);
-        }
-
-        let outcome = registry.take_generic_diagnostics();
-        registry.restore_generic_owners(proof);
-        outcome
-        // The armed guard drops here, discarding everything the proof appended.
-    };
+    let outcome = run_failing_template_proof(&mut registry, &mut draft_owner);
 
     // The failed proof leaked nothing: the settled registry and the draft bytes are
     // exactly what they were before the pass.
