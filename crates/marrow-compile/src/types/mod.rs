@@ -2443,7 +2443,6 @@ impl TypeRegistry {
             self.finish_fill(pending.index)?;
             match filled {
                 Ok(body) => {
-                    self.record_inst_body_dependencies(pending.index, &body);
                     self.generics.borrow_mut().type_insts[pending.index].state =
                         TypeInstState::Filling { staged: Some(body) };
                 }
@@ -2765,13 +2764,13 @@ impl TypeRegistry {
 
     /// Record `dependent` as depending on every provisional row its arguments reach.
     ///
-    /// Adjacent repeats are collapsed first. Settlement's refusal join is idempotent,
-    /// so a repeated edge changes nothing and costs a lookup here plus a traversal
-    /// there; a wide body names one type in every one of its members, which is where
-    /// the repeats come from and why collapsing them is worth a pass.
+    /// With [`record_active_dependency`](Self::record_active_dependency) and the
+    /// reuse edge `existing_type_instance` records, this covers every provisional row
+    /// a filled body can name: a member's type is built from this row's arguments,
+    /// from a concrete name of the template's own tree, or from a nested mint, and a
+    /// collection is walked through to those same leaves.
     fn record_semantic_dependencies(&self, dependent: usize, args: impl IntoIterator<Item = GArg>) {
         let mut pending: Vec<GArg> = args.into_iter().collect();
-        pending.dedup();
         let mut dependency_ids = Vec::new();
         while let Some(arg) = pending.pop() {
             match arg {
@@ -2800,17 +2799,6 @@ impl TypeRegistry {
                 generics.type_insts[dependency].dependents.push(dependent);
             }
         }
-    }
-
-    fn record_inst_body_dependencies(&self, dependent: usize, body: &InstBody) {
-        let args: Vec<GArg> = match body {
-            InstBody::Struct(fields) => fields.iter().map(|(_, arg)| *arg).collect(),
-            InstBody::Enum(variants) => variants
-                .iter()
-                .flat_map(|variant| variant.payload.iter().map(|(_, arg)| *arg))
-                .collect(),
-        };
-        self.record_semantic_dependencies(dependent, args);
     }
 
     fn strengthen_refusal(
