@@ -25,7 +25,7 @@ fn enum_conformance_fixture_passes_on_the_production_path() {
         .find(|line| line.contains(r#""kind":"summary""#))
         .unwrap_or_else(|| panic!("no summary record: {stdout}"));
     assert!(summary.contains(r#""failed":0"#), "{summary}");
-    assert!(summary.contains(r#""total":6"#), "{summary}");
+    assert!(summary.contains(r#""total":8"#), "{summary}");
 }
 
 /// A returned enum value renders through the VM: `run` on an export that
@@ -51,6 +51,65 @@ pub fn make(r: int): Shape {
         stdout.contains(r#""data":{"enum":"Shape","member":"circle","payload":[7]}"#),
         "{stdout}"
     );
+}
+
+/// A declared member payload carries a struct and another enum, exactly as a
+/// generic enum instantiation's payload does: the value constructs, matches,
+/// compares, and renders with the composite leaves nested in the payload array.
+#[test]
+fn a_composite_payload_renders_through_the_vm() {
+    let output = marrow_in(
+        &conformance_dir("enum_types"),
+        &["run", "makeCell", "--format", "jsonl", "--", "3", "4"],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    assert!(
+        stdout.contains(
+            r#""data":{"enum":"Cell","member":"filled","payload":[{"x":3,"y":4},{"enum":"Color","member":"blue","payload":[]}]}"#
+        ),
+        "{stdout}"
+    );
+}
+
+/// The payload shapes the widening does not admit keep their own refusals, and
+/// a nominal leaf keeps the nominal boundary: `marrow check` reports each at the
+/// declaration with its own message.
+#[test]
+fn a_refused_payload_shape_keeps_its_own_message() {
+    for (label, source, code, message) in [
+        (
+            "collection",
+            "enum E {\n    m(v: List<int>)\n}\n\npub fn f(): int {\n    return 0\n}\n",
+            "check.unsupported",
+            "is not a payload type",
+        ),
+        (
+            "optional",
+            "enum E {\n    m(v: int?)\n}\n\npub fn f(): int {\n    return 0\n}\n",
+            "check.unsupported",
+            "an optional enum payload field type",
+        ),
+        (
+            "cycle",
+            "enum E {\n    m(v: S)\n}\n\nstruct S {\n    e: E\n}\n\npub fn f(): int {\n    return 0\n}\n",
+            "check.recursion",
+            "contains itself",
+        ),
+        (
+            "nominal boundary",
+            "type Age: int in 0..150\n\nenum E {\n    m(a: Age)\n}\n\npub fn f(e: E): int {\n    return 0\n}\n",
+            "check.unsupported",
+            "public aggregate parameters containing nominal values",
+        ),
+    ] {
+        let workspace = Project::single(source).materialize("refused-payload");
+        let check = workspace.marrow(&["check"]);
+        let report = String::from_utf8_lossy(&check.stderr);
+        assert!(!check.status.success(), "{label}: {report}");
+        assert!(report.contains(code), "{label}: {report}");
+        assert!(report.contains(message), "{label}: {report}");
+    }
 }
 
 /// A non-exhaustive `match` is `check.match_nonexhaustive`.

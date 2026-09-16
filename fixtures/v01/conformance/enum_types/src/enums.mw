@@ -18,6 +18,19 @@ enum Shape {
     rect(width: int, height: int)
 }
 
+// A payload field carries what a generic enum's payload carries: a bare scalar,
+// a nominal int, a struct, or another enum.
+
+struct Point {
+    x: int
+    y: int
+}
+
+enum Cell {
+    empty
+    filled(at: Point, shade: Color)
+}
+
 // `match` dispatches on the member. An arm binds a payload member's fields
 // positionally, or omits the bindings to ignore the payload. The match is
 // exhaustive and has no wildcard arm.
@@ -75,6 +88,21 @@ pub fn makeCircle(r: int): Shape {
     return Shape::circle(radius: r)
 }
 
+pub fn makeCell(x: int, y: int): Cell {
+    return Cell::filled(at: Point(x: x, y: y), shade: Color::blue)
+}
+
+pub fn cellScore(c: Cell): int {
+    match c {
+        empty => {
+            return 0
+        }
+        filled(p, s) => {
+            return p.x * p.y + colorCode(s)
+        }
+    }
+}
+
 // `==` and `!=` are exact enum equality: same member and equal payload.
 
 pub fn sameColor(a: Color, b: Color): bool {
@@ -120,4 +148,19 @@ test "payload equality compares the payload" {
 test "construction travels through a function" {
     assert area(makeCircle(6)) == 36
     assert colorCode(makeRed()) == 1
+}
+
+test "a composite payload binds positionally" {
+    assert cellScore(Cell::empty) == 0
+    assert cellScore(makeCell(3, 4)) == 15
+    assert cellScore(Cell::filled(at: Point(x: 2, y: 5), shade: Color::red)) == 11
+}
+
+test "a composite payload compares structurally" {
+    assert makeCell(2, 2) == makeCell(2, 2)
+    assert makeCell(2, 2) != makeCell(2, 3)
+    assert Cell::empty != makeCell(1, 1)
+    const red = Cell::filled(at: Point(x: 1, y: 1), shade: Color::red)
+    const green = Cell::filled(at: Point(x: 1, y: 1), shade: Color::green)
+    assert red != green
 }
