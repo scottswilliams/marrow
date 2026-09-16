@@ -12,23 +12,8 @@ use marrow_image::{
     ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, PlannedSiteRef,
     RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, TypeId, ValueShapeNodeId,
 };
+use marrow_test_support::{admitted, admitted_plan, forge, rehash, site};
 use marrow_verify::{VerifyPhase, verify};
-
-#[path = "../../marrow-image/tests/common/site_seam.rs"]
-mod site_seam;
-use site_seam::site;
-
-#[path = "../../marrow-image/tests/common/image_forgery.rs"]
-mod image_forgery;
-use image_forgery::{forge, rehash};
-
-#[path = "../../marrow-image/tests/common/admitted_plan.rs"]
-mod admitted_plan;
-use admitted_plan::admitted_plan;
-
-#[path = "common/admitted.rs"]
-mod admitted_helper;
-use admitted_helper::admitted;
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 // Root A ("assets"): placement/product/key/field ledger ids.

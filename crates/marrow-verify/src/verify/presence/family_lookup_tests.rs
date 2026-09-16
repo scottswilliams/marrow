@@ -1,10 +1,11 @@
-use super::{EntryFamilies, admitted_plan::admitted_plan, entry_family, site_seam::site};
+use super::{EntryFamilies, entry_family};
 use crate::sealed::{SealedSite, SealedSiteTarget};
 use marrow_image::{
     DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId, FieldDef, FuncId,
     FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
     RootOccurrenceDef, Scalar, SemanticPath, SemanticTarget, SpanEntry,
 };
+use marrow_test_support::{admitted_plan, site};
 
 fn id(kind: u8, index: usize) -> LedgerIdBytes {
     let mut bytes = [0; 16];

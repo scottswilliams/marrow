@@ -8,11 +8,8 @@ use marrow_image::{
     CollectionTypeDef, ExportId, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr,
     ReferenceKind, Scalar, SpanEntry,
 };
+use marrow_test_support::admitted;
 use marrow_verify::verify;
-
-#[path = "common/admitted.rs"]
-mod admitted_helper;
-use admitted_helper::admitted;
 
 fn spans(code: &[Instr]) -> Vec<SpanEntry> {
     (0..code.len())

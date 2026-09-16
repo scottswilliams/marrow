@@ -14,26 +14,8 @@ use marrow_image::{
     ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, PlannedSiteRef, RecordTypeDef,
     RootOccurrenceDef, Scalar, SemanticStepKind, SemanticTarget, SpanEntry, TypeId, VariantDef,
 };
+use marrow_test_support::{admitted, admitted_plan, rehash, site};
 use marrow_verify::{VerifyPhase, verify};
-
-#[path = "../../marrow-image/tests/common/site_seam.rs"]
-mod site_seam;
-use site_seam::site;
-
-#[path = "../../marrow-image/tests/common/image_forgery.rs"]
-#[allow(
-    dead_code,
-    reason = "this file forges by offset, not by pattern search"
-)]
-mod image_forgery;
-use image_forgery::rehash;
-
-#[path = "../../marrow-image/tests/common/admitted_plan.rs"]
-mod admitted_plan;
-use admitted_plan::admitted_plan;
-
-#[path = "common/admitted.rs"]
-mod admitted_helper;
 
 #[path = "hostile/group_presence.rs"]
 mod group_presence;
@@ -48,7 +30,6 @@ mod required_reads;
 
 #[path = "hostile/legacy_artifact.rs"]
 mod legacy_artifact;
-use admitted_helper::admitted;
 
 #[path = "common/tracer_schema.rs"]
 #[allow(

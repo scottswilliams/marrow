@@ -13,5 +13,10 @@ marrow-codes = { path = "../marrow-codes" }
 marrow-image = { path = "../marrow-image" }
 marrow-temporal = { path = "../marrow-temporal" }
 
+[dev-dependencies]
+# The image fixtures more than one crate's tests build over: the admitted plan, the
+# armed draft transaction, the site seam, and the container byte forger.
+marrow-test-support = { path = "../marrow-test-support" }
+
 [lints]
 workspace = true

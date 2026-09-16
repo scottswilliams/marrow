@@ -5,8 +5,7 @@ use marrow_image::{
     OP_DUR_EXISTS, OP_POP, OP_RETURN, OperationClass, PlannedSiteRef, RecordTypeDef,
     RootOccurrenceDef, Scalar, SemanticPath, SemanticTarget, SpanEntry,
 };
-
-use crate::verify::{admitted_plan, image_forgery, site_seam};
+use marrow_test_support::{admitted_plan, forge, site};
 
 fn image(
     bodies: impl FnOnce(ConstId, &PlannedSiteRef) -> Vec<Vec<Instr>>,
@@ -47,7 +46,7 @@ fn image_with_roots(
     let value = draft.value_scalar(Scalar::Int).expect("integer shape");
     draft
         .declare_product(
-            &admitted_plan::admitted_plan(),
+            &admitted_plan(),
             product,
             record,
             vec![DeclarationMemberDef {
@@ -66,7 +65,7 @@ fn image_with_roots(
         let name = draft.intern_string(name).expect("root name");
         let root = draft
             .add_root_occurrence(
-                &admitted_plan::admitted_plan(),
+                &admitted_plan(),
                 product,
                 RootOccurrenceDef {
                     name,
@@ -79,7 +78,7 @@ fn image_with_roots(
                 },
             )
             .expect("integer-keyed root");
-        entries.push(site_seam::site(
+        entries.push(site(
             &mut draft,
             root.occurrence(),
             root.placement_path(),
@@ -629,7 +628,7 @@ fn replace_terminal_call(bytes: &mut [u8], from: u16, to: u16) {
             .count(),
         1,
     );
-    image_forgery::forge(bytes, &needle, 0, &[OP_CALL, to_hi, to_lo, OP_RETURN]);
+    forge(bytes, &needle, 0, &[OP_CALL, to_hi, to_lo, OP_RETURN]);
 }
 
 #[test]
@@ -775,7 +774,7 @@ fn rehashed_direct_read_beside_an_owner_call_rejects_at_test_entry() {
             .count(),
         1
     );
-    image_forgery::forge(
+    forge(
         &mut bytes,
         &needle,
         0,

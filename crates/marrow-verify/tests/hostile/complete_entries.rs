@@ -9,10 +9,10 @@ use marrow_image::{
 };
 use marrow_verify::VerifyPhase;
 
-use super::admitted_helper::admitted;
 use super::tracer_schema::Verdict::{Refused, Verified};
 use super::tracer_schema::*;
-use super::{admitted_plan, site_seam};
+use marrow_test_support::admitted;
+use marrow_test_support::{admitted_plan, site};
 
 /// The verdict of `if exists(slot 0) { <between>; strict sparse set on slot 0 }`, where
 /// `between` may add functions to the draft and returns the instructions inside the guard.
@@ -208,7 +208,7 @@ fn a_create_record_constructor_cannot_lend_its_field_slot_as_an_entry_key() {
     let shapes = scalar_shapes(&mut draft);
     draft
         .declare_product(
-            &admitted_plan::admitted_plan(),
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
             vec![field_member(
@@ -223,7 +223,7 @@ fn a_create_record_constructor_cannot_lend_its_field_slot_as_an_entry_key() {
     let root_name = ok(draft.intern_string("counters"));
     let root = draft
         .add_root_occurrence(
-            &admitted_plan::admitted_plan(),
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             RootOccurrenceDef {
                 name: root_name,
@@ -236,14 +236,14 @@ fn a_create_record_constructor_cannot_lend_its_field_slot_as_an_entry_key() {
             },
         )
         .expect("the string-keyed root is admitted");
-    let entry = site_seam::site(
+    let entry = site(
         &mut draft,
         root.occurrence(),
         root.placement_path(),
         SemanticTarget::WholePayload,
     );
     let members = product_members(&draft);
-    let field = site_seam::site(
+    let field = site(
         &mut draft,
         root.occurrence(),
         members[0].path(),

@@ -12,15 +12,8 @@ use marrow_image::{
     VariantDef,
 };
 use marrow_image::{DurableIndexComponent, DurableIndexShape};
+use marrow_test_support::{admitted, admitted_plan};
 use marrow_verify::verify;
-
-#[path = "../../marrow-image/tests/common/admitted_plan.rs"]
-mod admitted_plan;
-use admitted_plan::admitted_plan;
-
-#[path = "common/admitted.rs"]
-mod admitted_helper;
-use admitted_helper::admitted;
 
 /// A type reference naming a TYPES row no fixture declares.
 const FORGED_TYPE: ImageType = ImageType::Record {

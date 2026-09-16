@@ -26,11 +26,6 @@ mod spans;
 mod tables;
 mod type_ref;
 
-#[cfg(test)]
-mod fixtures;
-#[cfg(test)]
-use fixtures::{admitted_plan, image_forgery, site_seam};
-
 use container::decode_container;
 use seal::seal;
 

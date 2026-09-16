@@ -23,11 +23,8 @@ use marrow_image::{
     FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
     RootOccurrenceDef, Scalar, SpanEntry, TypeId, ValueShapeNodeId,
 };
+use marrow_test_support::admitted_plan;
 use marrow_verify::verify;
-
-#[path = "../../marrow-image/tests/common/admitted_plan.rs"]
-mod admitted_plan;
-use admitted_plan::admitted_plan;
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 const PLACEMENT_ID: [u8; 16] = [0x0b; 16];

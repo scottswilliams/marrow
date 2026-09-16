@@ -11,19 +11,8 @@ use marrow_image::{
     ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef,
     Scalar, SemanticTarget, TypeId, VariantDef, image_id,
 };
+use marrow_test_support::{admitted, admitted_plan, site};
 use marrow_verify::verify;
-
-#[path = "../../marrow-image/tests/common/site_seam.rs"]
-mod site_seam;
-use site_seam::site;
-
-#[path = "../../marrow-image/tests/common/admitted_plan.rs"]
-mod admitted_plan;
-use admitted_plan::admitted_plan;
-
-#[path = "common/admitted.rs"]
-mod admitted_helper;
-use admitted_helper::admitted;
 
 #[path = "common/tracer_schema.rs"]
 #[allow(

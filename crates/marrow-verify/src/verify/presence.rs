@@ -17,8 +17,6 @@ use std::collections::BTreeSet;
 mod family_lookup_tests;
 
 #[cfg(test)]
-use super::{admitted_plan, site_seam};
-#[cfg(test)]
 #[path = "presence/guarded_read_tests.rs"]
 mod guarded_read_tests;
 

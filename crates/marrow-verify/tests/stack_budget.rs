@@ -22,15 +22,8 @@ use marrow_image::{
     ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, PlannedSiteRef, RecordTypeDef,
     RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, TypeId, ValueShapeNodeId,
 };
+use marrow_test_support::{admitted_plan, site};
 use marrow_verify::{VERIFY_STACK_BYTES, verify};
-
-#[path = "../../marrow-image/tests/common/admitted_plan.rs"]
-mod admitted_plan;
-use admitted_plan::admitted_plan;
-
-#[path = "../../marrow-image/tests/common/site_seam.rs"]
-mod site_seam;
-use site_seam::site;
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 const PLACEMENT_ID: [u8; 16] = [0x0b; 16];

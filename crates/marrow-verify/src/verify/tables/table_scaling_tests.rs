@@ -8,15 +8,7 @@ use marrow_image::{
 };
 use std::ops::Range;
 
-use crate::verify::image_forgery::rehash;
-
-/// The armed transaction a fresh savepoint admits over `owner`.
-fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
-    let savepoint = owner.savepoint();
-    owner
-        .begin_transaction(savepoint)
-        .expect("a fresh savepoint admits")
-}
+use marrow_test_support::{admitted, rehash};
 
 const RECORD_WIDTH: usize = 4_096;
 const ENUM_WIDTH: usize = 256;

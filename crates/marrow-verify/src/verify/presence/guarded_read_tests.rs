@@ -1,4 +1,3 @@
-use super::{admitted_plan::admitted_plan, site_seam::site};
 use crate::{SealedConst, SealedInstr, SealedSite, SealedSiteTarget, VerifyPhase};
 use marrow_codes::Code;
 use marrow_image::{
@@ -6,6 +5,7 @@ use marrow_image::{
     ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar,
     SemanticTarget, SpanEntry,
 };
+use marrow_test_support::{admitted_plan, site};
 
 /// The four-guard diamond tape: each guard proves the entry present, and both diamond
 /// edges retain the Boolean below the guard operands, so the strict read below every

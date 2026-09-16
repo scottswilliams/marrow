@@ -3,9 +3,9 @@
 use marrow_image::{ExportId, ImageDraft, ImageType, Instr, Scalar};
 use marrow_verify::VerifyPhase;
 
-use super::admitted_helper::admitted;
 use super::tracer_schema::Verdict::{Refused, Verified};
 use super::tracer_schema::*;
+use marrow_test_support::admitted;
 
 #[test]
 fn required_reads_reject_sparse_and_non_field_targets() {

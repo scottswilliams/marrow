@@ -20,18 +20,7 @@ use marrow_image::{
     DeclarationMemberDef, DeclarationMemberShape, FieldDef, ImageBuildError, ImageDraft, ImageType,
     LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget,
 };
-
-#[path = "../../marrow-image/tests/common/site_seam.rs"]
-mod site_seam;
-use site_seam::site;
-
-#[path = "../../marrow-image/tests/common/admitted_plan.rs"]
-mod admitted_plan;
-use admitted_plan::admitted_plan;
-
-#[path = "common/admitted.rs"]
-mod admitted_helper;
-use admitted_helper::admitted;
+use marrow_test_support::{admitted, admitted_plan, site};
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 const PRODUCT_ID: [u8; 16] = [0x0d; 16];

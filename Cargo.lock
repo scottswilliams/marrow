@@ -276,6 +276,7 @@ dependencies = [
  "marrow-codes",
  "marrow-image",
  "marrow-temporal",
+ "marrow-test-support",
 ]
 
 [[package]]

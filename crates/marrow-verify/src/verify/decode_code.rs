@@ -789,10 +789,9 @@ mod index_site_partition {
     //! panicking.
 
     use marrow_image::{
-        CanonicalDeclarationPathSelector, CollTypeId, CollectionTypeDef, DeclarationMemberDef,
-        DeclarationMemberShape, DraftTxn, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType,
-        Instr, KeyColumn, LedgerIdBytes, PlannedSiteRef, RecordTypeDef, RootOccurrenceDef,
-        RootOccurrenceSelector, Scalar, SemanticTarget, SpanEntry,
+        CollTypeId, CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, DraftTxn,
+        ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
+        PlannedSiteRef, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry,
     };
 
     use super::opcode_bijection::samples;
@@ -960,21 +959,7 @@ mod index_site_partition {
         }
     }
 
-    use crate::verify::admitted_plan::admitted_plan;
-
-    /// Bind one occurrence, one canonical declaration path, and one target, then request
-    /// the site the binding names.
-    fn site(
-        draft: &mut DraftTxn<'_>,
-        root: &RootOccurrenceSelector,
-        path: &CanonicalDeclarationPathSelector,
-        target: SemanticTarget,
-    ) -> PlannedSiteRef {
-        let handle = draft
-            .bind_occurrence_site(root, path, target)
-            .expect("the path is a canonical path of this occurrence");
-        draft.request_site(&handle).expect("the binding is live")
-    }
+    use marrow_test_support::{admitted_plan, site};
 
     /// A minimal single-root durable schema with a whole-entry site and a field-leaf
     /// (non-index) site, plus a `List[int]` collection type. Mirrors the tracer schema

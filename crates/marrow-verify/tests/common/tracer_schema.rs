@@ -2,8 +2,7 @@
 //! owner each: the tracer `Counter { value:int required, label:string sparse }` at
 //! `^counters(name:string)` and its indexed and group/branch variants, the fixed ledger
 //! ids a hostile mutation targets, the function builder that mints every fixture's
-//! `FunctionDef`, and the typed verdict pins compare. Reached as a `#[path]` module
-//! beside `admitted`.
+//! `FunctionDef`, and the typed verdict pins compare.
 
 use marrow_image::{
     AdmittedRoot, DeclarationMember, DeclarationMemberDef, DeclarationMemberShape, DraftTxn,
@@ -13,9 +12,7 @@ use marrow_image::{
 };
 use marrow_verify::{VerifyPhase, verify};
 
-use super::admitted_helper::admitted;
-use super::admitted_plan::admitted_plan;
-use super::site_seam::site;
+use marrow_test_support::{admitted, admitted_plan, site};
 
 /// One within-domain draft mint, unwrapped: every fixture mint here is far inside
 /// the checked carrier domain.
