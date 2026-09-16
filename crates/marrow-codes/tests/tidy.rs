@@ -41,6 +41,7 @@ const RETAINED_MEMBERS: &[&str] = &[
     "marrow-store",
     "marrow-syntax",
     "marrow-temporal",
+    "marrow-test-support",
     "marrow-verify",
     "marrow-vm",
 ];

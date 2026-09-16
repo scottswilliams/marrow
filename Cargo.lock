@@ -263,6 +263,13 @@ name = "marrow-temporal"
 version = "0.1.0"
 
 [[package]]
+name = "marrow-test-support"
+version = "0.1.0"
+dependencies = [
+ "marrow-image",
+]
+
+[[package]]
 name = "marrow-verify"
 version = "0.1.0"
 dependencies = [

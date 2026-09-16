@@ -79,6 +79,7 @@ process; `marrow-lsp` projects compiler snapshot facts and adds no semantics.
 | `marrow-local-wire` | The framed protocol between a runner and its client: framing, limits, one canonical JSON writer, completed bounded frames, and the closed request, response, fault, and incomplete grammar | [TypeScript client](../tools/typescript-client.md) |
 | `marrow-runner` | The runner binary and library: the supervised Unix-domain channel, export dispatch over a verified image, and the one-shot provision, import, audit, apply, recovery, backup and restore commands over the lifecycle owners | [Operations](../operations/README.md) |
 | `marrow-lsp` | The standalone `marrow-lsp` executable: JSON-RPC over stdio, document sync, and diagnostics, formatting, hover, definition, completion, signature help, and document symbols projected from the compiler's `AnalysisSnapshot` | [Language server](../tools/lsp.md) |
+| `marrow-test-support` | The image-construction fixtures more than one crate's tests build over: the admitted plan, the armed draft transaction, the site seam, and the container byte forger. A `dev-dependencies` edge only; it ships in nothing | [Contributing](../../CONTRIBUTING.md) |
 
 The language server is its own executable. The `marrow` CLI has no `lsp`
 subcommand.

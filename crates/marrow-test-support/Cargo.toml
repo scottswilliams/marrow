@@ -1,0 +1,17 @@
+[package]
+name = "marrow-test-support"
+description = "The image-construction fixtures more than one crate's tests build over: the admitted plan, the armed draft transaction, the site seam, and the container byte forger."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Test scaffolding, never a shipped artifact: every consumer names it as a dev edge.
+publish = false
+
+[dependencies]
+marrow-image = { path = "../marrow-image" }
+
+[lints]
+workspace = true
