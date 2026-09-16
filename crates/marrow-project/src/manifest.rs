@@ -113,17 +113,16 @@ pub enum ManifestErrorKind {
 /// fault the parser locates — a 1-based [`Position`].
 ///
 /// Fields are private and every constructor is owner-private, so a `ManifestError`
-/// is always the exact typed code/kind/message/position triple `parse` produced;
-/// a hostile or inconsistent combination is unrepresentable outside this owner.
-/// The read-only accessors expose the typed [`Code`] rather than a spelling.
+/// is always the exact typed code/kind/message/position `parse` produced; an
+/// inconsistent combination is unrepresentable outside this owner. The read-only
+/// accessors expose the typed [`Code`] rather than a spelling.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ManifestError {
     code: Code,
     kind: ManifestErrorKind,
     message: String,
     /// The 1-based line and column of a malformed-TOML fault. A validation fault
-    /// with no single source point leaves it `None`, keeping the located position
-    /// a machine fact in the span rather than only prose a client must parse.
+    /// with no single source point leaves it `None`.
     position: Option<Position>,
 }
 

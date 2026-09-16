@@ -3,22 +3,17 @@
 //! `marrow-image`'s durable contract identity encodes each ledger reference as
 //! `IDREF(kind, id)`, where the kind byte is a hand-written constant
 //! (`marrow-image/src/durable_id.rs`, `IDREF_APPLICATION`..`IDREF_INDEX`) that must
-//! equal this crate's [`IdentityKind::tag`]. The two are coupled by nothing but
-//! agreement: `marrow-project` deliberately does not depend on `marrow-image`, and
-//! `marrow-image` deliberately does not depend on `marrow-project`, so no type or
-//! constant reaches across.
+//! equal this crate's [`IdentityKind::tag`]. Neither crate depends on the other, so
+//! the two are coupled by nothing but agreement, and a divergence would not fail to
+//! compile: it would change the contract-ID preimage of every durable image while
+//! the producer and the independent verifier still agreed with each other, so no
+//! round-trip test would notice.
 //!
-//! A silent divergence would not fail to compile. It would change the contract-ID
-//! preimage of every durable image while the producer and the independent verifier
-//! still agreed with each other, so no test that round-trips one build would notice
-//! — the identities would simply mean something else than the ledger says.
-//!
-//! This test is one half of the drift gate: the tags are restated here as literals,
+//! This test is one half of the drift gate — the tags are restated here as literals,
 //! so changing [`IdentityKind::tag`] fails here. The other half is the
-//! literal-stripping absence gate over `marrow-image`'s constants
-//! (`marrow-image/tests/identity_tag_mirror.rs`), so changing the mirror fails
-//! there. Neither half may be relaxed to accommodate the other: a real kind-space
-//! change edits the ledger, the mirror, and both gates in one transaction.
+//! literal-stripping absence gate over the mirror
+//! (`marrow-image/tests/identity_tag_mirror.rs`). A real kind-space change edits the
+//! ledger, the mirror, and both gates together; neither half is relaxed for the other.
 
 use marrow_project::IdentityKind;
 

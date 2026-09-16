@@ -47,18 +47,16 @@ impl FileIdentity {
     /// under the root, contain no empty, `.`, or `..` segment, and contain no NUL
     /// or ASCII control character.
     ///
-    /// This validates the *path* domain only. The full module-name character and
-    /// Unicode-normalization domain (which spellings may name a module, and
-    /// whether NFC/NFD-distinct segments are the same identity) lands with the
-    /// module-name semantic owner; control characters are rejected here today
-    /// because they are wrong under any future domain.
+    /// This validates the *path* domain only. The module-name character and
+    /// Unicode-normalization domain — which spellings may name a module, and whether
+    /// NFC/NFD-distinct segments are the same identity — belongs to the module-name
+    /// semantic owner. Control characters are rejected here because they are wrong
+    /// under any such domain.
     pub fn validate(path: &str) -> Result<(FileIdentity, ModuleName), SourcePathReason> {
         Self::check(path)?;
 
-        // `check` has established that `path` is a canonical `.mw` file with a
-        // non-empty stem under the source root, with no empty, `.`, `..`,
-        // backslash, or control segment. Derive the dotted module name from the
-        // segments below the root; this allocation is validate's, not check's.
+        // `check` has established the canonical shape; the allocation below is
+        // validate's alone, which is why `check` can stay allocation-free.
         let mut segments = path.split('/');
         segments.next(); // the source root, already checked.
         let under_root: Vec<&str> = segments.collect();
@@ -78,11 +76,10 @@ impl FileIdentity {
     /// source file, in the same reason precedence as [`FileIdentity::validate`],
     /// without allocating.
     ///
-    /// This is the one reason owner: `validate` delegates to it before
-    /// constructing an identity, and the physical adapter calls it on a borrowed
-    /// spelling before committing to any allocation. It traverses `path` as a
-    /// borrowed `&str` only — no owned buffer, split collection, or formatting —
-    /// so a caller may reject a spelling without paying for one.
+    /// This is the one reason owner: `validate` delegates to it, and the physical
+    /// adapter calls it on a borrowed spelling. It traverses `path` as a borrowed
+    /// `&str` only — no owned buffer, split collection, or formatting — so a caller
+    /// may reject a spelling without paying for an allocation.
     pub fn check(path: &str) -> Result<(), SourcePathReason> {
         if path.is_empty() {
             return Err(SourcePathReason::NonCanonical);
