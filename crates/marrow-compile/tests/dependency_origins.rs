@@ -631,3 +631,52 @@ pub fn spread(cell: Cell): int {
     );
     assert_eq!(codes_and_messages(&project), Vec::new());
 }
+
+const COLOR_LIBRARY: &str = r#"module palette
+
+enum Color {
+    red
+    green
+}
+
+pub fn name(color: Color): string {
+    match color {
+        red => {
+            return "red"
+        }
+        green => {
+            return "green"
+        }
+    }
+}
+"#;
+
+/// A dependency's enum is nameable as a type, so its members must be constructible
+/// and matchable from the consuming tree too.
+#[test]
+fn a_dependency_enum_member_is_constructible_and_matchable() {
+    let project = project_capture::project_with_dependency(
+        "graphtext",
+        &[(
+            "src/main.mw",
+            r#"module main
+
+use graphtext::palette
+
+pub fn run(): string {
+    const chosen: graphtext::Color = graphtext::Color::red
+    match chosen {
+        red => {
+            return palette::name(graphtext::Color::green)
+        }
+        green => {
+            return palette::name(chosen)
+        }
+    }
+}
+"#,
+        )],
+        &[("src/palette.mw", COLOR_LIBRARY)],
+    );
+    assert_eq!(codes_and_messages(&project), Vec::new());
+}
