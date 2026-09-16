@@ -57,16 +57,15 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Err(LoweringFailure::Recoverable)
     }
 
-    /// Lower `expr`, emitting code that pushes its value and returning its type.
+    /// Lower `expr` when it reads through a managed index or a durable place, returning
+    /// `None` when it is neither and the ordinary expression walk should continue.
     ///
-    /// The arms here cover unread fields with `..` rather than binding each to `_` as the
-    /// statement walker does: no `Expression` variant carries a block or a statement, so
-    /// no field can hold statements this walker would silently skip.
-    /// `no_expression_variant_carries_a_block` fails the moment one does.
-    pub(super) fn lower_expr(&mut self, expr: &Expression) -> ConstructResult<LTy> {
-        // A read through a declared managed index: a unique index is an exact
-        // complete-key lookup yielding the optional `Id(^root)`; a nonunique index is read
-        // by scanning it with a `for` head, so naming one in value position is rejected.
+    /// A unique index is an exact complete-key lookup yielding the optional `Id(^root)`;
+    /// a nonunique index is read by scanning it with a `for` head, so naming one in value
+    /// position is rejected. Inline addresses and composed reads off a named place or pin
+    /// use the same durable resolver. A bare place name is a durable designation, not a
+    /// value, and falls through to its own diagnostic in the walk.
+    fn lower_index_or_durable(&mut self, expr: &Expression) -> ConstructResult<Option<LTy>> {
         let index_read = match self.resolve_index_read(expr) {
             Ok(read) => read,
             Err(drift) => {
@@ -76,7 +75,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         if let Some(read) = index_read {
             if read.index.unique {
-                return self.lower_index_lookup(read.root, read.index, read.keys, expr.span());
+                return self
+                    .lower_index_lookup(read.root, read.index, read.keys, expr.span())
+                    .map(Some);
             }
             self.fail(SourceDiagnostic::at(
                 Code::CheckType,
@@ -90,9 +91,6 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             ));
             return Err(LoweringFailure::Recoverable);
         }
-        // Inline addresses and composed reads off a named place or pin use the same
-        // durable resolver. A bare place name is a durable designation, not a value, and
-        // falls through to its own diagnostic below.
         let durable_here = match self.durable_shape_here(expr) {
             Ok(shape) => shape,
             Err(drift) => {
@@ -113,7 +111,105 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             let place = self
                 .resolve_durable(expr)
                 .ok_or(LoweringFailure::Recoverable)?;
-            return self.lower_durable_read(place);
+            return self.lower_durable_read(place).map(Some);
+        }
+        Ok(None)
+    }
+
+    /// Lower a single-segment name in value position: an integer-bound built-in, a local
+    /// or parameter, a module-private constant, or an unresolved name.
+    fn lower_value_name(&mut self, name: &str, span: SourceSpan) -> ConstructResult<LTy> {
+        // An integer-bound value built-in (`maxInt`/`minInt`) folds to a
+        // constant `int` load. It is reserved, so resolving it first keeps a
+        // bare use of the bound unambiguous.
+        if let Some(value) = builtin_const_int(name) {
+            let const_id = self
+                .checked_mint(|draft| draft.intern_int(value))
+                .ok_or(LoweringFailure::Recoverable)?;
+            self.push(Instr::ConstLoad(const_id), span)?;
+            return Ok(LTy::bare_scalar(ScalarType::Int));
+        }
+        if let Some(local) = self.lookup(name) {
+            let (slot, ty) = (local.slot, local.ty);
+            // Record the resolved local/parameter type for editor hover; a
+            // local use has no definition target. Guarded because the
+            // spelling is O(type depth) — see `collects_hover`.
+            if self.collects_hover() {
+                let display = self.hover_type_display(ty);
+                self.record_hover(span, display.into(), None);
+            }
+            self.push(Instr::LocalGet(slot), span)?;
+            return Ok(ty);
+        }
+        // A place is a durable designation, not a first-class value:
+        // its bare name cannot be read, passed, or returned.
+        if self.lookup_place(name).is_some() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType,
+                self.file,
+                span,
+                format!(
+                    "`{name}` is a durable place, not a value; read a field with \
+                     `{name}.field`, guard the entry with `if const x = {name}`, \
+                     or test it with `exists({name})`"
+                ),
+            ));
+            return Err(LoweringFailure::Recoverable);
+        }
+        // A module-private constant, folded to a constant load. A constant the
+        // declaration pass refused still holds its name here, so the use is
+        // steered to that cause rather than told the name is unknown.
+        let consts = self.consts;
+        let constant = match consts.lookup(self.module, name) {
+            Ok(binding) => binding,
+            Err(drift) => {
+                self.ledger_drift::<()>(drift);
+                return Err(LoweringFailure::Recoverable);
+            }
+        };
+        match constant {
+            Binding::Accepted(value) => {
+                let value = value.clone();
+                return self.lower_const_value(&value, span);
+            }
+            Binding::Refused(_, refusal) => {
+                self.steer_refusal(refusal, span);
+                return Err(LoweringFailure::Recoverable);
+            }
+            Binding::Absent => {}
+        }
+        // A binding whose initializer failed left this name unbound; the
+        // initializer already reported the cause, so a later use is silent.
+        if self.poisoned_bindings.contains(name) {
+            self.failed = true;
+            return Err(LoweringFailure::Recoverable);
+        }
+        let candidates = self
+            .locals
+            .iter()
+            .map(|local| local.name.as_str())
+            .chain(self.functions.module_function_names(self.module))
+            .chain(consts.names_in(self.module));
+        let suggestion = nearest_name(name, candidates);
+        self.fail(name_not_in_scope(
+            self.file,
+            span,
+            NameFamily::Value,
+            name,
+            suggestion.as_deref(),
+        ));
+        Err(LoweringFailure::Recoverable)
+    }
+
+    /// Lower `expr`, emitting code that pushes its value and returning its type.
+    ///
+    /// The arms here cover unread fields with `..` rather than binding each to `_` as the
+    /// statement walker does: no `Expression` variant carries a block or a statement, so
+    /// no field can hold statements this walker would silently skip.
+    /// `no_expression_variant_carries_a_block` fails the moment one does.
+    pub(super) fn lower_expr(&mut self, expr: &Expression) -> ConstructResult<LTy> {
+        if let Some(ty) = self.lower_index_or_durable(expr)? {
+            return Ok(ty);
         }
         match expr {
             Expression::Literal { kind, text, span } => self.lower_literal(*kind, text, *span),
@@ -130,89 +226,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     ));
                     Err(LoweringFailure::Recoverable)
                 }
-                [name] => {
-                    let name = name.text();
-                    // An integer-bound value built-in (`maxInt`/`minInt`) folds to a
-                    // constant `int` load. It is reserved, so resolving it first keeps a
-                    // bare use of the bound unambiguous.
-                    if let Some(value) = builtin_const_int(name) {
-                        let const_id = self
-                            .checked_mint(|draft| draft.intern_int(value))
-                            .ok_or(LoweringFailure::Recoverable)?;
-                        self.push(Instr::ConstLoad(const_id), *span)?;
-                        return Ok(LTy::bare_scalar(ScalarType::Int));
-                    }
-                    if let Some(local) = self.lookup(name) {
-                        let (slot, ty) = (local.slot, local.ty);
-                        // Record the resolved local/parameter type for editor hover; a
-                        // local use has no definition target. Guarded because the
-                        // spelling is O(type depth) — see `collects_hover`.
-                        if self.collects_hover() {
-                            let display = self.hover_type_display(ty);
-                            self.record_hover(*span, display.into(), None);
-                        }
-                        self.push(Instr::LocalGet(slot), *span)?;
-                        return Ok(ty);
-                    }
-                    // A place is a durable designation, not a first-class value:
-                    // its bare name cannot be read, passed, or returned.
-                    if self.lookup_place(name).is_some() {
-                        self.fail(SourceDiagnostic::at(
-                            Code::CheckType,
-                            self.file,
-                            *span,
-                            format!(
-                                "`{name}` is a durable place, not a value; read a field with \
-                                 `{name}.field`, guard the entry with `if const x = {name}`, \
-                                 or test it with `exists({name})`"
-                            ),
-                        ));
-                        return Err(LoweringFailure::Recoverable);
-                    }
-                    // A module-private constant, folded to a constant load. A constant the
-                    // declaration pass refused still holds its name here, so the use is
-                    // steered to that cause rather than told the name is unknown.
-                    let consts = self.consts;
-                    let constant = match consts.lookup(self.module, name) {
-                        Ok(binding) => binding,
-                        Err(drift) => {
-                            self.ledger_drift::<()>(drift);
-                            return Err(LoweringFailure::Recoverable);
-                        }
-                    };
-                    match constant {
-                        Binding::Accepted(value) => {
-                            let value = value.clone();
-                            return self.lower_const_value(&value, *span);
-                        }
-                        Binding::Refused(_, refusal) => {
-                            self.steer_refusal(refusal, *span);
-                            return Err(LoweringFailure::Recoverable);
-                        }
-                        Binding::Absent => {}
-                    }
-                    // A binding whose initializer failed left this name unbound; the
-                    // initializer already reported the cause, so a later use is silent.
-                    if self.poisoned_bindings.contains(name) {
-                        self.failed = true;
-                        return Err(LoweringFailure::Recoverable);
-                    }
-                    let candidates = self
-                        .locals
-                        .iter()
-                        .map(|local| local.name.as_str())
-                        .chain(self.functions.module_function_names(self.module))
-                        .chain(consts.names_in(self.module));
-                    let suggestion = nearest_name(name, candidates);
-                    self.fail(name_not_in_scope(
-                        self.file,
-                        *span,
-                        NameFamily::Value,
-                        name,
-                        suggestion.as_deref(),
-                    ));
-                    Err(LoweringFailure::Recoverable)
-                }
+                [name] => self.lower_value_name(name.text(), *span),
                 _ => {
                     if let Some(path) = self.enum_path(segments) {
                         // `[alias::]Enum::member` for a payloadless member is an enum
@@ -1464,18 +1478,18 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         self.record_hover(callee_span, display.into(), Some(target));
     }
 
-    /// Lower a call to a generic function: infer each type argument from the call's
-    /// arguments, revalidate the type-parameter constraints against the inferred concrete
-    /// types, monomorphize one image function for the exact argument list, and emit a call
-    /// to it. Inference is exact: a generic argument matches the parameter type
-    /// structurally with no implicit bare-to-optional widening.
-    fn lower_generic_call(
+    /// Infer each type argument of a generic call from the call's arguments.
+    ///
+    /// Inference is exact: a generic argument matches the parameter type structurally
+    /// with no implicit bare-to-optional widening. Every type parameter must be
+    /// determined by an argument — there is no explicit instantiation syntax, so an
+    /// undetermined parameter cannot be resolved and the call is rejected at its site.
+    fn infer_generic_args(
         &mut self,
-        template_index: usize,
+        template: &'a GenericTemplate<'a>,
         args: &[Argument],
         span: SourceSpan,
-    ) -> ConstructResult<CallResult> {
-        let template: &'a GenericTemplate<'a> = &self.generics.templates[template_index];
+    ) -> ConstructResult<Vec<GArg>> {
         let params = &template.decl.params;
         if args.len() != params.len() {
             self.fail(SourceDiagnostic::at(
@@ -1514,9 +1528,6 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 return Err(LoweringFailure::Recoverable);
             }
         }
-        // Every type parameter must be determined by an argument: there is no
-        // explicit instantiation syntax, so an undetermined parameter cannot be
-        // resolved and the call is rejected at its site.
         let mut concrete = Vec::with_capacity(subst.len());
         for (slot, (name, _)) in subst.iter().zip(&template.type_params) {
             match slot {
@@ -1536,9 +1547,18 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 }
             }
         }
-        // Per-application constraint revalidation: the concrete type substituted for
-        // each constrained parameter must support the constraint's operators.
-        for ((name, constraint), arg) in template.type_params.iter().zip(&concrete) {
+        Ok(concrete)
+    }
+
+    /// Per-application constraint revalidation: the concrete type substituted for each
+    /// constrained parameter must support the constraint's operators.
+    fn revalidate_generic_constraints(
+        &mut self,
+        template: &GenericTemplate<'_>,
+        concrete: &[GArg],
+        span: SourceSpan,
+    ) -> ConstructResult<()> {
+        for ((name, constraint), arg) in template.type_params.iter().zip(concrete) {
             let Some(constraint) = constraint else {
                 continue;
             };
@@ -1570,6 +1590,22 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 return Err(LoweringFailure::Recoverable);
             }
         }
+        Ok(())
+    }
+
+    /// Lower a call to a generic function: infer each type argument from the call's
+    /// arguments, revalidate the type-parameter constraints against the inferred concrete
+    /// types, monomorphize one image function for the exact argument list, and emit a call
+    /// to it.
+    fn lower_generic_call(
+        &mut self,
+        template_index: usize,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> ConstructResult<CallResult> {
+        let template: &'a GenericTemplate<'a> = &self.generics.templates[template_index];
+        let concrete = self.infer_generic_args(template, args, span)?;
+        self.revalidate_generic_constraints(template, &concrete, span)?;
         // Resolve the return type against the concrete substitution, minting any
         // collection/enum instantiation the return shape needs into the draft (the
         // real draft for an instance, the throwaway draft for the template pass).
