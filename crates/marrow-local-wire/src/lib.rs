@@ -9,7 +9,7 @@
 //! process; a caller reads and writes bytes and uses this crate to frame, encode,
 //! decode, and bound them.
 //!
-//! The protocol is deliberately closed and small (campaign law 8): one protocol
+//! The protocol is deliberately closed and small: one protocol
 //! version, one canonical JSON encoding, a fixed set of message kinds, and no
 //! streaming, replay, cancellation, or pagination. Every decoder input is bounded
 //! before it allocates: a frame length, a value's nesting depth,
