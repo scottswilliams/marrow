@@ -541,10 +541,9 @@ impl AnalysisSnapshot {
     ///
     /// An unknown file or an out-of-range offset is a typed [`QueryError`]. A file that
     /// produced no parse tree (a non-UTF-8 file) is [`Unavailability::Syntax`]. A broken
-    /// file still resolves: a recovered incomplete-call node yields its active-call fact
-    /// even though the file has parse errors. A position in no call, or a call whose callee
-    /// resolves to no local declaration (a built-in, a cross-module callee, or an unknown
-    /// name), is `Absent`. An over-cap rendered display is a query-local
+    /// file still resolves: a recovered incomplete-call node yields its active-call fact.
+    /// A position in no call, or a call whose callee resolves to no local declaration, is
+    /// `Absent`. An over-cap rendered display is a query-local
     /// [`ActiveCallOutcome::Refused`], never a truncated display.
     pub fn active_call(
         &self,

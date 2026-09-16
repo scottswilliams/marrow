@@ -343,7 +343,7 @@ struct KeyColumnRow<'a> {
 pub(super) struct KeyTable<'a> {
     owner: KeyOwner<'a>,
     /// The declared column count. Kept beside the resolution because the width cap
-    /// names how many columns were *written*, which a refused tuple no longer has.
+    /// names how many columns were *written*, which a refused tuple has none of.
     declared_width: usize,
     resolution: Result<Vec<KeyColumnRow<'a>>, Box<SourceDiagnostic>>,
 }
@@ -468,9 +468,9 @@ impl<'a> KeyTable<'a> {
     }
 }
 /// One `group` member of a resource — a static namespace or, when keyed, a `branch`
-/// placement — as the durable build reads it: the declaration it was taken from, the
-/// qualified path every walker used to assemble on its own, its key rows when keyed,
-/// and its nested group rows in declaration order.
+/// placement — as the durable build reads it: the declaration it was taken from, its
+/// qualified path, its key rows when keyed, and its nested group rows in declaration
+/// order.
 ///
 /// The tree mirrors the declaration's group nesting exactly, so a walker drives off the
 /// rows and re-derives neither a member path nor keyedness from syntax. Taken once per

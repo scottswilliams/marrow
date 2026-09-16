@@ -17,9 +17,8 @@ pub(super) enum PlaceKey<'e> {
     /// A key operand expression, lowered — and therefore evaluated — at the
     /// operation site (the inline `^root(key)` form).
     Expr(&'e Expression),
-    /// A key already evaluated once into a local slot (a named `place`); each use
-    /// reads the slot with `LocalGet`, so the operand runs exactly once at the
-    /// binding no matter how many operations flow through the place.
+    /// A key already evaluated once into a local slot (a named `place`); each use reads
+    /// the slot, so the operand runs exactly once however many operations use the place.
     Bound(u16),
     /// The whole root key-path supplied by one entry-identity operand (`^root[id]`):
     /// `IdentityKeyPath` spreads it into the root's `cols` key columns. One `Identity`
@@ -96,9 +95,8 @@ pub(super) struct IndexRead<'a, 'e> {
 }
 
 impl<'a> PlaceLocal<'a> {
-    /// The entry this place addresses as a presence fact's key: its family and its
-    /// whole key-path as pre-evaluated slots (root-first), for a root or a branch place
-    /// uniformly.
+    /// The entry this place addresses as a presence fact's key: its family and its whole
+    /// key-path as pre-evaluated slots (root-first).
     pub(super) fn fact_key(&self) -> (&'a Family, Vec<u16>) {
         (
             self.node.family(),
@@ -290,9 +288,9 @@ pub(super) struct TraversalTarget<'a, 'e> {
     pub(super) span: SourceSpan,
 }
 
-/// Whether an instruction is a direct durable-place operation — a read, write,
-/// presence probe, erase, or managed-index access over a `^` place. Tests must reach
-/// these operations through calls.
+/// Whether an instruction is a direct durable-place operation — a read, write, presence
+/// probe, erase, or managed-index access over a `^` place. Tests must reach these
+/// through calls.
 pub(crate) fn is_durable_place_op(instr: &Instr) -> bool {
     matches!(
         instr.op_class(),
@@ -300,9 +298,8 @@ pub(crate) fn is_durable_place_op(instr: &Instr) -> bool {
     )
 }
 
-/// Whether an instruction stages a durable mutation (a write, replacement, or erase).
-/// The requires-ambient-transaction check treats these as the sites that demand a
-/// transaction.
+/// Whether an instruction stages a durable mutation (a write, replacement, or erase) —
+/// the sites the requires-ambient-transaction check demands a transaction for.
 pub(crate) fn is_mutation_instr(instr: &Instr) -> bool {
     instr.op_class() == OpClass::DurableMutation
 }
@@ -330,9 +327,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         if is_entry_address(expr) {
             Some(DurShape::Entry)
         } else if is_field_address(expr) || is_group_leaf_address(expr) {
-            // A field-exact address, a whole root-level group (both `<entry>.name`), or a
-            // group-leaf address `<entry>.group.leaf`. The resolver disambiguates a group
-            // from a field by name; a group leaf is one field selection deeper.
+            // A field-exact address or a whole root-level group (both `<entry>.name`), or
+            // a group leaf one field selection deeper. The resolver disambiguates a group
+            // from a field by name.
             Some(DurShape::Field)
         } else {
             None
@@ -655,9 +652,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Some(handle)
     }
 
-    /// Bind the `GroupEntry` site of the root-level group `group` of the root occurrence
-    /// `root` — the site a whole-group read, replace, or erase and every group-leaf
-    /// read-modify-write address.
+    /// Bind the `GroupEntry` site of the root-level group `group` under the root
+    /// occurrence `root` — the site every whole-group and group-leaf operation addresses.
     fn bind_group_site(
         &mut self,
         root: &'a crate::durable::DurableRoot,
@@ -854,8 +850,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Bind a validated `place` name to its durable entry address, pushing the
-    /// [`PlaceLocal`] on success. Returns a recoverable failure when the address does not
-    /// resolve — the resolver has already reported why — so the caller can poison the name.
+    /// [`PlaceLocal`] on success. An unresolved address is a recoverable failure the
+    /// resolver has already reported, so the caller can poison the name.
     fn bind_place_address(&mut self, name: &str, place_expr: &Expression) -> ConstructResult<()> {
         let access = match self.durable_access(place_expr) {
             Ok(shape) => shape,
@@ -1267,9 +1263,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     optional: true,
                 }
             }
-            // A group leaf materializes the whole group before projecting one slot.
-            // A proved required leaf is bare. Untested and sparse reads retain the
-            // optional result and absent-entry branch.
+            // A group leaf materializes the whole group before projecting one slot. A
+            // proved required leaf is bare; untested and sparse reads retain the optional
+            // result and absent-entry branch.
             DurTarget::GroupLeaf {
                 handle,
                 slot,
@@ -1321,9 +1317,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             ));
             return Err(LoweringFailure::Recoverable);
         };
-        // A managed-index read completes the presence family over an index: a unique index
-        // is a complete-key probe (the presence half of the `if const` lookup), a nonunique
-        // index is scan-only and has no keyed presence probe.
+        // A unique index is a complete-key probe (the presence half of the `if const`
+        // lookup); a nonunique index is scan-only and has no keyed presence probe.
         let index_read = match self.resolve_index_read(&arg.value) {
             Ok(read) => read,
             Err(drift) => {
@@ -1385,9 +1380,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 DurTarget::Entry { handle, .. } | DurTarget::Field { handle, .. } => self
                     .site_operand(&handle)
                     .ok_or(LoweringFailure::Recoverable)?,
-                // A group is markerless — its presence is the entry's presence — so a
-                // group-cell presence probe has no distinct meaning yet; a group leaf has no
-                // site of its own. Probe the containing entry instead.
+                // A group is markerless — its presence is the entry's — and a group leaf
+                // has no site of its own, so probe the containing entry instead.
                 DurTarget::Group { .. } | DurTarget::GroupLeaf { .. } => {
                     self.fail(SourceDiagnostic::at(
                         Code::CheckUnsupported,
@@ -1526,9 +1520,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 let key_slots = self.require_present(family, key_slots, place.span)?;
                 self.push(Instr::DurSetField { site, key_slots }, place.span)?;
             }
-            // `p.group = R.group(…)`: an exact whole-group replacement, group-scoped (the
-            // entry's other groups, top-level fields, and branches are untouched). The
-            // key slots are captured before the RHS; proof use follows its effects.
+            // `p.group = R.group(…)`: an exact whole-group replacement, group-scoped — the
+            // entry's other groups, top-level fields, and branches are untouched. The key
+            // slots are captured before the RHS; proof use follows its effects.
             DurTarget::Group { handle, record, .. } => {
                 let record = *record;
                 let key_slots = place.bound_key_path();
@@ -1564,8 +1558,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Lower the operand of a durable field set: a definite value of the field's bare
-    /// type. `absent` and any optional operand are refused naming `delete`, so a field
-    /// has one clearing spelling.
+    /// type. `absent` and any optional operand are refused naming `delete`, so a field has
+    /// one clearing spelling.
     fn lower_definite_field_value(
         &mut self,
         value: &Expression,
@@ -1573,8 +1567,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         span: SourceSpan,
     ) -> ConstructResult<()> {
         // A built-in or collection constructor is directed by the bare expected type;
-        // every other operand is lowered and its own type judged, so an optional operand
-        // is refused at the write rather than reported as a mismatch at the operand.
+        // every other operand is judged on its own type, so an optional operand is refused
+        // at the write rather than reported as a mismatch at the operand.
         let optional = match value {
             Expression::Absent { .. } => true,
             _ if constructor_kind(value).is_some() || collection_ctor_call(value).is_some() => {

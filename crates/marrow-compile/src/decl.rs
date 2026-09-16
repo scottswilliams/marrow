@@ -309,10 +309,8 @@ pub(crate) fn refuse_first(
 /// branch's key tuple — takes its names through one of these, in declaration order.
 /// The first occurrence keeps the name and the repeat earns the `check.name_conflict`
 /// row at its own name token, so no image carries two members of one name for the
-/// verifier to refuse without a span.
-///
-/// The set borrows the names from the declaration it walks; the owner spelling is
-/// rendered into the row, so it is owned.
+/// verifier to refuse without a span. The names are borrowed from the declaration
+/// walked; the owner spelling is rendered into the row, so it is owned.
 pub(crate) struct MemberNamespace<'a> {
     owner: String,
     taken: BTreeSet<&'a str>,
@@ -524,9 +522,8 @@ impl DeclarationRefusalSummary {
     /// Adopting a gap is the one retention a merge adds — every other field is `Copy`
     /// or discarded — and it is charged before it is held, so the ceiling bounds what
     /// the pass retains rather than only what its first refusal charged. No production
-    /// producer reaches that arm: the one gap-carrying class is a durable root, whose
-    /// namespace rejects a repeated placement name before declaring it. The charge is
-    /// kept so a namespace that later admits such a repeat inherits the accounting.
+    /// producer reaches that arm today, but the charge is kept so a namespace that later
+    /// admits a repeated gap-carrying refusal inherits the accounting.
     fn merge(
         &mut self,
         other: Self,
@@ -796,14 +793,12 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
             })
     }
 
-    /// The accepted declarations in source order, one per key, and only where the
-    /// key's first occurrence is that acceptance: exactly the occurrences
-    /// [`Self::lookup`] answers with, so what a namespace builds from this iterator
-    /// and what a use site resolves against cannot disagree.
-    ///
-    /// A namespace whose order is observed — image slot order, field order — reads its
-    /// accepted set from here rather than accumulating a parallel vector, which keeps
-    /// the ledger the single authority for which declarations survived.
+    /// The accepted declarations in source order, one per key, and only where the key's
+    /// first occurrence is that acceptance: exactly the occurrences [`Self::lookup`]
+    /// answers with, so a namespace built from this iterator and a use site resolving
+    /// against the ledger cannot disagree. A namespace whose order is observed — image
+    /// slot order, field order — reads it from here rather than accumulating a parallel
+    /// vector, which keeps the ledger the single authority.
     pub(crate) fn accepted(&self) -> impl Iterator<Item = (&K, &T)> {
         self.occurrences
             .iter()
