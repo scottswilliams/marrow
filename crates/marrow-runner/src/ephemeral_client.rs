@@ -512,7 +512,7 @@ mod tests {
         });
 
         match session.call(export, vec![]).expect("call") {
-            EphemeralCall::OutcomeUnknown(OutcomeUnknownCause::Io(_)) => {}
+            EphemeralCall::OutcomeUnknown(OutcomeUnknownCause::Io(crate::Direction::Read, _)) => {}
             _ => panic!("expected OutcomeUnknown after a lost reply"),
         }
         killer.join().expect("killer");

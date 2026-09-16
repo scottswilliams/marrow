@@ -127,7 +127,7 @@ mod tests {
     use marrow_codes::Code;
 
     use crate::OutcomeUnknownCause;
-    use crate::terminal::{ClientError, post_dispatch_cause, require_reply_turn};
+    use crate::terminal::{ClientError, Direction, post_dispatch_cause, require_reply_turn};
     use marrow_local_wire::{HandoffStage, LossClass, WireError, classify};
 
     /// A reply lost to any socket-read I/O failure after dispatch is classified
@@ -154,15 +154,16 @@ mod tests {
             std::io::ErrorKind::Other,
         ] {
             assert!(matches!(
-                post_dispatch_cause(ClientError::Io(std::io::Error::from(kind))),
-                OutcomeUnknownCause::Io(_),
+                post_dispatch_cause(ClientError::Io(Direction::Read, std::io::Error::from(kind))),
+                OutcomeUnknownCause::Io(..),
             ));
         }
         assert!(matches!(
             post_dispatch_cause(ClientError::Io(
-                std::io::Error::from_raw_os_error(i32::MAX,)
+                Direction::Read,
+                std::io::Error::from_raw_os_error(i32::MAX),
             )),
-            OutcomeUnknownCause::Io(_),
+            OutcomeUnknownCause::Io(..),
         ));
         assert_eq!(
             classify(HandoffStage::Dispatched),
@@ -220,13 +221,8 @@ mod tests {
     }
 
     /// Failing to write the request frame is a write, so it reports `io.write`, the code
-    /// the catalog names for "writing a runner protocol frame". Today `ClientError::Io`
-    /// carries no direction and every socket error reports `io.read`, so a companion that
-    /// dies while the terminal is still writing the request is reported as a failed read.
+    /// the registry names for "writing a runner protocol frame".
     #[test]
-    #[ignore = "ClientError::Io carries no read/write direction, so a failed request \
-                write reports io.read; splitting the variant changes an observable code \
-                on the shared ephemeral-session path and is a lead decision"]
     fn a_failed_request_frame_write_reports_io_write() {
         use std::os::unix::net::UnixStream;
 

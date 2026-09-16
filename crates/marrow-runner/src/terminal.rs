@@ -215,7 +215,7 @@ mod startup_tests {
         write.write_all(b"{\"interface\":").expect("partial prefix");
         assert!(
             matches!(read_descriptor(&mut read, Duration::from_millis(10)),
-                Err(ClientError::Io(error)) if error.kind() == io::ErrorKind::TimedOut
+                Err(ClientError::Io(_, error)) if error.kind() == io::ErrorKind::TimedOut
             )
         );
         write
@@ -252,7 +252,7 @@ mod startup_tests {
             reader.join().expect("descriptor reader cleanup");
             assert!(
                 matches!(observed,
-                    Ok(Err(ClientError::Io(error))) if error.kind() == io::ErrorKind::TimedOut
+                    Ok(Err(ClientError::Io(_, error))) if error.kind() == io::ErrorKind::TimedOut
                 ),
                 "descriptor read must finish before the parent releases stdout"
             );
@@ -351,8 +351,8 @@ pub enum CallOutcome {
 /// every variant; the cause never downgrades it to an ordinary client error.
 #[derive(Debug)]
 pub enum OutcomeUnknownCause {
-    /// Socket I/O failed or timed out while reading the reply.
-    Io(std::io::Error),
+    /// Socket I/O failed or timed out while exchanging the reply.
+    Io(Direction, std::io::Error),
     /// The reply frame or message violated the local-wire grammar.
     Wire(WireError),
     /// The reply carried a call turn other than the dispatched turn.
@@ -367,7 +367,7 @@ impl OutcomeUnknownCause {
     /// The stable cause discriminator, independent of its diagnostic code.
     pub fn kind(&self) -> CauseKind {
         match self {
-            Self::Io(_) => CauseKind::Io,
+            Self::Io(..) => CauseKind::Io,
             Self::Wire(_) => CauseKind::Wire,
             Self::TurnMismatch { .. } => CauseKind::TurnMismatch,
             Self::UnsolicitedMessage => CauseKind::UnsolicitedMessage,
@@ -378,7 +378,7 @@ impl OutcomeUnknownCause {
     /// The stable code for the distinct post-dispatch cause.
     pub fn code(&self) -> Code {
         match self {
-            Self::Io(_) => Code::IoRead,
+            Self::Io(direction, _) => direction.code(),
             Self::Wire(error) => error.code(),
             Self::TurnMismatch { .. } | Self::UnsolicitedMessage => Code::WireMalformed,
             Self::ReplyDecode => Code::RunnerReplyEncode,
@@ -428,7 +428,7 @@ pub(crate) fn require_reply_turn(
 /// call disposition remains outcome-unknown.
 pub(crate) fn post_dispatch_cause(error: ClientError) -> OutcomeUnknownCause {
     match error {
-        ClientError::Io(error) => OutcomeUnknownCause::Io(error),
+        ClientError::Io(direction, error) => OutcomeUnknownCause::Io(direction, error),
         ClientError::Wire(error) => OutcomeUnknownCause::Wire(error),
         ClientError::ReplyDecode => OutcomeUnknownCause::ReplyDecode,
         ClientError::Handshake
@@ -437,6 +437,26 @@ pub(crate) fn post_dispatch_cause(error: ClientError) -> OutcomeUnknownCause {
         | ClientError::ImageStage(_)
         | ClientError::Spawn(_)
         | ClientError::Descriptor => OutcomeUnknownCause::UnsolicitedMessage,
+    }
+}
+
+/// Which half of a wire exchange failed. The registry names `io.read` for reading a runner
+/// protocol frame and `io.write` for writing one, so a transport failure must say which it
+/// was. Connecting, preparing a socket, and drawing the launch nonce write nothing to the
+/// companion, so they report the reading half.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Read,
+    Write,
+}
+
+impl Direction {
+    /// The registry code for a transport failure in this direction.
+    pub const fn code(self) -> Code {
+        match self {
+            Self::Read => Code::IoRead,
+            Self::Write => Code::IoWrite,
+        }
     }
 }
 
@@ -456,8 +476,10 @@ pub enum ClientError {
     Spawn(std::io::Error),
     /// The launch descriptor line was missing or malformed.
     Descriptor,
-    /// The Unix socket could not be connected, or an I/O error occurred on it.
-    Io(std::io::Error),
+    /// The Unix socket could not be connected, or an I/O error occurred on it. The
+    /// direction names which half of the exchange failed, so the reported code is the one
+    /// the registry documents for that half.
+    Io(Direction, std::io::Error),
     /// A frame was rejected by the wire owner.
     Wire(WireError),
     /// The runner did not prove the expected session and interface, or spoke an out-of-protocol
@@ -476,7 +498,7 @@ impl ClientError {
             ClientError::ImageStage(_) => Code::IoWrite,
             ClientError::Spawn(_) => Code::RunnerSpawn,
             ClientError::Descriptor | ClientError::Handshake => Code::RunnerHandshake,
-            ClientError::Io(_) => Code::IoRead,
+            ClientError::Io(direction, _) => direction.code(),
             ClientError::Wire(wire) => wire.code(),
             ClientError::ReplyDecode => Code::RunnerReplyEncode,
         }
@@ -500,7 +522,7 @@ pub(crate) const CALL_DEADLINE: Duration = Duration::from_secs(10);
 /// error. The terminal sets this nonce in the runner's environment and proves it in the
 /// handshake.
 pub(crate) fn mint_nonce() -> Result<Id32, ClientError> {
-    mint_id().map_err(ClientError::Io)
+    mint_id().map_err(|error| ClientError::Io(Direction::Read, error))
 }
 
 /// The wire identity of a verified image: the exact image identity a runner proves back and a
@@ -670,7 +692,8 @@ pub(crate) fn spawn_companion(
     } else {
         CompanionKind::Ephemeral
     };
-    let (mut stdout, child_stdout) = UnixStream::pair().map_err(ClientError::Io)?;
+    let (mut stdout, child_stdout) =
+        UnixStream::pair().map_err(|error| ClientError::Io(Direction::Read, error))?;
     let mut staging = stage_image(image_bytes).map_err(ClientError::ImageStage)?;
 
     let mut command = Command::new(runner_exe);
@@ -718,7 +741,9 @@ const MAX_DESCRIPTOR_BYTES: usize = 64 * 1024;
 
 /// Read and parse the one launch-descriptor line the runner prints to stdout.
 fn read_descriptor(stdout: &mut UnixStream, timeout: Duration) -> Result<Descriptor, ClientError> {
-    stdout.set_nonblocking(true).map_err(ClientError::Io)?;
+    stdout
+        .set_nonblocking(true)
+        .map_err(|error| ClientError::Io(Direction::Read, error))?;
     let deadline = Instant::now() + timeout;
     let mut line = Vec::new();
     let mut chunk = [0; 1024];
@@ -739,7 +764,7 @@ fn read_descriptor(stdout: &mut UnixStream, timeout: Duration) -> Result<Descrip
                     return Err(ClientError::Descriptor);
                 }
             }
-            Err(error) => poll_or_fail(error, deadline)?,
+            Err(error) => poll_or_fail(error, deadline, Direction::Read)?,
         }
     }
 }
@@ -780,8 +805,11 @@ pub(crate) fn connect_and_handshake(
     deadline: Duration,
     kind: CompanionKind,
 ) -> Result<UnixStream, ClientError> {
-    let mut stream = UnixStream::connect(&descriptor.socket).map_err(ClientError::Io)?;
-    stream.set_nonblocking(true).map_err(ClientError::Io)?;
+    let mut stream = UnixStream::connect(&descriptor.socket)
+        .map_err(|error| ClientError::Io(Direction::Read, error))?;
+    stream
+        .set_nonblocking(true)
+        .map_err(|error| ClientError::Io(Direction::Read, error))?;
 
     write_message(&mut stream, &ClientMessage::Hello { nonce }, deadline)?;
     match read_message_with_turn(&mut stream, deadline)? {
@@ -887,9 +915,14 @@ pub(crate) fn write_message_with_turn(
     let mut buf = frame.as_slice();
     while !buf.is_empty() {
         match stream.write(buf) {
-            Ok(0) => return Err(ClientError::Io(io::ErrorKind::WriteZero.into())),
+            Ok(0) => {
+                return Err(ClientError::Io(
+                    Direction::Write,
+                    io::ErrorKind::WriteZero.into(),
+                ));
+            }
             Ok(n) => buf = &buf[n..],
-            Err(error) => poll_or_fail(error, deadline)?,
+            Err(error) => poll_or_fail(error, deadline, Direction::Write)?,
         }
     }
     Ok(())
@@ -916,19 +949,28 @@ fn read_exact_deadline(
     let mut filled = 0;
     while filled < buf.len() {
         match stream.read(&mut buf[filled..]) {
-            Ok(0) => return Err(ClientError::Io(io::ErrorKind::UnexpectedEof.into())),
+            Ok(0) => {
+                return Err(ClientError::Io(
+                    Direction::Read,
+                    io::ErrorKind::UnexpectedEof.into(),
+                ));
+            }
             Ok(n) => filled += n,
-            Err(error) => poll_or_fail(error, deadline)?,
+            Err(error) => poll_or_fail(error, deadline, Direction::Read)?,
         }
     }
     Ok(())
 }
 
-/// Absorb a polled read/write error through the channel's one poll discipline, mapping a
-/// silent deadline to a timed-out terminal I/O error.
-fn poll_or_fail(error: io::Error, deadline: Instant) -> Result<(), ClientError> {
+/// Absorb a polled error through the channel's one poll discipline, mapping a silent
+/// deadline to a timed-out terminal I/O error in the caller's direction.
+fn poll_or_fail(
+    error: io::Error,
+    deadline: Instant,
+    direction: Direction,
+) -> Result<(), ClientError> {
     poll_until(error, deadline, POLL).map_err(|stop| match stop {
-        PollStop::Expired => ClientError::Io(io::ErrorKind::TimedOut.into()),
-        PollStop::Failed(error) => ClientError::Io(error),
+        PollStop::Expired => ClientError::Io(direction, io::ErrorKind::TimedOut.into()),
+        PollStop::Failed(error) => ClientError::Io(direction, error),
     })
 }
