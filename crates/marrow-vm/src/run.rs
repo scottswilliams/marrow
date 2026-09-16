@@ -41,9 +41,8 @@ const MAX_CALL_DEPTH: u32 = 64;
 /// VM has no edge to the image crate, so it owns this limit itself.
 const MAX_TEXT_BYTES: usize = 64 * 1024;
 
-/// Mutable facts shared by every helper frame in one invocation. Grouping the
-/// instruction budget and confirmed-commit latch keeps frame dispatch small while
-/// preserving one budget and one durable boundary across the whole call tree.
+/// Mutable facts shared by every helper frame in one invocation: one instruction
+/// budget and one durable boundary across the whole call tree.
 struct ExecutionState<'a> {
     budget: &'a mut u64,
     commit_confirmed: bool,
@@ -92,12 +91,10 @@ pub(crate) fn run_durable(
     execute(function, args, 0, &mut state, Some(session), None)
 }
 
-/// A test-body driver: it turns each durable-touching call the driver frame makes
-/// into its own invocation boundary — opening the session that call's demand
-/// requires, running it, committing or rolling it back, and closing it — exactly as
-/// a terminal invocation does. The driver frame itself performs no direct durable
-/// operation (the test-entry phase refuses those instructions), so it drives
-/// only through calls.
+/// A test-body driver: each durable-touching call the driver frame makes becomes its
+/// own invocation boundary, session and all, exactly as a terminal invocation does.
+/// The driver frame performs no direct durable operation — the test-entry phase
+/// refuses those instructions — so it drives only through calls.
 pub(crate) trait DriverDispatch {
     fn invoke(
         &mut self,
@@ -161,8 +158,7 @@ fn execute<'s>(
     }
 }
 
-/// Execute one frame while sharing the invocation's confirmed-commit fact across
-/// helper calls. The outer wrapper converts any later runtime fault into an
+/// Execute one frame. A runtime fault raised after a confirmed commit becomes an
 /// incomplete invocation with known-new durable state.
 fn execute_frame<'s>(
     selected: VerifiedFunction<'_>,
@@ -733,10 +729,9 @@ impl<'i> Frame<'i> {
 
     fn int_div_checked(&mut self, target: usize) {
         let (a, b) = pop_ints(&mut self.stack);
-        // Compiler output routes a zero divisor to the `zero_divisor` arm before this
-        // op, so here `checked_div` fails only on i64::MIN / -1. `checked_div` (not
-        // `/`) is load-bearing regardless: it returns `None` for a zero or overflowing
-        // divisor, so it never panics even on a hand-built image that omits the branch.
+        // `checked_div` (not `/`) is load-bearing: it returns `None` for a zero or
+        // overflowing divisor, so it never panics even on a hand-built image whose
+        // compiler-emitted zero-divisor branch is missing.
         checked_or_branch(&mut self.stack, a.checked_div(b), target, &mut self.pc);
     }
 
@@ -1512,9 +1507,7 @@ impl<'i> Frame<'i> {
     fn map_value_at(&mut self) -> Result<(), DurableExecutionFault> {
         let index = pop_int(&mut self.stack);
         let (_, entries) = as_map(pop(&mut self.stack));
-        // Positional map `for` lowering drives the index over `0..length`; a forged
-        // image with an out-of-range index fails closed with `run.corruption` rather
-        // than reading past the map (see `ListGet`).
+        // Fails closed on a forged out-of-range index, as `map_key_at` does.
         let Some((_, value)) = usize::try_from(index).ok().and_then(|i| entries.get(i)) else {
             return Err(self.fault(Code::RunCorruption));
         };
@@ -1720,7 +1713,6 @@ fn as_bytes(value: Value) -> Rc<[u8]> {
     }
 }
 
-/// Unwrap an optional value to its inner `Option`.
 fn as_optional(value: Value) -> Option<Value> {
     match value {
         Value::Optional(inner) => inner.map(|boxed| *boxed),
@@ -1799,7 +1791,6 @@ fn fault(function: &SealedFunction, pc: usize, code: Code) -> DurableExecutionFa
     source_fault(function, pc, code).into()
 }
 
-/// Map a kernel fault to a source-mapped runtime fault at `pc`.
 fn kernel_fault(
     function: &SealedFunction,
     pc: usize,
@@ -1808,7 +1799,6 @@ fn kernel_fault(
     fault(function, pc, kernel.code())
 }
 
-/// Pop a key operand and convert it to a typed key scalar.
 fn pop_key(stack: &mut Vec<Value>) -> KeyScalar {
     value_to_key(pop(stack))
 }
@@ -1827,7 +1817,6 @@ fn value_to_key(value: Value) -> KeyScalar {
     }
 }
 
-/// Convert a key scalar back to a runtime value.
 fn key_to_value(key: KeyScalar) -> Value {
     match key {
         KeyScalar::Int(v) => Value::Int(v),
@@ -1894,11 +1883,8 @@ fn value_to_domain(value: Value) -> ValueDomain {
                 .map(value_to_domain)
                 .collect(),
         },
-        // An entry identity is not a durable value on this line: the checker and
-        // verifier keep it out of every durable field, entry, and key position, so it
-        // never crosses the store-write boundary. Naming it explicitly keeps the
-        // no-identity-at-the-encoder contract visible rather than folding it into the
-        // scalar catch-all's panic.
+        // The checker and verifier keep an entry identity out of every durable field,
+        // entry and key position, so it never crosses the store-write boundary.
         Value::Id(..) => unreachable!("an entry identity is never a durable value"),
         scalar => ValueDomain::Scalar(value_to_scalar(scalar)),
     }
