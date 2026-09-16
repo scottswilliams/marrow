@@ -38,6 +38,19 @@ pub(super) struct Decoded {
     pub(super) offset: u32,
 }
 
+/// The opcode groups, tried in order. Each returns `None` for an opcode it does not
+/// own and consumes no operand bytes then, so the reader is only advanced by the group
+/// that decodes the instruction. Verification decodes a program image once, so the
+/// walk down this short list costs nothing the VM's own dispatch would.
+type Decoder = fn(u8, &mut Reader<'_>) -> Result<Option<SealedInstr>, VerifyRejection>;
+
+const DECODERS: &[Decoder] = &[
+    decode_operand_and_scalar,
+    decode_value_shape,
+    decode_durable,
+    decode_collection,
+];
+
 /// Decode the function bytecode into instructions on boundaries. Jump operands are
 /// container byte offsets here; [`resolve_jumps`] rewrites them to tape indices.
 pub(super) fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
@@ -48,176 +61,224 @@ pub(super) fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> 
         let opcode = reader
             .u8()
             .ok_or(reject(VerifyPhase::Function, "short opcode"))?;
-        let instr = match opcode {
-            OP_CONST_LOAD => SealedInstr::ConstLoad(operand_u16(&mut reader)?),
-            OP_LOCAL_GET => SealedInstr::LocalGet(operand_u16(&mut reader)?),
-            OP_LOCAL_SET => SealedInstr::LocalSet(operand_u16(&mut reader)?),
-            OP_POP => SealedInstr::Pop,
-            OP_RETURN => SealedInstr::Return,
-            // Jump targets are decoded as byte offsets, resolved to tape indices below.
-            OP_JUMP => SealedInstr::Jump(operand_u32(&mut reader)? as usize),
-            OP_JUMP_IF_FALSE => SealedInstr::JumpIfFalse(operand_u32(&mut reader)? as usize),
-            OP_INT_ADD => SealedInstr::IntAdd,
-            OP_INT_SUB => SealedInstr::IntSub,
-            OP_INT_MUL => SealedInstr::IntMul,
-            OP_INT_REM => SealedInstr::IntRem,
-            OP_INT_DIV => SealedInstr::IntDiv,
-            OP_INT_ADD_CHECKED => SealedInstr::IntAddChecked(operand_u32(&mut reader)? as usize),
-            OP_INT_SUB_CHECKED => SealedInstr::IntSubChecked(operand_u32(&mut reader)? as usize),
-            OP_INT_MUL_CHECKED => SealedInstr::IntMulChecked(operand_u32(&mut reader)? as usize),
-            OP_INT_NEG_CHECKED => SealedInstr::IntNegChecked(operand_u32(&mut reader)? as usize),
-            OP_INT_DIV_CHECKED => SealedInstr::IntDivChecked(operand_u32(&mut reader)? as usize),
-            OP_INT_REM_CHECKED => SealedInstr::IntRemChecked(operand_u32(&mut reader)? as usize),
-            OP_RANGE_GUARD => {
-                let lo = operand_i64(&mut reader)?;
-                let hi = operand_i64(&mut reader)?;
-                if lo > hi {
-                    return Err(reject(
-                        VerifyPhase::Function,
-                        "range-guard interval is empty",
-                    ));
-                }
-                SealedInstr::RangeGuard { lo, hi }
+        let mut decoded = None;
+        for decode in DECODERS {
+            if let Some(instr) = decode(opcode, &mut reader)? {
+                decoded = Some(instr);
+                break;
             }
-            OP_INT_NEG => SealedInstr::IntNeg,
-            OP_BOOL_NOT => SealedInstr::BoolNot,
-            OP_INT_LT => SealedInstr::IntLt,
-            OP_INT_LE => SealedInstr::IntLe,
-            OP_INT_GT => SealedInstr::IntGt,
-            OP_INT_GE => SealedInstr::IntGe,
-            OP_EQ_INT => SealedInstr::EqInt,
-            OP_EQ_BOOL => SealedInstr::EqBool,
-            OP_EQ_TEXT => SealedInstr::EqText,
-            OP_TEXT_CONCAT => SealedInstr::TextConcat,
-            OP_TEXT_LT => SealedInstr::TextLt,
-            OP_TEXT_LE => SealedInstr::TextLe,
-            OP_TEXT_GT => SealedInstr::TextGt,
-            OP_TEXT_GE => SealedInstr::TextGe,
-            OP_EQ_BYTES => SealedInstr::EqBytes,
-            OP_BYTES_LT => SealedInstr::BytesLt,
-            OP_BYTES_LE => SealedInstr::BytesLe,
-            OP_BYTES_GT => SealedInstr::BytesGt,
-            OP_BYTES_GE => SealedInstr::BytesGe,
-            OP_CONV_STRING => SealedInstr::ConvString,
-            OP_CONV_BYTES_TEXT => SealedInstr::ConvBytesText,
-            OP_TEXT_IS_EMPTY => SealedInstr::TextIsEmpty,
-            OP_TEXT_CONTAINS => SealedInstr::TextContains,
-            OP_TEXT_TRIM => SealedInstr::TextTrim,
-            OP_TEXT_SPLIT => SealedInstr::TextSplit(operand_u16(&mut reader)?),
-            OP_TEXT_LINES => SealedInstr::TextLines(operand_u16(&mut reader)?),
-            OP_TEXT_JOIN => SealedInstr::TextJoin,
-            OP_EQ_DATE => SealedInstr::EqDate,
-            OP_DATE_LT => SealedInstr::DateLt,
-            OP_DATE_LE => SealedInstr::DateLe,
-            OP_DATE_GT => SealedInstr::DateGt,
-            OP_DATE_GE => SealedInstr::DateGe,
-            OP_EQ_INSTANT => SealedInstr::EqInstant,
-            OP_INSTANT_LT => SealedInstr::InstantLt,
-            OP_INSTANT_LE => SealedInstr::InstantLe,
-            OP_INSTANT_GT => SealedInstr::InstantGt,
-            OP_INSTANT_GE => SealedInstr::InstantGe,
-            OP_EQ_DURATION => SealedInstr::EqDuration,
-            OP_DURATION_LT => SealedInstr::DurationLt,
-            OP_DURATION_LE => SealedInstr::DurationLe,
-            OP_DURATION_GT => SealedInstr::DurationGt,
-            OP_DURATION_GE => SealedInstr::DurationGe,
-            OP_DATE_ADD_DAYS => SealedInstr::DateAddDays,
-            OP_DATE_DAYS_BETWEEN => SealedInstr::DateDaysBetween,
-            OP_DURATION_ADD => SealedInstr::DurationAdd,
-            OP_DURATION_SUB => SealedInstr::DurationSub,
-            OP_INSTANT_ADD_DURATION => SealedInstr::InstantAddDuration,
-            OP_INSTANT_SUB_DURATION => SealedInstr::InstantSubDuration,
-            OP_RECORD_NEW => SealedInstr::RecordNew(operand_u16(&mut reader)?),
-            OP_FIELD_GET => SealedInstr::FieldGet(operand_u16(&mut reader)?),
-            OP_FIELD_SET => SealedInstr::FieldSet(operand_u16(&mut reader)?),
-            OP_FIELD_UNSET => SealedInstr::FieldUnset(operand_u16(&mut reader)?),
-            OP_SOME_WRAP => SealedInstr::SomeWrap,
-            OP_VACANT_LOAD => SealedInstr::VacantLoad(decode_type_ref(&mut reader, &VACANT_LOAD)?),
-            OP_ENUM_CONSTRUCT => SealedInstr::EnumConstruct {
-                enum_idx: operand_u16(&mut reader)?,
-                variant: operand_u16(&mut reader)?,
-            },
-            OP_ENUM_TAG => SealedInstr::EnumTag,
-            OP_ENUM_PAYLOAD_GET => SealedInstr::EnumPayloadGet {
-                variant: operand_u16(&mut reader)?,
-                field: operand_u16(&mut reader)?,
-            },
-            OP_EQ_ENUM => SealedInstr::EqEnum,
-            OP_EQ_ID => SealedInstr::EqId,
-            OP_MAKE_IDENTITY => SealedInstr::MakeIdentity {
-                root: operand_u16(&mut reader)?,
-                cols: operand_u16(&mut reader)?,
-            },
-            OP_IDENTITY_KEY_PATH => SealedInstr::IdentityKeyPath(operand_u16(&mut reader)?),
-            OP_BRANCH_PRESENT => SealedInstr::BranchPresent(operand_u32(&mut reader)? as usize),
-            OP_UNREACHABLE => SealedInstr::Unreachable(operand_u16(&mut reader)?),
-            OP_TODO => SealedInstr::Todo(operand_u16(&mut reader)?),
-            OP_ASSERT => SealedInstr::Assert,
-            OP_CALL => SealedInstr::Call(operand_u16(&mut reader)?),
-            OP_DUR_EXISTS => SealedInstr::DurExists(operand_u16(&mut reader)?),
-            OP_DUR_FAMILY_EXISTS => SealedInstr::DurFamilyExists(operand_u16(&mut reader)?),
-            OP_DUR_READ_FIELD => SealedInstr::DurReadField(operand_u16(&mut reader)?),
-            OP_DUR_READ_FIELD_PRESENT => {
-                let (site, key_slots) = operand_site_key_slots(&mut reader)?;
-                SealedInstr::DurReadFieldPresent { site, key_slots }
-            }
-            OP_DUR_READ_ENTRY => SealedInstr::DurReadEntry(operand_u16(&mut reader)?),
-            OP_DUR_SET_FIELD => {
-                let (site, key_slots) = operand_site_key_slots(&mut reader)?;
-                SealedInstr::DurSetField { site, key_slots }
-            }
-            OP_DUR_READ_GROUP_PRESENT => {
-                let (site, key_slots) = operand_site_key_slots(&mut reader)?;
-                SealedInstr::DurReadGroupPresent { site, key_slots }
-            }
-            OP_DUR_CREATE_ENTRY => SealedInstr::DurCreateEntry(operand_u16(&mut reader)?),
-            OP_DUR_REPLACE_ENTRY => SealedInstr::DurReplaceEntry(operand_u16(&mut reader)?),
-            OP_DUR_ERASE_FIELD => SealedInstr::DurEraseField(operand_u16(&mut reader)?),
-            OP_DUR_ERASE_ENTRY => SealedInstr::DurEraseEntry(operand_u16(&mut reader)?),
-            OP_DUR_READ_GROUP => SealedInstr::DurReadGroup(operand_u16(&mut reader)?),
-            OP_DUR_REPLACE_GROUP => {
-                let (site, key_slots) = operand_site_key_slots(&mut reader)?;
-                SealedInstr::DurReplaceGroup { site, key_slots }
-            }
-            OP_DUR_ERASE_GROUP => SealedInstr::DurEraseGroup(operand_u16(&mut reader)?),
-            OP_DUR_ITERATE_BOUNDED => SealedInstr::DurIterateBounded {
-                site: operand_u16(&mut reader)?,
-                limit: operand_u32(&mut reader)?,
-                from: operand_bool(&mut reader)?,
-                list_ty: operand_u16(&mut reader)?,
-            },
-            OP_DUR_INDEX_SCAN => SealedInstr::DurIndexScan {
-                site: operand_u16(&mut reader)?,
-                limit: operand_u32(&mut reader)?,
-                from: operand_bool(&mut reader)?,
-                list_ty: operand_u16(&mut reader)?,
-            },
-            OP_DUR_INDEX_LOOKUP => SealedInstr::DurIndexLookup(operand_u16(&mut reader)?),
-            OP_DUR_INDEX_EXISTS => SealedInstr::DurIndexExists(operand_u16(&mut reader)?),
-            OP_TXN_BEGIN => SealedInstr::TxnBegin,
-            OP_TXN_COMMIT => SealedInstr::TxnCommit,
-            OP_LIST_NEW => SealedInstr::ListNew(operand_u16(&mut reader)?),
-            OP_LIST_APPEND => SealedInstr::ListAppend,
-            OP_LIST_LEN => SealedInstr::ListLen,
-            OP_LIST_GET => SealedInstr::ListGet,
-            OP_LIST_INDEX => SealedInstr::ListIndex,
-            OP_MAP_NEW => SealedInstr::MapNew(operand_u16(&mut reader)?),
-            OP_MAP_INSERT => SealedInstr::MapInsert,
-            OP_MAP_REMOVE => SealedInstr::MapRemove,
-            OP_MAP_GET => SealedInstr::MapGet,
-            OP_MAP_LEN => SealedInstr::MapLen,
-            OP_MAP_KEY_AT => SealedInstr::MapKeyAt,
-            OP_MAP_VALUE_AT => SealedInstr::MapValueAt,
-            _ => {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "unknown or not-yet-supported opcode",
-                ));
-            }
+        }
+        let Some(instr) = decoded else {
+            return Err(reject(
+                VerifyPhase::Function,
+                "unknown or not-yet-supported opcode",
+            ));
         };
         out.push(Decoded { instr, offset });
     }
     Ok(out)
+}
+
+/// Control flow, integer and boolean arithmetic, the text and bytes operators, the
+/// temporal comparisons and arithmetic, and the scalar conversions.
+fn decode_operand_and_scalar(
+    opcode: u8,
+    reader: &mut Reader<'_>,
+) -> Result<Option<SealedInstr>, VerifyRejection> {
+    Ok(Some(match opcode {
+        OP_CONST_LOAD => SealedInstr::ConstLoad(operand_u16(reader)?),
+        OP_LOCAL_GET => SealedInstr::LocalGet(operand_u16(reader)?),
+        OP_LOCAL_SET => SealedInstr::LocalSet(operand_u16(reader)?),
+        OP_POP => SealedInstr::Pop,
+        OP_RETURN => SealedInstr::Return,
+        // Jump targets are decoded as byte offsets, resolved to tape indices below.
+        OP_JUMP => SealedInstr::Jump(operand_u32(reader)? as usize),
+        OP_JUMP_IF_FALSE => SealedInstr::JumpIfFalse(operand_u32(reader)? as usize),
+        OP_INT_ADD => SealedInstr::IntAdd,
+        OP_INT_SUB => SealedInstr::IntSub,
+        OP_INT_MUL => SealedInstr::IntMul,
+        OP_INT_REM => SealedInstr::IntRem,
+        OP_INT_DIV => SealedInstr::IntDiv,
+        OP_INT_ADD_CHECKED => SealedInstr::IntAddChecked(operand_u32(reader)? as usize),
+        OP_INT_SUB_CHECKED => SealedInstr::IntSubChecked(operand_u32(reader)? as usize),
+        OP_INT_MUL_CHECKED => SealedInstr::IntMulChecked(operand_u32(reader)? as usize),
+        OP_INT_NEG_CHECKED => SealedInstr::IntNegChecked(operand_u32(reader)? as usize),
+        OP_INT_DIV_CHECKED => SealedInstr::IntDivChecked(operand_u32(reader)? as usize),
+        OP_INT_REM_CHECKED => SealedInstr::IntRemChecked(operand_u32(reader)? as usize),
+        OP_RANGE_GUARD => {
+            let lo = operand_i64(reader)?;
+            let hi = operand_i64(reader)?;
+            if lo > hi {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "range-guard interval is empty",
+                ));
+            }
+            SealedInstr::RangeGuard { lo, hi }
+        }
+        OP_INT_NEG => SealedInstr::IntNeg,
+        OP_BOOL_NOT => SealedInstr::BoolNot,
+        OP_INT_LT => SealedInstr::IntLt,
+        OP_INT_LE => SealedInstr::IntLe,
+        OP_INT_GT => SealedInstr::IntGt,
+        OP_INT_GE => SealedInstr::IntGe,
+        OP_EQ_INT => SealedInstr::EqInt,
+        OP_EQ_BOOL => SealedInstr::EqBool,
+        OP_EQ_TEXT => SealedInstr::EqText,
+        OP_TEXT_CONCAT => SealedInstr::TextConcat,
+        OP_TEXT_LT => SealedInstr::TextLt,
+        OP_TEXT_LE => SealedInstr::TextLe,
+        OP_TEXT_GT => SealedInstr::TextGt,
+        OP_TEXT_GE => SealedInstr::TextGe,
+        OP_EQ_BYTES => SealedInstr::EqBytes,
+        OP_BYTES_LT => SealedInstr::BytesLt,
+        OP_BYTES_LE => SealedInstr::BytesLe,
+        OP_BYTES_GT => SealedInstr::BytesGt,
+        OP_BYTES_GE => SealedInstr::BytesGe,
+        OP_CONV_STRING => SealedInstr::ConvString,
+        OP_CONV_BYTES_TEXT => SealedInstr::ConvBytesText,
+        OP_TEXT_IS_EMPTY => SealedInstr::TextIsEmpty,
+        OP_TEXT_CONTAINS => SealedInstr::TextContains,
+        OP_TEXT_TRIM => SealedInstr::TextTrim,
+        OP_TEXT_SPLIT => SealedInstr::TextSplit(operand_u16(reader)?),
+        OP_TEXT_LINES => SealedInstr::TextLines(operand_u16(reader)?),
+        OP_TEXT_JOIN => SealedInstr::TextJoin,
+        OP_EQ_DATE => SealedInstr::EqDate,
+        OP_DATE_LT => SealedInstr::DateLt,
+        OP_DATE_LE => SealedInstr::DateLe,
+        OP_DATE_GT => SealedInstr::DateGt,
+        OP_DATE_GE => SealedInstr::DateGe,
+        OP_EQ_INSTANT => SealedInstr::EqInstant,
+        OP_INSTANT_LT => SealedInstr::InstantLt,
+        OP_INSTANT_LE => SealedInstr::InstantLe,
+        OP_INSTANT_GT => SealedInstr::InstantGt,
+        OP_INSTANT_GE => SealedInstr::InstantGe,
+        OP_EQ_DURATION => SealedInstr::EqDuration,
+        OP_DURATION_LT => SealedInstr::DurationLt,
+        OP_DURATION_LE => SealedInstr::DurationLe,
+        OP_DURATION_GT => SealedInstr::DurationGt,
+        OP_DURATION_GE => SealedInstr::DurationGe,
+        OP_DATE_ADD_DAYS => SealedInstr::DateAddDays,
+        OP_DATE_DAYS_BETWEEN => SealedInstr::DateDaysBetween,
+        OP_DURATION_ADD => SealedInstr::DurationAdd,
+        OP_DURATION_SUB => SealedInstr::DurationSub,
+        OP_INSTANT_ADD_DURATION => SealedInstr::InstantAddDuration,
+        OP_INSTANT_SUB_DURATION => SealedInstr::InstantSubDuration,
+        _ => return Ok(None),
+    }))
+}
+
+/// Record fields, optionals, enum construction and payload reads, identity values,
+/// the diverging markers, and the call opcode.
+fn decode_value_shape(
+    opcode: u8,
+    reader: &mut Reader<'_>,
+) -> Result<Option<SealedInstr>, VerifyRejection> {
+    Ok(Some(match opcode {
+        OP_RECORD_NEW => SealedInstr::RecordNew(operand_u16(reader)?),
+        OP_FIELD_GET => SealedInstr::FieldGet(operand_u16(reader)?),
+        OP_FIELD_SET => SealedInstr::FieldSet(operand_u16(reader)?),
+        OP_FIELD_UNSET => SealedInstr::FieldUnset(operand_u16(reader)?),
+        OP_SOME_WRAP => SealedInstr::SomeWrap,
+        OP_VACANT_LOAD => SealedInstr::VacantLoad(decode_type_ref(reader, &VACANT_LOAD)?),
+        OP_ENUM_CONSTRUCT => SealedInstr::EnumConstruct {
+            enum_idx: operand_u16(reader)?,
+            variant: operand_u16(reader)?,
+        },
+        OP_ENUM_TAG => SealedInstr::EnumTag,
+        OP_ENUM_PAYLOAD_GET => SealedInstr::EnumPayloadGet {
+            variant: operand_u16(reader)?,
+            field: operand_u16(reader)?,
+        },
+        OP_EQ_ENUM => SealedInstr::EqEnum,
+        OP_EQ_ID => SealedInstr::EqId,
+        OP_MAKE_IDENTITY => SealedInstr::MakeIdentity {
+            root: operand_u16(reader)?,
+            cols: operand_u16(reader)?,
+        },
+        OP_IDENTITY_KEY_PATH => SealedInstr::IdentityKeyPath(operand_u16(reader)?),
+        OP_BRANCH_PRESENT => SealedInstr::BranchPresent(operand_u32(reader)? as usize),
+        OP_UNREACHABLE => SealedInstr::Unreachable(operand_u16(reader)?),
+        OP_TODO => SealedInstr::Todo(operand_u16(reader)?),
+        OP_ASSERT => SealedInstr::Assert,
+        OP_CALL => SealedInstr::Call(operand_u16(reader)?),
+        _ => return Ok(None),
+    }))
+}
+
+/// The durable reads, writes, traversals and index operations, and the transaction
+/// markers that bracket them.
+fn decode_durable(
+    opcode: u8,
+    reader: &mut Reader<'_>,
+) -> Result<Option<SealedInstr>, VerifyRejection> {
+    Ok(Some(match opcode {
+        OP_DUR_EXISTS => SealedInstr::DurExists(operand_u16(reader)?),
+        OP_DUR_FAMILY_EXISTS => SealedInstr::DurFamilyExists(operand_u16(reader)?),
+        OP_DUR_READ_FIELD => SealedInstr::DurReadField(operand_u16(reader)?),
+        OP_DUR_READ_FIELD_PRESENT => {
+            let (site, key_slots) = operand_site_key_slots(reader)?;
+            SealedInstr::DurReadFieldPresent { site, key_slots }
+        }
+        OP_DUR_READ_ENTRY => SealedInstr::DurReadEntry(operand_u16(reader)?),
+        OP_DUR_SET_FIELD => {
+            let (site, key_slots) = operand_site_key_slots(reader)?;
+            SealedInstr::DurSetField { site, key_slots }
+        }
+        OP_DUR_READ_GROUP_PRESENT => {
+            let (site, key_slots) = operand_site_key_slots(reader)?;
+            SealedInstr::DurReadGroupPresent { site, key_slots }
+        }
+        OP_DUR_CREATE_ENTRY => SealedInstr::DurCreateEntry(operand_u16(reader)?),
+        OP_DUR_REPLACE_ENTRY => SealedInstr::DurReplaceEntry(operand_u16(reader)?),
+        OP_DUR_ERASE_FIELD => SealedInstr::DurEraseField(operand_u16(reader)?),
+        OP_DUR_ERASE_ENTRY => SealedInstr::DurEraseEntry(operand_u16(reader)?),
+        OP_DUR_READ_GROUP => SealedInstr::DurReadGroup(operand_u16(reader)?),
+        OP_DUR_REPLACE_GROUP => {
+            let (site, key_slots) = operand_site_key_slots(reader)?;
+            SealedInstr::DurReplaceGroup { site, key_slots }
+        }
+        OP_DUR_ERASE_GROUP => SealedInstr::DurEraseGroup(operand_u16(reader)?),
+        OP_DUR_ITERATE_BOUNDED => SealedInstr::DurIterateBounded {
+            site: operand_u16(reader)?,
+            limit: operand_u32(reader)?,
+            from: operand_bool(reader)?,
+            list_ty: operand_u16(reader)?,
+        },
+        OP_DUR_INDEX_SCAN => SealedInstr::DurIndexScan {
+            site: operand_u16(reader)?,
+            limit: operand_u32(reader)?,
+            from: operand_bool(reader)?,
+            list_ty: operand_u16(reader)?,
+        },
+        OP_DUR_INDEX_LOOKUP => SealedInstr::DurIndexLookup(operand_u16(reader)?),
+        OP_DUR_INDEX_EXISTS => SealedInstr::DurIndexExists(operand_u16(reader)?),
+        OP_TXN_BEGIN => SealedInstr::TxnBegin,
+        OP_TXN_COMMIT => SealedInstr::TxnCommit,
+        _ => return Ok(None),
+    }))
+}
+
+/// The `List` and `Map` operations.
+fn decode_collection(
+    opcode: u8,
+    reader: &mut Reader<'_>,
+) -> Result<Option<SealedInstr>, VerifyRejection> {
+    Ok(Some(match opcode {
+        OP_LIST_NEW => SealedInstr::ListNew(operand_u16(reader)?),
+        OP_LIST_APPEND => SealedInstr::ListAppend,
+        OP_LIST_LEN => SealedInstr::ListLen,
+        OP_LIST_GET => SealedInstr::ListGet,
+        OP_LIST_INDEX => SealedInstr::ListIndex,
+        OP_MAP_NEW => SealedInstr::MapNew(operand_u16(reader)?),
+        OP_MAP_INSERT => SealedInstr::MapInsert,
+        OP_MAP_REMOVE => SealedInstr::MapRemove,
+        OP_MAP_GET => SealedInstr::MapGet,
+        OP_MAP_LEN => SealedInstr::MapLen,
+        OP_MAP_KEY_AT => SealedInstr::MapKeyAt,
+        OP_MAP_VALUE_AT => SealedInstr::MapValueAt,
+        _ => return Ok(None),
+    }))
 }
 
 fn operand_u16(reader: &mut Reader) -> Result<u16, VerifyRejection> {
@@ -363,12 +424,17 @@ mod opcode_bijection {
     /// [`every_decodable_opcode_has_a_sample`], which sweeps all 256 opcode bytes and
     /// demands that the ones the decoder knows are exactly the ones listed here.
     /// Reused by the sibling `index_site_partition` sweep as the canonical opcode
-    /// enumeration.
+    /// enumeration. The four groups are the decoder's own.
     pub(super) fn samples() -> Vec<SealedInstr> {
-        let optional_int = ImageType::Scalar {
-            scalar: Scalar::Int,
-            optional: true,
-        };
+        let mut all = operand_and_scalar_samples();
+        all.extend(value_shape_samples());
+        all.extend(durable_samples());
+        all.extend(collection_samples());
+        all
+    }
+
+    /// The control-flow, arithmetic, text, bytes, temporal and conversion opcodes.
+    fn operand_and_scalar_samples() -> Vec<SealedInstr> {
         vec![
             SealedInstr::ConstLoad(0),
             SealedInstr::LocalGet(0),
@@ -437,6 +503,16 @@ mod opcode_bijection {
             SealedInstr::IntDivChecked(0),
             SealedInstr::IntRemChecked(0),
             SealedInstr::RangeGuard { lo: 0, hi: 0 },
+        ]
+    }
+
+    /// The record, optional, enum, identity, diverging-marker and call opcodes.
+    fn value_shape_samples() -> Vec<SealedInstr> {
+        let optional_int = ImageType::Scalar {
+            scalar: Scalar::Int,
+            optional: true,
+        };
+        vec![
             SealedInstr::RecordNew(0),
             SealedInstr::FieldGet(0),
             SealedInstr::FieldSet(0),
@@ -461,6 +537,12 @@ mod opcode_bijection {
             SealedInstr::Todo(0),
             SealedInstr::Assert,
             SealedInstr::Call(0),
+        ]
+    }
+
+    /// The durable read, write, traversal and index opcodes with their transaction markers.
+    fn durable_samples() -> Vec<SealedInstr> {
+        vec![
             SealedInstr::DurExists(0),
             SealedInstr::DurFamilyExists(0),
             SealedInstr::DurReadField(0),
@@ -503,6 +585,12 @@ mod opcode_bijection {
             SealedInstr::DurIndexExists(0),
             SealedInstr::TxnBegin,
             SealedInstr::TxnCommit,
+        ]
+    }
+
+    /// The `List` and `Map` opcodes.
+    fn collection_samples() -> Vec<SealedInstr> {
+        vec![
             SealedInstr::ListNew(0),
             SealedInstr::ListAppend,
             SealedInstr::ListLen,

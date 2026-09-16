@@ -56,16 +56,9 @@ fn spans(code: &[Instr]) -> Vec<SpanEntry> {
         .collect()
 }
 
-/// Build root A ("books", int key, a required text field and a sparse text field, and a
-/// `notes(text)` branch) at RootId 0 and root B ("tallies", int key, int field) at RootId 1,
-/// plus the branch-entry site, the `List[text]` frozen-key collection a `notes` traversal
-/// freezes, and the sparse field's leaf site. Returns the branch site, the list type, and the
-/// sparse field-leaf site.
-fn two_root_branch_draft(
-    draft: &mut DraftTxn<'_>,
-) -> (PlannedSiteRef, marrow_image::CollTypeId, PlannedSiteRef) {
-    draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-
+/// Declare root A — `^books(id: int): Book { title required; subtitle sparse;
+/// notes(k: int): Book.notes { text required } }` — and return its admitted occurrence.
+fn declare_root_a(draft: &mut DraftTxn<'_>) -> marrow_image::AdmittedRoot {
     let book = draft.intern_string("Book").expect("a within-domain mint");
     let title = draft.intern_string("title").expect("a within-domain mint");
     let subtitle = draft
@@ -153,7 +146,7 @@ fn two_root_branch_draft(
             ],
         )
         .expect("a well-formed declaration");
-    let a = draft
+    draft
         .add_root_occurrence(
             &admitted_plan(),
             LedgerIdBytes::from_bytes(A_PRODUCT),
@@ -167,7 +160,20 @@ fn two_root_branch_draft(
                 indexes: Vec::new().into(),
             },
         )
-        .expect("the Product is declared");
+        .expect("the Product is declared")
+}
+
+/// Build root A ("books", int key, a required text field and a sparse text field, and a
+/// `notes(text)` branch) at RootId 0 and root B ("tallies", int key, int field) at RootId 1,
+/// plus the branch-entry site, the `List[text]` frozen-key collection a `notes` traversal
+/// freezes, and the sparse field's leaf site. Returns the branch site, the list type, and the
+/// sparse field-leaf site.
+fn two_root_branch_draft(
+    draft: &mut DraftTxn<'_>,
+) -> (PlannedSiteRef, marrow_image::CollTypeId, PlannedSiteRef) {
+    draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
+
+    let a = declare_root_a(draft);
 
     let tally = draft.intern_string("Tally").expect("a within-domain mint");
     let count = draft.intern_string("count").expect("a within-domain mint");

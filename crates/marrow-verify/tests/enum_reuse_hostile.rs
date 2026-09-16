@@ -424,21 +424,13 @@ fn spec_enum_shape(draft: &mut DraftTxn<'_>, spec: &RootSpec) -> ValueShapeNodeI
     access_shape(draft, (spec.sum, spec.members))
 }
 
-/// Encode the two-root artifact `spec` describes. Every root carries the same
-/// structural graph — an int field, an enum field, a one-field group, a keyed branch,
-/// and one unique managed index — so the artifacts differ only in which ledger ids
-/// they claim.
-fn forge(spec: &GraphSpec) -> Vec<u8> {
-    let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
-    draft.set_application_identity(id(spec.application));
-    let enum_idx = access_enum(&mut draft);
-    let access = ImageType::Enum {
-        idx: enum_idx,
-        optional: false,
-    };
-    let int = ImageType::scalar(Scalar::Int);
-
+/// The three record types every root in a forged artifact shares: the group's `Marks`,
+/// the branch's `Note`, and the root's `Grant` carrying an int, the enum, and the group.
+fn graph_records(
+    draft: &mut marrow_image::DraftTxn<'_>,
+    access: ImageType,
+    int: ImageType,
+) -> (marrow_image::TypeId, marrow_image::TypeId) {
     let group_rec_name = draft.intern_string("Marks").expect("a within-domain mint");
     let mark = draft.intern_string("mark").expect("a within-domain mint");
     let group_record = draft
@@ -492,6 +484,26 @@ fn forge(spec: &GraphSpec) -> Vec<u8> {
             ],
         })
         .expect("a within-domain mint");
+    (branch_record, root_record)
+}
+
+/// Encode the two-root artifact `spec` describes. Every root carries the same
+/// structural graph — an int field, an enum field, a one-field group, a keyed branch,
+/// and one unique managed index — so the artifacts differ only in which ledger ids
+/// they claim.
+fn forge(spec: &GraphSpec) -> Vec<u8> {
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
+    draft.set_application_identity(id(spec.application));
+    let enum_idx = access_enum(&mut draft);
+    let access = ImageType::Enum {
+        idx: enum_idx,
+        optional: false,
+    };
+    let int = ImageType::scalar(Scalar::Int);
+
+    let (branch_record, root_record) = graph_records(&mut draft, access, int);
+
     let notes = draft.intern_string("notes").expect("a within-domain mint");
 
     for (position, root) in spec.roots.iter().enumerate() {

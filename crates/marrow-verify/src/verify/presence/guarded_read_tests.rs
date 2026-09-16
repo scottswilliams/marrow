@@ -7,6 +7,98 @@ use marrow_image::{
     SemanticTarget, SpanEntry,
 };
 
+/// The four-guard diamond tape: each guard proves the entry present, and both diamond
+/// edges retain the Boolean below the guard operands, so the strict read below every
+/// join still stands on a live proof.
+fn interleaved_diamond_code(
+    draft: &mut marrow_image::DraftTxn<'_>,
+    entry: &marrow_image::PlannedSiteRef,
+    field: &marrow_image::PlannedSiteRef,
+    read_slots: [u16; 2],
+    zero: marrow_image::ConstId,
+) -> Vec<Instr> {
+    let yes = draft.intern_bool(true).expect("diamond condition");
+    let mut code = vec![Instr::ConstLoad(yes)];
+    let mut guards = Vec::new();
+    for [first, second] in [[0, 0], [0, 1], [1, 0], [1, 1]] {
+        code.extend([
+            Instr::LocalGet(first),
+            Instr::LocalGet(second),
+            Instr::DurExists(entry.clone()),
+        ]);
+        guards.push(code.len());
+        code.push(Instr::JumpIfFalse(0));
+        // Both diamond edges retain the Boolean below the guard operands.
+        let join = u32::try_from(code.len() + 3).expect("small diamond target");
+        code.extend([
+            Instr::ConstLoad(yes),
+            Instr::JumpIfFalse(join),
+            Instr::BoolNot,
+        ]);
+    }
+    code.extend([
+        Instr::Pop,
+        Instr::DurReadFieldPresent {
+            site: field.clone(),
+            key_slots: read_slots.to_vec(),
+        },
+        Instr::Return,
+    ]);
+    let absent = u32::try_from(code.len()).expect("small absent target");
+    code.extend([Instr::Pop, Instr::ConstLoad(zero), Instr::Return]);
+    for guard in guards {
+        code[guard] = Instr::JumpIfFalse(absent);
+    }
+    assert_eq!(code.len(), 35);
+    assert_eq!(code.iter().map(Instr::encoded_len).sum::<usize>(), 111);
+    code
+}
+
+/// The straight-line tape: `keys` guards, `padding` filler statements, then one strict
+/// read per guarded slot accumulated into the trailing local.
+fn accumulator_code(
+    entry: &marrow_image::PlannedSiteRef,
+    field: &marrow_image::PlannedSiteRef,
+    keys: u16,
+    padding: usize,
+    zero: marrow_image::ConstId,
+) -> Vec<Instr> {
+    let accumulator = keys;
+    let mut code = vec![Instr::ConstLoad(zero), Instr::LocalSet(accumulator)];
+    let mut guards = Vec::new();
+    for slot in 0..keys {
+        code.extend([Instr::LocalGet(slot), Instr::DurExists(entry.clone())]);
+        guards.push(code.len());
+        code.push(Instr::JumpIfFalse(0));
+    }
+    for _ in 0..padding {
+        code.extend([
+            Instr::LocalGet(accumulator),
+            Instr::ConstLoad(zero),
+            Instr::IntAdd,
+            Instr::LocalSet(accumulator),
+        ]);
+    }
+    for slot in 0..keys {
+        code.extend([
+            Instr::LocalGet(accumulator),
+            Instr::DurReadFieldPresent {
+                site: field.clone(),
+                key_slots: vec![slot],
+            },
+            Instr::IntAdd,
+            Instr::LocalSet(accumulator),
+        ]);
+    }
+    code.extend([Instr::LocalGet(accumulator), Instr::Return]);
+    let absent = code.len() as u32;
+    code.extend([Instr::ConstLoad(zero), Instr::Return]);
+    for guard in guards {
+        code[guard] = Instr::JumpIfFalse(absent);
+    }
+    code
+}
+
 fn image(keys: u16, padding: usize, interleaved_read: Option<[u16; 2]>) -> Vec<u8> {
     let mut owner = ImageDraft::new();
     let savepoint = owner.savepoint();
@@ -80,77 +172,15 @@ fn image(keys: u16, padding: usize, interleaved_read: Option<[u16; 2]>) -> Vec<u
         SemanticTarget::FieldLeaf,
     );
     let zero = draft.intern_int(0).expect("zero constant");
-    let (code, local_count) = if let Some(read_slots) = interleaved_read {
-        let yes = draft.intern_bool(true).expect("diamond condition");
-        let mut code = vec![Instr::ConstLoad(yes)];
-        let mut guards = Vec::new();
-        for [first, second] in [[0, 0], [0, 1], [1, 0], [1, 1]] {
-            code.extend([
-                Instr::LocalGet(first),
-                Instr::LocalGet(second),
-                Instr::DurExists(entry.clone()),
-            ]);
-            guards.push(code.len());
-            code.push(Instr::JumpIfFalse(0));
-            // Both diamond edges retain the Boolean below the guard operands.
-            let join = u32::try_from(code.len() + 3).expect("small diamond target");
-            code.extend([
-                Instr::ConstLoad(yes),
-                Instr::JumpIfFalse(join),
-                Instr::BoolNot,
-            ]);
-        }
-        code.extend([
-            Instr::Pop,
-            Instr::DurReadFieldPresent {
-                site: field.clone(),
-                key_slots: read_slots.to_vec(),
-            },
-            Instr::Return,
-        ]);
-        let absent = u32::try_from(code.len()).expect("small absent target");
-        code.extend([Instr::Pop, Instr::ConstLoad(zero), Instr::Return]);
-        for guard in guards {
-            code[guard] = Instr::JumpIfFalse(absent);
-        }
-        assert_eq!(code.len(), 35);
-        assert_eq!(code.iter().map(Instr::encoded_len).sum::<usize>(), 111);
-        (code, keys)
-    } else {
-        let accumulator = keys;
-        let mut code = vec![Instr::ConstLoad(zero), Instr::LocalSet(accumulator)];
-        let mut guards = Vec::new();
-        for slot in 0..keys {
-            code.extend([Instr::LocalGet(slot), Instr::DurExists(entry.clone())]);
-            guards.push(code.len());
-            code.push(Instr::JumpIfFalse(0));
-        }
-        for _ in 0..padding {
-            code.extend([
-                Instr::LocalGet(accumulator),
-                Instr::ConstLoad(zero),
-                Instr::IntAdd,
-                Instr::LocalSet(accumulator),
-            ]);
-        }
-        for slot in 0..keys {
-            code.extend([
-                Instr::LocalGet(accumulator),
-                Instr::DurReadFieldPresent {
-                    site: field.clone(),
-                    key_slots: vec![slot],
-                },
-                Instr::IntAdd,
-                Instr::LocalSet(accumulator),
-            ]);
-        }
-        code.extend([Instr::LocalGet(accumulator), Instr::Return]);
-        let absent = code.len() as u32;
-        code.extend([Instr::ConstLoad(zero), Instr::Return]);
-        for guard in guards {
-            code[guard] = Instr::JumpIfFalse(absent);
-        }
-        (code, keys + 1)
+    let (code, local_count) = match interleaved_read {
+        Some(read_slots) => (
+            interleaved_diamond_code(&mut draft, &entry, &field, read_slots, zero),
+            keys,
+        ),
+        None => (
+            accumulator_code(&entry, &field, keys, padding, zero),
+            keys + 1,
+        ),
     };
     let name = draft.intern_string("inspect").expect("function name");
     let source = draft.intern_string("retention.mw").expect("source name");
@@ -208,19 +238,9 @@ fn padding_between_guarded_reads_seals_one_read_per_key() {
     }
 }
 
-/// A read whose key pair a guard established verifies; the same read over a pair
-/// no guard established is refused in the flow phase.
-#[test]
-fn a_guarded_key_pair_verifies_and_an_unguarded_one_is_refused() {
-    let bytes = image(3, 0, Some([0, 0]));
-    let verified = crate::verify(&bytes).expect("the guarded pair verifies");
-    assert_eq!(verified.functions().len(), 1);
-    assert_eq!(verified.exports().len(), 1);
-    let export = &verified.exports()[0];
-    assert_eq!(export.id(), ExportId::of_local("", "inspect"));
-    assert_eq!(export.function().index(), 0);
-    assert!(!export.is_mutating());
-    assert_eq!(export.reachable_sites(), &[0, 1]);
+/// The verified function's signature, the root it reads, the two sites its reads name,
+/// and the two constants the tape loads.
+fn the_guarded_function_shape_is_sealed(verified: &crate::VerifiedImage) {
     let function = &verified.functions()[0];
     assert_eq!(function.name(), "inspect");
     assert_eq!(function.source(), "retention.mw");
@@ -253,6 +273,11 @@ fn a_guarded_key_pair_verifies_and_an_unguarded_one_is_refused() {
         verified.consts(),
         &[SealedConst::Int(0), SealedConst::Bool(true)],
     );
+}
+
+/// The sealed tape: the retained Boolean, four guard-and-diamond groups of seven, the
+/// strict read below the last join, the absent tail, and one span per instruction.
+fn the_guarded_diamond_tape_is_sealed(function: &crate::SealedFunction) {
     let code = function.instrs();
     assert_eq!(code.len(), 35);
     assert_eq!(code[0], SealedInstr::ConstLoad(1));
@@ -286,6 +311,23 @@ fn a_guarded_key_pair_verifies_and_an_unguarded_one_is_refused() {
             Some((u32::try_from(index).expect("small span") + 1, 1)),
         );
     }
+}
+
+/// A read whose key pair a guard established verifies; the same read over a pair
+/// no guard established is refused in the flow phase.
+#[test]
+fn a_guarded_key_pair_verifies_and_an_unguarded_one_is_refused() {
+    let bytes = image(3, 0, Some([0, 0]));
+    let verified = crate::verify(&bytes).expect("the guarded pair verifies");
+    assert_eq!(verified.functions().len(), 1);
+    assert_eq!(verified.exports().len(), 1);
+    let export = &verified.exports()[0];
+    assert_eq!(export.id(), ExportId::of_local("", "inspect"));
+    assert_eq!(export.function().index(), 0);
+    assert!(!export.is_mutating());
+    assert_eq!(export.reachable_sites(), &[0, 1]);
+    the_guarded_function_shape_is_sealed(&verified);
+    the_guarded_diamond_tape_is_sealed(&verified.functions()[0]);
 
     // Only the final read operand changes; slot 2 is initialized and key-typed,
     // but no guard establishes its ordered pair with slot 0.

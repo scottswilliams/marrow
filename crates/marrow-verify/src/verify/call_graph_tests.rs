@@ -147,87 +147,108 @@ fn presence_demand() -> ExportDemand {
 #[test]
 fn the_demand_closure_is_independent_of_function_numbering() {
     for roles in [[0u16, 1, 2, 3, 4], [4, 3, 2, 1, 0]] {
-        let [root, left, right, leaf, isolated] = roles;
-        let bytes = image(
-            |key, entry| {
-                let mut bodies = vec![vec![Instr::Return]; 5];
-                bodies[usize::from(root)] = vec![
-                    Instr::Call(left),
-                    Instr::Call(left),
-                    Instr::Call(right),
-                    Instr::Return,
-                ];
-                bodies[usize::from(left)] = vec![Instr::Call(leaf), Instr::Return];
-                bodies[usize::from(right)] = vec![Instr::Call(leaf), Instr::Return];
-                bodies[usize::from(leaf)] = presence_read(key, entry);
-                bodies
-            },
-            Some(usize::from(root)),
-            None,
-        );
-        let verified = crate::verify(&bytes).expect("acyclic presence diamond verifies");
-        assert_eq!(verified.functions().len(), 5);
-        assert_eq!(verified.exports().len(), 1);
-        assert!(verified.test_entries().is_empty());
-        assert_eq!(
-            verified
-                .functions()
-                .iter()
-                .map(|function| function.instrs().len())
-                .sum::<usize>(),
-            13,
-        );
-        let expected = presence_demand();
-        for index in [root, left, right, leaf] {
-            let function = verified
-                .function(FunctionIndex::new(index))
-                .expect("connected function exists");
-            assert_eq!(function.demand(), expected.as_view());
-            assert!(!function.body().is_mutating());
-            assert!(function.body().params().is_empty());
-            assert_eq!(function.body().ret(), ImageType::Unit);
-        }
-        for index in [left, right] {
-            assert!(matches!(
-                verified.functions()[usize::from(index)].instrs(),
-                [SealedInstr::Call(target), SealedInstr::Return] if *target == leaf
-            ));
-        }
+        the_presence_diamond_verifies(roles);
+    }
+}
+
+/// Verify the diamond whose five functions carry `roles` as their ordinals — root,
+/// left, right, leaf, isolated — and assert the closure it produces.
+fn the_presence_diamond_verifies(roles: [u16; 5]) {
+    let [root, left, right, leaf, _] = roles;
+    let bytes = image(
+        |key, entry| {
+            let mut bodies = vec![vec![Instr::Return]; 5];
+            bodies[usize::from(root)] = vec![
+                Instr::Call(left),
+                Instr::Call(left),
+                Instr::Call(right),
+                Instr::Return,
+            ];
+            bodies[usize::from(left)] = vec![Instr::Call(leaf), Instr::Return];
+            bodies[usize::from(right)] = vec![Instr::Call(leaf), Instr::Return];
+            bodies[usize::from(leaf)] = presence_read(key, entry);
+            bodies
+        },
+        Some(usize::from(root)),
+        None,
+    );
+    let verified = crate::verify(&bytes).expect("acyclic presence diamond verifies");
+    assert_eq!(verified.functions().len(), 5);
+    assert_eq!(verified.exports().len(), 1);
+    assert!(verified.test_entries().is_empty());
+    assert_eq!(
+        verified
+            .functions()
+            .iter()
+            .map(|function| function.instrs().len())
+            .sum::<usize>(),
+        13,
+    );
+    let expected = presence_demand();
+    for index in [root, left, right, leaf] {
+        let function = verified
+            .function(FunctionIndex::new(index))
+            .expect("connected function exists");
+        assert_eq!(function.demand(), expected.as_view());
+        assert!(!function.body().is_mutating());
+        assert!(function.body().params().is_empty());
+        assert_eq!(function.body().ret(), ImageType::Unit);
+    }
+    the_diamond_tapes_survive_verification(&verified, roles);
+    the_diamond_export_carries_the_closure(&verified, root, &expected);
+}
+
+/// Every function's sealed tape is the one its role was built with, and the isolated
+/// function stays empty of demand.
+fn the_diamond_tapes_survive_verification(verified: &VerifiedImage, roles: [u16; 5]) {
+    let [root, left, right, leaf, isolated] = roles;
+    for index in [left, right] {
         assert!(matches!(
-            verified.functions()[usize::from(leaf)].instrs(),
-            [
-                SealedInstr::ConstLoad(0),
-                SealedInstr::DurExists(0),
-                SealedInstr::Pop,
-                SealedInstr::Return
-            ]
-        ));
-        let empty = verified
-            .function(FunctionIndex::new(isolated))
-            .expect("isolated function exists");
-        assert!(empty.demand().is_empty());
-        assert!(!empty.body().is_mutating());
-        assert!(matches!(empty.body().instrs(), [SealedInstr::Return]));
-        let export = &verified.exports()[0];
-        assert_eq!(export.function(), FunctionIndex::new(root));
-        assert_eq!(export.id(), ExportId::of_local("", "entry"));
-        assert_eq!(
-            verified
-                .function(export.function())
-                .expect("verified export function")
-                .demand(),
-            expected.as_view()
-        );
-        assert_eq!(export.demand_id(), expected.demand_set_id());
-        assert_eq!(export.reachable_sites(), &[0]);
-        assert!(!export.is_mutating());
-        let root_code = verified.functions()[usize::from(root)].instrs();
-        assert!(matches!(
-            root_code,
-            [SealedInstr::Call(a), SealedInstr::Call(b), SealedInstr::Call(c), SealedInstr::Return]
-                if *a == left && *b == left && *c == right
+            verified.functions()[usize::from(index)].instrs(),
+            [SealedInstr::Call(target), SealedInstr::Return] if *target == leaf
         ));
     }
+    assert!(matches!(
+        verified.functions()[usize::from(leaf)].instrs(),
+        [
+            SealedInstr::ConstLoad(0),
+            SealedInstr::DurExists(0),
+            SealedInstr::Pop,
+            SealedInstr::Return
+        ]
+    ));
+    assert!(matches!(
+        verified.functions()[usize::from(root)].instrs(),
+        [SealedInstr::Call(a), SealedInstr::Call(b), SealedInstr::Call(c), SealedInstr::Return]
+            if *a == left && *b == left && *c == right
+    ));
+    let empty = verified
+        .function(FunctionIndex::new(isolated))
+        .expect("isolated function exists");
+    assert!(empty.demand().is_empty());
+    assert!(!empty.body().is_mutating());
+    assert!(matches!(empty.body().instrs(), [SealedInstr::Return]));
+}
+
+/// The sole export names the root function and republishes the closure's demand.
+fn the_diamond_export_carries_the_closure(
+    verified: &VerifiedImage,
+    root: u16,
+    expected: &ExportDemand,
+) {
+    let export = &verified.exports()[0];
+    assert_eq!(export.function(), FunctionIndex::new(root));
+    assert_eq!(export.id(), ExportId::of_local("", "entry"));
+    assert_eq!(
+        verified
+            .function(export.function())
+            .expect("verified export function")
+            .demand(),
+        expected.as_view()
+    );
+    assert_eq!(export.demand_id(), expected.demand_set_id());
+    assert_eq!(export.reachable_sites(), &[0]);
+    assert!(!export.is_mutating());
 }
 
 #[test]
@@ -369,6 +390,13 @@ fn unequal_function_demands_borrow_the_same_atoms() {
         assert_eq!(function.body().ret(), ImageType::Unit);
         assert!(!function.body().is_mutating());
     }
+    the_two_root_tapes_survive_verification(&verified);
+    the_two_root_entry_points_carry_their_own_demands(&verified, &a, &b, &both);
+}
+
+/// Every function's sealed tape is the one it was built with, each presence read
+/// naming its own site ordinal.
+fn the_two_root_tapes_survive_verification(verified: &VerifiedImage) {
     assert!(matches!(
         verified.functions()[0].instrs(),
         [
@@ -396,6 +424,15 @@ fn unequal_function_demands_borrow_the_same_atoms() {
         verified.functions()[4].instrs(),
         [SealedInstr::Return]
     ));
+}
+
+/// The export republishes one root's demand and the test entry the union of both.
+fn the_two_root_entry_points_carry_their_own_demands(
+    verified: &VerifiedImage,
+    a: &ExportDemand,
+    b: &ExportDemand,
+    both: &ExportDemand,
+) {
     let export = &verified.exports()[0];
     assert_eq!(export.function(), FunctionIndex::new(1));
     assert_eq!(export.id(), ExportId::of_local("", "entry"));
@@ -427,8 +464,8 @@ fn unequal_function_demands_borrow_the_same_atoms() {
             .demand_set_id(),
         both.demand_set_id()
     );
-    assert_eq!(verified.demand_union(), a);
-    assert_eq!(verified.test_demand_union(), both);
+    assert_eq!(&verified.demand_union(), a);
+    assert_eq!(&verified.test_demand_union(), both);
     assert_eq!(
         verified.demand_incidence().collect::<Vec<_>>(),
         vec![crate::NodeIncidence {
@@ -455,11 +492,11 @@ fn unequal_function_demands_borrow_the_same_atoms() {
             .find(|atom| *atom == expected)
             .expect("the semantic assertions established this atom")
     }
-    let leaf_a = atom(&verified, 2, &a.atoms()[0]);
-    let leaf_b = atom(&verified, 3, &b.atoms()[0]);
-    assert!(std::ptr::eq(leaf_a, atom(&verified, 1, &a.atoms()[0])));
-    assert!(std::ptr::eq(leaf_a, atom(&verified, 0, &a.atoms()[0])));
-    assert!(std::ptr::eq(leaf_b, atom(&verified, 0, &b.atoms()[0])));
+    let leaf_a = atom(verified, 2, &a.atoms()[0]);
+    let leaf_b = atom(verified, 3, &b.atoms()[0]);
+    assert!(std::ptr::eq(leaf_a, atom(verified, 1, &a.atoms()[0])));
+    assert!(std::ptr::eq(leaf_a, atom(verified, 0, &a.atoms()[0])));
+    assert!(std::ptr::eq(leaf_b, atom(verified, 0, &b.atoms()[0])));
 }
 
 fn assert_refusal(bytes: &[u8], phase: VerifyPhase, detail: &str) {

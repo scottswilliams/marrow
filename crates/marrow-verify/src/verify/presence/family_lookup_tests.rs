@@ -149,12 +149,9 @@ fn add_function(
 
 const CALLS_PER_CALLER: usize = 8;
 
-fn repeated_call_image(entries: usize) -> Vec<u8> {
-    assert!(entries >= 2);
-    let mut owner = ImageDraft::new();
-    let savepoint = owner.savepoint();
-    let mut draft = owner.begin_transaction(savepoint).expect("fresh savepoint");
-    draft.set_application_identity(id(1, 0));
+/// Declare the shared `Counter { value: int required; children[k: int] }` product every
+/// root occurrence in this image reuses.
+fn declare_counter_with_children(draft: &mut marrow_image::DraftTxn<'_>) -> marrow_image::TypeId {
     let record_name = draft.intern_string("Counter").expect("record name");
     let value_name = draft.intern_string("value").expect("field name");
     let branch_name = draft.intern_string("children").expect("branch name");
@@ -206,6 +203,16 @@ fn repeated_call_image(entries: usize) -> Vec<u8> {
             ],
         )
         .expect("one field and one keyed branch");
+    record
+}
+
+fn repeated_call_image(entries: usize) -> Vec<u8> {
+    assert!(entries >= 2);
+    let mut owner = ImageDraft::new();
+    let savepoint = owner.savepoint();
+    let mut draft = owner.begin_transaction(savepoint).expect("fresh savepoint");
+    draft.set_application_identity(id(1, 0));
+    let record = declare_counter_with_children(&mut draft);
     let members = draft.product_members(id(2, 0)).expect("declared members");
     let key = draft.intern_int(1).expect("key constant");
     let value = draft.intern_int(7).expect("field constant");
