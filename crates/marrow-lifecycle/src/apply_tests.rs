@@ -11,7 +11,7 @@ use crate::test_support::{
     IDS, SOURCE, Scratch, compile, compile_bytes, populate_counter, request,
 };
 use crate::{
-    AuditError, LifecycleError, LogicalHead, StoreInstanceId, accepted_ceiling, active_binding,
+    AdmissionRefusal, AuditError, LifecycleError, LogicalHead, StoreInstanceId, accepted_ceiling, active_binding,
     prepare, provision,
 };
 
@@ -152,7 +152,7 @@ fn sparse_apply_refusals_preserve_populated_store_bytes() {
             Some(proposed.ceiling_id())
         ),
         Err(ApplyError::Lifecycle(LifecycleError::Audit(
-            AuditError::ContractChanged(_)
+            AuditError::Refused(AdmissionRefusal::ContractChanged(_))
         )))
     ));
     assert_eq!(store_bytes(&scratch.store()), applied);
@@ -444,7 +444,7 @@ fn an_interrupted_sparse_apply_recovers_its_actual_head(
         recover(&scratch.store(), prepare(other.clone())).expect_err("wrong selected image");
     assert!(matches!(
         rejected.fault,
-        RecoveryFault::Validation(AuditError::ContractChanged(_))
+        RecoveryFault::Validation(AuditError::Refused(AdmissionRefusal::ContractChanged(_)))
     ));
     assert!(rejected.preserved.is_empty());
     if let Some(bytes) = &replacement {

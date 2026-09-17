@@ -231,6 +231,7 @@ fn recover_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actor::AdmissionRefusal;
     use crate::test_support::{SOURCE, Scratch, compile_bytes, populate_counter, request};
     use crate::{LogicalHead, active_binding, prepare, provision};
     use std::path::PathBuf;
@@ -851,7 +852,7 @@ mod tests {
             .expect_err("recovery cannot replay a different head");
         assert!(matches!(
             rejected.fault,
-            RecoveryFault::Validation(AuditError::ImageNotActive)
+            RecoveryFault::Validation(AuditError::Refused(AdmissionRefusal::NotActive))
         ));
         assert!(rejected.preserved.is_empty());
         if let Some(bytes) = &replacement {
@@ -1293,7 +1294,9 @@ mod tests {
         let envelope = std::fs::read(scratch.store().join(crate::ENVELOPE_FILE)).expect("envelope");
         assert!(matches!(
             recover(&scratch.store(), prepare(edited)).map_err(|error| error.fault),
-            Err(RecoveryFault::Validation(AuditError::ImageNotActive))
+            Err(RecoveryFault::Validation(AuditError::Refused(
+                AdmissionRefusal::NotActive
+            )))
         ));
         assert_eq!(
             std::fs::read(&engine).expect("engine unchanged"),

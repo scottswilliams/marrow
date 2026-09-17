@@ -53,7 +53,8 @@ mod provision_lifecycle_tests;
 mod test_support;
 
 pub use actor::{
-    AttachOutcome, ChangedFact, ContractChanged, LifecycleError, RebindReceipt, attach,
+    AdmissionRefusal, AttachOutcome, ChangedFact, ContractChanged, LifecycleError, RebindReceipt,
+    attach,
 };
 pub use apply::{ApplyError, ApplyReceipt, apply};
 pub use attachment::{

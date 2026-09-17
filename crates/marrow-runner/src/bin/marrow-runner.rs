@@ -432,7 +432,9 @@ fn attach(image_path: &Path, store: &Path) -> ExitCode {
         // This authority refusal precedes every engine call. The authenticated refusal
         // service exposes that known result; exiting before the handshake would leave
         // activation outcome unknown to the client. Channel setup opens no store.
-        Err(marrow_lifecycle::LifecycleError::DemandExceedsCeiling(refusal)) => {
+        Err(marrow_lifecycle::LifecycleError::Refused(
+            marrow_lifecycle::AdmissionRefusal::Exceeds(refusal),
+        )) => {
             let _ = writeln!(
                 std::io::stderr().lock(),
                 "{}: {refusal}",

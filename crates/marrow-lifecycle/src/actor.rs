@@ -25,13 +25,17 @@ use crate::image::{
 use crate::provision::{LockedStore, OpenBinding, OpenError};
 use crate::store_dir;
 
-/// Why the admission gate declined before any engine call.
+/// Why the admission gate declined the presented image before any engine call. One value
+/// reaches every caller unchanged: attach, audit, apply, recovery, restore, and import each
+/// carry it in a `Refused` arm rather than restating its cases.
 ///
-/// One enum for both strictnesses: the ceiling and pin facts are the same
-/// whichever gate ran, and the binding arms differ only in which comparison
-/// reached them.
-pub(crate) enum AdmissionRefusal {
-    /// The image's demand exceeds the accepted ceiling — a typed authority refusal.
+/// One enum for both strictnesses: the ceiling and pin facts are the same whichever gate
+/// ran, and the binding arms differ only in which comparison reached them.
+#[derive(Debug)]
+pub enum AdmissionRefusal {
+    /// The image's demand exceeds the accepted ceiling — a typed authority refusal naming
+    /// the exceeding export, effect, and place. The owner must consciously expand the
+    /// accepted ceiling.
     Exceeds(DemandExceedsCeiling),
     /// The persisted accepted-ceiling payload did not decode — store corruption.
     CeilingCorrupt,
@@ -49,13 +53,45 @@ pub(crate) enum AdmissionRefusal {
 }
 
 impl AdmissionRefusal {
-    /// The open error a corrupt persisted ceiling payload reports.
-    pub(crate) fn ceiling_corrupt() -> OpenError {
-        OpenError::Corruption {
-            message: "the persisted accepted authority ceiling did not decode".to_string(),
+    /// The stable dotted code a tool reports.
+    pub fn code(&self) -> Code {
+        match self {
+            AdmissionRefusal::Exceeds(refusal) => refusal.code(),
+            AdmissionRefusal::Pin(refusal) => refusal.code(),
+            AdmissionRefusal::ContractChanged(refusal) => refusal.code(),
+            AdmissionRefusal::NotActive => Code::StoreImageNotActive,
+            AdmissionRefusal::CeilingCorrupt | AdmissionRefusal::InconsistentBinding => {
+                Code::StoreCorruption
+            }
         }
     }
 }
+
+impl std::fmt::Display for AdmissionRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AdmissionRefusal::Exceeds(refusal) => write!(f, "{refusal}"),
+            AdmissionRefusal::Pin(refusal) => write!(f, "{refusal}"),
+            AdmissionRefusal::ContractChanged(refusal) => write!(f, "{refusal}"),
+            AdmissionRefusal::CeilingCorrupt => {
+                write!(f, "the persisted accepted authority ceiling did not decode")
+            }
+            AdmissionRefusal::NotActive => write!(
+                f,
+                "the program is not the store's active program: its code differs from the \
+                 bound program. Present the active program, or rebind the store with \
+                 `marrow run --store`"
+            ),
+            AdmissionRefusal::InconsistentBinding => write!(
+                f,
+                "the store's head names this program but records binding facts the program \
+                 does not have"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AdmissionRefusal {}
 
 /// How strictly the persisted head must already bind the presented image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -269,19 +305,11 @@ pub enum LifecycleError {
     /// The store could not be opened (not provisioned, incomplete, held by another owner, or
     /// corrupt).
     Open(OpenError),
-    /// The presented image's verified demand exceeds the store's accepted authority ceiling
-    /// — a typed refusal naming the exceeding export, effect, and place, with zero engine
-    /// calls, never corruption. The owner must consciously expand the accepted ceiling.
-    DemandExceedsCeiling(DemandExceedsCeiling),
-    /// The image is not a binding-only code update — a typed refusal pointing at `marrow
-    /// apply`, never corruption.
-    ContractChanged(ContractChanged),
-    /// The store's persisted head-map pin (the ledger-id ↔ cell-number bijection)
-    /// disagrees with the (ledger id → cell number) binding this toolchain would serve the
-    /// store under. Fail-closed and recovery-shaped: serving the store would readdress
-    /// durable cells, so the attach refuses with zero engine calls; Head, envelope,
-    /// engine data and the owner marker are unchanged.
-    HeadMapPin(HeadMapPinMismatch),
+    /// The admission gate refused the presented image under the lock and before any engine
+    /// call: an over-demanding image, a changed contract (pointing at `marrow apply`), or a
+    /// disagreeing head-map pin. Head, envelope, engine data and the owner marker are
+    /// unchanged; none of these is corruption.
+    Refused(AdmissionRefusal),
     /// The read-only logical audit or prepublication metadata verification failed.
     /// Metadata verification follows writable preparation and may observe its bookkeeping.
     Audit(AuditError),
@@ -296,31 +324,13 @@ pub enum LifecycleError {
     },
 }
 
-impl From<AdmissionRefusal> for LifecycleError {
-    fn from(refusal: AdmissionRefusal) -> Self {
-        match refusal {
-            AdmissionRefusal::Exceeds(refusal) => Self::DemandExceedsCeiling(refusal),
-            AdmissionRefusal::CeilingCorrupt => Self::Open(AdmissionRefusal::ceiling_corrupt()),
-            AdmissionRefusal::Pin(refusal) => Self::HeadMapPin(refusal),
-            AdmissionRefusal::ContractChanged(refusal) => Self::ContractChanged(refusal),
-            AdmissionRefusal::NotActive | AdmissionRefusal::InconsistentBinding => {
-                Self::Open(OpenError::Corruption {
-                    message: "the store's head does not bind the presented image".to_string(),
-                })
-            }
-        }
-    }
-}
-
 impl LifecycleError {
     /// The stable dotted code a tool reports.
     pub fn code(&self) -> Code {
         match self {
             LifecycleError::NotExecutable => Code::CliDurableUnsupported,
             LifecycleError::Open(error) => error.code(),
-            LifecycleError::DemandExceedsCeiling(refusal) => refusal.code(),
-            LifecycleError::ContractChanged(refusal) => refusal.code(),
-            LifecycleError::HeadMapPin(refusal) => refusal.code(),
+            LifecycleError::Refused(refusal) => refusal.code(),
             LifecycleError::Audit(error) => error.code(),
             LifecycleError::Invalid(_) => Code::StoreCorruption,
             LifecycleError::Metadata(error) => error.code(),
@@ -337,9 +347,7 @@ impl std::fmt::Display for LifecycleError {
                 "the program's durable shape is not yet executable by the store"
             ),
             LifecycleError::Open(error) => write!(f, "{error}"),
-            LifecycleError::DemandExceedsCeiling(refusal) => write!(f, "{refusal}"),
-            LifecycleError::ContractChanged(refusal) => write!(f, "{refusal}"),
-            LifecycleError::HeadMapPin(refusal) => write!(f, "{refusal}"),
+            LifecycleError::Refused(refusal) => write!(f, "{refusal}"),
             LifecycleError::Audit(error) => write!(f, "{error}"),
             LifecycleError::Invalid(report) => write!(
                 f,

@@ -32,10 +32,8 @@ use marrow_kernel::durable::{
 };
 use marrow_kernel::equality::ValueDomain;
 
-use crate::actor::{AdmissionRefusal, BindingStrictness, ContractChanged, ImageAdmission};
+use crate::actor::{AdmissionRefusal, BindingStrictness, ImageAdmission};
 use crate::attachment::PreparedImage;
-use crate::authority::DemandExceedsCeiling;
-use crate::image::HeadMapPinMismatch;
 use crate::provision::{AdmitError, OpenError, open_admitted};
 use marrow_codes::Code;
 
@@ -284,22 +282,9 @@ pub enum ImportError {
     /// The store could not be opened (not provisioned, incomplete, held, or corrupt). No store
     /// write occurred.
     Open(OpenError),
-    /// The store's active binding is a different image with the same binding facts: the
-    /// presented image is a code-only edit the store has not been rebound to. Refused before
-    /// the engine opens; `marrow run --store` performs the explicit rebind.
-    ImageNotActive,
-    /// The store's head names this image but records binding facts the image does not have —
-    /// inconsistent binding metadata, refused before the engine opens.
-    InconsistentBinding,
-    /// The store's active binding differs from the presented image in a binding fact — the
-    /// same typed refusal an attach reports, before the engine opens.
-    ContractChanged(ContractChanged),
-    /// The presented image's demand exceeds the store's accepted ceiling, with zero engine
-    /// calls.
-    DemandExceedsCeiling(DemandExceedsCeiling),
-    /// The store's persisted head-map pin disagrees with the numbering this toolchain would
-    /// serve it under; fail-closed with zero engine calls.
-    HeadMapPin(HeadMapPinMismatch),
+    /// The exact-binding gate refused the presented image under the lock and before any
+    /// engine call. Import never rebinds; `marrow run --store` performs the explicit rebind.
+    Refused(AdmissionRefusal),
     /// The target root's shape is not importable from flat scalar rows. No store write occurred.
     UnsupportedShape(ShapeFault),
     /// Effective authority denied the write: the store's ceiling intersected with the import
@@ -331,11 +316,7 @@ impl ImportError {
     pub fn code(&self) -> Code {
         match self {
             ImportError::Open(error) => error.code(),
-            ImportError::ImageNotActive => Code::StoreImageNotActive,
-            ImportError::InconsistentBinding => Code::StoreCorruption,
-            ImportError::ContractChanged(refusal) => refusal.code(),
-            ImportError::DemandExceedsCeiling(refusal) => refusal.code(),
-            ImportError::HeadMapPin(refusal) => refusal.code(),
+            ImportError::Refused(refusal) => refusal.code(),
             ImportError::UnsupportedShape(_) => Code::CliDurableUnsupported,
             ImportError::Denied => Code::RunAuthority,
             ImportError::Row { .. } => Code::ConfigInvalid,
@@ -351,11 +332,7 @@ impl ImportError {
             | ImportError::Commit { committed, .. }
             | ImportError::Io { committed, .. } => *committed,
             ImportError::Open(_)
-            | ImportError::ImageNotActive
-            | ImportError::InconsistentBinding
-            | ImportError::ContractChanged(_)
-            | ImportError::DemandExceedsCeiling(_)
-            | ImportError::HeadMapPin(_)
+            | ImportError::Refused(_)
             | ImportError::UnsupportedShape(_)
             | ImportError::Denied => ImportReport {
                 rows_imported: 0,
@@ -369,20 +346,7 @@ impl std::fmt::Display for ImportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ImportError::Open(error) => write!(f, "{error}"),
-            ImportError::ImageNotActive => write!(
-                f,
-                "the program is not the store's active program: its code differs from the \
-                 bound program. Run `marrow run --store` with this program first to rebind the \
-                 store, then retry the import"
-            ),
-            ImportError::InconsistentBinding => write!(
-                f,
-                "the store's head names this program but records binding facts the program \
-                 does not have; the store is not imported into"
-            ),
-            ImportError::ContractChanged(refusal) => write!(f, "{refusal}"),
-            ImportError::DemandExceedsCeiling(refusal) => write!(f, "{refusal}"),
-            ImportError::HeadMapPin(refusal) => write!(f, "{refusal}"),
+            ImportError::Refused(refusal) => write!(f, "{refusal}"),
             ImportError::UnsupportedShape(fault) => {
                 write!(f, "the target root is not importable: {fault}")
             }
@@ -467,16 +431,7 @@ pub fn import_jsonl(
     )
     .map_err(|error| match error {
         AdmitError::Open(error) => ImportError::Open(error),
-        AdmitError::Refused(refusal) => match refusal {
-            AdmissionRefusal::NotActive => ImportError::ImageNotActive,
-            AdmissionRefusal::InconsistentBinding => ImportError::InconsistentBinding,
-            AdmissionRefusal::ContractChanged(refusal) => ImportError::ContractChanged(refusal),
-            AdmissionRefusal::Exceeds(refusal) => ImportError::DemandExceedsCeiling(refusal),
-            AdmissionRefusal::CeilingCorrupt => {
-                ImportError::Open(AdmissionRefusal::ceiling_corrupt())
-            }
-            AdmissionRefusal::Pin(refusal) => ImportError::HeadMapPin(refusal),
-        },
+        AdmitError::Refused(refusal) => ImportError::Refused(refusal),
     })?;
 
     match import_rows_into(&mut opened, &plan, source, grant, limits) {

@@ -303,6 +303,7 @@ fn build_body(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actor::AdmissionRefusal;
     use crate::backup::tests::{Scratch, image_bytes, provision_fixture};
     use crate::backup_stream::{Encoder, Header};
     use marrow_kernel::durable::{Cell, ExportSink};
@@ -499,7 +500,7 @@ mod tests {
             let destination = scratch.base().join(name);
             let error = restore(&mut io::Cursor::new(bytes), &destination).unwrap_err();
             match (name, &error.fault) {
-                ("binding", RestoreFault::Admission(AuditError::ImageNotActive))
+                ("binding", RestoreFault::Admission(AuditError::Refused(AdmissionRefusal::NotActive)))
                 | (
                     "generation",
                     RestoreFault::Input(BackupReadError::Format(

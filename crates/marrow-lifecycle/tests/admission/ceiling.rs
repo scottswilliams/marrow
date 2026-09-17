@@ -8,7 +8,7 @@
 //! the ceiling (even when narrower than a prior image's) is admitted.
 
 use marrow_codes::Code;
-use marrow_lifecycle::{AttachOutcome, LifecycleError};
+use marrow_lifecycle::{AdmissionRefusal, AttachOutcome, LifecycleError};
 use marrow_verify::VerifiedImage;
 
 use crate::support::Scratch;
@@ -30,7 +30,7 @@ fn a_broadened_demand_is_refused_naming_the_exceeding_place() {
     let head_before = std::fs::read(scratch.dir().join("head")).expect("read head");
 
     let refusal = match attach_image(scratch.dir(), &broadened) {
-        Err(LifecycleError::DemandExceedsCeiling(refusal)) => refusal,
+        Err(LifecycleError::Refused(AdmissionRefusal::Exceeds(refusal))) => refusal,
         Err(other) => panic!(
             "the broadened image must be refused as demand-exceeds-ceiling, got: {}",
             other.code().as_str()
@@ -86,7 +86,7 @@ fn a_demand_beyond_the_ceiling_preempts_the_contract_refusal() {
 
     provision(scratch.dir(), &read_only);
     match attach_image(scratch.dir(), &both) {
-        Err(LifecycleError::DemandExceedsCeiling(refusal)) => {
+        Err(LifecycleError::Refused(AdmissionRefusal::Exceeds(refusal))) => {
             assert_eq!(refusal.code(), Code::StoreDemandExceedsCeiling);
         }
         Err(other) => panic!(
@@ -150,7 +150,7 @@ store ^tallies[name: string]: Tally
     provision(scratch.dir(), &image_a);
 
     let refusal = match attach_image(scratch.dir(), &image_b) {
-        Err(LifecycleError::DemandExceedsCeiling(refusal)) => refusal,
+        Err(LifecycleError::Refused(AdmissionRefusal::Exceeds(refusal))) => refusal,
         Err(other) => panic!(
             "expected demand-exceeds-ceiling, got {}",
             other.code().as_str()

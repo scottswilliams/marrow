@@ -753,7 +753,9 @@ impl LockedStore {
         let (head, digest) = decode_head(&self.directory).map_err(LifecycleError::Open)?;
         let exact = admission.incoming() == &head.binding;
         let names = (!exact).then(|| admission.audit_names());
-        let layout = admission.admit(&head, BindingStrictness::Compatible)?;
+        let layout = admission
+            .admit(&head, BindingStrictness::Compatible)
+            .map_err(LifecycleError::Refused)?;
         match names {
             None => self
                 .open_decoded(NativeOpenAccess::ReadWrite, head, digest, layout)

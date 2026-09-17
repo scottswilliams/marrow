@@ -16,9 +16,9 @@ use marrow_kernel::durable::{
 };
 use marrow_kernel::equality::ValueDomain;
 use marrow_lifecycle::{
-    ActiveBinding, AttachOutcome, ChangedFact, HeadMap, ImportError, ImportLimits, ImportTarget,
-    LogicalHead, NativeAttachment, RowFault, ShapeFault, active_binding, attach, head_map,
-    import_jsonl, prepare,
+    ActiveBinding, AdmissionRefusal, AttachOutcome, ChangedFact, HeadMap, ImportError,
+    ImportLimits, ImportTarget, LogicalHead, NativeAttachment, RowFault, ShapeFault,
+    active_binding, attach, head_map, import_jsonl, prepare,
 };
 use marrow_verify::{SealedSite, SealedSiteTarget, VerifiedImage};
 
@@ -767,7 +767,7 @@ fn import_refuses_every_non_active_image_before_the_engine_opens() {
             "a body-only stale image",
             LogicalHead::provision(binding, ceiling.clone(), map.clone()),
             edited,
-            |error| matches!(error, ImportError::ImageNotActive),
+            |error| matches!(error, ImportError::Refused(AdmissionRefusal::NotActive)),
         ),
         (
             "the same image identity with different binding facts",
@@ -780,7 +780,7 @@ fn import_refuses_every_non_active_image_before_the_engine_opens() {
                 map.clone(),
             ),
             image.clone(),
-            |error| matches!(error, ImportError::InconsistentBinding),
+            |error| matches!(error, ImportError::Refused(AdmissionRefusal::InconsistentBinding)),
         ),
         (
             "a changed durable contract",
@@ -789,7 +789,7 @@ fn import_refuses_every_non_active_image_before_the_engine_opens() {
             |error| {
                 matches!(
                     error,
-                    ImportError::ContractChanged(refusal)
+                    ImportError::Refused(AdmissionRefusal::ContractChanged(refusal))
                         if refusal.changed == ChangedFact::DurableContract
                 )
             },
@@ -802,14 +802,14 @@ fn import_refuses_every_non_active_image_before_the_engine_opens() {
                 map.clone(),
             ),
             image.clone(),
-            |error| matches!(error, ImportError::DemandExceedsCeiling(_)),
+            |error| matches!(error, ImportError::Refused(AdmissionRefusal::Exceeds(_))),
         ),
         (
             "a head map missing an image identity",
             LogicalHead::provision(binding, ceiling.clone(), foreign),
             image.clone(),
             |error| {
-                matches!(error, ImportError::HeadMapPin(refusal)
+                matches!(error, ImportError::Refused(AdmissionRefusal::Pin(refusal))
                 if matches!(refusal.disagreement, marrow_lifecycle::PinDisagreement::Missing { .. }))
             },
         ),
@@ -866,11 +866,11 @@ fn import_refuses_every_non_active_image_before_the_engine_opens() {
 /// contract-changed refusal, and reports nothing committed.
 #[test]
 fn the_stale_image_refusal_is_typed_and_commits_nothing() {
-    let error = ImportError::ImageNotActive;
+    let error = ImportError::Refused(AdmissionRefusal::NotActive);
     assert_eq!(error.code(), Code::StoreImageNotActive);
     assert_eq!(error.committed().rows_imported, 0);
     assert_eq!(
-        ImportError::InconsistentBinding.code(),
+        ImportError::Refused(AdmissionRefusal::InconsistentBinding).code(),
         Code::StoreCorruption
     );
 }

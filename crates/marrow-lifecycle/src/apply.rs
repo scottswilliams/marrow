@@ -13,7 +13,7 @@ use marrow_image::{
 use marrow_kernel::durable::NativeOpenAccess;
 use marrow_verify::VerifiedImage;
 
-use crate::actor::{BindingStrictness, ImageAdmission, rewrite_atomically};
+use crate::actor::{AdmissionRefusal, BindingStrictness, ImageAdmission, rewrite_atomically};
 use crate::codec::FormatError;
 use crate::envelope::{EnvelopeRecord, EnvelopeState};
 use crate::head::{ActiveBinding, MAX_ACCEPTED_CEILING_BYTES};
@@ -191,7 +191,7 @@ fn accept_ceiling(
     accepted: Option<CeilingId>,
 ) -> Result<AcceptedCeiling, ApplyError> {
     let ceiling = CeilingDescriptor::from_payload(&head.accepted_ceiling)
-        .map_err(|_| audit_failure(AuditError::InconsistentBinding))?;
+        .map_err(|_| audit_failure(AuditError::Refused(AdmissionRefusal::CeilingCorrupt)))?;
     let expanded = ceiling
         .expanded(demand, MAX_ACCEPTED_CEILING_BYTES as usize)
         .ok_or(ApplyError::CeilingTooLarge)?;

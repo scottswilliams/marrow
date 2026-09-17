@@ -7,8 +7,8 @@ use std::path::Path;
 use crate::support::actor_fixtures::*;
 use crate::support::compile::compile_files;
 use marrow_lifecycle::{
-    AttachOutcome, ChangedFact, HEAD_FILE, LifecycleError, LogicalHead, PinDisagreement,
-    active_binding, attach, head_map, prepare,
+    AdmissionRefusal, AttachOutcome, ChangedFact, HEAD_FILE, LifecycleError, LogicalHead,
+    PinDisagreement, active_binding, attach, head_map, prepare,
 };
 use marrow_verify::{VerifiedImage, verify};
 
@@ -89,7 +89,7 @@ fn refused_attach_preserves_marker(marker: Option<&[u8]>) {
         BASE_IDS,
     );
     match attach(scratch.dir(), prepare(changed)) {
-        Err(LifecycleError::ContractChanged(refusal)) => {
+        Err(LifecycleError::Refused(AdmissionRefusal::ContractChanged(refusal))) => {
             assert_eq!(refusal.changed, ChangedFact::DurableContract);
         }
         Err(error) => panic!("expected contract refusal, got {}", error.code().as_str()),
@@ -936,7 +936,7 @@ fn a_store_with_a_foreign_head_map_pin_is_refused_at_attach() {
     let first_id = foreign_persisted_pin(scratch.dir(), &image);
 
     match attach(scratch.dir(), prepare(image)) {
-        Err(LifecycleError::HeadMapPin(refusal)) => {
+        Err(LifecycleError::Refused(AdmissionRefusal::Pin(refusal))) => {
             assert_eq!(
                 refusal.code(),
                 Code::StoreCorruption,
@@ -978,7 +978,7 @@ fn the_pin_refusal_precedes_any_engine_call() {
     .expect("corrupt the engine file");
 
     match attach(scratch.dir(), prepare(image)) {
-        Err(LifecycleError::HeadMapPin(_)) => {}
+        Err(LifecycleError::Refused(AdmissionRefusal::Pin(_))) => {}
         Err(other) => panic!(
             "the pin must refuse before the engine is touched, got code {}",
             other.code().as_str()
@@ -1009,7 +1009,7 @@ fn a_rebind_over_a_foreign_pin_is_refused_without_a_write() {
         "the edit is binding-only"
     );
     match attach(scratch.dir(), prepare(edited.clone())) {
-        Err(LifecycleError::HeadMapPin(_)) => {}
+        Err(LifecycleError::Refused(AdmissionRefusal::Pin(_))) => {}
         Err(other) => panic!(
             "expected the pin refusal, got code {}",
             other.code().as_str()
@@ -1053,7 +1053,7 @@ fn a_contract_change_over_a_foreign_pin_stays_a_contract_refusal() {
         GRAPH_IDS,
     );
     match attach(scratch.dir(), prepare(evolved)) {
-        Err(LifecycleError::ContractChanged(refusal)) => {
+        Err(LifecycleError::Refused(AdmissionRefusal::ContractChanged(refusal))) => {
             assert_eq!(refusal.changed, ChangedFact::DurableContract);
         }
         Err(other) => panic!(
@@ -1114,7 +1114,7 @@ fn a_changed_contract_is_refused_before_engine_open() {
         GRAPH_IDS,
     );
     match attach(scratch.dir(), prepare(evolved)) {
-        Err(LifecycleError::ContractChanged(refusal)) => {
+        Err(LifecycleError::Refused(AdmissionRefusal::ContractChanged(refusal))) => {
             assert_eq!(refusal.changed, ChangedFact::DurableContract);
         }
         Err(other) => panic!(
@@ -1137,7 +1137,7 @@ fn adding_an_export_is_a_typed_interface_refusal() {
     let changed = compile(&extended, BASE_IDS);
 
     match attach(scratch.dir(), prepare(changed)) {
-        Err(LifecycleError::ContractChanged(refusal)) => {
+        Err(LifecycleError::Refused(AdmissionRefusal::ContractChanged(refusal))) => {
             assert_eq!(refusal.changed, ChangedFact::Interface);
             assert_eq!(refusal.code(), Code::StoreContractChanged);
             assert_ne!(refusal.code(), Code::StoreCorruption);
@@ -1164,7 +1164,7 @@ fn changing_the_durable_contract_is_a_typed_refusal() {
     let changed = compile(&evolved_source, BASE_IDS);
 
     match attach(scratch.dir(), prepare(changed)) {
-        Err(LifecycleError::ContractChanged(refusal)) => {
+        Err(LifecycleError::Refused(AdmissionRefusal::ContractChanged(refusal))) => {
             assert_eq!(refusal.changed, ChangedFact::DurableContract);
             assert_eq!(refusal.code(), Code::StoreContractChanged);
         }
@@ -1225,7 +1225,7 @@ fn a_changed_schema_fact_is_a_durable_contract_refusal() {
     ] {
         let changed = compile(&source, ids);
         match attach(scratch.dir(), prepare(changed)) {
-            Err(LifecycleError::ContractChanged(refusal)) => {
+            Err(LifecycleError::Refused(AdmissionRefusal::ContractChanged(refusal))) => {
                 assert_eq!(refusal.changed, ChangedFact::DurableContract, "{fact}");
                 assert_eq!(refusal.code(), Code::StoreContractChanged, "{fact}");
             }
@@ -1279,7 +1279,7 @@ fn a_key_tuple_arity_change_alone_is_a_durable_contract_refusal() {
     // The same ledger, one column narrower.
     let narrow = compile(BASE_SOURCE, &ids);
     match attach(scratch.dir(), prepare(narrow)) {
-        Err(LifecycleError::ContractChanged(refusal)) => {
+        Err(LifecycleError::Refused(AdmissionRefusal::ContractChanged(refusal))) => {
             assert_eq!(refusal.changed, ChangedFact::DurableContract);
             assert_eq!(refusal.code(), Code::StoreContractChanged);
         }

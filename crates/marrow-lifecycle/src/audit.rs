@@ -30,10 +30,8 @@ use marrow_kernel::durable::{
     SessionError, StoreProjection, StoreSchema,
 };
 
-use crate::actor::{AdmissionRefusal, BindingStrictness, ContractChanged, ImageAdmission};
+use crate::actor::{AdmissionRefusal, BindingStrictness, ImageAdmission};
 use crate::attachment::PreparedImage;
-use crate::authority::DemandExceedsCeiling;
-use crate::image::HeadMapPinMismatch;
 use crate::instance::StoreInstanceId;
 use crate::provision::{AdmitError, OpenError, open_admitted};
 
@@ -101,17 +99,9 @@ pub enum AuditError {
     NotExecutable,
     /// The store could not be opened (not provisioned, incomplete, held, or corrupt).
     Open(OpenError),
-    /// The store's active program differs from the presented image only in code: a
-    /// code-only edit that `marrow run --store` has not rebound.
-    ImageNotActive,
-    /// The store's head names this image but records binding facts the image does not have.
-    InconsistentBinding,
-    /// The store's active binding differs from the presented image in a binding fact.
-    ContractChanged(ContractChanged),
-    /// The presented image's demand exceeds the store's accepted ceiling.
-    DemandExceedsCeiling(DemandExceedsCeiling),
-    /// The persisted head-map pin disagrees with the derived numbering.
-    HeadMapPin(HeadMapPinMismatch),
+    /// The exact-binding gate refused the presented image under the lock and before any
+    /// engine call.
+    Refused(AdmissionRefusal),
     /// The semantic handle refused inspection, or the engine failed during the walk.
     Read(SessionError),
 }
@@ -122,11 +112,7 @@ impl AuditError {
         match self {
             AuditError::NotExecutable => Code::CliDurableUnsupported,
             AuditError::Open(error) => error.code(),
-            AuditError::ImageNotActive => Code::StoreImageNotActive,
-            AuditError::InconsistentBinding => Code::StoreCorruption,
-            AuditError::ContractChanged(refusal) => refusal.code(),
-            AuditError::DemandExceedsCeiling(refusal) => refusal.code(),
-            AuditError::HeadMapPin(refusal) => refusal.code(),
+            AuditError::Refused(refusal) => refusal.code(),
             AuditError::Read(SessionError::Poisoned) => Code::RunCommit,
             AuditError::Read(SessionError::Denied) => Code::RunAuthority,
             AuditError::Read(SessionError::Engine(error)) => error.code(),
@@ -144,19 +130,7 @@ impl std::fmt::Display for AuditError {
                 )
             }
             AuditError::Open(error) => write!(f, "{error}"),
-            AuditError::ImageNotActive => write!(
-                f,
-                "the program is not the store's active program: its code differs from the \
-                 bound program. Present the store's active program and retry the audit"
-            ),
-            AuditError::InconsistentBinding => write!(
-                f,
-                "the store's head names this program but records binding facts the program \
-                 does not have"
-            ),
-            AuditError::ContractChanged(refusal) => write!(f, "{refusal}"),
-            AuditError::DemandExceedsCeiling(refusal) => write!(f, "{refusal}"),
-            AuditError::HeadMapPin(refusal) => write!(f, "{refusal}"),
+            AuditError::Refused(refusal) => write!(f, "{refusal}"),
             AuditError::Read(SessionError::Poisoned) => write!(
                 f,
                 "the store cannot be inspected through a handle with an unresolved commit"
@@ -189,20 +163,7 @@ pub fn audit(dir: &Path, prepared: PreparedImage) -> Result<StoreAudit, AuditErr
 pub(crate) fn open_error(error: AdmitError<AdmissionRefusal>) -> AuditError {
     match error {
         AdmitError::Open(error) => AuditError::Open(error),
-        AdmitError::Refused(refusal) => refusal.into(),
-    }
-}
-
-impl From<AdmissionRefusal> for AuditError {
-    fn from(refusal: AdmissionRefusal) -> Self {
-        match refusal {
-            AdmissionRefusal::NotActive => Self::ImageNotActive,
-            AdmissionRefusal::InconsistentBinding => Self::InconsistentBinding,
-            AdmissionRefusal::ContractChanged(refusal) => Self::ContractChanged(refusal),
-            AdmissionRefusal::Exceeds(refusal) => Self::DemandExceedsCeiling(refusal),
-            AdmissionRefusal::CeilingCorrupt => Self::Open(AdmissionRefusal::ceiling_corrupt()),
-            AdmissionRefusal::Pin(refusal) => Self::HeadMapPin(refusal),
-        }
+        AdmitError::Refused(refusal) => AuditError::Refused(refusal),
     }
 }
 

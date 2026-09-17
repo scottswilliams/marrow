@@ -23,7 +23,7 @@
 
 use marrow_codes::Code;
 use marrow_kernel::durable::{DemandCoverage, InvocationGrant, PrincipalPredicate, SessionError};
-use marrow_lifecycle::{AttachOutcome, LifecycleError};
+use marrow_lifecycle::{AdmissionRefusal, AttachOutcome, LifecycleError};
 
 use crate::support::Scratch;
 use crate::support::ceiling::{attach_image, image, provision, source_broadened, source_read_only};
@@ -42,7 +42,7 @@ fn effective_authority_is_demand_ceiling_grant_and_the_reserved_principal_slot()
     // refused at attach, before any engine call. It never reaches the grant or principal terms.
     let head_before = std::fs::read(store.join("head")).expect("head");
     match attach_image(&store, &broadened) {
-        Err(LifecycleError::DemandExceedsCeiling(refusal)) => {
+        Err(LifecycleError::Refused(AdmissionRefusal::Exceeds(refusal))) => {
             assert_eq!(refusal.code(), Code::StoreDemandExceedsCeiling);
         }
         Err(other) => panic!(

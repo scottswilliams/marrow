@@ -9,8 +9,8 @@ use marrow_kernel::codec::value::RuntimeScalar;
 use marrow_kernel::durable::{DemandCoverage, Durable, EntryValue, InvocationGrant};
 use marrow_kernel::equality::ValueDomain;
 use marrow_lifecycle::{
-    AttachOutcome, AuditError, AuditSite, ChangedFact, ENGINE_FILE, active_binding, attach, audit,
-    prepare,
+    AdmissionRefusal, AttachOutcome, AuditError, AuditSite, ChangedFact, ENGINE_FILE,
+    active_binding, attach, audit, prepare,
 };
 use marrow_verify::{VerifiedImage, verify};
 
@@ -483,12 +483,12 @@ fn only_the_exact_active_binding_may_audit() {
     let before = store_files(&store);
     assert!(matches!(
         audit(&store, prepare(edited)),
-        Err(AuditError::ImageNotActive)
+        Err(AuditError::Refused(AdmissionRefusal::NotActive))
     ));
     assert!(store_files(&store) == before, "store artifacts changed");
     let widened = compile(WIDENED_SOURCE, IDS);
     match audit(&store, prepare(widened)) {
-        Err(AuditError::ContractChanged(refusal)) => {
+        Err(AuditError::Refused(AdmissionRefusal::ContractChanged(refusal))) => {
             assert_eq!(refusal.changed, ChangedFact::Interface);
         }
         other => panic!("expected a contract-changed refusal, got {other:?}"),
