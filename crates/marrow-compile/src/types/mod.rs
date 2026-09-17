@@ -60,10 +60,7 @@ use metadata::{DeclaredCounts, RowDirectory, RowDirectoryGuard};
 pub(crate) use owner_txn::GenericOwnerTxn;
 use owner_txn::ProofIsolation;
 use owner_txn::RegistryInverse;
-use render::{
-    ANCHOR, DISPLAY, collection_spelling_for_display, garg_spelling_validated,
-    inst_spelling_for_display, render_validated_arg,
-};
+use render::{ANCHOR, DISPLAY, render_validated_arg};
 
 /// The identity of a nominal type in [`TypeRegistry`] order, carried by the
 /// lowered type so classification never re-reads the source spelling.
@@ -153,6 +150,15 @@ impl TypeParamIndex {
 impl std::fmt::Display for TypeParamIndex {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+impl From<TypeInstId> for GArg {
+    fn from(id: TypeInstId) -> Self {
+        match id {
+            TypeInstId::Record(ty) => Self::Struct(ty),
+            TypeInstId::Enum(id) => Self::Enum(id),
+        }
     }
 }
 
@@ -1509,9 +1515,9 @@ pub(crate) struct TypeMetadataSession<'a> {
     failure: Option<GenericInvariant>,
 }
 
-/// Active-path marks for best-effort diagnostic spelling. Compiler-owned metadata
-/// validation rejects cycles before semantic or durable use; these marks keep the
-/// display-only fallback total even when it is asked to render a hostile cache.
+/// Active-path marks for a spelling walk. Compiler-owned metadata validation rejects
+/// cycles before semantic or durable use; these marks keep rendering total even when
+/// it is asked to spell a hostile cache.
 struct DisplayScratch {
     active_rows: Vec<u8>,
     active_collections: Vec<u8>,
@@ -1730,8 +1736,13 @@ impl TypeRegistry {
         Ok(())
     }
 
+    /// Validate value-type arguments against the cached row directory, the same
+    /// directory every mint probe and session reads, so a validation never rebuilds
+    /// the classification of rows an earlier probe already made.
     pub(crate) fn validate_type_arguments(&self, args: &[GArg]) -> Result<(), GenericInvariant> {
-        self.metadata_view().validate_args(args, None)
+        let view = self.metadata_view();
+        let mut metadata = self.row_directory(&view)?;
+        view.validate_args_with(args, None, metadata.scratch())
     }
 
     /// The image enum index of the reserved `Option[inner]`, minting it on first use.
@@ -2115,10 +2126,7 @@ impl TypeRegistry {
             }
         }
         self.mint_type_instance(draft, template, &resolved, site)
-            .map(|id| match id {
-                TypeInstId::Record(ty) => GArg::Struct(ty),
-                TypeInstId::Enum(id) => GArg::Enum(id),
-            })
+            .map(GArg::from)
     }
 
     /// Validate one instantiation key and resolve any existing row without keeping
@@ -2987,9 +2995,9 @@ impl TypeRegistry {
     /// The resolved member shape of a minted type instantiation, if `id` names one.
     fn type_inst_body(&self, id: TypeInstId) -> Result<Option<InstBody>, GenericInvariant> {
         let view = self.metadata_view();
-        let mut metadata = MetadataScratch::try_new(&view)?;
+        let mut metadata = self.row_directory(&view)?;
         Ok(view
-            .ready_inst_by_id(id, &mut metadata)?
+            .ready_inst_by_id(id, metadata.scratch())?
             .map(|(_, body)| body.clone()))
     }
 
@@ -3031,11 +3039,7 @@ impl TypeRegistry {
         if !matches!(inst.state, TypeInstState::Ready(_)) {
             return Ok(None);
         }
-        let arg = match id {
-            TypeInstId::Record(id) => GArg::Struct(id),
-            TypeInstId::Enum(id) => GArg::Enum(id),
-        };
-        render_validated_arg(self, view, metadata, arg, display, ANCHOR).map(Some)
+        render_validated_arg(self, view, metadata, GArg::from(id), display, ANCHOR).map(Some)
     }
 
     /// The source spelling of a generic type instantiation, `Name<arg, ...>`, if
@@ -3043,11 +3047,9 @@ impl TypeRegistry {
     /// cycle labels; durable identity uses [`enum_anchor_spelling`](Self::enum_anchor_spelling).
     pub(crate) fn inst_spelling(&self, id: TypeInstId) -> Option<String> {
         let view = self.metadata_view();
-        let metadata = MetadataScratch::try_new(&view).ok()?;
+        let metadata = self.row_directory(&view).ok()?;
         let mut display = DisplayScratch::for_view(&view);
-        inst_spelling_for_display(self, &view, &metadata, id, None, &mut display)
-            .ok()
-            .flatten()
+        render_validated_arg(self, &view, &metadata, GArg::from(id), &mut display, DISPLAY).ok()
     }
 
     fn inst_spelling_validated(
@@ -3057,10 +3059,7 @@ impl TypeRegistry {
         id: TypeInstId,
         display: &mut DisplayScratch,
     ) -> Result<Option<String>, GenericInvariant> {
-        let arg = match id {
-            TypeInstId::Record(id) => GArg::Struct(id),
-            TypeInstId::Enum(id) => GArg::Enum(id),
-        };
+        let arg = GArg::from(id);
         let row = metadata
             .row(id)
             .ok_or(GenericInvariant::TypeArgumentTargetMissing(arg))?;
@@ -3226,13 +3225,19 @@ impl TypeRegistry {
     /// used in diagnostics and cycle labels. The canonical angle-form display owner.
     pub(crate) fn collection_spelling(&self, idx: CollTypeId) -> String {
         let view = self.metadata_view();
-        let fallback = || "collection".to_string();
-        let Ok(metadata) = MetadataScratch::try_new(&view) else {
-            return fallback();
-        };
-        let mut display = DisplayScratch::for_view(&view);
-        collection_spelling_for_display(self, &view, &metadata, idx, None, None, &mut display)
-            .unwrap_or_else(|_| fallback())
+        let spelling = self.row_directory(&view).ok().and_then(|metadata| {
+            let mut display = DisplayScratch::for_view(&view);
+            render_validated_arg(
+                self,
+                &view,
+                &metadata,
+                GArg::Collection(idx),
+                &mut display,
+                DISPLAY,
+            )
+            .ok()
+        });
+        spelling.unwrap_or_else(|| "collection".to_string())
     }
 
     /// Every admitted `resource` record, in declaration-admission order. The durable
@@ -3879,8 +3884,8 @@ pub(crate) fn reject_value_cycles(
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<(), GenericInvariant> {
     let view = registry.metadata_view();
-    let mut metadata = MetadataScratch::try_new(&view)?;
-    let graph = ValueGraph::build_validated(registry, &view, &mut metadata)?;
+    let mut metadata = registry.row_directory(&view)?;
+    let graph = ValueGraph::build_validated(registry, &view, metadata.scratch())?;
     for info in &registry.structs {
         // A refused struct has an empty body and so lies on no cycle, but it is also
         // not a declaration this pass speaks for: its own cause was already reported

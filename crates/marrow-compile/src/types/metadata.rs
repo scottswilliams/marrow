@@ -271,7 +271,9 @@ pub(super) fn collection_generic_target(
 }
 
 impl MetadataScratch {
-    pub(super) fn try_new(view: &TypeMetadataView<'_>) -> Result<Self, GenericInvariant> {
+    /// Classify every declared and instantiated row from scratch. The one cold build;
+    /// every reader borrows the cached [`RowDirectory`] seeded from it.
+    fn try_new(view: &TypeMetadataView<'_>) -> Result<Self, GenericInvariant> {
         let mut records = Vec::new();
         let mut enums = Vec::new();
         for (record_row, record) in view.registry.records.iter().enumerate() {
@@ -387,14 +389,6 @@ impl MetadataScratch {
         }
     }
 
-    /// What the directory classified `id` as, if anything.
-    pub(super) fn record_owner(&self, id: TypeId) -> Option<RecordMetadataOwner> {
-        self.records.get(id.index() as usize).copied().flatten()
-    }
-
-    pub(super) fn enum_owner(&self, id: EnumId) -> Option<EnumMetadataOwner> {
-        self.enums.get(id.index() as usize).copied().flatten()
-    }
 
     pub(super) fn declared_struct(&self, id: TypeId) -> Option<usize> {
         self.records
@@ -477,15 +471,6 @@ impl TypeMetadataView<'_> {
             && index < self.generics.type_insts.len()
             && self.generics.filling.is_some()
             && self.generics.fill_rows.get(&TypeInstKey::from(id)) == Some(&index)
-    }
-
-    pub(super) fn validate_args(
-        &self,
-        args: &[GArg],
-        owner: Option<TypeInstId>,
-    ) -> Result<(), GenericInvariant> {
-        let mut scratch = MetadataScratch::try_new(self)?;
-        self.validate_args_with(args, owner, &mut scratch)
     }
 
     pub(super) fn validate_args_with(
@@ -1504,12 +1489,13 @@ impl TypeMetadataSession<'_> {
         let result = (|| {
             self.view
                 .validate_args_with(std::slice::from_ref(&arg), None, &mut self.metadata)?;
-            garg_spelling_validated(
+            render_validated_arg(
                 self.view.registry,
                 &self.view,
                 &self.metadata,
                 arg,
                 &mut self.display,
+                DISPLAY,
             )
         })();
         self.remember(result)
@@ -1720,8 +1706,8 @@ impl RowDirectory {
     /// extending the directory in image order. Rows below the watermark were classified
     /// on a prior probe and are not revisited. A `(template, args)` semantic-key collision
     /// cannot arise on an appended row (mint dedup admits only a fresh key), so extension
-    /// checks only image-identity placement; the full `try_new` semantic-key scan still
-    /// runs on every cold or invalidated build and on every unrouted projection path.
+    /// checks only image-identity placement; the full `try_new` semantic-key scan runs
+    /// on every cold or invalidated build.
     pub(super) fn extend(&mut self, view: &TypeMetadataView<'_>) -> Result<(), GenericInvariant> {
         // Atomic. A placement resizes the owner before it can fail on an identity
         // collision, so a failed extension would otherwise leave scratch rows the

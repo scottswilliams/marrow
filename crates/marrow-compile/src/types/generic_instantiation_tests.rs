@@ -55,13 +55,36 @@ fn fn_axis_fixture(v: usize) -> String {
     source
 }
 
-/// Both axes are deterministic across a widening instantiation population: the same
+/// Collection axis: `v` seeds, each applied through eight distinct `List`/`Map`/
+/// `Option` shapes as the parameters of one function, so the program mints `8 * v`
+/// distinct collection and reserved-enum instantiations without constructing a value
+/// of any. Every mint validates its arguments against the row directory, so this axis
+/// is the one that stays flat only while that directory is reused across mints.
+fn collection_axis_fixture(v: usize) -> String {
+    let mut source = String::from("module main\n\n");
+    seed_structs(&mut source, v);
+    source.push('\n');
+    for seed in 0..v {
+        writeln!(
+            source,
+            "fn take{seed}(a: List<N{seed}>, b: Map<int, N{seed}>, c: Option<N{seed}>, \
+             d: List<Option<N{seed}>>, e: Map<string, List<N{seed}>>, f: Map<string, N{seed}>, \
+             g: List<Map<int, N{seed}>>, h: Map<int, Option<N{seed}>>): int {{ return 0 }}"
+        )
+        .expect("write collection parameters");
+    }
+    source.push_str("\npub fn driver(): int { return 0 }\n");
+    source
+}
+
+/// Every axis is deterministic across a widening instantiation population: the same
 /// program compiles to the same image bytes however many instances it mints.
 #[test]
-fn both_instantiation_axes_compile_reproducibly_as_they_widen() {
+fn every_instantiation_axis_compiles_reproducibly_as_it_widens() {
     for (axis, fixture) in [
         ("type", type_axis_fixture as fn(usize) -> String),
         ("function", fn_axis_fixture),
+        ("collection", collection_axis_fixture),
     ] {
         for width in [128usize, 512] {
             let input = project(fixture(width));
