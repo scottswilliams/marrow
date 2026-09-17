@@ -14,13 +14,11 @@
 //! - [`frame`] — length-prefixed framing with [`MAX_FRAME`].
 //! - [`json`] — the canonical JSON model and codec (the wire's canonical-JSON owner).
 //! - [`message`] — the closed [`ClientMessage`]/[`ServerMessage`] grammar.
-//! - [`loss`] — the [`LossClass`] a lost reply is classified into, never replayed.
 
 mod error;
 mod frame;
 mod id;
 mod json;
-mod loss;
 mod message;
 mod span;
 
@@ -30,8 +28,7 @@ pub use id::Id32;
 pub use json::{
     ArrayWriter, Json, ObjectWriter, ValueWriter, encode, parse_strict, write_json_string,
 };
-pub use loss::{HandoffStage, LossClass, classify};
-pub use message::{ClientMessage, DurableState, ServerMessage};
+pub use message::{ClientMessage, ServerMessage};
 pub use span::Span;
 
 /// The protocol version byte carried by every frame. The runner and the generated

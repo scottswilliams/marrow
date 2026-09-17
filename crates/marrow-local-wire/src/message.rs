@@ -9,46 +9,17 @@
 //!
 //! The grammar is closed: there is no free-form envelope, no streaming or partial
 //! reply, and no replay/cancellation message. A mutating call whose reply is lost is
-//! classified through [`crate::loss`], never resent. Every request and call reply
+//! reported by its caller as outcome-unknown, never resent. Every request and call reply
 //! carries one exact u32 turn. A serial client assigns a turn once and the runner
 //! channel echoes it on that request's sole response, so a delayed response from an
 //! earlier turn cannot settle a later call.
 
-use marrow_codes::Code;
+use marrow_codes::{Code, DurableCommitState};
 
 use crate::error::WireError;
 use crate::id::Id32;
 use crate::json::{self, Json, ObjectWriter, ValueWriter};
 use crate::{EncodedFrame, frame, span::Span};
-
-/// What is known about durable state after an invocation stopped without
-/// completing. This is independent of the source-mapped fault and carries no
-/// recovery witness.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DurableState {
-    KnownOld,
-    KnownNew,
-    Unknown,
-}
-
-impl DurableState {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::KnownOld => "known_old",
-            Self::KnownNew => "known_new",
-            Self::Unknown => "unknown",
-        }
-    }
-
-    fn parse(value: &str) -> Option<Self> {
-        match value {
-            "known_old" => Some(Self::KnownOld),
-            "known_new" => Some(Self::KnownNew),
-            "unknown" => Some(Self::Unknown),
-            _ => None,
-        }
-    }
-}
 
 /// A message from the caller to the runner.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,7 +58,7 @@ pub enum ServerMessage {
     /// the wire.
     Incomplete {
         code: Code,
-        durable: DurableState,
+        durable: DurableCommitState,
         span: Span,
     },
     /// The request could not be admitted or run (an unknown export, an argument
@@ -552,9 +523,9 @@ impl<'a> Fields<'a> {
         })
     }
 
-    fn durable_state(&self, key: &str) -> Result<DurableState, WireError> {
+    fn durable_state(&self, key: &str) -> Result<DurableCommitState, WireError> {
         match self.get(key)? {
-            Json::Str(value) => DurableState::parse(value).ok_or(WireError::Malformed),
+            Json::Str(value) => DurableCommitState::parse(value).ok_or(WireError::Malformed),
             _ => Err(WireError::Malformed),
         }
     }
@@ -569,7 +540,7 @@ impl<'a> Fields<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClientMessage, Code, DurableState, ServerMessage};
+    use super::{ClientMessage, Code, DurableCommitState, ServerMessage};
     use crate::id::Id32;
     use crate::json::{self, Json};
     use crate::span::Span;
@@ -702,7 +673,7 @@ mod tests {
             json_of(
                 &ServerMessage::Incomplete {
                     code: Code::RunCommit,
-                    durable: DurableState::KnownNew,
+                    durable: DurableCommitState::KnownNew,
                     span: Span { line: 9, column: 4 },
                 }
                 .encode()
@@ -867,9 +838,9 @@ mod tests {
             span: Span { line: 1, column: 1 },
         });
         for durable in [
-            DurableState::KnownOld,
-            DurableState::KnownNew,
-            DurableState::Unknown,
+            DurableCommitState::KnownOld,
+            DurableCommitState::KnownNew,
+            DurableCommitState::Unknown,
         ] {
             server_round_trip(ServerMessage::Incomplete {
                 code: Code::RunCommit,

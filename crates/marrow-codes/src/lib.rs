@@ -36,6 +36,42 @@ impl StoreUncertainty {
     }
 }
 
+/// The durable state of an invocation that did not complete. This is independent of
+/// whether the function returned: a commit can be known to have left the store old or
+/// new even though instructions after the commit and the function return never ran. The
+/// kernel classifies it, the runner carries it on the wire, and the CLI reports it, all
+/// through this one definition and its one spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurableCommitState {
+    /// The interrupted commit is proven not to have changed durable state.
+    KnownOld,
+    /// The interrupted commit is proven to have installed its proposed durable state.
+    KnownNew,
+    /// The durable state cannot be classified.
+    Unknown,
+}
+
+impl DurableCommitState {
+    /// The wire and report spelling.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::KnownOld => "known_old",
+            Self::KnownNew => "known_new",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// The state spelled by [`Self::as_str`], or `None` for any other text.
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "known_old" => Some(Self::KnownOld),
+            "known_new" => Some(Self::KnownNew),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
+        }
+    }
+}
+
 /// The family a code belongs to, named by the first dotted segment of its string.
 /// The family fixes the tooling [`Family::kind`] a code reports.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]

@@ -11,7 +11,7 @@ mod scratch;
 
 use marrow_lifecycle::ProvisionReport;
 use marrow_local_wire::{ClientMessage, ServerMessage};
-use marrow_runner::Service;
+use marrow_runner::{Handler, Service};
 use output::broken_output;
 
 const SOURCE: &str = r#"resource Counter {
@@ -54,7 +54,7 @@ fn a_provision_request_with_a_matching_approval_provisions() {
     let base = scratch::path("runner-provision");
     std::fs::create_dir_all(&base).expect("scratch base");
     let store = base.join("store");
-    let service = Service::build(
+    let mut service = Service::build(
         marrow_verify::verify(&program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes)
             .expect("verify"),
     )
@@ -90,7 +90,7 @@ fn a_provision_request_with_a_wrong_approval_is_rejected() {
     let base = scratch::path("runner-provision");
     std::fs::create_dir_all(&base).expect("scratch base");
     let store = base.join("store");
-    let service = Service::build(
+    let mut service = Service::build(
         marrow_verify::verify(&program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes)
             .expect("verify"),
     )

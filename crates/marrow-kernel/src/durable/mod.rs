@@ -576,18 +576,7 @@ pub struct BoundedKeys {
     pub more: bool,
 }
 
-/// The durable state of an invocation that did not complete. This is independent of
-/// whether the function returned: a commit can be known to have left the store old or
-/// new even though instructions after the commit and the function return never ran.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DurableCommitState {
-    /// The interrupted commit is proven not to have changed durable state.
-    KnownOld,
-    /// The interrupted commit is proven to have installed its proposed durable state.
-    KnownNew,
-    /// The durable state cannot be classified.
-    Unknown,
-}
+pub use marrow_codes::DurableCommitState;
 
 /// The lifecycle scope of one attached store. It is not authority: it only prevents a
 /// recovery fact minted for one store instance and retained path from classifying another

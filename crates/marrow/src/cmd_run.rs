@@ -414,12 +414,11 @@ fn cleanup_record(error: marrow_runner::CompanionCleanupError) -> Record {
             child,
             staging,
             cause,
-            kill_error,
         } => Record::CompanionUnreaped {
             pid: child.id(),
             staging: staging.display().to_string(),
             cause: cause.to_string(),
-            kill_error: kill_error.map(|error| error.to_string()),
+            kill_error: None,
         },
         marrow_runner::CompanionCleanupError::Staging { path, cause } => Record::CompanionStaging {
             path: path.display().to_string(),
@@ -446,11 +445,7 @@ fn call_outcome_to_record(outcome: marrow_runner::CallOutcome) -> Record {
             column,
         } => Record::Incomplete {
             code,
-            durable: match durable {
-                marrow_runner::DurableState::KnownOld => marrow_vm::DurableCommitState::KnownOld,
-                marrow_runner::DurableState::KnownNew => marrow_vm::DurableCommitState::KnownNew,
-                marrow_runner::DurableState::Unknown => marrow_vm::DurableCommitState::Unknown,
-            },
+            durable,
             line,
             column,
         },

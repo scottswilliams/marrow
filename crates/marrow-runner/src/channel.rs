@@ -218,26 +218,20 @@ impl Channel {
         Err(AcceptError::Unauthenticated)
     }
 
-    /// Accept an authenticated client, then construct the request handler and run its session.
-    ///
-    /// The handler is built by `make_handler` **after** the handshake proves the launch nonce,
-    /// so a resource the handler opens on construction — the ephemeral-memory attachment — never
-    /// opens for a peer that has not authenticated. An eager caller (the storeless service, the
-    /// native session whose store must open before the handshake) passes a closure returning an
-    /// already-built handler. Returns once the client hangs up or the session closes fail-closed.
+    /// Accept an authenticated client and run its session against `handler`. Returns once
+    /// the client hangs up or the session closes fail-closed.
     pub fn accept_and_serve<H: Handler>(
         &self,
         secrets: &LaunchSecrets,
         interface: Id32,
         deadlines: &Deadlines,
         max_attempts: u32,
-        make_handler: impl FnOnce() -> H,
+        handler: &mut H,
     ) -> Result<(), AcceptError> {
         let mut connection =
             self.accept_authenticated(secrets, interface, deadlines, max_attempts)?;
-        let mut handler = make_handler();
         connection
-            .run_session(&mut handler, deadlines)
+            .run_session(handler, deadlines)
             .map_err(AcceptError::Io)
     }
 

@@ -6,7 +6,7 @@ use marrow_codes::Code;
 use marrow_local_wire::{
     ClientMessage, EncodedFrame, Json, MAX_FRAME, ServerMessage, WireError, frame_body_len,
 };
-use marrow_runner::{Id32, Service};
+use marrow_runner::{Handler, Id32, Service};
 
 /// The durable identity ledger used by the durable fixture below.
 const IDS: &str = "marrow ids v0\n\
@@ -54,7 +54,7 @@ fn id_of(idmap: &[(String, Id32)], name: &str) -> Id32 {
         .unwrap_or_else(|| panic!("no export {name}"))
 }
 
-fn call(service: &Service, export: Id32, args: Vec<Json>) -> ServerMessage {
+fn call(service: &mut Service, export: Id32, args: Vec<Json>) -> ServerMessage {
     let frame = service
         .handle(ClientMessage::Request { export, args }, Some(0))
         .expect("reply fits");
@@ -62,7 +62,7 @@ fn call(service: &Service, export: Id32, args: Vec<Json>) -> ServerMessage {
 }
 
 fn framed_call(
-    service: &Service,
+    service: &mut Service,
     export: Id32,
     args: Vec<Json>,
     expected_frame_bytes: usize,
@@ -72,7 +72,7 @@ fn framed_call(
 }
 
 fn framed_result(
-    service: &Service,
+    service: &mut Service,
     export: Id32,
     args: Vec<Json>,
     expected_frame_bytes: usize,
@@ -97,9 +97,9 @@ const ADD: &str = r#"pub fn add(a: int, b: int): int {
 
 #[test]
 fn a_storeless_call_returns_its_value() {
-    let (service, ids) = build(ADD, None);
+    let (mut service, ids) = build(ADD, None);
     let response = call(
-        &service,
+        &mut service,
         id_of(&ids, "add"),
         vec![Json::Int(2), Json::Int(3)],
     );
@@ -116,10 +116,10 @@ fn shared_text_result_is_bounded_before_frame_construction() {
     return xs
 }
 "#;
-    let (service, ids) = build(source, None);
+    let (mut service, ids) = build(source, None);
     assert_eq!(ids.len(), 1);
     let export = id_of(&ids, "triple");
-    let small_frame = framed_result(&service, export, vec![Json::Str("\0".into())], 126)
+    let small_frame = framed_result(&mut service, export, vec![Json::Str("\0".into())], 126)
         .expect("small reply fits");
     let frame = small_frame.as_bytes();
     let small = ServerMessage::decode(&frame[4..]).expect("small reply decodes");
@@ -146,7 +146,7 @@ fn shared_text_result_is_bounded_before_frame_construction() {
 
     assert_eq!(
         framed_result(
-            &service,
+            &mut service,
             export,
             vec![Json::Str("\0".repeat(58_252))],
             349_632,
@@ -157,9 +157,9 @@ fn shared_text_result_is_bounded_before_frame_construction() {
 
 #[test]
 fn a_runtime_fault_maps_to_a_fault_response() {
-    let (service, ids) = build(ADD, None);
+    let (mut service, ids) = build(ADD, None);
     let response = call(
-        &service,
+        &mut service,
         id_of(&ids, "add"),
         vec![Json::Int(i64::MAX), Json::Int(1)],
     );
@@ -171,8 +171,8 @@ fn a_runtime_fault_maps_to_a_fault_response() {
 
 #[test]
 fn an_unknown_export_is_rejected() {
-    let (service, _ids) = build(ADD, None);
-    let response = call(&service, Id32::from_bytes([0; 32]), vec![]);
+    let (mut service, _ids) = build(ADD, None);
+    let response = call(&mut service, Id32::from_bytes([0; 32]), vec![]);
     assert_eq!(
         response,
         ServerMessage::Reject {
@@ -183,8 +183,8 @@ fn an_unknown_export_is_rejected() {
 
 #[test]
 fn an_argument_count_mismatch_is_rejected() {
-    let (service, ids) = build(ADD, None);
-    let response = call(&service, id_of(&ids, "add"), vec![Json::Int(1)]);
+    let (mut service, ids) = build(ADD, None);
+    let response = call(&mut service, id_of(&ids, "add"), vec![Json::Int(1)]);
     assert_eq!(
         response,
         ServerMessage::Reject {
@@ -213,7 +213,7 @@ pub fn growAtCap(m: Map<int, int>): int {
     return length(changed)
 }
 "#;
-    let (service, ids) = build(source, None);
+    let (mut service, ids) = build(source, None);
     let reject = ServerMessage::Reject {
         code: Code::RunnerArgMismatch,
     };
@@ -233,7 +233,7 @@ pub fn growAtCap(m: Map<int, int>): int {
             .collect();
         assert_eq!(
             framed_call(
-                &service,
+                &mut service,
                 id_of(&ids, "mapCount"),
                 vec![array(entries)],
                 frame_bytes
@@ -274,7 +274,7 @@ pub fn growAtCap(m: Map<int, int>): int {
         .collect();
         assert_eq!(
             framed_call(
-                &service,
+                &mut service,
                 id_of(&ids, "mapBytes"),
                 vec![array(entries)],
                 frame_bytes
@@ -288,7 +288,12 @@ pub fn growAtCap(m: Map<int, int>): int {
         let entries = (0..65_536)
             .map(|key| array(vec![Json::Int(key), Json::Int(0)]))
             .collect();
-        let reply = framed_call(&service, id_of(&ids, name), vec![array(entries)], 644_369);
+        let reply = framed_call(
+            &mut service,
+            id_of(&ids, name),
+            vec![array(entries)],
+            644_369,
+        );
         match (name, reply) {
             ("replaceAtCap", ServerMessage::Value { data: Json::Int(9) }) => {}
             ("growAtCap", ServerMessage::Fault { code, .. }) => {
@@ -317,7 +322,7 @@ pub fn choiceCount(value: Option<Items>): int {
     }
 }
 "#;
-    let (service, ids) = build(source, None);
+    let (mut service, ids) = build(source, None);
     for count in [1, 65_537] {
         for name in ["nestedCount", "recordCount", "choiceCount"] {
             let list = array(vec![Json::Int(0); count]);
@@ -345,7 +350,7 @@ pub fn choiceCount(value: Option<Items>): int {
             };
             assert_eq!(
                 framed_call(
-                    &service,
+                    &mut service,
                     id_of(&ids, name),
                     vec![input],
                     118 + 2 * count + 1 + wrapper_bytes,
@@ -357,7 +362,7 @@ pub fn choiceCount(value: Option<Items>): int {
     }
     assert_eq!(
         framed_call(
-            &service,
+            &mut service,
             id_of(&ids, "choiceCount"),
             vec![Json::Object(vec![
                 ("member".to_string(), Json::Str("none".to_string())),
@@ -371,9 +376,9 @@ pub fn choiceCount(value: Option<Items>): int {
 
 #[test]
 fn an_argument_type_mismatch_is_rejected() {
-    let (service, ids) = build(ADD, None);
+    let (mut service, ids) = build(ADD, None);
     let response = call(
-        &service,
+        &mut service,
         id_of(&ids, "add"),
         vec![Json::Str("x".to_string()), Json::Int(1)],
     );
@@ -398,8 +403,8 @@ pub fn readValue(n: int): int {
     return ^counters[n].value ?? 0
 }
 "#;
-    let (service, ids) = build(source, Some(IDS.as_bytes()));
-    let response = call(&service, id_of(&ids, "readValue"), vec![Json::Int(1)]);
+    let (mut service, ids) = build(source, Some(IDS.as_bytes()));
+    let response = call(&mut service, id_of(&ids, "readValue"), vec![Json::Int(1)]);
     assert_eq!(
         response,
         ServerMessage::Reject {
@@ -419,12 +424,16 @@ pub fn shift(p: Point, dx: int): Point {
     return Point(x: p.x + dx, y: p.y)
 }
 "#;
-    let (service, ids) = build(source, None);
+    let (mut service, ids) = build(source, None);
     let point = Json::Object(vec![
         ("x".to_string(), Json::Int(1)),
         ("y".to_string(), Json::Int(2)),
     ]);
-    let response = call(&service, id_of(&ids, "shift"), vec![point, Json::Int(10)]);
+    let response = call(
+        &mut service,
+        id_of(&ids, "shift"),
+        vec![point, Json::Int(10)],
+    );
     assert_eq!(
         response,
         ServerMessage::Value {
@@ -471,10 +480,10 @@ fn array(items: Vec<Json>) -> Json {
 
 #[test]
 fn a_list_round_trips_through_the_codec() {
-    let (service, ids) = build(COLLECTIONS, None);
+    let (mut service, ids) = build(COLLECTIONS, None);
     // Return: a built list crosses as a JSON array.
     assert_eq!(
-        call(&service, id_of(&ids, "nums"), vec![]),
+        call(&mut service, id_of(&ids, "nums"), vec![]),
         ServerMessage::Value {
             data: array(vec![Json::Int(1), Json::Int(2)])
         }
@@ -482,7 +491,7 @@ fn a_list_round_trips_through_the_codec() {
     // Parameter: a JSON array decodes onto the `List<int>` parameter.
     assert_eq!(
         call(
-            &service,
+            &mut service,
             id_of(&ids, "total"),
             vec![array(vec![Json::Int(2), Json::Int(3), Json::Int(4)])],
         ),
@@ -496,11 +505,11 @@ fn framed_list_arguments_enforce_the_element_limit() {
     return length(xs)
 }
 "#;
-    let (service, ids) = build(source, None);
+    let (mut service, ids) = build(source, None);
     let export = id_of(&ids, "count");
     assert_eq!(
         framed_call(
-            &service,
+            &mut service,
             export,
             vec![array(vec![Json::Int(0); 65_536])],
             131_191,
@@ -511,7 +520,7 @@ fn framed_list_arguments_enforce_the_element_limit() {
     );
     assert_eq!(
         framed_call(
-            &service,
+            &mut service,
             export,
             vec![array(vec![Json::Int(0); 65_537])],
             131_193,
@@ -528,7 +537,7 @@ fn framed_nested_lists_enforce_the_parent_byte_limit() {
     return length(xs)
 }
 "#;
-    let (service, ids) = build(source, None);
+    let (mut service, ids) = build(source, None);
     let export = id_of(&ids, "count");
     // Eight child headers plus 131,071 eight-byte ints exactly fill the parent.
     let exact = [65_536, 65_535, 0, 0, 0, 0, 0, 0]
@@ -536,13 +545,13 @@ fn framed_nested_lists_enforce_the_parent_byte_limit() {
         .map(|len| array(vec![Json::Int(0); len]))
         .collect();
     assert_eq!(
-        framed_call(&service, export, vec![array(exact)], 262_283),
+        framed_call(&mut service, export, vec![array(exact)], 262_283),
         ServerMessage::Value { data: Json::Int(8) }
     );
     // Each child is valid; their parent needs 2 * (1 + 524,288) bytes.
     let excess = (0..2).map(|_| array(vec![Json::Int(0); 65_536])).collect();
     assert_eq!(
-        framed_call(&service, export, vec![array(excess)], 262_267),
+        framed_call(&mut service, export, vec![array(excess)], 262_267),
         ServerMessage::Reject {
             code: Code::RunnerArgMismatch
         }
@@ -551,10 +560,10 @@ fn framed_nested_lists_enforce_the_parent_byte_limit() {
 
 #[test]
 fn a_hostile_list_argument_is_rejected() {
-    let (service, ids) = build(COLLECTIONS, None);
+    let (mut service, ids) = build(COLLECTIONS, None);
     // A non-array where a list is expected.
     assert_eq!(
-        call(&service, id_of(&ids, "total"), vec![Json::Int(3)]),
+        call(&mut service, id_of(&ids, "total"), vec![Json::Int(3)]),
         ServerMessage::Reject {
             code: Code::RunnerArgMismatch
         }
@@ -562,7 +571,7 @@ fn a_hostile_list_argument_is_rejected() {
     // A list element of the wrong scalar type.
     assert_eq!(
         call(
-            &service,
+            &mut service,
             id_of(&ids, "total"),
             vec![array(vec![Json::Int(1), Json::Str("x".to_string())])],
         ),
@@ -574,11 +583,11 @@ fn a_hostile_list_argument_is_rejected() {
 
 #[test]
 fn a_map_round_trips_through_the_codec() {
-    let (service, ids) = build(COLLECTIONS, None);
+    let (mut service, ids) = build(COLLECTIONS, None);
     // Return: an ordered map crosses as an array of [key, value] pairs in ascending
     // key order, never a JS object.
     assert_eq!(
-        call(&service, id_of(&ids, "tally"), vec![]),
+        call(&mut service, id_of(&ids, "tally"), vec![]),
         ServerMessage::Value {
             data: array(vec![
                 array(vec![Json::Str("a".to_string()), Json::Int(1)]),
@@ -593,7 +602,7 @@ fn a_map_round_trips_through_the_codec() {
     ]);
     assert_eq!(
         call(
-            &service,
+            &mut service,
             id_of(&ids, "lookup"),
             vec![map, Json::Str("b".to_string())],
         ),
@@ -605,14 +614,14 @@ fn a_map_round_trips_through_the_codec() {
 
 #[test]
 fn a_map_argument_accepts_unique_pairs_in_reverse_order() {
-    let (service, ids) = build(COLLECTIONS, None);
+    let (mut service, ids) = build(COLLECTIONS, None);
     let map = array(vec![
         array(vec![Json::Str("b".to_string()), Json::Int(20)]),
         array(vec![Json::Str("a".to_string()), Json::Int(10)]),
     ]);
     assert_eq!(
         call(
-            &service,
+            &mut service,
             id_of(&ids, "lookup"),
             vec![map, Json::Str("b".to_string())],
         ),
@@ -625,7 +634,7 @@ fn a_map_argument_accepts_unique_pairs_in_reverse_order() {
 /// Every input ordering of one key family's Map admits to the same canonical order, and
 /// every admitted key looks up its own value while a key outside the map reads absent.
 fn every_map_ordering_canonicalizes(
-    service: &Service,
+    service: &mut Service,
     ids: &[(String, Id32)],
     kind: &str,
     keys: &[Json],
@@ -746,10 +755,10 @@ pub fn observe_{kind}(m: Map<{kind}, int>, k: {kind}): Observed_{kind} {{
 }
 "#,
     );
-    let (service, ids) = build(&source, None);
+    let (mut service, ids) = build(&source, None);
     let pair = |key, value| array(vec![key, value]);
     for (kind, keys) in families {
-        every_map_ordering_canonicalizes(&service, &ids, kind, &keys);
+        every_map_ordering_canonicalizes(&mut service, &ids, kind, &keys);
     }
     let nested_input = array(vec![
         pair(
@@ -784,7 +793,7 @@ pub fn observe_{kind}(m: Map<{kind}, int>, k: {kind}): Observed_{kind} {{
         ),
     ]);
     assert_eq!(
-        call(&service, id_of(&ids, "nested"), vec![nested_input]),
+        call(&mut service, id_of(&ids, "nested"), vec![nested_input]),
         ServerMessage::Value {
             data: nested_output
         },
@@ -794,7 +803,7 @@ pub fn observe_{kind}(m: Map<{kind}, int>, k: {kind}): Observed_{kind} {{
 
 #[test]
 fn a_hostile_map_argument_is_rejected() {
-    let (service, ids) = build(COLLECTIONS, None);
+    let (mut service, ids) = build(COLLECTIONS, None);
     let reject = ServerMessage::Reject {
         code: Code::RunnerArgMismatch,
     };
@@ -805,19 +814,23 @@ fn a_hostile_map_argument_is_rejected() {
         array(vec![Json::Str("a".to_string()), Json::Int(2)]),
     ]);
     assert_eq!(
-        call(&service, id_of(&ids, "lookup"), vec![dup, key.clone()]),
+        call(&mut service, id_of(&ids, "lookup"), vec![dup, key.clone()]),
         reject
     );
     // A mis-shaped entry (not a two-element pair).
     let bad_pair = array(vec![array(vec![Json::Str("a".to_string())])]);
     assert_eq!(
-        call(&service, id_of(&ids, "lookup"), vec![bad_pair, key.clone()]),
+        call(
+            &mut service,
+            id_of(&ids, "lookup"),
+            vec![bad_pair, key.clone()]
+        ),
         reject
     );
     // A key of the wrong scalar type (int where the key is a string).
     let bad_key = array(vec![array(vec![Json::Int(1), Json::Int(1)])]);
     assert_eq!(
-        call(&service, id_of(&ids, "lookup"), vec![bad_key, key]),
+        call(&mut service, id_of(&ids, "lookup"), vec![bad_key, key]),
         reject
     );
 }
@@ -854,11 +867,11 @@ pub fn keyId(who: Id(^assets)): bool {
 
 #[test]
 fn an_identity_argument_round_trips_and_hostiles_are_rejected() {
-    let (service, ids) = build(ID_PARAM, Some(ASSET_IDS.as_bytes()));
+    let (mut service, ids) = build(ID_PARAM, Some(ASSET_IDS.as_bytes()));
     // A single-column identity key tuple decodes onto the `Id(^assets)` parameter.
     assert_eq!(
         call(
-            &service,
+            &mut service,
             id_of(&ids, "keyId"),
             vec![array(vec![Json::Int(1)])],
         ),
@@ -872,7 +885,7 @@ fn an_identity_argument_round_trips_and_hostiles_are_rejected() {
     // Wrong arity: two keys for a single-column root.
     assert_eq!(
         call(
-            &service,
+            &mut service,
             id_of(&ids, "keyId"),
             vec![array(vec![Json::Int(1), Json::Int(2)])],
         ),
@@ -881,7 +894,7 @@ fn an_identity_argument_round_trips_and_hostiles_are_rejected() {
     // Wrong key scalar type: a string where the key column is int.
     assert_eq!(
         call(
-            &service,
+            &mut service,
             id_of(&ids, "keyId"),
             vec![array(vec![Json::Str("x".to_string())])],
         ),
@@ -889,7 +902,7 @@ fn an_identity_argument_round_trips_and_hostiles_are_rejected() {
     );
     // A non-array identity.
     assert_eq!(
-        call(&service, id_of(&ids, "keyId"), vec![Json::Int(1)]),
+        call(&mut service, id_of(&ids, "keyId"), vec![Json::Int(1)]),
         reject
     );
 }
@@ -905,13 +918,17 @@ pub fn shift(p: Point, dx: int): Point {
     return Point(x: p.x + dx, y: p.y)
 }
 "#;
-    let (service, ids) = build(source, None);
+    let (mut service, ids) = build(source, None);
     let point = Json::Object(vec![
         ("x".to_string(), Json::Int(1)),
         ("y".to_string(), Json::Int(2)),
         ("z".to_string(), Json::Int(3)),
     ]);
-    let response = call(&service, id_of(&ids, "shift"), vec![point, Json::Int(0)]);
+    let response = call(
+        &mut service,
+        id_of(&ids, "shift"),
+        vec![point, Json::Int(0)],
+    );
     assert_eq!(
         response,
         ServerMessage::Reject {
@@ -934,14 +951,14 @@ pub fn grow(s: Shape): Shape {
     }
 }
 "#;
-    let (service, ids) = build(source, None);
+    let (mut service, ids) = build(source, None);
     let export = id_of(&ids, "grow");
 
     let circle = Json::Object(vec![
         ("member".to_string(), Json::Str("circle".to_string())),
         ("payload".to_string(), Json::Array(vec![Json::Int(4)])),
     ]);
-    let grown = call(&service, export, vec![circle]);
+    let grown = call(&mut service, export, vec![circle]);
     assert_eq!(
         grown,
         ServerMessage::Value {
@@ -956,7 +973,7 @@ pub fn grow(s: Shape): Shape {
         ("member".to_string(), Json::Str("dot".to_string())),
         ("payload".to_string(), Json::Array(vec![])),
     ]);
-    let same = call(&service, export, vec![dot]);
+    let same = call(&mut service, export, vec![dot]);
     assert_eq!(
         same,
         ServerMessage::Value {

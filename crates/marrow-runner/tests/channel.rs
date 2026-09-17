@@ -25,8 +25,8 @@ use std::time::Duration;
 
 use marrow_codes::Code;
 use marrow_local_wire::{
-    ClientMessage, DurableState, EncodedFrame, HandoffStage, Id32, Json, LossClass, MAX_FRAME,
-    ServerMessage, Span, WireError, classify, frame_body_len,
+    ClientMessage, EncodedFrame, Id32, Json, MAX_FRAME, ServerMessage, Span, WireError,
+    frame_body_len,
 };
 use marrow_runner::{Channel, Deadlines, Handler, LaunchSecrets, Service, mint_id};
 
@@ -217,7 +217,7 @@ impl Handler for UnknownIncompleteHandler {
     ) -> Result<EncodedFrame, WireError> {
         ServerMessage::Incomplete {
             code: Code::RunCommit,
-            durable: DurableState::Unknown,
+            durable: marrow_codes::DurableCommitState::Unknown,
             span: Span { line: 4, column: 2 },
         }
         .encode_frame(turn.unwrap_or(0))
@@ -274,7 +274,7 @@ fn unknown_incomplete_is_written_once_then_the_session_closes() {
     assert!(matches!(
         incomplete,
         Some(ServerMessage::Incomplete {
-            durable: DurableState::Unknown,
+            durable: marrow_codes::DurableCommitState::Unknown,
             ..
         })
     ));
@@ -296,7 +296,7 @@ impl Handler for ClassifiedBeforeReplyHandler {
         self.release.recv().expect("release response");
         ServerMessage::Incomplete {
             code: Code::RunCommit,
-            durable: DurableState::KnownNew,
+            durable: marrow_codes::DurableCommitState::KnownNew,
             span: Span { line: 7, column: 3 },
         }
         .encode_frame(turn.unwrap_or(0))
@@ -339,7 +339,6 @@ fn loss_after_classification_before_reply_is_outcome_unknown() {
             .expect("drop reply transport");
         release_tx.send(()).expect("release handler");
         assert_eq!(recv(&mut stream), None, "no typed reply reached the caller");
-        classify(HandoffStage::Dispatched)
     });
 
     let mut handler = ClassifiedBeforeReplyHandler {
@@ -350,7 +349,7 @@ fn loss_after_classification_before_reply_is_outcome_unknown() {
         .accept_authenticated(&secrets(nonce, session), interface, &quick(), 16)
         .expect("accept");
     conn.run_session(&mut handler, &quick()).expect("serve");
-    assert_eq!(client.join().expect("client"), LossClass::OutcomeUnknown);
+    client.join().expect("client");
     channel.teardown();
 }
 
@@ -444,10 +443,6 @@ fn an_oversized_post_dispatch_response_closes_without_a_reply_or_second_dispatch
     assert_eq!(
         handler.calls, 1,
         "N+1 must not dispatch after encode failure"
-    );
-    assert_eq!(
-        classify(HandoffStage::Dispatched),
-        LossClass::OutcomeUnknown
     );
 }
 
@@ -642,14 +637,12 @@ fn death_before_send_classifies_not_started() {
         let ready = recv(&mut stream);
         // No Ready arrived and no request was sent.
         assert!(ready.is_none());
-        classify(HandoffStage::BeforeSend)
     });
 
     let outcome = channel.accept_authenticated(&secrets(nonce, session), interface, &quick(), 16);
-    let verdict = client.join().unwrap();
+    client.join().unwrap();
     channel.teardown();
     assert!(outcome.is_err());
-    assert_eq!(verdict, LossClass::NotStarted);
 }
 
 /// Death after the request was dispatched — the runner dies before replying — is
@@ -678,7 +671,6 @@ fn death_after_dispatch_classifies_outcome_unknown() {
         );
         let reply = recv(&mut stream);
         assert!(reply.is_none(), "no reply arrives after the runner dies");
-        classify(HandoffStage::Dispatched)
     });
 
     // Accept and handshake, then die immediately (drop the connection) instead of
@@ -687,7 +679,6 @@ fn death_after_dispatch_classifies_outcome_unknown() {
         .accept_authenticated(&secrets(nonce, session), interface, &quick(), 16)
         .expect("accept");
     drop(conn);
-    let verdict = client.join().unwrap();
+    client.join().unwrap();
     channel.teardown();
-    assert_eq!(verdict, LossClass::OutcomeUnknown);
 }

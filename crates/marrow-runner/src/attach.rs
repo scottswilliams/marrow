@@ -34,7 +34,7 @@
 //! }
 //! ```
 
-use marrow_codes::Code;
+use marrow_codes::{Code, DurableCommitState};
 use marrow_lifecycle::NativeAttachment;
 use marrow_local_wire::{ClientMessage, EncodedFrame, Json, WireError};
 use marrow_vm::{DurableExecutionFault, DurableRun, IncompleteDisposition};
@@ -72,10 +72,7 @@ impl Handler for AttachedService {
     ) -> Result<EncodedFrame, WireError> {
         let turn = turn.unwrap_or(0);
         match message {
-            ClientMessage::Hello { .. } => {
-                dispatch::reject(Code::RunnerHandshake).encode_frame(turn)
-            }
-            ClientMessage::Provision { .. } => {
+            ClientMessage::Hello { .. } | ClientMessage::Provision { .. } => {
                 dispatch::reject(Code::RunnerHandshake).encode_frame(turn)
             }
             ClientMessage::Request { export, args } => {
@@ -105,8 +102,6 @@ impl AttachedService {
             Ok(decoded) => decoded,
             Err(reject) => return reject.encode_frame(turn),
         };
-        // A storeless export needs no session; a durable one runs against the native store
-        // through the same attachment seam the ephemeral session uses.
         if let dispatch::Route::Storeless = decoded.route {
             return dispatch::run_storeless(
                 attachment.image(),
@@ -115,38 +110,49 @@ impl AttachedService {
                 turn,
             );
         }
-        let run = marrow_vm::run_export(attachment, decoded.export, decoded.values);
+        let Some(run) = marrow_vm::run_export(attachment, decoded.export, decoded.values) else {
+            return dispatch::reject(Code::RunnerUnknownExport).encode_frame(turn);
+        };
         match run {
-            Some(DurableRun::Ran(Err(DurableExecutionFault::Incomplete(incomplete)))) => {
-                match incomplete.into_disposition() {
-                    IncompleteDisposition::Classified { fault, durable } => {
-                        if durable == marrow_vm::DurableCommitState::Unknown {
-                            self.attachment.take();
-                            self.close_after_response = true;
-                        }
-                        dispatch::incomplete_message(&fault, durable).encode_frame(turn)
-                    }
-                    IncompleteDisposition::Pending { fault, recovery } => {
-                        let attachment = self
-                            .attachment
-                            .take()
-                            .expect("pending recovery owns the live attachment");
-                        let (durable, recovered) = attachment.resolve_recovery(recovery);
-                        self.attachment = recovered;
-                        self.close_after_response =
-                            durable == marrow_vm::DurableCommitState::Unknown;
-                        dispatch::incomplete_message(&fault, durable).encode_frame(turn)
-                    }
-                }
+            DurableRun::Ran(Ok(value)) => {
+                dispatch::value_frame(attachment.image(), value.as_ref(), turn)
             }
-            run => match dispatch::project_durable_run(attachment.image(), run, turn) {
-                dispatch::RunProjection::Reply(response) => response,
-                dispatch::RunProjection::RetireAfter(response) => {
+            DurableRun::Ran(Err(DurableExecutionFault::Runtime(fault))) => {
+                dispatch::fault_message(&fault).encode_frame(turn)
+            }
+            DurableRun::Ran(Err(DurableExecutionFault::Incomplete(incomplete))) => {
+                let (fault, durable) = self.classify(incomplete.into_disposition());
+                if durable == DurableCommitState::Unknown {
                     self.attachment.take();
                     self.close_after_response = true;
-                    response
                 }
-            },
+                dispatch::incomplete_message(&fault, durable).encode_frame(turn)
+            }
+            DurableRun::Parked => {
+                dispatch::reject(Code::RunnerDurableUnsupported).encode_frame(turn)
+            }
+            DurableRun::Failed(code) => dispatch::reject(code).encode_frame(turn),
+        }
+    }
+
+    /// The one durable-state classification for an incomplete invocation. A pending commit
+    /// recovery is resolved by the attachment itself, which alone may consume that fact; an
+    /// attachment the resolution could not keep is retired here.
+    fn classify(
+        &mut self,
+        disposition: IncompleteDisposition,
+    ) -> (marrow_vm::RuntimeFault, DurableCommitState) {
+        match disposition {
+            IncompleteDisposition::Classified { fault, durable } => (fault, durable),
+            IncompleteDisposition::Pending { fault, recovery } => {
+                let attachment = self
+                    .attachment
+                    .take()
+                    .expect("pending recovery owns the live attachment");
+                let (durable, recovered) = attachment.resolve_recovery(recovery);
+                self.attachment = recovered;
+                (fault, durable)
+            }
         }
     }
 }

@@ -17,7 +17,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use marrow_local_wire::{ClientMessage, HandoffStage, Id32, Json, LossClass, classify};
+use marrow_local_wire::{ClientMessage, Id32, Json};
 use marrow_verify::VerifiedImage;
 
 use crate::terminal::{
@@ -49,7 +49,7 @@ pub fn attach_and_call(
     let launch = terminal::mint_nonce()
         .map_err(terminal::CompanionStartupError::from)
         .and_then(|nonce| {
-            spawn_companion(runner_exe, image_bytes, Some(store), nonce)
+            spawn_companion(runner_exe, image_bytes, store, nonce)
                 .map(|(companion, descriptor)| (nonce, companion, descriptor))
         });
     let (nonce, companion, descriptor) = match launch {
@@ -84,9 +84,8 @@ fn call_over_socket(
 ) -> Result<CallOutcome, ClientError> {
     // Attach may already have rebound the store before the handshake. A missing startup
     // result cannot establish its outcome, even though no invocation has been sent.
-    let mut stream =
-        connect_and_handshake(descriptor, nonce, deadline, terminal::CompanionKind::Native)
-            .map_err(ClientError::activation_unknown)?;
+    let mut stream = connect_and_handshake(descriptor, nonce, deadline)
+        .map_err(ClientError::activation_unknown)?;
     const TURN: u32 = 0;
     write_message_with_turn(
         &mut stream,
@@ -107,16 +106,7 @@ fn call_over_socket(
             .and_then(|()| reply_to_outcome(image, export_id, reply).map_err(post_dispatch_cause)),
         Err(error) => Err(post_dispatch_cause(error)),
     };
-    match result {
-        Ok(outcome) => Ok(outcome),
-        Err(cause) => {
-            debug_assert_eq!(
-                classify(HandoffStage::Dispatched),
-                LossClass::OutcomeUnknown
-            );
-            Ok(CallOutcome::OutcomeUnknown { cause })
-        }
-    }
+    Ok(result.unwrap_or_else(|cause| CallOutcome::OutcomeUnknown { cause }))
 }
 
 /// Every socket-read cause after dispatch remains orthogonal evidence beneath
@@ -128,11 +118,10 @@ mod tests {
 
     use crate::OutcomeUnknownCause;
     use crate::terminal::{ClientError, Direction, post_dispatch_cause, require_reply_turn};
-    use marrow_local_wire::{HandoffStage, LossClass, WireError, classify};
+    use marrow_local_wire::WireError;
 
-    /// A reply lost to any socket-read I/O failure after dispatch is classified
-    /// `OutcomeUnknown`, matching the wire loss model for a `Dispatched` handoff stage — the
-    /// native one-shot call is reported outcome-unknown, never replayed.
+    /// A reply lost to any socket-read I/O failure after dispatch keeps its cause under the
+    /// outcome-unknown disposition — the native one-shot call is never replayed.
     #[test]
     fn every_socket_read_io_after_dispatch_is_outcome_unknown() {
         for kind in [
@@ -165,10 +154,6 @@ mod tests {
             )),
             OutcomeUnknownCause::Io(..),
         ));
-        assert_eq!(
-            classify(HandoffStage::Dispatched),
-            LossClass::OutcomeUnknown
-        );
     }
 
     /// Every invalid post-write reply retains its distinct cause without replacing
@@ -215,9 +200,6 @@ mod tests {
             OutcomeUnknownCause::ReplyDecode.code(),
             Code::RunnerReplyEncode,
         );
-        // A before-send failure (a pre-dispatch handshake/connect error) classifies NotStarted,
-        // the safe-to-consider-undone class, and never reaches the lost-reply path.
-        assert_eq!(classify(HandoffStage::BeforeSend), LossClass::NotStarted);
     }
 
     /// Failing to write the request frame is a write, so it reports `io.write`, the code

@@ -11,9 +11,8 @@
 //! ```
 //!
 //! A real native runner killed after it has been handed the request closes the connection
-//! (end-of-stream) rather than replying — the boundary the client maps to `OutcomeUnknown`
-//! for a `Dispatched` handoff stage. The client-side half is covered by the `client` unit
-//! tests.
+//! (end-of-stream) rather than replying — the boundary the client maps to `OutcomeUnknown`.
+//! The client-side half is covered by the `client` unit tests.
 
 #[path = "common/program.rs"]
 mod program;
@@ -26,9 +25,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use marrow_local_wire::{
-    ClientMessage, HandoffStage, Id32, Json, LossClass, ServerMessage, classify, frame_body_len,
-};
+use marrow_local_wire::{ClientMessage, Id32, Json, ServerMessage, frame_body_len};
 use marrow_runner::{CallOutcome, attach_and_call};
 use marrow_verify::VerifiedImage;
 use marrow_vm::Value;
@@ -204,8 +201,8 @@ fn add_request(image: &VerifiedImage, id: i64, name: &str) -> ClientMessage {
 }
 
 /// Killing an authenticated native runner before any request bytes are sent leaves the exact
-/// provisioned state unchanged. The terminal-side handoff stage is `BeforeSend`, so this loss is
-/// `NotStarted`; reopening performs the unclean-owner audit but cannot invent or replay a call.
+/// provisioned state unchanged. No request was written, so the call provably never ran;
+/// reopening performs the unclean-owner audit but cannot invent or replay a call.
 #[test]
 #[ignore = "spawns a runner that binds a Unix socket; run with the sandbox disabled"]
 fn native_death_before_request_is_not_started_and_leaves_the_old_state() {
@@ -219,7 +216,6 @@ fn native_death_before_request_is_not_started_and_leaves_the_old_state() {
     let _ = guard.0.wait();
     std::thread::sleep(Duration::from_millis(50));
     assert_eq!(recv(&mut stream), None, "no call reply can exist");
-    assert_eq!(classify(HandoffStage::BeforeSend), LossClass::NotStarted,);
     assert_eq!(
         snapshot(&image, &bytes, &store, 1),
         old_snapshot(),
@@ -270,7 +266,7 @@ fn native_death_after_reply_preserves_the_exact_committed_state() {
 
 /// A native call dispatched to a real `attach` process whose runner is then killed before it
 /// replies ends at end-of-stream, not a reply — the boundary the terminal client classifies as
-/// `OutcomeUnknown` for a `Dispatched` handoff stage. Reopening after the crash observes either
+/// `OutcomeUnknown`. Reopening after the crash observes either
 /// the exact old state or the exact fully committed cross-root state, never a torn mixture, and
 /// the one dispatched mutation is never replayed.
 #[test]
@@ -298,19 +294,13 @@ fn a_native_call_lost_to_runner_death_after_dispatch_is_outcome_unknown() {
 
     // The reply never arrives: the connection ends at end-of-stream. The terminal client maps
     // this, for a dispatched request, to CallOutcome::OutcomeUnknown (see the `client` unit
-    // tests); the wire loss model classifies the same stage as OutcomeUnknown.
+    // tests).
     std::thread::sleep(Duration::from_millis(50));
     let lost = recv(&mut stream);
     assert!(
         lost.is_none(),
         "a killed runner sends no reply, not a value: {lost:?}"
     );
-    assert_eq!(
-        classify(HandoffStage::Dispatched),
-        LossClass::OutcomeUnknown,
-        "a dispatched call lost to death is outcome-unknown, never replayed",
-    );
-
     let observed = snapshot(&image, &bytes, &store, 1);
     assert!(
         observed == old_snapshot() || observed == new_snapshot("Cordless Drill"),

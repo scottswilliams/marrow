@@ -1,38 +1,30 @@
 //! Storeless request dispatch and one-shot provisioning over a launched image.
 //!
-//! Requests are admitted against the verified export signature, then run on the VM.
-//! Successful values are encoded while borrowed; a completed frame or an encoding
-//! error leaves this owner. Runtime faults and admission rejects retain their typed
-//! response grammar.
+//! A request resolves through the shared export classifier; a storeless export runs on
+//! the VM with no session, and a durable export is a typed reject because this service
+//! opens no store. Successful values are encoded while borrowed; a completed frame or an
+//! encoding error leaves this owner.
 
 use marrow_codes::Code;
 use marrow_local_wire::{ClientMessage, EncodedFrame, Json, ServerMessage, WireError};
 
+use crate::channel::Handler;
 use crate::descriptor::Service;
 use crate::dispatch;
-use crate::transfer;
 
-impl crate::channel::Handler for Service {
+impl Handler for Service {
+    /// Produce a complete response while borrowed results are live. A `Hello`
+    /// after the handshake is a protocol error, not a second handshake.
     fn handle(
         &mut self,
         message: ClientMessage,
         turn: Option<u32>,
     ) -> Result<EncodedFrame, WireError> {
-        Service::handle(self, message, turn)
-    }
-}
-
-impl Service {
-    /// Produce a complete response while borrowed results are live. A `Hello`
-    /// after the handshake is a protocol error, not a second handshake.
-    pub fn handle(
-        &self,
-        message: ClientMessage,
-        turn: Option<u32>,
-    ) -> Result<EncodedFrame, WireError> {
         let turn = turn.unwrap_or(0);
         match message {
-            ClientMessage::Hello { .. } => reject(Code::RunnerHandshake).encode_frame(turn),
+            ClientMessage::Hello { .. } => {
+                dispatch::reject(Code::RunnerHandshake).encode_frame(turn)
+            }
             ClientMessage::Request { export, args } => {
                 self.handle_request(export.bytes(), &args, turn)
             }
@@ -41,7 +33,9 @@ impl Service {
             }
         }
     }
+}
 
+impl Service {
     /// Provision a fresh persistent store for the launched image at `store`, gated by the
     /// accepted-report `approval` token. Borrows the prepared image, rebuilds the report the
     /// approval must match (so an approval for a different store or image is refused), and
@@ -63,30 +57,18 @@ impl Service {
         args: &[Json],
         turn: u32,
     ) -> Result<EncodedFrame, WireError> {
-        let Some(served) = self.lookup(export) else {
-            return reject(Code::RunnerUnknownExport).encode_frame(turn);
-        };
-        if served.is_durable() {
-            return reject(Code::RunnerDurableUnsupported).encode_frame(turn);
-        }
         let image = self.image.image();
-        let selected = image
-            .function(served.func())
-            .expect("served function belongs to this image");
-        let function = selected.body();
-        if function.params().len() != args.len() {
-            return reject(Code::RunnerArgMismatch).encode_frame(turn);
-        }
-        let mut values = Vec::with_capacity(args.len());
-        for (ty, json) in function.params().iter().zip(args) {
-            match transfer::decode_arg(image, ty, json) {
-                Some(value) => values.push(value),
-                None => return reject(Code::RunnerArgMismatch).encode_frame(turn),
+        let decoded = match dispatch::decode_request(image, export, args) {
+            Ok(decoded) => decoded,
+            Err(reject) => return reject.encode_frame(turn),
+        };
+        match decoded.route {
+            dispatch::Route::Storeless => {
+                dispatch::run_storeless(image, decoded.export, decoded.values, turn)
             }
-        }
-        match marrow_vm::run(selected, values) {
-            Ok(value) => dispatch::value_frame(image, value.as_ref(), turn),
-            Err(fault) => dispatch::fault_message(&fault).encode_frame(turn),
+            dispatch::Route::Durable => {
+                dispatch::reject(Code::RunnerDurableUnsupported).encode_frame(turn)
+            }
         }
     }
 }
@@ -118,10 +100,6 @@ fn provision_reply(
             },
         },
     }
-}
-
-fn reject(code: Code) -> ServerMessage {
-    ServerMessage::Reject { code }
 }
 
 #[cfg(test)]

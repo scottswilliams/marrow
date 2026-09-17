@@ -182,7 +182,7 @@ impl Record {
             } => format!(
                 "{} at {line}:{column}: invocation incomplete; durable state {}",
                 code.as_str(),
-                durable_state_name(*durable),
+                durable.as_str(),
             ),
             Record::ArtifactRejected { code } => code.as_str().to_string(),
             Record::OperationalError { code, detail } => match detail {
@@ -261,7 +261,7 @@ impl Record {
             } => format!(
                 r#"{{"code":{},"durable":{},"kind":"run","outcome":"incomplete","span":{}}}"#,
                 json_string(code.as_str()),
-                json_string(durable_state_name(*durable)),
+                json_string(durable.as_str()),
                 span_object(*line, *column),
             ),
             Record::ActivationUncertain { instance } => format!(
@@ -354,7 +354,7 @@ impl TestRecord {
             } => format!(
                 r#"{{"code":{},"durable":{},"file":{},"kind":"test","name":{},"outcome":"incomplete","span":{}}}"#,
                 json_string(code.as_str()),
-                json_string(durable_state_name(*durable)),
+                json_string(durable.as_str()),
                 json_string(&self.file),
                 json_string(&self.name),
                 span_object(*line, *column),
@@ -391,7 +391,7 @@ impl TestRecord {
                 "ERROR {} ({} at {line}:{column}; incomplete, durable {})",
                 self.name,
                 code.as_str(),
-                durable_state_name(*durable),
+                durable.as_str(),
             ),
         }
     }
@@ -439,14 +439,6 @@ impl TestSummary {
 
 fn span_object(line: u32, column: u32) -> String {
     format!(r#"{{"column":{column},"line":{line}}}"#)
-}
-
-fn durable_state_name(state: marrow_vm::DurableCommitState) -> &'static str {
-    match state {
-        marrow_vm::DurableCommitState::KnownOld => "known_old",
-        marrow_vm::DurableCommitState::KnownNew => "known_new",
-        marrow_vm::DurableCommitState::Unknown => "unknown",
-    }
 }
 
 /// Render a value as the JSONL `data` field, or `Err` when it exceeds the data

@@ -41,6 +41,23 @@ jobs:
       - name: Test
         run: cargo test --workspace --all-targets --all-features --locked
 
+      # The socket, child-process, and Node journeys are `#[ignore]`d because the
+      # local development sandbox denies binding a Unix socket and spawning a
+      # runner. The hosted runners have no such sandbox and ship Node, so the
+      # ignored battery of the runner crate and of the CLI's journey, wire, and
+      # durable-state binaries runs here. Each leg is asserted to have run at
+      # least one test: a filter that matches nothing exits zero.
+      - name: Test (socket, process, and Node journeys)
+        run: |
+          set -o pipefail
+          cargo test -p marrow-runner --all-targets --all-features --locked -- --ignored 2>&1 \
+            | tee "$RUNNER_TEMP/ignored-runner.log"
+          grep -Eq '^test result: ok\. [1-9][0-9]* passed' "$RUNNER_TEMP/ignored-runner.log"
+          cargo test -p marrow --all-features --locked \
+            --test journeys --test wire --test durable_state -- --ignored 2>&1 \
+            | tee "$RUNNER_TEMP/ignored-marrow.log"
+          grep -Eq '^test result: ok\. [1-9][0-9]* passed' "$RUNNER_TEMP/ignored-marrow.log"
+
       - name: Clippy and unsafe check
         run: |
           cargo clippy --workspace --all-targets --all-features --locked -- \

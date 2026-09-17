@@ -28,8 +28,12 @@ fn runner_exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_marrow-runner"))
 }
 
+/// The exact reply and the cleanup verdict are independent: a direct child that outlives the
+/// terminal's unsignalled settlement budget (the grace period plus the per-call deadline) is
+/// handed back unreaped with its stage retained, and the caller reaps it explicitly. The
+/// wrapper therefore lingers past that budget, which bounds this test at about twelve seconds.
 #[test]
-#[ignore = "spawns a native runner inside a controlled lingering direct child"]
+#[ignore = "spawns a native runner inside a controlled lingering direct child; about twelve seconds"]
 fn exact_reply_survives_unconfirmed_native_cleanup_and_explicit_reap() {
     use std::os::unix::fs::PermissionsExt;
     let program::Program { image, bytes } = program::workshop();
@@ -50,7 +54,7 @@ fn exact_reply_survives_unconfirmed_native_cleanup_and_explicit_reap() {
     std::fs::write(
         &wrapper,
         format!(
-            "#!/bin/sh\n{} \"$@\"\nprintf waiting > {}\nexec /bin/sleep 2\n",
+            "#!/bin/sh\n{} \"$@\"\nprintf waiting > {}\nexec /bin/sleep 12\n",
             quote(&runner_exe()),
             quote(&marker),
         ),
@@ -80,17 +84,14 @@ fn exact_reply_survives_unconfirmed_native_cleanup_and_explicit_reap() {
         b"waiting"
     );
     let Err(marrow_runner::CompanionCleanupError::Unreaped {
-        mut child,
-        staging,
-        kill_error,
-        ..
+        mut child, staging, ..
     }) = completion.cleanup
     else {
         panic!("native linger must report unconfirmed cleanup");
     };
     // The unreaped child stays owned and unsignalled, so the caller can still reap it.
     assert!(child.wait().expect("explicit reap").success());
-    assert!(kill_error.is_none() && staging.exists());
+    assert!(staging.exists());
     std::fs::remove_dir_all(staging).expect("remove stage after explicit reap");
     std::fs::remove_dir_all(root).expect("remove owned successful fixture");
 }

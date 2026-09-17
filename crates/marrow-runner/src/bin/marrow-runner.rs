@@ -17,9 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use marrow_local_wire::{Json, encode};
-use marrow_runner::{
-    AttachedEphemeralService, Channel, Deadlines, Handler, Id32, LaunchSecrets, Service, mint_id,
-};
+use marrow_runner::{Channel, Deadlines, Handler, Id32, LaunchSecrets, Service, mint_id};
 
 mod store_apply;
 mod store_transfer;
@@ -53,11 +51,6 @@ enum Command {
         image: PathBuf,
         store: PathBuf,
         format: ReportFormat,
-    },
-    /// Attach the image to a fresh process-local in-memory store and serve its exports. The
-    /// store never persists — it is discarded when this process exits.
-    AttachEphemeral {
-        image: PathBuf,
     },
     /// Populate the store at `store` from a flat-scalar JSONL corpus through the trusted
     /// importer. Provisions the store first when it does not yet exist.
@@ -103,7 +96,6 @@ fn main() -> ExitCode {
             accept,
         }) => provision_command(&image, &store, accept),
         Some(Command::Attach { image, store }) => attach(&image, &store),
-        Some(Command::AttachEphemeral { image }) => attach_ephemeral(&image),
         Some(Command::Import {
             image,
             store,
@@ -116,8 +108,7 @@ fn main() -> ExitCode {
                 std::io::stderr(),
                 "usage: marrow-runner --image <path>\n       marrow-runner provision --image \
                  <path> --store <dir> [--yes]\n       marrow-runner attach --image <path> \
-                 --store <dir>\n       marrow-runner attach-ephemeral --image \
-                 <path>\n       marrow-runner import --image <path> --store <dir> \
+                 --store <dir>\n       marrow-runner import --image <path> --store <dir> \
                  --jsonl <path> --root <name> --keys <col,...>\n       marrow-runner audit \
                  --image <path> --store <dir> [--format text|jsonl]\n       marrow-runner apply \
                  --store <dir> --old-image <image> --new-image <image> [--accept-ceiling <id>] [--format text|jsonl]\n       marrow-runner recover \
@@ -383,7 +374,7 @@ fn serve(image_path: &Path) -> ExitCode {
         }
     };
     let interface = service.interface_id();
-    serve_over_channel(interface, move || service)
+    serve_over_channel(interface, service)
 }
 
 /// Attach the image to the persistent store at `store` through the privileged lifecycle
@@ -418,8 +409,10 @@ fn attach(image_path: &Path, store: &Path) -> ExitCode {
                 "{}: {refusal}",
                 refusal.code().as_str()
             );
-            let code = refusal.code();
-            return serve_over_channel(identity, move || marrow_runner::RefusalService::new(code));
+            return serve_over_channel(
+                identity,
+                marrow_runner::RefusalService::new(refusal.code()),
+            );
         }
         Err(error @ marrow_lifecycle::LifecycleError::ActivationUncertain { instance, .. }) => {
             let _ = writeln!(
@@ -448,41 +441,21 @@ fn attach(image_path: &Path, store: &Path) -> ExitCode {
         }
     };
 
-    let attached = marrow_runner::AttachedService::new(attachment);
-    serve_over_channel(identity, move || attached)
-}
-
-/// Attach the image to a fresh process-local in-memory store and serve its exports over a
-/// private local channel. Unlike the native `attach`, no persistent store is opened, no
-/// single-owner lock is taken, and no lifecycle classification runs: the store is minted in
-/// RAM and discarded when this process exits. The handshake identity is the exact image
-/// identity, known without opening the store.
-fn attach_ephemeral(image_path: &Path) -> ExitCode {
-    let image = match load_image(image_path) {
-        Ok(image) => image,
-        Err(code) => return code,
-    };
-    let identity = Id32::from_bytes(image.image_id().0);
-    let prepared = marrow_lifecycle::prepare(image);
-    serve_over_channel(identity, move || AttachedEphemeralService::mint(prepared))
+    serve_over_channel(identity, marrow_runner::AttachedService::new(attachment))
 }
 
 /// The shared channel discipline for every serving mode: mint the session secrets, bind a
 /// private local channel, publish one launch descriptor for the supervisor/terminal, admit one
-/// authenticated client, build the request handler, and serve it until it hangs up, tearing the
-/// channel down on every non-panic path.
-///
-/// `make_handler` is invoked only after the handshake proves the launch nonce, so a resource the
-/// handler opens on construction — the ephemeral-memory store — never opens for an unauthenticated
-/// peer. The eager modes (storeless, native) pass a closure returning an already-built handler.
-fn serve_over_channel<H: Handler>(interface: Id32, make_handler: impl FnOnce() -> H) -> ExitCode {
+/// authenticated client, and serve `handler` until it hangs up, tearing the channel down on
+/// every non-panic path.
+fn serve_over_channel(interface: Id32, mut handler: impl Handler) -> ExitCode {
     with_channel(interface, move |channel, secrets, deadlines| {
         channel.accept_and_serve(
             secrets,
             interface,
             deadlines,
             MAX_ACCEPT_ATTEMPTS,
-            make_handler,
+            &mut handler,
         )
     })
 }
@@ -581,7 +554,6 @@ fn parse_args() -> Option<Command> {
         // mode into another.
         Some("provision") => parse_provision(args),
         Some("attach") => parse_attach(args),
-        Some("attach-ephemeral") => parse_attach_ephemeral(args),
         Some("import") => parse_import(args),
         Some("audit") => parse_store(args, StoreOperation::Audit),
         Some("recover") => parse_store(args, StoreOperation::Recover),
@@ -641,20 +613,6 @@ fn parse_store(
         store: store?,
         format,
     })
-}
-
-/// Parse `attach-ephemeral --image <path>` in any flag order. Only `--image` is accepted: an
-/// ephemeral attachment has no store, so a `--store` (or any other flag) is refused rather than
-/// silently treated as a native attach.
-fn parse_attach_ephemeral(mut args: impl Iterator<Item = String>) -> Option<Command> {
-    let mut image: Option<PathBuf> = None;
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--image" => image = Some(PathBuf::from(args.next()?)),
-            _ => return None,
-        }
-    }
-    Some(Command::AttachEphemeral { image: image? })
 }
 
 /// Parse `provision --image <path> --store <dir> [--yes]` in any flag order. Both `--image`

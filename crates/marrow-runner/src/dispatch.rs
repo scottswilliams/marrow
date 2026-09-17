@@ -1,23 +1,19 @@
-//! Serving one request against a launched image, shared by the two attached sessions.
+//! The one export classifier and the wire projections every handler shares.
 //!
-//! The native attached session ([`crate::AttachedService`], over a persistent store) and the
-//! ephemeral-memory attached session ([`crate::AttachedEphemeralService`], over a process-local
-//! in-memory store) decode, run, and encode a `Request` identically — an unknown export and an
-//! argument-shape mismatch are the same typed rejects, a storeless export runs without a
-//! session, and a durable run projects onto the wire the same way. Only the attachment the
-//! durable export runs through differs, so that one classifier lives here rather than being
-//! duplicated per attachment kind.
+//! The storeless [`Service`](crate::Service) and the native attached session
+//! ([`crate::AttachedService`]) decode a `Request` identically — an unknown export and an
+//! argument-shape mismatch are the same typed rejects, and the export's verified demand
+//! decides its [`Route`] once here. A storeless export runs without a session through
+//! [`run_storeless`]; only the attached session runs a durable one.
 //!
-//! Decoding borrows the attachment's image immutably and finishes to owned values plus the
-//! copied export identity, so the borrow ends before the attachment is driven mutably.
+//! Decoding borrows the image immutably and finishes to owned values plus the copied
+//! export identity, so the borrow ends before an attachment is driven mutably.
 
-use marrow_codes::Code;
+use marrow_codes::{Code, DurableCommitState};
 use marrow_image::ExportId;
-use marrow_local_wire::{DurableState, EncodedFrame, Json, ServerMessage, Span, WireError};
+use marrow_local_wire::{EncodedFrame, Json, ServerMessage, Span, WireError};
 use marrow_verify::VerifiedImage;
-use marrow_vm::{
-    DurableCommitState, DurableExecutionFault, DurableRun, IncompleteDisposition, Value,
-};
+use marrow_vm::Value;
 
 use crate::transfer;
 
@@ -77,8 +73,8 @@ pub(crate) fn decode_request(
 }
 
 /// Run a storeless export (empty demand) with no session and project its outcome onto the wire.
-/// A storeless export needs no attachment, so both session kinds run it the same way, and a
-/// service whose attachment parked or failed still serves it. The export was resolved by
+/// A storeless export needs no attachment, so both services run it the same way, and an
+/// attached service whose store refused still serves it. The export was resolved by
 /// [`decode_request`] from this same image.
 pub(crate) fn run_storeless(
     image: &VerifiedImage,
@@ -96,56 +92,6 @@ pub(crate) fn run_storeless(
         Ok(value) => value_frame(image, value.as_ref(), turn),
         Err(fault) => fault_message(&fault).encode_frame(turn),
     }
-}
-
-/// Encoding failure cannot discard the attachment's retirement decision.
-#[must_use = "a retirement projection must close its attached service even if encoding failed"]
-pub(crate) enum RunProjection {
-    Reply(Result<EncodedFrame, WireError>),
-    RetireAfter(Result<EncodedFrame, WireError>),
-}
-
-/// Project the attachment's own run of an export. The caller applies retirement
-/// before returning the contained encoding result.
-pub(crate) fn project_durable_run(
-    image: &VerifiedImage,
-    run: Option<DurableRun>,
-    turn: u32,
-) -> RunProjection {
-    let Some(run) = run else {
-        return RunProjection::Reply(reject(Code::RunnerUnknownExport).encode_frame(turn));
-    };
-    let response = match run {
-        DurableRun::Ran(Ok(value)) => value_frame(image, value.as_ref(), turn),
-        DurableRun::Ran(Err(DurableExecutionFault::Runtime(fault))) => {
-            fault_message(&fault).encode_frame(turn)
-        }
-        DurableRun::Ran(Err(DurableExecutionFault::Incomplete(incomplete))) => {
-            return match incomplete.into_disposition() {
-                IncompleteDisposition::Classified { fault, durable } => {
-                    let response = incomplete_message(&fault, durable).encode_frame(turn);
-                    if durable == DurableCommitState::Unknown {
-                        RunProjection::RetireAfter(response)
-                    } else {
-                        RunProjection::Reply(response)
-                    }
-                }
-                IncompleteDisposition::Pending { fault, recovery } => {
-                    // Only the memory-backed attachment reaches this generic projector.
-                    // Its engine never returns an indeterminate commit; if that invariant
-                    // changes, consuming the fact is paired with an explicit retirement
-                    // projection rather than dropping it into an ordinary fault.
-                    drop(recovery);
-                    RunProjection::RetireAfter(
-                        incomplete_message(&fault, DurableCommitState::Unknown).encode_frame(turn),
-                    )
-                }
-            };
-        }
-        DurableRun::Parked => reject(Code::RunnerDurableUnsupported).encode_frame(turn),
-        DurableRun::Failed(code) => ServerMessage::Reject { code }.encode_frame(turn),
-    };
-    RunProjection::Reply(response)
 }
 
 /// Complete the response while the result and image are still borrowed.
@@ -171,15 +117,12 @@ pub(crate) fn fault_message(fault: &marrow_vm::RuntimeFault) -> ServerMessage {
     }
 }
 
+/// Encode an incomplete invocation: its source-mapped fault beside the classified durable
+/// state, two orthogonal facts.
 pub(crate) fn incomplete_message(
     fault: &marrow_vm::RuntimeFault,
     durable: DurableCommitState,
 ) -> ServerMessage {
-    let durable = match durable {
-        DurableCommitState::KnownOld => DurableState::KnownOld,
-        DurableCommitState::KnownNew => DurableState::KnownNew,
-        DurableCommitState::Unknown => DurableState::Unknown,
-    };
     ServerMessage::Incomplete {
         code: fault.code(),
         durable,
