@@ -1,6 +1,6 @@
 //! Cooperative cache-lock custody: exclusive acquisition, typed contention,
 //! release on drop, and lock-entry persistence. Affinity (no clone, no copy)
-//! is enforced by the `compile_fail` doctest on [`marrow_fs_journal::CacheLock`].
+//! is a property of [`marrow_fs_journal::CacheLock`], which derives neither.
 
 use crate::common::{Scratch, mode_of, require_mode_bits_bind, set_mode};
 use marrow_fs_journal::{

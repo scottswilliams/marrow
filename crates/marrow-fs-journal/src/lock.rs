@@ -9,33 +9,19 @@ use crate::entry::EntryName;
 
 /// An exclusively held cooperative lock on one entry of an admitted directory.
 ///
-/// The lock is affine: it cannot be cloned or copied, moving it transfers the
-/// sole custody, and dropping it is the only release. The descriptor is
-/// close-on-exec, so no spawned process inherits the exclusion.
-///
+/// The lock is affine: it derives neither `Clone` nor `Copy`, moving it
+/// transfers the sole custody, and dropping it is the only release. The
+/// descriptor is close-on-exec, so no spawned process inherits the exclusion.
 /// Lock entry names share the admitted directory with pending-journal names
-/// and must stay disjoint from them; that namespace discipline is cooperative
-/// and belongs to the consumer.
+/// and must stay disjoint from them; that discipline belongs to the consumer.
 ///
-/// What the lock excludes is a *separate* acquisition. `flock` is held by an
-/// open file description, not by a process or a thread, so a child that inherits
-/// the descriptor across `fork` shares the *same* hold: it is inside the
-/// exclusion, and parent and child can operate under it concurrently. A
-/// genuinely fresh open in that child does contend, as any other process's
-/// would. Threads sharing one holder are likewise not serialized by it;
-/// serializing the operations performed under a single acquisition is the
-/// holder's own job.
-///
-/// Release is therefore not instantaneous across a concurrent process spawn:
-/// dropping the holder releases the exclusion only once the forked child's
-/// close-on-exec descriptor closes at `exec`. A holder that releases and
-/// immediately reacquires during that window may observe [`LockError::Held`].
-///
-/// ```compile_fail
-/// fn duplicate(lock: marrow_fs_journal::CacheLock) {
-///     let _second = lock.clone();
-/// }
-/// ```
+/// `flock` is held by an open file description, not a process or thread: a
+/// child that inherits the descriptor across `fork` shares the same hold and is
+/// inside the exclusion, while a fresh open in that child contends like any
+/// other process would, and threads sharing one holder are not serialized by
+/// it. Release therefore completes only once a concurrently forked child's
+/// descriptor closes at `exec`; a holder that drops and immediately reacquires
+/// inside that window may observe [`LockError::Held`].
 pub struct CacheLock {
     /// Held for custody alone: closing the descriptor on drop is the one
     /// release, so the field is never read.
@@ -58,10 +44,8 @@ impl CacheLock {
         if file.try_lock_exclusive()? == LockAcquisition::Held {
             return Err(LockError::Held);
         }
-        // The restore runs on a node already witnessed as a regular file and
-        // already locked, so a planted non-regular node and a contended entry
-        // both keep the mode they carried. A lock entry a crash left inside the
-        // create-then-restore window carries a umask-stripped mode until here.
+        // Restored only after the witness and the lock, so a refused node keeps
+        // the mode it carried.
         file.restore_lock_mode()?;
         // The name must still map to the locked inode: without this recheck a
         // racing unlink-and-recreate would leave this holder excluding nobody

@@ -1,6 +1,6 @@
 [package]
 name = "marrow-fs-journal"
-description = "Sole descriptor-rooted filesystem publication owner: entry-name admission, admitted-directory custody, the cooperative cache lock, and the bounded five-kind pending-journal frame with replay and crash-debris classification."
+description = "Sole descriptor-rooted filesystem publication owner: entry-name admission, admitted-directory custody, the cooperative cache lock, and the bounded pending-journal frame with replay and crash-debris classification."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

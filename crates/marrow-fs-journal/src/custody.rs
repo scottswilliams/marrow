@@ -25,37 +25,18 @@ const REQUIRED_DIR: u32 = 0o700;
 /// A lossless filesystem identity: the platform's `st_dev` and `st_ino`
 /// projected injectively into `u64` each.
 ///
-/// # What an identity does and does not establish
+/// The value distinguishes two objects only while both are live. An open
+/// descriptor holds an inode number out of circulation, so a comparison
+/// against a descriptor this process still holds is exact. A number that
+/// outlived its descriptor — one decoded from a durable record after a
+/// crash — may since have been recycled (ext4 and XFS reuse freed numbers;
+/// APFS does not), so a durable record must carry evidence beyond the number,
+/// and content establishes equivalence, never provenance.
 ///
-/// The projection loses nothing, but the value it projects distinguishes two
-/// objects only while both are live. `unlink` frees an inode number with the
-/// last link, and ext4 and XFS hand it to the next create in the same block
-/// group; APFS draws from a counter that never repeats.
-///
-/// An open descriptor holds a number out of circulation for as long as it
-/// lives, so a comparison against a descriptor this process still holds is
-/// exact, and is the strongest form available. A comparison against a number
-/// that outlived its descriptor — one decoded from a durable record after a
-/// crash — is not: the number may since have been recycled, so the durable
-/// record must carry evidence beyond the number.
-///
-/// The strongest such evidence is content, and it establishes equivalence, not
-/// provenance: a foreign object handed a recycled number *and* carrying
-/// byte-identical content is indistinguishable from the original. Provenance
-/// beyond content is unknowable across a crash; a caller that needs it must
-/// keep a descriptor rather than a number.
-///
-/// # The removal bound
-///
-/// Removal names a path: neither qualified platform offers an unlink through a
-/// descriptor, so some interval separates the validation of an object from the
-/// unlink of the name that held it, and the name can be repointed inside it. No
-/// evidence about the object closes an interval about the name. What a caller
-/// can do is put the object under a name no writer it must tolerate ever
-/// touches; the publication owner does that, and the writers it admits —
-/// ordinary Git operations, which write tracked paths — touch none of its
-/// untracked transients. Against a writer outside that contract the interval
-/// stays open: a removal never proves an object is its own.
+/// Removal names a path: neither qualified platform unlinks through a
+/// descriptor, so an interval separates validating an object from unlinking
+/// the name that held it, and the name can be repointed inside it. No evidence
+/// about the object closes that interval; only custody of the name does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FsIdentity {
     dev: u64,
@@ -399,9 +380,6 @@ impl AdmittedDir {
     /// and admit it.
     pub fn create_child_dir(&self, name: &EntryName) -> Result<Self, CustodyError> {
         sys::mkdir_child(&self.handle, name.as_str())?;
-        // Not `admit_child`: the umask may have masked the mode `mkdirat` asked
-        // for, and the next line is what restores it. Judging the mode here
-        // would refuse a directory this call is about to make correct.
         let child = self.open_child(name)?;
         sys::restore_dir_mode(&child.handle)?;
         Ok(child)
@@ -460,7 +438,7 @@ impl AdmittedDir {
     /// different inode, and acting on the retained handle afterwards would act
     /// on an object no name holds. `op` names the operation the assertion
     /// guards, so a drift refusal says what it refused.
-    pub fn reassert(
+    pub(crate) fn reassert(
         &self,
         name: &EntryName,
         identity: FsIdentity,
@@ -475,26 +453,19 @@ impl AdmittedDir {
     /// Open this directory's lock entry `name`, creating it when absent, and
     /// witness that it is a regular file.
     ///
-    /// A create-if-absent open that reports absence is reporting a concurrent
-    /// creation of the same name rather than an absent entry: Darwin returns
-    /// `ENOENT` from `openat` while another thread or process is creating the
-    /// entry, and the name is already present by the time the refusal is read.
-    /// The first publication of a fresh clone is exactly that race — no
-    /// checkout carries the lock — so absence is retried a bounded number of
-    /// times, and each pass ends in the entry opening or in the refusal being
-    /// reported. Each pass is one `openat`, so `CREATION_RENDEZVOUS_PASSES` is
-    /// the whole cost of the rendezvous.
+    /// Darwin's `openat` reports `ENOENT` for a create-if-absent open while
+    /// another thread or process is creating the same entry, and the first
+    /// publication of a fresh clone is exactly that race, so absence is
+    /// retried `CREATION_RENDEZVOUS_PASSES` times before it is reported.
     ///
-    /// The node kind is witnessed on the opened handle before any lock is
-    /// attempted, because `flock` classifies no node kind: on Darwin it refuses
-    /// the one non-regular node this open accepts — a FIFO — with the
-    /// unsupported-semantics errno this crate reads as
-    /// [`CustodyError::Unsupported`], so an acquisition that locked first would
-    /// report the platform's lock semantics rather than name the planted node.
-    ///
-    /// An entry a crash left inside the crate's create-then-restore window is
-    /// refused here with the mode an operator must restore.
-    pub fn open_or_create_lock_entry(&self, name: &EntryName) -> Result<OpenedFile, CustodyError> {
+    /// The node kind is witnessed before any lock is attempted because `flock`
+    /// classifies none: on Darwin it refuses a FIFO with the errno this crate
+    /// reads as [`CustodyError::Unsupported`], which would name the platform's
+    /// lock semantics rather than the planted node.
+    pub(crate) fn open_or_create_lock_entry(
+        &self,
+        name: &EntryName,
+    ) -> Result<OpenedFile, CustodyError> {
         let mut passes = 0;
         let handle = loop {
             match sys::open_lock_file(&self.handle, name.as_str()) {
@@ -677,7 +648,7 @@ pub struct OpenedFile {
 
 /// Whether a non-blocking exclusive lock attempt took the lock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LockAcquisition {
+pub(crate) enum LockAcquisition {
     /// This handle now holds the lock.
     Taken,
     /// Another open file description holds it.
@@ -715,7 +686,7 @@ impl OpenedFile {
     }
 
     /// Attempt the non-blocking exclusive advisory lock on this handle.
-    pub fn try_lock_exclusive(&self) -> Result<LockAcquisition, CustodyError> {
+    pub(crate) fn try_lock_exclusive(&self) -> Result<LockAcquisition, CustodyError> {
         if sys::try_lock_exclusive(&self.handle)? {
             Ok(LockAcquisition::Taken)
         } else {

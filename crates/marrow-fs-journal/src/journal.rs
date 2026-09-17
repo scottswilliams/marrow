@@ -3,18 +3,18 @@
 //!
 //! A journal lives under two fixed names derived from one base entry name:
 //! `<base>.pending.create` (the claim name) and `<base>.pending`. The claim
-//! file is created `CREATE | EXCL` mode `0600`, self-witnesses its opened
-//! inode, contains the complete header plus the sequence-zero Prepared record
-//! before any link, and is same-handle synced, reread, and validated. It is
-//! then hard-linked destination-refusing to the pending name and the parent is
-//! synced: that parent sync is the durable claim.
+//! file is created `CREATE | EXCL` mode `0600`, contains the complete header
+//! plus the sequence-zero Prepared record before any link, and is same-handle
+//! synced, reread, and validated. It is then hard-linked destination-refusing
+//! to the pending name and the parent is synced: that parent sync is the
+//! durable claim.
 //!
 //! Create-only is preclaim; create-plus-pending must be one two-link inode;
-//! normal pending is the same one-link inode. Wrong kind, a third inode or
-//! link, a malformed self-witness, or an unexpected node is retained
-//! corruption and authorizes no artifact mutation. After the final unlink both
-//! names are absent and the retained journal handle is `nlink == 0`; the
-//! parent sync alone commits marker absence and permits owner release.
+//! normal pending is the same one-link inode. A malformed frame, a third inode
+//! or link, or an unexpected node is retained corruption and authorizes no
+//! artifact mutation. After the final unlink both names are absent and the
+//! retained journal handle is `nlink == 0`; the parent sync alone commits
+//! marker absence and permits owner release.
 
 use std::fmt;
 
@@ -79,8 +79,8 @@ impl PendingName {
     }
 }
 
-/// The identities a claim witnesses, offered to the row-header builder so
-/// kinds 4 and 5 embed them as their self-witness.
+/// The identities a claim witnesses and composes into the row header's
+/// leading [`JournalCommon`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JournalWitness {
     /// The admitted parent directory's identity.
@@ -110,11 +110,6 @@ pub enum CorruptionReason {
     UnexpectedLength { expected: u64, found: u64 },
     /// The claim and pending names map to different inodes.
     SplitInodes,
-    /// A kind-4 or kind-5 header's parent identity is not the admitted
-    /// parent.
-    SelfWitnessParentMismatch,
-    /// A kind-4 or kind-5 header's inode identity is not the journal's own.
-    SelfWitnessInodeMismatch,
     /// A same-handle reread returned different bytes than were written.
     RereadMismatch,
 }
@@ -145,12 +140,6 @@ impl fmt::Display for CorruptionReason {
             Self::SplitInodes => {
                 formatter.write_str("the claim and pending names map to different inodes")
             }
-            Self::SelfWitnessParentMismatch => {
-                formatter.write_str("the header's parent identity is not the admitted parent")
-            }
-            Self::SelfWitnessInodeMismatch => {
-                formatter.write_str("the header's inode identity is not the journal's own")
-            }
             Self::RereadMismatch => {
                 formatter.write_str("a same-handle reread returned different bytes")
             }
@@ -163,9 +152,6 @@ impl fmt::Display for CorruptionReason {
 pub enum JournalError {
     /// A custody operation refused.
     Custody(CustodyError),
-    /// A kind whose header must be led by the shared common was offered a
-    /// header with no common to lead it; nothing was written.
-    WitnessNotEmbedded,
     /// The producer violated the kind's frame law; nothing was written.
     Law(FrameLawError),
     /// Corruption was found; no further mutation is authorized.
@@ -193,8 +179,6 @@ impl fmt::Display for JournalError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Custody(error) => write!(formatter, "{error}"),
-            Self::WitnessNotEmbedded => formatter
-                .write_str("this journal kind's header must be led by the claim's own witness"),
             Self::Law(error) => write!(formatter, "frame law refused: {error}"),
             Self::Corrupt(reason) => write!(formatter, "retained corruption: {reason}"),
             Self::CeilingExceeded { total, limit } => write!(
@@ -374,8 +358,6 @@ impl<'d> PendingJournal<'d> {
         let valid_len = frame_total_len(&self.frame);
         let valid_bytes = self.file.read_prefix(valid_len)?;
 
-        // The offered record must itself be the legal continuation: appended
-        // to the valid frame it decodes as exactly one more complete record.
         let mut candidate = valid_bytes.clone();
         candidate.extend_from_slice(expected_next_record);
         match decode_frame(self.frame.kind(), &candidate) {
@@ -386,8 +368,6 @@ impl<'d> PendingJournal<'d> {
             Err(corruption) => return Err(JournalError::ExpectedRecordIllegal(corruption)),
         }
 
-        // The exact-prefix law: only a strict prefix of that unique record
-        // may be truncated.
         if tail.len() >= expected_next_record.len()
             || expected_next_record[..tail.len()] != tail[..]
         {
@@ -438,7 +418,7 @@ impl<'d> PendingJournal<'d> {
             .last()
             .expect("a pending journal carries at least its Prepared record");
         let next_sequence = u32::try_from(self.frame.records().len())
-            .expect("a registry holds at most six records");
+            .expect("the registry holds at most three records");
         Ok(LiveJournal {
             dir: self.dir,
             kind: self.frame.kind(),
@@ -602,7 +582,7 @@ pub enum ClaimRefusal {
 }
 
 /// A row header as a caller can build it: the generation slot and everything
-/// after the shared leading common.
+/// after the leading common.
 ///
 /// This is a value rather than a callback: the claim composes the common from
 /// the directory it is claiming under and the inode it created, and a callback
@@ -611,42 +591,35 @@ pub enum ClaimRefusal {
 /// leaving no marker.
 #[derive(Debug, Clone)]
 pub enum BuiltHeader {
-    /// A header led by the shared common. The caller supplies the generation
-    /// slot and the bytes after it; the two identities it cannot know are the
-    /// two it does not supply.
+    /// A header led by the common. The caller supplies the generation slot
+    /// and the bytes after it; the two identities it cannot know are the two
+    /// it does not supply.
     Witnessed {
         /// The row's 16-byte generation evidence.
         generation: [u8; 16],
         /// Everything after the common.
         tail: Vec<u8>,
     },
-    /// A header with no shared common: the bytes are the whole of it. Kinds
-    /// that carry a self-witness may not use this shape.
-    Plain(Vec<u8>),
 }
 
 impl BuiltHeader {
     fn compose(&self, witness: &JournalWitness) -> Vec<u8> {
-        match self {
-            Self::Witnessed { generation, tail } => {
-                let common = JournalCommon {
-                    generation: *generation,
-                    parent: witness.parent,
-                    journal_inode: witness.journal_inode,
-                };
-                let mut bytes = Vec::with_capacity(JOURNAL_COMMON_LEN + tail.len());
-                bytes.extend_from_slice(&common.encode());
-                bytes.extend_from_slice(tail);
-                bytes
-            }
-            Self::Plain(bytes) => bytes.clone(),
-        }
+        let Self::Witnessed { generation, tail } = self;
+        let common = JournalCommon {
+            generation: *generation,
+            parent: witness.parent,
+            journal_inode: witness.journal_inode,
+        };
+        let mut bytes = Vec::with_capacity(JOURNAL_COMMON_LEN + tail.len());
+        bytes.extend_from_slice(&common.encode());
+        bytes.extend_from_slice(tail);
+        bytes
     }
 }
 
 /// Claim a new pending journal in `dir` under `name`. `header` is the
 /// row-specific header as a value; the claim composes the leading
-/// `JournalCommon` from its own witness, so kinds 4 and 5 embed it by
+/// `JournalCommon` from its own witness, so every header embeds it by
 /// construction. `prepared_payload` is the sequence-zero Prepared record's
 /// payload.
 ///
@@ -663,13 +636,6 @@ pub fn claim<'d>(
     header: BuiltHeader,
     prepared_payload: &[u8],
 ) -> Result<LiveJournal<'d>, ClaimRefusal> {
-    // Everything whose refusal is genuinely preclaim happens inside
-    // `claim_preflight`, which cannot reach the link; everything from the link
-    // onward happens inside `claim_commit`, whose every refusal is
-    // possibly-durable by construction.
-    if kind.carries_self_witness() && matches!(header, BuiltHeader::Plain(_)) {
-        return Err(ClaimRefusal::Preclaim(JournalError::WitnessNotEmbedded));
-    }
     let prepared = claim_preflight(dir, name, kind, &header, prepared_payload)
         .map_err(ClaimRefusal::Preclaim)?;
     let total_len = prepared.bytes_len;
@@ -973,9 +939,6 @@ fn classify_claimed<'d>(
     if frame.records().len() > 1 || frame.tail() != &TailState::Clean {
         return corrupt_state(CorruptionReason::ClaimBeyondPrepared);
     }
-    if let Some(reason) = witness_mismatch(&frame, dir, &file) {
-        return corrupt_state(reason);
-    }
     Ok(PendingState::Claimed(ClaimedJournal {
         dir,
         name: name.clone(),
@@ -1009,9 +972,6 @@ fn classify_pending<'d>(
     if frame.records().is_empty() {
         return corrupt_state(CorruptionReason::MissingPrepared);
     }
-    if let Some(reason) = witness_mismatch(&frame, dir, &file) {
-        return corrupt_state(reason);
-    }
     Ok(PendingState::Pending(PendingJournal {
         dir,
         name: name.clone(),
@@ -1039,21 +999,6 @@ fn replay(
 ) -> Result<Result<DecodedFrame, FrameCorruption>, JournalError> {
     let bytes = file.read_prefix(expected.ceiling() + 1)?;
     Ok(decode_frame(expected, &bytes))
-}
-
-fn witness_mismatch(
-    frame: &DecodedFrame,
-    dir: &AdmittedDir,
-    file: &OpenedFile,
-) -> Option<CorruptionReason> {
-    let common = frame.journal_common()?;
-    if common.parent != dir.identity() {
-        return Some(CorruptionReason::SelfWitnessParentMismatch);
-    }
-    if common.journal_inode != file.identity() {
-        return Some(CorruptionReason::SelfWitnessInodeMismatch);
-    }
-    None
 }
 
 /// Assemble, write, sync, and validate the claim file's exact bytes through
@@ -1086,9 +1031,6 @@ fn write_claim_file(
 
 /// Assemble and law-check the claim bytes: the header plus the sequence-zero
 /// Prepared record.
-///
-/// The header arrives already composed against this claim's own witness, so
-/// nothing here re-checks that it embeds one.
 fn claim_bytes(
     kind: JournalKind,
     header: &[u8],

@@ -1,9 +1,9 @@
-//! The bounded five-kind pending-journal frame: one byte layout, one decoder.
+//! The bounded pending-journal frame: one byte layout, one decoder.
 //!
 //! ```text
 //! magic[8] = "MWPEND0\0"
 //! u8 version = 0
-//! u8 kind       # 1 ids, 2 provision, 3 rebind, 4 lineage, 5 cache
+//! u8 kind       # 1 ids
 //! u16_be reserved = 0
 //! u32_be(header_len)
 //! row_specific_header
@@ -39,24 +39,17 @@ pub(crate) const PREFIX_LEN: usize = 16;
 pub(crate) const RECORD_OVERHEAD: usize = 13;
 /// The `record_len` field value for an empty payload: sequence plus tag.
 pub(crate) const RECORD_LEN_BASE: u32 = 5;
-/// The shared leading header of kinds 4 and 5: generation, parent identity,
+/// The leading common of every row header: generation, parent identity,
 /// journal-inode identity.
 pub(crate) const JOURNAL_COMMON_LEN: usize = 48;
 
-/// The five pending-journal kinds. The numeric code is the frame's `kind`
-/// byte and is frozen by the known-answer tests.
+/// The pending-journal kinds. A kind exists for each row that publishes
+/// through a journal; the numeric code is the frame's `kind` byte and is
+/// frozen by the known-answer tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum JournalKind {
     /// Kind 1: identity-ledger publication.
     Ids,
-    /// Kind 2: store provision.
-    Provision,
-    /// Kind 3: store rebind.
-    Rebind,
-    /// Kind 4: package-lineage publication.
-    Lineage,
-    /// Kind 5: package-cache publication.
-    Cache,
 }
 
 impl JournalKind {
@@ -64,22 +57,6 @@ impl JournalKind {
     pub const fn code(self) -> u8 {
         match self {
             Self::Ids => 1,
-            Self::Provision => 2,
-            Self::Rebind => 3,
-            Self::Lineage => 4,
-            Self::Cache => 5,
-        }
-    }
-
-    /// The kind for a frame `kind` byte, if it names one.
-    pub const fn from_code(code: u8) -> Option<Self> {
-        match code {
-            1 => Some(Self::Ids),
-            2 => Some(Self::Provision),
-            3 => Some(Self::Rebind),
-            4 => Some(Self::Lineage),
-            5 => Some(Self::Cache),
-            _ => None,
         }
     }
 
@@ -89,62 +66,22 @@ impl JournalKind {
     pub const fn ceiling(self) -> usize {
         match self {
             Self::Ids => 2_101_248,
-            Self::Provision | Self::Rebind | Self::Lineage | Self::Cache => 4_096,
         }
     }
 
     /// The number of phases in the kind's registry. Phase tags run `1..=n`;
     /// tag 1 is `Prepared` and tag `n` is the terminal phase.
-    pub const fn phase_count(self) -> u8 {
+    pub(crate) const fn phase_count(self) -> u8 {
         match self {
-            Self::Ids | Self::Provision | Self::Lineage => 3,
-            Self::Rebind => 6,
-            Self::Cache => 5,
+            Self::Ids => 3,
         }
     }
 
     /// Whether `phase_tag` is the kind's terminal phase. This is the one
     /// statement of what completeness means; every holder of a last tag asks
     /// here rather than comparing against the registry itself.
-    pub const fn is_terminal(self, phase_tag: u8) -> bool {
+    pub(crate) const fn is_terminal(self, phase_tag: u8) -> bool {
         phase_tag == self.phase_count()
-    }
-
-    /// The exact `header_len` for kinds whose row header is closed (4 and 5).
-    /// Kinds 1–3 carry their consumer rows' headers, bounded by the ceiling.
-    pub const fn exact_header_len(self) -> Option<usize> {
-        match self {
-            Self::Lineage => Some(184),
-            Self::Cache => Some(285),
-            Self::Ids | Self::Provision | Self::Rebind => None,
-        }
-    }
-
-    /// Whether the kind's row header begins with a leading [`JournalCommon`]
-    /// self-witness (kinds 4 and 5).
-    pub const fn carries_self_witness(self) -> bool {
-        matches!(self, Self::Lineage | Self::Cache)
-    }
-
-    /// The exact phase-payload length by record position for kinds whose
-    /// record sizes are closed (4 and 5).
-    pub const fn exact_payload_len(self, position: u32) -> Option<usize> {
-        match self {
-            Self::Lineage => match position {
-                0 => Some(1),
-                1 | 2 => Some(33),
-                _ => None,
-            },
-            Self::Cache => match position {
-                0 => Some(1),
-                1 => Some(32),
-                2 => Some(128),
-                3 => Some(105),
-                4 => Some(81),
-                _ => None,
-            },
-            Self::Ids | Self::Provision | Self::Rebind => None,
-        }
     }
 }
 
@@ -152,21 +89,16 @@ impl fmt::Display for JournalKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
             Self::Ids => "ids",
-            Self::Provision => "provision",
-            Self::Rebind => "rebind",
-            Self::Lineage => "lineage",
-            Self::Cache => "cache",
         };
         formatter.write_str(name)
     }
 }
 
-/// The shared leading header of kinds 4 and 5. Generation is header evidence
+/// The leading common of every row header. Generation is header evidence
 /// only, never a name, semantic identity, or cleanup wildcard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JournalCommon {
-    /// The row's 16-byte generation evidence (`PackageLineage[0..16]` for
-    /// kind 4, `PackageRecordId[0..16]` for kind 5).
+    /// The row's 16-byte generation evidence.
     pub generation: [u8; 16],
     /// The admitted parent directory's identity at claim time.
     pub parent: FsIdentity,
@@ -278,17 +210,6 @@ impl DecodedFrame {
     pub fn is_complete(&self) -> bool {
         self.kind.is_terminal(self.last_tag())
     }
-
-    /// The `JournalCommon` leading kinds 4 and 5; `None` for kinds 1–3.
-    pub fn journal_common(&self) -> Option<JournalCommon> {
-        if !self.kind.carries_self_witness() {
-            return None;
-        }
-        let common: &[u8; JOURNAL_COMMON_LEN] = self.row_header[..JOURNAL_COMMON_LEN]
-            .try_into()
-            .expect("a closed-kind header begins with the 48-byte common");
-        Some(JournalCommon::decode(common))
-    }
 }
 
 /// The record law: the rules every record satisfies at its position in the
@@ -306,10 +227,6 @@ pub enum RecordLaw {
     FirstTagNotPrepared { found: u8 },
     /// The phase tag does not strictly advance past the preceding record's.
     TagNotAdvancing { previous: u8, found: u8 },
-    /// A closed-record kind requires dense phase tags equal to position + 1.
-    TagNotDense { found: u8 },
-    /// A closed-record kind requires the exact payload length for the position.
-    WrongPayloadLength { expected: usize, found: usize },
     /// The record does not end under the kind's ceiling at this position.
     OverCeiling { ceiling: usize, end: usize },
 }
@@ -328,14 +245,6 @@ impl fmt::Display for RecordLaw {
                 formatter,
                 "carries phase tag {found}, which does not advance past {previous}"
             ),
-            Self::TagNotDense { found } => write!(
-                formatter,
-                "carries phase tag {found}, breaking this kind's dense registry"
-            ),
-            Self::WrongPayloadLength { expected, found } => write!(
-                formatter,
-                "carries {found} payload bytes, not the exact {expected}"
-            ),
             Self::OverCeiling { ceiling, end } => {
                 write!(
                     formatter,
@@ -348,8 +257,7 @@ impl fmt::Display for RecordLaw {
 
 impl JournalKind {
     /// The half of the record law a declared length settles: registry
-    /// position, exact payload length, and ceiling fit for a record beginning
-    /// at byte `start`.
+    /// position and ceiling fit for a record beginning at byte `start`.
     pub(crate) fn check_record_size(
         self,
         sequence: u32,
@@ -358,14 +266,6 @@ impl JournalKind {
     ) -> Result<(), RecordLaw> {
         if sequence >= u32::from(self.phase_count()) {
             return Err(RecordLaw::SequenceOutOfRegistry);
-        }
-        if let Some(expected) = self.exact_payload_len(sequence)
-            && payload_len != expected
-        {
-            return Err(RecordLaw::WrongPayloadLength {
-                expected,
-                found: payload_len,
-            });
         }
         let end = start + RECORD_OVERHEAD + payload_len;
         if end > self.ceiling() {
@@ -397,9 +297,6 @@ impl JournalKind {
                 found: phase_tag,
             });
         }
-        if self.exact_payload_len(sequence).is_some() && u32::from(phase_tag) != sequence + 1 {
-            return Err(RecordLaw::TagNotDense { found: phase_tag });
-        }
         Ok(())
     }
 }
@@ -422,12 +319,6 @@ pub(crate) fn check_record_law(
 /// kind's frame law and was never encoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameLawError {
-    /// A closed-header kind was given a row header of the wrong exact length.
-    WrongHeaderLength {
-        kind: JournalKind,
-        expected: usize,
-        found: usize,
-    },
     /// The row header leaves no room for the Prepared record under the
     /// kind's ceiling.
     HeaderOverCeiling { kind: JournalKind, found: usize },
@@ -438,14 +329,6 @@ pub enum FrameLawError {
 impl fmt::Display for FrameLawError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::WrongHeaderLength {
-                kind,
-                expected,
-                found,
-            } => write!(
-                formatter,
-                "a {kind} row header is exactly {expected} bytes (found {found})"
-            ),
             Self::HeaderOverCeiling { kind, found } => write!(
                 formatter,
                 "a {found}-byte row header leaves no record room under the {kind} ceiling"
@@ -472,13 +355,8 @@ pub enum FrameCorruption {
     BadMagic,
     /// The version byte is not the supported version.
     BadVersion { found: u8 },
-    /// The kind byte names no kind.
+    /// The kind byte does not name this journal's kind.
     BadKind { found: u8 },
-    /// The kind byte names a different kind than this journal.
-    WrongKind {
-        expected: JournalKind,
-        found: JournalKind,
-    },
     /// The reserved field is not zero.
     NonzeroReserved { found: u16 },
     /// The header length violates the kind's law.
@@ -513,11 +391,12 @@ impl fmt::Display for FrameCorruption {
             Self::BadVersion { found } => {
                 write!(formatter, "frame version {found} is not supported")
             }
-            Self::BadKind { found } => write!(formatter, "kind byte {found} names no kind"),
-            Self::WrongKind { expected, found } => write!(
-                formatter,
-                "the frame is a {found} journal, not the expected {expected} journal"
-            ),
+            Self::BadKind { found } => {
+                write!(
+                    formatter,
+                    "kind byte {found} does not name this journal's kind"
+                )
+            }
             Self::NonzeroReserved { found } => {
                 write!(formatter, "the reserved field is {found}, not zero")
             }
@@ -556,24 +435,11 @@ impl std::error::Error for FrameCorruption {}
 /// Encode the fixed prefix and row header for `kind`, refusing a header that
 /// violates the kind's law.
 pub fn encode_header(kind: JournalKind, row_header: &[u8]) -> Result<Vec<u8>, FrameLawError> {
-    match kind.exact_header_len() {
-        Some(expected) => {
-            if row_header.len() != expected {
-                return Err(FrameLawError::WrongHeaderLength {
-                    kind,
-                    expected,
-                    found: row_header.len(),
-                });
-            }
-        }
-        None => {
-            if PREFIX_LEN + row_header.len() + RECORD_OVERHEAD > kind.ceiling() {
-                return Err(FrameLawError::HeaderOverCeiling {
-                    kind,
-                    found: row_header.len(),
-                });
-            }
-        }
+    if PREFIX_LEN + row_header.len() + RECORD_OVERHEAD > kind.ceiling() {
+        return Err(FrameLawError::HeaderOverCeiling {
+            kind,
+            found: row_header.len(),
+        });
     }
     let header_len =
         u32::try_from(row_header.len()).expect("a lawful row header fits the length field");
@@ -636,13 +502,8 @@ fn decode_prefix(expected: JournalKind, bytes: &[u8]) -> Result<FramePrefix, Fra
     if bytes[8] != VERSION {
         return Err(FrameCorruption::BadVersion { found: bytes[8] });
     }
-    let kind =
-        JournalKind::from_code(bytes[9]).ok_or(FrameCorruption::BadKind { found: bytes[9] })?;
-    if kind != expected {
-        return Err(FrameCorruption::WrongKind {
-            expected,
-            found: kind,
-        });
+    if bytes[9] != expected.code() {
+        return Err(FrameCorruption::BadKind { found: bytes[9] });
     }
     let reserved = u16::from_be_bytes([bytes[10], bytes[11]]);
     if reserved != 0 {
@@ -654,11 +515,7 @@ fn decode_prefix(expected: JournalKind, bytes: &[u8]) -> Result<FramePrefix, Fra
             .expect("the fixed prefix carries four header-length bytes"),
     );
     let header_len = declared_header as usize;
-    let lawful = match kind.exact_header_len() {
-        Some(exact) => header_len == exact,
-        None => PREFIX_LEN + header_len + RECORD_OVERHEAD <= kind.ceiling(),
-    };
-    if !lawful {
+    if PREFIX_LEN + header_len + RECORD_OVERHEAD > expected.ceiling() {
         return Err(FrameCorruption::BadHeaderLength {
             found: declared_header,
         });
@@ -756,7 +613,10 @@ fn take_record(sequence: u32, remaining: &[u8], disk: usize) -> PhaseRecord {
 /// `ceiling + 1` bytes; the decoder refuses the surplus byte before any
 /// length-derived allocation and fully validates every structurally visible
 /// field, including the visible fields of an incomplete tail.
-pub fn decode_frame(expected: JournalKind, bytes: &[u8]) -> Result<DecodedFrame, FrameCorruption> {
+pub(crate) fn decode_frame(
+    expected: JournalKind,
+    bytes: &[u8],
+) -> Result<DecodedFrame, FrameCorruption> {
     if bytes.len() > expected.ceiling() {
         return Err(FrameCorruption::Oversized {
             limit: expected.ceiling(),
@@ -803,3 +663,7 @@ pub fn decode_frame(expected: JournalKind, bytes: &[u8]) -> Result<DecodedFrame,
         tail,
     })
 }
+
+#[cfg(test)]
+#[path = "frame_tests.rs"]
+mod tests;

@@ -166,18 +166,10 @@ mod imp {
         let file = rustix::fs::openat(dir, name, flags, file_mode())
             .map(File::from)
             .map_err(|errno| map(CustodyOp::CreateFile, Reading::Nofollow, errno))?;
-        // The create-then-restore window is the crate documentation's.
-        // A refused mode restoration removes nothing: the entry this call
-        // created is left as never-linked debris, which the pending-journal
-        // classification reads as preclaim.
-        //
-        // Removing it is not available at this layer. `unlinkat` names a path,
-        // so a removal here could only witness the name with a stat and then
-        // unlink that name — deleting whatever landed between the two, which
-        // need not be the entry this call created. Nothing at this layer has a
-        // private location to move an object into first. Leaving classifiable
-        // debris costs a retained manual state; removing the wrong object costs
-        // a file that was never ours.
+        // A refused restoration removes nothing: `unlinkat` names a path, so a
+        // removal here could delete whatever landed under the name between a
+        // witnessing stat and the unlink. The never-linked entry is left as
+        // debris that pending-journal classification reads as preclaim.
         if let Err(errno) = rustix::fs::fchmod(&file, file_mode()) {
             return Err(map(CustodyOp::CreateFile, Reading::Plain, errno));
         }
@@ -229,8 +221,8 @@ mod imp {
     }
 
     /// `flock(LOCK_EX | LOCK_NB)`; `Ok(false)` reports a held lock. The typed
-    /// [`LockAcquisition`](crate::LockAcquisition) is minted at the custody
-    /// boundary, which is the only caller.
+    /// [`LockAcquisition`](crate::custody::LockAcquisition) is minted at the
+    /// custody boundary, which is the only caller.
     pub(crate) fn try_lock_exclusive(file: &FileHandle) -> Result<bool, CustodyError> {
         match rustix::fs::flock(file, FlockOperation::NonBlockingLockExclusive) {
             Ok(()) => Ok(true),
