@@ -169,9 +169,6 @@ define_keywords! {
     Date => { spelling: "date", class: BuiltinType },
     Instant => { spelling: "instant", class: BuiltinType },
     Duration => { spelling: "duration", class: BuiltinType },
-    Unknown => { spelling: "unknown", class: BuiltinType },
-    Error => { spelling: "Error", class: BuiltinType },
-    ErrorCode => { spelling: "ErrorCode", class: BuiltinType },
     Id => { spelling: "Id", class: BuiltinType },
 }
 
@@ -531,8 +528,6 @@ pub fn is_expression_callable_keyword(keyword: Keyword) -> bool {
             | Keyword::Date
             | Keyword::Instant
             | Keyword::Duration
-            | Keyword::ErrorCode
-            | Keyword::Error
             | Keyword::Id
     )
 }
@@ -550,8 +545,6 @@ pub fn is_expression_path_segment_keyword(keyword: Keyword) -> bool {
             | Keyword::Date
             | Keyword::Instant
             | Keyword::Duration
-            | Keyword::ErrorCode
-            | Keyword::Error
     )
 }
 

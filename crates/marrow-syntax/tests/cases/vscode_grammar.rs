@@ -470,7 +470,7 @@ fn keyword_pattern_matches(pattern: &str, source: &str) -> bool {
 fn canonical_spelling_from_variant(keyword: Keyword) -> String {
     let variant = format!("{keyword:?}");
     match keyword {
-        Keyword::Error | Keyword::ErrorCode | Keyword::Id => variant,
+        Keyword::Id => variant,
         _ => variant.to_ascii_lowercase(),
     }
 }
@@ -552,7 +552,7 @@ fn generated_grammar_is_committed() {
 
 #[test]
 fn canonical_keyword_taxonomy_kat() {
-    assert_eq!(Keyword::Unknown.lexical_class(), LexicalClass::BuiltinType);
+    assert_eq!(Keyword::Int.lexical_class(), LexicalClass::BuiltinType);
     assert_eq!(Keyword::True.lexical_class(), LexicalClass::BuiltinValue);
     assert_eq!(Keyword::False.lexical_class(), LexicalClass::BuiltinValue);
     assert_eq!(Keyword::Absent.lexical_class(), LexicalClass::BuiltinValue);
@@ -566,13 +566,13 @@ fn canonical_keyword_taxonomy_kat() {
         .iter()
         .find(|rule| rule.class == LexicalClass::BuiltinValue)
         .expect("built-in value rule");
-    assert!(type_words.spellings.contains(&"unknown"));
-    assert!(!value_words.spellings.contains(&"unknown"));
+    assert!(type_words.spellings.contains(&"int"));
+    assert!(!value_words.spellings.contains(&"int"));
     assert_eq!(
         rules
             .iter()
             .flat_map(|rule| &rule.spellings)
-            .filter(|spelling| **spelling == "unknown")
+            .filter(|spelling| **spelling == "int")
             .count(),
         1
     );
@@ -643,20 +643,15 @@ fn keyword_taxonomy_is_total_disjoint_and_parser_owned() {
 
 #[test]
 fn keyword_patterns_are_longest_first_escaped_and_bounded() {
-    let type_rule = keyword_rules()
-        .into_iter()
-        .find(|rule| rule.class == LexicalClass::BuiltinType)
-        .expect("built-in type rule");
-    let alternatives = keyword_alternatives(&type_rule.pattern);
-    let error_code = alternatives
-        .iter()
-        .position(|word| word == "ErrorCode")
-        .expect("ErrorCode");
-    let error = alternatives
-        .iter()
-        .position(|word| word == "Error")
-        .expect("Error");
-    assert!(error_code < error, "longest live prefix must render first");
+    for rule in keyword_rules() {
+        let alternatives = keyword_alternatives(&rule.pattern);
+        assert!(
+            alternatives
+                .windows(2)
+                .all(|pair| pair[0].len() >= pair[1].len()),
+            "a longer spelling must render before any prefix of it: {alternatives:?}"
+        );
+    }
 
     assert_eq!(
         regex_escape(r"a+b(c)[d]{e}.^$|?*\\"),

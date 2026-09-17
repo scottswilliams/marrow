@@ -43,7 +43,7 @@
         { "name": "keyword.declaration.marrow", "match": "(resource|module|struct|alias|const|index|place|store|enum|test|type|use|var|fn)(?![A-Za-z0-9_])" },
         { "name": "storage.modifier.marrow", "match": "(sensitive|required|supports|checked|journal|unique|pub)(?![A-Za-z0-9_])" },
         { "name": "storage.modifier.effect.marrow", "match": "(declassify|writes|reads)(?![A-Za-z0-9_])" },
-        { "name": "storage.type.builtin.marrow", "match": "(ErrorCode|duration|decimal|instant|unknown|string|Error|bytes|bool|date|int|Id)(?![A-Za-z0-9_])" },
+        { "name": "storage.type.builtin.marrow", "match": "(duration|decimal|instant|string|bytes|bool|date|int|Id)(?![A-Za-z0-9_])" },
         { "name": "constant.language.marrow", "match": "(absent|false|true)(?![A-Za-z0-9_])" },
         { "name": "keyword.operator.word.marrow", "match": "(and|not|is|or)(?![A-Za-z0-9_])" }
       ]

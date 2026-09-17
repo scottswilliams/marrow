@@ -395,7 +395,7 @@ fn suppresses_layout_inside_open_delimiters() {
         kinds(source),
         vec![
             TokenKind::Keyword(Keyword::Return),
-            TokenKind::Keyword(Keyword::Error),
+            TokenKind::Identifier,
             TokenKind::LeftParen,
             TokenKind::Identifier,
             TokenKind::Colon,
@@ -420,7 +420,7 @@ fn comment_lines_inside_open_delimiters_do_not_emit_newlines() {
         kinds(source),
         vec![
             TokenKind::Keyword(Keyword::Return),
-            TokenKind::Keyword(Keyword::Error),
+            TokenKind::Identifier,
             TokenKind::LeftParen,
             TokenKind::Comment,
             TokenKind::Identifier,

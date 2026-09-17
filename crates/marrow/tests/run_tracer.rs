@@ -513,8 +513,8 @@ fn byte_literal_boundary_and_reference_are_exact() {
     );
 }
 
-/// `int("1")`, `bool(1)`, `decimal`, `ErrorCode`, and a decimal literal each carry
-/// an exact rejection code, and the reference states the same boundary.
+/// `int("1")`, `bool(1)`, `decimal`, and a decimal literal each carry an exact
+/// rejection code, and the reference states the same boundary.
 #[test]
 fn rejected_conversion_and_decimal_literal_codes_are_exact() {
     for (name, source, code) in [
@@ -531,11 +531,6 @@ fn rejected_conversion_and_decimal_literal_codes_are_exact() {
         (
             "decimal-call",
             "module main\n\npub fn value(): int {\n    const converted = decimal(1)\n    return 0\n}\n",
-            "check.type",
-        ),
-        (
-            "error-code-call",
-            "module main\n\npub fn value(): int {\n    const converted = ErrorCode(\"run.example\")\n    return 0\n}\n",
             "check.type",
         ),
         (
@@ -558,7 +553,7 @@ fn rejected_conversion_and_decimal_literal_codes_are_exact() {
     let builtins = normalize(include_str!("../../../docs/language/builtins.md"));
 
     assert!(types.contains(
-        "`int(\"1\")` and `bool(1)` are examples. `decimal` and `ErrorCode` have no current callable scalar owner, so `decimal(1)` and `ErrorCode(\"run.example\")` report `check.type`."
+        "`int(\"1\")` and `bool(1)` are examples. `decimal` has no current callable scalar owner, so `decimal(1)` reports `check.type`."
     ));
     assert!(syntax.contains("| Decimal (**future**) |"));
     assert!(!syntax.contains("| Decimal |"));

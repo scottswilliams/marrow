@@ -22,21 +22,21 @@ Marrow does not publish asks for the fact to be added to the compiler.
 ## Reserved words
 
 The lexer classifies each of the following words as a keyword, so none is
-available as an identifier. The set is case-sensitive: `Error`, `ErrorCode`, and
-`Id` are reserved with their capitalization, and a lowercase `error` is an
-ordinary identifier. Some words are contextual in the grammar: `by`, `at most`,
-`from`, `on more`, and the duration units are read as keywords only in specific
-positions and are outside this set. Some reserved words are held for a future
-clause: `writes`, `reads`, `merge`, `journal`, `sensitive`, `declassify`, `lock`.
+available as an identifier. The set is case-sensitive: `Id` is reserved with its
+capitalization, and a lowercase `id` is an ordinary identifier. Some words are
+contextual in the grammar: `by`, `at most`, `from`, `on more`, and the duration
+units are read as keywords only in specific positions and are outside this set.
+Some reserved words are held for a future clause: `writes`, `reads`, `merge`,
+`journal`, `sensitive`, `declassify`, `lock`.
 A reserved word means only that the lexer treats it as a keyword.
 
 <!-- BEGIN reserved-words -->
 ```text
 absent alias and assert bool break bytes checked const continue date decimal
-declassify delete duration else enum Error ErrorCode false fn for Id if in index
-instant int is journal lock match merge module not or place pub reads require
-required resource return sensitive store string struct supports test transaction
-true try type unique unknown unset use var while writes
+declassify delete duration else enum false fn for Id if in index instant int is
+journal lock match merge module not or place pub reads require required resource
+return sensitive store string struct supports test transaction true try type
+unique unset use var while writes
 ```
 <!-- END reserved-words -->
 

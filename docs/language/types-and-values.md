@@ -380,7 +380,7 @@ not reach another. `T` and `V` are any value type, including a nested `List`,
 `string`, `bytes`, `date`, `instant`, and `duration`, or a nominal int type. A
 nominal Map key retains its source type and uses its base scalar for
 representation and ordering. A struct, enum, collection, optional, or entry
-identity is not a Map key. `ErrorCode` is not a local Map key.
+identity is not a Map key.
 
 `List()` and `Map()` construct an empty collection whose type comes from an
 annotation, an argument, or a return type. `List(a, b, c)` constructs a list of
@@ -722,17 +722,16 @@ faults with `run.text_limit` at the conversion expression
 
 A call pairing two current scalar names is a `check.unsupported`.
 `int("1")` and `bool(1)` are examples.
-`decimal` and `ErrorCode` have no current callable scalar owner, so
-`decimal(1)` and `ErrorCode("run.example")` report `check.type`. The temporal
-names `date`, `instant`, and `duration` construct a value from a literal and
-convert nothing at run time.
+`decimal` has no current callable scalar owner, so `decimal(1)` reports
+`check.type`. The temporal names `date`, `instant`, and `duration` construct a
+value from a literal and convert nothing at run time.
 
 ## Key types
 
 A key names one element of a collection or a durable place. Local `Map<K, V>`
 keys use `int`, `bool`, `string`, `bytes`, `date`, `instant`, and `duration`, or
 a nominal int type. A nominal Map key retains its source type and uses its base
-scalar for representation and ordering. `ErrorCode` is not a local Map key.
+scalar for representation and ordering.
 
 Durable key positions use `int`, `bool`, `string`, `bytes`, `date`, or `instant`;
 `duration` and nominal source types are not durable keys. A root or branch may

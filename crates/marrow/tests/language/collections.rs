@@ -238,17 +238,6 @@ pub fn value(): int {
             "check.unsupported",
         ),
         (
-            "ErrorCode",
-            r#"module main
-
-pub fn value(): int {
-    const values: Map<ErrorCode, int> = Map()
-    return 0
-}
-"#,
-            "check.unsupported",
-        ),
-        (
             "generic parameter",
             r#"module main
 
@@ -326,10 +315,6 @@ fn the_reference_states_the_same_key_domain() {
         assert!(section.contains(local_domain), "{name}: {section}");
         assert!(section.contains("nominal int type"), "{name}: {section}");
         assert!(section.contains(nominal_rule), "{name}: {section}");
-        assert!(
-            section.contains("`ErrorCode` is not a local Map key"),
-            "{name}: {section}"
-        );
     }
     assert!(
         key_types.contains(
