@@ -13,7 +13,7 @@ use marrow_lifecycle::{MemoryAttachment, MintOutcome, mint_ephemeral, prepare};
 use marrow_verify::verify;
 
 use crate::attach::{DurableRun, run_export};
-use crate::fault::DurableExecutionFault;
+use crate::fault::{DurableExecutionFault, IncompleteDisposition};
 use crate::run::run_durable;
 use crate::value::Value;
 
@@ -402,10 +402,13 @@ fn aborted_commit_is_incomplete_known_old() {
         panic!("aborted commit was flattened to an ordinary runtime fault");
     };
     assert_eq!(incomplete.runtime_fault().code(), Code::RunCommit);
-    assert_eq!(
-        incomplete.durable_state(),
-        Some(DurableCommitState::KnownOld)
-    );
+    assert!(matches!(
+        incomplete.into_disposition(),
+        IncompleteDisposition::Classified {
+            durable: DurableCommitState::KnownOld,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -418,10 +421,13 @@ fn confirmed_commit_followed_by_pure_fault_is_incomplete_known_new() {
     };
     assert_eq!(incomplete.runtime_fault().code(), Code::RunDivideByZero);
     assert_eq!(incomplete.runtime_fault().line(), 18);
-    assert_eq!(
-        incomplete.durable_state(),
-        Some(DurableCommitState::KnownNew)
-    );
+    assert!(matches!(
+        incomplete.into_disposition(),
+        IncompleteDisposition::Classified {
+            durable: DurableCommitState::KnownNew,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -438,10 +444,13 @@ fn confirmed_commit_followed_by_helper_fault_is_incomplete_known_new() {
         12,
         "the incomplete outcome retains the helper instruction's source span",
     );
-    assert_eq!(
-        incomplete.durable_state(),
-        Some(DurableCommitState::KnownNew)
-    );
+    assert!(matches!(
+        incomplete.into_disposition(),
+        IncompleteDisposition::Classified {
+            durable: DurableCommitState::KnownNew,
+            ..
+        }
+    ));
 }
 
 #[test]

@@ -12,12 +12,13 @@ use marrow_codes::Code;
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::RuntimeScalar;
 use marrow_kernel::durable::{
-    BoundedLimit, CommitResult, Durable, DurableCommitState, EntryValue, Presence,
+    AuthorizedSite, BoundedLimit, CommitResult, Durable, DurableCommitState, EntryValue,
+    KernelFault, Presence,
 };
 use marrow_kernel::equality::ValueDomain;
 use marrow_verify::{
-    FunctionIndex, SealedConst, SealedFunction, SealedInstr, SealedSite, SealedSiteTarget,
-    VerifiedFunction, VerifiedImage,
+    FunctionIndex, SealedConst, SealedFunction, SealedGroup, SealedInstr, SealedSite,
+    SealedSiteTarget, VerifiedFunction, VerifiedImage,
 };
 
 use crate::fault::{DurableExecutionFault, RuntimeFault};
@@ -199,9 +200,9 @@ fn execute_frame<'s>(
             SealedInstr::Return => return Ok(frame.stack.pop()),
             SealedInstr::Jump(target) => frame.pc = *target,
             SealedInstr::JumpIfFalse(target) => frame.jump_if_false(*target),
-            SealedInstr::IntAdd => frame.int_add()?,
-            SealedInstr::IntSub => frame.int_sub()?,
-            SealedInstr::IntMul => frame.int_mul()?,
+            SealedInstr::IntAdd => frame.int_checked(i64::checked_add)?,
+            SealedInstr::IntSub => frame.int_checked(i64::checked_sub)?,
+            SealedInstr::IntMul => frame.int_checked(i64::checked_mul)?,
             SealedInstr::IntRem => frame.int_rem()?,
             SealedInstr::IntDiv => frame.int_div()?,
             SealedInstr::IntNeg => frame.int_neg()?,
@@ -211,14 +212,16 @@ fn execute_frame<'s>(
             | SealedInstr::IntGt
             | SealedInstr::IntGe
             | SealedInstr::EqInt => frame.int_compare(instr),
-            SealedInstr::EqBool => frame.eq_bool(),
-            SealedInstr::EqText => frame.eq_text(),
+            SealedInstr::EqBool
+            | SealedInstr::EqText
+            | SealedInstr::EqBytes
+            | SealedInstr::EqEnum
+            | SealedInstr::EqId => frame.eq_values(),
             SealedInstr::TextConcat => frame.text_concat()?,
             SealedInstr::TextLt
             | SealedInstr::TextLe
             | SealedInstr::TextGt
             | SealedInstr::TextGe => frame.text_compare(instr),
-            SealedInstr::EqBytes => frame.eq_bytes(),
             SealedInstr::BytesLt
             | SealedInstr::BytesLe
             | SealedInstr::BytesGt
@@ -240,10 +243,14 @@ fn execute_frame<'s>(
             | SealedInstr::DurationGe => frame.duration_compare(instr),
             SealedInstr::DateAddDays => frame.date_add_days()?,
             SealedInstr::DateDaysBetween => frame.date_days_between(),
-            SealedInstr::DurationAdd => frame.duration_add()?,
-            SealedInstr::DurationSub => frame.duration_sub()?,
-            SealedInstr::InstantAddDuration => frame.instant_add_duration()?,
-            SealedInstr::InstantSubDuration => frame.instant_sub_duration()?,
+            SealedInstr::DurationAdd => frame.duration_checked(marrow_temporal::duration_add)?,
+            SealedInstr::DurationSub => frame.duration_checked(marrow_temporal::duration_sub)?,
+            SealedInstr::InstantAddDuration => {
+                frame.instant_checked(marrow_temporal::instant_add_duration)?
+            }
+            SealedInstr::InstantSubDuration => {
+                frame.instant_checked(marrow_temporal::instant_sub_duration)?
+            }
             SealedInstr::ConvString => frame.conv_string()?,
             SealedInstr::ConvBytesText => frame.conv_bytes_text(),
             SealedInstr::IntAddChecked(target) => frame.int_add_checked(*target),
@@ -272,8 +279,6 @@ fn execute_frame<'s>(
             SealedInstr::EnumPayloadGet { variant, field } => {
                 frame.enum_payload_get(*variant, *field)?
             }
-            SealedInstr::EqEnum => frame.eq_enum(),
-            SealedInstr::EqId => frame.eq_id(),
             SealedInstr::MakeIdentity { root, cols } => frame.make_identity(*root, *cols),
             SealedInstr::IdentityKeyPath(cols) => frame.identity_key_path(*cols),
             SealedInstr::BranchPresent(target) => frame.branch_present(*target),
@@ -382,10 +387,14 @@ impl<'i> Frame<'i> {
                 self.dur_replace_entry(require_session(session), *site)?
             }
             SealedInstr::DurEraseField(site) => {
-                self.dur_erase_field(require_session(session), *site)?
+                self.dur_key_op(require_session(session), *site, |d, s, k| {
+                    d.erase_field(s, k)
+                })?
             }
             SealedInstr::DurEraseEntry(site) => {
-                self.dur_erase_entry(require_session(session), *site)?
+                self.dur_key_op(require_session(session), *site, |d, s, k| {
+                    d.erase_entry(s, k)
+                })?
             }
             SealedInstr::DurReadGroup(site) => {
                 self.dur_read_group(require_session(session), *site)?
@@ -397,7 +406,9 @@ impl<'i> Frame<'i> {
                 self.dur_replace_group(require_session(session), *site, key_slots)?
             }
             SealedInstr::DurEraseGroup(site) => {
-                self.dur_erase_group(require_session(session), *site)?
+                self.dur_key_op(require_session(session), *site, |d, s, k| {
+                    d.erase_group(s, k)
+                })?
             }
             SealedInstr::DurIterateBounded {
                 site,
@@ -467,34 +478,27 @@ impl<'i> Frame<'i> {
         }
     }
 
-    fn int_add(&mut self) -> Result<(), DurableExecutionFault> {
-        let (a, b) = pop_ints(&mut self.stack);
-        match a.checked_add(b) {
-            Some(v) => self.stack.push(Value::Int(v)),
-            None => return Err(self.fault(Code::RunOverflow)),
-        }
+    /// Push a checked result, or fault with `code` when the operation had none.
+    fn push_checked(
+        &mut self,
+        value: Option<Value>,
+        code: Code,
+    ) -> Result<(), DurableExecutionFault> {
+        let Some(value) = value else {
+            return Err(self.fault(code));
+        };
+        self.stack.push(value);
         self.pc += 1;
         Ok(())
     }
 
-    fn int_sub(&mut self) -> Result<(), DurableExecutionFault> {
+    /// A binary integer operation that faults `run.overflow` when its result leaves `i64`.
+    fn int_checked(
+        &mut self,
+        op: fn(i64, i64) -> Option<i64>,
+    ) -> Result<(), DurableExecutionFault> {
         let (a, b) = pop_ints(&mut self.stack);
-        match a.checked_sub(b) {
-            Some(v) => self.stack.push(Value::Int(v)),
-            None => return Err(self.fault(Code::RunOverflow)),
-        }
-        self.pc += 1;
-        Ok(())
-    }
-
-    fn int_mul(&mut self) -> Result<(), DurableExecutionFault> {
-        let (a, b) = pop_ints(&mut self.stack);
-        match a.checked_mul(b) {
-            Some(v) => self.stack.push(Value::Int(v)),
-            None => return Err(self.fault(Code::RunOverflow)),
-        }
-        self.pc += 1;
-        Ok(())
+        self.push_checked(op(a, b).map(Value::Int), Code::RunOverflow)
     }
 
     fn int_rem(&mut self) -> Result<(), DurableExecutionFault> {
@@ -504,12 +508,7 @@ impl<'i> Frame<'i> {
         }
         // `i64::MIN % -1` overflows the checked remainder (the quotient is
         // unrepresentable), so it faults as overflow rather than panicking.
-        match a.checked_rem(b) {
-            Some(v) => self.stack.push(Value::Int(v)),
-            None => return Err(self.fault(Code::RunOverflow)),
-        }
-        self.pc += 1;
-        Ok(())
+        self.push_checked(a.checked_rem(b).map(Value::Int), Code::RunOverflow)
     }
 
     fn int_div(&mut self) -> Result<(), DurableExecutionFault> {
@@ -520,22 +519,12 @@ impl<'i> Frame<'i> {
         // Truncating division toward zero, paired with the truncating `%`
         // remainder so `a == (a / b) * b + a % b`. `i64::MIN / -1` has an
         // unrepresentable quotient, so it faults as overflow.
-        match a.checked_div(b) {
-            Some(v) => self.stack.push(Value::Int(v)),
-            None => return Err(self.fault(Code::RunOverflow)),
-        }
-        self.pc += 1;
-        Ok(())
+        self.push_checked(a.checked_div(b).map(Value::Int), Code::RunOverflow)
     }
 
     fn int_neg(&mut self) -> Result<(), DurableExecutionFault> {
         let a = pop_int(&mut self.stack);
-        match a.checked_neg() {
-            Some(v) => self.stack.push(Value::Int(v)),
-            None => return Err(self.fault(Code::RunOverflow)),
-        }
-        self.pc += 1;
-        Ok(())
+        self.push_checked(a.checked_neg().map(Value::Int), Code::RunOverflow)
     }
 
     fn bool_not(&mut self) {
@@ -558,16 +547,11 @@ impl<'i> Frame<'i> {
         self.pc += 1;
     }
 
-    fn eq_bool(&mut self) {
-        let b = as_bool(pop(&mut self.stack));
-        let a = as_bool(pop(&mut self.stack));
-        self.stack.push(Value::Bool(a == b));
-        self.pc += 1;
-    }
-
-    fn eq_text(&mut self) {
-        let b = as_text(pop(&mut self.stack));
-        let a = as_text(pop(&mut self.stack));
+    /// Equality over two operands the verifier typed alike: scalars, enums, and identities
+    /// compare by value.
+    fn eq_values(&mut self) {
+        let b = pop(&mut self.stack);
+        let a = pop(&mut self.stack);
         self.stack.push(Value::Bool(a == b));
         self.pc += 1;
     }
@@ -598,13 +582,6 @@ impl<'i> Frame<'i> {
             _ => ordering.is_ge(),
         };
         self.stack.push(Value::Bool(result));
-        self.pc += 1;
-    }
-
-    fn eq_bytes(&mut self) {
-        let b = as_bytes(pop(&mut self.stack));
-        let a = as_bytes(pop(&mut self.stack));
-        self.stack.push(Value::Bool(a == b));
         self.pc += 1;
     }
 
@@ -657,12 +634,10 @@ impl<'i> Frame<'i> {
     fn date_add_days(&mut self) -> Result<(), DurableExecutionFault> {
         let days = pop_int(&mut self.stack);
         let date = pop_date(&mut self.stack);
-        match marrow_temporal::add_days(date, days) {
-            Some(result) => self.stack.push(Value::Date(result)),
-            None => return Err(self.fault(Code::RunTemporalOverflow)),
-        }
-        self.pc += 1;
-        Ok(())
+        self.push_checked(
+            marrow_temporal::add_days(date, days).map(Value::Date),
+            Code::RunTemporalOverflow,
+        )
     }
 
     fn date_days_between(&mut self) {
@@ -673,48 +648,27 @@ impl<'i> Frame<'i> {
         self.pc += 1;
     }
 
-    fn duration_add(&mut self) -> Result<(), DurableExecutionFault> {
+    /// A duration-by-duration operation that faults `run.temporal_overflow`.
+    fn duration_checked(
+        &mut self,
+        op: fn(i128, i128) -> Option<i128>,
+    ) -> Result<(), DurableExecutionFault> {
         let b = pop_duration(&mut self.stack);
         let a = pop_duration(&mut self.stack);
-        match marrow_temporal::duration_add(a, b) {
-            Some(result) => self.stack.push(Value::Duration(result)),
-            None => return Err(self.fault(Code::RunTemporalOverflow)),
-        }
-        self.pc += 1;
-        Ok(())
+        self.push_checked(op(a, b).map(Value::Duration), Code::RunTemporalOverflow)
     }
 
-    fn duration_sub(&mut self) -> Result<(), DurableExecutionFault> {
-        let b = pop_duration(&mut self.stack);
-        let a = pop_duration(&mut self.stack);
-        match marrow_temporal::duration_sub(a, b) {
-            Some(result) => self.stack.push(Value::Duration(result)),
-            None => return Err(self.fault(Code::RunTemporalOverflow)),
-        }
-        self.pc += 1;
-        Ok(())
-    }
-
-    fn instant_add_duration(&mut self) -> Result<(), DurableExecutionFault> {
+    /// An instant-by-duration operation that faults `run.temporal_overflow`.
+    fn instant_checked(
+        &mut self,
+        op: fn(i128, i128) -> Option<i128>,
+    ) -> Result<(), DurableExecutionFault> {
         let duration = pop_duration(&mut self.stack);
         let instant = pop_instant(&mut self.stack);
-        match marrow_temporal::instant_add_duration(instant, duration) {
-            Some(result) => self.stack.push(Value::Instant(result)),
-            None => return Err(self.fault(Code::RunTemporalOverflow)),
-        }
-        self.pc += 1;
-        Ok(())
-    }
-
-    fn instant_sub_duration(&mut self) -> Result<(), DurableExecutionFault> {
-        let duration = pop_duration(&mut self.stack);
-        let instant = pop_instant(&mut self.stack);
-        match marrow_temporal::instant_sub_duration(instant, duration) {
-            Some(result) => self.stack.push(Value::Instant(result)),
-            None => return Err(self.fault(Code::RunTemporalOverflow)),
-        }
-        self.pc += 1;
-        Ok(())
+        self.push_checked(
+            op(instant, duration).map(Value::Instant),
+            Code::RunTemporalOverflow,
+        )
     }
 
     fn conv_string(&mut self) -> Result<(), DurableExecutionFault> {
@@ -961,20 +915,6 @@ impl<'i> Frame<'i> {
         Ok(())
     }
 
-    fn eq_enum(&mut self) {
-        let b = pop(&mut self.stack);
-        let a = pop(&mut self.stack);
-        self.stack.push(Value::Bool(a == b));
-        self.pc += 1;
-    }
-
-    fn eq_id(&mut self) {
-        let b = pop(&mut self.stack);
-        let a = pop(&mut self.stack);
-        self.stack.push(Value::Bool(a == b));
-        self.pc += 1;
-    }
-
     fn make_identity(&mut self, root: u16, cols: u16) {
         // k0 was pushed first, so the popped keys fill the tuple in reverse.
         let mut keys: Vec<KeyScalar> = vec![KeyScalar::Bool(false); cols as usize];
@@ -1197,9 +1137,9 @@ impl<'i> Frame<'i> {
             .read_entry(&authorized, &keys)
             .map_err(|kf| self.kernel_fault(&kf))?;
         let ty = entry_record_type(image, site);
-        let group_records = site_group_records(image, site);
+        let groups = site_groups(image, site);
         self.stack.push(Value::Optional(
-            entry.map(|entry| Box::new(entry_to_record(ty, entry, &group_records))),
+            entry.map(|entry| Box::new(entry_to_record(ty, entry, groups))),
         ));
         self.pc += 1;
         Ok(())
@@ -1244,7 +1184,7 @@ impl<'i> Frame<'i> {
     ) -> Result<(), DurableExecutionFault> {
         let image = self.image;
         let authorized = durable.site(site);
-        let entry = record_to_entry(pop(&mut self.stack), site_group_records(image, site).len());
+        let entry = record_to_entry(pop(&mut self.stack), site_groups(image, site).len());
         let keys = pop_key_path(&mut self.stack, authorized.key_arity());
         durable
             .create_entry(&authorized, &keys, entry)
@@ -1260,7 +1200,7 @@ impl<'i> Frame<'i> {
     ) -> Result<(), DurableExecutionFault> {
         let image = self.image;
         let authorized = durable.site(site);
-        let entry = record_to_entry(pop(&mut self.stack), site_group_records(image, site).len());
+        let entry = record_to_entry(pop(&mut self.stack), site_groups(image, site).len());
         let keys = pop_key_path(&mut self.stack, authorized.key_arity());
         durable
             .replace_entry(&authorized, &keys, entry)
@@ -1269,30 +1209,17 @@ impl<'i> Frame<'i> {
         Ok(())
     }
 
-    fn dur_erase_field(
+    /// A durable operation over a site's whole key-path that pushes nothing: the erase
+    /// family. `op` is the kernel method for the addressed node.
+    fn dur_key_op<T>(
         &mut self,
         durable: &mut dyn Durable,
         site: u16,
+        op: impl FnOnce(&mut dyn Durable, &AuthorizedSite, &[KeyScalar]) -> Result<T, KernelFault>,
     ) -> Result<(), DurableExecutionFault> {
         let authorized = durable.site(site);
         let keys = pop_key_path(&mut self.stack, authorized.key_arity());
-        durable
-            .erase_field(&authorized, &keys)
-            .map_err(|kf| self.kernel_fault(&kf))?;
-        self.pc += 1;
-        Ok(())
-    }
-
-    fn dur_erase_entry(
-        &mut self,
-        durable: &mut dyn Durable,
-        site: u16,
-    ) -> Result<(), DurableExecutionFault> {
-        let authorized = durable.site(site);
-        let keys = pop_key_path(&mut self.stack, authorized.key_arity());
-        durable
-            .erase_entry(&authorized, &keys)
-            .map_err(|kf| self.kernel_fault(&kf))?;
+        op(durable, &authorized, &keys).map_err(|kf| self.kernel_fault(&kf))?;
         self.pc += 1;
         Ok(())
     }
@@ -1347,20 +1274,6 @@ impl<'i> Frame<'i> {
         let keys = self.place_key_path(key_slots);
         durable
             .replace_group(&authorized, &keys, group)
-            .map_err(|kf| self.kernel_fault(&kf))?;
-        self.pc += 1;
-        Ok(())
-    }
-
-    fn dur_erase_group(
-        &mut self,
-        durable: &mut dyn Durable,
-        site: u16,
-    ) -> Result<(), DurableExecutionFault> {
-        let authorized = durable.site(site);
-        let keys = pop_key_path(&mut self.stack, authorized.key_arity());
-        durable
-            .erase_group(&authorized, &keys)
             .map_err(|kf| self.kernel_fault(&kf))?;
         self.pc += 1;
         Ok(())
@@ -1988,8 +1901,8 @@ fn record_to_entry(value: Value, group_count: usize) -> EntryValue {
 /// sub-records back as the record's trailing slots. `group_records` names each group's
 /// materialized record type, in declaration order; it is empty for a group-less entry (or
 /// a branch entry, whose executable shape carries no group). The kernel builds
-/// `entry.groups` from the store schema, so its count matches `group_records`.
-fn entry_to_record(ty: u16, entry: EntryValue, group_records: &[u16]) -> Value {
+/// `entry.groups` from the store schema, so its count matches `groups`.
+fn entry_to_record(ty: u16, entry: EntryValue, groups: &[SealedGroup]) -> Value {
     let mut slots: Vec<Option<Value>> = entry
         .fields
         .into_iter()
@@ -1997,29 +1910,25 @@ fn entry_to_record(ty: u16, entry: EntryValue, group_records: &[u16]) -> Value {
         .collect();
     assert_eq!(
         entry.groups.len(),
-        group_records.len(),
+        groups.len(),
         "the kernel builds one group value per schema group"
     );
-    for (group, &record) in entry.groups.into_iter().zip(group_records) {
-        slots.push(Some(entry_to_record(record, group, &[])));
+    for (group, schema) in entry.groups.into_iter().zip(groups) {
+        slots.push(Some(entry_to_record(schema.record(), group, &[])));
     }
     Value::Record(ty, slots.into_boxed_slice())
 }
 
-/// The materialized record types of a root-entry site's root-level groups, in declaration
-/// order — the `group_records` a whole-entry [`entry_to_record`] joins. A branch-entry
-/// site (or any non-root-entry target) has no group on this line, so this is empty.
-fn site_group_records(image: &VerifiedImage, site: u16) -> Vec<u16> {
+/// The root-level groups of a root-entry site, in declaration order — the sealed groups a
+/// whole-entry [`entry_to_record`] joins and [`record_to_entry`] counts. A branch-entry site
+/// (or any non-root-entry target) has no group on this line, so this is empty.
+fn site_groups(image: &VerifiedImage, site: u16) -> &[SealedGroup] {
     let SealedSite::Flat { root, target } = &image.sites()[site as usize] else {
         unreachable!("the verifier admits a durable opcode only over a flat site")
     };
     match target {
-        SealedSiteTarget::WholePayload => image.roots()[*root as usize]
-            .groups()
-            .iter()
-            .map(marrow_verify::SealedGroup::record)
-            .collect(),
-        _ => Vec::new(),
+        SealedSiteTarget::WholePayload => image.roots()[*root as usize].groups(),
+        _ => &[],
     }
 }
 

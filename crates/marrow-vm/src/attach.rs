@@ -28,9 +28,9 @@
 //! ```
 
 use marrow_codes::Code;
-use marrow_kernel::durable::{DemandCoverage, InvocationGrant, SessionHost};
+use marrow_kernel::durable::{DemandCoverage, Durable, InvocationGrant, SessionHost};
 use marrow_lifecycle::{Attachment, FreshTest, TestHost};
-use marrow_verify::{DemandView, ExportId, VerifiedFunction};
+use marrow_verify::{ExportId, VerifiedFunction};
 
 use crate::fault::{DurableExecutionFault, RuntimeFault};
 use crate::run::{DriverDispatch, run, run_driver, run_durable, run_in_session};
@@ -91,43 +91,53 @@ pub fn run_test(mut test: FreshTest) -> DurableRun {
     DurableRun::Ran(run_driver(function, Vec::new(), &mut driver))
 }
 
-/// Open the session `func` requires on `host` and run it. A mutating demand
-/// drives a transaction session (which also reads); a read-only demand drives a read
-/// session, so a read-only invocation never opens a writer; an empty demand needs no
-/// session.
+/// Run one export as its own invocation: a fresh budget, and the one session its demand
+/// requires on `host`.
 fn run_on_host<H: SessionHost + ?Sized>(
     func: VerifiedFunction<'_>,
     args: Vec<Value>,
     host: &mut H,
 ) -> DurableRun {
+    DurableRun::Ran(with_session(host, func, |session| match session {
+        None => run(func, args).map_err(DurableExecutionFault::from),
+        Some(session) => run_durable(func, args, session),
+    }))
+}
+
+/// Open the session `func`'s verified demand requires on `host` and run `body` in it: a
+/// transaction session for a mutating demand (which also reads), a read session for a
+/// read-only one, so a read-only invocation never opens a writer, and no session for an
+/// empty demand. The session closes when `body` returns — a committed writer persists, a
+/// dropped one rolls back — before the next invocation opens its own.
+///
+/// A session the host refuses to open resolved the invocation's authority against the
+/// store's ceiling and the full grant and was refused. The demand is a subset of the
+/// image union the ceiling is minted from, so a well-formed image never reaches this; it
+/// is a source-positioned `run.authority` fault rather than a panic.
+fn with_session<H: SessionHost + ?Sized>(
+    host: &mut H,
+    func: VerifiedFunction<'_>,
+    body: impl FnOnce(Option<&mut dyn Durable>) -> Result<Option<Value>, DurableExecutionFault>,
+) -> Result<Option<Value>, DurableExecutionFault> {
     let demand = func.demand();
     if demand.is_empty() {
-        return DurableRun::Ran(run(func, args).map_err(DurableExecutionFault::from));
+        return body(None);
     }
     let grant = InvocationGrant::full_store();
-    let coverage = coverage(demand);
-    let result = if coverage.write {
+    let coverage = DemandCoverage {
+        read: demand.reads(),
+        write: demand.writes(),
+    };
+    if coverage.write {
         match host.txn_session(grant, coverage) {
-            Ok(mut session) => run_durable(func, args, &mut session),
-            Err(_) => {
-                return DurableRun::Failed(Code::CliDurableUnsupported);
-            }
+            Ok(mut session) => body(Some(&mut session)),
+            Err(_) => Err(session_open_fault(func)),
         }
     } else {
         match host.read_session(grant, coverage) {
-            Ok(mut session) => run_durable(func, args, &mut session),
-            Err(_) => {
-                return DurableRun::Failed(Code::CliDurableUnsupported);
-            }
+            Ok(mut session) => body(Some(&mut session)),
+            Err(_) => Err(session_open_fault(func)),
         }
-    };
-    DurableRun::Ran(result)
-}
-
-fn coverage(demand: DemandView<'_>) -> DemandCoverage {
-    DemandCoverage {
-        read: demand.reads(),
-        write: demand.writes(),
     }
 }
 
@@ -145,34 +155,12 @@ impl<H: SessionHost + ?Sized> DriverDispatch for TestDriver<'_, H> {
         depth: u32,
         budget: &mut u64,
     ) -> Result<Option<Value>, DurableExecutionFault> {
-        let demand = func.demand();
-        // A storeless callee needs no session.
-        if demand.is_empty() {
-            return run_in_session(func, args, depth, budget, None);
-        }
-        let grant = InvocationGrant::full_store();
-        let cover = coverage(demand);
-        // Either session closes when this invocation returns — a committed writer
-        // persists, a dropped one rolls back — before the next call opens its own.
-        if cover.write {
-            match self.host.txn_session(grant, cover) {
-                Ok(mut session) => run_in_session(func, args, depth, budget, Some(&mut session)),
-                Err(_) => Err(session_open_fault(func)),
-            }
-        } else {
-            match self.host.read_session(grant, cover) {
-                Ok(mut session) => run_in_session(func, args, depth, budget, Some(&mut session)),
-                Err(_) => Err(session_open_fault(func)),
-            }
-        }
+        with_session(self.host, func, |session| {
+            run_in_session(func, args, depth, budget, session)
+        })
     }
 }
 
-/// A driver invocation whose session could not open — the authority resolved against
-/// the store's ceiling and the invocation grant refused it. The callee's demand is a
-/// subset of the test-image union the ceiling is minted from, so a well-formed image
-/// never reaches this; it is mapped to a source-positioned `run.authority` fault rather
-/// than a panic.
 fn session_open_fault(func: VerifiedFunction<'_>) -> DurableExecutionFault {
     let (line, column) = func.body().span_at(0).unwrap_or((1, 1));
     RuntimeFault::new(Code::RunAuthority, line, column).into()

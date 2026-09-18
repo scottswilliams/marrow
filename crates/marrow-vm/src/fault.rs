@@ -85,16 +85,7 @@ impl std::error::Error for RuntimeFault {}
 /// ```
 #[must_use = "an incomplete invocation and any pending commit recovery must be handled"]
 #[derive(Debug)]
-pub struct InvocationIncomplete {
-    fault: RuntimeFault,
-    durability: IncompleteDurability,
-}
-
-#[derive(Debug)]
-enum IncompleteDurability {
-    Classified(DurableCommitState),
-    Pending(Box<CommitRecovery>),
-}
+pub struct InvocationIncomplete(Box<IncompleteDisposition>);
 
 /// The consuming projection of an incomplete invocation. Product hosts must
 /// exhaustively preserve either the already classified durable state or the sole
@@ -121,47 +112,29 @@ pub enum IncompleteDisposition {
 }
 
 impl InvocationIncomplete {
-    pub(crate) fn classified(fault: RuntimeFault, state: DurableCommitState) -> Self {
-        Self {
+    pub(crate) fn classified(fault: RuntimeFault, durable: DurableCommitState) -> Self {
+        Self(Box::new(IncompleteDisposition::Classified {
             fault,
-            durability: IncompleteDurability::Classified(state),
-        }
+            durable,
+        }))
     }
 
     pub(crate) fn pending(fault: RuntimeFault, recovery: CommitRecovery) -> Self {
-        Self {
-            fault,
-            durability: IncompleteDurability::Pending(Box::new(recovery)),
-        }
-    }
-
-    /// The classified durable state, or `None` while the attached lifecycle
-    /// still owns an unresolved commit recovery.
-    pub fn durable_state(&self) -> Option<DurableCommitState> {
-        match &self.durability {
-            IncompleteDurability::Classified(state) => Some(*state),
-            IncompleteDurability::Pending(_) => None,
-        }
+        Self(Box::new(IncompleteDisposition::Pending { fault, recovery }))
     }
 
     /// Consume this incomplete invocation into its closed host disposition. A pending
     /// branch moves the sole affine recovery fact; the VM never accepts a caller-supplied
     /// durable classification.
     pub fn into_disposition(self) -> IncompleteDisposition {
-        let Self { fault, durability } = self;
-        match durability {
-            IncompleteDurability::Classified(durable) => {
-                IncompleteDisposition::Classified { fault, durable }
-            }
-            IncompleteDurability::Pending(recovery) => IncompleteDisposition::Pending {
-                fault,
-                recovery: *recovery,
-            },
-        }
+        *self.0
     }
 
     pub fn runtime_fault(&self) -> &RuntimeFault {
-        &self.fault
+        match &*self.0 {
+            IncompleteDisposition::Classified { fault, .. }
+            | IncompleteDisposition::Pending { fault, .. } => fault,
+        }
     }
 }
 
@@ -206,17 +179,6 @@ impl DurableExecutionFault {
 
     pub fn detail(&self) -> Option<&str> {
         self.runtime_fault().detail()
-    }
-
-    pub fn durable_state(&self) -> Option<DurableCommitState> {
-        match self {
-            Self::Runtime(_) => None,
-            Self::Incomplete(incomplete) => incomplete.durable_state(),
-        }
-    }
-
-    pub fn is_incomplete(&self) -> bool {
-        matches!(self, Self::Incomplete(_))
     }
 
     pub fn runtime_fault(&self) -> &RuntimeFault {
