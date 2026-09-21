@@ -13,6 +13,7 @@
 //!   committed state intact.
 
 use marrow_codes::Code;
+use marrow_verify::RootId;
 use marrow_vm::Value;
 
 use crate::common::{CallOutcome, Project, Session};
@@ -403,7 +404,7 @@ fn each_managed_index_is_bound_to_the_occurrence_that_declared_it() {
         image
             .indexes()
             .iter()
-            .filter(|index| index.root() == root)
+            .filter(|index| index.root() == RootId::from_index(root))
             .map(|index| index.id())
             .collect()
     };
@@ -419,7 +420,13 @@ fn each_managed_index_is_bound_to_the_occurrence_that_declared_it() {
         .filter(|index| index.components().contains(&sku))
         .map(|index| (index.root(), index.id(), index.unique()))
         .collect();
-    assert_eq!(over_sku, vec![(0, rep(0x3b), true), (1, rep(0x5b), true)]);
+    assert_eq!(
+        over_sku,
+        vec![
+            (RootId::from_index(0), rep(0x3b), true),
+            (RootId::from_index(1), rep(0x5b), true),
+        ]
+    );
 }
 
 /// The runtime consequence of the same law: the two occurrences' unique `sku` indexes do

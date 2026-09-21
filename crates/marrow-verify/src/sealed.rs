@@ -13,9 +13,10 @@ pub(crate) use demand::FunctionDemands;
 
 pub(crate) use marrow_image::SealedInstr;
 use marrow_image::{
-    DemandSetId, DemandView, DurableContractGraph, DurableContractId, DurableContractView,
-    DurableIndexComponent, ExportDemand, ExportId, ImageId, ImageType, LedgerIdBytes,
-    OperationClass, Scalar, SemanticNode, SemanticPath, SemanticTarget,
+    CollTypeId, DemandSetId, DemandView, DurableContractGraph, DurableContractId,
+    DurableContractView, DurableIndexComponent, ExportDemand, ExportId, ImageId, ImageType,
+    LedgerIdBytes, OperationClass, RootId, Scalar, SemanticNode, SemanticPath, SemanticTarget,
+    TypeId,
 };
 
 /// A relative position in a [`VerifiedImage`]'s function table, distinct from local,
@@ -139,7 +140,7 @@ pub enum SealedSite {
 pub struct SealedRoot {
     pub(crate) name: Rc<str>,
     pub(crate) keys: Vec<Scalar>,
-    pub(crate) record: u16,
+    pub(crate) record: TypeId,
     pub(crate) has_extras: bool,
     pub(crate) branches: Vec<SealedBranch>,
     pub(crate) groups: Vec<SealedGroup>,
@@ -152,7 +153,7 @@ pub struct SealedRoot {
 #[derive(Debug, Clone)]
 pub struct SealedGroup {
     pub(crate) name: Rc<str>,
-    pub(crate) record: u16,
+    pub(crate) record: TypeId,
 }
 
 impl SealedGroup {
@@ -160,7 +161,7 @@ impl SealedGroup {
     pub fn name(&self) -> &str {
         &self.name
     }
-    pub fn record(&self) -> u16 {
+    pub fn record(&self) -> TypeId {
         self.record
     }
 }
@@ -176,7 +177,7 @@ impl SealedGroup {
 pub struct SealedBranch {
     pub(crate) name: Rc<str>,
     pub(crate) keys: Vec<Scalar>,
-    pub(crate) record: u16,
+    pub(crate) record: TypeId,
     pub(crate) branches: Vec<SealedBranch>,
 }
 
@@ -189,7 +190,7 @@ impl SealedBranch {
     pub fn keys(&self) -> &[Scalar] {
         &self.keys
     }
-    pub fn record(&self) -> u16 {
+    pub fn record(&self) -> TypeId {
         self.record
     }
     /// The branch's own nested branches, in declaration order.
@@ -207,7 +208,7 @@ impl SealedRoot {
     pub fn keys(&self) -> &[Scalar] {
         &self.keys
     }
-    pub fn record(&self) -> u16 {
+    pub fn record(&self) -> TypeId {
         self.record
     }
     /// Whether the resource declares a member shape the flat kernel cannot execute: a
@@ -259,7 +260,7 @@ pub enum SealedIndexComponent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealedIndex {
     pub(crate) id: LedgerIdBytes,
-    pub(crate) root: u16,
+    pub(crate) root: RootId,
     pub(crate) unique: bool,
     pub(crate) components: Vec<DurableIndexComponent>,
     pub(crate) projection: Vec<SealedIndexComponent>,
@@ -273,7 +274,7 @@ impl SealedIndex {
     }
 
     /// The index of the durable root this index belongs to.
-    pub fn root(&self) -> u16 {
+    pub fn root(&self) -> RootId {
         self.root
     }
 
@@ -543,8 +544,8 @@ impl VerifiedImage {
         self.image_id
     }
 
-    pub fn record_type(&self, index: u16) -> &SealedRecordType {
-        &self.types[index as usize]
+    pub fn record_type(&self, index: TypeId) -> &SealedRecordType {
+        &self.types[index.index() as usize]
     }
 
     /// The sealed record types, indexed by image record-type index. Consumed by the
@@ -567,8 +568,8 @@ impl VerifiedImage {
 
     /// The sealed collection type at `index`. The verifier proved every operand and
     /// return index in range.
-    pub fn collection_type(&self, index: u16) -> SealedCollectionType {
-        self.collections[index as usize]
+    pub fn collection_type(&self, index: CollTypeId) -> SealedCollectionType {
+        self.collections[index.index() as usize]
     }
 
     /// The durable roots, in declaration order (up to `MAX_ROOTS`).

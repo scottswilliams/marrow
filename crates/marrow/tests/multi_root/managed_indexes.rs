@@ -12,8 +12,8 @@
 //! the VM `index_read` fixtures.
 
 use marrow_verify::{
-    DurableIndexComponent, LedgerIdBytes, SealedIndexComponent, SealedSite, SealedSiteTarget,
-    SemanticNodeKind, SemanticStepKind, SemanticTarget, VerifiedImage,
+    DurableIndexComponent, LedgerIdBytes, RootId, SealedIndexComponent, SealedSite,
+    SealedSiteTarget, SemanticNodeKind, SemanticStepKind, SemanticTarget, VerifiedImage,
 };
 
 use crate::common::{Diagnostics, Project};
@@ -112,7 +112,7 @@ fn a_keyed_root_with_a_nonunique_and_a_unique_index_verifies_with_complete_ident
 
     let by_shelf = &indexes[0];
     assert_eq!(by_shelf.id(), rep(0x70));
-    assert_eq!(by_shelf.root(), 0);
+    assert_eq!(by_shelf.root(), RootId::from_index(0));
     assert!(!by_shelf.unique(), "byShelf is nonunique");
     assert_eq!(
         by_shelf.components(),

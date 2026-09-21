@@ -18,7 +18,7 @@ use marrow_kernel::durable::{
 use marrow_kernel::equality::ValueDomain;
 use marrow_verify::{
     FunctionIndex, SealedConst, SealedFunction, SealedGroup, SealedInstr, SealedSite,
-    SealedSiteTarget, VerifiedFunction, VerifiedImage,
+    SealedSiteTarget, TypeId, VerifiedFunction, VerifiedImage,
 };
 
 use crate::fault::{DurableExecutionFault, RuntimeFault};
@@ -824,7 +824,7 @@ impl<'i> Frame<'i> {
     }
 
     fn record_new(&mut self, ty: u16) {
-        let fields = self.image.record_type(ty).fields();
+        let fields = self.image.record_type(TypeId::from_index(ty)).fields();
         // f0 was pushed first, so the popped values fill slots in reverse.
         let mut slots: Vec<Option<Value>> = vec![None; fields.len()];
         for (index, field) in fields.iter().enumerate().rev() {
@@ -843,7 +843,8 @@ impl<'i> Frame<'i> {
         let image = self.image;
         let (ty, slots) = as_record(pop(&mut self.stack));
         let cell = slots[field as usize].clone();
-        let required = image.record_type(ty).fields()[field as usize].required();
+        let required =
+            image.record_type(TypeId::from_index(ty)).fields()[field as usize].required();
         if required {
             self.stack
                 .push(cell.expect("verifier proved a required field is present"));
@@ -1914,7 +1915,11 @@ fn entry_to_record(ty: u16, entry: EntryValue, groups: &[SealedGroup]) -> Value 
         "the kernel builds one group value per schema group"
     );
     for (group, schema) in entry.groups.into_iter().zip(groups) {
-        slots.push(Some(entry_to_record(schema.record(), group, &[])));
+        slots.push(Some(entry_to_record(
+            record_ordinal(schema.record()),
+            group,
+            &[],
+        )));
     }
     Value::Record(ty, slots.into_boxed_slice())
 }
@@ -1946,6 +1951,13 @@ fn site_root(image: &VerifiedImage, site: u16) -> u16 {
 /// The record type index of the entry a site addresses: the branch's record for a
 /// branch entry site, the root's otherwise. The verifier admits a durable opcode only
 /// over a flat executable site, so the referenced site is `Flat`.
+/// The `u16` a [`Value::Record`] carries for a sealed record type; every sealed reference
+/// was decoded from a `u16` wire read, so the narrowing is total.
+fn record_ordinal(record: TypeId) -> u16 {
+    u16::try_from(record.index())
+        .expect("a verified table reference was decoded from a u16 wire read")
+}
+
 fn entry_record_type(image: &VerifiedImage, site: u16) -> u16 {
     let (root, target) = match &image.sites()[site as usize] {
         SealedSite::Flat { root, target } => (*root, target),
@@ -1954,7 +1966,7 @@ fn entry_record_type(image: &VerifiedImage, site: u16) -> u16 {
         }
     };
     let root = &image.roots()[root as usize];
-    match target {
+    let record = match target {
         SealedSiteTarget::BranchEntry(path) => {
             // Walk the branch path level by level through the recursive sealed branch tree;
             // the deepest branch's own record is the whole-entry record. The verifier
@@ -1982,7 +1994,8 @@ fn entry_record_type(image: &VerifiedImage, site: u16) -> u16 {
         SealedSiteTarget::IndexScan(_) | SealedSiteTarget::IndexLookup(_) => {
             unreachable!("a whole-entry read never targets an index site")
         }
-    }
+    };
+    record_ordinal(record)
 }
 
 /// Pop a durable operation's key-path: `arity` key operands assembled root-first. The

@@ -17,10 +17,10 @@ mod vtype;
 
 pub use interface::interface_of;
 pub use marrow_image::{
-    CeilingDescriptor, CeilingId, DemandAtom, DemandSetId, DemandView, DurableContractId,
-    DurableGraphInputRefusal, DurableIndexComponent, ExportDemand, ExportId, ImageId, ImageType,
-    LedgerIdBytes, OperationClass, Scalar, SealedInstr, SemanticNode, SemanticNodeKind,
-    SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget,
+    CeilingDescriptor, CeilingId, CollTypeId, DemandAtom, DemandSetId, DemandView,
+    DurableContractId, DurableGraphInputRefusal, DurableIndexComponent, ExportDemand, ExportId,
+    ImageId, ImageType, LedgerIdBytes, OperationClass, RootId, Scalar, SealedInstr, SemanticNode,
+    SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget, TypeId,
 };
 pub use reject::{
     Bound, Duplicate, Flag, Operand, Projection, Ref, Region, RejectionKind, SiteFault, SiteKind,

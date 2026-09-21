@@ -12,7 +12,7 @@ use crate::sealed::{
     SealedExport, SealedFunction, SealedIndex, SealedInstr, SealedRecordType, SealedRoot,
     SealedTestEntry, VerifiedImage,
 };
-use marrow_image::ImageType;
+use marrow_image::{ImageType, TypeId};
 use std::rc::Rc;
 
 pub(super) fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
@@ -220,7 +220,7 @@ fn seal_roots(
             SealedRoot {
                 name: strings[root.name as usize].clone(),
                 keys: root.keys.iter().map(|(scalar, _)| *scalar).collect(),
-                record: root.record,
+                record: TypeId::from_index(root.record),
                 has_extras: !root.members.iter().all(member_flat_at_root),
                 branches: if flat {
                     seal_branches(&root.members, strings)

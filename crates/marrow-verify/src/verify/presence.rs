@@ -477,7 +477,7 @@ mod presence_root_discrimination {
     use std::collections::BTreeSet;
     use std::rc::Rc;
 
-    use marrow_image::Scalar;
+    use marrow_image::{Scalar, TypeId};
 
     use super::super::context::{CallGraph, Ctx, Effects};
     use super::{EntryFamilies, PresenceFacts, presence_edges};
@@ -487,7 +487,7 @@ mod presence_root_discrimination {
         SealedRoot {
             name: Rc::from(name),
             keys: vec![Scalar::Int],
-            record: 0,
+            record: TypeId::from_index(0),
             has_extras: false,
             branches: Vec::new(),
             groups: Vec::new(),

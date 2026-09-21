@@ -12,7 +12,7 @@
 //! (the array of its key-column scalars). The graph is closed over every
 //! `ImageType`, so a served signature always has a codec.
 
-use marrow_image::{ImageType, Scalar};
+use marrow_image::{CollTypeId, ImageType, Scalar, TypeId};
 use marrow_local_wire::{Json, ValueWriter, WireError};
 use marrow_verify::{SealedCollectionType, VerifiedImage};
 use marrow_vm::{KeyScalar, Value, collection_within_limits, key_bytes};
@@ -86,7 +86,7 @@ fn decode_record(image: &VerifiedImage, idx: u16, json: &Json) -> Option<Value> 
     let Json::Object(pairs) = json else {
         return None;
     };
-    let record = image.record_type(idx);
+    let record = image.record_type(TypeId::from_index(idx));
     let mut slots: Vec<Option<Value>> = Vec::with_capacity(record.fields().len());
     for field in record.fields() {
         match pairs
@@ -154,7 +154,7 @@ fn decode_collection(image: &VerifiedImage, idx: u16, json: &Json) -> Option<Val
         return None;
     }
     let mut bytes = 0usize;
-    match image.collection_type(idx) {
+    match image.collection_type(CollTypeId::from_index(idx)) {
         SealedCollectionType::List { elem } => {
             let mut values = Vec::with_capacity(items.len());
             for item in items {
@@ -263,7 +263,7 @@ pub(crate) fn encode_value(
         Value::Optional(None) => slot.null(),
         Value::Optional(Some(inner)) => encode_value(image, inner, slot),
         Value::Record(idx, slots) => {
-            let record = image.record_type(*idx);
+            let record = image.record_type(TypeId::from_index(*idx));
             let mut fields: Vec<(&str, &Value)> = record
                 .fields()
                 .iter()

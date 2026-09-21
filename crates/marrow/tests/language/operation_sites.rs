@@ -296,8 +296,8 @@ fn appending_an_untouched_optional_field_grows_broad_demand_but_adds_no_site() {
     let before = image(FLAT_SOURCE, FLAT_IDS);
     let after = image(WIDENED_SOURCE, WIDENED_IDS);
 
-    let before_record = &before.record_types()[before.roots()[0].record() as usize];
-    let after_record = &after.record_types()[after.roots()[0].record() as usize];
+    let before_record = before.record_type(before.roots()[0].record());
+    let after_record = after.record_type(after.roots()[0].record());
     assert_eq!(before_record.fields().len(), 2);
     assert_eq!(
         after_record.fields().len(),

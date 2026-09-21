@@ -606,7 +606,7 @@ pub fn putX(id: int, t: string) {
     assert!(
         beta_branch < alpha_branch,
         "the first store's Product mints its branch entry record first \
-         ({beta_branch} then {alpha_branch})"
+         ({beta_branch:?} then {alpha_branch:?})"
     );
 }
 

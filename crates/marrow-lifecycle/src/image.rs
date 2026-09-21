@@ -11,8 +11,8 @@ use marrow_kernel::durable::{
     StoreProjectionBuilder, StoreSchema, StoreSchemaBuilder,
 };
 use marrow_verify::{
-    CeilingDescriptor, ImageType, Scalar, SealedIndexComponent, SealedSite, SealedSiteTarget,
-    SemanticNode, SemanticNodeKind, SemanticStep, VerifiedImage,
+    CeilingDescriptor, ImageType, RootId, Scalar, SealedIndexComponent, SealedSite,
+    SealedSiteTarget, SemanticNode, SemanticNodeKind, SemanticStep, VerifiedImage,
 };
 
 use crate::codec::FormatError;
@@ -600,7 +600,7 @@ fn derive_root_schema(
     for index in image
         .indexes()
         .iter()
-        .filter(|index| index.root() == root_index)
+        .filter(|index| index.root() == RootId::from_index(root_index))
     {
         builder.index(
             *index.id().bytes(),
@@ -767,7 +767,7 @@ fn value_shape(image: &VerifiedImage, ty: ImageType) -> Option<ValueShape> {
                 pending.push(ShapeStep::Close);
                 pending.extend(
                     image
-                        .record_type(sealed_ordinal(idx.index()))
+                        .record_type(idx)
                         .fields()
                         .iter()
                         .rev()

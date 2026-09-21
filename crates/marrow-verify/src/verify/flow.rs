@@ -1236,10 +1236,10 @@ fn apply_durable(
             for scalar in branch_key_columns(root, path)? {
                 columns.push(VType::bare_scalar(scalar));
             }
-            (TypeId::from_index(branch.record), branch.keys().len())
+            (branch.record, branch.keys().len())
         }
         SealedSiteTarget::WholePayload | SealedSiteTarget::FieldLeaf(_) => {
-            (TypeId::from_index(root.record), root.keys.len())
+            (root.record, root.keys.len())
         }
         SealedSiteTarget::GroupEntry(group) => {
             // A group is addressed by the root's own key-path (it is a value unit of the
@@ -1249,7 +1249,7 @@ fn apply_durable(
                 .groups
                 .get(*group as usize)
                 .ok_or(reject(VerifyPhase::Function, Kind::OutOfRange(Ref::Group)))?;
-            (TypeId::from_index(group.record), root.keys.len())
+            (group.record, root.keys.len())
         }
         SealedSiteTarget::IndexScan(_) | SealedSiteTarget::IndexLookup(_) => {
             unreachable!("index read targets are handled before the entry key-path logic")
@@ -1511,7 +1511,7 @@ fn index_component_scalar(
             reject(VerifyPhase::Function, Kind::OutOfRange(Ref::KeyColumn)),
         ),
         SealedIndexComponent::Field(position) => {
-            let record = ctx.types.get(root.record as usize).ok_or(reject(
+            let record = ctx.types.get(root.record.index() as usize).ok_or(reject(
                 VerifyPhase::Function,
                 Kind::OutOfRange(Ref::RecordType),
             ))?;
@@ -1555,7 +1555,7 @@ fn apply_index_read(
         .indexes
         .get(index_position as usize)
         .ok_or(reject(VerifyPhase::Function, Kind::OutOfRange(Ref::Index)))?;
-    if index.root != site_root {
+    if index.root != RootId::from_index(site_root) {
         return Err(reject(VerifyPhase::Function, Kind::IndexRootMismatch));
     }
     let projection: Vec<Scalar> = index
@@ -1760,7 +1760,7 @@ fn field_of<'a>(
             ));
         }
     };
-    ctx.types[record as usize]
+    ctx.types[record.index() as usize]
         .fields()
         .get(field as usize)
         .ok_or(reject(VerifyPhase::Function, Kind::OutOfRange(Ref::Field)))

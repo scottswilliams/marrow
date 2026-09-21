@@ -24,7 +24,7 @@ use marrow_image::{
     AdmittedGraphInputPlan, CanonicalValueShapeDag, DeclarationMemberDef, DeclarationMemberShape,
     DurableContractGraph, DurableContractId, DurableGraphInputRefusal, DurableIndexComponent,
     DurableIndexShape, DurableMemberView, DurableMemberViewKind, DurableMemberViews,
-    DurableProductGraph, ImageType, KeyColumn, LedgerIdBytes, RootOccurrenceDef, Scalar,
+    DurableProductGraph, ImageType, KeyColumn, LedgerIdBytes, RootId, RootOccurrenceDef, Scalar,
     SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget,
     StrId, TypeId, ValueShapeNodeId, ValueShapeView,
 };
@@ -808,20 +808,13 @@ pub(super) fn seal_branches(
 /// Seal one run of member rows into its branch list, descending through each branch's own
 /// members. Nesting is bounded by the decoded member depth the table phase already
 /// enforced.
-/// The sealed wire-domain `u16` of a shared typed table reference. Every value that
-/// reaches here was decoded from a `u16` wire read and re-validated in range, so the
-/// narrowing is total; it is spelled checked so the wire domain is stated.
-fn sealed_ordinal(index: u32) -> u16 {
-    u16::try_from(index).expect("a verified table reference was decoded from a u16 wire read")
-}
-
 fn seal_branch_run(members: DurableMemberViews<'_>, strings: &[Rc<str>]) -> Vec<SealedBranch> {
     members
         .filter_map(|member| match member.kind() {
             DurableMemberViewKind::Branch(branch) => Some(SealedBranch {
                 name: strings[branch.name().index() as usize].clone(),
                 keys: branch.keys().iter().map(|key| key.scalar).collect(),
-                record: sealed_ordinal(branch.record().index()),
+                record: branch.record(),
                 branches: seal_branch_run(member.members(), strings),
             }),
             _ => None,
@@ -856,7 +849,7 @@ pub(super) fn seal_groups(root: &DecodedRoot, types: &[SealedRecordType]) -> Vec
             };
             SealedGroup {
                 name: slot.name.clone(),
-                record: sealed_ordinal(record.index()),
+                record,
             }
         })
         .collect()
@@ -926,7 +919,7 @@ pub(super) fn seal_root_indexes(
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(SealedIndex {
                 id: index.id,
-                root: root_index,
+                root: RootId::from_index(root_index),
                 unique: index.unique,
                 components: index.components.clone(),
                 projection,
