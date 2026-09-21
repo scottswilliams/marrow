@@ -1,21 +1,12 @@
 //! Verifier-reconstructed durable demand and the `DemandSetId` identity.
 //!
-//! An export's **demand** is the stable set of durable-access atoms its whole call
-//! closure performs: for every durable operation the export reaches, *which* graph node it
-//! touches (a [`SemanticPath`]) and *what class* of access it makes (a closed
-//! [`OperationClass`]). Demand describes access and never grants it: runtime authority is
-//! `demand ∩ ceiling ∩ grant` resolved at the path kernel, and this owner supplies only
-//! the `demand` term.
-//!
-//! Demand is a compiler fact **reconstructed by the verifier**, not a serialized summary.
-//! The image carries operation sites and bytecode, and the verifier rebuilds each export's
-//! atom set from the sealed sites its call closure references; nothing about demand is
-//! written into the image. An export's stable [`ExportDemand`] and its image-local
-//! reachable-site set stay distinct, so a body edit that leaves the atom set unchanged
-//! keeps the `DemandSetId` while changing the [`ImageId`](crate::ImageId).
-//!
-//! [`DemandSetId`] is a domain-separated SHA-256 over a length-delimited canonical
-//! payload:
+//! An export's demand is the stable set of durable-access atoms its whole call closure
+//! performs: which graph node ([`SemanticPath`]) and what class of access
+//! ([`OperationClass`]). Demand describes access and never grants it; runtime authority
+//! is `demand ∩ ceiling ∩ grant` at the path kernel. The verifier rebuilds each export's
+//! atom set from the sealed sites its call closure references and nothing about demand is
+//! written into the image, so a body edit that leaves the atom set unchanged keeps the
+//! [`DemandSetId`] while changing the image id.
 //!
 //! ```text
 //! DemandSetId = SHA-256( KIND ‖ u64_be(len(payload)) ‖ payload )
@@ -32,12 +23,8 @@
 //!   class_tag = read 0, write 1, presence 2, erase 3, index_read 4
 //! ```
 //!
-//! Canonical order is ascending lexicographic over each atom's `atom_body` bytes,
-//! deduplicated, so two demands are equal iff their atom sets are equal regardless
-//! of the order the verifier discovered them. Because the atoms carry entropy-minted
-//! ledger ids, moving an atom from one export to another leaves the program-wide
-//! union's `DemandSetId` unchanged while changing both exports' ids.
-
+//! Atoms are ascending by `atom_body` bytes and deduplicated, so two demands are equal
+//! iff their atom sets are equal, whatever order the verifier discovered them in.
 use sha2::{Digest, Sha256};
 
 use crate::bounds;
@@ -328,7 +315,7 @@ impl ExportDemand {
     /// and trailing bytes all reject. This decodes a store's persisted accepted deployment
     /// ceiling, so a hostile or torn payload must reject typed rather than yield a partial
     /// or forged demand.
-    pub fn decode_atom_set(bytes: &[u8]) -> Result<ExportDemand, CeilingDecodeError> {
+    pub(crate) fn decode_atom_set(bytes: &[u8]) -> Result<ExportDemand, CeilingDecodeError> {
         let mut cur = AtomCursor::new(bytes);
         let lineage = cur.lp()?;
         if lineage != LOCAL_ROOT_LINEAGE {

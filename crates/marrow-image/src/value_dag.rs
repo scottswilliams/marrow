@@ -1,48 +1,20 @@
-//! The canonical durable value-shape DAG: the sole representation of a durable
-//! field's stored value shape.
+//! The canonical durable value-shape DAG: the sole representation of a durable field's
+//! stored value shape.
 //!
-//! A durable field's value is drawn from the closed acyclic durable value set — a scalar
-//! (a nominal erases to its base scalar), a dense `struct` of positional leaves, or a
-//! closed `enum` carrying a sum identity and one member identity per variant. Those shapes
-//! nest, and nesting is shared: one struct type reached from four fields of four enclosing
-//! levels is one declaration, not 256 occurrences.
+//! A [`CanonicalValueShapeDag`] holds each distinct shape — a scalar, a dense `struct` of
+//! positional leaves, or a closed `enum` with a sum identity and one member identity per
+//! variant — once, as an interned node, and every nested position holds a
+//! [`ValueShapeNodeId`] carrying the node's arena-local ordinal plus an exact-node stamp.
+//! A node is minted only from ids that already exist, so every reference points strictly
+//! backwards and the arena cannot state a cycle; no node owns a nested node, so it cannot
+//! state an occurrence tree.
 //!
-//! A [`CanonicalValueShapeDag`] holds each distinct shape once as an interned node, and
-//! every nested position holds a [`ValueShapeNodeId`] carrying the node's arena-local
-//! ordinal plus an exact-node stamp. Two properties follow structurally: a node is minted
-//! only from ids that already exist, so every reference points strictly backwards and the
-//! arena **cannot state a cycle**; and no node owns a nested node, so it **cannot state an
-//! occurrence tree** and the arena's size is the number of distinct shapes declared.
-//!
-//! # Depth
-//!
-//! `MAX_DURABLE_VALUE_DEPTH` bounds how deeply a durable field's value nests. Depth is a
-//! property of a *path*, not of a type: a struct used both as a top-level field value and
-//! nested twenty levels down is one node at two depths, and deciding the bound from
-//! whichever depth a walk sees first either refuses a shallow occurrence that fits or
-//! admits a deep one the verifier will reject.
-//!
-//! Each node therefore carries [`CanonicalValueShapeDag::depth`]: the longest path from
-//! that node down to a scalar, counting the node itself. It is exact and order-independent
-//! because interning order is a topological order, so one forward pass computes it. A
-//! field value rooted at `n` occupies levels `1..=depth(n)` and fits exactly when
-//! `depth(n) <= MAX_DURABLE_VALUE_DEPTH`, whatever depth `n`'s shared descendants reach
-//! through some other field.
-//!
-//! # Expansion
-//!
-//! Both v0 wire encodings — the durable contract's identity preimage and the image's
-//! DURABLE section — spell a value shape as a fully expanded tree, and expanding a shared
-//! graph is exponential in its nesting depth. [`expand`] therefore never builds one: it
-//! walks an explicit work stack and writes each byte straight into an [`ImageByteSink`]
-//! that may stop accepting at a ceiling, so a shape too large for any image is decided in
-//! the bytes the sink admits.
-//!
-//! A shape can also be too *wide* to spell: both forms write an arity as a `u16`, so
-//! [`expand`] refuses a node stating more positions with [`DurableGraphTooLarge`] before
-//! the count reaches the wire. An arity is never narrowed — which would give two shapes
-//! one identity — and never decided by aborting the caller.
-
+//! Depth is a property of a path, so each node carries the longest path from itself down
+//! to a scalar, and a field value rooted at `n` fits exactly when
+//! `depth(n) <= MAX_DURABLE_VALUE_DEPTH`. Both wire forms spell a shape fully expanded,
+//! which is exponential in nesting depth, so [`expand`] never builds the tree: it streams
+//! bytes into an [`ImageByteSink`] that may stop at a ceiling, and refuses an arity the
+//! wire's `u16` cannot spell with [`DurableGraphTooLarge`] rather than narrowing it.
 use std::collections::HashMap;
 use std::hash::BuildHasher;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -678,7 +650,7 @@ impl ValueShapeNodeId {
 /// caller's question. [`expand`] stops as soon as a sink reports [`ImageByteSink::is_full`],
 /// so the work an expansion costs is the bytes its sink accepts, never the bytes the
 /// whole tree would occupy.
-pub trait ImageByteSink {
+pub(crate) trait ImageByteSink {
     fn push(&mut self, byte: u8);
 
     fn extend_bytes(&mut self, bytes: &[u8]);
@@ -702,7 +674,7 @@ impl ImageByteSink for Vec<u8> {
 /// How a value shape's bytes are spelled. The two v0 forms differ only in how a ledger
 /// identity is written, so one expansion owner serves both and they cannot drift.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ValueShapeWireForm {
+pub(crate) enum ValueShapeWireForm {
     /// The durable contract's canonical identity payload: a ledger id is a kind-tagged
     /// length-prefixed `IDREF`.
     ContractPayload,

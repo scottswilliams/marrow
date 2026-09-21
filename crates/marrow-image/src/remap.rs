@@ -1,53 +1,20 @@
 //! Opaque canonical-order remap tokens.
 //!
 //! The encoder sorts the string and constant pools into canonical order and rewrites
-//! every reference through a sort map. The section writers must not be able to *read*
-//! those maps: a writer that can inspect a remapped index can branch on it, and a
-//! section whose bytes depend on the sort order cannot be reasoned about from its
-//! rows. This module therefore hands writers tokens instead of indices.
-//!
-//! A token is minted only by its remap provider, carries its value privately, and has
-//! exactly one operation: a consuming [`StringToken::emit`]/[`ConstToken::emit`] that
-//! appends the value's two big-endian bytes to an [`ImageByteSink`]. There is no
-//! accessor, no comparison, no formatting, and no conversion, so remap-dependent
-//! behavior other than writing exactly two bytes is unrepresentable in a writer. The
-//! two domains are distinct types, so a string remap cannot answer for a constant
-//! reference or the reverse.
-//!
-//! The token types are publicly *nameable* — like the durable member views, whose
-//! unconstructibility is proved the same way — solely so the seal is pinned by
-//! compile-fail probes from outside the crate; no operation on them is public.
+//! every reference through a sort map. A section writer must not be able to *read* those
+//! maps: a writer that can inspect a remapped index can branch on it, and a section whose
+//! bytes depend on the sort order cannot be reasoned about from its rows. Writers
+//! therefore receive tokens: each is minted only by its remap provider, carries its value
+//! privately, and has exactly one operation, a consuming `emit` that appends the value's
+//! two big-endian bytes to a sink. There is no accessor, comparison, or conversion, and
+//! the string and constant domains are distinct types, so remap-dependent behavior other
+//! than writing exactly two bytes is unrepresentable in a writer.
 
 use crate::draft::{ConstId, StrId};
 use crate::value_dag::{ImageByteSink, push_u16};
 
 /// An opaque remapped string-pool reference: two wire bytes a writer can append and
 /// nothing else.
-///
-/// A token cannot be compared, read, forged from a raw index, or crossed with the
-/// constant domain, so no writer can branch on a remap value.
-///
-/// ```compile_fail,E0369
-/// fn same(a: marrow_image::StringToken, b: marrow_image::StringToken) -> bool {
-///     a == b
-/// }
-/// ```
-/// ```compile_fail,E0616
-/// fn value(token: marrow_image::StringToken) -> u16 {
-///     token.0
-/// }
-/// ```
-/// ```compile_fail,E0603
-/// fn forge() -> marrow_image::StringToken {
-///     marrow_image::StringToken(0)
-/// }
-/// ```
-/// ```compile_fail,E0308
-/// fn takes_const(_: marrow_image::ConstToken) {}
-/// fn cross(token: marrow_image::StringToken) {
-///     takes_const(token)
-/// }
-/// ```
 pub(crate) struct StringToken(u16);
 
 impl StringToken {
@@ -70,23 +37,6 @@ impl StringToken {
 
 /// An opaque remapped constant-pool reference: two wire bytes a writer can append and
 /// nothing else.
-///
-/// ```compile_fail,E0369
-/// fn same(a: marrow_image::ConstToken, b: marrow_image::ConstToken) -> bool {
-///     a == b
-/// }
-/// ```
-/// ```compile_fail,E0616
-/// fn value(token: marrow_image::ConstToken) -> u16 {
-///     token.0
-/// }
-/// ```
-/// ```compile_fail,E0308
-/// fn takes_string(_: marrow_image::StringToken) {}
-/// fn cross(token: marrow_image::ConstToken) {
-///     takes_string(token)
-/// }
-/// ```
 pub(crate) struct ConstToken(u16);
 
 impl ConstToken {

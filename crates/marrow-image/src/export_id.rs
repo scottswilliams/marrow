@@ -1,14 +1,10 @@
 //! The `ExportId` durable export identity.
 //!
-//! An [`ExportId`] is the stable 32-byte identity of one public (`pub fn`) export. It
-//! crosses the compiler → image → verifier → VM boundary, so it is a distinct typed
-//! 32-byte domain-separated SHA-256 over a length-delimited canonical payload.
-//!
-//! The payload is the export's *declaration path* and nothing else — not its body,
-//! parameters, or return type. Editing a body or changing a signature therefore leaves the
-//! id unchanged, while renaming the function or moving it to another module changes it.
-//! Anyone can mint a valid id, so the VM accepts one only from a verified image and never
-//! dispatches on a source name.
+//! An [`ExportId`] is the stable 32-byte identity of one public export: a domain-separated
+//! SHA-256 over its declaration path and nothing else, so editing a body or signature
+//! leaves it unchanged while renaming or moving the function changes it. Anyone can mint a
+//! valid id, so the VM accepts one only from a verified image and never dispatches on a
+//! source name.
 //!
 //! ```text
 //! ExportId = SHA-256( KIND ‖ u64_be(len(payload)) ‖ payload )
@@ -24,18 +20,11 @@
 //!   item    = the export's function name, e.g. "add"
 //! ```
 //!
-//! Every module segment and the item are ASCII identifiers (non-empty, no `.`), so the
-//! dotted `module` join is injective over segments and the id is collision-free across
-//! declaration paths. Three defenses keep that true: the compiler validates every segment
-//! and the item against the identifier domain immediately before minting (its
-//! `valid_export_path` guard); project capture derives each module name from a unique
-//! canonical source path; and the verifier rejects an EXPORTS table whose ids are not
-//! strictly ascending and unique.
-//!
-//! Identity is not compatibility: signatures are excluded, so a later cross-boundary
-//! binding that stores an `ExportId` must pair it with a separate typed signature
-//! fingerprint checked at bind time rather than widening `ExportId`.
-
+//! Module segments and the item are ASCII identifiers with no `.`, so the dotted join is
+//! injective and ids are collision-free across declaration paths; the compiler validates
+//! each segment before minting and the verifier rejects an EXPORTS table whose ids are not
+//! strictly ascending. Identity is not compatibility: a binding that stores an `ExportId`
+//! pairs it with a separate signature fingerprint rather than widening the id.
 use sha2::{Digest, Sha256};
 
 /// The domain-separation tag for the export identity. Distinct from every other

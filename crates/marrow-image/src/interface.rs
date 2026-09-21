@@ -1,34 +1,18 @@
 //! The host-neutral wire interface descriptor and the `InterfaceId` identity.
 //!
-//! A program's **wire interface** is the set of its concrete root-package exports,
-//! each described host-neutrally by a [`FunctionDescriptor`]: the export's stable
-//! [`ExportId`], its parameter and return types projected into the closed **transfer
-//! graph**, and its verifier-reconstructed durable demand identity
-//! ([`DemandSetId`]). Both real callers — the terminal and the generated TypeScript
-//! client — consume this one descriptor set; neither reparses source, and no
-//! host-specific value model crosses the boundary.
+//! A program's wire interface is the set of its concrete root-package exports, each a
+//! [`FunctionDescriptor`]: the export's stable [`ExportId`], its parameter and return
+//! types projected into the closed transfer graph, and its verifier-reconstructed
+//! [`DemandSetId`]. The interface is reconstructed from the verified image, never
+//! serialized into it, so the [`InterfaceId`] derives from verified facts: a body edit that
+//! changes no signature and no demand leaves it unchanged while changing the image id.
 //!
-//! Like the [`DemandSetId`](crate::DemandSetId), the interface is a **fact
-//! reconstructed from the verified image, never serialized into it**. Every input —
-//! the export ids, the function parameter/return types, the record and enum tables,
-//! and each export's `DemandSetId` — is already present in a `VerifiedImage`, so the
-//! [`InterfaceId`] derives from verified facts (like `DemandSetId` derives at
-//! verify) rather than trusting a compiler-written interface section. A body edit
-//! that changes no signature and no demand leaves the `InterfaceId` unchanged while
-//! changing the [`ImageId`](crate::ImageId); any signature or demand change moves it.
-//!
-//! The **transfer graph** is the closed set of value types that may cross the wire:
-//! `unit`, the seven scalars (a nominal type erases to its scalar, so it is already
-//! covered), a product (`struct`/record), a sum (a user `enum`, or a built-in
-//! `Option`/`Result`, both represented as image enums), a finite `List<T>`, a finite
-//! ordered `Map<K, V>`, and an entry identity `Id(^root)` (the earned transfer
-//! extension). The graph covers every [`ImageType`] kind. Because a record
-//! field, enum payload, list element, or map key/value may itself be a composite
-//! type, a signature is expanded structurally
-//! under a node budget ([`bounds::MAX_INTERFACE_TRANSFER_NODES`](crate::bounds::MAX_INTERFACE_TRANSFER_NODES)).
-//! The type-kind graph is closed, but even a verified acyclic signature can exceed that
-//! expansion budget; reconstruction then returns [`InterfaceError::SignatureTooComplex`]
-//! before materializing an exponential tree.
+//! The transfer graph covers every [`ImageType`] kind — unit, the scalars, records, enums,
+//! lists, maps, and entry identities — expanded structurally under the
+//! `MAX_INTERFACE_TRANSFER_NODES` budget; a verified acyclic signature past it is
+//! [`InterfaceError::SignatureTooComplex`]. Field and variant names are encoded because a
+//! rename is an observable signature change; the export name is not, because the
+//! [`ExportId`] already carries the declaration path.
 //!
 //! ```text
 //! InterfaceId = SHA-256( KIND ‖ u64_be(len(payload)) ‖ payload )
@@ -51,12 +35,6 @@
 //!                package is 0x01 ‖ <32-byte package id> at a later phase, mirroring
 //!                the `ExportId`/`DemandSetId` lineage seam.
 //! ```
-//!
-//! The export's `ExportId` already carries its declaration-path (name) identity, so
-//! the interface identity need not re-encode the name; it composes the export ids,
-//! their transfer signatures, and their demand ids. Field and variant names *are*
-//! encoded, because a rename is an observable signature change a caller must track.
-
 use sha2::{Digest, Sha256};
 
 use crate::bounds::MAX_INTERFACE_TRANSFER_NODES;

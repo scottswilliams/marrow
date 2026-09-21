@@ -1,27 +1,15 @@
 //! The derived stable semantic path of a durable graph node.
 //!
-//! Every node of a program's durable graph — a root placement, a static `group`
-//! namespace, a keyed `branch` placement, and each stored field — has a derived
-//! stable [`SemanticPath`]: the ordered chain of kind-tagged ledger ids from the
-//! application down to the node. A path is **index-free** — it is the chain of the
-//! graph's entropy-minted [`LedgerIdBytes`], never a container table index — and it
-//! **follows the ledger ids**, so a rename that moves a ledger anchor (its id
-//! unchanged) leaves every node's path unchanged, while re-minting an id changes
-//! exactly the paths that pass through it. Two nodes are the same place iff their
-//! chains are equal.
-//!
-//! The path is the stable identity. It is derived from the same durable member
-//! graph that backs the [`crate::DurableContractView`] over ledger ids, so the
-//! compiler and the verifier reconstruct identical paths from the same graph. There
-//! is deliberately no separate hashed `PathId`: the ledger-id chain is itself the
-//! stable identity, and durable authority, evolution, tooling, and physical
-//! encoding project from this one owner rather than minting a parallel path model.
-//!
-//! A [`SemanticPath`] names *which* graph node; what an operation does *at* that
-//! node — observe the whole payload, read or write one field — is the separate
-//! operation-target concern. Key columns are identity attributes of a placement,
-//! not separately addressable nodes, so they are not path steps.
-
+//! Every node of a program's durable graph — a root placement, a static `group`, a keyed
+//! `branch` placement, and each stored field — has a derived [`SemanticPath`]: the
+//! ordered chain of kind-tagged ledger ids from the application down to the node. A path
+//! is index-free and follows the ledger ids, so a rename that keeps an id leaves every
+//! path unchanged while re-minting an id changes exactly the paths through it; two nodes
+//! are the same place iff their chains are equal. It is derived from the same member
+//! graph as the [`crate::DurableContractView`], so compiler and verifier reconstruct
+//! identical paths, and there is no separate hashed path id: authority, evolution,
+//! tooling, and physical encoding project from this one owner. Key columns are identity
+//! attributes of a placement, not path steps.
 use crate::bounds;
 use crate::durable_id::LedgerIdBytes;
 

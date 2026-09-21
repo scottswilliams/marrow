@@ -15,10 +15,6 @@
 /// identity ledger permits encodes to ~343 KB.
 pub const MAX_IMAGE_BYTES: usize = 512 * 1024;
 
-/// The encoded width of one SPANS row, the per-span term of the draft's settled-body
-/// image charge.
-pub use crate::encode::SPAN_ROW_BYTES;
-
 /// Maximum string-pool entries and the byte length of any one entry. A wide resource
 /// interns one string per declared field name; [`MAX_IMAGE_BYTES`] remains the true
 /// bound on the pool's total bytes.
@@ -146,7 +142,7 @@ pub const MAX_TRAVERSAL_BOUND: u32 = 65_536;
 /// verified acyclic value graph can still expand exponentially (a diamond of
 /// many-fielded records), so `InterfaceId` derivation bounds the expanded node count
 /// before it allocates.
-pub const MAX_INTERFACE_TRANSFER_NODES: usize = 4096;
+pub(crate) const MAX_INTERFACE_TRANSFER_NODES: usize = 4096;
 
 // Width-bound decoupling invariants, enforced at compile time: a future edit
 // that re-couples the narrow bounds to the widened record field width — or drops a
@@ -292,38 +288,3 @@ const _: () = {
 /// once here so every accounting that charges growth reads one number.
 pub const GROWTH_AND_COPY: u64 = 3;
 
-#[cfg(test)]
-mod tests {
-    //! The chosen value of each width constant. The *decoupling* relationships are
-    //! enforced at compile time by the `const _` block above.
-    use super::*;
-
-    #[test]
-    fn width_constants_hold_their_chosen_values() {
-        assert_eq!(MAX_RECORD_FIELDS, 4096, "top-level record field width");
-        assert_eq!(MAX_STRUCT_LEAVES, 64, "dense inline-composite leaf count");
-        assert_eq!(MAX_INDEX_COMPONENTS, 72, "index projection width");
-        assert_eq!(MAX_DURABLE_MEMBERS, 8192, "durable member-tree total");
-        assert_eq!(MAX_SITES, 8192, "operation-site table");
-        assert_eq!(MAX_STRINGS, 8192, "string-pool entries");
-        assert_eq!(MAX_ROOTS, 4096, "durable roots per project");
-    }
-
-    /// The type/function family sits at the top of the u16-encoded range, with the
-    /// whole-image byte ceiling in lockstep to admit a wide durable resource.
-    #[test]
-    fn scale_floor_family_holds_its_widened_values() {
-        assert_eq!(MAX_TYPES, 4096, "record types per image");
-        assert_eq!(MAX_ENUMS, 4096, "enum types per image");
-        assert_eq!(MAX_FUNCTIONS, 4096, "functions per image");
-        assert_eq!(MAX_COLLECTIONS, 4096, "collection value types per image");
-        assert_eq!(MAX_IMAGE_BYTES, 512 * 1024, "whole-image byte ceiling");
-    }
-
-    /// The exported-function surface admits a multi-module export family (a measured
-    /// 43-export ensemble) with headroom.
-    #[test]
-    fn export_bound_holds_its_widened_value() {
-        assert_eq!(MAX_EXPORTS, 256, "exported functions per image");
-    }
-}

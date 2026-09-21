@@ -1,16 +1,10 @@
 //! The deployment-ceiling descriptor and its `CeilingId` identity.
 //!
-//! A **deployment ceiling** is the maximum durable authority a store admits: an
-//! attachment resolves each invocation's effective authority as
-//! `demand ∩ ceiling ∩ grant`, and the ceiling is the standing upper bound the
-//! store was minted under. Its descriptor is a sorted, deduplicated set of
-//! durable-access atoms — the same atom model the verifier reconstructs for
-//! [`ExportDemand`] — so a deployment's ceiling is the program-wide demand *union* it
-//! chooses to admit. The compiler describes demand and a deployment picks a ceiling;
-//! neither grants, and the kernel intersects the two with the invocation grant.
-//!
-//! [`CeilingId`] is a domain-separated SHA-256 over the same length-delimited canonical
-//! atom-set payload [`ExportDemand`] owns, under a *distinct* frozen `kind`:
+//! A deployment ceiling is the maximum durable authority a store admits: an attachment
+//! resolves each invocation's authority as `demand ∩ ceiling ∩ grant`, and the ceiling is
+//! the standing upper bound the store was minted under — a sorted, deduplicated atom set
+//! in the same model the verifier reconstructs for [`ExportDemand`]. Neither the
+//! compiler's demand nor the deployment's ceiling grants; the kernel intersects them.
 //!
 //! ```text
 //! CeilingId = SHA-256( KIND ‖ u64_be(len(payload)) ‖ payload )
@@ -18,13 +12,9 @@
 //!   payload = LP(lineage) ‖ u32_be(atom_count) ‖ atom*   (ascending by atom bytes, deduplicated)
 //! ```
 //!
-//! The atom-set payload has one owner ([`ExportDemand::atom_set_payload`]); the
-//! demand identity and the ceiling identity differ only in their `kind`. Domain
-//! separation is load-bearing: a `DemandSetId` and a `CeilingId` computed over the
-//! *same* atom set are different bytes, so a demand identity can never be presented
-//! as a ceiling identity that would widen authority. The attachment mint binds the
-//! ceiling id, so the store carries the exact ceiling it was minted under.
-
+//! The atom-set payload has one owner ([`ExportDemand::atom_set_payload`]); the two ids
+//! differ only in `kind`, so a demand identity can never be presented as a ceiling
+//! identity that would widen authority.
 use crate::demand::{CeilingDecodeError, DemandAtom, ExportDemand, frame_id};
 
 /// The domain-separation tag for the deployment-ceiling identity. Distinct from every
