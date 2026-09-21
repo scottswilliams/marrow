@@ -4,10 +4,11 @@
 //!
 //! The typed boundary is [`EntryName`], [`AdmittedDir`], [`OpenedFile`], and
 //! [`CacheLock`]; no raw descriptor or adapter type escapes it, and there is no
-//! `unsafe` code. Entries are created `CREATE | EXCL` and their exact mode is
-//! restored by `fchmod` on the creating descriptor, so a crash between the two
-//! calls leaves a umask-masked mode that later opens refuse with
-//! [`CustodyError::ModeDenied`]; the crate performs no path-based `chmod`.
+//! `unsafe` code. Journal files are created `CREATE | EXCL`, and every entry
+//! this crate creates has its exact mode restored by `fchmod` on the creating
+//! descriptor, so a crash between the two calls leaves a umask-masked mode
+//! that later opens refuse with [`CustodyError::ModeDenied`]; the crate
+//! performs no path-based `chmod`.
 //!
 //! The qualified platforms are Darwin and Linux on `x86_64`/`aarch64`; any
 //! other platform, unsupported semantic, or identity drift is a typed refusal.
@@ -33,8 +34,8 @@ pub use custody::{
 };
 pub use entry::{EntryName, EntryNameError};
 pub use frame::{
-    DecodedFrame, FrameCorruption, FrameLawError, JournalCommon, JournalKind, PhaseRecord,
-    RecordLaw, TailState, encode_header, encode_record,
+    DecodedFrame, FrameCorruption, FrameLawError, JournalCommon, PhaseRecord, RecordLaw, TailState,
+    encode_header, encode_record,
 };
 pub use journal::{
     BuiltHeader, ClaimRefusal, ClaimedJournal, CorruptionReason, JournalError, JournalWitness,

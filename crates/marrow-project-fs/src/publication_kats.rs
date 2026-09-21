@@ -14,8 +14,8 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use marrow_codes::Code;
 use marrow_fs_journal::{
-    AdmittedDir, CustodyError, CustodyOp, EntryName, FsIdentity, JournalKind, PendingName,
-    encode_header, encode_record,
+    AdmittedDir, CustodyError, CustodyOp, EntryName, FsIdentity, PendingName, encode_header,
+    encode_record,
 };
 use marrow_project::{IdentityAnchor, IdentityKind, LedgerPublicationPlan, META_DIR};
 
@@ -230,17 +230,11 @@ impl<'a> Crash<'a> {
             base_bytes: self.base.clone().unwrap_or_default(),
             next_bytes: self.next.clone(),
         };
-        let mut bytes =
-            encode_header(JournalKind::Ids, &header.encode()).expect("a lawful kind-1 header");
+        let mut bytes = encode_header(&header.encode()).expect("a lawful kind-1 header");
         for (sequence, (tag, payload)) in self.records.iter().enumerate() {
             bytes.extend_from_slice(
-                &encode_record(
-                    JournalKind::Ids,
-                    u32::try_from(sequence).expect("few records"),
-                    *tag,
-                    payload,
-                )
-                .expect("a lawful kind-1 record"),
+                &encode_record(u32::try_from(sequence).expect("few records"), *tag, payload)
+                    .expect("a lawful kind-1 record"),
             );
         }
         bytes.extend_from_slice(&self.tail);
@@ -256,11 +250,11 @@ fn set_mode(path: &Path, mode: u32) {
 }
 
 fn installing_record() -> Vec<u8> {
-    encode_record(JournalKind::Ids, 1, 2, &[]).expect("a lawful record")
+    encode_record(1, 2, &[]).expect("a lawful record")
 }
 
 fn settled_record(terminal: u8) -> Vec<u8> {
-    encode_record(JournalKind::Ids, 2, 3, &[terminal]).expect("a lawful record")
+    encode_record(2, 3, &[terminal]).expect("a lawful record")
 }
 
 // ===== Fresh publication =====================================================
@@ -1186,8 +1180,8 @@ fn a_malformed_header_is_retained() {
     let _serial = serialized();
     let project = Project::new("malformed-header");
     project.write_meta("ids.publish.stage", b"successor");
-    let mut bytes = encode_header(JournalKind::Ids, &[0u8; 40]).expect("a lawful frame header");
-    bytes.extend_from_slice(&encode_record(JournalKind::Ids, 0, 1, &[]).expect("a lawful record"));
+    let mut bytes = encode_header(&[0u8; 40]).expect("a lawful frame header");
+    bytes.extend_from_slice(&encode_record(0, 1, &[]).expect("a lawful record"));
     project.write_meta("ids.pending", &bytes);
     set_mode(&project.meta().join("ids.pending"), 0o600);
 

@@ -23,8 +23,9 @@ use crate::custody::{
 };
 use crate::entry::{EntryName, EntryNameError};
 use crate::frame::{
-    DecodedFrame, FrameCorruption, FrameLawError, JOURNAL_COMMON_LEN, JournalCommon, JournalKind,
+    CEILING, DecodedFrame, FrameCorruption, FrameLawError, JOURNAL_COMMON_LEN, JournalCommon,
     PREFIX_LEN, RECORD_OVERHEAD, TailState, decode_frame, encode_header, encode_record,
+    is_terminal,
 };
 
 /// The fixed claim-name suffix.
@@ -142,12 +143,12 @@ impl fmt::Display for CorruptionReason {
 pub enum JournalError {
     /// A custody operation refused.
     Custody(CustodyError),
-    /// The producer violated the kind's frame law; nothing was written.
+    /// The producer violated the frame law; nothing was written.
     Law(FrameLawError),
     /// Corruption was found; no further mutation is authorized.
     Corrupt(CorruptionReason),
-    /// The append would exceed the kind's ceiling; nothing was written.
-    CeilingExceeded { total: usize, limit: usize },
+    /// The append would exceed the ceiling; nothing was written.
+    CeilingExceeded { total: usize },
     /// The terminal registry phase is already recorded.
     AppendAfterComplete,
     /// The requested phase tag does not advance past the last recorded one.
@@ -171,9 +172,9 @@ impl fmt::Display for JournalError {
             Self::Custody(error) => write!(formatter, "{error}"),
             Self::Law(error) => write!(formatter, "frame law refused: {error}"),
             Self::Corrupt(reason) => write!(formatter, "retained corruption: {reason}"),
-            Self::CeilingExceeded { total, limit } => write!(
+            Self::CeilingExceeded { total } => write!(
                 formatter,
-                "appending would grow the journal to {total} bytes, over its {limit}-byte ceiling"
+                "appending would grow the journal to {total} bytes, over its {CEILING}-byte ceiling"
             ),
             Self::AppendAfterComplete => {
                 formatter.write_str("the terminal registry phase is already recorded")
@@ -227,9 +228,9 @@ impl From<FrameLawError> for JournalError {
 pub enum PendingState<'d> {
     /// Neither name exists.
     Absent,
-    /// Only the claim name exists: preclaim debris, never durably claimed,
-    /// discardable under witness.
-    Preclaim(PreclaimDebris<'d>),
+    /// Only the claim name exists: a claim file that was never durably
+    /// claimed, retained as it lies.
+    Preclaim(PreclaimDebris),
     /// Both names exist as one two-link inode holding exactly the header and
     /// Prepared record: a durable (or durable-pending) claim to adopt.
     Claimed(ClaimedJournal<'d>),
@@ -239,23 +240,12 @@ pub enum PendingState<'d> {
     Corrupt(CorruptionReason),
 }
 
-/// Preclaim debris: a claim file that was never durably claimed. The only
-/// permitted mutation is a witnessed discard.
+/// A claim file that was never durably claimed. Classification witnessed it
+/// as a readable one-link regular file and leaves it in place: its content is
+/// unconstrained by the journal's law, so nothing can prove it belongs to any
+/// protocol run.
 #[derive(Debug)]
-pub struct PreclaimDebris<'d> {
-    dir: &'d AdmittedDir,
-    name: PendingName,
-    file: OpenedFile,
-}
-
-impl PreclaimDebris<'_> {
-    /// Discard the debris under witness: the name must still map to the
-    /// witnessed inode immediately before the unlink, and the parent is
-    /// synced afterward.
-    pub fn discard(self) -> Result<(), JournalError> {
-        discard_witnessed(self.dir, self.name.claim(), &self.file)
-    }
-}
+pub struct PreclaimDebris;
 
 /// A claimed journal observed in its two-link state.
 #[derive(Debug)]
@@ -302,7 +292,6 @@ impl<'d> ClaimedJournal<'d> {
         )?;
         Ok(LiveJournal {
             dir: self.dir,
-            kind: self.frame.kind(),
             witness: JournalWitness {
                 parent: self.dir.identity(),
                 journal_inode: self.file.identity(),
@@ -345,7 +334,7 @@ impl<'d> PendingJournal<'d> {
 
         let mut candidate = valid_bytes.clone();
         candidate.extend_from_slice(expected_next_record);
-        match decode_frame(self.frame.kind(), &candidate) {
+        match decode_frame(&candidate) {
             Ok(frame)
                 if frame.records().len() == self.frame.records().len() + 1
                     && frame.tail() == &TailState::Clean => {}
@@ -368,7 +357,7 @@ impl<'d> PendingJournal<'d> {
         )?;
         self.file.truncate(valid_len as u64)?;
         self.file.sync()?;
-        let reread = self.file.read_prefix(self.frame.kind().ceiling() + 1)?;
+        let reread = self.file.read_prefix(CEILING + 1)?;
         if reread != valid_bytes {
             return Err(JournalError::Corrupt(CorruptionReason::RereadMismatch));
         }
@@ -379,7 +368,7 @@ impl<'d> PendingJournal<'d> {
             LinkExpectation::Single,
             valid_len,
         )?;
-        self.frame = decode_frame(self.frame.kind(), &valid_bytes)
+        self.frame = decode_frame(&valid_bytes)
             .map_err(|corruption| JournalError::Corrupt(CorruptionReason::Frame(corruption)))?;
         Ok(())
     }
@@ -402,11 +391,10 @@ impl<'d> PendingJournal<'d> {
             .records()
             .last()
             .expect("a pending journal carries at least its Prepared record");
-        let next_sequence = u32::try_from(self.frame.records().len())
-            .expect("the registry holds at most three records");
+        let next_sequence =
+            u32::try_from(self.frame.records().len()).expect("a registry's record count fits u32");
         Ok(LiveJournal {
             dir: self.dir,
-            kind: self.frame.kind(),
             last_tag: last.phase_tag(),
             witness: JournalWitness {
                 parent: self.dir.identity(),
@@ -426,7 +414,6 @@ impl<'d> PendingJournal<'d> {
 pub struct LiveJournal<'d> {
     dir: &'d AdmittedDir,
     name: PendingName,
-    kind: JournalKind,
     file: OpenedFile,
     witness: JournalWitness,
     total_len: usize,
@@ -449,10 +436,10 @@ impl LiveJournal<'_> {
 
     /// Whether the terminal registry phase is recorded.
     pub(crate) fn is_complete(&self) -> bool {
-        self.kind.is_terminal(self.last_tag)
+        is_terminal(self.last_tag)
     }
 
-    /// Append one record: validate the kind's law, recheck the mapping and
+    /// Append one record: validate the record law, recheck the mapping and
     /// witness, write, `fsync` the file, and recheck again.
     pub fn append(&mut self, phase_tag: u8, payload: &[u8]) -> Result<(), JournalError> {
         if self.is_complete() {
@@ -464,13 +451,10 @@ impl LiveJournal<'_> {
                 requested: phase_tag,
             });
         }
-        let record = encode_record(self.kind, self.next_sequence, phase_tag, payload)?;
+        let record = encode_record(self.next_sequence, phase_tag, payload)?;
         let total = self.total_len + record.len();
-        if total > self.kind.ceiling() {
-            return Err(JournalError::CeilingExceeded {
-                total,
-                limit: self.kind.ceiling(),
-            });
+        if total > CEILING {
+            return Err(JournalError::CeilingExceeded { total });
         }
         recheck(
             self.dir,
@@ -557,7 +541,8 @@ pub enum ClaimRefusal {
 }
 
 /// A row header as a caller can build it: the generation slot and everything
-/// after the leading common.
+/// after the leading common. The two identities the caller cannot know are
+/// the two it does not supply.
 ///
 /// This is a value rather than a callback: the claim composes the common from
 /// the directory it is claiming under and the inode it created, and a callback
@@ -565,29 +550,23 @@ pub enum ClaimRefusal {
 /// the marker itself, after which every refusal would still be reported as
 /// leaving no marker.
 #[derive(Debug, Clone)]
-pub enum BuiltHeader {
-    /// A header led by the common. The caller supplies the generation slot
-    /// and the bytes after it; the two identities it cannot know are the two
-    /// it does not supply.
-    Witnessed {
-        /// The row's 16-byte generation evidence.
-        generation: [u8; 16],
-        /// Everything after the common.
-        tail: Vec<u8>,
-    },
+pub struct BuiltHeader {
+    /// The row's 16-byte generation evidence.
+    pub generation: [u8; 16],
+    /// Everything after the common.
+    pub tail: Vec<u8>,
 }
 
 impl BuiltHeader {
     fn compose(&self, witness: &JournalWitness) -> Vec<u8> {
-        let Self::Witnessed { generation, tail } = self;
         let common = JournalCommon {
-            generation: *generation,
+            generation: self.generation,
             parent: witness.parent,
             journal_inode: witness.journal_inode,
         };
-        let mut bytes = Vec::with_capacity(JOURNAL_COMMON_LEN + tail.len());
+        let mut bytes = Vec::with_capacity(JOURNAL_COMMON_LEN + self.tail.len());
         bytes.extend_from_slice(&common.encode());
-        bytes.extend_from_slice(tail);
+        bytes.extend_from_slice(&self.tail);
         bytes
     }
 }
@@ -607,12 +586,11 @@ impl BuiltHeader {
 pub fn claim<'d>(
     dir: &'d AdmittedDir,
     name: &PendingName,
-    kind: JournalKind,
     header: BuiltHeader,
     prepared_payload: &[u8],
 ) -> Result<LiveJournal<'d>, ClaimRefusal> {
-    let prepared = claim_preflight(dir, name, kind, &header, prepared_payload)
-        .map_err(ClaimRefusal::Preclaim)?;
+    let prepared =
+        claim_preflight(dir, name, &header, prepared_payload).map_err(ClaimRefusal::Preclaim)?;
     let total_len = prepared.bytes_len;
     let file = prepared.file;
     let witness = prepared.witness;
@@ -620,7 +598,6 @@ pub fn claim<'d>(
     Ok(LiveJournal {
         dir,
         name: name.clone(),
-        kind,
         file,
         witness,
         total_len,
@@ -646,7 +623,6 @@ struct PreparedClaim {
 fn claim_preflight(
     dir: &AdmittedDir,
     name: &PendingName,
-    kind: JournalKind,
     header: &BuiltHeader,
     prepared_payload: &[u8],
 ) -> Result<PreparedClaim, JournalError> {
@@ -664,7 +640,6 @@ fn claim_preflight(
         dir,
         name,
         &mut file,
-        kind,
         &header.compose(&witness),
         prepared_payload,
     ) {
@@ -761,11 +736,10 @@ impl MarkerStats {
     }
 }
 
-/// The two marker names, separated from the pair that also carries the base.
+/// The two marker names, separated from the pair that derives them.
 ///
 /// Minted only by [`PendingName::markers`], so the pair is still the one owner
-/// of the spellings; this removes the reach back to the base name where
-/// reaching it would be a defect.
+/// of the spellings; a reader that receives this cannot reach any other name.
 #[derive(Debug, Clone, Copy)]
 pub struct MarkerNames<'n> {
     claim: &'n EntryName,
@@ -774,9 +748,9 @@ pub struct MarkerNames<'n> {
 
 /// Which of the four marker-name shapes the pair is in, decided from the stats
 /// alone: [`classify`] receives no directory and no names, so a classification
-/// cannot read an artifact. Turning a shape into a state that can act — discard,
-/// adopt, resume — reads the marker file and needs the directory, so it is a
-/// separate step the caller takes at the point of consumption.
+/// cannot read an artifact. Turning a shape into a state that can act — adopt,
+/// resume — reads the marker file and needs the directory, so it is a separate
+/// step the caller takes at the point of consumption.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarkerShape {
     /// Neither name exists.
@@ -831,8 +805,8 @@ impl MarkerShape {
     ///
     /// This runs after the shape is decided, so the classify-before-reconcile
     /// ordering depends on [`MarkerStats::read`], not on this. Admission takes
-    /// the full pair and the directory because the states it returns — a
-    /// preclaim discard, a pending resume — act through both afterwards.
+    /// the full pair and the directory because the states it returns — a claim
+    /// to adopt, a journal to resume — act through both afterwards.
     ///
     /// # Errors
     ///
@@ -841,21 +815,18 @@ impl MarkerShape {
         self,
         dir: &'d AdmittedDir,
         name: &PendingName,
-        expected: JournalKind,
     ) -> Result<PendingState<'d>, JournalError> {
         match self {
             Self::Absent => Ok(PendingState::Absent),
             Self::Preclaim(claim) => classify_preclaim(dir, name, claim),
-            Self::Claimed { claim, pending } => {
-                classify_claimed(dir, name, expected, claim, pending)
-            }
-            Self::Pending(pending) => classify_pending(dir, name, expected, pending),
+            Self::Claimed { claim, pending } => classify_claimed(dir, name, claim, pending),
+            Self::Pending(pending) => classify_pending(dir, name, pending),
         }
     }
 }
 
 fn classify_preclaim<'d>(
-    dir: &'d AdmittedDir,
+    dir: &AdmittedDir,
     name: &PendingName,
     stat: EntryStat,
 ) -> Result<PendingState<'d>, JournalError> {
@@ -869,19 +840,14 @@ fn classify_preclaim<'d>(
     }
     // Preclaim content and mode are unconstrained: the crash may have fallen
     // anywhere before the durable claim, including before the mode-restoring
-    // fchmod, so classification and discard must need only read access.
-    let file = witnessed(dir.open_file_readonly(name.claim())?, stat.identity())?;
-    Ok(PendingState::Preclaim(PreclaimDebris {
-        dir,
-        name: name.clone(),
-        file,
-    }))
+    // fchmod, so classification must need only read access.
+    witnessed(dir.open_file_readonly(name.claim())?, stat.identity())?;
+    Ok(PendingState::Preclaim(PreclaimDebris))
 }
 
 fn classify_claimed<'d>(
     dir: &'d AdmittedDir,
     name: &PendingName,
-    expected: JournalKind,
     claim_stat: EntryStat,
     pending_stat: EntryStat,
 ) -> Result<PendingState<'d>, JournalError> {
@@ -904,7 +870,7 @@ fn classify_claimed<'d>(
         });
     }
     let file = witnessed(dir.open_file(name.claim())?, claim_stat.identity())?;
-    let frame = match replay(expected, &file)? {
+    let frame = match replay(&file)? {
         Ok(frame) => frame,
         Err(corruption) => return corrupt_state(CorruptionReason::Frame(corruption)),
     };
@@ -925,7 +891,6 @@ fn classify_claimed<'d>(
 fn classify_pending<'d>(
     dir: &'d AdmittedDir,
     name: &PendingName,
-    expected: JournalKind,
     stat: EntryStat,
 ) -> Result<PendingState<'d>, JournalError> {
     if stat.kind() != NodeKind::Regular {
@@ -940,7 +905,7 @@ fn classify_pending<'d>(
         return corrupt_state(CorruptionReason::WrongMode { found: stat.mode() });
     }
     let file = witnessed(dir.open_file(name.pending())?, stat.identity())?;
-    let frame = match replay(expected, &file)? {
+    let frame = match replay(&file)? {
         Ok(frame) => frame,
         Err(corruption) => return corrupt_state(CorruptionReason::Frame(corruption)),
     };
@@ -968,12 +933,9 @@ fn witnessed(file: OpenedFile, observed: FsIdentity) -> Result<OpenedFile, Journ
 /// Bounded replay: read at most ceiling-plus-one bytes through the retained
 /// handle and decode. The inner result separates transient custody failures
 /// (outer) from frame corruption (inner).
-fn replay(
-    expected: JournalKind,
-    file: &OpenedFile,
-) -> Result<Result<DecodedFrame, FrameCorruption>, JournalError> {
-    let bytes = file.read_prefix(expected.ceiling() + 1)?;
-    Ok(decode_frame(expected, &bytes))
+fn replay(file: &OpenedFile) -> Result<Result<DecodedFrame, FrameCorruption>, JournalError> {
+    let bytes = file.read_prefix(CEILING + 1)?;
+    Ok(decode_frame(&bytes))
 }
 
 /// Assemble, write, sync, and validate the claim file's exact bytes through
@@ -983,14 +945,13 @@ fn write_claim_file(
     dir: &AdmittedDir,
     name: &PendingName,
     file: &mut OpenedFile,
-    kind: JournalKind,
     header: &[u8],
     prepared_payload: &[u8],
 ) -> Result<Vec<u8>, JournalError> {
-    let bytes = claim_bytes(kind, header, prepared_payload)?;
+    let bytes = claim_bytes(header, prepared_payload)?;
     file.append(&bytes)?;
     file.sync()?;
-    let reread = file.read_prefix(kind.ceiling() + 1)?;
+    let reread = file.read_prefix(CEILING + 1)?;
     if reread != bytes {
         return Err(JournalError::Corrupt(CorruptionReason::RereadMismatch));
     }
@@ -1006,18 +967,11 @@ fn write_claim_file(
 
 /// Assemble and law-check the claim bytes: the header plus the sequence-zero
 /// Prepared record.
-fn claim_bytes(
-    kind: JournalKind,
-    header: &[u8],
-    prepared_payload: &[u8],
-) -> Result<Vec<u8>, JournalError> {
-    let mut bytes = encode_header(kind, header)?;
-    bytes.extend_from_slice(&encode_record(kind, 0, 1, prepared_payload)?);
-    if bytes.len() > kind.ceiling() {
-        return Err(JournalError::CeilingExceeded {
-            total: bytes.len(),
-            limit: kind.ceiling(),
-        });
+fn claim_bytes(header: &[u8], prepared_payload: &[u8]) -> Result<Vec<u8>, JournalError> {
+    let mut bytes = encode_header(header)?;
+    bytes.extend_from_slice(&encode_record(0, 1, prepared_payload)?);
+    if bytes.len() > CEILING {
+        return Err(JournalError::CeilingExceeded { total: bytes.len() });
     }
     Ok(bytes)
 }

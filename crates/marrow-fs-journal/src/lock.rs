@@ -22,11 +22,16 @@ use crate::entry::EntryName;
 /// it. Release therefore completes only once a concurrently forked child's
 /// descriptor closes at `exec`; a holder that drops and immediately reacquires
 /// inside that window may observe [`LockError::Held`].
+///
+/// ```compile_fail
+/// fn duplicate(lock: marrow_fs_journal::CacheLock) {
+///     let _second = lock.clone();
+/// }
+/// ```
 pub struct CacheLock {
     /// Held for custody alone: closing the descriptor on drop is the one
-    /// release, so the field is never read.
-    #[allow(dead_code)]
-    file: OpenedFile,
+    /// release.
+    _file: OpenedFile,
     identity: FsIdentity,
 }
 
@@ -53,13 +58,8 @@ impl CacheLock {
         dir.reassert(name, file.identity(), CustodyOp::Lock)?;
         Ok(Self {
             identity: file.identity(),
-            file,
+            _file: file,
         })
-    }
-
-    /// The locked entry's inode identity.
-    pub fn identity(&self) -> FsIdentity {
-        self.identity
     }
 }
 

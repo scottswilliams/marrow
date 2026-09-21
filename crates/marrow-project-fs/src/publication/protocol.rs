@@ -10,8 +10,8 @@ use std::fmt;
 
 use marrow_fs_journal::{
     AdmittedDir, BuiltHeader, ClaimRefusal, CustodyError, CustodyOp, EntryName, EntryStat,
-    FsIdentity, JournalKind, LiveJournal, MarkerStats, OpenedFile, PendingState, PhaseRecord,
-    TailState, claim, classify, encode_record,
+    FsIdentity, LiveJournal, MarkerStats, OpenedFile, PendingState, PhaseRecord, TailState, claim,
+    classify, encode_record,
 };
 use marrow_project::{LedgerExpectedArtifact, LedgerPublicationPlan, LedgerPublicationView};
 
@@ -259,7 +259,7 @@ pub(super) fn recover(
     // that was classified.
     let shape = classify(MarkerStats::read(meta, names.markers())?);
     let marker_witness = shape.marker_identity();
-    match shape.admit(meta, names, JournalKind::Ids)? {
+    match shape.admit(meta, names)? {
         PendingState::Absent => {
             reconcile_quarantine(guard, guard.stage_name())?;
             require_clear_stage(guard)?;
@@ -307,11 +307,9 @@ pub(super) fn recover(
 /// exists, so no terminal exists either and a restore can contradict nothing.
 fn preflight(guard: &ProjectMetadataWriteGuard) -> Result<(), IdsPublicationError> {
     let meta = guard.meta();
-    match classify(MarkerStats::read(meta, guard.journal_names().markers())?).admit(
-        meta,
-        guard.journal_names(),
-        JournalKind::Ids,
-    )? {
+    match classify(MarkerStats::read(meta, guard.journal_names().markers())?)
+        .admit(meta, guard.journal_names())?
+    {
         PendingState::Absent => {}
         PendingState::Preclaim(_) => {
             return Err(IdsPublicationError::bare(IdsRefusal::UnclaimedIncomplete));
@@ -375,13 +373,7 @@ fn publish_admitted<'a>(
             .unwrap_or_default(),
         next_bytes: next.to_vec(),
     };
-    let claimed = claim(
-        meta,
-        guard.journal_names(),
-        JournalKind::Ids,
-        planned.build(),
-        &[],
-    );
+    let claimed = claim(meta, guard.journal_names(), planned.build(), &[]);
     let journal = match claimed {
         Ok(journal) => journal,
         Err(refusal) => {
@@ -445,7 +437,7 @@ impl PlannedHeader {
     /// The header as the claim takes it: the generation slot and the bytes
     /// after the common, neither of which depends on a claim existing.
     fn build(&self) -> BuiltHeader {
-        BuiltHeader::Witnessed {
+        BuiltHeader {
             generation: self.generation(),
             tail: self.encode_tail(),
         }
@@ -1140,8 +1132,7 @@ fn expected_next_record(
 /// Encode one kind-1 record. The kind's registry admits exactly these
 /// sequence/tag/payload shapes, so the frame law cannot refuse them.
 fn record(sequence: u32, tag: u8, payload: &[u8]) -> Vec<u8> {
-    encode_record(JournalKind::Ids, sequence, tag, payload)
-        .expect("a kind-1 phase record is lawful by construction")
+    encode_record(sequence, tag, payload).expect("a kind-1 phase record is lawful by construction")
 }
 
 /// Which terminal record a crash could have been appending. The artifact map
@@ -1375,8 +1366,7 @@ mod tests {
             base_bytes: Vec::new(),
             next_bytes: b"successor".to_vec(),
         };
-        let mut bytes =
-            encode_header(JournalKind::Ids, &header.encode()).expect("a lawful kind-1 header");
+        let mut bytes = encode_header(&header.encode()).expect("a lawful kind-1 header");
         for (sequence, (tag, payload)) in [
             (1u8, Vec::new()),
             (INSTALLING, Vec::new()),
@@ -1386,13 +1376,8 @@ mod tests {
         .enumerate()
         {
             bytes.extend_from_slice(
-                &encode_record(
-                    JournalKind::Ids,
-                    u32::try_from(sequence).expect("few records"),
-                    *tag,
-                    payload,
-                )
-                .expect("a lawful kind-1 record"),
+                &encode_record(u32::try_from(sequence).expect("few records"), *tag, payload)
+                    .expect("a lawful kind-1 record"),
             );
         }
         std::fs::write(&marker, &bytes).expect("fill the marker");

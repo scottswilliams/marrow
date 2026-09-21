@@ -16,16 +16,15 @@ fn root(scratch: &Scratch) -> AdmittedDir {
 }
 
 #[test]
-fn acquisition_creates_the_entry_and_witnesses_its_identity() {
+fn acquisition_creates_the_entry() {
     let scratch = Scratch::new("acquire");
     let dir = root(&scratch);
 
-    let lock = CacheLock::acquire(&dir, &name("lock")).expect("acquire");
+    let _lock = CacheLock::acquire(&dir, &name("lock")).expect("acquire");
     let entry = dir
         .stat_entry(&name("lock"))
         .expect("stat lock entry")
         .expect("the lock entry exists");
-    assert_eq!(entry.identity(), lock.identity());
     assert_eq!(entry.kind(), NodeKind::Regular);
     assert_eq!(mode_of(&scratch.path().join("lock")), 0o600);
 }
@@ -52,21 +51,26 @@ fn the_lock_entry_persists_across_holders() {
     let scratch = Scratch::new("persist");
     let dir = root(&scratch);
 
-    let first = CacheLock::acquire(&dir, &name("lock")).expect("first acquire");
-    let identity = first.identity();
-    drop(first);
-
-    assert!(
+    let entry = || {
         dir.stat_entry(&name("lock"))
             .expect("stat lock entry")
-            .is_some(),
-        "release keeps the lock entry in place",
-    );
-    let second = CacheLock::acquire(&dir, &name("lock")).expect("second acquire");
+            .map(|stat| stat.identity())
+    };
+
+    let first = CacheLock::acquire(&dir, &name("lock")).expect("first acquire");
+    let created = entry().expect("the lock entry exists");
+    drop(first);
+
     assert_eq!(
-        second.identity(),
-        identity,
-        "the second holder locks the same persistent inode",
+        entry(),
+        Some(created),
+        "release keeps the lock entry in place"
+    );
+    let _second = CacheLock::acquire(&dir, &name("lock")).expect("second acquire");
+    assert_eq!(
+        entry(),
+        Some(created),
+        "the second holder locks the same persistent inode"
     );
 }
 

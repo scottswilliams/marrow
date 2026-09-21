@@ -6,8 +6,6 @@ use super::*;
 
 const PARENT: FsIdentity = FsIdentity::new(0x0102_0304_0506_0708, 0x1112_1314_1516_1718);
 const INODE: FsIdentity = FsIdentity::new(0x2122_2324_2526_2728, 0x3132_3334_3536_3738);
-/// The kind-1 ceiling: two full identity ledgers plus overhead.
-const CEILING: usize = 2_101_248;
 
 fn generation() -> [u8; 16] {
     let mut bytes = [0u8; 16];
@@ -67,18 +65,13 @@ fn golden() -> Vec<u8> {
     frame
 }
 
-fn decode(bytes: &[u8]) -> Result<DecodedFrame, FrameCorruption> {
-    decode_frame(JournalKind::Ids, bytes)
-}
-
 fn decode_ok(bytes: &[u8]) -> DecodedFrame {
-    decode(bytes).expect("a well-formed frame decodes")
+    decode_frame(bytes).expect("a well-formed frame decodes")
 }
 
 /// Whether the frame's last record is the terminal registry phase.
 fn complete(frame: &DecodedFrame) -> bool {
-    let last_tag = frame.records().last().map_or(0, PhaseRecord::phase_tag);
-    JournalKind::Ids.is_terminal(last_tag)
+    is_terminal(frame.records().last().map_or(0, PhaseRecord::phase_tag))
 }
 
 #[test]
@@ -103,18 +96,17 @@ fn journal_common_is_the_frozen_forty_eight_byte_layout() {
 }
 
 #[test]
-fn the_kind_code_ceiling_and_registry_are_frozen() {
-    assert_eq!(JournalKind::Ids.code(), 1);
-    assert_eq!(JournalKind::Ids.ceiling(), CEILING);
-    assert_eq!(JournalKind::Ids.phase_count(), 3);
-    assert_eq!(JournalKind::Ids.to_string(), "ids");
+fn the_kind_byte_ceiling_and_registry_are_frozen() {
+    assert_eq!(KIND, 1);
+    assert_eq!(CEILING, 2_101_248);
+    assert_eq!(PHASE_COUNT, 3);
 }
 
 #[test]
 fn the_golden_frame_is_byte_exact() {
     let golden = golden();
 
-    let mut encoded = encode_header(JournalKind::Ids, &header()).expect("header");
+    let mut encoded = encode_header(&header()).expect("header");
     assert_eq!(encoded.len(), 96);
     assert_eq!(&encoded[0..8], b"MWPEND0\0");
     assert_eq!(encoded[8], 0, "version");
@@ -127,14 +119,11 @@ fn the_golden_frame_is_byte_exact() {
         (1, 2, vec![0xB1; 33]),
         (2, 3, vec![0xB2; 33]),
     ] {
-        encoded.extend_from_slice(
-            &encode_record(JournalKind::Ids, sequence, tag, &payload).expect("record"),
-        );
+        encoded.extend_from_slice(&encode_record(sequence, tag, &payload).expect("record"));
     }
     assert_eq!(encoded, golden);
 
     let decoded = decode_ok(&golden);
-    assert_eq!(decoded.kind(), JournalKind::Ids);
     assert_eq!(decoded.row_header(), &header()[..]);
     assert_eq!(decoded.records().len(), 3);
     assert_eq!(decoded.records()[0].phase_tag(), 1);
@@ -150,7 +139,7 @@ fn the_golden_frame_is_byte_exact() {
 
 #[test]
 fn record_encoding_is_the_frozen_layout() {
-    let encoded = encode_record(JournalKind::Ids, 1, 2, &[0xAB, 0xCD]).expect("record");
+    let encoded = encode_record(1, 2, &[0xAB, 0xCD]).expect("record");
     assert_eq!(encoded, [0, 0, 0, 7, 0, 0, 0, 1, 2, 0xAB, 0xCD, 0, 0, 0, 7]);
 }
 
@@ -167,16 +156,13 @@ fn a_frame_at_its_exact_ceiling_decodes_and_one_more_byte_refuses() {
     assert!(complete(&decode_ok(&frame)));
 
     frame.push(0);
-    assert_eq!(
-        decode(&frame),
-        Err(FrameCorruption::Oversized { limit: CEILING })
-    );
+    assert_eq!(decode_frame(&frame), Err(FrameCorruption::Oversized));
 }
 
 #[test]
 fn noncanonical_bytes_at_the_ceiling_are_bounded_corruption() {
     let garbage = vec![0x5A; CEILING];
-    assert_eq!(decode(&garbage), Err(FrameCorruption::BadMagic));
+    assert_eq!(decode_frame(&garbage), Err(FrameCorruption::BadMagic));
 }
 
 #[test]
@@ -194,9 +180,12 @@ fn registry_phases_may_be_skipped() {
 
 #[test]
 fn truncated_prefixes_are_corruption() {
-    assert_eq!(decode(&[]), Err(FrameCorruption::TooShort { found: 0 }));
     assert_eq!(
-        decode(&golden()[..15]),
+        decode_frame(&[]),
+        Err(FrameCorruption::TooShort { found: 0 })
+    );
+    assert_eq!(
+        decode_frame(&golden()[..15]),
         Err(FrameCorruption::TooShort { found: 15 })
     );
 }
@@ -207,29 +196,34 @@ fn a_bad_magic_bad_version_or_nonzero_reserved_is_corruption() {
 
     let mut bad_magic = golden.clone();
     bad_magic[0] = b'X';
-    assert_eq!(decode(&bad_magic), Err(FrameCorruption::BadMagic));
+    assert_eq!(decode_frame(&bad_magic), Err(FrameCorruption::BadMagic));
 
     let mut bad_version = golden.clone();
     bad_version[8] = 1;
     assert_eq!(
-        decode(&bad_version),
+        decode_frame(&bad_version),
         Err(FrameCorruption::BadVersion { found: 1 })
     );
 
     let mut reserved = golden.clone();
     reserved[11] = 1;
     assert_eq!(
-        decode(&reserved),
+        decode_frame(&reserved),
         Err(FrameCorruption::NonzeroReserved { found: 1 })
     );
 }
 
+/// Every byte other than the one kind is refused, including the codes of the
+/// kinds that once existed.
 #[test]
 fn a_kind_byte_naming_another_kind_is_corruption() {
     let mut frame = golden();
-    for found in [0, 2, 0xFF] {
+    for found in [0, 2, 3, 4, 5, 0xFF] {
         frame[9] = found;
-        assert_eq!(decode(&frame), Err(FrameCorruption::BadKind { found }));
+        assert_eq!(
+            decode_frame(&frame),
+            Err(FrameCorruption::BadKind { found })
+        );
     }
 }
 
@@ -237,7 +231,7 @@ fn a_kind_byte_naming_another_kind_is_corruption() {
 fn a_header_is_bounded_by_the_ceiling() {
     let frame = prefix(0xFFFF_FFFF);
     assert_eq!(
-        decode(&frame),
+        decode_frame(&frame),
         Err(FrameCorruption::BadHeaderLength { found: 0xFFFF_FFFF })
     );
 }
@@ -247,7 +241,7 @@ fn a_frame_ending_inside_its_header_is_corruption() {
     let mut frame = prefix(100);
     frame.extend_from_slice(&[0x77; 50]);
     assert_eq!(
-        decode(&frame),
+        decode_frame(&frame),
         Err(FrameCorruption::HeaderTruncated {
             expected: 100,
             found: 50,
@@ -261,7 +255,7 @@ fn an_impossible_declared_record_length_is_corruption() {
     frame.extend_from_slice(&[0x77; 4]);
     frame.extend_from_slice(&4u32.to_be_bytes()); // below the 5-byte base
     assert_eq!(
-        decode(&frame),
+        decode_frame(&frame),
         Err(FrameCorruption::BadRecordLength {
             sequence: 0,
             found: 4,
@@ -272,11 +266,10 @@ fn an_impossible_declared_record_length_is_corruption() {
     over.extend_from_slice(&[0x77; 4]);
     over.extend_from_slice(&0xFFFF_FF00u32.to_be_bytes()); // over the ceiling
     assert_eq!(
-        decode(&over),
+        decode_frame(&over),
         Err(FrameCorruption::Record {
             sequence: 0,
             law: RecordLaw::OverCeiling {
-                ceiling: CEILING,
                 end: 0xFFFF_FF00 - 5 + 13 + 20,
             },
         })
@@ -292,7 +285,7 @@ fn a_mismatched_length_echo_is_corruption() {
     broken[last] ^= 0xFF;
     frame.extend_from_slice(&broken);
     assert_eq!(
-        decode(&frame),
+        decode_frame(&frame),
         Err(FrameCorruption::LengthEchoMismatch { sequence: 0 })
     );
 }
@@ -304,7 +297,7 @@ fn a_skipped_or_repeated_sequence_is_corruption() {
     skipped.extend_from_slice(&record(0, 1, b"a"));
     skipped.extend_from_slice(&record(2, 2, b"b"));
     assert_eq!(
-        decode(&skipped),
+        decode_frame(&skipped),
         Err(FrameCorruption::SequenceNotDense {
             expected: 1,
             found: 2,
@@ -316,7 +309,7 @@ fn a_skipped_or_repeated_sequence_is_corruption() {
     repeated.extend_from_slice(&record(0, 1, b"a"));
     repeated.extend_from_slice(&record(0, 2, b"b"));
     assert_eq!(
-        decode(&repeated),
+        decode_frame(&repeated),
         Err(FrameCorruption::SequenceNotDense {
             expected: 1,
             found: 0,
@@ -327,7 +320,7 @@ fn a_skipped_or_repeated_sequence_is_corruption() {
     first.extend_from_slice(&[0x77; 4]);
     first.extend_from_slice(&record(1, 1, b"a"));
     assert_eq!(
-        decode(&first),
+        decode_frame(&first),
         Err(FrameCorruption::SequenceNotDense {
             expected: 0,
             found: 1,
@@ -341,7 +334,7 @@ fn tag_law_violations_are_corruption() {
     zero.extend_from_slice(&[0x77; 4]);
     zero.extend_from_slice(&record(0, 0, b"a"));
     assert_eq!(
-        decode(&zero),
+        decode_frame(&zero),
         Err(FrameCorruption::Record {
             sequence: 0,
             law: RecordLaw::TagOutOfRegistry { found: 0 },
@@ -352,7 +345,7 @@ fn tag_law_violations_are_corruption() {
     beyond.extend_from_slice(&[0x77; 4]);
     beyond.extend_from_slice(&record(0, 4, b"a"));
     assert_eq!(
-        decode(&beyond),
+        decode_frame(&beyond),
         Err(FrameCorruption::Record {
             sequence: 0,
             law: RecordLaw::TagOutOfRegistry { found: 4 },
@@ -363,7 +356,7 @@ fn tag_law_violations_are_corruption() {
     unprepared.extend_from_slice(&[0x77; 4]);
     unprepared.extend_from_slice(&record(0, 2, b"a"));
     assert_eq!(
-        decode(&unprepared),
+        decode_frame(&unprepared),
         Err(FrameCorruption::Record {
             sequence: 0,
             law: RecordLaw::FirstTagNotPrepared { found: 2 },
@@ -375,7 +368,7 @@ fn tag_law_violations_are_corruption() {
     stalled.extend_from_slice(&record(0, 1, b"a"));
     stalled.extend_from_slice(&record(1, 1, b"b"));
     assert_eq!(
-        decode(&stalled),
+        decode_frame(&stalled),
         Err(FrameCorruption::Record {
             sequence: 1,
             law: RecordLaw::TagNotAdvancing {
@@ -391,7 +384,7 @@ fn bytes_after_the_terminal_phase_are_corruption() {
     let mut golden = golden();
     golden.push(0x00);
     assert_eq!(
-        decode(&golden),
+        decode_frame(&golden),
         Err(FrameCorruption::TrailingBytes { found: 1 })
     );
 }
@@ -416,7 +409,7 @@ fn an_incomplete_final_record_is_a_validated_tail_candidate() {
     let mut bad_visible = full[..156].to_vec();
     bad_visible.extend_from_slice(&4u32.to_be_bytes());
     assert_eq!(
-        decode(&bad_visible),
+        decode_frame(&bad_visible),
         Err(FrameCorruption::BadRecordLength {
             sequence: 2,
             found: 4,
@@ -428,7 +421,7 @@ fn an_incomplete_final_record_is_a_validated_tail_candidate() {
     bad_sequence.extend_from_slice(&38u32.to_be_bytes());
     bad_sequence.extend_from_slice(&7u32.to_be_bytes());
     assert_eq!(
-        decode(&bad_sequence),
+        decode_frame(&bad_sequence),
         Err(FrameCorruption::SequenceNotDense {
             expected: 2,
             found: 7,
@@ -441,7 +434,7 @@ fn an_incomplete_final_record_is_a_validated_tail_candidate() {
     bad_tag.extend_from_slice(&2u32.to_be_bytes());
     bad_tag.push(9);
     assert_eq!(
-        decode(&bad_tag),
+        decode_frame(&bad_tag),
         Err(FrameCorruption::Record {
             sequence: 2,
             law: RecordLaw::TagOutOfRegistry { found: 9 },
@@ -464,28 +457,25 @@ fn a_header_only_frame_decodes_with_no_records() {
 #[test]
 fn producer_law_refusals_are_typed() {
     assert_eq!(
-        encode_header(JournalKind::Ids, &vec![0x77; CEILING]),
-        Err(FrameLawError::HeaderOverCeiling {
-            kind: JournalKind::Ids,
-            found: CEILING,
-        })
+        encode_header(&vec![0x77; CEILING]),
+        Err(FrameLawError::HeaderOverCeiling { found: CEILING })
     );
     assert_eq!(
-        encode_record(JournalKind::Ids, 0, 0, b""),
+        encode_record(0, 0, b""),
         Err(FrameLawError::Record {
             sequence: 0,
             law: RecordLaw::TagOutOfRegistry { found: 0 },
         })
     );
     assert_eq!(
-        encode_record(JournalKind::Ids, 0, 4, b""),
+        encode_record(0, 4, b""),
         Err(FrameLawError::Record {
             sequence: 0,
             law: RecordLaw::TagOutOfRegistry { found: 4 },
         })
     );
     assert_eq!(
-        encode_record(JournalKind::Ids, 1, 1, b""),
+        encode_record(1, 1, b""),
         Err(FrameLawError::Record {
             sequence: 1,
             law: RecordLaw::TagNotAdvancing {
@@ -495,18 +485,17 @@ fn producer_law_refusals_are_typed() {
         })
     );
     assert_eq!(
-        encode_record(JournalKind::Ids, 3, 3, b""),
+        encode_record(3, 3, b""),
         Err(FrameLawError::Record {
             sequence: 3,
             law: RecordLaw::SequenceOutOfRegistry,
         })
     );
     assert_eq!(
-        encode_record(JournalKind::Ids, 0, 1, &vec![0u8; CEILING]),
+        encode_record(0, 1, &vec![0u8; CEILING]),
         Err(FrameLawError::Record {
             sequence: 0,
             law: RecordLaw::OverCeiling {
-                ceiling: CEILING,
                 end: 16 + 13 + CEILING,
             },
         })

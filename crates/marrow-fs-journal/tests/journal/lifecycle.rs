@@ -9,8 +9,8 @@ use crate::common::{Scratch, mode_of, require_mode_bits_bind, set_mode};
 use marrow_fs_journal::{
     AdmittedDir, BuiltHeader, CacheLock, ClaimRefusal, CorruptionReason, CustodyError, CustodyOp,
     EntryName, EntryNameError, FrameCorruption, FsIdentity, JournalCommon, JournalError,
-    JournalKind, LiveJournal, MarkerStats, NodeKind, PendingName, PendingState, TailState, claim,
-    classify, encode_header, encode_record,
+    LiveJournal, MarkerStats, NodeKind, PendingName, PendingState, TailState, claim, classify,
+    encode_header, encode_record,
 };
 
 fn name(spelling: &str) -> EntryName {
@@ -27,13 +27,13 @@ fn pending_name(base: &str) -> PendingName {
 
 const GENERATION: [u8; 16] = [0x51; 16];
 const HEADER_TAIL: [u8; 8] = [0x77; 8];
-/// The kind-1 frame ceiling, as the frame known-answer tests freeze it.
+/// The frame ceiling, as the frame known-answer tests freeze it.
 const CEILING: usize = 2_101_248;
 
 /// The row header as a caller builds it: the claim composes the leading
 /// common from its own witness.
 fn header() -> BuiltHeader {
-    BuiltHeader::Witnessed {
+    BuiltHeader {
         generation: GENERATION,
         tail: HEADER_TAIL.to_vec(),
     }
@@ -49,8 +49,8 @@ fn header_bytes(common: JournalCommon) -> Vec<u8> {
 /// The exact bytes a claim writes: the header plus the sequence-zero Prepared
 /// record.
 fn claim_bytes(common: JournalCommon) -> Vec<u8> {
-    let mut bytes = encode_header(JournalKind::Ids, &header_bytes(common)).expect("encode header");
-    bytes.extend_from_slice(&encode_record(JournalKind::Ids, 0, 1, b"P").expect("encode Prepared"));
+    let mut bytes = encode_header(&header_bytes(common)).expect("encode header");
+    bytes.extend_from_slice(&encode_record(0, 1, b"P").expect("encode Prepared"));
     bytes
 }
 
@@ -69,7 +69,7 @@ fn planted_claim_bytes() -> Vec<u8> {
 }
 
 fn claim_ids<'d>(dir: &'d AdmittedDir, names: &PendingName) -> LiveJournal<'d> {
-    claim(dir, names, JournalKind::Ids, header(), b"P").expect("claim an ids journal")
+    claim(dir, names, header(), b"P").expect("claim an ids journal")
 }
 
 /// `claim` with its arm named and then dropped. These tests assert which refusal
@@ -82,17 +82,14 @@ fn claim_error<'d>(
     header: BuiltHeader,
     prepared_payload: &[u8],
 ) -> Result<LiveJournal<'d>, JournalError> {
-    claim(dir, name, JournalKind::Ids, header, prepared_payload).map_err(|refusal| match refusal {
+    claim(dir, name, header, prepared_payload).map_err(|refusal| match refusal {
         ClaimRefusal::Preclaim(error) | ClaimRefusal::PossiblyDurable(error) => error,
     })
 }
 
 fn admit<'d>(dir: &'d AdmittedDir, names: &PendingName) -> Result<PendingState<'d>, JournalError> {
-    classify(MarkerStats::read(dir, names.markers()).expect("stat the marker pair")).admit(
-        dir,
-        names,
-        JournalKind::Ids,
-    )
+    classify(MarkerStats::read(dir, names.markers()).expect("stat the marker pair"))
+        .admit(dir, names)
 }
 
 #[test]
@@ -175,7 +172,7 @@ fn a_frame_law_violation_in_the_header_is_refused_before_any_link() {
     let result = claim_error(
         &dir,
         &names,
-        BuiltHeader::Witnessed {
+        BuiltHeader {
             generation: GENERATION,
             tail: vec![0xEE; CEILING],
         },
@@ -237,7 +234,7 @@ fn appends_grow_the_journal_by_exact_records_and_enforce_the_registry() {
     ));
 
     live.append(2, b"installed").expect("append Installed");
-    let record = encode_record(JournalKind::Ids, 1, 2, b"installed").expect("record");
+    let record = encode_record(1, 2, b"installed").expect("record");
     assert_eq!(
         std::fs::metadata(&path).expect("stat").len(),
         base_len + record.len() as u64
@@ -260,8 +257,7 @@ fn an_append_over_the_ceiling_is_refused_and_writes_nothing() {
     let mut live = claim(
         &dir,
         &names,
-        JournalKind::Ids,
-        BuiltHeader::Witnessed {
+        BuiltHeader {
             generation: GENERATION,
             tail: vec![0x88; 2_000_000],
         },
@@ -444,27 +440,30 @@ fn classify_reports_absence() {
 }
 
 #[test]
-fn create_only_debris_is_preclaim_and_discardable_under_witness() {
+fn create_only_debris_is_preclaim_and_retained() {
     let scratch = Scratch::new("preclaim");
     let dir = root(&scratch);
     let names = pending_name("store");
     let claim_path = scratch.path().join("store.pending.create");
 
     // Kill points: an empty claim file, a partial header, and a complete
-    // frame that never reached its link are all preclaim.
+    // frame that never reached its link are all preclaim, and none is touched.
     let full = planted_claim_bytes();
     for cut in [0, 1, 15, 16, full.len()] {
         std::fs::write(&claim_path, &full[..cut]).expect("plant preclaim debris");
-        match admit(&dir, &names).expect("classify") {
-            PendingState::Preclaim(debris) => {
-                debris.discard().expect("witnessed discard");
-                assert!(
-                    !claim_path.exists(),
-                    "discard removes the debris at cut {cut}"
-                );
-            }
-            other => panic!("cut {cut}: expected preclaim, found {other:?}"),
-        }
+        assert!(
+            matches!(
+                admit(&dir, &names).expect("classify"),
+                PendingState::Preclaim(_)
+            ),
+            "cut {cut} classifies as preclaim"
+        );
+        assert_eq!(
+            std::fs::read(&claim_path).expect("the debris is retained"),
+            &full[..cut],
+            "classification never mutates, at cut {cut}"
+        );
+        std::fs::remove_file(&claim_path).expect("clear the debris");
     }
     assert!(matches!(
         admit(&dir, &names).expect("classify"),
@@ -473,7 +472,7 @@ fn create_only_debris_is_preclaim_and_discardable_under_witness() {
 }
 
 #[test]
-fn read_only_preclaim_debris_is_classified_and_discardable() {
+fn read_only_preclaim_debris_is_classified_and_retained() {
     let scratch = Scratch::new("preclaim-readonly");
     let dir = root(&scratch);
     let names = pending_name("store");
@@ -481,25 +480,31 @@ fn read_only_preclaim_debris_is_classified_and_discardable() {
 
     // Kill point: the crash fell between the create and the mode-restoring
     // fchmod under a hostile umask, leaving mode-0400 debris. Classification
-    // and discard must need only read access to the file.
+    // must need only read access to the file.
     std::fs::write(&claim_path, b"partial").expect("plant preclaim debris");
     set_mode(&claim_path, 0o400);
 
-    match admit(&dir, &names).expect("classify with read access alone") {
-        PendingState::Preclaim(debris) => debris
-            .discard()
-            .expect("the witnessed discard needs only the directory"),
-        other => panic!("expected preclaim, found {other:?}"),
-    }
-    assert!(!claim_path.exists());
+    assert!(matches!(
+        admit(&dir, &names).expect("classify with read access alone"),
+        PendingState::Preclaim(_)
+    ));
+    assert_eq!(
+        std::fs::read(&claim_path).expect("the debris is retained"),
+        b"partial"
+    );
+    assert_eq!(
+        mode_of(&claim_path),
+        0o400,
+        "classification writes no mode of its own"
+    );
 }
 
 /// The sibling kill point: the same crash under a umask that strips owner read
 /// (`0477` leaves `0200`) leaves debris no open of this crate can reach, since
-/// classification pins the inode it reports through a held descriptor.
-/// Classification refuses it by name with the observed mode and the mode an
-/// operator must restore, rather than an unclassified I/O error; restoring
-/// that mode returns the debris to ordinary classification and discard.
+/// classification witnesses the file through a read-only open. Classification
+/// refuses it by name with the observed mode and the mode an operator must
+/// restore, rather than an unclassified I/O error; restoring that mode returns
+/// the debris to ordinary classification.
 #[test]
 fn write_only_preclaim_debris_names_the_operator_action() {
     let scratch = Scratch::new("preclaim-writeonly");
@@ -519,17 +524,17 @@ fn write_only_preclaim_debris_names_the_operator_action() {
         other => panic!("expected the typed mode refusal, found {other:?}"),
     }
     assert_eq!(
-        std::fs::metadata(&claim_path).expect("stat debris").mode() & 0o7777,
+        mode_of(&claim_path),
         0o200,
-        "the refusal writes no mode of its own",
+        "the refusal writes no mode of its own"
     );
 
     set_mode(&claim_path, 0o400);
-    match admit(&dir, &names).expect("classify after the restore") {
-        PendingState::Preclaim(debris) => debris.discard().expect("witnessed discard"),
-        other => panic!("expected preclaim, found {other:?}"),
-    }
-    assert!(!claim_path.exists());
+    assert!(matches!(
+        admit(&dir, &names).expect("classify after the restore"),
+        PendingState::Preclaim(_)
+    ));
+    assert!(claim_path.exists(), "classification never mutates");
 }
 
 #[test]
@@ -588,7 +593,7 @@ fn a_two_link_journal_with_appended_records_is_retained_corruption() {
     let claim_path = scratch.path().join("store.pending.create");
 
     let mut bytes = planted_claim_bytes();
-    bytes.extend_from_slice(&encode_record(JournalKind::Ids, 1, 2, b"x").expect("record"));
+    bytes.extend_from_slice(&encode_record(1, 2, b"x").expect("record"));
     std::fs::write(&claim_path, &bytes).expect("write overfull claim");
     set_mode(&claim_path, 0o600);
     std::fs::hard_link(&claim_path, scratch.path().join("store.pending")).expect("link");
@@ -623,7 +628,7 @@ fn a_pending_journal_replays_its_records_and_resumes() {
     let pending_path = scratch.path().join("store.pending");
 
     let mut bytes = planted_claim_bytes();
-    bytes.extend_from_slice(&encode_record(JournalKind::Ids, 1, 2, b"installed").expect("record"));
+    bytes.extend_from_slice(&encode_record(1, 2, b"installed").expect("record"));
     std::fs::write(&pending_path, &bytes).expect("write pending journal");
     set_mode(&pending_path, 0o600);
 
@@ -654,7 +659,7 @@ fn an_incomplete_tail_is_truncated_only_against_the_unique_next_record() {
     let pending_path = scratch.path().join("store.pending");
 
     let valid = planted_claim_bytes();
-    let expected_next = encode_record(JournalKind::Ids, 1, 2, b"final").expect("record");
+    let expected_next = encode_record(1, 2, b"final").expect("record");
     let mut bytes = valid.clone();
     bytes.extend_from_slice(&expected_next[..12]); // kill point: mid-record crash
     std::fs::write(&pending_path, &bytes).expect("write torn journal");
@@ -679,7 +684,7 @@ fn an_incomplete_tail_is_truncated_only_against_the_unique_next_record() {
     assert!(matches!(error, JournalError::IncompleteTail));
 
     // A candidate that is not the tail's continuation truncates nothing.
-    let wrong = encode_record(JournalKind::Ids, 1, 2, b"foxal").expect("record");
+    let wrong = encode_record(1, 2, b"foxal").expect("record");
     assert!(matches!(
         pending.truncate_tail(&wrong),
         Err(JournalError::TailNotPrefix)
@@ -691,7 +696,7 @@ fn an_incomplete_tail_is_truncated_only_against_the_unique_next_record() {
     );
 
     // A structurally illegal candidate is refused as such.
-    let illegal = encode_record(JournalKind::Ids, 2, 3, b"x").expect("record");
+    let illegal = encode_record(2, 3, b"x").expect("record");
     assert!(matches!(
         pending.truncate_tail(&illegal),
         Err(JournalError::ExpectedRecordIllegal(_))
@@ -725,7 +730,7 @@ fn truncating_a_clean_journal_is_refused() {
         PendingState::Pending(pending) => pending,
         other => panic!("expected a pending journal, found {other:?}"),
     };
-    let next = encode_record(JournalKind::Ids, 1, 2, b"x").expect("record");
+    let next = encode_record(1, 2, b"x").expect("record");
     assert!(matches!(
         pending.truncate_tail(&next),
         Err(JournalError::NoIncompleteTail)
@@ -752,8 +757,7 @@ fn hostile_pending_states_are_retained_corruption() {
     );
 
     // A header-only journal lost its durable Prepared record.
-    let header_only =
-        encode_header(JournalKind::Ids, &header_bytes(planted_common())).expect("header");
+    let header_only = encode_header(&header_bytes(planted_common())).expect("header");
     std::fs::write(&pending_path, &header_only).expect("write");
     assert_corrupt(&dir, &names, &CorruptionReason::MissingPrepared);
 
@@ -772,7 +776,7 @@ fn hostile_pending_states_are_retained_corruption() {
     assert_corrupt(
         &dir,
         &names,
-        &CorruptionReason::Frame(FrameCorruption::Oversized { limit: CEILING }),
+        &CorruptionReason::Frame(FrameCorruption::Oversized),
     );
 
     // The wrong mode is retained corruption.
