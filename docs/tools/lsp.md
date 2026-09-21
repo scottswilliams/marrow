@@ -73,7 +73,7 @@ of the offset. An unfinished edit (a bare `Enum::`, a `receiver.`, an open call
 argument) still classifies through the parser's recovery.
 
 Positions are exchanged in the LSP UTF-16 encoding; the server maps them to and
-from the compiler's UTF-8 spans. The advertised trigger characters (`.`, `:`, `(`,
+from the compiler's UTF-8 spans. A line ends before its `\n` or `\r\n` terminator. The advertised trigger characters (`.`, `:`, `(`,
 `,`) are an editor hint; classification is positional.
 
 ## Overlays and staleness

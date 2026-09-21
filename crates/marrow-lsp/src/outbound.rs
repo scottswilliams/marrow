@@ -410,6 +410,79 @@ mod tests {
         assert_eq!(text, r#"{"jsonrpc":"2.0","id":1,"result":null}"#);
     }
 
+    /// Every refusal's wire code and message, byte-pinned through the encoder. A new
+    /// variant is added here with its pair.
+    #[test]
+    fn every_error_code_encodes_its_pinned_code_and_message() {
+        let pinned = [
+            (ErrorCode::ParseError, -32700, "parse error"),
+            (ErrorCode::InvalidRequest, -32600, "invalid request"),
+            (
+                ErrorCode::BatchUnsupported,
+                -32600,
+                "batch requests are not supported",
+            ),
+            (
+                ErrorCode::DuplicateRequestId,
+                -32600,
+                "duplicate request id",
+            ),
+            (
+                ErrorCode::InvalidInPhase,
+                -32600,
+                "invalid request in current state",
+            ),
+            (
+                ErrorCode::InitializeRepeated,
+                -32600,
+                "initialize already handled",
+            ),
+            (ErrorCode::MethodNotFound, -32601, "method not found"),
+            (
+                ErrorCode::MalformedInitializeParams,
+                -32602,
+                "malformed initialize params",
+            ),
+            (
+                ErrorCode::MalformedWorkspaceRoot,
+                -32602,
+                "malformed workspace root",
+            ),
+            (ErrorCode::NoWorkspaceRoot, -32602, "no selected root"),
+            (ErrorCode::MalformedParams, -32602, "malformed params"),
+            (ErrorCode::InternalError, -32603, "internal error"),
+            (
+                ErrorCode::ServerNotInitialized,
+                -32002,
+                "server not initialized",
+            ),
+            (ErrorCode::ContentModified, -32801, "content modified"),
+            (
+                ErrorCode::CaptureUnavailable,
+                -32803,
+                "project capture unavailable",
+            ),
+            (
+                ErrorCode::AnalysisResourceLimit,
+                -32803,
+                "analysis resource limit",
+            ),
+        ];
+        for (code, wire, message) in pinned {
+            let text = body(&Outbound::Error {
+                id: Some(RequestId::Integer(1)),
+                code,
+            });
+            assert_eq!(
+                text,
+                format!(
+                    r#"{{"jsonrpc":"2.0","id":1,"error":{{"code":{wire},"message":"{message}"}}}}"#
+                ),
+                "{code:?}"
+            );
+        }
+    }
+
     #[test]
     fn oversized_body_is_too_large_with_no_partial_bytes() {
         let huge = "x".repeat(MAX_OUTBOUND_FRAME_BYTES + 1);

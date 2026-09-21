@@ -104,6 +104,14 @@ impl Connection {
         let status = self.child.wait().expect("wait for child");
         status.code().unwrap_or(-1)
     }
+
+    /// Wait for the process with stdin still open, as an editor that sent `exit` and
+    /// simply waits would.
+    fn wait_keeping_stdin_open(mut self) -> i32 {
+        let status = self.child.wait().expect("wait for child");
+        drop(self.stdin);
+        status.code().unwrap_or(-1)
+    }
 }
 
 fn root_uri(dir: &Path) -> String {
@@ -152,6 +160,21 @@ fn handshake_and_clean_shutdown() {
     assert!(reply.get("result").is_some());
     conn.notify("exit", Value::Null);
     assert_eq!(conn.wait(), 0, "clean shutdown then exit is zero");
+}
+
+#[test]
+fn exit_ends_the_process_while_stdin_stays_open() {
+    let dir = temp_project("exit-open-stdin", "module main\n");
+    let mut conn = Connection::spawn();
+    initialize(&mut conn, &dir);
+    conn.request(9, "shutdown", Value::Null);
+    conn.recv_response(9);
+    conn.notify("exit", Value::Null);
+    assert_eq!(
+        conn.wait_keeping_stdin_open(),
+        0,
+        "exit alone ends the process; no stdin close is needed"
+    );
 }
 
 #[test]

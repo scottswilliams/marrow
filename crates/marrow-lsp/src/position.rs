@@ -46,10 +46,26 @@ impl<'a> LineMap<'a> {
             clamped -= 1;
         }
         let line = self.line_starts.partition_point(|&start| start <= clamped) - 1;
-        let character = self.source[self.line_starts[line]..clamped]
+        let end = clamped.min(self.content_end(line));
+        let character = self.source[self.line_starts[line]..end]
             .encode_utf16()
             .count();
         Position::new(line as u32, character as u32)
+    }
+
+    /// The byte at which line `line`'s content ends: before its `\n` or `\r\n`
+    /// terminator, or at the end of source for the last line. An offset inside the
+    /// terminator maps to the line's end, as the protocol's line end is the content end.
+    fn content_end(&self, line: usize) -> usize {
+        let Some(&next) = self.line_starts.get(line + 1) else {
+            return self.source.len();
+        };
+        let terminator = if self.source.as_bytes()[..next - 1].ends_with(b"\r") {
+            2
+        } else {
+            1
+        };
+        next - terminator
     }
 
     /// The LSP range spanning a half-open byte range.
@@ -65,10 +81,7 @@ impl<'a> LineMap<'a> {
         let Some(&line_start) = self.line_starts.get(line) else {
             return self.source.len();
         };
-        let line_end = self
-            .line_starts
-            .get(line + 1)
-            .map_or(self.source.len(), |next| next - 1);
+        let line_end = self.content_end(line);
         let mut units = 0u32;
         for (index, ch) in self.source[line_start..line_end].char_indices() {
             if units >= position.character {
@@ -169,6 +182,26 @@ mod tests {
         assert_eq!(map.end_position(), Position::new(1, 0));
         assert_eq!(map.byte_at(Position::new(1, 0)), 3);
         assert_eq!(map.byte_at(Position::new(0, 5)), 2);
+    }
+
+    #[test]
+    fn crlf_ends_a_line_before_its_carriage_return() {
+        let map = LineMap::new("ab\r\ncd");
+        assert_eq!(map.position_at(2), Position::new(0, 2));
+        assert_eq!(
+            map.position_at(3),
+            Position::new(0, 2),
+            "inside the terminator"
+        );
+        assert_eq!(map.position_at(4), Position::new(1, 0));
+        assert_eq!(map.end_position(), Position::new(1, 2));
+        assert_eq!(map.byte_at(Position::new(0, 2)), 2);
+        assert_eq!(map.byte_at(Position::new(0, 99)), 2, "clamps before the CR");
+        assert_eq!(map.byte_at(Position::new(1, 1)), 5);
+        let empty = LineMap::new("\r\n");
+        assert_eq!(empty.position_at(1), Position::new(0, 0));
+        assert_eq!(empty.byte_at(Position::new(0, 5)), 0);
+        assert_eq!(empty.end_position(), Position::new(1, 0));
     }
 
     #[test]

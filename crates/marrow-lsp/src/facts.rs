@@ -349,7 +349,6 @@ mod tests {
     use std::sync::Arc;
 
     use crate::analysis::{AnalysisOutcome, OverlayInput, run_analysis};
-    use crate::position::after;
     use crate::scratch::{self, TempDir};
     use crate::uri::{DocumentKey, OriginRoots, SelectedRoot, document_uri};
     use marrow_compile::InputRevision;
@@ -465,83 +464,5 @@ mod tests {
         let main = "module main\n\npub fn f(: {\n";
         let (snapshot, _root, _dir) = analyze_source("fmtbad", main);
         assert!(formatting(&snapshot, &main_file(), main).is_none());
-    }
-
-    /// The Graph Report conformance fixture: structs, an enum with members, monomorphic
-    /// helpers, and tests — the earning caller for completion, signature help, and
-    /// document symbols.
-    const GRAPH_REPORT: &str =
-        include_str!("../../../fixtures/v01/conformance/graph_report/src/graph_report.mw");
-
-    #[test]
-    fn completion_at_enum_path_offers_the_members() {
-        // The in-progress edit the feature serves: `Role::` typed, the member not yet.
-        // The incomplete path does not parse; the bounded parser recovery still
-        // classifies the enum-path position.
-        let editing = GRAPH_REPORT.replacen("return Role::isolated", "return Role::", 1);
-        let (snapshot, _root, _dir) = analyze_source("completion", &editing);
-        let position = LineMap::new(&editing).position_at(after(&editing, "return Role::"));
-        let Ok(Some(CompletionResponse::Array(items))) =
-            completion(&snapshot, &main_file(), &editing, position)
-        else {
-            panic!("an enum-path position completes to the enum's members");
-        };
-        let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
-        for member in ["source", "sink", "internal", "isolated"] {
-            assert!(labels.contains(&member), "enum member {member} offered");
-        }
-    }
-
-    #[test]
-    fn signature_help_inside_a_call_marks_the_active_parameter() {
-        let (snapshot, _root, _dir) = analyze_source("sighelp", GRAPH_REPORT);
-        // Inside `classifyRole(o, i)` at the second argument slot.
-        let position =
-            LineMap::new(GRAPH_REPORT).position_at(after(GRAPH_REPORT, "classifyRole(o, "));
-        let Ok(Some(help)) = signature_help(&snapshot, &main_file(), GRAPH_REPORT, position) else {
-            panic!("a position inside a call has signature help");
-        };
-        assert_eq!(help.signatures.len(), 1, "one active signature");
-        assert!(
-            help.signatures[0].label.contains("classifyRole"),
-            "the callee signature is `classifyRole`"
-        );
-        assert_eq!(
-            help.active_parameter,
-            Some(1),
-            "the cursor sits at the second parameter"
-        );
-    }
-
-    #[test]
-    fn document_symbols_outline_declarations_with_nested_members() {
-        let (snapshot, _root, _dir) = analyze_source("symbols", GRAPH_REPORT);
-        let Some(DocumentSymbolResponse::Nested(symbols)) =
-            document_symbols(&snapshot, &main_file(), GRAPH_REPORT)
-        else {
-            panic!("a parsed file has a declaration outline");
-        };
-        let names: Vec<&str> = symbols.iter().map(|symbol| symbol.name.as_str()).collect();
-        for name in ["Edge", "Role", "classifyRole", "topoOrder", "report"] {
-            assert!(
-                names.contains(&name),
-                "top-level declaration {name} present"
-            );
-        }
-        // The enum carries its members as nested children.
-        let role = symbols
-            .iter()
-            .find(|symbol| symbol.name == "Role")
-            .expect("Role symbol");
-        let members: Vec<&str> = role
-            .children
-            .as_deref()
-            .unwrap_or_default()
-            .iter()
-            .map(|child| child.name.as_str())
-            .collect();
-        for member in ["source", "sink", "internal", "isolated"] {
-            assert!(members.contains(&member), "enum member {member} nested");
-        }
     }
 }

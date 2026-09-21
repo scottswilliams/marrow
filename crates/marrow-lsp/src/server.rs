@@ -17,7 +17,7 @@
 use std::collections::VecDeque;
 use std::io::{BufReader, Write};
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 use std::thread::JoinHandle;
 
 use lsp_types::{
@@ -64,17 +64,18 @@ pub fn serve() -> u8 {
     let (wake_tx, wake_rx) = sync_channel::<()>(1);
 
     let reader = spawn("marrow-lsp-reader", {
-        let wake_tx = wake_tx.clone();
-        move || reader_loop(ingress_tx, wake_tx)
+        let link = Link::new(ingress_tx, &wake_tx);
+        move || reader_loop(link)
     });
     let worker = spawn("marrow-lsp-worker", {
-        let wake_tx = wake_tx.clone();
-        move || worker_loop(&work_rx, &result_tx, &wake_tx)
+        let link = Link::new(result_tx, &wake_tx);
+        move || worker_loop(&work_rx, &link)
     });
     let writer = spawn("marrow-lsp-writer", {
-        let wake_tx = wake_tx.clone();
-        move || writer_loop(&frame_rx, &receipt_tx, &wake_tx)
+        let link = Link::new(receipt_tx, &wake_tx);
+        move || writer_loop(&frame_rx, &link)
     });
+    drop(wake_tx);
 
     let mut coordinator = Coordinator::new();
     let exit = drive(
@@ -87,12 +88,64 @@ pub fn serve() -> u8 {
         &frame_tx,
     );
 
-    drop(work_tx);
-    drop(frame_tx);
-    for handle in [reader, worker, writer] {
+    // Close every channel end the coordinator holds, so a producer blocked on a send or
+    // a receive returns, then wait for the threads whose remaining work is bounded. The
+    // reader may sit in a stdin read nothing here can interrupt, so it is left to the
+    // process exit rather than joined.
+    drop((
+        ingress_rx, result_rx, receipt_rx, wake_rx, work_tx, frame_tx,
+    ));
+    for handle in [worker, writer] {
         let _ = handle.join();
     }
+    drop(reader);
     exit
+}
+
+/// A producer thread's link to the coordinator: the channel it sends on and the wake it
+/// signals. Field order is drop order: the channel disconnects before the exit wake is
+/// sent, so a wake never precedes the disconnection it announces, and a thread that
+/// returns or unwinds always wakes the coordinator into observing its loss.
+struct Link<T> {
+    events: SyncSender<T>,
+    exit: ExitSignal,
+}
+
+impl<T> Link<T> {
+    fn new(events: SyncSender<T>, wake: &SyncSender<()>) -> Self {
+        Self {
+            events,
+            exit: ExitSignal { wake: wake.clone() },
+        }
+    }
+
+    /// Send one event, then wake the coordinator. `false` once the coordinator is gone.
+    fn send(&self, event: T) -> bool {
+        if self.events.send(event).is_err() {
+            return false;
+        }
+        self.exit.wake();
+        true
+    }
+}
+
+/// Wakes the coordinator on request and, as a producer's exit signal, on drop.
+struct ExitSignal {
+    wake: SyncSender<()>,
+}
+
+impl ExitSignal {
+    /// A full wake slot already holds a wake and a closed one means the coordinator has
+    /// stopped; neither needs another signal.
+    fn wake(&self) {
+        let _ = self.wake.try_send(());
+    }
+}
+
+impl Drop for ExitSignal {
+    fn drop(&mut self) {
+        self.wake();
+    }
 }
 
 fn spawn(name: &str, body: impl FnOnce() + Send + 'static) -> JoinHandle<()> {
@@ -104,7 +157,8 @@ fn spawn(name: &str, body: impl FnOnce() + Send + 'static) -> JoinHandle<()> {
 }
 
 /// The thread driver: it moves coordinator outputs to the writer and worker channels and
-/// feeds events back. It contains no protocol logic.
+/// feeds events back. It contains no protocol logic. The first terminal transition ends
+/// the loop; nothing queued behind it is applied.
 fn drive(
     coordinator: &mut Coordinator,
     ingress: &Receiver<ReaderEvent>,
@@ -118,52 +172,73 @@ fn drive(
         let mut progressed = drain(receipts, coordinator, |coordinator, Receipt| {
             coordinator.on_receipt();
         });
-        progressed |= drain(results, coordinator, Coordinator::on_worker_result);
-        progressed |= receive_ingress(coordinator, ingress);
-        // Move coordinator outputs downstream without blocking on a full channel.
-        if let Some(job) = coordinator.job_out.take()
-            && work_tx.try_send(job).is_err()
-        {
-            coordinator.worker_busy = false;
-            coordinator.pending_recompute = true;
+        if coordinator.running {
+            progressed |= drain(results, coordinator, Coordinator::on_worker_result);
         }
-        while let Some(bytes) = coordinator.outbound.outbox.front() {
-            match frame_tx.try_send(bytes.clone()) {
-                Ok(()) => {
-                    coordinator.outbound.outbox.pop_front();
-                }
-                Err(_) => break,
-            }
+        if coordinator.running {
+            progressed |= receive_ingress(coordinator, ingress);
         }
+        forward_outputs(coordinator, work_tx, frame_tx);
         if !coordinator.running {
             break;
         }
-        if !progressed {
-            let _ = wake.recv();
+        // Park until a producer has something new or is gone. A closed wake channel
+        // means every producer thread has exited.
+        if !progressed && wake.recv().is_err() {
+            coordinator.terminate(1);
         }
     }
     coordinator.exit_code
 }
 
-/// Drain one producer's channel into the coordinator. A disconnected channel means its
-/// thread is gone — it panicked, or its stream closed without a terminal event — which
-/// ends the server rather than leaving it idle forever.
+/// Drain one producer's channel into the coordinator, stopping at a terminal transition.
+/// A disconnected channel means its thread is gone — it panicked, or its stream closed
+/// without a terminal event — which ends the server rather than leaving it idle forever.
 fn drain<T>(
     events: &Receiver<T>,
     coordinator: &mut Coordinator,
     mut apply: impl FnMut(&mut Coordinator, T),
 ) -> bool {
     let mut progressed = false;
-    loop {
+    while coordinator.running {
         match events.try_recv() {
             Ok(event) => {
                 apply(coordinator, event);
                 progressed = true;
             }
-            Err(TryRecvError::Empty) => return progressed,
-            Err(TryRecvError::Disconnected) => {
+            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Disconnected) => coordinator.terminate(1),
+        }
+    }
+    progressed
+}
+
+/// Move coordinator outputs downstream without blocking on a full channel. A closed
+/// channel means its thread is gone, which is terminal.
+fn forward_outputs(
+    coordinator: &mut Coordinator,
+    work_tx: &SyncSender<WorkerJob>,
+    frame_tx: &SyncSender<Vec<u8>>,
+) {
+    if let Some(job) = coordinator.job_out.take() {
+        match work_tx.try_send(job) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                coordinator.worker_busy = false;
+                coordinator.pending_recompute = true;
+            }
+            Err(TrySendError::Disconnected(_)) => coordinator.terminate(1),
+        }
+    }
+    while let Some(bytes) = coordinator.outbound.outbox.front() {
+        match frame_tx.try_send(bytes.clone()) {
+            Ok(()) => {
+                coordinator.outbound.outbox.pop_front();
+            }
+            Err(TrySendError::Full(_)) => break,
+            Err(TrySendError::Disconnected(_)) => {
                 coordinator.terminate(1);
-                return true;
+                break;
             }
         }
     }
@@ -189,7 +264,7 @@ enum ReaderEvent {
     Terminal,
 }
 
-fn reader_loop(ingress: SyncSender<ReaderEvent>, wake: SyncSender<()>) {
+fn reader_loop(link: Link<ReaderEvent>) {
     let stdin = std::io::stdin();
     let mut reader = crate::transport::FrameReader::new(BufReader::new(stdin.lock()));
     loop {
@@ -201,23 +276,17 @@ fn reader_loop(ingress: SyncSender<ReaderEvent>, wake: SyncSender<()>) {
                 if let Err(crate::transport::FrameError::Fault(fault)) = outcome {
                     let _ = writeln!(std::io::stderr().lock(), "marrow-lsp: {fault:?}");
                 }
-                let _ = ingress.send(ReaderEvent::Terminal);
-                let _ = wake.try_send(());
+                link.send(ReaderEvent::Terminal);
                 return;
             }
         };
-        if ingress.send(event).is_err() {
+        if !link.send(event) {
             return;
         }
-        let _ = wake.try_send(());
     }
 }
 
-fn worker_loop(
-    work: &Receiver<WorkerJob>,
-    result: &SyncSender<AnalysisOutcome>,
-    wake: &SyncSender<()>,
-) {
+fn worker_loop(work: &Receiver<WorkerJob>, link: &Link<AnalysisOutcome>) {
     while let Ok(job) = work.recv() {
         let overlay: Vec<OverlayInput<'_>> = job
             .overlay
@@ -227,15 +296,13 @@ fn worker_loop(
                 bytes: text.as_bytes(),
             })
             .collect();
-        let outcome = run_analysis(&job.root, &overlay, job.revision);
-        if result.send(outcome).is_err() {
+        if !link.send(run_analysis(&job.root, &overlay, job.revision)) {
             return;
         }
-        let _ = wake.try_send(());
     }
 }
 
-fn writer_loop(frames: &Receiver<Vec<u8>>, receipts: &SyncSender<Receipt>, wake: &SyncSender<()>) {
+fn writer_loop(frames: &Receiver<Vec<u8>>, link: &Link<Receipt>) {
     let stdout = std::io::stdout();
     while let Ok(body) = frames.recv() {
         let mut handle = stdout.lock();
@@ -243,10 +310,9 @@ fn writer_loop(frames: &Receiver<Vec<u8>>, receipts: &SyncSender<Receipt>, wake:
             return;
         }
         drop(handle);
-        if receipts.send(Receipt).is_err() {
+        if !link.send(Receipt) {
             return;
         }
-        let _ = wake.try_send(());
     }
 }
 
@@ -763,10 +829,7 @@ impl Coordinator {
         match method {
             "initialized" if self.lifecycle.on_initialized() => self.enter_running(),
             "initialized" => {}
-            "exit" => {
-                self.exit_code = self.lifecycle.on_exit();
-                self.running = false;
-            }
+            "exit" => self.terminate(self.lifecycle.on_exit()),
             "textDocument/didOpen" => self.on_did_open(params),
             "textDocument/didChange" => self.on_did_change(params),
             "textDocument/didClose" => self.on_did_close(params),
@@ -971,7 +1034,11 @@ impl Coordinator {
                 return;
             }
         }
-        if self.pending_recompute
+        // A recompute queued behind the busy worker runs only over an all-available
+        // ledger: otherwise it would analyze an unavailable document's disk bytes and
+        // publish them under the newer version the ledger refused.
+        if std::mem::take(&mut self.pending_recompute)
+            && self.ledger.all_available()
             && let Some(root) = self.root.clone()
         {
             self.dispatch_recompute(&root);
@@ -1327,13 +1394,16 @@ impl Coordinator {
                 .push((id.clone(), TerminalClass::AbandonedByTerminal));
             self.requests.retire(&id);
         }
-        self.exit_code = self.lifecycle.on_terminal();
-        self.running = false;
+        self.terminate(self.lifecycle.on_terminal());
     }
 
+    /// The first terminal transition wins: a later exit, fault, or lost thread cannot
+    /// change the code the server exits with.
     fn terminate(&mut self, code: u8) {
-        self.exit_code = code;
-        self.running = false;
+        if self.running {
+            self.exit_code = code;
+            self.running = false;
+        }
     }
 }
 
@@ -1687,16 +1757,63 @@ mod tests {
 
     // ---- Law: a lost producer thread is terminal, never a hang ----
 
+    /// A worker that unwinds while the coordinator is parked still ends the server: its
+    /// link disconnects and then wakes the coordinator into observing the loss.
     #[test]
     fn a_lost_worker_is_terminal() {
-        let mut coordinator = Coordinator::new();
+        let (wake_tx, wake_rx) = sync_channel(1);
         let (_ingress_tx, ingress_rx) = sync_channel(1);
         let (result_tx, result_rx) = sync_channel(1);
+        let (_receipt_tx, receipt_rx) = sync_channel(1);
+        let (work_tx, _work_rx) = sync_channel(1);
+        let (frame_tx, _frame_rx) = sync_channel(1);
+        let worker = Link::new(result_tx, &wake_tx);
+        let server = std::thread::spawn(move || {
+            let mut coordinator = Coordinator::new();
+            drive(
+                &mut coordinator,
+                &ingress_rx,
+                &result_rx,
+                &receipt_rx,
+                &wake_rx,
+                &work_tx,
+                &frame_tx,
+            )
+        });
+        // Let the server park: the wake slot holds one, so the second send returns only
+        // once the loop has taken the first from inside its wait. The loss below then
+        // lands on a loop that has already parked, with nothing else to wake it.
+        wake_tx.send(()).unwrap();
+        wake_tx.send(()).unwrap();
+        drop(wake_tx);
+        drop(worker);
+        assert_eq!(
+            server.join().unwrap(),
+            1,
+            "a lost worker ends the server nonzero"
+        );
+    }
+
+    /// The first terminal transition wins: an `exit` queued behind a lost worker cannot
+    /// turn the nonzero code into a clean zero.
+    #[test]
+    fn the_first_terminal_transition_wins() {
+        let dir = temp_project("first-wins", "module main\n");
+        let mut coordinator = running(&dir);
+        coordinator.on_frame(br#"{"jsonrpc":"2.0","id":9,"method":"shutdown"}"#);
+        coordinator.on_receipt();
+        assert_eq!(coordinator.lifecycle.phase(), Phase::AwaitExit);
+        let (ingress_tx, ingress_rx) = sync_channel(1);
+        let (result_tx, result_rx) = sync_channel::<AnalysisOutcome>(1);
         let (_receipt_tx, receipt_rx) = sync_channel(1);
         let (_wake_tx, wake_rx) = sync_channel(1);
         let (work_tx, _work_rx) = sync_channel(1);
         let (frame_tx, _frame_rx) = sync_channel(1);
-        // The worker unwound: its result sender is gone while every other thread lives.
+        ingress_tx
+            .send(ReaderEvent::Frame(
+                br#"{"jsonrpc":"2.0","method":"exit"}"#.to_vec(),
+            ))
+            .unwrap();
         drop(result_tx);
         let exit = drive(
             &mut coordinator,
@@ -1707,8 +1824,48 @@ mod tests {
             &work_tx,
             &frame_tx,
         );
-        assert_eq!(exit, 1, "a lost worker ends the server nonzero");
-        assert!(!coordinator.running);
+        assert_eq!(
+            exit, 1,
+            "the queued exit does not overwrite the lost worker's code"
+        );
+    }
+
+    // ---- Law: a queued recompute never runs over an unavailable document ----
+
+    #[test]
+    fn a_queued_recompute_is_dropped_when_a_document_becomes_unavailable() {
+        let main = "module main\n\npub fn f(): int {\n    return 1\n}\n";
+        let dir = temp_project("pending-unavailable", main);
+        let mut coordinator = running(&dir);
+        coordinator.outbound.outbox.clear();
+        let initial = run_next_job(&mut coordinator);
+        coordinator.on_worker_result(initial);
+        deliver_frames(&mut coordinator);
+
+        // Version 1 dispatches an analysis the worker is still running.
+        coordinator.on_frame(open_body(&dir, 1, main).as_bytes());
+        let job = coordinator.job_out.take().expect("the open dispatches");
+        // Version 2 is valid while the worker is busy: a recompute is queued.
+        coordinator.on_frame(change_body(&dir, 2, main).as_bytes());
+        assert!(coordinator.pending_recompute);
+        // Version 3 is refused: the document is unavailable at the current revision.
+        let huge = "x".repeat((1 << 20) + 1);
+        coordinator.on_frame(change_body(&dir, 3, &huge).as_bytes());
+        assert!(!coordinator.ledger.all_available());
+
+        // The version-1 analysis completes. The queued recompute must not run: it would
+        // analyze the file's disk bytes and publish them as version 3.
+        coordinator.on_worker_result(run_job(&job));
+        assert!(
+            coordinator.job_out.is_none(),
+            "no recompute over an unavailable document"
+        );
+        assert!(!coordinator.pending_recompute);
+        assert!(!coordinator.worker_busy);
+
+        // A later valid change recovers the document and recomputes.
+        coordinator.on_frame(change_body(&dir, 4, main).as_bytes());
+        assert!(coordinator.job_out.is_some(), "recovery dispatches");
     }
 
     // ---- Law: shared live-entry budget and IngressOverload N/N+1 ----
@@ -2025,7 +2182,11 @@ mod tests {
     const TYPE_ERROR: &str = "module main\n\npub fn f(): int {\n    return true\n}\n";
 
     fn run_next_job(coordinator: &mut Coordinator) -> AnalysisOutcome {
-        let job = coordinator.job_out.take().expect("analysis job dispatched");
+        run_job(&coordinator.job_out.take().expect("analysis job dispatched"))
+    }
+
+    /// Run one dispatched job the way the worker does.
+    fn run_job(job: &WorkerJob) -> AnalysisOutcome {
         let overlay: Vec<_> = job
             .overlay
             .iter()
@@ -2035,6 +2196,21 @@ mod tests {
             })
             .collect();
         run_analysis(&job.root, &overlay, job.revision)
+    }
+
+    /// The decoded `result` of the delivered response to request `id`.
+    fn response<T: serde::de::DeserializeOwned>(delivered: &[String], id: i32) -> T {
+        #[derive(serde::Deserialize)]
+        struct Response<T> {
+            id: i32,
+            result: T,
+        }
+        delivered
+            .iter()
+            .filter_map(|frame| serde_json::from_str::<Response<T>>(frame).ok())
+            .find(|response| response.id == id)
+            .map(|response| response.result)
+            .expect("a result for the request was delivered")
     }
 
     fn deliver_frames(coordinator: &mut Coordinator) -> Vec<String> {
@@ -2675,6 +2851,98 @@ mod tests {
             assert!(coordinator.job_out.is_none());
         }
         cleanup(&dir);
+    }
+
+    // ---- Law: semantic queries parse, dispatch, and encode through the coordinator ----
+
+    /// The Graph Report conformance fixture: structs, an enum with members, monomorphic
+    /// helpers, and tests — the earning caller for completion, signature help, and
+    /// document symbols.
+    const GRAPH_REPORT: &str =
+        include_str!("../../../fixtures/v01/conformance/graph_report/src/graph_report.mw");
+
+    #[test]
+    fn completion_at_enum_path_offers_the_members() {
+        // The in-progress edit the feature serves: `Role::` typed, the member not yet.
+        // The incomplete path does not parse; the bounded parser recovery still
+        // classifies the enum-path position.
+        let editing = GRAPH_REPORT.replacen("return Role::isolated", "return Role::", 1);
+        let dir = temp_project("completion", &editing);
+        let mut coordinator = opened(&dir, &editing);
+        deliver_frames(&mut coordinator);
+        let position = LineMap::new(&editing).position_at(after(&editing, "return Role::"));
+        coordinator.on_frame(position_body(&dir, 30, "completion", position).as_bytes());
+        let delivered = deliver_frames(&mut coordinator);
+        let lsp_types::CompletionResponse::Array(items) = response(&delivered, 30) else {
+            panic!("an enum-path position completes to a complete candidate list");
+        };
+        let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+        for member in ["source", "sink", "internal", "isolated"] {
+            assert!(labels.contains(&member), "enum member {member} offered");
+        }
+    }
+
+    #[test]
+    fn signature_help_inside_a_call_marks_the_active_parameter() {
+        let dir = temp_project("sighelp", GRAPH_REPORT);
+        let mut coordinator = opened(&dir, GRAPH_REPORT);
+        deliver_frames(&mut coordinator);
+        // Inside `classifyRole(o, i)` at the second argument slot.
+        let position =
+            LineMap::new(GRAPH_REPORT).position_at(after(GRAPH_REPORT, "classifyRole(o, "));
+        coordinator.on_frame(position_body(&dir, 31, "signatureHelp", position).as_bytes());
+        let delivered = deliver_frames(&mut coordinator);
+        let help: lsp_types::SignatureHelp = response(&delivered, 31);
+        assert_eq!(help.signatures.len(), 1, "one active signature");
+        assert!(
+            help.signatures[0].label.contains("classifyRole"),
+            "the callee signature is `classifyRole`"
+        );
+        assert_eq!(
+            help.active_parameter,
+            Some(1),
+            "the cursor sits at the second parameter"
+        );
+    }
+
+    #[test]
+    fn document_symbols_outline_declarations_with_nested_members() {
+        let dir = temp_project("symbols", GRAPH_REPORT);
+        let mut coordinator = opened(&dir, GRAPH_REPORT);
+        deliver_frames(&mut coordinator);
+        coordinator.on_frame(
+            format!(
+                r#"{{"jsonrpc":"2.0","id":32,"method":"textDocument/documentSymbol","params":{{"textDocument":{{"uri":"{}/src/main.mw"}}}}}}"#,
+                root_uri(&dir)
+            )
+            .as_bytes(),
+        );
+        let delivered = deliver_frames(&mut coordinator);
+        let lsp_types::DocumentSymbolResponse::Nested(symbols) = response(&delivered, 32) else {
+            panic!("a parsed file has a nested declaration outline");
+        };
+        let names: Vec<&str> = symbols.iter().map(|symbol| symbol.name.as_str()).collect();
+        for name in ["Edge", "Role", "classifyRole", "topoOrder", "report"] {
+            assert!(
+                names.contains(&name),
+                "top-level declaration {name} present"
+            );
+        }
+        // The enum carries its members as nested children.
+        let role = symbols
+            .iter()
+            .find(|symbol| symbol.name == "Role")
+            .expect("Role symbol");
+        let members: Vec<&str> = role
+            .children
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|child| child.name.as_str())
+            .collect();
+        for member in ["source", "sink", "internal", "isolated"] {
+            assert!(members.contains(&member), "enum member {member} nested");
+        }
     }
 
     // ---- Law: dependency files are read-only and addressed at their own location ----
