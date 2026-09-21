@@ -14,10 +14,8 @@
 //! (end-of-stream) rather than replying — the boundary the client maps to `OutcomeUnknown`.
 //! The client-side half is covered by the `client` unit tests.
 
-#[path = "common/program.rs"]
-mod program;
-#[path = "common/scratch.rs"]
-mod scratch;
+use marrow_test_support::Scratch;
+use marrow_test_support::program;
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -81,7 +79,10 @@ impl Drop for KillOnDrop {
 }
 
 fn launch_attached(image_bytes: &[u8], store: &Path) -> (KillOnDrop, UnixStream, PathBuf) {
-    let image_path = scratch::path("native-kill-img").with_extension("mwi");
+    let image_path = store
+        .parent()
+        .expect("the store sits under its scratch directory")
+        .join("image.mwi");
     std::fs::write(&image_path, image_bytes).expect("stage image");
 
     let nonce = marrow_runner::mint_id().expect("nonce");
@@ -207,17 +208,17 @@ fn add_request(image: &VerifiedImage, id: i64, name: &str) -> ClientMessage {
 #[ignore = "spawns a runner that binds a Unix socket; run with the sandbox disabled"]
 fn native_death_before_request_leaves_the_exact_old_state() {
     let program::Program { image, bytes } = program::workshop();
-    let store = scratch::path("native-kill-before-send").join("store");
-    std::fs::create_dir_all(store.parent().expect("parent")).expect("scratch dir");
-    provision(&store, &image);
+    let scratch = Scratch::new("native-kill-before-send");
+    let store = scratch.store();
+    provision(store, &image);
 
-    let (mut guard, mut stream, image_path) = launch_attached(&bytes, &store);
+    let (mut guard, mut stream, image_path) = launch_attached(&bytes, store);
     guard.0.kill().expect("kill runner before request");
     let _ = guard.0.wait();
     std::thread::sleep(Duration::from_millis(50));
     assert_eq!(recv(&mut stream), None, "no call reply can exist");
     assert_eq!(
-        snapshot(&image, &bytes, &store, 1),
+        snapshot(&image, &bytes, store, 1),
         old_snapshot(),
         "a death before request dispatch leaves the exact provisioned state",
     );
@@ -233,11 +234,11 @@ fn native_death_before_request_leaves_the_exact_old_state() {
 #[ignore = "spawns a runner that binds a Unix socket; run with the sandbox disabled"]
 fn native_death_after_reply_preserves_the_exact_committed_state() {
     let program::Program { image, bytes } = program::workshop();
-    let store = scratch::path("native-kill-after-reply").join("store");
-    std::fs::create_dir_all(store.parent().expect("parent")).expect("scratch dir");
-    provision(&store, &image);
+    let scratch = Scratch::new("native-kill-after-reply");
+    let store = scratch.store();
+    provision(store, &image);
 
-    let (mut guard, mut stream, image_path) = launch_attached(&bytes, &store);
+    let (mut guard, mut stream, image_path) = launch_attached(&bytes, store);
     stream
         .write_all(
             &add_request(&image, 2, "Impact Driver")
@@ -255,7 +256,7 @@ fn native_death_after_reply_preserves_the_exact_committed_state() {
     guard.0.kill().expect("kill runner after reply");
     let _ = guard.0.wait();
     assert_eq!(
-        snapshot(&image, &bytes, &store, 2),
+        snapshot(&image, &bytes, store, 2),
         new_snapshot("Impact Driver"),
         "a received reply pins the exact confirmed cross-root state",
     );
@@ -273,11 +274,11 @@ fn native_death_after_reply_preserves_the_exact_committed_state() {
 #[ignore = "spawns a runner that binds a Unix socket; run with the sandbox disabled"]
 fn native_death_after_dispatch_sends_no_reply_and_leaves_one_atomic_state() {
     let program::Program { image, bytes } = program::workshop();
-    let store = scratch::path("native-kill").join("store");
-    std::fs::create_dir_all(store.parent().expect("parent")).expect("scratch dir");
-    provision(&store, &image);
+    let scratch = Scratch::new("native-kill");
+    let store = scratch.store();
+    provision(store, &image);
 
-    let (mut guard, mut stream, image_path) = launch_attached(&bytes, &store);
+    let (mut guard, mut stream, image_path) = launch_attached(&bytes, store);
 
     // Dispatch a mutating call (`add`).
     stream
@@ -301,7 +302,7 @@ fn native_death_after_dispatch_sends_no_reply_and_leaves_one_atomic_state() {
         lost.is_none(),
         "a killed runner sends no reply, not a value: {lost:?}"
     );
-    let observed = snapshot(&image, &bytes, &store, 1);
+    let observed = snapshot(&image, &bytes, store, 1);
     assert!(
         observed == old_snapshot() || observed == new_snapshot("Cordless Drill"),
         "crash recovery must expose one atomic state across the asset, nested log, and tally; \

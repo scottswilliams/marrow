@@ -12,7 +12,7 @@ use super::{Durable, DurableStore};
 use crate::codec::key::KeyScalar;
 use crate::codec::value::{RuntimeScalar, ScalarKind};
 use crate::equality::ValueDomain;
-use crate::test_common::Scratch;
+use marrow_test_support::Scratch;
 
 mod bounded_acquisition;
 mod branch_fields;
@@ -26,8 +26,8 @@ mod navigation_work;
 mod nested_branches;
 
 fn native_fixture(temp: &Scratch) -> NativeEngineOwner {
-    NativeEngineOwner::provision(&temp.store()).expect("provision native fixture");
-    NativeEngineOwner::acquire_existing(&temp.store())
+    NativeEngineOwner::provision(temp.path()).expect("provision native fixture");
+    NativeEngineOwner::acquire_existing(temp.path())
         .expect("hold native fixture")
         .bind_and_open_existing(
             crate::durable::NativeOpenAccess::ReadWrite,
@@ -532,8 +532,8 @@ fn label_cell(name: &str, label: &str) -> (Vec<u8>, Vec<u8>) {
 /// returned guard.
 fn native_indexed() -> (DurableStore<NativeEngineOwner>, Scratch) {
     let temp = Scratch::new("index-maint");
-    NativeEngineOwner::provision(&temp.store()).expect("provision native");
-    let engine = NativeEngineOwner::acquire_existing(&temp.store())
+    NativeEngineOwner::provision(temp.path()).expect("provision native");
+    let engine = NativeEngineOwner::acquire_existing(temp.path())
         .expect("acquire the owner lock")
         .bind_and_open_existing(
             crate::durable::NativeOpenAccess::ReadWrite,

@@ -17,7 +17,7 @@ use crate::failure::{
 };
 use crate::limits::AdapterLimits;
 use crate::overlay::{OverlayEntry, OverlaySnapshot};
-use crate::scratch::TempDir;
+use marrow_test_support::Scratch;
 
 fn base_limits() -> AdapterLimits {
     let default = &AdapterLimits::DEFAULT;
@@ -47,9 +47,9 @@ fn app_manifest(path: &str) -> Vec<u8> {
 
 /// Two sibling trees: an application declaring one local-path dependency, and the
 /// library it names.
-fn two_trees(tag: &str) -> TempDir {
-    let temp = TempDir::new(tag);
-    temp.write("app/marrow.toml", &app_manifest("../graphtext"));
+fn two_trees(tag: &str) -> Scratch {
+    let temp = Scratch::new(tag);
+    temp.write("app/marrow.toml", app_manifest("../graphtext"));
     temp.write("app/src/main.mw", b"pub fn main()\n");
     temp.write("graphtext/marrow.toml", b"edition = \"2026\"\n");
     temp.write("graphtext/src/text.mw", b"module text\n");
@@ -144,7 +144,7 @@ fn a_declared_dependency_joins_the_capture_under_its_alias() {
 
 #[test]
 fn an_undeclared_sibling_tree_is_not_captured() {
-    let temp = TempDir::new("no-dependencies");
+    let temp = Scratch::new("no-dependencies");
     temp.write("app/marrow.toml", b"edition = \"2026\"\n");
     temp.write("app/src/main.mw", b"pub fn main()\n");
     temp.write("graphtext/marrow.toml", b"edition = \"2026\"\n");
@@ -177,12 +177,12 @@ fn a_dependency_path_that_names_no_usable_project_refuses() {
         ("an invalid manifest", DependencyRefusal::InvalidManifest),
     ];
     for (label, reason) in cases {
-        let temp = TempDir::new("unusable");
+        let temp = Scratch::new("unusable");
         let declared = match label {
             "itself" => "../app",
             _ => "../graphtext",
         };
-        temp.write("app/marrow.toml", &app_manifest(declared));
+        temp.write("app/marrow.toml", app_manifest(declared));
         temp.write("app/src/main.mw", b"pub fn main()\n");
         match label {
             "no manifest" => temp.write("graphtext/src/text.mw", b"module text\n"),
@@ -233,7 +233,7 @@ fn a_dependency_reached_through_a_symlink_refuses() {
     let temp = two_trees("symlinked");
     std::os::unix::fs::symlink(temp.path().join("graphtext"), temp.path().join("link"))
         .expect("create symlink");
-    temp.write("app/marrow.toml", &app_manifest("../link"));
+    temp.write("app/marrow.toml", app_manifest("../link"));
 
     let root = temp.path().join("app");
     let failure = refusal(&root);
@@ -247,10 +247,7 @@ fn a_dependency_reached_through_a_symlink_refuses() {
 #[test]
 fn a_dependency_path_that_escapes_to_nothing_refuses() {
     let temp = two_trees("escaping");
-    temp.write(
-        "app/marrow.toml",
-        &app_manifest("../../marrow-dep01-absent"),
-    );
+    temp.write("app/marrow.toml", app_manifest("../../marrow-dep01-absent"));
     let root = temp.path().join("app");
     let failure = refusal(&root);
     assert_eq!(code(&root, &failure), Code::ProjectDependencyPath);
@@ -264,10 +261,7 @@ fn a_dependency_path_that_escapes_to_nothing_refuses() {
 fn an_absolute_dependency_path_refuses_in_the_manifest() {
     let temp = two_trees("absolute");
     let absolute = temp.path().join("graphtext");
-    temp.write(
-        "app/marrow.toml",
-        &app_manifest(&absolute.to_string_lossy()),
-    );
+    temp.write("app/marrow.toml", app_manifest(&absolute.to_string_lossy()));
     let root = temp.path().join("app");
     // The pure manifest owner refuses a location spelling before any filesystem
     // operation, so no admission is attempted.

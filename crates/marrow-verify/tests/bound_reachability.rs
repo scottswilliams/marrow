@@ -20,7 +20,7 @@ use marrow_image::{
     DeclarationMemberDef, DeclarationMemberShape, FieldDef, ImageBuildError, ImageDraft, ImageType,
     LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget,
 };
-use marrow_test_support::{admitted, admitted_plan, site};
+use marrow_test_support::{admitted_plan, site};
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 const PRODUCT_ID: [u8; 16] = [0x0d; 16];
@@ -49,7 +49,7 @@ fn member_id(n: usize) -> LedgerIdBytes {
 /// and `roots` keyless roots over it, each with its eager whole-payload site.
 fn roots_corpus(roots: usize) -> ImageDraft {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let resource = draft.intern_string("R").expect("a within-domain mint");
     let field = draft.intern_string("v").expect("a within-domain mint");
     let record = draft
@@ -222,7 +222,7 @@ const WIDE_FIELDS: usize = 64;
 /// leaf. Its site count is `roots * (WIDE_FIELDS + 1)`.
 fn wide_corpus(roots: usize) -> Result<Vec<u8>, ImageBuildError> {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let resource = draft.intern_string("R").expect("a within-domain mint");
     let field_names: Vec<_> = (0..WIDE_FIELDS)
         .map(|n| {

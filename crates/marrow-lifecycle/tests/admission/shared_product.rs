@@ -70,16 +70,16 @@ const DISTINCT_IDS: &str = "marrow ids v0\n\
      high-water 0\n\
      end\n";
 
-use crate::support::Scratch;
+use marrow_test_support::Scratch;
 
-use crate::support::compile::compile;
 use crate::support::store::try_provision_approved as provision;
+use marrow_test_support::program::compile;
 
 #[test]
 fn two_roots_over_one_product_are_refused_by_the_head_identity_map() {
     let image = compile(SHARED, SHARED_IDS);
     let scratch = Scratch::new("shared");
-    let refused = provision(&scratch.store(), &image)
+    let refused = provision(scratch.store(), &image)
         .expect_err("a shared-Product image must not provision natively");
     assert!(
         matches!(refused, ProvisionImageError::Head(_)),
@@ -98,5 +98,5 @@ fn two_roots_over_distinct_products_still_provision() {
     // refusal above is caused by the sharing, not by having two roots.
     let image = compile(DISTINCT, DISTINCT_IDS);
     let scratch = Scratch::new("distinct");
-    provision(&scratch.store(), &image).expect("two roots over distinct Products provision");
+    provision(scratch.store(), &image).expect("two roots over distinct Products provision");
 }

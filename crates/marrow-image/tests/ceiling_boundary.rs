@@ -20,12 +20,12 @@ use marrow_image::{
     ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef,
     Scalar, SpanEntry,
 };
-use marrow_test_support::{admitted, admitted_plan};
+use marrow_test_support::admitted_plan;
 
 /// A minimal clean storeless draft: one exported `main`, one constant.
 fn storeless_base() -> ImageDraft {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let src = draft
         .intern_string("src/main.mw")
         .expect("a within-domain mint");
@@ -72,7 +72,7 @@ fn string_corpus(target: usize) -> ImageDraft {
         full_rows -= 1;
         delta += 2 + FULL;
     }
-    let mut draft = admitted(&mut owner);
+    let mut draft = owner.begin_transaction();
     for index in 0..full_rows {
         draft
             .intern_string(&format!("{index:04}{}", "x".repeat(FULL - 4)))
@@ -120,7 +120,7 @@ fn the_string_selector_is_refused_one_byte_past_the_ceiling() {
 fn the_full_function_partition_is_refused_by_measurement() {
     let started = Instant::now();
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let generic_src = draft
         .intern_string("src/generic.mw")
         .expect("a within-domain mint");
@@ -188,7 +188,7 @@ fn the_full_function_partition_is_refused_by_measurement() {
 #[test]
 fn the_span_heavy_draft_is_refused_by_measurement() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let src = draft
         .intern_string("src/main.mw")
         .expect("a within-domain mint");
@@ -226,7 +226,7 @@ fn the_span_heavy_draft_is_refused_by_measurement() {
 /// instruction.
 fn span_count_draft(count: usize) -> ImageDraft {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let src = draft
         .intern_string("src/main.mw")
         .expect("a within-domain mint");
@@ -280,7 +280,7 @@ fn u16_boundary_span_counts_select_the_ceiling_before_any_wire_proof() {
 fn the_compact_expansion_regression_is_refused_decisively() {
     let started = Instant::now();
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     draft.set_application_identity(LedgerIdBytes::from_bytes([0x01; 16]));
     let value = {
         let mut level = draft
@@ -362,7 +362,7 @@ fn the_compact_expansion_regression_is_refused_decisively() {
 /// all scale together, and the whole image stays inside the ceiling at 4x.
 fn linear_draft(scale: usize) -> ImageDraft {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let src = draft
         .intern_string("src/main.mw")
         .expect("a within-domain mint");

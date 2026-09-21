@@ -172,9 +172,9 @@ high-water 0\n\
 end\n";
     let image = compile(source, ids);
     let scratch = Scratch::new("key-only-indexes");
-    provision_from(scratch.dir(), &image);
+    provision_from(scratch.store(), &image);
     let report = import_jsonl(
-        scratch.dir(),
+        scratch.store(),
         prepare(image.clone()),
         ImportTarget {
             root: 0,
@@ -188,7 +188,7 @@ end\n";
     assert_eq!(report.rows_imported, 2);
     assert_eq!(report.batches_committed, 1);
     {
-        let mut attachment = attach_active(scratch.dir(), &image);
+        let mut attachment = attach_active(scratch.store(), &image);
         let (_, opened) = attachment.bridge();
         let mut read = opened
             .read_session(
@@ -239,7 +239,7 @@ end\n";
         );
     }
     let audit =
-        marrow_lifecycle::audit(scratch.dir(), prepare(image)).expect("fresh logical audit");
+        marrow_lifecycle::audit(scratch.store(), prepare(image)).expect("fresh logical audit");
     assert!(audit.is_clean(), "{audit:?}");
     assert_eq!(audit.summary.entries, 2);
     assert_eq!(audit.summary.index_cells, 4);
@@ -269,12 +269,12 @@ fn whole_entry_site(image: &VerifiedImage) -> u16 {
         .expect("the fixture reads a whole entry")
 }
 
-use crate::support::Scratch;
 use crate::support::store::{provision_from, provision_with_head};
+use marrow_test_support::Scratch;
 
 use marrow_codes::Code;
 
-use crate::support::compile::compile;
+use marrow_test_support::program::compile;
 
 /// Provision a fresh store at `dir` bound to `image`.
 fn counter_target() -> ImportTarget {
@@ -311,7 +311,7 @@ fn read_entry(dir: &Path, image: &VerifiedImage, id: i64) -> Option<EntryValue> 
 fn a_realistic_corpus_populates_the_store_through_the_kernel() {
     let scratch = Scratch::new("bulk");
     let image = compile(SOURCE, IDS);
-    provision_from(scratch.dir(), &image);
+    provision_from(scratch.store(), &image);
 
     // A realistic export: even ids carry a text label (with commas, quotes, and an escaped
     // newline — the text a positional CSV could not carry); odd ids leave the sparse label
@@ -340,7 +340,7 @@ fn a_realistic_corpus_populates_the_store_through_the_kernel() {
         ..ImportLimits::DEFAULT
     };
     let report = import_jsonl(
-        scratch.dir(),
+        scratch.store(),
         prepare(image.clone()),
         counter_target(),
         Cursor::new(jsonl.into_bytes()),
@@ -357,7 +357,7 @@ fn a_realistic_corpus_populates_the_store_through_the_kernel() {
     );
 
     // Kernel-mediated read-back: an even id has a present label, an odd id an absent one.
-    let even = read_entry(scratch.dir(), &image, 4).expect("entry 4 present");
+    let even = read_entry(scratch.store(), &image, 4).expect("entry 4 present");
     assert_eq!(
         even.fields[0],
         Some(ValueDomain::Scalar(RuntimeScalar::Int(40))),
@@ -370,7 +370,7 @@ fn a_realistic_corpus_populates_the_store_through_the_kernel() {
         ))),
         "the escaped label decoded through the kernel",
     );
-    let odd = read_entry(scratch.dir(), &image, 5).expect("entry 5 present");
+    let odd = read_entry(scratch.store(), &image, 5).expect("entry 5 present");
     assert_eq!(
         odd.fields[0],
         Some(ValueDomain::Scalar(RuntimeScalar::Int(50)))
@@ -379,7 +379,7 @@ fn a_realistic_corpus_populates_the_store_through_the_kernel() {
 
     // A never-imported id is absent — the importer created exactly the corpus.
     let site = whole_entry_site(&image);
-    let mut attachment = attach_active(scratch.dir(), &image);
+    let mut attachment = attach_active(scratch.store(), &image);
     let (_, opened) = attachment.bridge();
     let mut read = opened
         .read_session(
@@ -404,11 +404,11 @@ fn a_realistic_corpus_populates_the_store_through_the_kernel() {
 fn a_read_only_grant_denies_the_import() {
     let scratch = Scratch::new("denied");
     let image = compile(SOURCE, IDS);
-    provision_from(scratch.dir(), &image);
+    provision_from(scratch.store(), &image);
 
     let jsonl = "{\"id\": 1, \"value\": 10}\n";
     let denied = import_jsonl(
-        scratch.dir(),
+        scratch.store(),
         prepare(image.clone()),
         counter_target(),
         Cursor::new(jsonl.as_bytes().to_vec()),
@@ -425,7 +425,7 @@ fn a_read_only_grant_denies_the_import() {
 
     // No write occurred: the store has no entry 1.
     assert!(
-        read_entry(scratch.dir(), &image, 1).is_none(),
+        read_entry(scratch.store(), &image, 1).is_none(),
         "a denied import writes nothing",
     );
 }
@@ -436,7 +436,7 @@ fn a_read_only_grant_denies_the_import() {
 fn a_row_fault_names_its_line_and_keeps_the_committed_prefix() {
     let scratch = Scratch::new("rowfault");
     let image = compile(SOURCE, IDS);
-    provision_from(scratch.dir(), &image);
+    provision_from(scratch.store(), &image);
 
     // Lines 1-2 are good, line 3 is missing the required `value`. batch_rows=1 so lines 1-2 are
     // committed before line 3 faults.
@@ -448,7 +448,7 @@ fn a_row_fault_names_its_line_and_keeps_the_committed_prefix() {
         ..ImportLimits::DEFAULT
     };
     match import_jsonl(
-        scratch.dir(),
+        scratch.store(),
         prepare(image.clone()),
         counter_target(),
         Cursor::new(jsonl.as_bytes().to_vec()),
@@ -467,9 +467,9 @@ fn a_row_fault_names_its_line_and_keeps_the_committed_prefix() {
         other => panic!("expected a row fault, got {other:?}"),
     }
     // The committed prefix is durable.
-    assert!(read_entry(scratch.dir(), &image, 1).is_some());
-    assert!(read_entry(scratch.dir(), &image, 2).is_some());
-    assert!(read_entry(scratch.dir(), &image, 3).is_none());
+    assert!(read_entry(scratch.store(), &image, 1).is_some());
+    assert!(read_entry(scratch.store(), &image, 2).is_some());
+    assert!(read_entry(scratch.store(), &image, 3).is_none());
 }
 
 /// A duplicate key in one import is a typed row fault (create yields already-present); the
@@ -478,11 +478,11 @@ fn a_row_fault_names_its_line_and_keeps_the_committed_prefix() {
 fn a_duplicate_key_is_a_row_fault() {
     let scratch = Scratch::new("dupe");
     let image = compile(SOURCE, IDS);
-    provision_from(scratch.dir(), &image);
+    provision_from(scratch.store(), &image);
 
     let jsonl = "{\"id\": 7, \"value\": 1}\n{\"id\": 7, \"value\": 2}\n";
     match import_jsonl(
-        scratch.dir(),
+        scratch.store(),
         prepare(image.clone()),
         counter_target(),
         Cursor::new(jsonl.as_bytes().to_vec()),
@@ -504,7 +504,7 @@ fn a_duplicate_key_is_a_row_fault() {
 fn a_unique_index_collision_is_a_located_row_fault() {
     let scratch = Scratch::new("uidx");
     let image = compile(INDEXED_SOURCE, INDEXED_IDS);
-    provision_from(scratch.dir(), &image);
+    provision_from(scratch.store(), &image);
 
     let jsonl = "{\"id\": 1, \"email\": \"a@x\", \"name\": \"A\"}\n\
                  {\"id\": 2, \"email\": \"a@x\", \"name\": \"B\"}\n";
@@ -513,7 +513,7 @@ fn a_unique_index_collision_is_a_located_row_fault() {
         ..ImportLimits::DEFAULT
     };
     match import_jsonl(
-        scratch.dir(),
+        scratch.store(),
         prepare(image.clone()),
         ImportTarget {
             root: 0,
@@ -541,11 +541,11 @@ fn a_unique_index_collision_is_a_located_row_fault() {
 fn a_nested_root_shape_is_refused() {
     let scratch = Scratch::new("nested");
     let image = compile(NESTED_SOURCE, NESTED_IDS);
-    provision_from(scratch.dir(), &image);
+    provision_from(scratch.store(), &image);
 
     let jsonl = "{\"id\": 1, \"title\": \"x\"}\n";
     match import_jsonl(
-        scratch.dir(),
+        scratch.store(),
         prepare(image.clone()),
         ImportTarget {
             root: 0,
@@ -568,7 +568,7 @@ fn a_nested_root_shape_is_refused() {
 fn a_large_corpus_commits_in_bounded_batches() {
     let scratch = Scratch::new("large");
     let image = compile(SOURCE, IDS);
-    provision_from(scratch.dir(), &image);
+    provision_from(scratch.store(), &image);
 
     let rows = 40_000u64;
     let batch_rows = 500usize;
@@ -579,7 +579,7 @@ fn a_large_corpus_commits_in_bounded_batches() {
 
     let start = std::time::Instant::now();
     let report = import_jsonl(
-        scratch.dir(),
+        scratch.store(),
         prepare(image.clone()),
         counter_target(),
         std::io::BufReader::new(source),
@@ -606,7 +606,7 @@ fn a_large_corpus_commits_in_bounded_batches() {
     );
 
     // Spot-check the tail landed through the kernel.
-    let tail = read_entry(scratch.dir(), &image, rows as i64).expect("tail present");
+    let tail = read_entry(scratch.store(), &image, rows as i64).expect("tail present");
     assert_eq!(
         tail.fields[0],
         Some(ValueDomain::Scalar(RuntimeScalar::Int(rows as i64 * 10))),
@@ -617,10 +617,10 @@ fn a_large_corpus_commits_in_bounded_batches() {
 fn import_retains_existing_values_with_an_inserted_sparse_field() {
     let scratch = Scratch::new("accepted-numbering");
     let old = compile(SOURCE, IDS);
-    provision_from(scratch.dir(), &old);
+    provision_from(scratch.store(), &old);
     let import = |image: &VerifiedImage, input: &[u8]| {
         import_jsonl(
-            scratch.dir(),
+            scratch.store(),
             prepare(image.clone()),
             counter_target(),
             Cursor::new(input),
@@ -631,7 +631,7 @@ fn import_retains_existing_values_with_an_inserted_sparse_field() {
     };
     assert_eq!(import(&old, b"{\"id\":7,\"value\":42}\n").rows_imported, 1);
     assert_eq!(
-        read_entry(scratch.dir(), &old, 7)
+        read_entry(scratch.store(), &old, 7)
             .expect("old entry")
             .fields[0],
         Some(ValueDomain::Scalar(RuntimeScalar::Int(42)))
@@ -647,7 +647,7 @@ fn import_retains_existing_values_with_an_inserted_sparse_field() {
         .iter()
         .map(|entry| entry.ledger_id)
         .collect();
-    ids.push(marrow_image::LedgerIdBytes::from_bytes([0x2e; 16]));
+    ids.push(marrow_test_support::id(0x2e));
     let accepted = HeadMap::assign(&ids).expect("preserved old addresses");
     for entry in old_map.entries() {
         assert_eq!(accepted.number_of(&entry.ledger_id), Some(entry.number));
@@ -660,14 +660,15 @@ fn import_retains_existing_values_with_an_inserted_sparse_field() {
         accepted,
     )
     .encode();
-    std::fs::write(scratch.dir().join(marrow_lifecycle::HEAD_FILE), &head).expect("accepted Head");
+    std::fs::write(scratch.store().join(marrow_lifecycle::HEAD_FILE), &head)
+        .expect("accepted Head");
     assert_eq!(
         import(&inserted, b"{\"id\":8,\"value\":84,\"extra\":77}\n").rows_imported,
         1
     );
     for (id, extra, value) in [(7, None, 42), (8, Some(77), 84)] {
         assert_eq!(
-            read_entry(scratch.dir(), &inserted, id)
+            read_entry(scratch.store(), &inserted, id)
                 .expect("entry")
                 .fields,
             vec![
@@ -678,11 +679,11 @@ fn import_retains_existing_values_with_an_inserted_sparse_field() {
         );
     }
     assert_eq!(
-        std::fs::read(scratch.dir().join(marrow_lifecycle::HEAD_FILE)).expect("Head"),
+        std::fs::read(scratch.store().join(marrow_lifecycle::HEAD_FILE)).expect("Head"),
         head
     );
     assert!(
-        marrow_lifecycle::audit(scratch.dir(), prepare(inserted))
+        marrow_lifecycle::audit(scratch.store(), prepare(inserted))
             .expect("audit")
             .is_clean()
     );
@@ -749,7 +750,7 @@ fn import_refuses_every_non_active_image_before_the_engine_opens() {
     let foreign = {
         let mut ids: Vec<marrow_image::LedgerIdBytes> =
             map.entries().iter().map(|entry| entry.ledger_id).collect();
-        ids[0] = marrow_image::LedgerIdBytes::from_bytes([0xff; 16]);
+        ids[0] = marrow_test_support::id(0xff);
         HeadMap::assign(&ids).expect("a foreign identity still forms a bijection")
     };
 
@@ -813,16 +814,16 @@ fn import_refuses_every_non_active_image_before_the_engine_opens() {
 
     for (case, head, presented, refused) in cases {
         let scratch = Scratch::new("admission");
-        provision_with_head(scratch.dir(), head);
-        let engine_path = scratch.dir().join(marrow_lifecycle::ENGINE_FILE);
+        provision_with_head(scratch.store(), head);
+        let engine_path = scratch.store().join(marrow_lifecycle::ENGINE_FILE);
         std::fs::write(&engine_path, b"not an engine").expect("corrupt the engine file");
         let head_before =
-            std::fs::read(scratch.dir().join(marrow_lifecycle::HEAD_FILE)).expect("read head");
-        let envelope_before = std::fs::read(scratch.dir().join(marrow_lifecycle::ENVELOPE_FILE))
+            std::fs::read(scratch.store().join(marrow_lifecycle::HEAD_FILE)).expect("read head");
+        let envelope_before = std::fs::read(scratch.store().join(marrow_lifecycle::ENVELOPE_FILE))
             .expect("read envelope");
 
         let outcome = import_jsonl(
-            scratch.dir(),
+            scratch.store(),
             prepare(presented),
             counter_target(),
             Cursor::new(b"{\"id\": 1, \"value\": 10}\n".to_vec()),
@@ -845,12 +846,12 @@ fn import_refuses_every_non_active_image_before_the_engine_opens() {
             "{case}: the refusal reached the engine",
         );
         assert_eq!(
-            std::fs::read(scratch.dir().join(marrow_lifecycle::HEAD_FILE)).expect("read head"),
+            std::fs::read(scratch.store().join(marrow_lifecycle::HEAD_FILE)).expect("read head"),
             head_before,
             "{case}: the refusal rewrote the head",
         );
         assert_eq!(
-            std::fs::read(scratch.dir().join(marrow_lifecycle::ENVELOPE_FILE))
+            std::fs::read(scratch.store().join(marrow_lifecycle::ENVELOPE_FILE))
                 .expect("read envelope"),
             envelope_before,
             "{case}: the refusal rewrote the envelope",
@@ -971,7 +972,7 @@ fn unsupported_generations_refuses_import_before_engine_open() {
     ] {
         for broken_engine in [true, false] {
             let scratch = Scratch::new("old-generation");
-            let dir = scratch.dir();
+            let dir = scratch.store();
             provision_from(dir, &image);
             let head_path = dir.join(marrow_lifecycle::HEAD_FILE);
             let current_head = std::fs::read(&head_path).expect("current head");

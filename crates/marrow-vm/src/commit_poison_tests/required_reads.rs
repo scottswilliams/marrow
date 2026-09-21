@@ -396,14 +396,7 @@ fn required_field_faults_abort_earlier_writes_on_memory() {
 
 #[test]
 fn required_field_faults_abort_earlier_writes_on_native() {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
-    let root = std::env::temp_dir().join(format!(
-        "marrow-required-reads-{}-{nonce}",
-        std::process::id()
-    ));
-    std::fs::create_dir(&root).expect("create a new scratch root without reusing prior data");
+    let root = marrow_test_support::Scratch::new("required-reads");
     for target in [Target::Root, Target::Branch] {
         for damage in [Damage::Healthy, Damage::Missing, Damage::Malformed] {
             let path = root.join(format!("{target:?}-{damage:?}"));

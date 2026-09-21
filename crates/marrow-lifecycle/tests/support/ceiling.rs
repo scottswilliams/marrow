@@ -6,12 +6,8 @@
 //! contract refusal: a case that varied the ledger too would not know which of the two
 //! it had provoked.
 
-#![allow(dead_code, unused_imports)]
-
-use marrow_verify::VerifiedImage;
-
-use super::compile;
 pub use super::store::{attach_image, provision_approved as provision};
+use marrow_verify::VerifiedImage;
 
 /// The identity ledger shared by every variant: the application, the `Counter` product, its
 /// two fields, the `counters` root, and its key column.
@@ -56,5 +52,5 @@ pub fn source_broadened() -> String {
 
 /// A verified image of `source` under [`IDS`].
 pub fn image(source: &str) -> VerifiedImage {
-    compile::compile(source, IDS)
+    marrow_test_support::program::compile(source, IDS)
 }

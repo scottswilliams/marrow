@@ -21,7 +21,7 @@ use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::RuntimeScalar;
 use marrow_kernel::durable::{CommitResult, DemandCoverage, Durable, EntryValue, InvocationGrant};
 use marrow_kernel::equality::ValueDomain;
-use marrow_test_support::{admitted, admitted_plan, site};
+use marrow_test_support::{admitted_plan, site};
 use marrow_verify::{VerifiedImage, verify};
 use marrow_vm::{
     DurableRun, MemoryAttachment, MintOutcome, Value, mint_ephemeral, prepare, run_export,
@@ -169,7 +169,7 @@ fn declare_books_with_notes(
 /// branch keys are both `int`, so the frozen key list is `List[int]`.
 fn traversal_image() -> VerifiedImage {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
 
     let (book_record, note_record, books, product) = declare_books_with_notes(&mut draft);
 
@@ -585,7 +585,7 @@ fn a_branch_traversal_scopes_to_its_parent_entry() {
 /// ceiling.
 fn wide_key_image() -> (VerifiedImage, u16) {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let rec = draft.intern_string("Rec").expect("a within-domain mint");
     let v = draft.intern_string("v").expect("a within-domain mint");
     let record = draft

@@ -143,13 +143,10 @@ fn joined(paths: &[String]) -> Option<String> {
 mod tests {
     use super::{DemandPlaces, DurableNaming, PathSigil};
     use marrow_image::{
-        DemandAtom, ExportDemand, LedgerIdBytes, OperationClass, SemanticPath, SemanticStep,
-        SemanticStepKind,
+        DemandAtom, ExportDemand, OperationClass, SemanticPath, SemanticStep, SemanticStepKind,
     };
 
-    fn id(byte: u8) -> LedgerIdBytes {
-        LedgerIdBytes::from_bytes([byte; 16])
-    }
+    use marrow_test_support::id;
 
     const APP: u8 = 0x0a;
     const ROOT: u8 = 0x0b;

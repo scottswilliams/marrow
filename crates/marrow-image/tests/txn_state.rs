@@ -11,12 +11,12 @@ use marrow_image::{
     EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr,
     LedgerIdBytes, RecordTypeDef, ReferenceKind, RootOccurrenceDef, Scalar, VariantDef,
 };
-use marrow_test_support::{admitted, admitted_plan};
+use marrow_test_support::admitted_plan;
 
 /// A committed one-function draft that encodes, for rollback byte-identity checks.
 fn exporting_owner() -> ImageDraft {
     let mut owner = ImageDraft::new();
-    let mut draft = admitted(&mut owner);
+    let mut draft = owner.begin_transaction();
     let name = draft.intern_string("main").expect("a within-domain mint");
     let source = draft
         .intern_string("src/main.mw")
@@ -48,7 +48,7 @@ fn a_rolled_back_transaction_restores_the_exact_bytes() {
     let mut owner = exporting_owner();
     let before = owner.encode().expect("the base draft encodes").bytes;
     {
-        let mut txn = admitted(&mut owner);
+        let mut txn = owner.begin_transaction();
         let name = txn.intern_string("Extra").expect("a within-domain mint");
         let field = txn.intern_string("f").expect("a within-domain mint");
         txn.intern_text("extra-text").expect("a within-domain mint");
@@ -79,7 +79,7 @@ fn a_rolled_back_transaction_restores_the_exact_bytes() {
     assert_eq!(before, after, "the armed inverse is byte-exact");
     // The interning indexes were restored with the pool: the same text re-mints the
     // same ordinal, so a stale index entry cannot alias a discarded row.
-    let mut txn = admitted(&mut owner);
+    let mut txn = owner.begin_transaction();
     let re_minted = txn.intern_text("extra-text").expect("a within-domain mint");
     let twin = txn.intern_text("extra-text").expect("a within-domain mint");
     assert_eq!(re_minted, twin);
@@ -91,7 +91,7 @@ fn a_rolled_back_transaction_restores_the_exact_bytes() {
 #[test]
 fn a_rolled_back_fill_of_a_pre_transaction_row_is_reverted() {
     let mut owner = ImageDraft::new();
-    let mut txn = admitted(&mut owner);
+    let mut txn = owner.begin_transaction();
     let name = txn.intern_string("R").expect("a within-domain mint");
     let field = txn.intern_string("f").expect("a within-domain mint");
     let record = txn.reserve_record_type(name).expect("a within-domain mint");
@@ -104,7 +104,7 @@ fn a_rolled_back_fill_of_a_pre_transaction_row_is_reverted() {
         "a reservation left vacant is the fence's coherence invariant",
     );
     {
-        let mut txn = admitted(&mut owner);
+        let mut txn = owner.begin_transaction();
         txn.set_record_fields(
             record,
             vec![FieldDef {
@@ -123,7 +123,7 @@ fn a_rolled_back_fill_of_a_pre_transaction_row_is_reverted() {
         )),
         "the rollback reverted the fill, so the row is vacant again",
     );
-    let mut txn = admitted(&mut owner);
+    let mut txn = owner.begin_transaction();
     txn.set_record_fields(record, Vec::new())
         .expect("the reverted row spends its one fill again");
     txn.commit();
@@ -139,7 +139,7 @@ fn a_rolled_back_fill_of_a_pre_transaction_row_is_reverted() {
 fn function_prefix_fills_restore_on_return_error_and_unwind() {
     fn seed() -> (ImageDraft, marrow_image::FuncId, marrow_image::FuncId) {
         let mut owner = ImageDraft::new();
-        let mut txn = admitted(&mut owner);
+        let mut txn = owner.begin_transaction();
         let name = txn
             .intern_string("sentinel")
             .expect("valid fixture construction");
@@ -190,7 +190,7 @@ fn function_prefix_fills_restore_on_return_error_and_unwind() {
         let mut suffix = None;
         let result =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), ()> {
-                let mut txn = admitted(&mut owner);
+                let mut txn = owner.begin_transaction();
                 fill(&mut txn, vacant);
                 let name = txn
                     .intern_string("suffix")
@@ -239,12 +239,12 @@ fn function_prefix_fills_restore_on_return_error_and_unwind() {
                 ReferenceKind::VacantFunction
             ))
         );
-        let mut txn = admitted(&mut owner);
+        let mut txn = owner.begin_transaction();
         fill(&mut txn, vacant);
         txn.commit();
 
         let (mut control, _, control_vacant) = seed();
-        let mut txn = admitted(&mut control);
+        let mut txn = control.begin_transaction();
         fill(&mut txn, control_vacant);
         txn.commit();
         assert_eq!(
@@ -335,7 +335,7 @@ fn each_active_kind_admits_its_crossing_and_the_fence_refuses_it() {
         let mut owner = exporting_owner();
         let clean = owner.encode().expect("the base draft encodes").bytes;
         {
-            let mut txn = admitted(&mut owner);
+            let mut txn = owner.begin_transaction();
             (kind.cross)(&mut txn);
             assert_eq!(
                 txn.encode().map(|_| ()),
@@ -349,7 +349,7 @@ fn each_active_kind_admits_its_crossing_and_the_fence_refuses_it() {
             "rollback restored the rows and the ledger byte for byte",
         );
         // Commit: the crossing is retained and the fence still refuses.
-        let mut txn = admitted(&mut owner);
+        let mut txn = owner.begin_transaction();
         (kind.cross)(&mut txn);
         txn.commit();
         assert_eq!(owner.encode().map(|_| ()), Err(kind.verdict));
@@ -363,7 +363,7 @@ fn each_active_kind_admits_its_crossing_and_the_fence_refuses_it() {
 fn the_roots_crossing_is_admitted_and_the_fence_refuses_it() {
     let product = LedgerIdBytes::from_bytes([0x0d; 16]);
     let mut owner = ImageDraft::new();
-    let mut txn = admitted(&mut owner);
+    let mut txn = owner.begin_transaction();
     let name = txn.intern_string("R").expect("a within-domain mint");
     let record = txn
         .add_record_type(RecordTypeDef {
@@ -416,7 +416,7 @@ fn the_roots_crossing_is_admitted_and_the_fence_refuses_it() {
 
     // Rollback: the crossing and its ledger delta are restored exactly.
     {
-        let mut txn = admitted(&mut owner);
+        let mut txn = owner.begin_transaction();
         admit_one(&mut txn);
         assert_eq!(
             txn.encode().map(|_| ()),
@@ -431,7 +431,7 @@ fn the_roots_crossing_is_admitted_and_the_fence_refuses_it() {
     );
 
     // Commit: the crossing is retained and the fence still refuses.
-    let mut txn = admitted(&mut owner);
+    let mut txn = owner.begin_transaction();
     admit_one(&mut txn);
     txn.commit();
     assert_eq!(
@@ -450,7 +450,7 @@ fn an_intern_text_at_the_const_cap_commits_its_whole_compound() {
     let mut owner = exporting_owner();
     let clean = owner.encode().expect("the base draft encodes").bytes;
     {
-        let mut txn = admitted(&mut owner);
+        let mut txn = owner.begin_transaction();
         for value in 0..(MAX_CONSTS as i64) {
             txn.intern_int(value).expect("a within-domain mint");
         }
@@ -495,7 +495,7 @@ fn an_intern_text_at_the_const_cap_commits_its_whole_compound() {
 #[test]
 fn a_complete_definition_is_not_replaceable_and_vacancy_is_fence_distinct() {
     let mut owner = ImageDraft::new();
-    let mut txn = admitted(&mut owner);
+    let mut txn = owner.begin_transaction();
     let name = txn.intern_string("R").expect("a within-domain mint");
     let complete = txn
         .add_record_type(RecordTypeDef {
@@ -657,7 +657,7 @@ fn each_counted_kind_admits_exactly_its_maximum_and_stays_available() {
 
     for kind in kinds {
         let mut owner = exporting_owner();
-        let mut txn = admitted(&mut owner);
+        let mut txn = owner.begin_transaction();
         let last = kind.maximum - kind.seeded - 1;
         let mut identity_at_maximum = String::new();
         for index in 0..kind.maximum - kind.seeded {
@@ -703,7 +703,7 @@ fn each_counted_kind_admits_exactly_its_maximum_and_stays_available() {
             "the committed maximum is still a complete artifact",
         );
 
-        let mut txn = admitted(&mut owner);
+        let mut txn = owner.begin_transaction();
         (kind.mint)(&mut txn, kind.maximum);
         assert_eq!(
             txn.encode().map(|_| ()),
@@ -719,14 +719,14 @@ fn each_counted_kind_admits_exactly_its_maximum_and_stays_available() {
 #[test]
 fn a_duplicate_constant_hit_returns_the_same_id_and_mutates_nothing() {
     let mut owner = exporting_owner();
-    let mut txn = admitted(&mut owner);
+    let mut txn = owner.begin_transaction();
     let first_int = txn.intern_int(4242).expect("a within-domain mint");
     let first_text = txn.intern_text("duplicate").expect("a within-domain mint");
     let first_date = txn.intern_date(19_000).expect("a within-domain mint");
     txn.commit();
     let minted = owner.encode().expect("the minted draft encodes").bytes;
 
-    let mut txn = admitted(&mut owner);
+    let mut txn = owner.begin_transaction();
     assert_eq!(
         txn.intern_int(4242).expect("a within-domain mint"),
         first_int,
@@ -842,7 +842,7 @@ fn every_pair_of_policy_crossings_yields_the_canonical_minimum_in_either_order()
             let mut owner = exporting_owner();
             let clean = owner.encode().expect("the base draft encodes").bytes;
             {
-                let mut txn = admitted(&mut owner);
+                let mut txn = owner.begin_transaction();
                 (first.cross)(&mut txn);
                 (second.cross)(&mut txn);
                 assert_eq!(
@@ -857,7 +857,7 @@ fn every_pair_of_policy_crossings_yields_the_canonical_minimum_in_either_order()
                 "rollback restored both crossings and the whole ledger byte for byte",
             );
 
-            let mut txn = admitted(&mut owner);
+            let mut txn = owner.begin_transaction();
             (first.cross)(&mut txn);
             (second.cross)(&mut txn);
             txn.commit();
@@ -880,7 +880,7 @@ fn every_pair_of_policy_crossings_yields_the_canonical_minimum_in_either_order()
 #[test]
 fn the_function_slot_mint_refuses_past_its_carrier_without_aliasing_slot_zero() {
     let mut owner = ImageDraft::new();
-    let mut draft = admitted(&mut owner);
+    let mut draft = owner.begin_transaction();
     let name = draft.intern_string("f").expect("a within-domain mint");
     let function = || FunctionDef {
         name,

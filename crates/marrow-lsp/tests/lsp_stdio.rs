@@ -9,10 +9,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde_json::Value;
 
-#[path = "support/scratch.rs"]
-mod scratch;
-
-use scratch::TempDir;
+use marrow_test_support::{Scratch, file_uri};
 
 /// A framed JSON-RPC connection to a spawned `marrow-lsp`.
 struct Connection {
@@ -115,11 +112,11 @@ impl Connection {
 }
 
 fn root_uri(dir: &Path) -> String {
-    scratch::uri_of(dir)
+    file_uri(dir)
 }
 
-fn temp_project(tag: &str, main: &str) -> TempDir {
-    TempDir::project(&format!("stdio-{tag}"), main)
+fn temp_project(tag: &str, main: &str) -> Scratch {
+    Scratch::project(&format!("stdio-{tag}"), main)
 }
 
 fn initialize(conn: &mut Connection, dir: &Path) {

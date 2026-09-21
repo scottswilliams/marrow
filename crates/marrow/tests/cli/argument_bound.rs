@@ -11,7 +11,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::common::{TempDir, stage_toolchain, staged_marrow_in, write};
+use crate::common::{stage_toolchain, staged_marrow_in, write};
+use marrow_test_support::Scratch;
 
 /// The language text bound, in UTF-8 bytes.
 const TEXT_BOUND: usize = 65_536;
@@ -48,7 +49,7 @@ enum RunPath {
 #[test]
 fn one_text_bound_admits_and_refuses_the_same_argument_on_both_run_paths() {
     let toolchain = stage_toolchain();
-    let temp = TempDir::new("argument-bound");
+    let temp = Scratch::new("argument-bound");
     let (project, store) = project_with_store(&toolchain, &temp);
     let store_arg = store.to_str().expect("store path");
 
@@ -84,7 +85,7 @@ fn one_text_bound_admits_and_refuses_the_same_argument_on_both_run_paths() {
 #[test]
 fn an_oversized_argument_is_refused_before_the_named_store_is_touched() {
     let toolchain = stage_toolchain();
-    let temp = TempDir::new("argument-bound-jsonl");
+    let temp = Scratch::new("argument-bound-jsonl");
     let project = temp.join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(&project.join("src/main.mw"), SOURCE);
@@ -120,7 +121,7 @@ fn an_oversized_argument_is_refused_before_the_named_store_is_touched() {
 
 /// A durable project at `temp/app` with its ledger, and a store beside it provisioned
 /// and populated through `marrow import`.
-fn project_with_store(toolchain: &Path, temp: &TempDir) -> (PathBuf, PathBuf) {
+fn project_with_store(toolchain: &Path, temp: &Scratch) -> (PathBuf, PathBuf) {
     let project = temp.join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(&project.join("src/main.mw"), SOURCE);

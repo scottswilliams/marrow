@@ -6,7 +6,7 @@ use marrow_image::{
     DraftTxn, EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr,
     RecordTypeDef, Scalar, SpanEntry, VariantDef,
 };
-use marrow_test_support::{admitted, rehash};
+use marrow_test_support::rehash;
 use std::ops::Range;
 
 const RECORD_WIDTH: usize = 4_096;
@@ -37,7 +37,7 @@ fn add_main(draft: &mut DraftTxn<'_>) {
 
 fn record_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let record_name = draft.intern_string("Wide").expect("a within-domain mint");
     let mut fields = Vec::with_capacity(RECORD_WIDTH);
     for index in 0..RECORD_WIDTH {
@@ -61,7 +61,7 @@ fn record_image() -> Vec<u8> {
 
 fn enum_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let enum_name = draft.intern_string("Choice").expect("a within-domain mint");
     let mut variants = Vec::with_capacity(ENUM_WIDTH);
     for index in 0..ENUM_WIDTH {
@@ -85,7 +85,7 @@ fn enum_image() -> Vec<u8> {
 
 fn repeated_names_across_rows_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let field_name = draft.intern_string("value").expect("a within-domain mint");
     for record in ["First", "Second"] {
         let name = draft.intern_string(record).expect("a within-domain mint");

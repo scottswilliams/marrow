@@ -25,8 +25,8 @@ use marrow_codes::Code;
 use marrow_kernel::durable::{DemandCoverage, InvocationGrant, PrincipalPredicate, SessionError};
 use marrow_lifecycle::{AdmissionRefusal, AttachOutcome, LifecycleError};
 
-use crate::support::Scratch;
 use crate::support::ceiling::{attach_image, image, provision, source_broadened, source_read_only};
+use marrow_test_support::Scratch;
 
 #[test]
 fn effective_authority_is_demand_ceiling_grant_and_the_reserved_principal_slot() {
@@ -36,12 +36,12 @@ fn effective_authority_is_demand_ceiling_grant_and_the_reserved_principal_slot()
     let store = scratch.store();
 
     // The store's accepted ceiling is the read-only image's demand union.
-    provision(&store, &read_only);
+    provision(store, &read_only);
 
     // TERM 1 — demand ∩ ceiling: the broadened demand exceeds the accepted ceiling and is
     // refused at attach, before any engine call. It never reaches the grant or principal terms.
     let head_before = std::fs::read(store.join("head")).expect("head");
-    match attach_image(&store, &broadened) {
+    match attach_image(store, &broadened) {
         Err(LifecycleError::Refused(AdmissionRefusal::Exceeds(refusal))) => {
             assert_eq!(refusal.code(), Code::StoreDemandExceedsCeiling);
         }
@@ -59,7 +59,7 @@ fn effective_authority_is_demand_ceiling_grant_and_the_reserved_principal_slot()
 
     // The read-only image is admitted (its demand fits the ceiling); it opens the store so the
     // remaining terms are checked at the kernel session over a real native handle.
-    let mut attachment = match attach_image(&store, &read_only) {
+    let mut attachment = match attach_image(store, &read_only) {
         Ok(AttachOutcome::AlreadyActive(attachment)) => attachment,
         Ok(AttachOutcome::Rebound { attachment, .. }) => attachment,
         Err(err) => panic!(

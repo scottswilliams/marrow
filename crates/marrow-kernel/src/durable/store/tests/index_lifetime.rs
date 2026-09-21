@@ -3,8 +3,8 @@
 use super::*;
 use crate::codec::value::encode_domain;
 use crate::durable::ContentDigest;
-use crate::test_common::{Counters, CountingEngine};
 use marrow_store::Cell as StoreCell;
+use marrow_test_support::{Counters, CountingEngine};
 
 const UNIQUE: [u8; 16] = [0x91; 16];
 const ALL: [u8; 16] = [0x92; 16];
@@ -155,7 +155,7 @@ fn indexed_entry<E: ByteEngine>(
 }
 
 fn reopen(temp: &Scratch) -> NativeEngineOwner {
-    NativeEngineOwner::acquire_existing(&temp.store())
+    NativeEngineOwner::acquire_existing(temp.path())
         .expect("reacquire native owner")
         .bind_and_open_existing(
             crate::durable::NativeOpenAccess::ReadWrite,

@@ -10,8 +10,7 @@ use std::sync::Arc;
 use marrow_compile::{AnalysisSnapshot, InputRevision, analyze};
 use marrow_project::FileIdentity;
 
-#[path = "common/project.rs"]
-mod project_capture;
+use marrow_test_support::project as project_capture;
 use project_capture::{project, project_bytes};
 
 #[path = "editor_facts/active_call.rs"]

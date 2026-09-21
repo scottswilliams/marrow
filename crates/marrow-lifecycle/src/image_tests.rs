@@ -2,10 +2,8 @@
 
 use super::*;
 use crate as marrow_lifecycle;
-#[path = "../tests/support/actor_fixtures.rs"]
-mod fixtures;
-use crate::test_support::compile::compile_files;
-use fixtures::*;
+use marrow_test_support::graph_corpus::*;
+use marrow_test_support::program::compile_files;
 
 /// The image whose one group makes a kind swap numbering-neutral: `details` is the last
 /// (only) group and there is no branch, so a projection that respells it as a keyed branch

@@ -1,11 +1,10 @@
-// The four construction steps every durable fixture repeats: an entry record, a Product
-// declaration, a root occurrence over it, and a unit function.
-//
-// Shared because each step carries an admission contract — a declaration spends the
-// plan's Product term, an occurrence spends its root term, a function append validates
-// every site operand — and a per-file copy is a per-file opportunity to spell one of
-// those contracts differently.
-#![allow(dead_code)]
+//! The four construction steps every durable fixture repeats: an entry record, a Product
+//! declaration, a root occurrence over it, and a unit function.
+//!
+//! Shared because each step carries an admission contract — a declaration spends the
+//! plan's Product term, an occurrence spends its root term, a function append validates
+//! every site operand — and a per-file copy is a per-file opportunity to spell one of
+//! those contracts differently.
 
 use marrow_image::{
     AdmittedGraphInputPlan, AdmittedRoot, DeclarationMember, DeclarationMemberDef, DraftTxn,

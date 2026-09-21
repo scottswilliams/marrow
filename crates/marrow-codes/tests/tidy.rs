@@ -18,10 +18,9 @@
 use std::fs;
 use std::path::Path;
 
-#[path = "common/workspace.rs"]
-mod workspace;
+mod common;
 
-use workspace::{tracked_paths, workspace_root};
+use common::{tracked_paths, workspace_root};
 
 /// The exact set of workspace packages the workspace retains, which is also the
 /// exact set of directories under `crates/`.
@@ -132,6 +131,7 @@ fn cargo_dag_respects_the_trust_boundaries() {
     the_project_adapter_is_the_sole_filesystem_owner(&packages);
     the_runner_never_compiles_source(&packages);
     the_byte_engine_has_one_production_consumer(&packages);
+    the_test_scaffolding_is_a_dev_edge_everywhere(&packages);
 }
 
 /// The workspace member named `name`, which the metadata always carries.
@@ -253,9 +253,10 @@ fn the_project_adapter_is_the_sole_filesystem_owner(packages: &[PackageEdges]) {
             ("marrow-codes".to_string(), false),
             ("marrow-fs-journal".to_string(), false),
             ("marrow-project".to_string(), false),
+            ("marrow-test-support".to_string(), true),
         ],
         "marrow-project-fs must depend only on marrow-project, marrow-codes, and \
-         marrow-fs-journal"
+         marrow-fs-journal, plus the test scaffolding as a dev edge"
     );
     let cli = find(packages, "marrow");
     assert!(
@@ -309,11 +310,14 @@ fn the_runner_never_compiles_source(packages: &[PackageEdges]) {
     }
 }
 
-/// The raw byte engine has exactly one production consumer: the path kernel. The VM's
-/// private commit-fault tests implement a fault-injecting engine double against the
-/// engine traits, a dev-only edge that never reaches a production build.
+/// The raw byte engine has exactly one production consumer: the path kernel. The test
+/// scaffolding crate implements the engine doubles against the engine traits, and the
+/// VM's private commit-fault tests borrow one; both are edges no production build takes.
 fn the_byte_engine_has_one_production_consumer(packages: &[PackageEdges]) {
     for package in packages {
+        if package.name == "marrow-test-support" {
+            continue;
+        }
         let production_store = package
             .edges
             .iter()
@@ -340,6 +344,22 @@ fn the_byte_engine_has_one_production_consumer(packages: &[PackageEdges]) {
                 package.name
             );
         }
+    }
+}
+
+/// The test scaffolding crate is reached only through `[dev-dependencies]`, so its own
+/// edges — the engine traits, the compiler, the verifier — reach no production build
+/// through it.
+fn the_test_scaffolding_is_a_dev_edge_everywhere(packages: &[PackageEdges]) {
+    for package in packages {
+        assert!(
+            !package
+                .edges
+                .iter()
+                .any(|(dep, is_dev)| dep == "marrow-test-support" && !is_dev),
+            "{} must name marrow-test-support under [dev-dependencies] only",
+            package.name
+        );
     }
 }
 
@@ -446,6 +466,9 @@ fn no_tracked_file_names_a_forbidden_family() {
 struct AbsenceScan {
     subject: &'static str,
     roots: &'static [&'static str],
+    /// The files under `roots` the scan leaves alone: the one owner of what the needles
+    /// name, and nothing else.
+    except: &'static [&'static str],
     needles: &'static [&'static str],
 }
 
@@ -453,6 +476,7 @@ const ABSENCE_SCANS: &[AbsenceScan] = &[
     AbsenceScan {
         subject: "a bounded kernel owner stops being bounded through one of these",
         roots: &["crates/marrow-kernel/src/"],
+        except: &[],
         needles: &["ManuallyDrop", "mem::forget"],
     },
     AbsenceScan {
@@ -463,6 +487,7 @@ const ABSENCE_SCANS: &[AbsenceScan] = &[
             "crates/marrow-image/src/site_plan.rs",
             "crates/marrow-image/src/draft.rs",
         ],
+        except: &[],
         needles: &[
             "Cell<",
             "RefCell<",
@@ -489,6 +514,7 @@ const ABSENCE_SCANS: &[AbsenceScan] = &[
             "crates/marrow-syntax/src/",
             "crates/marrow-kernel/src/codec/",
         ],
+        except: &[],
         needles: &[
             "SystemTime",
             "UNIX_EPOCH",
@@ -505,6 +531,7 @@ const ABSENCE_SCANS: &[AbsenceScan] = &[
     AbsenceScan {
         subject: "a filesystem edge reached a pure owner",
         roots: &["crates/marrow-project/src/", "crates/marrow-compile/src/"],
+        except: &[],
         needles: &["std::fs", "std::io::Read", "File::open", "File::create"],
     },
     // Severity is owned by the diagnostic payload (`marrow_syntax::Severity`, fixed at
@@ -513,6 +540,7 @@ const ABSENCE_SCANS: &[AbsenceScan] = &[
     AbsenceScan {
         subject: "a deleted registry classification axis returned",
         roots: &["crates/marrow-codes/src/"],
+        except: &[],
         needles: &[
             "pub enum Catchability",
             "fn catchability(",
@@ -526,6 +554,7 @@ const ABSENCE_SCANS: &[AbsenceScan] = &[
     AbsenceScan {
         subject: "a sync stronger or weaker than plain fsync entered the journal",
         roots: &["crates/marrow-fs-journal/src/"],
+        except: &[],
         needles: &[
             "fcntl_fullfsync",
             "F_FULLFSYNC",
@@ -533,6 +562,20 @@ const ABSENCE_SCANS: &[AbsenceScan] = &[
             "sync_data",
             "fdatasync",
         ],
+    },
+    // A test temporary directory has one minter, `marrow_test_support::Scratch`: unique
+    // per case, removed on drop, retained with its path printed when the case panics. A
+    // second minter is a second cleanup policy. The runner's staging and channel
+    // directories are production temporaries, not test fixtures.
+    AbsenceScan {
+        subject: "a test minted its own temporary directory beside the one scratch owner",
+        roots: &["crates/"],
+        except: &[
+            "crates/marrow-test-support/src/scratch.rs",
+            "crates/marrow-runner/src/staging.rs",
+            "crates/marrow-runner/src/channel.rs",
+        ],
+        needles: &["env::temp_dir(", "tempdir"],
     },
 ];
 
@@ -544,6 +587,7 @@ fn the_absence_scans_hold() {
         for relative in tracked_paths() {
             if !relative.ends_with(".rs")
                 || !scan.roots.iter().any(|root| relative.starts_with(root))
+                || scan.except.contains(&relative.as_str())
             {
                 continue;
             }

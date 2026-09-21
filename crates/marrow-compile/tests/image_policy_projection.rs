@@ -32,10 +32,8 @@ use marrow_compile::{
 };
 use marrow_project::{FileIdentity, ProjectInput};
 
-#[path = "common/project.rs"]
-mod common_project;
-#[path = "common/ids.rs"]
-mod ids;
+use marrow_test_support::ids;
+use marrow_test_support::project as common_project;
 
 /// The suite's fixtures generate their sources, so they are borrowed into the shared
 /// capture helper's `&str` pairs at each call.

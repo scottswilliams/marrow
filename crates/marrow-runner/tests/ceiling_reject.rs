@@ -11,10 +11,8 @@
 //! Spawns a runner that binds a Unix socket, which the sandbox denies; run with the sandbox
 //! disabled (the workspace battery already runs that way).
 
-#[path = "common/program.rs"]
-mod program;
-#[path = "common/scratch.rs"]
-mod scratch;
+use marrow_test_support::Scratch;
+use marrow_test_support::program;
 
 use std::path::{Path, PathBuf};
 
@@ -74,9 +72,9 @@ fn runner_exe() -> PathBuf {
 fn a_broadened_image_is_rejected_end_to_end_through_the_native_path() {
     let read_only = compile(&source_read_only());
     let broadened = compile(&source_broadened());
-    let scratch = scratch::Scratch::new("ceiling-reject");
+    let scratch = Scratch::new("ceiling-reject");
     let store = scratch.store();
-    provision(&store, &read_only.image);
+    provision(store, &read_only.image);
 
     let head_before = std::fs::read(store.join("head")).expect("head");
 
@@ -86,7 +84,7 @@ fn a_broadened_image_is_rejected_end_to_end_through_the_native_path() {
         &runner_exe(),
         &broadened.image,
         &broadened.bytes,
-        &store,
+        store,
         broadened.export_id("readValue"),
         vec![Json::Int(1)],
     );
@@ -122,7 +120,7 @@ fn a_broadened_image_is_rejected_end_to_end_through_the_native_path() {
         &runner_exe(),
         &read_only.image,
         &read_only.bytes,
-        &store,
+        store,
         read_only.export_id("readValue"),
         vec![Json::Int(1)],
     );

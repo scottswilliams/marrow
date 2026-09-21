@@ -1525,7 +1525,7 @@ fn initialize_result() -> InitializeResult {
 mod tests {
     use super::*;
     use crate::position::{LineMap, after};
-    use crate::scratch::{self, TempDir};
+    use marrow_test_support::{Scratch, file_uri};
     use std::fs;
     use std::path::Path;
 
@@ -1543,12 +1543,12 @@ mod tests {
 
     // ---- test scaffolding: drive the pure coordinator with deterministic events ----
 
-    fn temp_project(tag: &str, main: &str) -> TempDir {
-        TempDir::project(&format!("server-{tag}"), main)
+    fn temp_project(tag: &str, main: &str) -> Scratch {
+        Scratch::project(&format!("server-{tag}"), main)
     }
 
     fn root_uri(dir: &Path) -> String {
-        scratch::uri_of(dir)
+        file_uri(dir)
     }
 
     fn selected_root(dir: &Path) -> SelectedRoot {
@@ -1652,7 +1652,7 @@ mod tests {
     /// A workspace whose project declares one local dependency nested inside it, so both
     /// trees sit under the one selected root and the server must tell them apart by
     /// origin rather than by containment.
-    fn temp_dependency_project(tag: &str, main: &str) -> TempDir {
+    fn temp_dependency_project(tag: &str, main: &str) -> Scratch {
         let dir = temp_project(tag, main);
         dir.write("lib/graphtext/marrow.toml", "edition = \"2026\"\n");
         dir.write("lib/graphtext/src/text.mw", GRAPH_TEXT);

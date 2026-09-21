@@ -14,17 +14,17 @@
 use marrow_kernel::codec::key::{KeyScalar, encode_key_value};
 use marrow_store::{ByteEngine, NativeEngineOwner, ReadView, WriteTxn};
 
-use crate::common::Scratch;
+use marrow_test_support::Scratch;
 
 /// Write each key scalar (scrambled from language order) as a cell whose value echoes the
 /// encoded key, commit, close the store, reopen it, and return the persisted cells in the
 /// engine's ascending scan order.
 fn round_trip(tag: &str, scrambled: &[KeyScalar]) -> Vec<(Vec<u8>, Vec<u8>)> {
     let scratch = Scratch::new(tag);
-    let path = scratch.store();
-    NativeEngineOwner::provision(&path).expect("provision native store");
+    let path = scratch.path();
+    NativeEngineOwner::provision(path).expect("provision native store");
     {
-        let mut engine = NativeEngineOwner::acquire_existing(&path)
+        let mut engine = NativeEngineOwner::acquire_existing(path)
             .expect("acquire the owner lock")
             .bind_and_open_existing(
                 marrow_kernel::durable::NativeOpenAccess::ReadWrite,
@@ -46,7 +46,7 @@ fn round_trip(tag: &str, scrambled: &[KeyScalar]) -> Vec<(Vec<u8>, Vec<u8>)> {
         // Dropping `engine` closes the file: the next open is a genuine restart.
     }
 
-    let engine = NativeEngineOwner::acquire_existing(&path)
+    let engine = NativeEngineOwner::acquire_existing(path)
         .expect("acquire the owner lock")
         .bind_and_open_existing(
             marrow_kernel::durable::NativeOpenAccess::ReadWrite,

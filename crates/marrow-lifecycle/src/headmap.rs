@@ -240,9 +240,7 @@ mod tests {
         assert_eq!(exhausted.extend(&[]).expect("no allocation"), exhausted);
     }
 
-    fn id(byte: u8) -> LedgerIdBytes {
-        LedgerIdBytes::from_bytes([byte; 16])
-    }
+    use marrow_test_support::id;
 
     /// The head map frames the same number space the kernel admits projections into: its
     /// entry bound is a hand-copy of the kernel's [`MAX_STORE_NODES`] and may not drift, or

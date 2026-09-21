@@ -12,7 +12,8 @@
 use std::fs;
 use std::path::Path;
 
-use crate::common::{TempDir, conformance_dir, marrow_in};
+use crate::common::{conformance_dir, marrow_in};
+use marrow_test_support::Scratch;
 
 /// The library's own directory name, which is also the final segment of the relative
 /// path the application's manifest declares. Copying the pair keeps both names so the
@@ -22,8 +23,8 @@ const APP: &str = "graph_report";
 
 /// Copy the fixture pair into a scratch directory, preserving both directory names so
 /// the application's declared relative path resolves without editing its manifest.
-fn two_trees(label: &str) -> TempDir {
-    let scratch = TempDir::new(label);
+fn two_trees(label: &str) -> Scratch {
+    let scratch = Scratch::new(label);
     for name in [APP, LIB] {
         copy_tree(&conformance_dir(name), &scratch.join(name));
     }
@@ -214,8 +215,8 @@ test "the library drives its own writer" {
 /// Write a two-tree pair under `label`: a `library` project holding `library_source`
 /// and an application that declares it at `../library`. Each tree commits the ledger
 /// its own declarations need, so `check` reaches the transaction rules.
-fn shelf_pair(label: &str, library_source: &str, app_source: &str) -> TempDir {
-    let scratch = TempDir::new(label);
+fn shelf_pair(label: &str, library_source: &str, app_source: &str) -> Scratch {
+    let scratch = Scratch::new(label);
     write_project(
         &scratch.join("library"),
         "edition = \"2026\"\n",

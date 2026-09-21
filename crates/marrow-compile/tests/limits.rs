@@ -6,10 +6,8 @@
 
 use marrow_project::ProjectInput;
 
-#[path = "common/ledger.rs"]
-mod ledger_fixture;
-#[path = "common/project.rs"]
-mod project_capture;
+use marrow_test_support::ledger as ledger_fixture;
+use marrow_test_support::project as project_capture;
 
 #[path = "limits/issuance_amplification.rs"]
 mod issuance_amplification;

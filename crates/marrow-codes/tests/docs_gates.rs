@@ -20,10 +20,9 @@ use std::fmt;
 use std::path::{Component, Path};
 use std::sync::OnceLock;
 
-#[path = "common/workspace.rs"]
-mod workspace;
+mod common;
 
-use workspace::{tracked_paths, workspace_root};
+use common::{tracked_paths, workspace_root};
 
 // ---------------------------------------------------------------------------
 // Violations

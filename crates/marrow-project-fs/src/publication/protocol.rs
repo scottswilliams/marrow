@@ -1231,20 +1231,20 @@ mod tests {
 
     use super::*;
     use crate::publication::IdsPublication;
-    use crate::scratch::TempDir;
+    use marrow_test_support::Scratch;
 
     /// A scratch project with a write owner.
     ///
     /// The guard is declared before the directory, so it releases the owner lock
     /// before the fixture removes the tree under it.
-    struct Scratch {
+    struct OwnedProject {
         guard: ProjectMetadataWriteGuard,
-        dir: TempDir,
+        dir: Scratch,
     }
 
-    impl Scratch {
+    impl OwnedProject {
         fn new(tag: &str) -> Self {
-            let dir = TempDir::new(tag);
+            let dir = Scratch::new(tag);
             let guard = ProjectMetadataWriteGuard::acquire(dir.path()).expect("the write owner");
             Self { guard, dir }
         }
@@ -1270,7 +1270,7 @@ mod tests {
     /// published.
     #[test]
     fn a_finish_that_already_removed_the_marker_reports_the_terminal_it_recorded() {
-        let scratch = Scratch::new("postunlink");
+        let scratch = OwnedProject::new("postunlink");
         let guard = scratch.guard();
 
         let meta_path = scratch.meta_path();
@@ -1328,7 +1328,7 @@ mod tests {
     /// routes to adopts — so the retry settles instead.
     #[test]
     fn a_spent_session_is_offered_as_a_marker_to_recover_not_a_journal_to_drive() {
-        let scratch = Scratch::new("spent");
+        let scratch = OwnedProject::new("spent");
         let guard = scratch.guard();
 
         // An installed successor at one link with the stage already cleaned:

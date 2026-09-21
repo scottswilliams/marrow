@@ -17,6 +17,7 @@ use marrow_verify::RootId;
 use marrow_vm::Value;
 
 use crate::common::{CallOutcome, Project, Session};
+use marrow_test_support::id;
 
 // Each root carries one unique index (`*BySku`) and one nonunique index (`*ByShelf`); the
 // index anchors live at `<root>.<index name>`. Every durable declaration has a distinct
@@ -385,10 +386,6 @@ pub fn nameB(id: int): string? {
 }
 "#;
 
-fn rep(byte: u8) -> marrow_image::LedgerIdBytes {
-    marrow_image::LedgerIdBytes::from_bytes([byte; 16])
-}
-
 /// A managed index belongs to a root **occurrence**, but a Product field declaration
 /// belongs to the Product: `Item.sku` is one declaration that both `^a` and `^b` project.
 /// The sealed image binds each index to the one root that declared it, so the kernel's
@@ -408,12 +405,12 @@ fn each_managed_index_is_bound_to_the_occurrence_that_declared_it() {
             .map(|index| index.id())
             .collect()
     };
-    assert_eq!(ids_of(0), vec![rep(0x3b)]);
-    assert_eq!(ids_of(1), vec![rep(0x5b), rep(0x6b)]);
+    assert_eq!(ids_of(0), vec![id(0x3b)]);
+    assert_eq!(ids_of(1), vec![id(0x5b), id(0x6b)]);
 
     // `Item.sku` (0x0f) is one Product field declaration projected by an index of each
     // occurrence; the two indexes are distinct rows bound to distinct roots.
-    let sku = marrow_verify::DurableIndexComponent::Field(rep(0x0f));
+    let sku = marrow_verify::DurableIndexComponent::Field(id(0x0f));
     let over_sku: Vec<_> = image
         .indexes()
         .iter()
@@ -423,8 +420,8 @@ fn each_managed_index_is_bound_to_the_occurrence_that_declared_it() {
     assert_eq!(
         over_sku,
         vec![
-            (RootId::from_index(0), rep(0x3b), true),
-            (RootId::from_index(1), rep(0x5b), true),
+            (RootId::from_index(0), id(0x3b), true),
+            (RootId::from_index(1), id(0x5b), true),
         ]
     );
 }

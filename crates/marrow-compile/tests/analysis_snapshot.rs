@@ -8,8 +8,7 @@
 
 use marrow_project::FileIdentity;
 
-#[path = "common/project.rs"]
-mod project_capture;
+use marrow_test_support::project as project_capture;
 use project_capture::{project, project_with_ids};
 
 #[path = "analysis_snapshot/fact_settlement.rs"]

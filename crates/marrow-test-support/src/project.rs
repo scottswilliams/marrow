@@ -1,8 +1,6 @@
 //! One project-capture helper: a fixture is captured through the production project
 //! owner, never hand-assembled.
 
-#![allow(dead_code)]
-
 use marrow_project::{
     CaptureLimits, CapturedDependency, CapturedFile, Manifest, ProjectInput, capture_origins,
 };

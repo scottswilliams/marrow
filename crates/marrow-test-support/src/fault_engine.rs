@@ -1,12 +1,8 @@
 //! A fault-injecting byte engine shared by the kernel's commit-recovery tests and the VM's
 //! private commit-poison tests: it delegates to an in-memory backend but reports a
 //! test-chosen commit verdict independently of whether the staged bytes land, and can fail
-//! a chosen mid-transaction write. Test source included by `#[path]` from both sites; it is
-//! not a crate, a production module, or a second engine implementation.
-
-// Each including test module uses a different subset of the helpers, so unused-item
-// warnings here are expected.
-#![allow(dead_code)]
+//! a chosen mid-transaction write. It is a test double, not a second engine
+//! implementation.
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -23,7 +19,7 @@ use marrow_store::{
 
 /// The single-root projection a case opens under: the root, plus its sites resolved against
 /// it. Every site here names root 0 — the store's only root.
-pub(super) fn project(schema: &StoreSchema, sites: Vec<SiteTarget>) -> StoreProjection {
+pub fn project(schema: &StoreSchema, sites: Vec<SiteTarget>) -> StoreProjection {
     let mut projection = StoreProjection::builder();
     projection.root(schema.clone());
     for target in sites {
@@ -38,7 +34,7 @@ pub(super) fn project(schema: &StoreSchema, sites: Vec<SiteTarget>) -> StoreProj
 /// independently of whether the staged bytes actually land, so an indeterminate verdict
 /// can accompany either a persisted or a discarded write.
 #[derive(Clone, Copy, Debug)]
-pub(super) enum Mode {
+pub enum Mode {
     /// Persist the staged bytes and report `Confirmed` (the honest in-memory path).
     Confirm,
     /// Persist the staged bytes but report `Indeterminate`: the write landed, yet the
@@ -56,16 +52,16 @@ pub(super) enum Mode {
 /// test flips the mode between sessions to model, e.g., a recovered store committing
 /// cleanly after an earlier abort.
 #[derive(Clone)]
-pub(super) struct ModeHandle(Rc<Cell<Mode>>);
+pub struct ModeHandle(Rc<Cell<Mode>>);
 
 impl ModeHandle {
-    pub(super) fn new(mode: Mode) -> Self {
+    pub fn new(mode: Mode) -> Self {
         Self(Rc::new(Cell::new(mode)))
     }
-    pub(super) fn set(&self, mode: Mode) {
+    pub fn set(&self, mode: Mode) {
         self.0.set(mode);
     }
-    pub(super) fn get(&self) -> Mode {
+    pub fn get(&self) -> Mode {
         self.0.get()
     }
 }
@@ -76,16 +72,16 @@ impl ModeHandle {
 /// write that fails partway through a commit or an apply plan, before the transaction's
 /// own `commit`. `None` never faults.
 #[derive(Clone)]
-pub(super) struct WriteFaultHandle(Rc<Cell<Option<u32>>>);
+pub struct WriteFaultHandle(Rc<Cell<Option<u32>>>);
 
 impl WriteFaultHandle {
-    pub(super) fn inert() -> Self {
+    pub fn inert() -> Self {
         Self(Rc::new(Cell::new(None)))
     }
-    pub(super) fn set(&self, target: Option<u32>) {
+    pub fn set(&self, target: Option<u32>) {
         self.0.set(target);
     }
-    pub(super) fn get(&self) -> Option<u32> {
+    pub fn get(&self) -> Option<u32> {
         self.0.get()
     }
 }
@@ -94,7 +90,7 @@ impl WriteFaultHandle {
 /// test-chosen [`Mode`] and may fail a chosen mid-transaction write per a
 /// [`WriteFaultHandle`].
 #[derive(Clone)]
-pub(super) struct FaultEngine {
+pub struct FaultEngine {
     inner: Rc<RefCell<BTreeMap<Vec<u8>, Vec<u8>>>>,
     mode: ModeHandle,
     write_fault: WriteFaultHandle,
@@ -102,12 +98,12 @@ pub(super) struct FaultEngine {
 
 impl FaultEngine {
     /// A double that only ever misreports the commit verdict; no write faults.
-    pub(super) fn new(mode: ModeHandle) -> Self {
+    pub fn new(mode: ModeHandle) -> Self {
         Self::with_write_fault(mode, WriteFaultHandle::inert())
     }
     /// A double that both resolves commit per `mode` and fails the write `write_fault`
     /// selects, so a test can exercise an engine write that fails mid-transaction.
-    pub(super) fn with_write_fault(mode: ModeHandle, write_fault: WriteFaultHandle) -> Self {
+    pub fn with_write_fault(mode: ModeHandle, write_fault: WriteFaultHandle) -> Self {
         Self {
             inner: Rc::new(RefCell::new(BTreeMap::new())),
             mode,
@@ -119,7 +115,7 @@ impl FaultEngine {
 /// An owned coherent snapshot. The test engine shares durable bytes across separately
 /// constructed handles so recovery KATs can actually drop the poisoned handle and reopen;
 /// cloning the map here keeps each read view stable for its lifetime.
-pub(super) struct FaultView {
+pub struct FaultView {
     entries: BTreeMap<Vec<u8>, Vec<u8>>,
 }
 
@@ -162,7 +158,7 @@ impl ReadView for FaultView {
 /// The double's transaction: the backend transaction plus the mode captured at `begin`
 /// and the mid-transaction write fault (the 1-based write index to fail, and a running
 /// count of the writes issued so far).
-pub(super) struct FaultTxn {
+pub struct FaultTxn {
     base: Rc<RefCell<BTreeMap<Vec<u8>, Vec<u8>>>>,
     working: BTreeMap<Vec<u8>, Vec<u8>>,
     mode: Mode,
@@ -257,17 +253,17 @@ impl ByteEngine for FaultEngine {
     }
 }
 
-pub(super) fn schema() -> StoreSchema {
+pub fn schema() -> StoreSchema {
     let mut builder = StoreSchemaBuilder::root("counters", vec![ScalarKind::Str]);
     builder.scalar_field("value", ScalarKind::Int, true);
     builder.finish().expect("a bounded schema builds")
 }
 
-pub(super) fn sites() -> Vec<SiteTarget> {
+pub fn sites() -> Vec<SiteTarget> {
     vec![SiteTarget::whole_payload(), SiteTarget::field_leaf(0)]
 }
 
-pub(super) fn write() -> DemandCoverage {
+pub fn write() -> DemandCoverage {
     DemandCoverage {
         read: true,
         write: true,
@@ -276,6 +272,6 @@ pub(super) fn write() -> DemandCoverage {
 
 /// Stage one entry and commit it. The session is scoped so its mutable borrow of the
 /// store ends here, freeing the store for affine recovery classification.
-pub(super) fn unscoped_store(engine: FaultEngine) -> DurableStore<FaultEngine> {
+pub fn unscoped_store(engine: FaultEngine) -> DurableStore<FaultEngine> {
     DurableStore::from_engine(engine, project(&schema(), sites()))
 }

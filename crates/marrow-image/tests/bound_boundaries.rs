@@ -17,15 +17,13 @@ use marrow_image::{
     ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef,
     Scalar, SpanEntry, TypeId, VariantDef,
 };
-use marrow_test_support::{admitted, admitted_plan};
+use marrow_test_support::admitted_plan;
 
-#[path = "common/ledger_ids.rs"]
-mod ledger_ids;
-use ledger_ids::{APPLICATION_ID, FIELD_ID, INDEX_ID, KEY_ID, PLACEMENT_ID, PRODUCT_ID, seeded_id};
+use marrow_test_support::ledger_ids::{
+    APPLICATION_ID, FIELD_ID, INDEX_ID, KEY_ID, PLACEMENT_ID, PRODUCT_ID, seeded_id,
+};
 
-#[path = "common/fixture_graph.rs"]
-mod fixture_graph;
-use fixture_graph::{admit_root, declare_product, empty_record};
+use marrow_test_support::fixture_graph::{admit_root, declare_product, empty_record};
 
 /// The seeded-id tag for the index components the projection-width tests name, and for
 /// the second Product a budget test declares.
@@ -45,7 +43,7 @@ fn encode_root(
     indexes: Vec<DurableIndexShape>,
 ) -> Result<(), ImageBuildError> {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let members = members(&mut draft);
     let record = empty_record(&mut draft, "R");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
@@ -144,7 +142,7 @@ fn a_dense_struct_at_the_leaf_limit_encodes() {
 #[test]
 fn a_dense_struct_one_leaf_over_the_limit_is_refused_at_the_surface() {
     let mut owner = ImageDraft::new();
-    let mut draft = admitted(&mut owner);
+    let mut draft = owner.begin_transaction();
     let int = draft
         .value_scalar(Scalar::Int)
         .expect("the test arena mints");
@@ -264,7 +262,7 @@ fn a_construction_budget_saturates_at_the_admitted_intake() {
 fn a_command_vector_wider_than_its_budget_appends_no_row() {
     let plan = AdmittedGraphInputPlan::admit(1, 1, 1);
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let name = draft.intern_string("R").expect("a within-domain mint");
     let record = draft
         .add_record_type(RecordTypeDef {
@@ -319,7 +317,7 @@ fn a_second_distinct_product_past_its_plan_budget_is_refused_and_appends_no_row(
     let second_product = component_id(0x51);
 
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let name = draft.intern_string("R").expect("a within-domain mint");
     let record = draft
         .add_record_type(RecordTypeDef {
@@ -406,7 +404,7 @@ fn a_second_root_occurrence_past_its_plan_budget_is_refused() {
     let second_placement = component_id(0x53);
 
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let name = draft.intern_string("R").expect("a within-domain mint");
     let record = draft
         .add_record_type(RecordTypeDef {
@@ -522,7 +520,7 @@ const OVER_DEEP_STEPS: usize = 8_000;
 #[test]
 fn a_draft_refuses_an_over_deep_command_vector() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let name = draft.intern_string("R").expect("a within-domain mint");
     let record = draft
         .add_record_type(RecordTypeDef {
@@ -579,7 +577,7 @@ fn a_durable_graph_refuses_an_over_deep_command_vector() {
 fn the_member_nesting_bound_admits_its_own_depth_and_refuses_one_more() {
     for (depth, within_bound) in [(MAX_DURABLE_DEPTH, true), (MAX_DURABLE_DEPTH + 1, false)] {
         let mut draft_owner = ImageDraft::new();
-        let mut draft = admitted(&mut draft_owner);
+        let mut draft = draft_owner.begin_transaction();
         let name = draft.intern_string("R").expect("a within-domain mint");
         let record = draft
             .add_record_type(RecordTypeDef {
@@ -627,7 +625,7 @@ fn encode_rows(
     fill: impl Fn(&mut DraftTxn<'_>, usize),
 ) -> Result<(), ImageBuildError> {
     let mut owner = ImageDraft::new();
-    let mut draft = admitted(&mut owner);
+    let mut draft = owner.begin_transaction();
     for row in 0..rows {
         fill(&mut draft, row);
     }

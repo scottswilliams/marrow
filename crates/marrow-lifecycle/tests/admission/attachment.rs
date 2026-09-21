@@ -90,10 +90,10 @@ test "two is two" {
 }
 "#;
 
-use crate::support::Scratch;
 use crate::support::store::provision_approved as provision;
+use marrow_test_support::Scratch;
 
-use crate::support::compile::{compile, compile_with_tests};
+use marrow_test_support::program::{compile, compile_with_tests};
 
 fn export(image: &VerifiedImage, name: &str) -> ExportId {
     image
@@ -153,11 +153,11 @@ fn a_store_executes_only_the_image_it_is_bound_to() {
     let image_b = compile(&COUNTER_SOURCE.replace("?? 0", "?? 1"), COUNTER_IDS);
     assert_ne!(image_a.image_id().0, image_b.image_id().0);
     let scratch = Scratch::new("pair");
-    provision(scratch.dir(), &image_a);
+    provision(scratch.store(), &image_a);
 
     // A/A: the head binds A and A's code runs (its default is 0).
     {
-        let (mut attachment, rebound) = native(scratch.dir(), &image_a);
+        let (mut attachment, rebound) = native(scratch.store(), &image_a);
         assert!(!rebound);
         assert_eq!(attachment.head().binding.image_id, image_a.image_id().0);
         assert_eq!(attachment.image().image_id().0, image_a.image_id().0);
@@ -174,7 +174,7 @@ fn a_store_executes_only_the_image_it_is_bound_to() {
 
     // Explicit B attach: the head rebinds to B, B's code runs (its default is 1), and the
     // data committed under A is intact.
-    let (mut attachment, rebound) = native(scratch.dir(), &image_b);
+    let (mut attachment, rebound) = native(scratch.store(), &image_b);
     assert!(rebound, "a body-only edit rebinds");
     assert_eq!(attachment.head().binding.image_id, image_b.image_id().0);
     assert_eq!(attachment.image().image_id().0, image_b.image_id().0);
@@ -211,8 +211,8 @@ fn every_field_site_reads_its_own_value_on_both_hosts() {
     );
 
     let scratch = Scratch::new("sites");
-    provision(scratch.dir(), &image);
-    let (mut native, _) = native(scratch.dir(), &image);
+    provision(scratch.store(), &image);
+    let (mut native, _) = native(scratch.store(), &image);
     assert_eq!(
         call(&mut native, "readB", vec![Value::Int(1)]),
         Some(Value::Int(0))
@@ -284,11 +284,11 @@ fn a_storeless_image_keeps_its_identity_and_mints_no_store() {
 
     let scratch = Scratch::new("storeless");
     assert!(matches!(
-        attach(scratch.dir(), prepare(image.clone())),
+        attach(scratch.store(), prepare(image.clone())),
         Err(LifecycleError::NotExecutable)
     ));
     assert!(
-        !scratch.dir().exists(),
+        !scratch.store().exists(),
         "a refused storeless attach touches no store"
     );
 

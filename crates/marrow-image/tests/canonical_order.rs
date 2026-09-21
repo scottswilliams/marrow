@@ -12,7 +12,6 @@
 //! - TEST-ENTRY (0x08): entries ascending by the remapped (byte-sorted) name index.
 
 use marrow_image::{EncodedImage, ExportId, FunctionDef, ImageDraft, ImageType, Instr, StrId};
-use marrow_test_support::admitted;
 
 /// The body of section `id` in `image`: the container is `magic(4) ‖ version(1) ‖
 /// image-id(32) ‖ section-count(1)` followed by `id(1) ‖ len(u32) ‖ body` sections.
@@ -53,7 +52,7 @@ fn function(name: StrId, source: StrId) -> FunctionDef {
 #[test]
 fn the_string_pool_is_emitted_byte_sorted() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     draft.intern_string("pear").expect("a within-domain mint");
     draft.intern_string("apple").expect("a within-domain mint");
     draft.intern_string("mango").expect("a within-domain mint");
@@ -74,7 +73,7 @@ fn the_string_pool_is_emitted_byte_sorted() {
 #[test]
 fn the_const_pool_is_emitted_in_wire_byte_order() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     draft.intern_text("a").expect("a within-domain mint");
     draft.intern_int(-1).expect("a within-domain mint");
     draft.intern_bool(true).expect("a within-domain mint");
@@ -102,7 +101,7 @@ fn the_const_pool_is_emitted_in_wire_byte_order() {
 #[test]
 fn the_export_table_is_emitted_in_ascending_id_order() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let source = draft
         .intern_string("src/main.mw")
         .expect("a within-domain mint");
@@ -139,7 +138,7 @@ fn the_export_table_is_emitted_in_ascending_id_order() {
 #[test]
 fn the_test_entry_table_is_emitted_in_ascending_name_order() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let source = draft.intern_string("s").expect("a within-domain mint");
     let mut funcs = Vec::new();
     for text in ["zeta", "alpha", "mid"] {

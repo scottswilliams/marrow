@@ -2,7 +2,7 @@
 //! intersection, the provision report and its approval, shared-product provisioning, and
 //! the image/store attachment itself.
 
-mod support;
+pub mod support;
 
 #[path = "admission/attachment.rs"]
 mod attachment;

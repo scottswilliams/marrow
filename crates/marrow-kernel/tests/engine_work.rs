@@ -2,8 +2,6 @@
 //! engine for an audit walk, a rejected or permitted call, an exact field mutation, an
 //! index scan, and a wide sparse entry read.
 
-mod common;
-
 #[path = "engine_work/audit_walk.rs"]
 mod audit_walk;
 #[path = "engine_work/call_witness.rs"]

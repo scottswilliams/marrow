@@ -17,7 +17,7 @@ use marrow_kernel::durable::{
 use marrow_kernel::equality::ValueDomain;
 use marrow_store::{ByteEngine, MemoryEngine, NativeEngineOwner};
 
-use crate::common::Scratch;
+use marrow_test_support::Scratch;
 
 /// The single-root projection a case opens under: the root, plus its sites resolved against
 /// it. Every site here names root 0 — the store's only root.
@@ -264,7 +264,7 @@ fn memory_and_redb_agree_on_the_operation_trace() {
     ));
 
     let temp = Scratch::new("optrace");
-    let native = native_owner(&temp.store());
+    let native = native_owner(temp.path());
     let (redb_transcript, redb_dump) = replay(DurableStore::from_engine(
         native,
         project(&schema(), sites()),
@@ -372,7 +372,7 @@ fn set_field_agrees_across_engines() {
         project(&schema(), sites()),
     ));
     let temp = Scratch::new("strict");
-    let native = native_owner(&temp.store());
+    let native = native_owner(temp.path());
     let (redb_presence, redb_dump) = probe(DurableStore::from_engine(
         native,
         project(&schema(), sites()),
@@ -434,7 +434,7 @@ fn rollback_discards_staged_writes_on_both_backends() {
         Presence::Absent
     );
     let temp = Scratch::new("rollback");
-    let native = native_owner(&temp.store());
+    let native = native_owner(temp.path());
     assert_eq!(
         probe(DurableStore::from_engine(
             native,
@@ -478,7 +478,7 @@ fn a_replaced_entry_drops_unlisted_sparse_leaves() {
         None
     );
     let temp = Scratch::new("replace-drops");
-    let native = native_owner(&temp.store());
+    let native = native_owner(temp.path());
     assert_eq!(
         probe(DurableStore::from_engine(
             native,
@@ -602,7 +602,7 @@ fn memory_and_redb_agree_on_the_group_operation_trace() {
     ));
 
     let temp = Scratch::new("optrace-groups");
-    let native = native_owner(&temp.store());
+    let native = native_owner(temp.path());
     let (redb_transcript, redb_reads) = replay_groups(DurableStore::from_engine(
         native,
         project(&group_schema(), group_sites()),
@@ -865,7 +865,7 @@ fn empty_payload_marker_lifetime_agrees_across_engines() {
     ));
     let temp = Scratch::new("empty-payload-markers");
     replay_marker_lifetime(DurableStore::from_engine(
-        native_owner(&temp.store()),
+        native_owner(temp.path()),
         project(&schema, sites),
     ));
 }

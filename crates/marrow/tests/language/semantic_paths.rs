@@ -12,6 +12,7 @@
 use marrow_verify::{SemanticNodeKind, SemanticStepKind};
 
 use crate::common::Project;
+use marrow_test_support::id;
 
 /// A resource with a top-level field, a static `group` holding a field, and a keyed
 /// `branch` holding two fields — every durable node kind in one graph.
@@ -54,34 +55,33 @@ const LIBRARY_IDS: &str = "marrow ids v0\n\
 /// The `(kind, terminal-ledger-id)` fingerprint of every derived semantic node,
 /// sorted, observed through the full production path. The terminal id is the last
 /// step's ledger id — the node's own placement/group/field id.
-fn node_fingerprints(source: &str, ids: &str) -> Vec<(SemanticNodeKind, [u8; 16])> {
+fn node_fingerprints(
+    source: &str,
+    ids: &str,
+) -> Vec<(SemanticNodeKind, marrow_image::LedgerIdBytes)> {
     let image = Project::single(source).ids(ids).image();
-    let mut nodes: Vec<(SemanticNodeKind, [u8; 16])> = image
+    let mut nodes: Vec<(SemanticNodeKind, marrow_image::LedgerIdBytes)> = image
         .semantic_nodes()
         .iter()
         .map(|node| {
             let terminal = node.path.steps().last().expect("a node path is non-empty");
-            (node.kind, *terminal.id.bytes())
+            (node.kind, terminal.id)
         })
         .collect();
     nodes.sort();
     nodes
 }
 
-fn rep(byte: u8) -> [u8; 16] {
-    [byte; 16]
-}
-
 #[test]
 fn every_durable_node_has_a_semantic_path_ending_in_its_ledger_id() {
     let mut expected = vec![
-        (SemanticNodeKind::Root, rep(0x0b)),
-        (SemanticNodeKind::Field, rep(0x0e)),  // Book.title
-        (SemanticNodeKind::Group, rep(0x20)),  // Book.details
-        (SemanticNodeKind::Field, rep(0x21)),  // Book.details.pages
-        (SemanticNodeKind::Branch, rep(0x30)), // Book.notes
-        (SemanticNodeKind::Field, rep(0x32)),  // Book.notes.text
-        (SemanticNodeKind::Field, rep(0x33)),  // Book.notes.createdAt
+        (SemanticNodeKind::Root, id(0x0b)),
+        (SemanticNodeKind::Field, id(0x0e)),  // Book.title
+        (SemanticNodeKind::Group, id(0x20)),  // Book.details
+        (SemanticNodeKind::Field, id(0x21)),  // Book.details.pages
+        (SemanticNodeKind::Branch, id(0x30)), // Book.notes
+        (SemanticNodeKind::Field, id(0x32)),  // Book.notes.text
+        (SemanticNodeKind::Field, id(0x33)),  // Book.notes.createdAt
     ];
     expected.sort();
     assert_eq!(node_fingerprints(LIBRARY_SOURCE, LIBRARY_IDS), expected);
@@ -95,7 +95,7 @@ fn a_field_path_runs_from_the_application_through_its_container() {
     // The group-nested field `pages`: application -> root placement -> group -> field.
     let pages = nodes
         .iter()
-        .find(|n| n.path.steps().last().unwrap().id.bytes() == &rep(0x21))
+        .find(|n| n.path.steps().last().unwrap().id == id(0x21))
         .expect("the group field is a node");
     let kinds: Vec<SemanticStepKind> = pages.path.steps().iter().map(|s| s.kind).collect();
     assert_eq!(
@@ -107,14 +107,14 @@ fn a_field_path_runs_from_the_application_through_its_container() {
             SemanticStepKind::Field,     // pages
         ]
     );
-    let ids: Vec<[u8; 16]> = pages.path.steps().iter().map(|s| *s.id.bytes()).collect();
-    assert_eq!(ids, vec![rep(0x0a), rep(0x0b), rep(0x20), rep(0x21)]);
+    let ids: Vec<marrow_image::LedgerIdBytes> = pages.path.steps().iter().map(|s| s.id).collect();
+    assert_eq!(ids, vec![id(0x0a), id(0x0b), id(0x20), id(0x21)]);
 
     // The branch field `notes.text`: the branch step is a Placement (a branch is a
     // keyed node just like a root), not a Group.
     let text = nodes
         .iter()
-        .find(|n| n.path.steps().last().unwrap().id.bytes() == &rep(0x32))
+        .find(|n| n.path.steps().last().unwrap().id == id(0x32))
         .expect("the branch field is a node");
     let kinds: Vec<SemanticStepKind> = text.path.steps().iter().map(|s| s.kind).collect();
     assert_eq!(
@@ -176,8 +176,8 @@ fn re_minting_a_group_id_changes_exactly_the_paths_through_it() {
     let after = node_fingerprints(LIBRARY_SOURCE, &re_minted);
     assert_ne!(base, after);
     // The group's terminal id changed to the fresh id.
-    assert!(after.contains(&(SemanticNodeKind::Group, rep(0x22))));
-    assert!(!after.contains(&(SemanticNodeKind::Group, rep(0x20))));
+    assert!(after.contains(&(SemanticNodeKind::Group, id(0x22))));
+    assert!(!after.contains(&(SemanticNodeKind::Group, id(0x20))));
     // The field `title`, unrelated to the group, keeps its path.
-    assert!(after.contains(&(SemanticNodeKind::Field, rep(0x0e))));
+    assert!(after.contains(&(SemanticNodeKind::Field, id(0x0e))));
 }

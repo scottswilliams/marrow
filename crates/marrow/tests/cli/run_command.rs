@@ -2,9 +2,8 @@
 //! and the command-line surface every subcommand shares — usage on `--help`, and one
 //! usage-error form.
 
-use crate::common::{
-    MARROW_BIN, Project, TempDir, marrow_in, stage_toolchain, staged_marrow_in, write,
-};
+use crate::common::{MARROW_BIN, Project, marrow_in, stage_toolchain, staged_marrow_in, write};
+use marrow_test_support::Scratch;
 
 const HALF: &str = "\
 pub fn half(n: int): Result<int, string> {
@@ -101,7 +100,7 @@ const COMMANDS: [&str; 13] = [
 /// usage on standard output with exit 0, without reading a project.
 #[test]
 fn every_subcommand_prints_its_usage_on_help() {
-    let empty = TempDir::new("help");
+    let empty = Scratch::new("help");
     for command in COMMANDS {
         for flag in ["--help", "-h"] {
             let output = marrow_in(&empty, &[command, flag]);
@@ -132,7 +131,7 @@ fn help_after_the_separator_is_a_positional_argument() {
 /// format, and a missing required flag.
 #[test]
 fn usage_errors_name_the_problem_and_the_commands_help() {
-    let empty = TempDir::new("usage");
+    let empty = Scratch::new("usage");
     let cases: [(&[&str], &str); 6] = [
         (
             &["run", "--bogus"],
@@ -276,7 +275,7 @@ const COUNTER_IDS: &str = "marrow ids v0\n\
 #[test]
 fn a_durable_top_level_err_commits_and_exits_one() {
     let toolchain = stage_toolchain();
-    let temp = TempDir::new("durable-err");
+    let temp = Scratch::new("durable-err");
     let project = temp.join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(&project.join("src/main.mw"), COUNTER_SOURCE);

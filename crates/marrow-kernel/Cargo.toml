@@ -14,6 +14,8 @@ marrow-store = { path = "../marrow-store", features = ["native"] }
 marrow-temporal = { path = "../marrow-temporal" }
 
 [dev-dependencies]
+# The workspace test scaffolding: the one scratch directory and the shared fixture builders.
+marrow-test-support = { path = "../marrow-test-support" }
 marrow-image = { path = "../marrow-image" }
 # Already a normal in-workspace dependency; also needed by name in the widened-value
 # differential integration test for the canonical instant year-range bounds.

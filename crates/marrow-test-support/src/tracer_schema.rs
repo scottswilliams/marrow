@@ -12,7 +12,7 @@ use marrow_image::{
 };
 use marrow_verify::{VerifyPhase, verify};
 
-use marrow_test_support::{admitted, admitted_plan, site};
+use crate::{admitted_plan, site};
 
 /// One within-domain draft mint, unwrapped: every fixture mint here is far inside
 /// the checked carrier domain.
@@ -311,7 +311,7 @@ pub fn finish_two_key(mut draft: DraftTxn<'_>, code: Vec<Instr>) -> Vec<u8> {
 /// `code` builds from that schema's site operands.
 pub fn put_export(code: impl FnOnce(&Sites) -> Vec<Instr>) -> ImageDraft {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let sites = durable_schema(&mut draft);
     let code = code(&sites);
     let func = add_fn(
@@ -367,7 +367,7 @@ pub fn indexed_draft_full(
     by_value_components: Vec<DurableIndexComponent>,
 ) -> (ImageDraft, AdmittedRoot) {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let counter = ok(draft.intern_string("Counter"));
     let value = ok(draft.intern_string("value"));
     let label = ok(draft.intern_string("label"));
@@ -446,7 +446,7 @@ pub fn group_branch_draft_with_branch_record(
     branch_record_required: bool,
 ) -> (ImageDraft, AdmittedRoot) {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let shapes = scalar_shapes(&mut draft);
     let book = ok(draft.intern_string("Book"));
     let title = ok(draft.intern_string("title"));

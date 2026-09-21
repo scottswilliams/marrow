@@ -11,9 +11,3 @@
 pub mod codec;
 pub mod durable;
 pub mod equality;
-
-/// The suites' shared fixtures — the scratch directory and the counting engine —
-/// are the same files the integration binaries use, loaded once for the whole crate.
-#[cfg(test)]
-#[path = "../tests/common/mod.rs"]
-mod test_common;

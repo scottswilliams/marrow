@@ -1,19 +1,11 @@
 //! Durable identity fixtures resolved through compiler gaps or the shared ledger writer.
 
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 
 use marrow_compile::{CompileFailure, compile};
 use marrow_project::{IdentityAnchor, ProjectInput};
 
-#[path = "ledger.rs"]
-mod ledger;
-#[allow(
-    unused_imports,
-    reason = "fixture suites use different subsets of the shared identity helpers"
-)]
-pub use ledger::ledger;
+pub use crate::ledger::ledger;
 
 /// The ledger a project needs, minted from the gaps the compiler itself reports.
 ///

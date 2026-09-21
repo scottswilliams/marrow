@@ -25,7 +25,7 @@ fn populated_transfer(scratch: &Scratch, count: i64) -> (Header, Vec<Cell>) {
         })
         .unwrap() as u16;
     let crate::AttachOutcome::AlreadyActive(mut attachment) =
-        crate::attach(&scratch.store(), prepare(image)).unwrap()
+        crate::attach(scratch.store(), prepare(image)).unwrap()
     else {
         panic!("active fixture")
     };
@@ -57,8 +57,8 @@ fn populated_transfer(scratch: &Scratch, count: i64) -> (Header, Vec<Cell>) {
     ));
     drop(txn);
     drop(attachment);
-    let path = scratch.base().join("source.backup");
-    let backup = crate::backup(&scratch.store(), image_bytes(), &path).unwrap();
+    let path = scratch.path().join("source.backup");
+    let backup = crate::backup(scratch.store(), image_bytes(), &path).unwrap();
     assert_eq!(backup.audit.summary.entries, count as u64);
     assert_eq!(backup.audit.summary.index_cells, count as u64);
     decode_transfer(&std::fs::read(path).unwrap())
@@ -107,13 +107,13 @@ fn populated_truncation_retains_headless_stage_and_refuses_service() {
     let scratch = std::mem::ManuallyDrop::new(Scratch::new("restore"));
     eprintln!(
         "preserved populated truncated transfer: {}",
-        scratch.base().display()
+        scratch.path().display()
     );
     let (header, cells) = populated_transfer(&scratch, 130);
     assert_eq!(cells.len(), 390);
     let mut bytes = encode_transfer(&header, &cells);
     bytes.pop();
-    let destination = scratch.base().join("restored");
+    let destination = scratch.path().join("restored");
     let error = restore(&mut io::Cursor::new(bytes), &destination).unwrap_err();
     assert!(matches!(
         error.fault,
@@ -131,7 +131,7 @@ fn rehashed_witness_and_missing_or_stale_index_refuse_before_head() {
     let scratch = std::mem::ManuallyDrop::new(Scratch::new("restore"));
     eprintln!(
         "preserved semantic transfer refusals: {}",
-        scratch.base().display()
+        scratch.path().display()
     );
     let (header, original) = populated_transfer(&scratch, 3);
     let mut witness = original.clone();
@@ -155,7 +155,7 @@ fn rehashed_witness_and_missing_or_stale_index_refuse_before_head() {
         ("stale", stale, Some(AuditFault::IndexStale)),
     ] {
         let bytes = encode_transfer(&header, &cells);
-        let destination = scratch.base().join(name);
+        let destination = scratch.path().join(name);
         let error = restore(&mut io::Cursor::new(bytes), &destination).unwrap_err();
         match (error.fault, finding) {
             (RestoreFault::Body(Body::OutsideNamespace), None) => {}
@@ -184,7 +184,7 @@ fn rehashed_incompatible_headers_refuse_before_private_construction() {
     let body_len = old_head.len() - 32;
     let digest = marrow_image::StoreHeadDigest::compute(&old_head[..body_len]);
     old_head[body_len..].copy_from_slice(digest.bytes());
-    let before: std::collections::BTreeSet<_> = std::fs::read_dir(scratch.base())
+    let before: std::collections::BTreeSet<_> = std::fs::read_dir(scratch.path())
         .unwrap()
         .map(|entry| entry.unwrap().file_name())
         .collect();
@@ -194,7 +194,7 @@ fn rehashed_incompatible_headers_refuse_before_private_construction() {
         ("image", b"invalid image".to_vec(), header.head),
     ] {
         let bytes = encode_transfer(&Header { image, head }, &cells);
-        let destination = scratch.base().join(name);
+        let destination = scratch.path().join(name);
         let error = restore(&mut io::Cursor::new(bytes), &destination).unwrap_err();
         match (name, &error.fault) {
             (
@@ -212,7 +212,7 @@ fn rehashed_incompatible_headers_refuse_before_private_construction() {
         }
         assert!(error.stage.is_none());
         assert!(!destination.exists());
-        let after: std::collections::BTreeSet<_> = std::fs::read_dir(scratch.base())
+        let after: std::collections::BTreeSet<_> = std::fs::read_dir(scratch.path())
             .unwrap()
             .map(|entry| entry.unwrap().file_name())
             .collect();
@@ -245,8 +245,8 @@ fn fresh_populated_publication_prefix_recovers_without_replaying_construction() 
     }
     .encode()
     .unwrap();
-    let stage = scratch.base().join("complete-stage");
-    let destination = scratch.base().join("published");
+    let stage = scratch.path().join("complete-stage");
+    let destination = scratch.path().join("published");
     let publication = Publication::admit(&stage, &destination, Seam::NONE).unwrap();
     create_private_dir(&stage).unwrap();
     let mut input = io::Cursor::new(&bytes);
@@ -293,7 +293,7 @@ fn fresh_populated_publication_prefix_recovers_without_replaying_construction() 
             .state,
         EnvelopeState::Active
     );
-    let artifact = scratch.base().join("recovered.backup");
+    let artifact = scratch.path().join("recovered.backup");
     let backup = crate::backup(&destination, &header.image, &artifact).unwrap();
     assert_eq!(backup.audit.instance, instance);
     assert_eq!(std::fs::read(artifact).unwrap(), bytes);
@@ -344,12 +344,12 @@ fn final_admission_rejects_changed_metadata_and_retains_published_store() {
         let scratch = std::mem::ManuallyDrop::new(Scratch::new("restore"));
         eprintln!(
             "preserved final-admission restore fixture: {}",
-            scratch.base().display()
+            scratch.path().display()
         );
         provision_fixture(&scratch);
-        let backup = scratch.base().join("backup");
-        crate::backup(&scratch.store(), image_bytes(), &backup).unwrap();
-        let destination = scratch.base().join("restored");
+        let backup = scratch.path().join("backup");
+        crate::backup(scratch.store(), image_bytes(), &backup).unwrap();
+        let destination = scratch.path().join("restored");
         let (seam, reached) = mutate_at(Step::FinalRead, move |dir| {
             change_before_final_admission(dir, artifact)
         });
@@ -378,9 +378,9 @@ fn final_admission_rejects_changed_metadata_and_retains_published_store() {
 fn restoring_empty_content_does_not_execute_embedded_seed() {
     let scratch = Scratch::new("restore");
     provision_fixture(&scratch);
-    let artifact = scratch.base().join("backup");
-    crate::backup(&scratch.store(), image_bytes(), &artifact).unwrap();
-    let destination = scratch.base().join("restored");
+    let artifact = scratch.path().join("backup");
+    crate::backup(scratch.store(), image_bytes(), &artifact).unwrap();
+    let destination = scratch.path().join("restored");
     let restored = restore(&mut std::fs::File::open(artifact).unwrap(), &destination).unwrap();
     assert_eq!(restored.audit.summary.entries, 0);
     let image = marrow_verify::verify(image_bytes()).unwrap();
@@ -398,12 +398,12 @@ fn occupied_destination_retains_completed_unpublished_stage() {
     let scratch = std::mem::ManuallyDrop::new(Scratch::new("restore"));
     eprintln!(
         "preserved restore collision fixture: {}",
-        scratch.base().display()
+        scratch.path().display()
     );
     provision_fixture(&scratch);
-    let artifact = scratch.base().join("backup");
-    crate::backup(&scratch.store(), image_bytes(), &artifact).unwrap();
-    let destination = scratch.base().join("occupied");
+    let artifact = scratch.path().join("backup");
+    crate::backup(scratch.store(), image_bytes(), &artifact).unwrap();
+    let destination = scratch.path().join("occupied");
     std::fs::create_dir(&destination).unwrap();
     let metadata = std::fs::metadata(&destination).unwrap();
     let error = restore(&mut std::fs::File::open(artifact).unwrap(), &destination).unwrap_err();
@@ -437,12 +437,12 @@ fn publication_and_activation_barrier_failures_retain_destination_and_instance()
         let scratch = std::mem::ManuallyDrop::new(Scratch::new("restore"));
         eprintln!(
             "preserved restore barrier fixture: {}",
-            scratch.base().display()
+            scratch.path().display()
         );
         provision_fixture(&scratch);
-        let artifact = scratch.base().join("backup");
-        crate::backup(&scratch.store(), image_bytes(), &artifact).unwrap();
-        let destination = scratch.base().join("restored");
+        let artifact = scratch.path().join("backup");
+        crate::backup(scratch.store(), image_bytes(), &artifact).unwrap();
+        let destination = scratch.path().join("restored");
         let seam = if activation {
             cut(Step::Activation)
         } else {
@@ -488,14 +488,14 @@ fn truncated_transfer_has_no_head_and_no_ordinary_or_recovery_admission() {
     let scratch = std::mem::ManuallyDrop::new(Scratch::new("restore"));
     eprintln!(
         "preserved truncated restore fixture: {}",
-        scratch.base().display()
+        scratch.path().display()
     );
     provision_fixture(&scratch);
-    let artifact = scratch.base().join("backup");
-    crate::backup(&scratch.store(), image_bytes(), &artifact).unwrap();
+    let artifact = scratch.path().join("backup");
+    crate::backup(scratch.store(), image_bytes(), &artifact).unwrap();
     let mut bytes = std::fs::read(artifact).unwrap();
     bytes.pop();
-    let destination = scratch.base().join("restored");
+    let destination = scratch.path().join("restored");
     let error = restore(&mut io::Cursor::new(bytes), &destination).unwrap_err();
     assert!(matches!(
         error.fault,

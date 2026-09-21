@@ -15,8 +15,7 @@
 use marrow_codes::Code;
 use marrow_compile::{CompileFailure, compile};
 
-#[path = "common/project.rs"]
-mod project_capture;
+use marrow_test_support::project as project_capture;
 
 /// The stack a 256-level bounded recursion is asked to fit in: 4 KiB per admitted level.
 const MINT_STACK_BUDGET_BYTES: usize = 4 * 1024 * 256;

@@ -11,19 +11,17 @@ use marrow_project::{
 };
 use marrow_project_fs::{OverlaySnapshot, capture_project};
 
-mod scratch;
-
-use scratch::TempDir;
+use marrow_test_support::Scratch;
 
 /// A temporary project root, over the crate's one scratch fixture.
 pub struct Project {
-    dir: TempDir,
+    dir: Scratch,
 }
 
 impl Project {
     pub fn new(tag: &str) -> Self {
         Self {
-            dir: TempDir::project(tag),
+            dir: Scratch::project(tag, ""),
         }
     }
 

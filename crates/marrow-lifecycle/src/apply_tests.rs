@@ -9,7 +9,7 @@ use crate::recovery::{RecoveryFault, recover};
 use crate::seam::Step;
 use crate::store_dir::{Artifact, Body};
 use crate::test_support::{
-    IDS, SOURCE, Scratch, compile, compile_bytes, cut, mutate_at, populate_counter, request,
+    IDS, SOURCE, Scratch, compile_bytes, cut, mutate_at, populate_counter, request,
 };
 use crate::{
     AdmissionRefusal, AuditError, LifecycleError, LogicalHead, StoreInstanceId, accepted_ceiling,
@@ -25,7 +25,7 @@ fn a_corrupt_accepted_ceiling_is_refused_as_corruption_before_the_engine_opens()
     let new = marrow_verify::verify(&new).expect("new image");
     let scratch = Scratch::new("apply");
     provision(
-        &scratch.store(),
+        scratch.store(),
         request(&old, StoreInstanceId::draw().expect("instance")),
     )
     .expect("provision");
@@ -37,7 +37,7 @@ fn a_corrupt_accepted_ceiling_is_refused_as_corruption_before_the_engine_opens()
     std::fs::write(scratch.store().join(crate::HEAD_FILE), corrupt.encode()).expect("head");
     std::fs::write(scratch.store().join(crate::ENGINE_FILE), b"not an engine")
         .expect("engine control");
-    let refused = match crate::attach(&scratch.store(), prepare(old.clone())) {
+    let refused = match crate::attach(scratch.store(), prepare(old.clone())) {
         Err(error) => error,
         Ok(_) => panic!("a corrupt ceiling cannot attach"),
     };
@@ -46,7 +46,7 @@ fn a_corrupt_accepted_ceiling_is_refused_as_corruption_before_the_engine_opens()
         LifecycleError::Refused(AdmissionRefusal::CeilingCorrupt)
     ));
     assert_eq!(refused.code(), marrow_codes::Code::StoreCorruption);
-    let refused = apply(&scratch.store(), prepare(old), prepare(new), None)
+    let refused = apply(scratch.store(), prepare(old), prepare(new), None)
         .expect_err("a corrupt ceiling cannot apply");
     assert!(matches!(
         refused,
@@ -72,7 +72,7 @@ fn sparse_images() -> (Vec<u8>, Vec<u8>) {
     );
     let source = SOURCE.replace("required value", "extra: int\nrequired value")
         + "\npub fn readExtra(n: int): int { return ^counters[n].extra ?? -1 }\n";
-    let new = compile::compile_bytes(&source, &ids);
+    let new = marrow_test_support::program::compile_bytes(&source, &ids);
     (old, new)
 }
 
@@ -107,12 +107,12 @@ fn sparse_apply_refusals_preserve_populated_store_bytes() {
     let new = marrow_verify::verify(&new).expect("new image");
     let scratch = Scratch::new("apply");
     provision(
-        &scratch.store(),
+        scratch.store(),
         request(&old, StoreInstanceId::draw().expect("instance")),
     )
     .expect("provision");
-    populate_counter(&scratch.store(), &old);
-    let before = store_bytes(&scratch.store());
+    populate_counter(scratch.store(), &old);
+    let before = store_bytes(scratch.store());
     let ceiling = CeilingDescriptor::from_payload(&accepted_ceiling(&old)).expect("old ceiling");
     let proposed = ceiling
         .expanded(
@@ -129,7 +129,7 @@ fn sparse_apply_refusals_preserve_populated_store_bytes() {
         Some(image_ceiling.ceiling_id()),
     ] {
         let error = apply(
-            &scratch.store(),
+            scratch.store(),
             prepare(old.clone()),
             prepare(new.clone()),
             accepted,
@@ -150,10 +150,10 @@ fn sparse_apply_refusals_preserve_populated_store_bytes() {
                 .iter()
                 .any(|effect| effect.place.as_deref() == Some("^counters.extra"))
         );
-        assert_eq!(store_bytes(&scratch.store()), before);
+        assert_eq!(store_bytes(scratch.store()), before);
     }
     let error = apply(
-        &scratch.store(),
+        scratch.store(),
         prepare(old.clone()),
         prepare(old.clone()),
         Some(CeilingId::from_bytes([0; 32])),
@@ -162,21 +162,21 @@ fn sparse_apply_refusals_preserve_populated_store_bytes() {
     assert!(
         matches!(error, ApplyError::CeilingUnaccepted { old: prior, proposed, added } if prior == ceiling.ceiling_id() && proposed == prior && added.is_empty())
     );
-    assert_eq!(store_bytes(&scratch.store()), before);
+    assert_eq!(store_bytes(scratch.store()), before);
     let changed = marrow_verify::verify(&compile_bytes(&SOURCE.replace("required ", "")))
         .expect("changed requiredness");
     assert!(matches!(
         apply(
-            &scratch.store(),
+            scratch.store(),
             prepare(old.clone()),
             prepare(changed),
             None
         ),
         Err(ApplyError::Unsupported)
     ));
-    assert_eq!(store_bytes(&scratch.store()), before);
+    assert_eq!(store_bytes(scratch.store()), before);
     let receipt = apply(
-        &scratch.store(),
+        scratch.store(),
         prepare(old.clone()),
         prepare(new.clone()),
         Some(proposed.ceiling_id()),
@@ -189,10 +189,10 @@ fn sparse_apply_refusals_preserve_populated_store_bytes() {
     )
     .expect("Head");
     assert_eq!(head.accepted_ceiling, proposed.atom_set_payload());
-    let applied = store_bytes(&scratch.store());
+    let applied = store_bytes(scratch.store());
     assert!(matches!(
         apply(
-            &scratch.store(),
+            scratch.store(),
             prepare(old),
             prepare(new),
             Some(proposed.ceiling_id())
@@ -201,7 +201,7 @@ fn sparse_apply_refusals_preserve_populated_store_bytes() {
             AuditError::Refused(AdmissionRefusal::ContractChanged(_))
         )))
     ));
-    assert_eq!(store_bytes(&scratch.store()), applied);
+    assert_eq!(store_bytes(scratch.store()), applied);
 }
 
 #[test]
@@ -210,12 +210,12 @@ fn sparse_apply_rejects_incompatible_graphs_without_store_changes() {
     let old = marrow_verify::verify(&old).expect("old image");
     let scratch = Scratch::new("apply");
     provision(
-        &scratch.store(),
+        scratch.store(),
         request(&old, StoreInstanceId::draw().expect("instance")),
     )
     .expect("provision");
-    populate_counter(&scratch.store(), &old);
-    let before = store_bytes(&scratch.store());
+    populate_counter(scratch.store(), &old);
+    let before = store_bytes(scratch.store());
     let ids = IDS.replace(
         "high-water",
         "id field Counter.extra 0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\nid index counters.byValue 10101010101010101010101010101010\nid sum Option[int] 11111111111111111111111111111111\nid member Option[int].none 12121212121212121212121212121212\nid member Option[int].some 13131313131313131313131313131313\nhigh-water",
@@ -247,16 +247,17 @@ fn sparse_apply_rejects_incompatible_graphs_without_store_changes() {
         let source = format!(
             "resource Counter {{ {fields} }}\nstore ^counters[id: {key}]: Counter {suffix}\npub fn bootstrap(): int {{ return 0 }}\n"
         );
-        let new = marrow_verify::verify(&compile::compile_bytes(&source, &ids))
-            .unwrap_or_else(|error| panic!("{label}: {error:?}"));
+        let new =
+            marrow_verify::verify(&marrow_test_support::program::compile_bytes(&source, &ids))
+                .unwrap_or_else(|error| panic!("{label}: {error:?}"));
         assert!(
             matches!(
-                apply(&scratch.store(), prepare(old.clone()), prepare(new), None),
+                apply(scratch.store(), prepare(old.clone()), prepare(new), None),
                 Err(ApplyError::Unsupported)
             ),
             "{label}"
         );
-        assert_eq!(store_bytes(&scratch.store()), before, "{label}");
+        assert_eq!(store_bytes(scratch.store()), before, "{label}");
     }
 }
 
@@ -273,20 +274,21 @@ fn sparse_apply_rejects_changed_index_meaning_without_store_changes() {
         "high-water",
         "id index counters.byValue 10101010101010101010101010101010\nhigh-water",
     );
-    let old = marrow_verify::verify(&compile::compile_bytes(&source, &ids)).expect("indexed image");
+    let old = marrow_verify::verify(&marrow_test_support::program::compile_bytes(&source, &ids))
+        .expect("indexed image");
     let scratch = Scratch::new("apply");
     provision(
-        &scratch.store(),
+        scratch.store(),
         request(&old, StoreInstanceId::draw().expect("instance")),
     )
     .expect("provision");
-    populate_counter(&scratch.store(), &old);
+    populate_counter(scratch.store(), &old);
     assert!(
-        crate::audit(&scratch.store(), prepare(old.clone()))
+        crate::audit(scratch.store(), prepare(old.clone()))
             .expect("old audit")
             .is_clean()
     );
-    let before = store_bytes(&scratch.store());
+    let before = store_bytes(scratch.store());
     for replacement in [
         "",
         "index byValue[id, value] unique",
@@ -294,15 +296,16 @@ fn sparse_apply_rejects_changed_index_meaning_without_store_changes() {
     ] {
         let changed = source.replace("index byValue[value, id] unique", replacement);
         let new =
-            marrow_verify::verify(&compile::compile_bytes(&changed, &ids)).expect("changed index");
+            marrow_verify::verify(&marrow_test_support::program::compile_bytes(&changed, &ids))
+                .expect("changed index");
         assert!(
             matches!(
-                apply(&scratch.store(), prepare(old.clone()), prepare(new), None),
+                apply(scratch.store(), prepare(old.clone()), prepare(new), None),
                 Err(ApplyError::Unsupported)
             ),
             "{replacement}"
         );
-        assert_eq!(store_bytes(&scratch.store()), before, "{replacement}");
+        assert_eq!(store_bytes(scratch.store()), before, "{replacement}");
     }
 }
 
@@ -334,12 +337,12 @@ fn sparse_apply_preserves_populated_irregular_addresses_and_refuses_exhaustion()
         request.head.head_map = crate::HeadMap::decode(&mut crate::codec::Reader::new(&encoded))
             .expect("valid irregular map before population");
         let old_map = request.head.head_map.clone();
-        provision(&scratch.store(), request).expect("provision");
-        populate_counter(&scratch.store(), &old);
-        let before = crate::audit(&scratch.store(), prepare(old.clone())).expect("populated old");
-        let bytes = store_bytes(&scratch.store());
+        provision(scratch.store(), request).expect("provision");
+        populate_counter(scratch.store(), &old);
+        let before = crate::audit(scratch.store(), prepare(old.clone())).expect("populated old");
+        let bytes = store_bytes(scratch.store());
         let result = apply(
-            &scratch.store(),
+            scratch.store(),
             prepare(old.clone()),
             prepare(new.clone()),
             Some(ceiling),
@@ -352,7 +355,7 @@ fn sparse_apply_preserves_populated_irregular_addresses_and_refuses_exhaustion()
                 }))
             ));
             assert_eq!(result.unwrap_err().code(), marrow_codes::Code::StoreLimit);
-            assert_eq!(store_bytes(&scratch.store()), bytes);
+            assert_eq!(store_bytes(scratch.store()), bytes);
             continue;
         }
         result.expect("apply at actual high-water");
@@ -375,7 +378,7 @@ fn sparse_apply_preserves_populated_irregular_addresses_and_refuses_exhaustion()
             .find(|entry| old_map.number_of(&entry.ledger_id).is_none())
             .expect("added field");
         assert_eq!(new_entry.number, high_water);
-        let after = crate::audit(&scratch.store(), prepare(new.clone())).expect("new layout");
+        let after = crate::audit(scratch.store(), prepare(new.clone())).expect("new layout");
         assert!(after.is_clean());
         assert_eq!(after.summary.entries, 1);
         assert_eq!(after.digest, before.digest);
@@ -439,12 +442,11 @@ fn an_interrupted_sparse_apply_recovers_its_actual_head(
 ) {
     let scratch = Scratch::new("apply");
     let instance = StoreInstanceId::draw().expect("instance");
-    provision(&scratch.store(), request(old, instance)).expect("provision");
-    populate_counter(&scratch.store(), old);
-    let before =
-        crate::audit(&scratch.store(), prepare(old.clone())).expect("old logical contents");
+    provision(scratch.store(), request(old, instance)).expect("provision");
+    populate_counter(scratch.store(), old);
+    let before = crate::audit(scratch.store(), prepare(old.clone())).expect("old logical contents");
     let error = apply_observed(
-        &scratch.store(),
+        scratch.store(),
         prepare(old.clone()),
         prepare(new.clone()),
         Some(ceiling),
@@ -483,7 +485,7 @@ fn an_interrupted_sparse_apply_recovers_its_actual_head(
         active_binding(selected)
     );
     let rejected =
-        recover(&scratch.store(), prepare(other.clone())).expect_err("wrong selected image");
+        recover(scratch.store(), prepare(other.clone())).expect_err("wrong selected image");
     assert!(matches!(
         rejected.fault,
         RecoveryFault::Validation(AuditError::Refused(AdmissionRefusal::ContractChanged(_)))
@@ -497,7 +499,7 @@ fn an_interrupted_sparse_apply_recovers_its_actual_head(
         );
     }
     let recovered =
-        recover(&scratch.store(), prepare(selected.clone())).expect("recover actual image");
+        recover(scratch.store(), prepare(selected.clone())).expect("recover actual image");
     assert_eq!(recovered.instance, instance);
     assert_eq!(recovered.image_id, selected.image_id());
     if let Some(bytes) = replacement {
@@ -515,7 +517,7 @@ fn an_interrupted_sparse_apply_recovers_its_actual_head(
         head
     );
     let after =
-        crate::audit(&scratch.store(), prepare(selected.clone())).expect("recovered contents");
+        crate::audit(scratch.store(), prepare(selected.clone())).expect("recovered contents");
     assert!(after.is_clean());
     assert_eq!(after.summary.entries, 1);
     assert_eq!(after.digest, before.digest);
@@ -551,16 +553,16 @@ fn sparse_apply_final_verification_preserves_uncertainty_and_instance() {
                 .expect("valid envelope")
             }
         };
-        provision(&scratch.store(), req).expect("provision");
-        populate_counter(&scratch.store(), &old);
-        let store = scratch.store();
+        provision(scratch.store(), req).expect("provision");
+        populate_counter(scratch.store(), &old);
+        let store = scratch.store().to_path_buf();
         let bytes = replacement.clone();
         let (seam, reached) = mutate_at(Step::Activated, move |dir| {
             dir.replace(artifact, &bytes).expect("replace artifact");
             crate::durable_fs::sync_dir(&store).expect("sync directory");
         });
         let error = apply_observed(
-            &scratch.store(),
+            scratch.store(),
             prepare(old.clone()),
             prepare(new.clone()),
             Some(ceiling),
@@ -594,18 +596,21 @@ fn sparse_apply_refuses_logical_corruption_before_publication() {
     );
     let new_source = source.replace("required value", "extra: int\nrequired value")
         + "\npub fn readExtra(n: int): int { return ^counters[n].extra ?? -1 }\n";
-    let new = marrow_verify::verify(&compile::compile_bytes(&new_source, &ids))
-        .expect("new boolean image");
+    let new = marrow_verify::verify(&marrow_test_support::program::compile_bytes(
+        &new_source,
+        &ids,
+    ))
+    .expect("new boolean image");
     let populated = Scratch::new("apply");
     let target = Scratch::new("apply");
     provision(
-        &populated.store(),
+        populated.store(),
         request(&integer, StoreInstanceId::draw().expect("instance")),
     )
     .expect("integer store");
-    populate_counter(&populated.store(), &integer);
+    populate_counter(populated.store(), &integer);
     provision(
-        &target.store(),
+        target.store(),
         request(&old, StoreInstanceId::draw().expect("instance")),
     )
     .expect("boolean store");
@@ -614,7 +619,7 @@ fn sparse_apply_refuses_logical_corruption_before_publication() {
         target.store().join(crate::ENGINE_FILE),
     )
     .expect("physical store with wrong logical values");
-    let before = store_bytes(&target.store());
+    let before = store_bytes(target.store());
     let ceiling = marrow_image::CeilingDescriptor::from_payload(&accepted_ceiling(&old))
         .expect("old ceiling")
         .expanded(
@@ -623,13 +628,13 @@ fn sparse_apply_refuses_logical_corruption_before_publication() {
         )
         .expect("union")
         .ceiling_id();
-    let error = apply(&target.store(), prepare(old), prepare(new), Some(ceiling))
+    let error = apply(target.store(), prepare(old), prepare(new), Some(ceiling))
         .expect_err("invalid OLD data");
     let ApplyError::Lifecycle(LifecycleError::Invalid(report)) = error else {
         panic!("logical audit must refuse: {error:?}")
     };
     assert!(!report.is_clean());
-    assert_eq!(store_bytes(&target.store()), before);
+    assert_eq!(store_bytes(target.store()), before);
 }
 
 /// A store whose envelope is not Active is mid-publication. Apply refuses it before opening
@@ -649,10 +654,10 @@ fn sparse_apply_refuses_a_store_awaiting_activation() {
         .ceiling_id();
     let scratch = Scratch::new("apply");
     let instance = StoreInstanceId::draw().expect("instance");
-    provision(&scratch.store(), request(&old, instance)).expect("provision");
-    populate_counter(&scratch.store(), &old);
+    provision(scratch.store(), request(&old, instance)).expect("provision");
+    populate_counter(scratch.store(), &old);
     apply_observed(
-        &scratch.store(),
+        scratch.store(),
         prepare(old.clone()),
         prepare(new.clone()),
         Some(ceiling),
@@ -664,8 +669,8 @@ fn sparse_apply_refuses_a_store_awaiting_activation() {
     )
     .expect("envelope");
     assert!(matches!(record.state, EnvelopeState::Rebind { .. }));
-    let before = store_bytes(&scratch.store());
-    let error = apply(&scratch.store(), prepare(old), prepare(new), Some(ceiling))
+    let before = store_bytes(scratch.store());
+    let error = apply(scratch.store(), prepare(old), prepare(new), Some(ceiling))
         .expect_err("a store awaiting activation admits no apply");
     assert!(
         matches!(
@@ -676,5 +681,5 @@ fn sparse_apply_refuses_a_store_awaiting_activation() {
         ),
         "{error:?}"
     );
-    assert_eq!(store_bytes(&scratch.store()), before);
+    assert_eq!(store_bytes(scratch.store()), before);
 }

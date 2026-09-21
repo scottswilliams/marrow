@@ -1,7 +1,8 @@
 //! Multiple roots and their indexes: root presence, managed indexes, index reads, entry
 //! identity, and optional presence steering.
 
-mod common;
+#[path = "common/project.rs"]
+pub mod common;
 
 #[path = "multi_root/entry_identity_value.rs"]
 mod entry_identity_value;

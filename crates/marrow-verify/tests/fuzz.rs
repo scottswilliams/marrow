@@ -11,15 +11,10 @@ use marrow_image::{
     ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef,
     Scalar, SemanticTarget, TypeId, VariantDef, image_id,
 };
-use marrow_test_support::{admitted, admitted_plan, site};
+use marrow_test_support::{admitted_plan, site};
 use marrow_verify::verify;
 
-#[path = "common/tracer_schema.rs"]
-#[allow(
-    dead_code,
-    reason = "this binary uses the slice of the shared tracer fixture its corpora need"
-)]
-mod tracer_schema;
+use marrow_test_support::tracer_schema;
 use tracer_schema::*;
 
 fn ledger(bytes: [u8; 16]) -> LedgerIdBytes {
@@ -85,7 +80,7 @@ fn seed() -> u64 {
 
 fn a_good_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let answer = ok(draft.intern_int(42));
     let code = vec![Instr::ConstLoad(answer), Instr::Return];
     let func = add_int_fn(&mut draft, "main", code);
@@ -100,7 +95,7 @@ fn a_good_image() -> Vec<u8> {
 /// graph cycle pass that plain scalar images never touch.
 fn a_nested_value_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let inner = ok(draft.intern_string("Inner"));
     let outer = ok(draft.intern_string("Outer"));
     let ename = ok(draft.intern_string("E"));
@@ -217,7 +212,7 @@ fn mutated_durable_images_never_panic_the_verifier() {
 /// root without indexes never exercises.
 fn an_indexed_durable_image() -> Vec<u8> {
     let (mut draft_owner, root) = indexed_draft(by_label_projection());
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     site(
         &mut draft,
         root.occurrence(),
@@ -244,7 +239,7 @@ fn mutated_indexed_durable_images_never_panic_the_verifier() {
 /// place-slot presence lattice, which a bare-set image never exercises.
 fn a_strict_durable_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let sites = durable_schema(&mut draft);
     let text = ok(draft.intern_text("x"));
     let code = vec![
@@ -288,7 +283,7 @@ fn mutated_strict_durable_images_never_panic_the_verifier() {
 /// flat root never exercises.
 fn a_group_branch_durable_image() -> Vec<u8> {
     let (mut draft_owner, root) = group_branch_draft(false);
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     // The whole-graph operation sites a compiler emits for a nested graph: a whole-payload
     // site per keyed placement (the root and the `notes` branch) and a field-leaf site per
     // stored field (`title`, `details.pages`, `notes.text`).
@@ -322,7 +317,7 @@ fn mutated_group_branch_durable_images_never_panic_the_verifier() {
 /// that a flat scalar root never exercises.
 fn a_widened_durable_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     // Enum `Access { a, b(int) }` — `b` carries an int payload leaf.
     let access = ok(draft.intern_string("Access"));
     let a = ok(draft.intern_string("a"));
@@ -478,7 +473,7 @@ fn mutated_widened_durable_images_never_panic_the_verifier() {
 /// exercises.
 fn a_multi_site_durable_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let rec = ok(draft.intern_string("Row"));
     let mut field_defs = Vec::new();
     for name in ["a", "b", "c", "d"] {

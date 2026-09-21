@@ -1,6 +1,6 @@
-use crate::{test_ledger as ledger, test_project as project_capture};
 use marrow_codes::Code;
 use marrow_syntax::SourceSpan;
+use marrow_test_support::{ledger, project as project_capture};
 
 /// A write guarded by an older presence proof, with erasers before and inside the
 /// loops that surround it, is refused once at the write itself — not once per

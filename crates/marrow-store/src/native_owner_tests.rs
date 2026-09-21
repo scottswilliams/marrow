@@ -11,8 +11,8 @@ use super::*;
 use ::redb::{ReadableDatabase, TableDefinition};
 
 use crate::redb::{create_raw, reopen_raw};
-use crate::scratch_tests::Scratch;
 use marrow_codes::Code;
+use marrow_test_support::Scratch;
 
 /// Acquire, bind, and open in the one order production uses.
 fn open_existing(

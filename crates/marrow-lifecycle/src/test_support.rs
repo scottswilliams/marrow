@@ -21,19 +21,14 @@ use crate::{
     active_binding, head_map, prepare,
 };
 
-#[path = "../tests/support/compile.rs"]
-pub(crate) mod compile;
-#[path = "../tests/support/scratch.rs"]
-mod scratch;
-
-pub(crate) use scratch::Scratch;
+pub(crate) use marrow_test_support::Scratch;
 
 pub(crate) const SOURCE: &str = "resource Counter { required value: int }\nstore ^counters[id: int]: Counter\npub fn readValue(n: int): int { return ^counters[n].value ?? 0 }\n";
 pub(crate) const IDS: &str = "marrow ids v0\nmachine-written by marrow; do not edit\nid application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\nid product Counter 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\nid field Counter.value 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\nid root counters 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\nid key counters.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\nhigh-water 0\nend\n";
 
 /// The image bytes of `source` under the corpus ledger.
 pub(crate) fn compile_bytes(source: &str) -> Vec<u8> {
-    compile::compile_bytes(source, IDS)
+    marrow_test_support::program::compile_bytes(source, IDS)
 }
 
 pub(crate) fn request(image: &VerifiedImage, instance: StoreInstanceId) -> ProvisionRequest {

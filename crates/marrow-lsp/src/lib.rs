@@ -38,9 +38,4 @@ mod server;
 mod transport;
 mod uri;
 
-/// The crate's one scratch-directory fixture, shared with the integration suite.
-#[cfg(test)]
-#[path = "../tests/support/scratch.rs"]
-mod scratch;
-
 pub use server::serve;

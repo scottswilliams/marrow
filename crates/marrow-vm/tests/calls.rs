@@ -1,7 +1,6 @@
 //! Checked function selection, direct calls, cycle rejection and call depth.
 
 use marrow_image::{ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry};
-use marrow_test_support::admitted;
 use marrow_verify::{FunctionIndex, VerifiedImage, verify};
 use marrow_vm::{Value, run};
 
@@ -19,7 +18,7 @@ fn spans(code: &[Instr]) -> Vec<SpanEntry> {
 
 fn direct_call_image(argument: i64, operation: Instr) -> VerifiedImage {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let src = draft
         .intern_string("src/main.mw")
         .expect("a within-domain mint");
@@ -78,7 +77,7 @@ fn a_direct_call_runs() {
 #[test]
 fn absent_function_ordinals_are_refused_without_panicking() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let src = draft
         .intern_string("src/main.mw")
         .expect("a within-domain mint");
@@ -159,7 +158,7 @@ fn selections_keep_their_image_through_constants_and_helper_calls() {
 #[test]
 fn a_self_recursive_call_rejects_as_a_cycle() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let src = draft
         .intern_string("src/main.mw")
         .expect("a within-domain mint");
@@ -189,7 +188,7 @@ fn an_acyclic_call_chain_past_the_dynamic_depth_bound_refuses() {
     const FIRST_OVER_LIMIT_CALLS: usize = 65;
 
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let src = draft
         .intern_string("src/main.mw")
         .expect("a within-domain mint");

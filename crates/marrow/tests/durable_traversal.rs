@@ -1,6 +1,7 @@
 //! Durable traversal: place bases, traversal sources, and the rejections each refuses.
 
-mod common;
+#[path = "common/project.rs"]
+pub mod common;
 
 #[path = "durable_traversal/durable_place_base_composition.rs"]
 mod durable_place_base_composition;

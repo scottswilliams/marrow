@@ -1,7 +1,7 @@
 //! Durable evolution: field widening, widened values, enum reuse, identity allocation,
 //! and the identity ledger.
 
-mod common;
+pub mod common;
 
 #[path = "durable_evolution/durable_enum_reuse.rs"]
 mod durable_enum_reuse;

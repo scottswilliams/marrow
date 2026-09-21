@@ -10,7 +10,7 @@ use super::{FORMAT_VERSION, META, NativeEngine, TABLE, create_raw, map_open_erro
 use crate::conformance;
 use crate::engine::{ByteEngine, CommitOutcome, ReadView, WriteTxn};
 use crate::error::StoreError;
-use crate::scratch_tests::Scratch;
+use marrow_test_support::Scratch;
 
 #[test]
 fn read_only_admission_selects_the_writable_allocator_path_without_full_repair() {

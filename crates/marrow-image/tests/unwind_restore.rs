@@ -11,15 +11,11 @@ use marrow_image::{
     CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId, FieldDef,
     FunctionDef, ImageDraft, ImageType, Instr, LedgerIdBytes, Scalar, SemanticTarget, VariantDef,
 };
-use marrow_test_support::{admitted, admitted_plan};
+use marrow_test_support::admitted_plan;
 
-#[path = "common/ledger_ids.rs"]
-mod ledger_ids;
-use ledger_ids::{APPLICATION_ID, PRODUCT_ID, seeded_id};
+use marrow_test_support::ledger_ids::{APPLICATION_ID, PRODUCT_ID, seeded_id};
 
-#[path = "common/fixture_graph.rs"]
-mod fixture_graph;
-use fixture_graph::{admit_root, declare_product};
+use marrow_test_support::fixture_graph::{admit_root, declare_product};
 
 /// The seeded-id tag for the field member each pass declares.
 const FIELD: u8 = 0x50;
@@ -139,13 +135,13 @@ fn mutate_every_owner(txn: &mut DraftTxn<'_>, seed: u8) {
 #[ignore = "the subprocess half of the outer-panic restoration red"]
 fn inner_outer_panic_restores_every_owner() {
     let mut owner = ImageDraft::new();
-    let mut txn = admitted(&mut owner);
+    let mut txn = owner.begin_transaction();
     mutate_every_owner(&mut txn, 0x21);
     txn.commit();
     let baseline = owner.encode().expect("the committed draft encodes").bytes;
 
     let unwound = catch_unwind(AssertUnwindSafe(|| {
-        let mut txn = admitted(&mut owner);
+        let mut txn = owner.begin_transaction();
         mutate_every_owner(&mut txn, 0x22);
         panic!("the outer panic after mutating every owner");
     }));

@@ -11,7 +11,8 @@ use std::fs;
 use std::path::Path;
 use std::process::Output;
 
-use crate::common::{Project, TempDir, marrow_in, write};
+use crate::common::{Project, marrow_in, write};
+use marrow_test_support::Scratch;
 
 /// The version-control ignore entry the publication owner writes beside the
 /// entries no checkout may carry. A project adds no line of its own, so these
@@ -452,7 +453,7 @@ fn a_cloned_and_relocated_checkout_reuses_the_committed_ids() {
     let committed = fs::read(workspace.path(".marrow/ids")).expect("committed artifact");
 
     // Clone: manifest, source, and .marrow/ids — no store, as a checkout would be.
-    let clone = TempDir::new("clone-dst");
+    let clone = Scratch::new("clone-dst");
     write(
         &clone.join("marrow.toml"),
         fs::read_to_string(workspace.path("marrow.toml")).unwrap(),

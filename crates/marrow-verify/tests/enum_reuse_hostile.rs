@@ -16,7 +16,7 @@ use marrow_image::{
     FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
     RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, ValueShapeNodeId, VariantDef,
 };
-use marrow_test_support::{admitted, admitted_plan, site};
+use marrow_test_support::{admitted_plan, site};
 use marrow_verify::{Duplicate, RejectionKind, VerifyPhase, verify};
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
@@ -100,7 +100,7 @@ fn build(
     shape_two: AccessShape,
 ) -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     draft.set_application_identity(id(APPLICATION_ID));
     let shape_one = access_shape(&mut draft, shape_one);
     let shape_two = access_shape(&mut draft, shape_two);
@@ -482,7 +482,7 @@ fn graph_records(
 /// they claim.
 fn forge(spec: &GraphSpec) -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     draft.set_application_identity(id(spec.application));
     let enum_idx = access_enum(&mut draft);
     let access = ImageType::Enum {

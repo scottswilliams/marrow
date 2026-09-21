@@ -88,9 +88,9 @@ fn unsupported_envelope_stamp_refuses_provision_before_creating_files() {
     let scratch = Scratch::new("unsupported-stamp");
     let mut req = request(instance());
     req.envelope.engine_format_version = u32::MAX;
-    let result = provision(&scratch.store(), req);
+    let result = provision(scratch.store(), req);
     if result.is_ok() {
-        let original = scratch.base().to_path_buf();
+        let original = scratch.path().to_path_buf();
         std::mem::forget(scratch);
         panic!(
             "unsupported envelope stamp was published; preserve {}",
@@ -110,7 +110,7 @@ fn unsupported_envelope_stamp_refuses_provision_before_creating_files() {
         })
     ));
     assert_eq!(
-        std::fs::read_dir(scratch.base())
+        std::fs::read_dir(scratch.path())
             .expect("scratch entries")
             .count(),
         0
@@ -120,7 +120,7 @@ fn unsupported_envelope_stamp_refuses_provision_before_creating_files() {
 #[test]
 fn provision_accepts_a_long_valid_destination_name() {
     let scratch = std::mem::ManuallyDrop::new(Scratch::new("long-destination"));
-    let store = scratch.base().join("s".repeat(240));
+    let store = scratch.path().join("s".repeat(240));
     // Establish that the filesystem accepts the destination component itself.
     std::fs::create_dir(&store).expect("valid destination component");
     std::fs::remove_dir(&store).expect("return destination to absent");
@@ -128,7 +128,7 @@ fn provision_accepts_a_long_valid_destination_name() {
     let provisioned = provision(&store, request(id)).unwrap_or_else(|error| {
         panic!(
             "provision valid destination: {error}; preserve {}",
-            scratch.base().display()
+            scratch.path().display()
         )
     });
     assert_eq!(provisioned.instance, id);
@@ -150,12 +150,12 @@ fn provision_publishes_complete_and_open_reopens() {
     let store = dir.store();
     let id = instance();
 
-    assert_eq!(classify(&store), Preflight::Absent);
-    let provisioned = provision(&store, request(id)).expect("provision");
+    assert_eq!(classify(store), Preflight::Absent);
+    let provisioned = provision(store, request(id)).expect("provision");
     assert_eq!(provisioned.instance, id);
-    assert_eq!(classify(&store), Preflight::Complete);
+    assert_eq!(classify(store), Preflight::Complete);
 
-    let opened = open(&store, projection()).expect("open");
+    let opened = open(store, projection()).expect("open");
     assert_eq!(
         opened.envelope.instance, id,
         "the reopened store carries its instance"
@@ -164,7 +164,7 @@ fn provision_publishes_complete_and_open_reopens() {
     drop(opened); // releases the lock (clean shutdown truncates the lock body)
 
     // A clean reopen is not an unclean shutdown: it still opens.
-    let reopened = open(&store, projection()).expect("reopen after clean close");
+    let reopened = open(store, projection()).expect("reopen after clean close");
     assert_eq!(reopened.envelope.instance, id);
 }
 
@@ -173,18 +173,18 @@ fn uncertain_publication_refuses_ordinary_reopen() {
     let dir = Scratch::new("publication-reopen");
     let store = dir.store();
     let id = instance();
-    let error = provision_observed(&store, request(id), cut_parent_sync())
+    let error = provision_observed(store, request(id), cut_parent_sync())
         .expect_err("the publication parent sync failed");
     assert!(
         matches!(error.fault, crate::ProvisionFault::PublicationUncertain { instance, .. } if instance == id)
     );
 
-    match open(&store, projection()) {
+    match open(store, projection()) {
         Err(OpenError::ActivationRequired { instance }) => assert_eq!(instance, id),
         Err(error) => panic!("unexpected refusal: {error}"),
         Ok(opened) => {
             drop(opened);
-            let retained = dir.base().to_path_buf();
+            let retained = dir.path().to_path_buf();
             std::mem::forget(dir);
             panic!(
                 "ordinary open admitted an uncertain publication; retained fault store: {}",
@@ -199,11 +199,11 @@ fn failed_publication_sync_reports_uncertainty_and_retains_destination() {
     let dir = Scratch::new("publication-sync");
     let store = dir.store();
     let id = instance();
-    let error = provision_observed(&store, request(id), cut_parent_sync())
+    let error = provision_observed(store, request(id), cut_parent_sync())
         .expect_err("the final parent sync failed");
 
-    assert_eq!(classify(&store), Preflight::Complete);
-    let children = std::fs::read_dir(dir.base())
+    assert_eq!(classify(store), Preflight::Complete);
+    let children = std::fs::read_dir(dir.path())
         .expect("read parent")
         .map(|entry| entry.expect("child").file_name())
         .collect::<Vec<_>>();
@@ -223,7 +223,7 @@ fn failed_publication_sync_reports_uncertainty_and_retains_destination() {
         id
     );
     assert!(matches!(
-        provision(&store, request(instance())),
+        provision(store, request(instance())),
         Err(ProvisionError {
             fault: crate::ProvisionFault::AlreadyProvisioned,
             ..
@@ -240,7 +240,7 @@ fn failed_active_sync_reports_distinct_uncertainty_after_publication_barrier() {
     let dir = Scratch::new("active-sync");
     let store = dir.store();
     let id = instance();
-    let error = provision_observed(&store, request(id), cut(crate::seam::Step::Activation))
+    let error = provision_observed(store, request(id), cut(crate::seam::Step::Activation))
         .expect_err("final Active directory sync failed");
     assert!(
         matches!(error.fault, crate::ProvisionFault::ActivationUncertain { instance, .. } if instance == id)
@@ -251,7 +251,7 @@ fn failed_active_sync_reports_distinct_uncertainty_after_publication_barrier() {
     )
     .expect("valid record");
     assert_eq!(record.state, crate::envelope::EnvelopeState::Active);
-    let opened = open(&store, projection()).expect("the prior publication barrier succeeded");
+    let opened = open(store, projection()).expect("the prior publication barrier succeeded");
     assert_eq!(opened.envelope.instance, id);
 }
 
@@ -265,12 +265,12 @@ fn a_pre_rename_crash_state_keeps_the_destination_absent() {
 
     // Model the pre-rename crash state: a leftover temp-shaped sibling, destination absent.
     let leftover = dir
-        .base()
+        .path()
         .join(format!(".marrow-provisioning.{}.999", std::process::id()));
     std::fs::create_dir_all(leftover.join("junk")).expect("leftover temp");
 
     assert_eq!(
-        classify(&store),
+        classify(store),
         Preflight::Absent,
         "a pre-rename crash never publishes the destination",
     );
@@ -278,10 +278,10 @@ fn a_pre_rename_crash_state_keeps_the_destination_absent() {
     // A fresh provision still succeeds and publishes a complete store.
     let id = instance();
     assert_eq!(
-        provision(&store, request(id)).expect("provision").instance,
+        provision(store, request(id)).expect("provision").instance,
         id
     );
-    assert_eq!(classify(&store), Preflight::Complete);
+    assert_eq!(classify(store), Preflight::Complete);
     assert!(
         leftover.exists(),
         "the leftover temp is ignored, not required"
@@ -295,30 +295,30 @@ fn a_failed_preflight_creates_no_file() {
     let dir = Scratch::new("no-file");
     let store = dir.store();
 
-    let before = list(dir.base());
-    assert_eq!(classify(&store), Preflight::Absent);
+    let before = list(dir.path());
+    assert_eq!(classify(store), Preflight::Absent);
     assert_eq!(
-        list(dir.base()),
+        list(dir.path()),
         before,
         "preflight on absent created nothing"
     );
 
     // Incomplete: a directory with no artifacts.
-    std::fs::create_dir_all(&store).expect("mkdir");
-    let before = list(&store);
-    assert_eq!(classify(&store), Preflight::Incomplete);
+    std::fs::create_dir_all(store).expect("mkdir");
+    let before = list(store);
+    assert_eq!(classify(store), Preflight::Incomplete);
     assert_eq!(
-        list(&store),
+        list(store),
         before,
         "preflight on incomplete created nothing"
     );
 
     // Open refuses an incomplete store without touching it.
     assert!(matches!(
-        open(&store, projection()),
+        open(store, projection()),
         Err(OpenError::Incomplete)
     ));
-    assert_eq!(list(&store), before, "a refused open created nothing");
+    assert_eq!(list(store), before, "a refused open created nothing");
 }
 
 /// A second open of a held store is refused with StoreInUse naming the live owner (this
@@ -328,10 +328,10 @@ fn a_second_open_is_store_in_use_naming_the_owner() {
     let dir = Scratch::new("in-use");
     let store = dir.store();
     let id = instance();
-    provision(&store, request(id)).expect("provision");
+    provision(store, request(id)).expect("provision");
 
-    let held = open(&store, projection()).expect("first open holds the lock");
-    match open(&store, projection()) {
+    let held = open(store, projection()).expect("first open holds the lock");
+    match open(store, projection()) {
         Err(OpenError::Lock(error)) => {
             assert_eq!(error.code(), Code::StoreLocked);
             match error {
@@ -351,7 +351,7 @@ fn a_second_open_is_store_in_use_naming_the_owner() {
     }
     drop(held);
     // Once released, the store opens again.
-    open(&store, projection()).expect("reopen after release");
+    open(store, projection()).expect("reopen after release");
 }
 
 /// Creator race: many threads provision the same destination concurrently; exactly one wins
@@ -365,7 +365,7 @@ fn concurrent_provision_has_one_winner_and_one_lineage() {
     let winners: Vec<_> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..8)
             .map(|_| {
-                let store = store.clone();
+                let store = store.to_path_buf();
                 scope.spawn(move || {
                     let id = instance();
                     match provision(&store, request(id)) {
@@ -390,12 +390,12 @@ fn concurrent_provision_has_one_winner_and_one_lineage() {
 
     assert_eq!(winners.len(), 1, "exactly one provisioner wins the race");
     assert_eq!(
-        list(dir.base()),
+        list(dir.path()),
         vec!["store"],
         "losers remove their own stages"
     );
-    assert_eq!(classify(&store), Preflight::Complete);
-    let opened = open(&store, projection()).expect("open the survivor");
+    assert_eq!(classify(store), Preflight::Complete);
+    let opened = open(store, projection()).expect("open the survivor");
     assert_eq!(
         opened.envelope.instance, winners[0],
         "the destination carries exactly the winner's instance (one lineage)",
@@ -410,12 +410,12 @@ fn an_unclean_prior_shutdown_runs_the_audit_and_a_healthy_store_opens() {
     let dir = Scratch::new("unclean");
     let store = dir.store();
     let id = instance();
-    provision(&store, request(id)).expect("provision");
+    provision(store, request(id)).expect("provision");
 
     // Simulate a crashed owner: write a stale owner descriptor into the lock body WITHOUT
     // holding the advisory lock, then leave it (a clean shutdown would have truncated it).
     {
-        let held = open(&store, projection()).expect("open to populate the lock body");
+        let held = open(store, projection()).expect("open to populate the lock body");
         // Copy the current lock body, then drop `held` (which truncates it), then restore the
         // stale body — modelling a crash that left the descriptor behind.
         let lock_path = store.join(crate::LOCK_FILE);
@@ -432,10 +432,10 @@ fn an_unclean_prior_shutdown_runs_the_audit_and_a_healthy_store_opens() {
 
     // The next open sees the unclean prior shutdown, runs the audit, and the healthy store
     // opens. (The audit covers crash-path corruption only — see the module note.)
-    let opened = open(&store, projection()).expect("open runs the audit and succeeds");
+    let opened = open(store, projection()).expect("open runs the audit and succeeds");
     drop(opened);
     // The clean close truncated the lock, so the following open is not unclean and still opens.
-    open(&store, projection()).expect("clean reopen");
+    open(store, projection()).expect("clean reopen");
 }
 
 /// Cross-process contention: a spawned child holds the store while the parent is refused with
@@ -446,10 +446,10 @@ fn a_child_process_holding_the_store_blocks_the_parent_by_pid() {
     let dir = Scratch::new("child-lock");
     let store = dir.store();
     let id = instance();
-    provision(&store, request(id)).expect("provision");
+    provision(store, request(id)).expect("provision");
 
-    let ready = dir.base().join("child-ready");
-    let release = dir.base().join("child-release");
+    let ready = dir.path().join("child-ready");
+    let release = dir.path().join("child-release");
 
     // Re-invoke this test binary in the ignored child-holder helper, passing the store dir and
     // the coordination files by env. The child opens the store (taking the lock), touches
@@ -461,7 +461,7 @@ fn a_child_process_holding_the_store_blocks_the_parent_by_pid() {
             "--ignored",
             "--nocapture",
         ])
-        .env("MARROW_LC_STORE", &store)
+        .env("MARROW_LC_STORE", store)
         .env("MARROW_LC_READY", &ready)
         .env("MARROW_LC_RELEASE", &release)
         .spawn()
@@ -478,7 +478,7 @@ fn a_child_process_holding_the_store_blocks_the_parent_by_pid() {
     }
 
     // The parent is refused, named by the child's pid.
-    let outcome = open(&store, projection());
+    let outcome = open(store, projection());
     match outcome {
         Err(OpenError::Lock(marrow_kernel::durable::NativeLockError::StoreInUse {
             owner: Some(owner),
@@ -505,7 +505,7 @@ fn a_child_process_holding_the_store_blocks_the_parent_by_pid() {
     // Release the child and confirm the store reopens once it exits.
     std::fs::write(&release, b"").expect("signal release");
     child.wait().expect("child exits");
-    open(&store, projection()).expect("reopen after the child releases");
+    open(store, projection()).expect("reopen after the child releases");
 }
 
 /// The child-holder helper: NOT a real test (ignored). When invoked with the coordination
@@ -522,7 +522,7 @@ fn child_holder_helper() {
     let release = std::env::var("MARROW_LC_RELEASE").expect("release path");
     let store = PathBuf::from(store);
 
-    let _held = open(&store, projection()).expect("child opens and holds the store");
+    let _held = open(&store, projection()).expect("child opens and holds the &store");
     std::fs::write(&ready, b"").expect("signal ready");
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
@@ -783,11 +783,11 @@ fn relative_provision_reports_success_after_publication() {
 fn run_exact_child(dir: Scratch, test: &str, marker: &str) {
     let mut child = std::process::Command::new(std::env::current_exe().expect("current exe"))
         .args(["--exact", test, "--nocapture"])
-        .current_dir(dir.base())
+        .current_dir(dir.path())
         .env_remove("MARROW_LC_CREATE_COLLISION_CHILD_BASE")
         .env_remove("MARROW_LC_RELATIVE_PROVISION_CHILD_BASE")
         .env_remove("MARROW_LC_STAGE_ALIAS_CHILD_BASE")
-        .env(marker, dir.base())
+        .env(marker, dir.path())
         .spawn()
         .expect("spawn exact child test");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -795,7 +795,7 @@ fn run_exact_child(dir: Scratch, test: &str, marker: &str) {
         match child.try_wait() {
             Ok(Some(status)) => {
                 if !status.success() {
-                    let original = dir.base().to_path_buf();
+                    let original = dir.path().to_path_buf();
                     std::mem::forget(dir);
                     panic!(
                         "child test {test} failed: {status}; preserve {}",

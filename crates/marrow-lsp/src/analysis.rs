@@ -198,7 +198,7 @@ impl std::fmt::Write for BoundedSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scratch::{self, TempDir};
+    use marrow_test_support::{Scratch, file_uri};
     use std::fs;
 
     /// Build a real on-disk project and return its root URI spelling.
@@ -215,11 +215,11 @@ mod tests {
     }
 
     fn root_for(dir: &Path) -> SelectedRoot {
-        SelectedRoot::from_uri(&scratch::uri_of(dir)).unwrap()
+        SelectedRoot::from_uri(&file_uri(dir)).unwrap()
     }
 
-    fn temp_dir(tag: &str) -> TempDir {
-        TempDir::new(&format!("analysis-{tag}"))
+    fn temp_dir(tag: &str) -> Scratch {
+        Scratch::new(&format!("analysis-{tag}"))
     }
 
     #[test]

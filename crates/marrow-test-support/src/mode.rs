@@ -1,13 +1,9 @@
-//! Shared scratch-directory and mode-bit support for the conformance suite.
-
-#![allow(dead_code)]
+//! Unix mode-bit probes for the suites that plant a withheld permission.
 
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 
-mod scratch;
-
-pub use scratch::Scratch;
+use crate::Scratch;
 
 /// Require that permission bits actually deny this process the access a mode
 /// withholds.

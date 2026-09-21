@@ -1,12 +1,17 @@
-// The fixture ledger-id namespace: the fixed ids a durable fixture names, and the one
-// minter for every seeded id beside them.
-//
-// Shared because a ledger id is an identity: two files that spell the same fixture
-// identity differently describe two different durable graphs, and a reader comparing
-// them cannot tell which difference is load-bearing.
-#![allow(dead_code)]
+//! The fixture ledger-id namespace: the fixed ids a durable fixture names, and the two
+//! minters for every id spelled beside them.
+//!
+//! Shared because a ledger id is an identity: two files that spell the same fixture
+//! identity differently describe two different durable graphs, and a reader comparing
+//! them cannot tell which difference is load-bearing.
 
 use marrow_image::LedgerIdBytes;
+
+/// The sixteen-byte ledger id every byte of which is `byte`: the fixed fixture id a test
+/// spells inline.
+pub fn id(byte: u8) -> LedgerIdBytes {
+    LedgerIdBytes::from_bytes([byte; 16])
+}
 
 /// The application identity a non-empty durable graph is anchored by.
 pub const APPLICATION_ID: [u8; 16] = [0x0a; 16];

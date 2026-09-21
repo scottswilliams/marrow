@@ -25,10 +25,10 @@ pub fn readValue(id: int): int? {
 }
 "#;
 
-use crate::support::Scratch;
+use marrow_test_support::Scratch;
 
 fn compile() -> PreparedImage {
-    let prepared = prepare(crate::support::compile::compile(SOURCE, IDS));
+    let prepared = prepare(marrow_test_support::program::compile(SOURCE, IDS));
     assert!(prepared.projection().is_some(), "durable schema");
     prepared
 }
@@ -56,7 +56,7 @@ fn recovery_consumes_the_old_owner_and_returns_only_a_known_reopened_owner() {
 #[test]
 fn ordinary_open_does_not_recreate_a_missing_engine_file() {
     let scratch = Scratch::new("commit-outcome");
-    let store = scratch.base().join("store");
+    let store = scratch.path().join("store");
     let prepared = provision_fixture(&store);
     let engine = store.join(ENGINE_FILE);
     std::fs::remove_file(&engine).expect("remove provisioned engine");
@@ -78,7 +78,7 @@ fn ordinary_open_does_not_recreate_a_missing_engine_file() {
 fn ordinary_open_does_not_adopt_empty_or_malformed_engine_files() {
     for (label, bytes) in [("empty", b"".as_slice()), ("malformed", b"not redb")] {
         let scratch = Scratch::new("commit-outcome");
-        let store = scratch.base().join(label);
+        let store = scratch.path().join(label);
         let prepared = provision_fixture(&store);
         let engine = store.join(ENGINE_FILE);
         std::fs::write(&engine, bytes).expect("replace engine with invalid body");

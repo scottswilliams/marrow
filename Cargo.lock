@@ -131,6 +131,7 @@ dependencies = [
  "marrow-runner",
  "marrow-syntax",
  "marrow-temporal",
+ "marrow-test-support",
  "marrow-verify",
  "marrow-vm",
  "serde_json",
@@ -149,12 +150,14 @@ dependencies = [
  "marrow-project",
  "marrow-syntax",
  "marrow-temporal",
+ "marrow-test-support",
 ]
 
 [[package]]
 name = "marrow-fs-journal"
 version = "0.1.0"
 dependencies = [
+ "marrow-test-support",
  "rustix",
 ]
 
@@ -174,6 +177,7 @@ dependencies = [
  "marrow-image",
  "marrow-store",
  "marrow-temporal",
+ "marrow-test-support",
  "marrow-verify",
  "marrow-vm",
 ]
@@ -210,6 +214,7 @@ dependencies = [
  "marrow-compile",
  "marrow-project-fs",
  "marrow-syntax",
+ "marrow-test-support",
  "serde",
  "serde_json",
 ]
@@ -229,6 +234,7 @@ dependencies = [
  "marrow-codes",
  "marrow-fs-journal",
  "marrow-project",
+ "marrow-test-support",
 ]
 
 [[package]]
@@ -242,6 +248,7 @@ dependencies = [
  "marrow-local-wire",
  "marrow-project",
  "marrow-temporal",
+ "marrow-test-support",
  "marrow-verify",
  "marrow-vm",
 ]
@@ -251,6 +258,7 @@ name = "marrow-store"
 version = "0.1.0"
 dependencies = [
  "marrow-codes",
+ "marrow-test-support",
  "redb",
 ]
 
@@ -269,7 +277,12 @@ version = "0.1.0"
 name = "marrow-test-support"
 version = "0.1.0"
 dependencies = [
+ "marrow-compile",
  "marrow-image",
+ "marrow-kernel",
+ "marrow-project",
+ "marrow-store",
+ "marrow-verify",
 ]
 
 [[package]]

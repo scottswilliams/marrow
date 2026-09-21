@@ -6,7 +6,7 @@
 //! command surface itself — argument decoding, exit codes, rendered stdout/stderr
 //! shape, the identity mint, the durable trough outcome — spawns the binary.
 
-mod common;
+pub mod common;
 
 use common::{CallOutcome, Diagnostics, Project, conformance_dir, marrow_in};
 use marrow_codes::Code;

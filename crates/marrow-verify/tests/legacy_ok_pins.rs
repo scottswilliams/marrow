@@ -12,7 +12,7 @@ use marrow_image::{
     VariantDef,
 };
 use marrow_image::{DurableIndexComponent, DurableIndexShape};
-use marrow_test_support::{admitted, admitted_plan};
+use marrow_test_support::admitted_plan;
 use marrow_verify::verify;
 
 /// A type reference naming a TYPES row no fixture declares.
@@ -30,7 +30,7 @@ fn main_draft(params: Vec<ImageType>, code: Vec<Instr>) -> ImageDraft {
 /// the exported function a second time.
 fn main_draft_with_id(params: Vec<ImageType>, code: Vec<Instr>) -> (ImageDraft, FuncId) {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let src = draft
         .intern_string("src/main.mw")
         .expect("a within-domain mint");
@@ -102,7 +102,7 @@ fn clean_image() -> EncodedImage {
 /// holds two: a `FuncId` is a table position, not a capability bound to its draft.
 fn forged_func_id() -> FuncId {
     let mut other_owner = ImageDraft::new();
-    let mut other = admitted(&mut other_owner);
+    let mut other = other_owner.begin_transaction();
     let src = other.intern_string("s").expect("a within-domain mint");
     let name = other.intern_string("f").expect("a within-domain mint");
     other.intern_int(0).expect("a within-domain mint");
@@ -148,7 +148,7 @@ fn an_out_of_range_call_target_draws_the_call_target_refusal() {
 #[test]
 fn an_out_of_range_export_target_draws_the_export_target_refusal() {
     let mut draft_owner = main_draft(Vec::new(), short_code());
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     draft.add_export(ExportId::of_local("", "ghost"), forged_func_id());
     assert_eq!(
         draft.encode().map(|_| ()),
@@ -161,7 +161,7 @@ fn an_out_of_range_export_target_draws_the_export_target_refusal() {
 #[test]
 fn an_out_of_range_test_entry_target_draws_the_test_target_refusal() {
     let mut draft_owner = main_draft(Vec::new(), short_code());
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let entry_name = draft.intern_string("t").expect("a within-domain mint");
     draft.add_test_entry(entry_name, forged_func_id());
     assert_eq!(
@@ -290,7 +290,7 @@ fn an_out_of_range_make_identity_root_draws_the_root_table_refusal() {
 #[test]
 fn an_out_of_range_field_type_draws_the_type_table_refusal() {
     let mut draft_owner = main_draft(Vec::new(), short_code());
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let name = draft.intern_string("R").expect("a within-domain mint");
     let field_name = draft.intern_string("f").expect("a within-domain mint");
     draft
@@ -312,7 +312,7 @@ fn an_out_of_range_field_type_draws_the_type_table_refusal() {
 #[test]
 fn an_out_of_range_enum_payload_type_draws_the_type_table_refusal() {
     let mut draft_owner = main_draft(Vec::new(), short_code());
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let name = draft.intern_string("P").expect("a within-domain mint");
     let variant_name = draft.intern_string("pv").expect("a within-domain mint");
     draft
@@ -334,7 +334,7 @@ fn an_out_of_range_enum_payload_type_draws_the_type_table_refusal() {
 #[test]
 fn an_out_of_range_collection_elem_type_draws_the_type_table_refusal() {
     let mut draft_owner = main_draft(Vec::new(), short_code());
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     draft
         .add_collection_type(CollectionTypeDef::List { elem: FORGED_TYPE })
         .expect("a within-domain mint");
@@ -381,7 +381,7 @@ fn durable_parts(
     indexed: bool,
 ) -> (ImageDraft, AdmittedRoot) {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let value = draft
         .value_scalar(Scalar::Int)
         .expect("the test arena mints");
@@ -475,7 +475,7 @@ fn durable_parts(
 
 /// Add and export `main` over an already-built durable graph.
 fn finish_main(mut owner: ImageDraft, code: Vec<Instr>, ret: ImageType) -> ImageDraft {
-    let mut draft = admitted(&mut owner);
+    let mut draft = owner.begin_transaction();
     let src = draft
         .intern_string("src/main.mw")
         .expect("a within-domain mint");
@@ -566,7 +566,7 @@ fn a_make_identity_cols_arity_mismatch_draws_the_root_table_refusal() {
 #[test]
 fn a_dangling_iterate_list_type_draws_the_collection_type_refusal() {
     let (mut draft_owner, root) = durable_parts(TableRef::Valid, None, false);
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let handle = draft
         .bind_occurrence_site(
             root.occurrence(),
@@ -610,7 +610,7 @@ fn a_dangling_iterate_list_type_draws_the_collection_type_refusal() {
 fn a_dangling_index_scan_list_type_draws_the_collection_type_refusal() {
     let scan_draft = |list_ty: CollTypeId| {
         let (mut draft_owner, root) = durable_parts(TableRef::Valid, None, true);
-        let mut draft = admitted(&mut draft_owner);
+        let mut draft = draft_owner.begin_transaction();
         // COLLTYPES row 0: the `List[int]` a corrected scan freezes its keys into.
         draft
             .add_collection_type(CollectionTypeDef::List {
@@ -667,7 +667,7 @@ fn a_dangling_index_scan_list_type_draws_the_collection_type_refusal() {
 
 /// A fieldless record populating TYPES row 0, as decoy for the non-record domains.
 fn with_decoy_record(mut owner: ImageDraft) -> ImageDraft {
-    let mut draft = admitted(&mut owner);
+    let mut draft = owner.begin_transaction();
     let name = draft.intern_string("Decoy").expect("a within-domain mint");
     draft
         .add_record_type(RecordTypeDef {
@@ -681,7 +681,7 @@ fn with_decoy_record(mut owner: ImageDraft) -> ImageDraft {
 
 /// A payloadless enum populating ENUMS row 0, as decoy for the record domain.
 fn with_decoy_enum(mut owner: ImageDraft) -> ImageDraft {
-    let mut draft = admitted(&mut owner);
+    let mut draft = owner.begin_transaction();
     let name = draft
         .intern_string("DecoyEnum")
         .expect("a within-domain mint");
@@ -811,7 +811,7 @@ fn an_out_of_range_enum_construct_variant_draws_the_enum_type_refusal() {
 fn an_out_of_range_map_new_ordinal_draws_the_collection_type_refusal() {
     let with_map_row = |code: Vec<Instr>| {
         let mut draft_owner = main_draft(Vec::new(), code);
-        let mut draft = admitted(&mut draft_owner);
+        let mut draft = draft_owner.begin_transaction();
         draft
             .add_collection_type(CollectionTypeDef::Map {
                 key: ImageType::scalar(Scalar::Int),
@@ -851,7 +851,7 @@ fn an_out_of_range_map_new_ordinal_draws_the_collection_type_refusal() {
 #[test]
 fn a_duplicate_export_target_draws_the_export_table_refusal() {
     let (mut draft_owner, main) = main_draft_with_id(Vec::new(), short_code());
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     draft.add_export(ExportId::of_local("", "again"), main);
     assert_eq!(
         draft.encode().map(|_| ()),
@@ -864,7 +864,7 @@ fn a_duplicate_export_target_draws_the_export_table_refusal() {
 #[test]
 fn a_duplicate_test_target_draws_the_test_table_refusal() {
     let mut draft_owner = main_draft(Vec::new(), short_code());
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let test_fn = add_plain_function(&mut draft, "t", ImageType::Unit, vec![Instr::Return]);
     let first = draft.intern_string("ta").expect("a within-domain mint");
     let second = draft.intern_string("tb").expect("a within-domain mint");
@@ -879,7 +879,7 @@ fn a_duplicate_test_target_draws_the_test_table_refusal() {
 #[test]
 fn a_duplicate_test_name_draws_the_test_table_refusal() {
     let mut draft_owner = main_draft(Vec::new(), short_code());
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let first = add_plain_function(&mut draft, "t1", ImageType::Unit, vec![Instr::Return]);
     let second = add_plain_function(&mut draft, "t2", ImageType::Unit, vec![Instr::Return]);
     let name = draft.intern_string("t").expect("a within-domain mint");
@@ -897,7 +897,7 @@ fn a_duplicate_test_name_draws_the_test_table_refusal() {
 fn an_export_test_overlap_draws_the_test_table_refusal() {
     let build = |exported: bool| {
         let mut draft_owner = main_draft(Vec::new(), short_code());
-        let mut draft = admitted(&mut draft_owner);
+        let mut draft = draft_owner.begin_transaction();
         let test_fn = add_plain_function(&mut draft, "t", ImageType::Unit, vec![Instr::Return]);
         if exported {
             draft.add_export(ExportId::of_local("", "t"), test_fn);
@@ -919,7 +919,7 @@ fn an_export_test_overlap_draws_the_test_table_refusal() {
 #[test]
 fn a_duplicate_export_id_draws_the_export_table_refusal() {
     let mut draft_owner = main_draft(Vec::new(), short_code());
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     // A second structurally valid function, exported under `main`'s exact id.
     let second = add_plain_function(
         &mut draft,
@@ -946,7 +946,7 @@ fn a_duplicate_export_id_draws_the_export_table_refusal() {
 fn a_test_entry_with_params_draws_the_test_table_refusal() {
     let build = |params: Vec<ImageType>| {
         let mut draft_owner = main_draft(Vec::new(), short_code());
-        let mut draft = admitted(&mut draft_owner);
+        let mut draft = draft_owner.begin_transaction();
         let src = draft
             .intern_string("src/tests.mw")
             .expect("a within-domain mint");
@@ -994,7 +994,7 @@ fn an_assert_outside_a_test_entry_draws_the_test_table_refusal() {
         vec![Instr::ConstLoad(truth), Instr::Assert, Instr::Return]
     };
     let mut corrected_owner = main_draft(Vec::new(), short_code());
-    let mut corrected = admitted(&mut corrected_owner);
+    let mut corrected = corrected_owner.begin_transaction();
     let code = assert_body(&mut corrected);
     let test_fn = add_plain_function(&mut corrected, "t", ImageType::Unit, code);
     let name = corrected.intern_string("tn").expect("a within-domain mint");
@@ -1004,7 +1004,7 @@ fn an_assert_outside_a_test_entry_draws_the_test_table_refusal() {
     assert!(outcome.is_ok(), "{outcome:?}");
 
     let mut draft_owner = main_draft(Vec::new(), short_code());
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let code = assert_body(&mut draft);
     let asserting = add_plain_function(&mut draft, "t", ImageType::Unit, code);
     draft.add_export(ExportId::of_local("", "t"), asserting);
@@ -1020,7 +1020,7 @@ fn an_assert_outside_a_test_entry_draws_the_test_table_refusal() {
 fn a_direct_test_operation_draws_the_test_table_refusal() {
     let build = |direct: Option<bool>, drives_owner: bool| {
         let (mut draft_owner, root) = durable_parts(TableRef::Valid, None, false);
-        let mut draft = admitted(&mut draft_owner);
+        let mut draft = draft_owner.begin_transaction();
         let handle = draft
             .bind_occurrence_site(
                 root.occurrence(),
@@ -1112,7 +1112,7 @@ fn a_call_into_a_test_entry_draws_the_test_table_refusal() {
                 Instr::Return,
             ],
         );
-        let mut draft = admitted(&mut draft_owner);
+        let mut draft = draft_owner.begin_transaction();
         let callee = add_plain_function(&mut draft, "t", ImageType::Unit, vec![Instr::Return]);
         assert_eq!(callee.index(), 1, "the call names the companion");
         if tested {
@@ -1135,7 +1135,7 @@ fn a_call_into_a_test_entry_draws_the_test_table_refusal() {
 #[test]
 fn a_bad_test_signature_draws_the_test_table_refusal() {
     let mut draft_owner = main_draft(Vec::new(), short_code());
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     // A structurally valid int function, wrong only as a TEST target.
     let test_fn = add_plain_function(
         &mut draft,

@@ -8,7 +8,6 @@
 //! same seeks whether each label carries two rows or fifty, a bounded `at most N` scan
 //! costs `N + 1` seeks, and a unique lookup is one probe.
 
-use crate::common::{Counters, CountingEngine};
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{
@@ -16,6 +15,7 @@ use marrow_kernel::durable::{
     InvocationGrant, SiteTarget, StoreProjection, StoreSchema, StoreSchemaBuilder,
 };
 use marrow_kernel::equality::ValueDomain;
+use marrow_test_support::{Counters, CountingEngine};
 
 /// The single-root projection a case opens under: the root, plus its sites resolved against
 /// it. Every site here names root 0 — the store's only root.

@@ -87,7 +87,7 @@ fn instance() -> StoreInstanceId {
 /// A provisioned store at a fresh temporary destination.
 fn provisioned(tag: &str) -> (Scratch, PathBuf) {
     let dir = Scratch::new(tag);
-    let store = dir.store();
+    let store = dir.store().to_path_buf();
     provision(&store, request(instance())).expect("provision");
     (dir, store)
 }
@@ -96,8 +96,8 @@ fn provisioned(tag: &str) -> (Scratch, PathBuf) {
 fn admission_refuses_a_directory_other_than_the_locked_node() {
     for corrupt_engine in [false, true] {
         let (dir, store) = provisioned("directory-substitution");
-        let replacement = dir.base().join("replacement");
-        let displaced = dir.base().join("displaced");
+        let replacement = dir.path().join("replacement");
+        let displaced = dir.path().join("displaced");
         provision(&replacement, request(instance())).expect("provision replacement");
         if corrupt_engine {
             std::fs::write(replacement.join(crate::ENGINE_FILE), b"invalid engine")
@@ -134,7 +134,7 @@ fn admission_refuses_a_directory_other_than_the_locked_node() {
         );
         if !identity_refusal {
             drop(opened);
-            let retained = dir.base().to_path_buf();
+            let retained = dir.path().to_path_buf();
             std::mem::forget(dir);
             panic!(
                 "missing locked-directory identity refusal; retained fault store: {}",
@@ -175,7 +175,7 @@ fn pending_records_refuse_before_engine_open() {
         let store = dir.store();
         let id = metadata.instance;
         provision(
-            &store,
+            store,
             ProvisionRequest {
                 envelope: metadata.clone(),
                 head: head(1, vec![0x44]),
@@ -187,14 +187,14 @@ fn pending_records_refuse_before_engine_open() {
             state,
         };
         let bytes = record.encode().expect("pending record");
-        std::fs::write(envelope_path(&store), &bytes).expect("write record");
+        std::fs::write(envelope_path(store), &bytes).expect("write record");
         std::fs::write(store.join(crate::ENGINE_FILE), b"invalid engine")
             .expect("invalid engine control");
         assert!(
-            matches!(open(&store, projection()), Err(OpenError::ActivationRequired { instance }) if instance == id)
+            matches!(open(store, projection()), Err(OpenError::ActivationRequired { instance }) if instance == id)
         );
         assert_eq!(
-            std::fs::read(envelope_path(&store)).expect("record unchanged"),
+            std::fs::read(envelope_path(store)).expect("record unchanged"),
             bytes
         );
         assert_eq!(
@@ -253,7 +253,7 @@ impl Damage {
 fn a_contender_is_locked_out_whatever_state_the_holder_envelope_is_in() {
     for damage in [Damage::Malformed, Damage::Truncated, Damage::Absent] {
         let (_dir, store) = provisioned(&format!("contender-envelope-{}", damage.label()));
-        let held = open(&store, projection()).expect("the holder opens the store");
+        let held = open(&store, projection()).expect("the holder opens the &store");
         damage.apply(&envelope_path(&store));
 
         match open(&store, projection()) {
@@ -283,7 +283,7 @@ fn a_contender_is_locked_out_whatever_state_the_holder_envelope_is_in() {
 fn a_contender_is_locked_out_whatever_state_the_holder_head_is_in() {
     for damage in [Damage::Malformed, Damage::Truncated, Damage::Absent] {
         let (_dir, store) = provisioned(&format!("contender-head-{}", damage.label()));
-        let held = open(&store, projection()).expect("the holder opens the store");
+        let held = open(&store, projection()).expect("the holder opens the &store");
         damage.apply(&head_path(&store));
 
         match open(&store, projection()) {
@@ -316,7 +316,7 @@ fn a_contender_is_locked_out_whatever_state_the_holder_head_is_in() {
 #[test]
 fn a_contender_is_locked_out_whatever_state_the_holder_marker_is_in() {
     let (dir, store) = provisioned("contender-marker");
-    let held = open(&store, projection()).expect("the holder opens the store");
+    let held = open(&store, projection()).expect("the holder opens the &store");
     let marker = store.join(crate::LOCK_FILE);
 
     for (tag, body) in [
@@ -343,7 +343,7 @@ fn a_contender_is_locked_out_whatever_state_the_holder_marker_is_in() {
         }
     }
 
-    std::fs::hard_link(&marker, dir.base().join("marker-alias")).expect("add a second marker link");
+    std::fs::hard_link(&marker, dir.path().join("marker-alias")).expect("add a second marker link");
     match open(&store, projection()) {
         Err(OpenError::Lock(error)) => assert_eq!(
             error.code(),
@@ -371,7 +371,7 @@ fn a_contender_is_locked_out_whatever_state_the_holder_marker_is_in() {
 #[test]
 fn replacing_every_replaceable_node_a_holder_locks_admits_no_second_owner() {
     let (_dir, store) = provisioned("compound-fault");
-    let held = open(&store, projection()).expect("the holder opens the store");
+    let held = open(&store, projection()).expect("the holder opens the &store");
 
     // A fresh engine node published over the held one under its own name: a whole store
     // engine byte for byte, and an inode no holder locks.
@@ -430,7 +430,7 @@ fn a_store_directory_that_denies_access_refuses_as_a_permission_denial() {
             }
         }
 
-        let _ = std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o700));
+        let _ = std::fs::set_permissions(store, std::fs::Permissions::from_mode(0o700));
         drop(held);
     }
 }
@@ -574,7 +574,7 @@ fn no_door_into_a_held_store_admits_a_second_owner() {
     } in doors
     {
         let (_dir, store) = provisioned("held-store-doors");
-        let held = open(&store, projection()).expect("the holder opens the store");
+        let held = open(&store, projection()).expect("the holder opens the &store");
         damage(&store);
 
         match open(&store, projection()) {
@@ -592,7 +592,7 @@ fn no_door_into_a_held_store_admits_a_second_owner() {
                 ),
             },
         }
-        let _ = std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o700));
+        let _ = std::fs::set_permissions(store, std::fs::Permissions::from_mode(0o700));
         drop(held);
     }
 }
@@ -621,7 +621,7 @@ fn the_envelope_ceiling_admits_its_maximum_and_refuses_one_byte_more() {
         "the largest envelope the encoder produces is the ceiling admission applies",
     );
     provision(
-        &store,
+        store,
         ProvisionRequest {
             envelope: maximal,
             head: head(1, vec![0x44]),
@@ -629,19 +629,19 @@ fn the_envelope_ceiling_admits_its_maximum_and_refuses_one_byte_more() {
     )
     .expect("provision a maximal envelope");
 
-    let opened = open(&store, projection()).expect("a maximal envelope is admitted");
+    let opened = open(store, projection()).expect("a maximal envelope is admitted");
     assert_eq!(opened.envelope.instance, id);
     drop(opened);
 
-    std::fs::write(envelope_path(&store), &bytes).expect("write maximal pending record");
+    std::fs::write(envelope_path(store), &bytes).expect("write maximal pending record");
     assert!(
-        matches!(open(&store, projection()), Err(OpenError::ActivationRequired { instance }) if instance == id)
+        matches!(open(store, projection()), Err(OpenError::ActivationRequired { instance }) if instance == id)
     );
 
     let mut oversize = bytes.clone();
     oversize.push(0x00);
-    std::fs::write(envelope_path(&store), &oversize).expect("write an oversize envelope");
-    match open(&store, projection()) {
+    std::fs::write(envelope_path(store), &oversize).expect("write an oversize envelope");
+    match open(store, projection()) {
         Err(error) => assert_eq!(
             error.code(),
             Code::StoreLimit,
@@ -666,7 +666,7 @@ fn the_head_ceiling_admits_its_maximum_and_refuses_one_byte_more() {
         "the largest head the encoder produces is the ceiling admission applies",
     );
     provision(
-        &store,
+        store,
         ProvisionRequest {
             envelope: envelope(instance(), "0.1.0"),
             head: maximal,
@@ -674,14 +674,14 @@ fn the_head_ceiling_admits_its_maximum_and_refuses_one_byte_more() {
     )
     .expect("provision a maximal head");
 
-    let opened = open(&store, projection()).expect("a maximal head is admitted");
+    let opened = open(store, projection()).expect("a maximal head is admitted");
     assert_eq!(opened.head.head_map.len(), 65_536);
     drop(opened);
 
     let mut oversize = bytes.clone();
     oversize.push(0x00);
-    std::fs::write(head_path(&store), &oversize).expect("write an oversize head");
-    match open(&store, projection()) {
+    std::fs::write(head_path(store), &oversize).expect("write an oversize head");
+    match open(store, projection()) {
         Err(error) => assert_eq!(
             error.code(),
             Code::StoreLimit,
@@ -706,7 +706,7 @@ fn the_head_ceiling_admits_its_maximum_and_refuses_one_byte_more() {
 fn a_symbolic_link_standing_in_for_an_artifact_is_refused() {
     for artifact in [crate::ENVELOPE_FILE, crate::HEAD_FILE, crate::ENGINE_FILE] {
         let (dir, store) = provisioned(&format!("symlink-{artifact}"));
-        let target = dir.base().join(format!("{artifact}-elsewhere"));
+        let target = dir.path().join(format!("{artifact}-elsewhere"));
         let path = store.join(artifact);
         std::fs::rename(&path, &target).expect("move the artifact outside the store directory");
         std::os::unix::fs::symlink(&target, &path).expect("link the artifact name to it");
@@ -732,7 +732,7 @@ fn a_second_hard_link_to_an_artifact_is_refused() {
     for artifact in ["envelope", "head"] {
         let (dir, store) = provisioned(&format!("hardlink-{artifact}"));
         let path = store.join(artifact);
-        std::fs::hard_link(&path, dir.base().join(format!("{artifact}-alias")))
+        std::fs::hard_link(&path, dir.path().join(format!("{artifact}-alias")))
             .expect("add a second link to the artifact");
 
         match open(&store, projection()) {
@@ -910,15 +910,15 @@ fn an_artifact_rewritten_under_a_read_is_never_admitted_spliced() {
 fn an_open_of_a_directory_that_is_not_a_store_writes_nothing_into_it() {
     let dir = Scratch::new("refused-publishes-nothing");
     let store = dir.store();
-    std::fs::create_dir_all(&store).expect("an existing but empty store directory");
+    std::fs::create_dir_all(store).expect("an existing but empty store directory");
     std::fs::write(store.join("notes.txt"), b"unrelated").expect("an unrelated file");
 
     for _ in 0..2 {
         assert!(matches!(
-            open(&store, projection()),
+            open(store, projection()),
             Err(OpenError::Incomplete),
         ));
-        let mut names = std::fs::read_dir(&store)
+        let mut names = std::fs::read_dir(store)
             .expect("read the refused directory")
             .flatten()
             .map(|entry| entry.file_name().to_string_lossy().into_owned())

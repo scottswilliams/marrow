@@ -2,12 +2,12 @@
 
 use super::*;
 use crate::durable::{AuditFault, AuditSite, ContentDigest};
-use crate::test_common::{Counters, CountingEngine};
 use marrow_store::Cell;
 use marrow_temporal::{
     SUPPORTED_DATE_MAX_DAYS, SUPPORTED_DATE_MIN_DAYS, SUPPORTED_INSTANT_MAX_NANOS,
     SUPPORTED_INSTANT_MIN_NANOS,
 };
+use marrow_test_support::{Counters, CountingEngine};
 use std::fmt::Debug;
 
 #[derive(Clone, Copy, Debug)]

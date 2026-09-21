@@ -8,7 +8,7 @@ use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 use marrow_syntax::SourceSpan;
 
 use crate::compile::{CompileFailure, ResourceLimitKind, check, compile, compile_with_tests};
-use crate::{test_ledger as ledger, test_project as project_capture};
+use marrow_test_support::{ledger, project as project_capture};
 
 fn project(source: String) -> ProjectInput {
     let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");

@@ -261,8 +261,8 @@ mod tests {
         CommitResult, Durable, EntryValue, SiteTarget, StoreProjection, StoreSchemaBuilder,
     };
     use crate::equality::ValueDomain;
-    use crate::test_common::Scratch;
     use marrow_store::NativeLockError;
+    use marrow_test_support::Scratch;
 
     fn witness(generation: u128) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(1 + std::mem::size_of::<u128>());

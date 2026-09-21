@@ -662,7 +662,10 @@ mod post_staging_custody_tests {
             text.push('\n');
         }
         text.push_str("high-water 0\nend\n");
-        crate::test_project::project_with_ids(&[("src/main.mw", "")], Some(text.as_bytes()))
+        marrow_test_support::project::project_with_ids(
+            &[("src/main.mw", "")],
+            Some(text.as_bytes()),
+        )
     }
 
     /// Everything a store's staging can change that a draft the encoder refuses still

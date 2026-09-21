@@ -1,6 +1,6 @@
 [package]
 name = "marrow-test-support"
-description = "The image-construction fixtures more than one crate's tests build over: the admitted plan, the armed draft transaction, the site seam, and the container byte forger."
+description = "The test scaffolding more than one binary builds over: the one scratch directory, the image, ledger and project builders, the engine doubles, and the verifier's tracer corpus."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,7 +11,14 @@ authors.workspace = true
 publish = false
 
 [dependencies]
+marrow-compile = { path = "../marrow-compile" }
 marrow-image = { path = "../marrow-image" }
+marrow-kernel = { path = "../marrow-kernel" }
+marrow-project = { path = "../marrow-project" }
+# The byte-engine traits the engine doubles implement; the path kernel stays the
+# engine's only production consumer.
+marrow-store = { path = "../marrow-store" }
+marrow-verify = { path = "../marrow-verify" }
 
 [lints]
 workspace = true

@@ -5,13 +5,12 @@ use marrow_verify::VerifyPhase;
 
 use super::tracer_schema::Verdict::{Refused, Verified};
 use super::tracer_schema::*;
-use marrow_test_support::admitted;
 
 #[test]
 fn required_reads_reject_sparse_and_non_field_targets() {
     for target in ["required", "sparse", "entry"] {
         let mut owner = ImageDraft::new();
-        let mut draft = admitted(&mut owner);
+        let mut draft = owner.begin_transaction();
         let sites = durable_schema(&mut draft);
         let site = match target {
             "required" => sites.value,
@@ -55,7 +54,7 @@ fn required_reads_need_the_exact_initialized_typed_key_slots() {
         (vec![0, 1], Refused(VerifyPhase::Function)),
     ] {
         let mut owner = ImageDraft::new();
-        let mut draft = admitted(&mut owner);
+        let mut draft = owner.begin_transaction();
         let sites = durable_schema(&mut draft);
         let code = vec![
             Instr::LocalGet(0),
@@ -92,7 +91,7 @@ fn required_reads_need_the_exact_initialized_typed_key_slots() {
 #[test]
 fn rebinding_a_proved_key_invalidates_a_required_read() {
     let mut owner = ImageDraft::new();
-    let mut draft = admitted(&mut owner);
+    let mut draft = owner.begin_transaction();
     let sites = durable_schema(&mut draft);
     let bytes = finish_two_key(
         draft,
@@ -124,7 +123,7 @@ fn required_branch_reads_need_the_same_family_and_whole_ordered_tuple() {
         (false, false, vec![0], Verified),
     ] {
         let mut schema = super::branch_presence_schema();
-        let draft = admitted(&mut schema.owner);
+        let draft = schema.owner.begin_transaction();
         let mut code = vec![Instr::LocalGet(0)];
         if guard_branch {
             code.push(Instr::LocalGet(1));
@@ -160,7 +159,7 @@ fn required_branch_reads_need_the_same_family_and_whole_ordered_tuple() {
 fn required_read_only_guards_reject_bypassed_key_producers() {
     for bypass in [false, true] {
         let mut owner = ImageDraft::new();
-        let mut draft = admitted(&mut owner);
+        let mut draft = owner.begin_transaction();
         let sites = durable_schema(&mut draft);
         let flag = ok(draft.intern_bool(true));
         let code = vec![
@@ -197,7 +196,7 @@ fn required_read_only_guards_reject_bypassed_key_producers() {
 fn a_required_read_cannot_follow_commit_even_with_a_live_proof() {
     for after_commit in [false, true] {
         let mut owner = ImageDraft::new();
-        let mut draft = admitted(&mut owner);
+        let mut draft = owner.begin_transaction();
         let sites = durable_schema(&mut draft);
         let mut code = vec![
             Instr::TxnBegin,
@@ -232,7 +231,7 @@ fn a_required_read_cannot_follow_commit_even_with_a_live_proof() {
 fn a_transitive_family_erase_invalidates_a_required_read() {
     for erasing in [false, true] {
         let mut owner = ImageDraft::new();
-        let mut draft = admitted(&mut owner);
+        let mut draft = owner.begin_transaction();
         let sites = durable_schema(&mut draft);
         let mut callee = None;
         for name in ["erase", "relay"] {

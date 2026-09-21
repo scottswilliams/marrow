@@ -28,7 +28,7 @@ use crate::failure::{
 use crate::limits::AdapterLimits;
 use crate::overlay::{OverlayBound, OverlayEntry, OverlayFailure, OverlayReason, OverlaySnapshot};
 use crate::path::native_units;
-use crate::scratch::TempDir;
+use marrow_test_support::Scratch;
 
 const ROOT: &str = "/proj";
 
@@ -515,7 +515,7 @@ fn as_overlay(failure: &CaptureFailure) -> &OverlayFailure {
     }
 }
 
-fn valid_project(temp: &TempDir) {
+fn valid_project(temp: &Scratch) {
     temp.write("marrow.toml", b"edition = \"2026\"\n");
 }
 
@@ -537,7 +537,7 @@ fn missing_root_is_a_canonicalize_failure_not_a_manifest_failure() {
 
 #[test]
 fn a_file_root_is_an_unexpected_kind_failure() {
-    let temp = TempDir::new("file-root");
+    let temp = Scratch::new("file-root");
     let file_root = temp.path().join("not-a-directory");
     fs::write(&file_root, b"x").expect("write file root");
     let failure = capture_project_with_limits(&file_root, OverlaySnapshot::empty(), &base_limits())
@@ -558,7 +558,7 @@ fn a_file_root_is_an_unexpected_kind_failure() {
 
 #[test]
 fn a_symlinked_manifest_is_refused_as_a_link() {
-    let temp = TempDir::new("symlink-manifest");
+    let temp = Scratch::new("symlink-manifest");
     temp.write("real.toml", b"edition = \"2026\"\n");
     std::os::unix::fs::symlink(
         temp.path().join("real.toml"),
@@ -576,7 +576,7 @@ fn a_symlinked_manifest_is_refused_as_a_link() {
 
 #[test]
 fn a_hardlinked_manifest_is_refused_as_a_hardlink() {
-    let temp = TempDir::new("hardlink-manifest");
+    let temp = Scratch::new("hardlink-manifest");
     temp.write("real.toml", b"edition = \"2026\"\n");
     fs::hard_link(
         temp.path().join("real.toml"),
@@ -596,7 +596,7 @@ fn a_hardlinked_manifest_is_refused_as_a_hardlink() {
 
 #[test]
 fn a_hardlinked_source_file_is_refused_as_a_hardlink() {
-    let temp = TempDir::new("hardlink-source");
+    let temp = Scratch::new("hardlink-source");
     valid_project(&temp);
     temp.write("src/real.mw", b"pub fn f()\n");
     fs::hard_link(
@@ -618,7 +618,7 @@ fn a_hardlinked_source_file_is_refused_as_a_hardlink() {
 /// Create a special file — a FIFO — at a project-relative path. Nothing in the
 /// crate opens it: capture classifies a terminal object's kind before it opens
 /// one, so a FIFO fixture cannot block a test on a missing writer.
-fn write_special_file(temp: &TempDir, relative: &str) {
+fn write_special_file(temp: &Scratch, relative: &str) {
     let path = temp.path().join(relative);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).expect("create parent");
@@ -633,7 +633,7 @@ fn write_special_file(temp: &TempDir, relative: &str) {
 /// Capture the project and require the exact typed terminal-link refusal naming
 /// `spelling`. A link below `src` must refuse with a cause; it is never skipped,
 /// which would leave the module silently absent from the capture.
-fn expect_link_below_src(temp: &TempDir, spelling: &str) -> CaptureFailure {
+fn expect_link_below_src(temp: &Scratch, spelling: &str) -> CaptureFailure {
     let failure =
         match capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &base_limits()) {
             Err(failure) => failure,
@@ -673,7 +673,7 @@ fn expect_link_below_src(temp: &TempDir, spelling: &str) -> CaptureFailure {
 /// downstream as an unexplained missing module; the link now carries the cause.
 #[test]
 fn a_module_behind_a_symlinked_directory_refuses_instead_of_vanishing() {
-    let temp = TempDir::new("symlink-module");
+    let temp = Scratch::new("symlink-module");
     valid_project(&temp);
     temp.write("src/main.mw", b"pub fn main()\n");
     temp.write("outside/shelf.mw", b"module link::shelf\n");
@@ -688,7 +688,7 @@ fn a_module_behind_a_symlinked_directory_refuses_instead_of_vanishing() {
 /// opened at that name, so it refuses like every other aliased role.
 #[test]
 fn a_symlinked_source_file_below_src_is_refused_as_a_link() {
-    let temp = TempDir::new("symlink-source");
+    let temp = Scratch::new("symlink-source");
     valid_project(&temp);
     temp.write("src/main.mw", b"pub fn main()\n");
     std::os::unix::fs::symlink(
@@ -704,7 +704,7 @@ fn a_symlinked_source_file_below_src_is_refused_as_a_link() {
 /// missing target.
 #[test]
 fn a_broken_symlink_below_src_is_refused_as_a_link() {
-    let temp = TempDir::new("symlink-broken");
+    let temp = Scratch::new("symlink-broken");
     valid_project(&temp);
     temp.write("src/main.mw", b"pub fn main()\n");
     std::os::unix::fs::symlink(
@@ -719,7 +719,7 @@ fn a_broken_symlink_below_src_is_refused_as_a_link() {
 /// rather than merely unreached.
 #[test]
 fn a_symlink_escaping_the_project_root_is_refused_as_a_link() {
-    let temp = TempDir::new("symlink-escape");
+    let temp = Scratch::new("symlink-escape");
     let root = temp.path().join("project");
     fs::create_dir_all(root.join("src")).expect("create the project");
     fs::write(root.join("marrow.toml"), b"edition = \"2026\"\n").expect("write manifest");
@@ -742,7 +742,7 @@ fn a_symlink_escaping_the_project_root_is_refused_as_a_link() {
 /// with no depth bound or visited set standing in for the policy.
 #[test]
 fn a_symlink_cycle_below_src_is_refused_as_a_link() {
-    let temp = TempDir::new("symlink-cycle");
+    let temp = Scratch::new("symlink-cycle");
     valid_project(&temp);
     temp.write("src/main.mw", b"pub fn main()\n");
     std::os::unix::fs::symlink(temp.path().join("src"), temp.path().join("src/self"))
@@ -755,7 +755,7 @@ fn a_symlink_cycle_below_src_is_refused_as_a_link() {
 /// kind before opening it, rather than being ignored like a non-source entry.
 #[test]
 fn a_special_file_named_mw_below_src_is_refused_as_a_wrong_kind() {
-    let temp = TempDir::new("special-source");
+    let temp = Scratch::new("special-source");
     valid_project(&temp);
     write_special_file(&temp, "src/main.mw");
     let failure =
@@ -788,7 +788,7 @@ fn a_special_file_named_mw_below_src_is_refused_as_a_wrong_kind() {
 /// ignored entry, exactly like a non-`.mw` regular file.
 #[test]
 fn a_special_file_below_src_naming_no_module_is_still_ignored() {
-    let temp = TempDir::new("special-ignored");
+    let temp = Scratch::new("special-ignored");
     valid_project(&temp);
     temp.write("src/main.mw", b"pub fn main()\n");
     write_special_file(&temp, "src/notes.txt");
@@ -808,7 +808,7 @@ fn a_special_file_below_src_naming_no_module_is_still_ignored() {
 
 #[test]
 fn over_bound_aggregate_path_work_is_refused() {
-    let temp = TempDir::new("path-work-bound");
+    let temp = Scratch::new("path-work-bound");
     valid_project(&temp);
     temp.write("src/main.mw", b"pub fn main()\n");
     let mut limits = base_limits();
@@ -826,7 +826,7 @@ fn over_bound_aggregate_path_work_is_refused() {
 
 #[test]
 fn over_bound_retained_path_units_is_refused() {
-    let temp = TempDir::new("retained-path-bound");
+    let temp = Scratch::new("retained-path-bound");
     valid_project(&temp);
     temp.write("src/main.mw", b"pub fn main()\n");
     let mut limits = base_limits();
@@ -844,7 +844,7 @@ fn over_bound_retained_path_units_is_refused() {
 
 #[test]
 fn control_an_under_bound_project_captures_its_modules() {
-    let temp = TempDir::new("under-bound-source");
+    let temp = Scratch::new("under-bound-source");
     valid_project(&temp);
     temp.write("src/main.mw", b"pub fn main()\n");
     let input = capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &base_limits())
@@ -861,7 +861,7 @@ fn control_an_under_bound_project_captures_its_modules() {
 
 #[test]
 fn visiting_over_the_entry_bound_is_refused() {
-    let temp = TempDir::new("visited-bound");
+    let temp = Scratch::new("visited-bound");
     valid_project(&temp);
     for name in ["a", "b", "c", "d"] {
         temp.write(&format!("src/{name}.mw"), b"");
@@ -881,7 +881,7 @@ fn visiting_over_the_entry_bound_is_refused() {
 
 #[test]
 fn descending_past_the_depth_bound_is_refused() {
-    let temp = TempDir::new("depth-bound");
+    let temp = Scratch::new("depth-bound");
     valid_project(&temp);
     temp.write("src/a/b/c/deep.mw", b"");
     let mut limits = base_limits();
@@ -899,7 +899,7 @@ fn descending_past_the_depth_bound_is_refused() {
 
 #[test]
 fn control_source_capture_order_is_deterministic() {
-    let temp = TempDir::new("deterministic-order");
+    let temp = Scratch::new("deterministic-order");
     valid_project(&temp);
     for name in ["zeta", "alpha", "mid"] {
         temp.write(&format!("src/{name}.mw"), b"");
@@ -1060,7 +1060,7 @@ fn duplicate_overlay_keys_report_both_original_indices() {
 
 #[test]
 fn an_exact_member_overlay_replaces_the_disk_body() {
-    let temp = TempDir::new("overlay-replace");
+    let temp = Scratch::new("overlay-replace");
     valid_project(&temp);
     temp.write("src/main.mw", b"disk-body");
     let entries = [OverlayEntry::new("src/main.mw", b"overlay-body")];
@@ -1079,7 +1079,7 @@ fn an_exact_member_overlay_replaces_the_disk_body() {
 /// key: the identity owner reads `C:` as a directory outside `src`.
 #[test]
 fn a_nonmember_overlay_is_refused_at_its_index_and_presented() {
-    let temp = TempDir::new("overlay-nonmember");
+    let temp = Scratch::new("overlay-nonmember");
     valid_project(&temp);
     temp.write("src/main.mw", b"pub fn main()\n");
     for key in ["src/ghost.mw", "C:/x"] {
@@ -1110,7 +1110,7 @@ fn a_nonmember_overlay_is_refused_at_its_index_and_presented() {
 /// lease to the end would need.
 #[test]
 fn source_leases_release_before_the_next_admission() {
-    let temp = TempDir::new("source-lease-release");
+    let temp = Scratch::new("source-lease-release");
     valid_project(&temp);
     let names: Vec<String> = (0..8)
         .map(|index| format!("{}{index}.mw", "f".repeat(200)))
@@ -1135,7 +1135,7 @@ fn source_leases_release_before_the_next_admission() {
 #[test]
 fn stage_a_missing_manifest_is_the_only_reported_role() {
     // Control: no source or ledger role is inspected after the manifest refuses.
-    let temp = TempDir::new("stage-a-order");
+    let temp = Scratch::new("stage-a-order");
     temp.write("src/main.mw", b"pub fn main()\n");
     temp.write(".marrow/ids", b"garbage");
     let failure =
@@ -1156,7 +1156,7 @@ fn a_ledger_at_the_retired_root_path_fails_closed_before_any_ledger_read() {
     // The ledger has one home. A file at the retired root path refuses with the
     // typed location fault and is never read — even valid artifact bytes there
     // change nothing.
-    let temp = TempDir::new("legacy-ledger-vacant");
+    let temp = Scratch::new("legacy-ledger-vacant");
     valid_project(&temp);
     temp.write("marrow.ids", b"garbage never read");
     let failure =
@@ -1174,7 +1174,7 @@ fn a_ledger_at_the_retired_root_path_fails_closed_before_any_ledger_read() {
 
 #[test]
 fn a_ledger_at_both_paths_fails_closed_as_a_reconcile_fault() {
-    let temp = TempDir::new("legacy-ledger-occupied");
+    let temp = Scratch::new("legacy-ledger-occupied");
     valid_project(&temp);
     temp.write("marrow.ids", b"stale copy");
     temp.write(".marrow/ids", b"home copy");
@@ -1195,7 +1195,7 @@ fn a_ledger_at_both_paths_fails_closed_as_a_reconcile_fault() {
 fn stage_c_pure_refusal_precedes_unmatched_overlay_settlement() {
     // A colliding project plus a nonmember overlay: the pure collision is reported
     // first, before overlay settlement runs at all.
-    let temp = TempDir::new("stage-c-precedence");
+    let temp = Scratch::new("stage-c-precedence");
     valid_project(&temp);
     temp.write("src/a/b.mw", b"");
     temp.write("src/a.b.mw", b"");
@@ -1212,7 +1212,7 @@ fn stage_c_pure_refusal_precedes_unmatched_overlay_settlement() {
 #[test]
 fn control_empty_overlay_capture_is_byte_stable() {
     // Empty-overlay capture returns exactly the disk bytes: a retained control.
-    let temp = TempDir::new("stage-c-empty");
+    let temp = Scratch::new("stage-c-empty");
     valid_project(&temp);
     temp.write("src/main.mw", b"disk");
     let input = capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &base_limits())

@@ -9,7 +9,6 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use crate::common::{Counters, CountingEngine};
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{
@@ -18,6 +17,7 @@ use marrow_kernel::durable::{
 };
 use marrow_kernel::equality::ValueDomain;
 use marrow_store::{ByteEngine, Cell as StoreCell, MemoryEngine, ReadView, StoreError, StoreOp};
+use marrow_test_support::{Counters, CountingEngine};
 
 /// `^wide[id: int]` with a required `value`, `declared - 1` sparse `Int` fields, and a
 /// unique index on `value`.

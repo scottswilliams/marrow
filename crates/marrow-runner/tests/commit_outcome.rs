@@ -2,10 +2,8 @@
 //! is an ordinary typed `Fault` that leaves the store and the session usable, and a fault
 //! after a confirmed commit is `Incomplete` with `known_new`.
 
-#[path = "common/program.rs"]
-mod program;
-#[path = "common/scratch.rs"]
-mod scratch;
+use marrow_test_support::Scratch;
+use marrow_test_support::program;
 
 use marrow_codes::{Code, DurableCommitState};
 use marrow_local_wire::{ClientMessage, EncodedFrame, Id32, Json, ServerMessage, WireError};
@@ -74,15 +72,15 @@ fn request(fixture: &program::Program, name: &str, args: Vec<Json>) -> ClientMes
 }
 
 /// Provision a fresh store for the fixture under `scratch` and attach to it.
-fn attached(fixture: &program::Program, scratch: &scratch::Scratch) -> AttachedService {
+fn attached(fixture: &program::Program, scratch: &Scratch) -> AttachedService {
     let store = scratch.store();
     let prepared = marrow_lifecycle::prepare(fixture.image.clone());
-    let report = marrow_lifecycle::ProvisionReport::new(&store, &prepared)
+    let report = marrow_lifecycle::ProvisionReport::new(store, &prepared)
         .expect("fixture is native executable");
     let approval = marrow_lifecycle::ProvisionApproval::accept(&report);
-    marrow_lifecycle::provision_image(&store, &prepared, &approval)
+    marrow_lifecycle::provision_image(store, &prepared, &approval)
         .expect("provision native fixture");
-    match marrow_lifecycle::attach(&store, prepared).expect("attach native fixture") {
+    match marrow_lifecycle::attach(store, prepared).expect("attach native fixture") {
         marrow_lifecycle::AttachOutcome::AlreadyActive(attachment) => {
             AttachedService::new(attachment)
         }
@@ -98,7 +96,7 @@ fn attached(fixture: &program::Program, scratch: &scratch::Scratch) -> AttachedS
 #[test]
 fn a_unique_index_fault_is_typed_and_does_not_retire_a_healthy_session() {
     let fixture = program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes());
-    let scratch = scratch::Scratch::new("commit-outcome-index");
+    let scratch = Scratch::new("commit-outcome-index");
     let mut service = attached(&fixture, &scratch);
 
     // A committed value, then a second entry whose `value` collides in the unique index.
@@ -141,7 +139,7 @@ fn a_unique_index_fault_is_typed_and_does_not_retire_a_healthy_session() {
 #[test]
 fn confirmed_commit_then_fault_is_known_new_and_keeps_the_session() {
     let fixture = program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes());
-    let scratch = scratch::Scratch::new("commit-outcome-known-new");
+    let scratch = Scratch::new("commit-outcome-known-new");
     let mut service = attached(&fixture, &scratch);
 
     let response = decoded(service.handle(
@@ -177,7 +175,7 @@ fn confirmed_commit_then_fault_is_known_new_and_keeps_the_session() {
 #[test]
 fn post_handshake_hello_and_provision_are_rejected_by_the_attached_session() {
     let fixture = program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes());
-    let scratch = scratch::Scratch::new("commit-outcome-handshake");
+    let scratch = Scratch::new("commit-outcome-handshake");
     let mut service = attached(&fixture, &scratch);
     let handshake = ServerMessage::Reject {
         code: Code::RunnerHandshake,

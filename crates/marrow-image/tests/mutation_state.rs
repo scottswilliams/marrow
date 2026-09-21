@@ -15,17 +15,15 @@ use marrow_image::{
     FieldDef, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr, LedgerIdBytes,
     RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, TypeId,
 };
-use marrow_test_support::{admitted, admitted_plan};
+use marrow_test_support::admitted_plan;
 
-#[path = "common/ledger_ids.rs"]
-mod ledger_ids;
-use ledger_ids::{
+use marrow_test_support::ledger_ids::{
     APPLICATION_ID, FIELD_ID, INDEX_ID, PLACEMENT_ID, PRODUCT_ID, SECOND_PLACEMENT_ID,
 };
 
-#[path = "common/fixture_graph.rs"]
-mod fixture_graph;
-use fixture_graph::{admit_root, declare_product, empty_record, unit_function};
+use marrow_test_support::fixture_graph::{
+    admit_root, declare_product, empty_record, unit_function,
+};
 
 /// One required int field member, minting its value shape into `draft`'s arena.
 fn one_field_members(draft: &mut DraftTxn<'_>) -> Vec<DeclarationMemberDef> {
@@ -84,7 +82,7 @@ fn a_refused_occurrence_leaves_no_live_row_and_spends_no_budget() {
     let over_ordinal_indexes = usize::from(u16::MAX) + 2;
     let plan = AdmittedGraphInputPlan::admit(1, 1, 8);
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     declare_fixture_product(&mut draft, &plan);
     let name = draft.intern_string("r").expect("a within-domain mint");
@@ -272,7 +270,7 @@ fn fill_test_entries(draft: &mut DraftTxn<'_>) {
 fn every_flat_family_admits_past_its_cap_and_only_encode_refuses() {
     for (family, fill, expected) in OVER_CAP_FAMILIES {
         let mut draft_owner = ImageDraft::new();
-        let mut draft = admitted(&mut draft_owner);
+        let mut draft = draft_owner.begin_transaction();
         fill(&mut draft);
         assert_eq!(
             draft.encode().map(|_| ()).as_ref().err(),
@@ -288,7 +286,7 @@ fn every_flat_family_admits_past_its_cap_and_only_encode_refuses() {
 #[test]
 fn set_record_fields_with_an_out_of_range_id_is_refused() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let name = draft.intern_string("R").expect("a within-domain mint");
     draft
         .add_record_type(RecordTypeDef {
@@ -312,7 +310,7 @@ fn set_record_fields_with_an_out_of_range_id_is_refused() {
 #[test]
 fn set_enum_variants_with_an_out_of_range_id_is_refused() {
     let mut other_owner = ImageDraft::new();
-    let mut other = admitted(&mut other_owner);
+    let mut other = other_owner.begin_transaction();
     let name = other.intern_string("E").expect("a within-domain mint");
     let foreign = other
         .add_enum_type(EnumTypeDef {
@@ -322,7 +320,7 @@ fn set_enum_variants_with_an_out_of_range_id_is_refused() {
         .expect("a within-domain mint");
 
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     assert_eq!(
         draft.set_enum_variants(foreign, Vec::new()),
         Err(DraftStateError::ForeignDraft),
@@ -334,7 +332,7 @@ fn set_enum_variants_with_an_out_of_range_id_is_refused() {
 #[test]
 fn a_second_fill_is_refused_and_the_draft_remains_encodable() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let name = draft.intern_string("R").expect("a within-domain mint");
     let field = draft.intern_string("f").expect("a within-domain mint");
     let record = draft
@@ -370,7 +368,7 @@ fn a_divergent_application_identity_latches_a_sticky_conflict() {
     let first = LedgerIdBytes::from_bytes([0x01; 16]);
     let second = LedgerIdBytes::from_bytes([0x02; 16]);
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
 
     draft.set_application_identity(first);
     assert_eq!(draft.contract_view().application(), Some(first));
@@ -408,7 +406,7 @@ fn a_divergent_application_identity_latches_a_sticky_conflict() {
 #[test]
 fn an_over_wide_or_foreign_typed_arena_append_is_refused_and_mutates_nothing() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let int = draft
         .value_scalar(Scalar::Int)
         .expect("the test arena mints");
@@ -426,7 +424,7 @@ fn an_over_wide_or_foreign_typed_arena_append_is_refused_and_mutates_nothing() {
     // A leaf minted by another draft's arena, out of range for this one.
     let foreign = {
         let mut other_owner = ImageDraft::new();
-        let mut other = admitted(&mut other_owner);
+        let mut other = other_owner.begin_transaction();
         other
             .value_scalar(Scalar::Int)
             .expect("the test arena mints");
@@ -464,7 +462,7 @@ fn an_over_wide_or_foreign_typed_arena_append_is_refused_and_mutates_nothing() {
 fn a_failed_site_request_leaves_the_site_plan_unchanged() {
     let mut draft_owner = ImageDraft::new();
     let (mut draft, root) = {
-        let mut draft = admitted(&mut draft_owner);
+        let mut draft = draft_owner.begin_transaction();
         draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
         declare_fixture_product(&mut draft, &admitted_plan());
         let root = admit_fixture_root(&mut draft, &admitted_plan(), "r", PLACEMENT_ID);
@@ -485,7 +483,7 @@ fn a_failed_site_request_leaves_the_site_plan_unchanged() {
     // A handle whose rows a discarded transaction appended is stale once it drops.
     draft.commit();
     let stale = {
-        let mut proof = admitted(&mut draft_owner);
+        let mut proof = draft_owner.begin_transaction();
         let extra = admit_fixture_root(&mut proof, &admitted_plan(), "s", SECOND_PLACEMENT_ID);
         proof
             .bind_occurrence_site(
@@ -495,7 +493,7 @@ fn a_failed_site_request_leaves_the_site_plan_unchanged() {
             )
             .expect("the extra root admits a whole-payload site")
     };
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     assert!(
         draft.request_site(&stale).is_err(),
         "a handle over a discarded row does not mint",
@@ -532,7 +530,7 @@ fn a_failed_site_request_leaves_the_site_plan_unchanged() {
 fn a_foreign_handle_is_refused_without_touching_the_plan() {
     let build = || {
         let mut draft_owner = ImageDraft::new();
-        let mut draft = admitted(&mut draft_owner);
+        let mut draft = draft_owner.begin_transaction();
         draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
         declare_fixture_product(&mut draft, &admitted_plan());
         let root = admit_fixture_root(&mut draft, &admitted_plan(), "r", PLACEMENT_ID);
@@ -540,7 +538,7 @@ fn a_foreign_handle_is_refused_without_touching_the_plan() {
         (draft_owner, root)
     };
     let (mut mine_owner, my_root) = build();
-    let mut mine = admitted(&mut mine_owner);
+    let mut mine = mine_owner.begin_transaction();
     let (theirs, their_root) = build();
     let foreign = theirs
         .bind_occurrence_site(
@@ -576,7 +574,7 @@ fn a_foreign_handle_is_refused_without_touching_the_plan() {
 #[test]
 fn a_failed_function_append_leaves_no_function_row() {
     let mut other_owner = ImageDraft::new();
-    let mut other = admitted(&mut other_owner);
+    let mut other = other_owner.begin_transaction();
     other.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     declare_fixture_product(&mut other, &admitted_plan());
     let other_root = admit_fixture_root(&mut other, &admitted_plan(), "r", PLACEMENT_ID);
@@ -590,7 +588,7 @@ fn a_failed_function_append_leaves_no_function_row() {
     let foreign_site = other.request_site(&handle).expect("a live binding");
 
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let name = draft.intern_string("f").expect("a within-domain mint");
     let source = draft
         .intern_string("src/main.mw")
@@ -665,19 +663,19 @@ fn a_failed_function_append_leaves_no_function_row() {
 #[test]
 fn a_discarded_proof_rolls_back_the_intern_text_compound() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let main = unit_function(&mut draft, "main", vec![Instr::Return]);
     draft.add_export(ExportId::of_local("m", "main"), main);
     let before = draft.encode().expect("a fitting draft").bytes;
 
     draft.commit();
     let proof_const = {
-        let mut proof = admitted(&mut draft_owner);
+        let mut proof = draft_owner.begin_transaction();
         proof
             .intern_text("throwaway-text")
             .expect("a within-domain mint")
     };
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let after = draft.encode().expect("a fitting draft").bytes;
     assert_eq!(before, after, "the compound appended nothing that survived");
 
@@ -700,12 +698,12 @@ fn a_discarded_proof_rolls_back_the_intern_text_compound() {
 #[test]
 fn a_rewound_and_reappended_row_refuses_the_operand_minted_before_the_rewind() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
 
     draft.commit();
     let old_site = {
-        let mut proof = admitted(&mut draft_owner);
+        let mut proof = draft_owner.begin_transaction();
         declare_fixture_product(&mut proof, &admitted_plan());
         let root = admit_fixture_root(&mut proof, &admitted_plan(), "r", PLACEMENT_ID);
         let handle = proof
@@ -717,7 +715,7 @@ fn a_rewound_and_reappended_row_refuses_the_operand_minted_before_the_rewind() {
             .expect("the root admits a whole-payload site");
         proof.request_site(&handle).expect("a live binding")
     };
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
 
     // The identical rows re-mint at the same ordinals, with fresh stamps.
     declare_fixture_product(&mut draft, &admitted_plan());

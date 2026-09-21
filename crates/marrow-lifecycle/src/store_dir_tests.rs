@@ -7,7 +7,7 @@ use crate::test_support::Scratch;
 #[test]
 fn preservation_refuses_collision_and_entropy_failure_without_changing_files() {
     let scratch = Scratch::new("preservation-refusals");
-    let root = scratch.base();
+    let root = scratch.path();
     let directory = AdmittedStoreDir::admit(root, Seam::NONE).expect("admit");
     let source = root.join("envelope.replacing");
     let destination = root.join("envelope.replacing.preserved.00000000000000000000000000000000");

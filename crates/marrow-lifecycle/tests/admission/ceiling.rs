@@ -11,8 +11,8 @@ use marrow_codes::Code;
 use marrow_lifecycle::{AdmissionRefusal, AttachOutcome, LifecycleError};
 use marrow_verify::VerifiedImage;
 
-use crate::support::Scratch;
 use crate::support::ceiling::{attach_image, image, provision, source_broadened, source_read_only};
+use marrow_test_support::Scratch;
 
 /// The MUST-WIN: a store provisioned under the read-only image refuses the broadened image —
 /// the demand now exceeds the accepted ceiling — naming the export, the new effect, and the
@@ -26,10 +26,10 @@ fn a_broadened_demand_is_refused_naming_the_exceeding_place() {
     // The broadening changes the code and the demand, but not the durable contract or the
     // exported interface — so the refusal is specifically an authority refusal, not a
     // contract-changed one.
-    provision(scratch.dir(), &read_only);
-    let head_before = std::fs::read(scratch.dir().join("head")).expect("read head");
+    provision(scratch.store(), &read_only);
+    let head_before = std::fs::read(scratch.store().join("head")).expect("read head");
 
-    let refusal = match attach_image(scratch.dir(), &broadened) {
+    let refusal = match attach_image(scratch.store(), &broadened) {
         Err(LifecycleError::Refused(AdmissionRefusal::Exceeds(refusal))) => refusal,
         Err(other) => panic!(
             "the broadened image must be refused as demand-exceeds-ceiling, got: {}",
@@ -53,11 +53,11 @@ fn a_broadened_demand_is_refused_naming_the_exceeding_place() {
 
     // Zero engine calls / store intact: the head is byte-unchanged and the store still opens
     // and serves the prior (read-only) program as already-active.
-    let head_after = std::fs::read(scratch.dir().join("head")).expect("read head");
+    let head_after = std::fs::read(scratch.store().join("head")).expect("read head");
     assert_eq!(head_before, head_after, "the refusal wrote nothing");
     assert!(
         matches!(
-            attach_image(scratch.dir(), &read_only),
+            attach_image(scratch.store(), &read_only),
             Ok(AttachOutcome::AlreadyActive(_))
         ),
         "the prior program remains usable after the refusal",
@@ -84,8 +84,8 @@ fn a_demand_beyond_the_ceiling_preempts_the_contract_refusal() {
         "the variant must really change the contract, or the preemption proves nothing",
     );
 
-    provision(scratch.dir(), &read_only);
-    match attach_image(scratch.dir(), &both) {
+    provision(scratch.store(), &read_only);
+    match attach_image(scratch.store(), &both) {
         Err(LifecycleError::Refused(AdmissionRefusal::Exceeds(refusal))) => {
             assert_eq!(refusal.code(), Code::StoreDemandExceedsCeiling);
         }
@@ -141,15 +141,16 @@ store ^tallies[name: string]: Tally
          tally.count = tally.count + 1\n        }}\n    }}\n    return found\n}}\n"
     );
 
-    let compile_with =
-        |source: &str| -> VerifiedImage { crate::support::compile::compile(source, WORKSHOP_IDS) };
+    let compile_with = |source: &str| -> VerifiedImage {
+        marrow_test_support::program::compile(source, WORKSHOP_IDS)
+    };
 
     let scratch = Scratch::new("two-root");
     let image_a = compile_with(&read_only);
     let image_b = compile_with(&broadened);
-    provision(scratch.dir(), &image_a);
+    provision(scratch.store(), &image_a);
 
-    let refusal = match attach_image(scratch.dir(), &image_b) {
+    let refusal = match attach_image(scratch.store(), &image_b) {
         Err(LifecycleError::Refused(AdmissionRefusal::Exceeds(refusal))) => refusal,
         Err(other) => panic!(
             "expected demand-exceeds-ceiling, got {}",
@@ -186,8 +187,8 @@ fn a_narrowed_demand_within_the_ceiling_is_admitted() {
     let read_only = image(&source_read_only());
     let broadened = image(&source_broadened());
 
-    provision(scratch.dir(), &broadened);
-    match attach_image(scratch.dir(), &read_only) {
+    provision(scratch.store(), &broadened);
+    match attach_image(scratch.store(), &read_only) {
         Ok(AttachOutcome::Rebound { .. }) => {}
         Ok(AttachOutcome::AlreadyActive(_)) => {
             panic!("the narrower image differs in code, so it rebinds rather than already-active")
@@ -217,8 +218,8 @@ fn a_rebind_preserves_the_stores_standing_ceiling() {
         "the two ceilings must really differ, or preservation proves nothing",
     );
 
-    provision(scratch.dir(), &broadened);
-    match attach_image(scratch.dir(), &read_only) {
+    provision(scratch.store(), &broadened);
+    match attach_image(scratch.store(), &read_only) {
         Ok(AttachOutcome::Rebound { .. }) => {}
         Ok(AttachOutcome::AlreadyActive(_)) => panic!("the narrower image differs in code"),
         Err(other) => panic!(
@@ -228,7 +229,7 @@ fn a_rebind_preserves_the_stores_standing_ceiling() {
     }
 
     let head = marrow_lifecycle::LogicalHead::decode(
-        &std::fs::read(scratch.dir().join("head")).expect("read head"),
+        &std::fs::read(scratch.store().join("head")).expect("read head"),
     )
     .expect("decode head");
     assert_eq!(
@@ -242,7 +243,7 @@ fn a_rebind_preserves_the_stores_standing_ceiling() {
     );
 
     // And the maximum still admits what the store was provisioned under.
-    match attach_image(scratch.dir(), &broadened) {
+    match attach_image(scratch.store(), &broadened) {
         Ok(AttachOutcome::Rebound { .. }) => {}
         Ok(AttachOutcome::AlreadyActive(_)) => panic!("the broader image differs in code"),
         Err(other) => panic!(

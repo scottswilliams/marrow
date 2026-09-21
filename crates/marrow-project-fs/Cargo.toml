@@ -18,3 +18,7 @@ marrow-project = { path = "../marrow-project" }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# The workspace test scaffolding: the one scratch directory and the shared fixture builders.
+marrow-test-support = { path = "../marrow-test-support" }

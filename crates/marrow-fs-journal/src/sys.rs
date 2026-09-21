@@ -359,7 +359,7 @@ mod imp {
     mod tests {
         use super::*;
 
-        use crate::scratch::Scratch;
+        use marrow_test_support::Scratch;
 
         /// Every retained descriptor is close-on-exec, and journal files are
         /// append-mode: the flags are read back through `fcntl` rather than

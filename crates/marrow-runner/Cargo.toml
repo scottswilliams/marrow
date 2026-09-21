@@ -21,6 +21,8 @@ marrow-lifecycle = { path = "../marrow-lifecycle" }
 marrow-temporal = { path = "../marrow-temporal" }
 
 [dev-dependencies]
+# The workspace test scaffolding: the one scratch directory and the shared fixture builders.
+marrow-test-support = { path = "../marrow-test-support" }
 marrow-project = { path = "../marrow-project" }
 marrow-compile = { path = "../marrow-compile" }
 

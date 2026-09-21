@@ -12,9 +12,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use crate::common::{
-    MARROW_BIN, TempDir, stage_toolchain, staged_marrow_in, unaccepted_ceiling_id, write,
-};
+use crate::common::{MARROW_BIN, stage_toolchain, staged_marrow_in, unaccepted_ceiling_id, write};
+use marrow_test_support::Scratch;
 
 const SOURCE: &str = r#"resource Counter {
     required value: int
@@ -142,7 +141,7 @@ struct Journey<'a> {
 // Inserting before a populated field exercises accepted physical numbering through
 // the compiler, explicit image operation and ordinary companion-backed reads.
 fn populated_apply_preserves_old_values_and_leaves_new_fields_absent(toolchain: &Path) {
-    let temp = TempDir::new("apply");
+    let temp = Scratch::new("apply");
     eprintln!(
         "apply command fixture retained on failure: {}",
         temp.display()
@@ -457,7 +456,7 @@ fn the_applied_store_backs_up_restores_and_recovers(
 // This process-level control earns its cost by crossing compiler, companion,
 // native publication and restore without the original project being available.
 fn backup_restores_absent_ancestor_descendants_without_a_project(toolchain: &Path) {
-    let temp = std::mem::ManuallyDrop::new(TempDir::new("backup"));
+    let temp = std::mem::ManuallyDrop::new(Scratch::new("backup"));
     eprintln!(
         "backup command fixture retained on failure: {}",
         temp.display()
@@ -617,7 +616,7 @@ fn store_files(dir: &Path) -> std::collections::BTreeMap<std::ffi::OsString, Vec
 
 /// A durable project at `dir` with its ledger, and a provisioned store beside it
 /// populated with two counters through `marrow import`.
-fn project_with_store(toolchain: &Path, temp: &TempDir) -> (PathBuf, PathBuf) {
+fn project_with_store(toolchain: &Path, temp: &Scratch) -> (PathBuf, PathBuf) {
     let project = temp.join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(&project.join("src/main.mw"), SOURCE);
@@ -659,7 +658,7 @@ fn text(bytes: &[u8]) -> String {
 }
 
 fn a_clean_store_audits_with_a_stable_digest_and_exit_zero(toolchain: &Path) {
-    let temp = TempDir::new("clean");
+    let temp = Scratch::new("clean");
     let (project, store) = project_with_store(toolchain, &temp);
     let store_arg = store.to_str().expect("store path");
     fs::write(store.join("lock"), b"unclean").expect("prior marker");
@@ -720,7 +719,7 @@ fn instance_of(line: &str) -> &str {
 }
 
 fn recovery_refuses_an_altered_engine_with_exit_one(toolchain: &Path) {
-    let temp = TempDir::new("flip");
+    let temp = Scratch::new("flip");
     let (project, store) = project_with_store(toolchain, &temp);
     let engine = store.join("store.redb");
     let mut bytes = fs::read(&engine).expect("read engine");
@@ -760,7 +759,7 @@ fn recovery_refuses_an_altered_engine_with_exit_one(toolchain: &Path) {
 }
 
 fn a_code_only_edit_must_be_rebound_before_it_audits(toolchain: &Path) {
-    let temp = TempDir::new("stale");
+    let temp = Scratch::new("stale");
     let (project, store) = project_with_store(toolchain, &temp);
     fs::remove_file(store.join("lock")).expect("remove clean marker");
     let before = store_files(&store);
@@ -801,7 +800,7 @@ fn a_code_only_edit_must_be_rebound_before_it_audits(toolchain: &Path) {
 }
 
 fn usage_and_absent_store_refusals_keep_their_codes(toolchain: &Path) {
-    let temp = TempDir::new("usage");
+    let temp = Scratch::new("usage");
     let project = temp.join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(&project.join("src/main.mw"), SOURCE);
@@ -825,7 +824,7 @@ fn usage_and_absent_store_refusals_keep_their_codes(toolchain: &Path) {
 
 #[test]
 fn a_compiler_resource_limit_keeps_its_typed_code_before_store_access() {
-    let temp = TempDir::new("compiler-limit");
+    let temp = Scratch::new("compiler-limit");
     let project = temp.join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     let mut source = String::from("module main\n\n");
@@ -856,7 +855,7 @@ fn a_compiler_resource_limit_keeps_its_typed_code_before_store_access() {
 }
 
 fn a_storeless_program_has_nothing_to_audit(toolchain: &Path) {
-    let temp = TempDir::new("storeless");
+    let temp = Scratch::new("storeless");
     let project = temp.join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(
@@ -873,7 +872,7 @@ fn a_storeless_program_has_nothing_to_audit(toolchain: &Path) {
 }
 
 fn an_invalid_scalar_reports_a_logical_finding(toolchain: &Path) {
-    let temp = TempDir::new("invalid-scalar");
+    let temp = Scratch::new("invalid-scalar");
     let (project, store) = project_with_store(toolchain, &temp);
     let engine = store.join("store.redb");
     let mut bytes = fs::read(&engine).expect("read engine");
@@ -951,7 +950,7 @@ fn doctor_reports_and_refusals_share_one_owned_toolchain() {
 fn explicit_recovery_preserves_data_and_reports_moved_files(toolchain: &Path) {
     use serde_json::Value;
 
-    let temp = TempDir::new("recover");
+    let temp = Scratch::new("recover");
     let (project, store) = project_with_store(toolchain, &temp);
     let store_arg = store.to_str().expect("store path");
     let before = marrow(
@@ -1008,7 +1007,7 @@ fn explicit_recovery_preserves_data_and_reports_moved_files(toolchain: &Path) {
 #[cfg(unix)]
 fn recovery_failure_reports_a_preservation_move(toolchain: &Path) {
     for format in ["text", "jsonl"] {
-        let temp = TempDir::new("recover-refusal");
+        let temp = Scratch::new("recover-refusal");
         let (project, store) = project_with_store(toolchain, &temp);
         let envelope = fs::read(store.join("envelope")).expect("envelope");
         let head = fs::read(store.join("head")).expect("head");

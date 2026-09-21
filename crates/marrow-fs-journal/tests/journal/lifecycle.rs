@@ -5,13 +5,13 @@
 
 use std::os::unix::fs::MetadataExt;
 
-use crate::common::{Scratch, mode_of, require_mode_bits_bind, set_mode};
 use marrow_fs_journal::{
     AdmittedDir, BuiltHeader, CacheLock, ClaimRefusal, CorruptionReason, CustodyError, CustodyOp,
     EntryName, EntryNameError, FrameCorruption, FsIdentity, JournalCommon, JournalError,
     LiveJournal, MarkerStats, NodeKind, PendingName, PendingState, TailState, claim, classify,
     encode_header, encode_record,
 };
+use marrow_test_support::{Scratch, mode_of, require_mode_bits_bind, set_mode};
 
 fn name(spelling: &str) -> EntryName {
     EntryName::admit(spelling).expect("test names are admissible")

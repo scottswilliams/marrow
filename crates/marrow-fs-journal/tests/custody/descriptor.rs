@@ -6,8 +6,8 @@
 
 use std::os::unix::fs::MetadataExt;
 
-use crate::common::{Scratch, mode_of};
 use marrow_fs_journal::{AdmittedDir, CustodyError, EntryName, FsIdentity, NodeKind};
+use marrow_test_support::{Scratch, mode_of};
 
 fn name(spelling: &str) -> EntryName {
     EntryName::admit(spelling).expect("test names are admissible")

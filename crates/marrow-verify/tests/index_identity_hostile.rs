@@ -15,7 +15,7 @@ use marrow_image::{
     LedgerIdBytes, PlannedSiteRef, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget,
     SpanEntry, ValueShapeNodeId,
 };
-use marrow_test_support::{admitted, admitted_plan, site};
+use marrow_test_support::{admitted_plan, site};
 use marrow_verify::verify;
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
@@ -174,7 +174,7 @@ fn verify_one(
     ret: ImageType,
 ) -> Result<(), ()> {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let graph = build_graph(&mut draft);
     let code = code(&graph);
     build_export(&mut draft, code, params, ret);
@@ -233,7 +233,7 @@ fn list_ret(idx: marrow_image::CollTypeId) -> ImageType {
 fn a_valid_index_scan_and_lookup_verify() {
     // Scan holds the one leading field (shelf) as a prefix and freezes `List[int]`.
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let g = build_graph(&mut draft);
     let scan = vec![
         Instr::LocalGet(0),
@@ -250,7 +250,7 @@ fn a_valid_index_scan_and_lookup_verify() {
     assert!(verify(&draft.encode().expect("encode").bytes).is_ok());
 
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let g = build_graph(&mut draft);
     let lookup = vec![
         Instr::LocalGet(0),
@@ -266,7 +266,7 @@ fn a_valid_index_scan_and_lookup_verify() {
 #[test]
 fn a_scan_over_a_unique_index_is_refused() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let g = build_graph(&mut draft);
     // `DurIndexScan` pointed at the unique lookup site.
     let code = vec![
@@ -287,7 +287,7 @@ fn a_scan_over_a_unique_index_is_refused() {
 #[test]
 fn a_lookup_over_a_nonunique_index_is_refused() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let g = build_graph(&mut draft);
     let code = vec![
         Instr::LocalGet(0),
@@ -301,7 +301,7 @@ fn a_lookup_over_a_nonunique_index_is_refused() {
 #[test]
 fn a_scan_list_of_the_wrong_element_type_is_refused() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let g = build_graph(&mut draft);
     let list_text = draft
         .add_collection_type(marrow_image::CollectionTypeDef::List { elem: text() })

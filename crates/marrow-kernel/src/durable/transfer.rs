@@ -148,12 +148,12 @@ mod tests {
 
     #[test]
     fn native_late_input_failure_keeps_exact_confirmed_prefix_under_same_owner() {
-        use crate::test_common::Scratch;
         use marrow_store::{NativeEngineOwner, NativeOpenAccess};
+        use marrow_test_support::Scratch;
         let scratch = Scratch::new("transfer-prefix");
-        let directory = scratch.store();
-        NativeEngineOwner::provision(&directory).unwrap();
-        let mut owner = NativeEngineOwner::acquire_existing(&directory)
+        let directory = scratch.path();
+        NativeEngineOwner::provision(directory).unwrap();
+        let mut owner = NativeEngineOwner::acquire_existing(directory)
             .unwrap()
             .bind_and_open_existing(NativeOpenAccess::ReadWrite, [0x73; 16], || {
                 Ok::<_, std::convert::Infallible>(())

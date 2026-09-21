@@ -26,7 +26,7 @@ use crate::publication::{
     IdsPublication, IdsPublicationError, IdsPublicationMarker, IdsPublishOutcome, IdsRefusal,
     ProjectMetadataWriteGuard, ids_publication_marker,
 };
-use crate::scratch::TempDir;
+use marrow_test_support::{Scratch, set_mode};
 
 fn serialized() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -43,13 +43,13 @@ fn assert_settled(project: &Project, expected: IdsPublication) {
 
 /// A temporary project root, over the crate's one scratch fixture.
 struct Project {
-    dir: TempDir,
+    dir: Scratch,
 }
 
 impl Project {
     fn new(tag: &str) -> Self {
         Self {
-            dir: TempDir::project(tag),
+            dir: Scratch::project(tag, ""),
         }
     }
 
@@ -242,11 +242,6 @@ impl<'a> Crash<'a> {
         // The journal owner requires the fixed mode on a durable claim.
         set_mode(&path, 0o600);
     }
-}
-
-fn set_mode(path: &Path, mode: u32) {
-    use std::os::unix::fs::PermissionsExt as _;
-    fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("set fixture mode");
 }
 
 fn installing_record() -> Vec<u8> {

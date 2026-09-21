@@ -263,6 +263,7 @@ fn unreported_termination(status: std::process::ExitStatus) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use marrow_test_support::Scratch;
 
     fn layout(dir: &Path, release: &str, runner_bytes: &[u8]) {
         std::fs::create_dir_all(dir).expect("dir");
@@ -272,17 +273,6 @@ mod tests {
             super::manifest_text(release, "marrow-runner", runner_bytes),
         )
         .expect("manifest");
-    }
-
-    fn scratch(tag: &str) -> PathBuf {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        std::env::temp_dir().join(format!(
-            "marrow-companion-{tag}-{}-{nonce}",
-            std::process::id()
-        ))
     }
 
     /// A companion that exits on its own has written its typed record and the terminal
@@ -309,7 +299,7 @@ mod tests {
 
     #[test]
     fn a_matching_layout_verifies() {
-        let dir = scratch("ok");
+        let dir = Scratch::new("companion-ok");
         layout(&dir, "9.9.9", b"stock runner bytes");
         assert_eq!(
             discover_companion_in(&dir, "9.9.9"),
@@ -320,8 +310,7 @@ mod tests {
 
     #[test]
     fn a_missing_manifest_is_damage() {
-        let dir = scratch("missing");
-        std::fs::create_dir_all(&dir).expect("dir");
+        let dir = Scratch::new("companion-missing");
         assert_eq!(
             discover_companion_in(&dir, "9.9.9"),
             Err(CompanionError::ManifestMissing),
@@ -331,7 +320,7 @@ mod tests {
 
     #[test]
     fn a_release_mismatch_is_damage() {
-        let dir = scratch("release");
+        let dir = Scratch::new("companion-release");
         layout(&dir, "1.0.0", b"stock runner bytes");
         assert_eq!(
             discover_companion_in(&dir, "9.9.9"),
@@ -342,7 +331,7 @@ mod tests {
 
     #[test]
     fn an_altered_companion_is_rejected() {
-        let dir = scratch("altered");
+        let dir = Scratch::new("companion-altered");
         layout(&dir, "9.9.9", b"stock runner bytes");
         // Overwrite the companion after the manifest recorded its identity.
         std::fs::write(dir.join("marrow-runner"), b"tampered bytes").expect("tamper");
@@ -394,8 +383,7 @@ mod tests {
 
     #[test]
     fn a_traversing_runner_name_is_refused() {
-        let dir = scratch("traverse");
-        std::fs::create_dir_all(&dir).expect("dir");
+        let dir = Scratch::new("companion-traverse");
         std::fs::write(
             dir.join(MANIFEST_NAME),
             "marrow companions v0\nrelease 9.9.9\nrunner ../evil 0000000000000000000000000000000000000000000000000000000000000000\nend\n",

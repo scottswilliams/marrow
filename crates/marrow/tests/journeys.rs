@@ -2,7 +2,7 @@
 //! reports, the local-dependency pair, the scale corpus, the source-test and formatter
 //! runs, and diagnostic actionability.
 
-mod common;
+pub mod common;
 
 #[path = "journeys/collections_temporal.rs"]
 mod collections_temporal;

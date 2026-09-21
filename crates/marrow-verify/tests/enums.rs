@@ -9,7 +9,6 @@ use marrow_image::{
     CollectionTypeDef, DraftTxn, EnumId, EnumTypeDef, ExportId, FunctionDef, ImageBuildError,
     ImageDraft, ImageType, Instr, ReferenceKind, Scalar, SpanEntry, VariantDef,
 };
-use marrow_test_support::admitted;
 use marrow_verify::verify;
 
 fn spans(code: &[Instr]) -> Vec<SpanEntry> {
@@ -63,7 +62,7 @@ fn verify_fn(
     ret: ImageType,
     code: Vec<Instr>,
 ) -> Option<Code> {
-    let mut draft = admitted(&mut owner);
+    let mut draft = owner.begin_transaction();
     let name = draft.intern_string("f").expect("a within-domain mint");
     let source = draft
         .intern_string("src/main.mw")
@@ -93,7 +92,7 @@ fn encode_fn(
     ret: ImageType,
     code: Vec<Instr>,
 ) -> Result<(), ImageBuildError> {
-    let mut draft = admitted(&mut owner);
+    let mut draft = owner.begin_transaction();
     let name = draft.intern_string("f").expect("a within-domain mint");
     let source = draft
         .intern_string("src/main.mw")
@@ -117,7 +116,7 @@ fn encode_fn(
 #[test]
 fn a_well_formed_enum_image_verifies() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let enum_idx = shape(&mut draft);
     let two = draft.intern_int(2).expect("a within-domain mint");
     // f(): int = Shape::circle(2) then read its payload leaf.
@@ -151,7 +150,7 @@ fn a_well_formed_enum_image_verifies() {
 #[test]
 fn an_enum_param_index_out_of_range_is_refused_by_the_producer() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let _ = shape(&mut draft); // one enum exists (index 0)
     // A parameter references enum index 7, which is out of range.
     let code = vec![Instr::Return];
@@ -194,7 +193,7 @@ fn an_enum_return_index_out_of_range_is_refused_by_the_producer() {
 #[test]
 fn a_duplicate_variant_name_rejects_at_table() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let name = draft.intern_string("E").expect("a within-domain mint");
     let a = draft.intern_string("a").expect("a within-domain mint");
     draft
@@ -233,7 +232,7 @@ fn a_duplicate_variant_name_rejects_at_table() {
 #[test]
 fn an_out_of_range_construct_variant_is_refused_by_the_producer() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let enum_idx = shape(&mut draft);
     // Shape has 3 variants; constructing variant 9 is out of range.
     let code = vec![
@@ -263,7 +262,7 @@ fn an_out_of_range_construct_variant_is_refused_by_the_producer() {
 #[test]
 fn an_out_of_range_payload_field_rejects_at_function() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let enum_idx = shape(&mut draft);
     let two = draft.intern_int(2).expect("a within-domain mint");
     // circle has one payload field (index 0); reading field 5 is out of range.
@@ -301,7 +300,7 @@ fn a_collection_enum_payload_leaf_rejects_at_table() {
     // compiler's check-time refusal of the same shape is defense in depth, not the
     // trust boundary.
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let list_int = draft
         .add_collection_type(CollectionTypeDef::List {
             elem: ImageType::scalar(Scalar::Int),
@@ -342,7 +341,7 @@ fn a_truncated_enum_table_rejects_at_envelope() {
     // A valid enum image with its final byte flipped but not rehashed rejects at
     // the envelope; truncating the trailing ENUMS section corrupts the digest.
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let _ = shape(&mut draft);
     let name = draft.intern_string("f").expect("a within-domain mint");
     let source = draft

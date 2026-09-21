@@ -2,10 +2,10 @@
 //! release on drop, and lock-entry persistence. Affinity (no clone, no copy)
 //! is a property of [`marrow_fs_journal::CacheLock`], which derives neither.
 
-use crate::common::{Scratch, mode_of, require_mode_bits_bind, set_mode};
 use marrow_fs_journal::{
     AdmittedDir, CacheLock, CustodyError, CustodyOp, EntryName, LockError, NodeKind,
 };
+use marrow_test_support::{Scratch, mode_of, require_mode_bits_bind, set_mode};
 
 fn name(spelling: &str) -> EntryName {
     EntryName::admit(spelling).expect("test names are admissible")

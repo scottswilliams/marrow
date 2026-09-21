@@ -2,17 +2,13 @@
 //! the launched image's store, gated by the accepted-report token. The server (runner) is one
 //! caller of the wire `Provision` DTO; the encoder here is the other. No socket is bound.
 
-#[path = "common/output.rs"]
-mod output;
-#[path = "common/program.rs"]
-mod program;
-#[path = "common/scratch.rs"]
-mod scratch;
+use marrow_test_support::Scratch;
+use marrow_test_support::program;
 
 use marrow_lifecycle::ProvisionReport;
 use marrow_local_wire::{ClientMessage, ServerMessage};
 use marrow_runner::{Handler, Service};
-use output::broken_output;
+use marrow_test_support::broken_output;
 
 const SOURCE: &str = r#"resource Counter {
     required value: int
@@ -51,8 +47,7 @@ fn approval_token(store: &std::path::Path) -> String {
 /// instance; opening the destination confirms the store is complete.
 #[test]
 fn a_provision_request_with_a_matching_approval_provisions() {
-    let base = scratch::path("runner-provision");
-    std::fs::create_dir_all(&base).expect("scratch base");
+    let base = Scratch::new("runner-provision");
     let store = base.join("store");
     let mut service = Service::build(
         marrow_verify::verify(&program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes)
@@ -80,15 +75,13 @@ fn a_provision_request_with_a_matching_approval_provisions() {
         }
         other => panic!("expected Provisioned, got {other:?}"),
     }
-    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// A `Provision` whose approval token does not match the report the runner rebuilds is
 /// rejected, and no store is published.
 #[test]
 fn a_provision_request_with_a_wrong_approval_is_rejected() {
-    let base = scratch::path("runner-provision");
-    std::fs::create_dir_all(&base).expect("scratch base");
+    let base = Scratch::new("runner-provision");
     let store = base.join("store");
     let mut service = Service::build(
         marrow_verify::verify(&program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes)
@@ -114,15 +107,13 @@ fn a_provision_request_with_a_wrong_approval_is_rejected() {
         "a mismatched approval is rejected, got {response:?}",
     );
     assert!(!store.exists(), "a rejected provision publishes no store");
-    let _ = std::fs::remove_dir_all(&base);
 }
 
 #[test]
 fn provision_receipt_failure_preserves_the_published_store() {
     use std::process::{Command, Stdio};
 
-    let base = scratch::path("runner-provision");
-    std::fs::create_dir_all(&base).expect("scratch base");
+    let base = Scratch::new("runner-provision");
     let bytes = program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes;
     let image_path = base.join("program.image");
     std::fs::write(&image_path, &bytes).expect("write image");
@@ -172,8 +163,7 @@ fn recovery_output_failure_keeps_completed_activation_and_preserved_bytes() {
     use std::process::{Command, Stdio};
 
     for format in ["text", "jsonl"] {
-        let base = scratch::path("runner-provision");
-        std::fs::create_dir_all(&base).expect("scratch base");
+        let base = Scratch::new("runner-provision");
         let bytes = program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes;
         let image_path = base.join("program.image");
         std::fs::write(&image_path, &bytes).expect("image");
@@ -248,8 +238,7 @@ fn logical_transfer_keeps_completed_effects_when_receipt_delivery_fails() {
     use std::process::{Command, Stdio};
     for restore in [false, true] {
         for close_diagnostic in [false, true] {
-            let base = scratch::path("runner-provision");
-            std::fs::create_dir_all(&base).expect("scratch");
+            let base = Scratch::new("runner-provision");
             eprintln!("preserved transfer output failure: {}", base.display());
             let bytes = program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes;
             let image = marrow_verify::verify(&bytes).expect("image");
@@ -349,8 +338,7 @@ fn logical_transfer_keeps_completed_effects_when_receipt_delivery_fails() {
 #[test]
 fn restore_command_refuses_incomplete_input_without_a_usable_destination() {
     use std::process::Command;
-    let base = scratch::path("runner-provision");
-    std::fs::create_dir_all(&base).expect("scratch");
+    let base = Scratch::new("runner-provision");
     eprintln!("preserved invalid transfer inputs: {}", base.display());
     let bytes = program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes;
     let source = base.join("source");
@@ -420,8 +408,7 @@ fn import_with_closed_stream(destination: ImportStore, closed: ClosedStream) {
     use marrow_runner::{AttachedService, Handler};
     use std::process::{Command, Stdio};
 
-    let base = scratch::path("runner-provision");
-    std::fs::create_dir_all(&base).expect("scratch base");
+    let base = Scratch::new("runner-provision");
     let bytes = program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes;
     let image = marrow_verify::verify(&bytes).expect("verify image");
     assert_eq!(image.exports().len(), 1);
@@ -540,8 +527,7 @@ fn runner_usage_stderr_failure_keeps_usage_status() {
 #[test]
 fn provision_report_failure_precedes_publication() {
     use std::process::{Command, Stdio};
-    let base = scratch::path("runner-provision");
-    std::fs::create_dir_all(&base).expect("scratch base");
+    let base = Scratch::new("runner-provision");
     let image = base.join("program.image");
     std::fs::write(
         &image,
@@ -572,8 +558,7 @@ fn provision_report_failure_precedes_publication() {
 #[test]
 fn invalid_image_with_closed_stderr_leaves_store_absent() {
     use std::process::{Command, Stdio};
-    let base = scratch::path("runner-provision");
-    std::fs::create_dir_all(&base).expect("scratch base");
+    let base = Scratch::new("runner-provision");
     let invalid = base.join("invalid.image");
     std::fs::write(&invalid, b"not an image").expect("invalid image");
     let store = base.join("store");

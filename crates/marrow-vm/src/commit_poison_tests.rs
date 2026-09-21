@@ -25,10 +25,10 @@ use crate::value::Value;
 
 use marrow_test_support::admitted_plan;
 
-#[path = "../../marrow-kernel/tests/common/fault_engine.rs"]
-mod fault_engine;
-use fault_engine::{FaultEngine, Mode, ModeHandle, WriteFaultHandle, unscoped_store, write};
 use marrow_codes::Code;
+use marrow_test_support::fault_engine::{
+    FaultEngine, Mode, ModeHandle, WriteFaultHandle, unscoped_store, write,
+};
 
 const APPLICATION_ID: [u8; 16] = [0x91; 16];
 const ROOT_PLACEMENT_ID: [u8; 16] = [0x92; 16];

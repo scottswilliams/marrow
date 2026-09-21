@@ -4,12 +4,12 @@
 
 use std::path::Path;
 
-use crate::support::actor_fixtures::*;
-use crate::support::compile::compile_files;
 use marrow_lifecycle::{
     AdmissionRefusal, AttachOutcome, ChangedFact, HEAD_FILE, LifecycleError, LogicalHead,
     PinDisagreement, active_binding, attach, head_map, prepare,
 };
+use marrow_test_support::graph_corpus::*;
+use marrow_test_support::program::compile_files;
 use marrow_verify::{VerifiedImage, verify};
 
 /// The base durable program: a `counters` root of `Counter` resources (a required `value`
@@ -53,8 +53,8 @@ fn projection_of(image: &VerifiedImage) -> marrow_kernel::durable::StoreProjecti
 
 use marrow_codes::Code;
 
-use crate::support::Scratch;
 use crate::support::store::provision_from;
+use marrow_test_support::Scratch;
 
 #[test]
 fn refused_attach_preserves_absent_owner_marker() {
@@ -69,12 +69,12 @@ fn refused_attach_preserves_nonempty_owner_marker() {
 fn refused_attach_preserves_marker(marker: Option<&[u8]>) {
     let scratch = Scratch::new("refusal-marker");
     let image = compile(BASE_SOURCE, BASE_IDS);
-    provision_from(scratch.dir(), &image);
-    assert!(!scratch.dir().join("lock").exists());
+    provision_from(scratch.store(), &image);
+    assert!(!scratch.store().join("lock").exists());
     if let Some(marker) = marker {
-        std::fs::write(scratch.dir().join("lock"), marker).expect("seed marker");
+        std::fs::write(scratch.store().join("lock"), marker).expect("seed marker");
     }
-    let mut before = std::fs::read_dir(scratch.dir())
+    let mut before = std::fs::read_dir(scratch.store())
         .expect("list provisioned store")
         .map(|entry| {
             let entry = entry.expect("store entry");
@@ -88,7 +88,7 @@ fn refused_attach_preserves_marker(marker: Option<&[u8]>) {
         &BASE_SOURCE.replace("    label: string\n", "    required label: string\n"),
         BASE_IDS,
     );
-    match attach(scratch.dir(), prepare(changed)) {
+    match attach(scratch.store(), prepare(changed)) {
         Err(LifecycleError::Refused(AdmissionRefusal::ContractChanged(refusal))) => {
             assert_eq!(refusal.changed, ChangedFact::DurableContract);
         }
@@ -97,11 +97,11 @@ fn refused_attach_preserves_marker(marker: Option<&[u8]>) {
     }
     for (name, bytes) in &before {
         assert!(
-            std::fs::read(scratch.dir().join(name)).expect("read refused store") == *bytes,
+            std::fs::read(scratch.store().join(name)).expect("read refused store") == *bytes,
             "admission changed {name:?}",
         );
     }
-    let mut after = std::fs::read_dir(scratch.dir())
+    let mut after = std::fs::read_dir(scratch.store())
         .expect("list refused store")
         .map(|entry| entry.expect("store entry").file_name())
         .collect::<Vec<_>>();
@@ -135,10 +135,10 @@ fn explicit_recovery_preserves_populated_program_data() {
     let set_value = export("setValue");
     let read_value = export("readValue");
     let scratch = Scratch::new("populated-recovery");
-    let instance = provision_from(scratch.dir(), &image);
+    let instance = provision_from(scratch.store(), &image);
     {
         let AttachOutcome::AlreadyActive(mut attachment) =
-            attach(scratch.dir(), prepare(image.clone())).expect("attach")
+            attach(scratch.store(), prepare(image.clone())).expect("attach")
         else {
             panic!("provisioned binding")
         };
@@ -152,24 +152,24 @@ fn explicit_recovery_preserves_populated_program_data() {
         ));
     }
     let before =
-        marrow_lifecycle::audit(scratch.dir(), prepare(image.clone())).expect("before audit");
+        marrow_lifecycle::audit(scratch.store(), prepare(image.clone())).expect("before audit");
     assert_eq!(before.summary.entries, 1);
-    let head = std::fs::read(scratch.dir().join(HEAD_FILE)).expect("head");
+    let head = std::fs::read(scratch.store().join(HEAD_FILE)).expect("head");
     let receipt =
-        marrow_lifecycle::recover(scratch.dir(), prepare(image.clone())).expect("recovery");
+        marrow_lifecycle::recover(scratch.store(), prepare(image.clone())).expect("recovery");
     assert_eq!(receipt.instance, instance);
     assert_eq!(receipt.image_id, image.image_id());
     assert_eq!(
-        std::fs::read(scratch.dir().join(HEAD_FILE)).expect("head unchanged"),
+        std::fs::read(scratch.store().join(HEAD_FILE)).expect("head unchanged"),
         head
     );
     let after =
-        marrow_lifecycle::audit(scratch.dir(), prepare(image.clone())).expect("after audit");
+        marrow_lifecycle::audit(scratch.store(), prepare(image.clone())).expect("after audit");
     assert!(after.is_clean());
     assert_eq!(after.digest, before.digest);
     assert_eq!(after.summary.entries, 1);
     let AttachOutcome::AlreadyActive(mut attachment) =
-        attach(scratch.dir(), prepare(image)).expect("attach recovered")
+        attach(scratch.store(), prepare(image)).expect("attach recovered")
     else {
         panic!("recovery does not rebind")
     };
@@ -275,7 +275,7 @@ fn the_accepted_map_keeps_every_old_number(
     inserted: &VerifiedImage,
     fresh_extra_number: u32,
 ) -> marrow_lifecycle::HeadMap {
-    let extra_id = marrow_image::LedgerIdBytes::from_bytes([0x10; 16]);
+    let extra_id = marrow_test_support::id(0x10);
     let mut ids: Vec<_> = old_head
         .head_map
         .entries()
@@ -349,11 +349,11 @@ return true
     };
     // Retain the original store on a failed assertion for independent byte inspection.
     let scratch = std::mem::ManuallyDrop::new(Scratch::new("accepted-numbering"));
-    eprintln!("accepted-numbering scratch: {}", scratch.dir().display());
-    provision_from(scratch.dir(), old);
+    eprintln!("accepted-numbering scratch: {}", scratch.store().display());
+    provision_from(scratch.store(), old);
     {
         let AttachOutcome::AlreadyActive(mut attachment) =
-            attach(scratch.dir(), prepare(old.clone())).expect("old attach")
+            attach(scratch.store(), prepare(old.clone())).expect("old attach")
         else {
             panic!("provisioned binding")
         };
@@ -367,7 +367,7 @@ return true
         ));
     }
     let accepted = the_accepted_map_keeps_every_old_number(
-        &open_head(scratch.dir(), old),
+        &open_head(scratch.store(), old),
         &inserted,
         fresh_extra_number,
     );
@@ -378,9 +378,9 @@ return true
         marrow_lifecycle::accepted_ceiling(&inserted),
         accepted,
     );
-    std::fs::write(scratch.dir().join(HEAD_FILE), head.encode()).expect("accepted head");
+    std::fs::write(scratch.store().join(HEAD_FILE), head.encode()).expect("accepted head");
     let AttachOutcome::AlreadyActive(mut attachment) =
-        attach(scratch.dir(), prepare(inserted.clone())).expect("accepted-map attach")
+        attach(scratch.store(), prepare(inserted.clone())).expect("accepted-map attach")
     else {
         panic!("accepted image is already active")
     };
@@ -405,17 +405,17 @@ return true
         ));
     }
     drop(attachment);
-    let before_recovery = marrow_lifecycle::audit(scratch.dir(), prepare(inserted.clone()))
+    let before_recovery = marrow_lifecycle::audit(scratch.store(), prepare(inserted.clone()))
         .expect("accepted-map audit");
     assert!(before_recovery.is_clean());
     assert_eq!(before_recovery.summary.index_cells, 1);
-    marrow_lifecycle::recover(scratch.dir(), prepare(inserted.clone()))
+    marrow_lifecycle::recover(scratch.store(), prepare(inserted.clone()))
         .expect("accepted-map recovery");
-    let recovered =
-        marrow_lifecycle::audit(scratch.dir(), prepare(inserted.clone())).expect("recovered audit");
+    let recovered = marrow_lifecycle::audit(scratch.store(), prepare(inserted.clone()))
+        .expect("recovered audit");
     assert_eq!(recovered.digest, before_recovery.digest);
     the_accepted_store_backs_up_and_restores(
-        scratch.dir(),
+        scratch.store(),
         &inserted,
         &inserted_bytes,
         &head,
@@ -437,9 +437,9 @@ fn rebind_preserves_an_occupied_replacement_slot() {
     ] {
         for shape in ["empty", "partial", "symlink", "directory", "hardlink"] {
             let scratch = Scratch::new("replacement-shape");
-            provision_from(scratch.dir(), &image);
-            let path = scratch.dir().join(slot);
-            let peer = scratch.dir().join("unrelated");
+            provision_from(scratch.store(), &image);
+            let path = scratch.store().join(slot);
+            let peer = scratch.store().join("unrelated");
             std::fs::write(&peer, b"unrelated bytes").expect("peer");
             match shape {
                 "empty" => std::fs::write(&path, b"").expect("empty sibling"),
@@ -450,10 +450,10 @@ fn rebind_preserves_an_occupied_replacement_slot() {
                 _ => unreachable!(),
             }
             let before = std::fs::symlink_metadata(&path).expect("sibling metadata");
-            let head = std::fs::read(scratch.dir().join(HEAD_FILE)).expect("head");
-            let envelope = std::fs::read(scratch.dir().join(marrow_lifecycle::ENVELOPE_FILE))
+            let head = std::fs::read(scratch.store().join(HEAD_FILE)).expect("head");
+            let envelope = std::fs::read(scratch.store().join(marrow_lifecycle::ENVELOPE_FILE))
                 .expect("envelope");
-            let error = attach(scratch.dir(), prepare(edited.clone()))
+            let error = attach(scratch.store(), prepare(edited.clone()))
                 .err()
                 .expect("occupied slot refuses");
             assert!(
@@ -491,18 +491,18 @@ fn rebind_preserves_an_occupied_replacement_slot() {
                 assert_eq!(std::fs::read_link(&path).expect("link unchanged"), peer);
             }
             assert_eq!(
-                std::fs::read(scratch.dir().join(HEAD_FILE)).expect("head unchanged"),
+                std::fs::read(scratch.store().join(HEAD_FILE)).expect("head unchanged"),
                 head
             );
             if entry == StoreEntry::Envelope {
                 assert_eq!(
-                    std::fs::read(scratch.dir().join(marrow_lifecycle::ENVELOPE_FILE))
+                    std::fs::read(scratch.store().join(marrow_lifecycle::ENVELOPE_FILE))
                         .expect("envelope unchanged"),
                     envelope
                 );
             } else {
                 assert!(matches!(
-                    attach(scratch.dir(), prepare(image.clone())),
+                    attach(scratch.store(), prepare(image.clone())),
                     Err(LifecycleError::Open(OpenError::ActivationRequired { .. }))
                 ));
             }
@@ -518,7 +518,7 @@ fn old_image_binding_refuses_active_and_rebind_before_engine_open() {
     for presented in [&image, &edited] {
         for broken_engine in [false, true] {
             let scratch = Scratch::new("old-image-binding");
-            let dir = scratch.dir();
+            let dir = scratch.store();
             provision_from(dir, &image);
             let head_path = dir.join(marrow_lifecycle::HEAD_FILE);
             let mut head = LogicalHead::decode(&std::fs::read(&head_path).expect("head"))
@@ -775,16 +775,16 @@ fn graph_id(segments: &[&str]) -> marrow_image::LedgerIdBytes {
         ["tags", "name"] => 0x41,
         other => panic!("no GRAPH_IDS anchor for kernel walk node {other:?}"),
     };
-    marrow_image::LedgerIdBytes::from_bytes([byte; 16])
+    marrow_test_support::id(byte)
 }
 
 #[test]
 fn attach_to_the_same_image_is_already_active() {
     let scratch = Scratch::new("already-active");
     let image = compile(BASE_SOURCE, BASE_IDS);
-    provision_from(scratch.dir(), &image);
+    provision_from(scratch.store(), &image);
 
-    match attach(scratch.dir(), prepare(image)).expect("attach") {
+    match attach(scratch.store(), prepare(image)).expect("attach") {
         AttachOutcome::AlreadyActive(attachment) => drop(attachment),
         AttachOutcome::Rebound { .. } => panic!("an identical image must be already-active"),
     }
@@ -813,11 +813,11 @@ fn a_body_only_edit_is_a_binding_only_rebind() {
             .expect("export")
             .id()
     };
-    let instance = provision_from(scratch.dir(), &image);
+    let instance = provision_from(scratch.store(), &image);
     let original = active_binding(&image);
     {
         let AttachOutcome::AlreadyActive(mut attachment) =
-            attach(scratch.dir(), prepare(image.clone())).expect("attach")
+            attach(scratch.store(), prepare(image.clone())).expect("attach")
         else {
             panic!("provisioned binding")
         };
@@ -845,7 +845,7 @@ fn a_body_only_edit_is_a_binding_only_rebind() {
         "the facts are preserved"
     );
 
-    let receipt = match attach(scratch.dir(), prepare(edited.clone())).expect("attach") {
+    let receipt = match attach(scratch.store(), prepare(edited.clone())).expect("attach") {
         AttachOutcome::Rebound {
             mut attachment,
             receipt,
@@ -881,7 +881,7 @@ fn a_body_only_edit_is_a_binding_only_rebind() {
 
     // The rebind persisted: reopening reads the new image as the active binding, and the head
     // map (durable contract unchanged) is preserved.
-    let opened = open_head(scratch.dir(), &edited);
+    let opened = open_head(scratch.store(), &edited);
     assert_eq!(opened.binding.image_id, edited_binding.image_id);
     assert_eq!(
         opened.head_map,
@@ -905,7 +905,7 @@ fn foreign_persisted_pin(dir: &Path, image: &VerifiedImage) -> marrow_image::Led
     let mut ids: Vec<marrow_image::LedgerIdBytes> =
         map.entries().iter().map(|entry| entry.ledger_id).collect();
     let missing = ids[0];
-    ids[0] = marrow_image::LedgerIdBytes::from_bytes([0xee; 16]);
+    ids[0] = marrow_test_support::id(0xee);
     let foreign = marrow_lifecycle::HeadMap::assign(&ids).expect("a foreign bijection assigns");
     let forged = LogicalHead::provision(
         active_binding(image),
@@ -932,10 +932,10 @@ fn _pin_family_covers_every_serving_outcome(outcome: AttachOutcome) {
 fn a_store_with_a_foreign_head_map_pin_is_refused_at_attach() {
     let scratch = Scratch::new("pin-foreign");
     let image = compile(GRAPH_SOURCE, GRAPH_IDS);
-    provision_from(scratch.dir(), &image);
-    let first_id = foreign_persisted_pin(scratch.dir(), &image);
+    provision_from(scratch.store(), &image);
+    let first_id = foreign_persisted_pin(scratch.store(), &image);
 
-    match attach(scratch.dir(), prepare(image)) {
+    match attach(scratch.store(), prepare(image)) {
         Err(LifecycleError::Refused(AdmissionRefusal::Pin(refusal))) => {
             assert_eq!(
                 refusal.code(),
@@ -969,15 +969,15 @@ fn a_store_with_a_foreign_head_map_pin_is_refused_at_attach() {
 fn the_pin_refusal_precedes_any_engine_call() {
     let scratch = Scratch::new("pin-before-engine");
     let image = compile(GRAPH_SOURCE, GRAPH_IDS);
-    provision_from(scratch.dir(), &image);
-    foreign_persisted_pin(scratch.dir(), &image);
+    provision_from(scratch.store(), &image);
+    foreign_persisted_pin(scratch.store(), &image);
     std::fs::write(
-        scratch.dir().join(marrow_lifecycle::ENGINE_FILE),
+        scratch.store().join(marrow_lifecycle::ENGINE_FILE),
         b"not an engine",
     )
     .expect("corrupt the engine file");
 
-    match attach(scratch.dir(), prepare(image)) {
+    match attach(scratch.store(), prepare(image)) {
         Err(LifecycleError::Refused(AdmissionRefusal::Pin(_))) => {}
         Err(other) => panic!(
             "the pin must refuse before the engine is touched, got code {}",
@@ -994,13 +994,13 @@ fn the_pin_refusal_precedes_any_engine_call() {
 fn a_rebind_over_a_foreign_pin_is_refused_without_a_write() {
     let scratch = Scratch::new("pin-rebind");
     let image = compile(GRAPH_SOURCE, GRAPH_IDS);
-    provision_from(scratch.dir(), &image);
-    let true_head = std::fs::read(scratch.dir().join(HEAD_FILE)).expect("read true head");
-    foreign_persisted_pin(scratch.dir(), &image);
+    provision_from(scratch.store(), &image);
+    let true_head = std::fs::read(scratch.store().join(HEAD_FILE)).expect("read true head");
+    foreign_persisted_pin(scratch.store(), &image);
 
-    let before_head = std::fs::read(scratch.dir().join(HEAD_FILE)).expect("read head");
-    let before_envelope =
-        std::fs::read(scratch.dir().join(marrow_lifecycle::ENVELOPE_FILE)).expect("read envelope");
+    let before_head = std::fs::read(scratch.store().join(HEAD_FILE)).expect("read head");
+    let before_envelope = std::fs::read(scratch.store().join(marrow_lifecycle::ENVELOPE_FILE))
+        .expect("read envelope");
 
     // A body-only edit: same durable contract and interface, different image bytes.
     let edited = compile(&GRAPH_SOURCE.replace("?? \"?\"", "?? \"!\""), GRAPH_IDS);
@@ -1008,7 +1008,7 @@ fn a_rebind_over_a_foreign_pin_is_refused_without_a_write() {
         active_binding(&image).facts_equal(&active_binding(&edited)),
         "the edit is binding-only"
     );
-    match attach(scratch.dir(), prepare(edited.clone())) {
+    match attach(scratch.store(), prepare(edited.clone())) {
         Err(LifecycleError::Refused(AdmissionRefusal::Pin(_))) => {}
         Err(other) => panic!(
             "expected the pin refusal, got code {}",
@@ -1017,19 +1017,20 @@ fn a_rebind_over_a_foreign_pin_is_refused_without_a_write() {
         Ok(_) => panic!("a rebind over a foreign pin was served"),
     }
     assert_eq!(
-        std::fs::read(scratch.dir().join(HEAD_FILE)).expect("read head"),
+        std::fs::read(scratch.store().join(HEAD_FILE)).expect("read head"),
         before_head,
         "the refusal rewrote the head it refused",
     );
     assert_eq!(
-        std::fs::read(scratch.dir().join(marrow_lifecycle::ENVELOPE_FILE)).expect("read envelope"),
+        std::fs::read(scratch.store().join(marrow_lifecycle::ENVELOPE_FILE))
+            .expect("read envelope"),
         before_envelope,
         "the refusal rewrote the envelope",
     );
 
     // The refusal released the lock: with the true pin restored, the same rebind commits.
-    std::fs::write(scratch.dir().join(HEAD_FILE), &true_head).expect("restore the true head");
-    match attach(scratch.dir(), prepare(edited)).expect("attach") {
+    std::fs::write(scratch.store().join(HEAD_FILE), &true_head).expect("restore the true head");
+    match attach(scratch.store(), prepare(edited)).expect("attach") {
         AttachOutcome::Rebound { attachment, .. } => drop(attachment),
         AttachOutcome::AlreadyActive(_) => panic!("a body edit must rebind"),
     }
@@ -1043,8 +1044,8 @@ fn a_rebind_over_a_foreign_pin_is_refused_without_a_write() {
 fn a_contract_change_over_a_foreign_pin_stays_a_contract_refusal() {
     let scratch = Scratch::new("pin-contract");
     let image = compile(GRAPH_SOURCE, GRAPH_IDS);
-    provision_from(scratch.dir(), &image);
-    foreign_persisted_pin(scratch.dir(), &image);
+    provision_from(scratch.store(), &image);
+    foreign_persisted_pin(scratch.store(), &image);
 
     // The same durable node set (same ledger ids) with one field promoted to required — a
     // durable-contract change that leaves the numbering walk identical.
@@ -1052,7 +1053,7 @@ fn a_contract_change_over_a_foreign_pin_stays_a_contract_refusal() {
         &GRAPH_SOURCE.replace("    subtitle: string\n", "    required subtitle: string\n"),
         GRAPH_IDS,
     );
-    match attach(scratch.dir(), prepare(evolved)) {
+    match attach(scratch.store(), prepare(evolved)) {
         Err(LifecycleError::Refused(AdmissionRefusal::ContractChanged(refusal))) => {
             assert_eq!(refusal.changed, ChangedFact::DurableContract);
         }
@@ -1070,11 +1071,11 @@ fn a_contract_change_over_a_foreign_pin_stays_a_contract_refusal() {
 fn accepted_high_water_is_independent_of_current_node_count() {
     let scratch = Scratch::new("pin-high-water");
     let image = compile(GRAPH_SOURCE, GRAPH_IDS);
-    provision_from(scratch.dir(), &image);
+    provision_from(scratch.store(), &image);
 
     // The head map's high-water u32 sits right after the fixed head prefix:
     // magic(4)+ver(1)+imgfmt(1)+3×id(32)+commit(8)+ddig(32)+ddpos(8) = 150.
-    let head_path = scratch.dir().join(HEAD_FILE);
+    let head_path = scratch.store().join(HEAD_FILE);
     let mut bytes = std::fs::read(&head_path).expect("read head");
     let map_start = 4 + 1 + 1 + 32 * 3 + 8 + 32 + 8;
     bytes[map_start..map_start + 4].copy_from_slice(&u32::MAX.to_be_bytes());
@@ -1083,7 +1084,7 @@ fn accepted_high_water_is_independent_of_current_node_count() {
     bytes[body_len..].copy_from_slice(resealed.bytes());
     std::fs::write(&head_path, &bytes).expect("write forged head");
 
-    match attach(scratch.dir(), prepare(image)) {
+    match attach(scratch.store(), prepare(image)) {
         Ok(AttachOutcome::AlreadyActive(attachment)) => {
             assert_eq!(attachment.head().head_map.next_number(), u32::MAX);
         }
@@ -1100,11 +1101,11 @@ fn accepted_high_water_is_independent_of_current_node_count() {
 #[test]
 fn a_changed_contract_is_refused_before_engine_open() {
     let scratch = std::mem::ManuallyDrop::new(Scratch::new("contract-garbage-engine"));
-    eprintln!("contract-refusal scratch: {}", scratch.dir().display());
+    eprintln!("contract-refusal scratch: {}", scratch.store().display());
     let image = compile(GRAPH_SOURCE, GRAPH_IDS);
-    provision_from(scratch.dir(), &image);
+    provision_from(scratch.store(), &image);
     std::fs::write(
-        scratch.dir().join(marrow_lifecycle::ENGINE_FILE),
+        scratch.store().join(marrow_lifecycle::ENGINE_FILE),
         b"not an engine",
     )
     .expect("corrupt the engine file");
@@ -1113,7 +1114,7 @@ fn a_changed_contract_is_refused_before_engine_open() {
         &GRAPH_SOURCE.replace("    subtitle: string\n", "    required subtitle: string\n"),
         GRAPH_IDS,
     );
-    match attach(scratch.dir(), prepare(evolved)) {
+    match attach(scratch.store(), prepare(evolved)) {
         Err(LifecycleError::Refused(AdmissionRefusal::ContractChanged(refusal))) => {
             assert_eq!(refusal.changed, ChangedFact::DurableContract);
         }
@@ -1130,13 +1131,13 @@ fn a_changed_contract_is_refused_before_engine_open() {
 fn adding_an_export_is_a_typed_interface_refusal() {
     let scratch = Scratch::new("iface");
     let image = compile(BASE_SOURCE, BASE_IDS);
-    provision_from(scratch.dir(), &image);
+    provision_from(scratch.store(), &image);
 
     // A new pure export changes the exported interface, not the durable contract or ceiling.
     let extended = format!("{BASE_SOURCE}\npub fn two(): int {{\n    return 2\n}}\n");
     let changed = compile(&extended, BASE_IDS);
 
-    match attach(scratch.dir(), prepare(changed)) {
+    match attach(scratch.store(), prepare(changed)) {
         Err(LifecycleError::Refused(AdmissionRefusal::ContractChanged(refusal))) => {
             assert_eq!(refusal.changed, ChangedFact::Interface);
             assert_eq!(refusal.code(), Code::StoreContractChanged);
@@ -1154,7 +1155,7 @@ fn adding_an_export_is_a_typed_interface_refusal() {
 fn changing_the_durable_contract_is_a_typed_refusal() {
     let scratch = Scratch::new("contract");
     let image = compile(BASE_SOURCE, BASE_IDS);
-    provision_from(scratch.dir(), &image);
+    provision_from(scratch.store(), &image);
 
     // Promote the sparse `label` field to required — the same durable node (same ledger id),
     // but a changed required flag, which is part of the durable contract. The exported
@@ -1163,7 +1164,7 @@ fn changing_the_durable_contract_is_a_typed_refusal() {
     let evolved_source = BASE_SOURCE.replace("    label: string\n", "    required label: string\n");
     let changed = compile(&evolved_source, BASE_IDS);
 
-    match attach(scratch.dir(), prepare(changed)) {
+    match attach(scratch.store(), prepare(changed)) {
         Err(LifecycleError::Refused(AdmissionRefusal::ContractChanged(refusal))) => {
             assert_eq!(refusal.changed, ChangedFact::DurableContract);
             assert_eq!(refusal.code(), Code::StoreContractChanged);
@@ -1198,7 +1199,7 @@ fn changing_the_durable_contract_is_a_typed_refusal() {
 fn a_changed_schema_fact_is_a_durable_contract_refusal() {
     let scratch = Scratch::new("schema-fact");
     let image = compile(GRAPH_SOURCE, GRAPH_IDS);
-    provision_from(scratch.dir(), &image);
+    provision_from(scratch.store(), &image);
 
     let value_shape = GRAPH_SOURCE.replace("required name: string", "required name: int");
     let required = GRAPH_SOURCE.replace("required name: string", "name: string");
@@ -1215,7 +1216,7 @@ fn a_changed_schema_fact_is_a_durable_contract_refusal() {
     // refused must not be the binding it stored. Without this the classification could
     // write the incoming binding on its way out and every assertion below would still
     // pass, so this is what makes the refusal a refusal rather than a report.
-    let provisioned_head = std::fs::read(scratch.dir().join(HEAD_FILE)).expect("read head");
+    let provisioned_head = std::fs::read(scratch.store().join(HEAD_FILE)).expect("read head");
 
     for (fact, source, ids) in [
         ("a field's value shape", value_shape, GRAPH_IDS),
@@ -1224,7 +1225,7 @@ fn a_changed_schema_fact_is_a_durable_contract_refusal() {
         ("a key tuple's arity", key_arity, arity_ids.as_str()),
     ] {
         let changed = compile(&source, ids);
-        match attach(scratch.dir(), prepare(changed)) {
+        match attach(scratch.store(), prepare(changed)) {
             Err(LifecycleError::Refused(AdmissionRefusal::ContractChanged(refusal))) => {
                 assert_eq!(refusal.changed, ChangedFact::DurableContract, "{fact}");
                 assert_eq!(refusal.code(), Code::StoreContractChanged, "{fact}");
@@ -1236,7 +1237,7 @@ fn a_changed_schema_fact_is_a_durable_contract_refusal() {
             Ok(_) => panic!("{fact} changed but the store was served"),
         }
         assert_eq!(
-            std::fs::read(scratch.dir().join(HEAD_FILE)).expect("read head"),
+            std::fs::read(scratch.store().join(HEAD_FILE)).expect("read head"),
             provisioned_head,
             "{fact}: the refusal rewrote the head it refused",
         );
@@ -1273,12 +1274,12 @@ fn a_key_tuple_arity_change_alone_is_a_durable_contract_refusal() {
 
     let scratch = Scratch::new("arity-alone");
     let wide = compile(&two_columns, &ids);
-    provision_from(scratch.dir(), &wide);
-    let head = std::fs::read(scratch.dir().join(HEAD_FILE)).expect("read head");
+    provision_from(scratch.store(), &wide);
+    let head = std::fs::read(scratch.store().join(HEAD_FILE)).expect("read head");
 
     // The same ledger, one column narrower.
     let narrow = compile(BASE_SOURCE, &ids);
-    match attach(scratch.dir(), prepare(narrow)) {
+    match attach(scratch.store(), prepare(narrow)) {
         Err(LifecycleError::Refused(AdmissionRefusal::ContractChanged(refusal))) => {
             assert_eq!(refusal.changed, ChangedFact::DurableContract);
             assert_eq!(refusal.code(), Code::StoreContractChanged);
@@ -1290,7 +1291,7 @@ fn a_key_tuple_arity_change_alone_is_a_durable_contract_refusal() {
         Ok(_) => panic!("the key tuple narrowed but the store was served"),
     }
     assert_eq!(
-        std::fs::read(scratch.dir().join(HEAD_FILE)).expect("read head"),
+        std::fs::read(scratch.store().join(HEAD_FILE)).expect("read head"),
         head,
         "the refusal rewrote the head it refused",
     );
@@ -1307,7 +1308,7 @@ fn generation_one_refuses_active_and_rebind_before_engine_open() {
     for presented in [&image, &edited] {
         for broken_engine in [true, false] {
             let scratch = Scratch::new("old-generation");
-            let dir = scratch.dir();
+            let dir = scratch.store();
             provision_from(dir, &image);
             let head_path = dir.join(marrow_lifecycle::HEAD_FILE);
             let current_head = std::fs::read(&head_path).expect("current head");

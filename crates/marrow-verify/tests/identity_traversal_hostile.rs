@@ -15,7 +15,7 @@ use marrow_image::{
     FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, PlannedSiteRef,
     RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry,
 };
-use marrow_test_support::{admitted, admitted_plan, site};
+use marrow_test_support::{admitted_plan, site};
 use marrow_verify::{RejectionKind, VerifyPhase, verify};
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
@@ -264,7 +264,7 @@ fn build_export(draft: &mut DraftTxn<'_>, code: Vec<Instr>) {
 #[test]
 fn an_identity_ancestor_over_the_traversed_root_verifies() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let (branch_site, list_ty, _subtitle_site) = two_root_branch_draft(&mut draft);
     let code = vec![
         Instr::LocalGet(0),
@@ -298,7 +298,7 @@ fn an_identity_ancestor_over_the_traversed_root_verifies() {
 #[test]
 fn a_cross_root_identity_traversal_ancestor_is_rejected() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let (branch_site, list_ty, _subtitle_site) = two_root_branch_draft(&mut draft);
     let code = vec![
         Instr::LocalGet(0),
@@ -334,7 +334,7 @@ fn a_cross_root_identity_traversal_ancestor_is_rejected() {
 #[test]
 fn a_cross_root_identity_family_probe_ancestor_is_rejected() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let (branch_site, _list_ty, _subtitle_site) = two_root_branch_draft(&mut draft);
     let code = vec![
         Instr::LocalGet(0),
@@ -376,7 +376,7 @@ fn a_cross_root_identity_family_probe_ancestor_is_rejected() {
 #[test]
 fn a_cross_root_identity_key_slot_in_a_strict_set_is_rejected() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let (_branch_site, _list_ty, subtitle_site) = two_root_branch_draft(&mut draft);
     let value = draft.intern_text("x").expect("a within-domain mint");
     // Mint Id(^tallies, k) into slot 1, then name slot 1 as the strict set's key-path over a

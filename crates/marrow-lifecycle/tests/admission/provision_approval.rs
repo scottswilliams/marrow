@@ -10,8 +10,8 @@ use marrow_lifecycle::{
 };
 use marrow_verify::VerifiedImage;
 
-use crate::support::Scratch;
 use crate::support::ceiling::{image as compile, source_broadened, source_read_only};
+use marrow_test_support::Scratch;
 
 fn prepared(image: &VerifiedImage) -> PreparedImage {
     let prepared = prepare(image.clone());
@@ -72,7 +72,7 @@ fn provision_refuses_without_a_matching_approval() {
     let scratch = Scratch::new("provision-approval");
 
     let wrong = ProvisionApproval::from_token("not-the-right-token");
-    let refused = provision_image(&scratch.store(), &prepared(&image), &wrong);
+    let refused = provision_image(scratch.store(), &prepared(&image), &wrong);
     assert!(
         matches!(refused, Err(ProvisionImageError::Unapproved)),
         "a mismatched approval is refused",
@@ -92,11 +92,11 @@ fn an_accepted_provision_round_trips_through_attach() {
     let scratch = Scratch::new("provision-approval");
 
     let prepared = prepared(&image);
-    let report = ProvisionReport::new(&scratch.store(), &prepared).expect("report");
+    let report = ProvisionReport::new(scratch.store(), &prepared).expect("report");
     let approval = ProvisionApproval::accept(&report);
-    let provisioned = provision_image(&scratch.store(), &prepared, &approval).expect("provision");
+    let provisioned = provision_image(scratch.store(), &prepared, &approval).expect("provision");
 
-    let attachment = match attach(&scratch.store(), prepared).expect("attach") {
+    let attachment = match attach(scratch.store(), prepared).expect("attach") {
         AttachOutcome::AlreadyActive(attachment) => attachment,
         AttachOutcome::Rebound { .. } => panic!("the provisioned image is already active"),
     };

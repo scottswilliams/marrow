@@ -7,8 +7,7 @@
 use marrow_compile::{CompileFailure, Compiled, SourceDiagnostic, compile};
 use marrow_project::ProjectInput;
 
-#[path = "common/project.rs"]
-mod project_capture;
+use marrow_test_support::project as project_capture;
 
 #[path = "language_surface/bracket_lookup.rs"]
 mod bracket_lookup;

@@ -7,8 +7,6 @@
 //! binding, ceiling, or pin fact at a time. Both live here so a suite cannot quietly grow a
 //! third.
 
-#![allow(dead_code)]
-
 use std::path::Path;
 
 use marrow_lifecycle::{

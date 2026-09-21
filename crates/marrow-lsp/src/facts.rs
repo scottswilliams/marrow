@@ -349,11 +349,11 @@ mod tests {
     use std::sync::Arc;
 
     use crate::analysis::{AnalysisOutcome, OverlayInput, run_analysis};
-    use crate::scratch::{self, TempDir};
     use crate::uri::{DocumentKey, OriginRoots, SelectedRoot, document_uri};
     use marrow_compile::InputRevision;
     use marrow_project_fs::FileIdentity;
     use marrow_project_fs::SourceOrigin;
+    use marrow_test_support::{Scratch, file_uri};
 
     fn identity(path: &str) -> FileIdentity {
         FileIdentity::validate(path).unwrap().0
@@ -364,8 +364,8 @@ mod tests {
         ProjectFile::root(identity("src/main.mw"))
     }
 
-    fn temp_project(tag: &str, main: &str) -> (TempDir, SelectedRoot) {
-        let base = TempDir::project(&format!("facts-{tag}"), main);
+    fn temp_project(tag: &str, main: &str) -> (Scratch, SelectedRoot) {
+        let base = Scratch::project(&format!("facts-{tag}"), main);
         let root = root_for(&base);
         (base, root)
     }
@@ -377,10 +377,10 @@ mod tests {
     }
 
     fn root_for(dir: &Path) -> SelectedRoot {
-        SelectedRoot::from_uri(&scratch::uri_of(dir)).unwrap()
+        SelectedRoot::from_uri(&file_uri(dir)).unwrap()
     }
 
-    fn analyze_source(tag: &str, main: &str) -> (Arc<AnalysisSnapshot>, SelectedRoot, TempDir) {
+    fn analyze_source(tag: &str, main: &str) -> (Arc<AnalysisSnapshot>, SelectedRoot, Scratch) {
         let (base, root) = temp_project(tag, main);
         let overlay = vec![OverlayInput {
             key: "src/main.mw",

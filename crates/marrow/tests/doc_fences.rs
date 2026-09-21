@@ -22,15 +22,16 @@ use marrow_compile::CompileFailure;
 use marrow_project::{CaptureLimits, CapturedFile, Manifest};
 use marrow_vm::{DurableExecutionFault, DurableRun, IncompleteDisposition};
 
-mod common;
+pub mod common;
 
-use common::{TempDir, marrow_in, write};
+use common::{marrow_in, write};
 use marrow_codes::Code;
+use marrow_test_support::Scratch;
 
 #[test]
 fn scratch_projects_are_unique_within_the_test_process() {
-    let first = TempDir::new("unique");
-    let second = TempDir::new("unique");
+    let first = Scratch::new("unique");
+    let second = Scratch::new("unique");
     assert_ne!(&*first, &*second);
 }
 
@@ -385,7 +386,7 @@ fn verify_fence(fence: &DocFence) -> Result<(), FenceFailure> {
 /// verification and source-test run over the minted ledger. The final result
 /// remains authoritative if minting fails.
 fn mint_and_verify(fence: &DocFence, pre_mint: Vec<FailureRecord>) -> Result<(), FenceFailure> {
-    let temp = TempDir::new("fence");
+    let temp = Scratch::new("fence");
     write(&temp.join("marrow.toml"), "edition = \"2026\"\n");
     write(&temp.join(fence.source_rel_path()), &fence.source);
 

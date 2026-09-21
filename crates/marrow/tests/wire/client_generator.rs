@@ -18,11 +18,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::common::{TempDir, marrow_in, write};
+use crate::common::{marrow_in, write};
+use marrow_test_support::Scratch;
 
 #[test]
 fn nominal_aggregate_inputs_publish_neither_client_nor_image() {
-    let temp = TempDir::new("nominal-input");
+    let temp = Scratch::new("nominal-input");
     write(&temp.join("marrow.toml"), "edition = \"2026\"\n");
     write(
         &temp.join("src/main.mw"),
@@ -112,7 +113,7 @@ pub fn lookup(m: Map<string, int>, k: string): int {
 }
 "#;
 
-fn fixture_project(temp: &TempDir) -> PathBuf {
+fn fixture_project(temp: &Scratch) -> PathBuf {
     let project = temp.join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(&project.join("src/main.mw"), FIXTURE);
@@ -141,7 +142,7 @@ fn workspace_root() -> PathBuf {
 /// the emitted supervisor files are byte-identical to the pinned tracked assets.
 #[test]
 fn generation_is_deterministic_and_supervisor_is_pinned() {
-    let temp = TempDir::new("determinism");
+    let temp = Scratch::new("determinism");
     let project = fixture_project(&temp);
 
     let first = generate(&project, "gen-a");
@@ -168,7 +169,7 @@ fn generation_is_deterministic_and_supervisor_is_pinned() {
 /// Paired with the semantic assertions below, per the presentation-snapshot law.
 #[test]
 fn generated_client_matches_the_golden() {
-    let temp = TempDir::new("golden");
+    let temp = Scratch::new("golden");
     let project = fixture_project(&temp);
     let out = generate(&project, "gen");
     let generated = fs::read_to_string(out.join("client.mts")).expect("generated client");
@@ -192,7 +193,7 @@ fn generated_client_matches_the_golden() {
 /// an independent in-process reconstruction from the verified image.
 #[test]
 fn generated_signatures_and_interface_pin_are_exact() {
-    let temp = TempDir::new("semantics");
+    let temp = Scratch::new("semantics");
     let project = fixture_project(&temp);
     let out = generate(&project, "gen");
     let generated = fs::read_to_string(out.join("client.mts")).expect("generated client");
@@ -251,7 +252,7 @@ fn reconstruct_interface_id() -> String {
 /// return typed through the list decoder.
 #[test]
 fn a_collection_export_generates() {
-    let temp = TempDir::new("list");
+    let temp = Scratch::new("list");
     let project = temp.join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(
@@ -289,7 +290,7 @@ fn a_collection_export_generates() {
 /// TCP endpoint either.
 #[test]
 fn one_grammar_and_no_generic_transport() {
-    let temp = TempDir::new("containment");
+    let temp = Scratch::new("containment");
     let project = fixture_project(&temp);
     let out = generate(&project, "gen");
 

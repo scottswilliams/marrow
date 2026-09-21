@@ -1,8 +1,8 @@
-//! The draft construction seam: the budget a fixture is admitted under, the transaction
-//! it builds in, and the bind-then-request protocol that mints an operation site.
+//! The draft construction seam: the budget a fixture is admitted under and the
+//! bind-then-request protocol that mints an operation site.
 
 use marrow_image::{
-    AdmittedGraphInputPlan, CanonicalDeclarationPathSelector, DraftTxn, ImageDraft, PlannedSiteRef,
+    AdmittedGraphInputPlan, CanonicalDeclarationPathSelector, DraftTxn, PlannedSiteRef,
     RootOccurrenceSelector, SemanticTarget, bounds,
 };
 
@@ -19,11 +19,6 @@ pub fn admitted_plan() -> AdmittedGraphInputPlan {
         bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
         bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
     )
-}
-
-/// The armed transaction over `owner`: the one admission every fixture opens.
-pub fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
-    owner.begin_transaction()
 }
 
 /// Bind one canonical declaration path of `root` to the target that node admits and mint

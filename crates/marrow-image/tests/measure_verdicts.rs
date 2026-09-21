@@ -20,15 +20,15 @@ use marrow_image::{
     KeyColumn, LedgerIdBytes, RecordTypeDef, ReferenceKind, RootId, Scalar, SemanticTarget,
     SpanEntry, StrId, TypeId, ValueShapeNodeId, VariantDef,
 };
-use marrow_test_support::{admitted, admitted_plan};
+use marrow_test_support::admitted_plan;
 
-#[path = "common/ledger_ids.rs"]
-mod ledger_ids;
-use ledger_ids::{APPLICATION_ID, FIELD_ID, PLACEMENT_ID, PRODUCT_ID, seeded_id};
+use marrow_test_support::ledger_ids::{
+    APPLICATION_ID, FIELD_ID, PLACEMENT_ID, PRODUCT_ID, seeded_id,
+};
 
-#[path = "common/fixture_graph.rs"]
-mod fixture_graph;
-use fixture_graph::{admit_root, declare_product, empty_record, unit_function};
+use marrow_test_support::fixture_graph::{
+    admit_root, declare_product, empty_record, unit_function,
+};
 
 /// An instruction operand no table row answers: the raw-indexing defect the
 /// checked-conversion class covers.
@@ -275,7 +275,7 @@ impl Fixture {
         if self.has(Fault::ForgedValueNode) {
             // Index 2 in a three-node arena; the fixture draft's arena holds one.
             let mut other_owner = ImageDraft::new();
-            let mut other = admitted(&mut other_owner);
+            let mut other = other_owner.begin_transaction();
             other
                 .value_scalar(Scalar::Int)
                 .expect("the test arena mints");
@@ -493,7 +493,7 @@ impl Fixture {
 
     fn encode(self) -> Result<(), ImageBuildError> {
         let mut draft_owner = ImageDraft::new();
-        let mut draft = admitted(&mut draft_owner);
+        let mut draft = draft_owner.begin_transaction();
         let value = self.value(&mut draft);
         let record = self.record(&mut draft);
         if !self.has(Fault::WithoutApplication) {
@@ -712,7 +712,7 @@ fn body(over_code_bytes: bool, bad_const: bool, bad_jump: bool, zero: ConstId) -
 /// that append real functions (the TestEntries and Exports overflows).
 fn forged_func_id() -> FuncId {
     let mut other_owner = ImageDraft::new();
-    let mut other = admitted(&mut other_owner);
+    let mut other = other_owner.begin_transaction();
     let src = other.intern_string("s").expect("a within-domain mint");
     let name = other.intern_string("f").expect("a within-domain mint");
     let def = FunctionDef {
@@ -1350,7 +1350,7 @@ fn a_clean_draft_encodes() {
 #[test]
 fn an_over_wide_struct_append_is_refused_at_the_surface() {
     let mut owner = ImageDraft::new();
-    let mut draft = admitted(&mut owner);
+    let mut draft = owner.begin_transaction();
     let int = draft
         .value_scalar(Scalar::Int)
         .expect("the test arena mints");
@@ -1405,7 +1405,7 @@ fn vacant_functions_refuse_and_fill_order_does_not_change_image_order() {
             .collect()
     }
     let mut control = ImageDraft::new();
-    let mut txn = admitted(&mut control);
+    let mut txn = control.begin_transaction();
     for def in definitions(&mut txn) {
         txn.add_function(def).expect("valid fixture construction");
     }
@@ -1416,7 +1416,7 @@ fn vacant_functions_refuse_and_fill_order_does_not_change_image_order() {
         .bytes;
     for missing in 0..3 {
         let mut owner = ImageDraft::new();
-        let mut txn = admitted(&mut owner);
+        let mut txn = owner.begin_transaction();
         let defs = definitions(&mut txn);
         let ids: Vec<_> = (0..3)
             .map(|_| {
@@ -1437,7 +1437,7 @@ fn vacant_functions_refuse_and_fill_order_does_not_change_image_order() {
                 ReferenceKind::VacantFunction
             ))
         );
-        let mut txn = admitted(&mut owner);
+        let mut txn = owner.begin_transaction();
         txn.fill_function(ids[missing], defs[missing].clone())
             .expect("valid fixture construction");
         txn.commit();

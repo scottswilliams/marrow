@@ -40,13 +40,6 @@ mod scalar;
 mod source;
 mod types;
 
-#[cfg(test)]
-#[path = "../tests/common/ledger.rs"]
-mod test_ledger;
-#[cfg(test)]
-#[path = "../tests/common/project.rs"]
-mod test_project;
-
 pub use analysis::{
     ActiveCall, ActiveCallOutcome, AnalysisFailure, AnalysisResourceLimit, AnalysisSnapshot,
     Candidate, CandidateKind, CompletionOutcome, Completions, DeclKind, DeclSymbol, Definition,
@@ -81,7 +74,7 @@ pub use source::ProjectFile;
 pub(crate) fn test_input() -> &'static marrow_project::ProjectInput {
     static INPUT: std::sync::OnceLock<marrow_project::ProjectInput> = std::sync::OnceLock::new();
     INPUT.get_or_init(|| {
-        test_project::project(&[
+        marrow_test_support::project::project(&[
             ("src/a.mw", ""),
             ("src/abcdefgh.mw", ""),
             ("src/first.mw", ""),

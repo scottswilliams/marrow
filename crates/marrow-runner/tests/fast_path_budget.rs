@@ -16,10 +16,8 @@
 //!
 //! Run with `--nocapture` to see the recorded medians.
 
-#[path = "common/program.rs"]
-mod program;
-#[path = "common/scratch.rs"]
-mod scratch;
+use marrow_test_support::Scratch;
+use marrow_test_support::program;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -61,11 +59,11 @@ fn fast_path_costs_are_recorded() {
 
     // open (lock + decode + admission + engine open): provision once, then attach the active
     // image and close repeatedly.
-    let store = scratch::path("fastpath-open").join("store");
-    std::fs::create_dir_all(store.parent().unwrap()).unwrap();
-    provision(&store, &image);
+    let scratch = Scratch::new("fastpath-open");
+    let store = scratch.store();
+    provision(store, &image);
     let open = measure(21, || {
-        let attached = marrow_lifecycle::attach(&store, marrow_lifecycle::prepare(image.clone()))
+        let attached = marrow_lifecycle::attach(store, marrow_lifecycle::prepare(image.clone()))
             .expect("open");
         drop(attached);
     });
@@ -78,7 +76,7 @@ fn fast_path_costs_are_recorded() {
         // Alternate the active image so every attach is a real rebind (a head commit).
         let img = if toggle { &image } else { &edited };
         toggle = !toggle;
-        match marrow_lifecycle::attach(&store, marrow_lifecycle::prepare(img.clone()))
+        match marrow_lifecycle::attach(store, marrow_lifecycle::prepare(img.clone()))
             .expect("attach")
         {
             marrow_lifecycle::AttachOutcome::Rebound { attachment, .. } => drop(attachment),
@@ -87,9 +85,9 @@ fn fast_path_costs_are_recorded() {
     });
 
     // end-to-end companion call (spawn + attach + open + run + commit + teardown).
-    let call_store = scratch::path("fastpath-call").join("store");
-    std::fs::create_dir_all(call_store.parent().unwrap()).unwrap();
-    provision(&call_store, &image);
+    let call_scratch = Scratch::new("fastpath-call");
+    let call_store = call_scratch.store();
+    provision(call_store, &image);
     let runner = PathBuf::from(env!("CARGO_BIN_EXE_marrow-runner"));
     let present = program::export_id(&image, "present");
     let end_to_end = measure(11, || {
@@ -97,7 +95,7 @@ fn fast_path_costs_are_recorded() {
             &runner,
             &image,
             &bytes,
-            &call_store,
+            call_store,
             present,
             vec![Json::Int(1)],
         );

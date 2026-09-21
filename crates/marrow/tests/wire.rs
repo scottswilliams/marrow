@@ -1,7 +1,7 @@
 //! The wire interface and generated client: known-answer traces, the published
 //! interface projection, and the generator's output end to end.
 
-mod common;
+pub mod common;
 
 #[path = "wire/client_e2e.rs"]
 mod client_e2e;

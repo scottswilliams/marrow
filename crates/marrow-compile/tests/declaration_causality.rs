@@ -26,12 +26,10 @@ use marrow_compile::{ResourceLimitKind, SourceStage};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 use std::collections::BTreeSet;
 
-#[path = "common/ids.rs"]
-mod ids;
+use marrow_test_support::ids;
 #[path = "declaration_causality/name_conflicts.rs"]
 mod name_conflicts;
-#[path = "common/project.rs"]
-mod project_capture;
+use marrow_test_support::project as project_capture;
 #[path = "declaration_causality/refused_names.rs"]
 mod refused_names;
 

@@ -9,20 +9,16 @@
 //! step. The terminal-side wire client under test is `attach_and_call`; companion discovery
 //! and release verification are covered by the terminal's own unit tests.
 
-#[path = "common/output.rs"]
-mod output;
-#[path = "common/program.rs"]
-mod program;
-#[path = "common/scratch.rs"]
-mod scratch;
+use marrow_test_support::Scratch;
+use marrow_test_support::program;
 
 use std::path::{Path, PathBuf};
 
 use marrow_image::ImageType;
 use marrow_runner::{CallOutcome, Json, attach_and_call};
+use marrow_test_support::broken_output;
 use marrow_verify::VerifiedImage;
 use marrow_vm::Value;
-use output::broken_output;
 
 fn runner_exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_marrow-runner"))
@@ -37,10 +33,10 @@ fn runner_exe() -> PathBuf {
 fn exact_reply_survives_unconfirmed_native_cleanup_and_explicit_reap() {
     use std::os::unix::fs::PermissionsExt;
     let program::Program { image, bytes } = program::workshop();
-    let store = scratch::path("native-attach").join("store");
-    let root = store.parent().expect("fixture parent");
-    std::fs::create_dir_all(root).expect("fixture directory");
-    provision(&store, &image);
+    let scratch = Scratch::new("native-attach");
+    let store = scratch.store();
+    let root = scratch.path();
+    provision(store, &image);
     let wrapper = root.join("lingering-runner");
     let marker = root.join("entered-linger");
     let quote = |path: &Path| {
@@ -66,7 +62,7 @@ fn exact_reply_survives_unconfirmed_native_cleanup_and_explicit_reap() {
         &wrapper,
         &image,
         &bytes,
-        &store,
+        store,
         program::export_id(&image, "catalogued"),
         vec![],
     );
@@ -100,13 +96,14 @@ fn exact_reply_survives_unconfirmed_native_cleanup_and_explicit_reap() {
 #[ignore = "spawns executable child controls"]
 fn startup_loss_distinguishes_native_spawn_from_spawn_failure() {
     let program::Program { image, bytes } = program::workshop();
-    let store = scratch::path("native-attach").join("store");
+    let scratch = Scratch::new("native-attach");
+    let store = scratch.store();
     let export = program::export_id(&image, "assetName");
     let failed_spawn = attach_and_call(
         &store.join("absent-runner"),
         &image,
         &bytes,
-        &store,
+        store,
         export,
         Vec::new(),
     );
@@ -119,7 +116,7 @@ fn startup_loss_distinguishes_native_spawn_from_spawn_failure() {
         &std::env::current_exe().expect("test executable rejects runner arguments"),
         &image,
         &bytes,
-        &store,
+        store,
         export,
         Vec::new(),
     );
@@ -140,11 +137,11 @@ fn closed_launch_descriptor_does_not_undo_a_completed_rebind() {
         program::workshop_with("\nfn version(): int { return 2 }\n");
     assert_ne!(old.image_id(), new.image_id());
     for capture_diagnostic in [true, false] {
-        let store = scratch::path("native-attach").join("store");
-        let base = store.parent().expect("parent");
-        std::fs::create_dir(base).expect("fixture directory");
-        provision(&store, &old);
-        let before = marrow_lifecycle::audit(&store, marrow_lifecycle::prepare(old.clone()))
+        let scratch = Scratch::new("native-attach");
+        let store = scratch.store();
+        let base = scratch.path();
+        provision(store, &old);
+        let before = marrow_lifecycle::audit(store, marrow_lifecycle::prepare(old.clone()))
             .expect("old active store");
         let image = base.join("program.image");
         std::fs::write(&image, &bytes).expect("image");
@@ -158,7 +155,7 @@ fn closed_launch_descriptor_does_not_undo_a_completed_rebind() {
             .args(["attach", "--image"])
             .arg(&image)
             .arg("--store")
-            .arg(&store)
+            .arg(store)
             .stdin(Stdio::null())
             .stdout(writer)
             .stderr(diagnostic)
@@ -173,7 +170,7 @@ fn closed_launch_descriptor_does_not_undo_a_completed_rebind() {
                     .contains(marrow_codes::Code::IoWrite.as_str())
             );
         }
-        let after = marrow_lifecycle::audit(&store, marrow_lifecycle::prepare(new.clone()))
+        let after = marrow_lifecycle::audit(store, marrow_lifecycle::prepare(new.clone()))
             .expect("new image is already active without a second attach");
         assert_eq!(after.instance, before.instance);
         assert_eq!(after.image_id, new.image_id());
@@ -270,8 +267,8 @@ pub fn setMovesRequired(v: int): Result<int, string> {
 }
 "#,
     );
-    let store = scratch::path("native-attach").join("store");
-    std::fs::create_dir_all(store.parent().expect("parent")).expect("scratch dir");
+    let scratch = Scratch::new("native-attach");
+    let store = scratch.store().to_path_buf();
     provision(&store, &image);
     let epoch = marrow_temporal::format_instant(0).expect("epoch instant");
     let terminal = Terminal {
@@ -390,7 +387,7 @@ pub fn setMovesRequired(v: int): Result<int, string> {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod image_input {
-    use super::{program, runner_exe, scratch};
+    use super::{Scratch, program, runner_exe};
     use std::process::{Child, Command, Output, Stdio};
     use std::time::{Duration, Instant};
 
@@ -442,8 +439,8 @@ mod image_input {
     #[test]
     fn image_ingress_refuses_a_bounded_stream_without_waiting_for_eof() {
         // The directory outlives both guarded children, including panic cleanup.
-        let scratch = scratch::Scratch::new("native-attach-image-input");
-        let fifo = scratch.dir().join("image.fifo");
+        let scratch = Scratch::new("native-attach-image-input");
+        let fifo = scratch.path().join("image.fifo");
         let made = Command::new("/usr/bin/mkfifo")
             .arg(&fifo)
             .output()
@@ -493,11 +490,11 @@ IFS= read -r hold
 
     #[test]
     fn a_small_valid_image_loads_for_provision_preview() {
-        let scratch = scratch::Scratch::new("native-attach-image-input");
+        let scratch = Scratch::new("native-attach-image-input");
         let program::Program { image, bytes } = program::workshop();
         assert!(bytes.len() < marrow_image::bounds::MAX_IMAGE_BYTES);
-        let path = scratch.dir().join("image.mwi");
-        let store = scratch.dir().join("store");
+        let path = scratch.path().join("image.mwi");
+        let store = scratch.path().join("store");
         std::fs::write(&path, bytes).expect("write valid image");
         let prepared = marrow_lifecycle::prepare(image);
         let report = marrow_lifecycle::ProvisionReport::new(&store, &prepared)
@@ -545,8 +542,8 @@ fn a_body_edit_rebinds_and_preserves_committed_data() {
         "the body edit must change the image identity",
     );
 
-    let store = scratch::path("native-attach").join("store");
-    std::fs::create_dir_all(store.parent().expect("parent")).expect("scratch dir");
+    let scratch = Scratch::new("native-attach");
+    let store = scratch.store().to_path_buf();
     provision(&store, &image_a);
     let epoch = marrow_temporal::format_instant(0).expect("epoch instant");
     let runner = runner_exe();
@@ -611,8 +608,8 @@ fn describe(outcome: &CallOutcome) -> String {
 #[test]
 fn a_committed_add_is_durable_with_its_log_descendant() {
     let program::Program { image, bytes } = program::workshop();
-    let store = scratch::path("native-attach").join("store");
-    std::fs::create_dir_all(store.parent().expect("parent")).expect("scratch dir");
+    let scratch = Scratch::new("native-attach");
+    let store = scratch.store().to_path_buf();
     provision(&store, &image);
     let epoch = marrow_temporal::format_instant(0).expect("epoch instant");
     let terminal = Terminal {

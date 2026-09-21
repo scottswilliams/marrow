@@ -1,7 +1,7 @@
 //! The durable declaration graph: demand, breadth, groups and branches, composite keys,
 //! nested branches, subtree purge, and cross-module roots.
 
-mod common;
+pub mod common;
 
 #[path = "durable_graph/cross_module_roots.rs"]
 mod cross_module_roots;

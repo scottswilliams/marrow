@@ -12,7 +12,7 @@ use marrow_image::{
     ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, PlannedSiteRef,
     RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, TypeId, ValueShapeNodeId,
 };
-use marrow_test_support::{admitted, admitted_plan, forge, rehash, site};
+use marrow_test_support::{admitted_plan, forge, rehash, site};
 use marrow_verify::{Duplicate, DurableGraphInputRefusal, RejectionKind, VerifyPhase, verify};
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
@@ -185,7 +185,7 @@ fn build_export(
 #[test]
 fn two_roots_sharing_a_name_are_rejected() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     // Root B reuses root A's name "assets" (a distinct string index, same content).
     build_two_roots(&mut draft, "assets", Scalar::Int);
     build_export(
@@ -209,7 +209,7 @@ fn two_roots_sharing_a_name_are_rejected() {
 #[test]
 fn two_distinct_roots_verify() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     build_two_roots(&mut draft, "tallies", Scalar::Int);
     build_export(
         &mut draft,
@@ -230,7 +230,7 @@ fn two_distinct_roots_verify() {
 #[test]
 fn a_cross_root_identity_reaching_a_foreign_site_is_rejected() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let (_a_site, b_site) = build_two_roots(&mut draft, "tallies", Scalar::Int);
     // Mint Id(^assets, k) then use it as the key-path of a DurExists on ^tallies.
     let code = vec![
@@ -336,7 +336,7 @@ fn build_shared_product(draft: &mut DraftTxn<'_>) -> TypeId {
 /// A shared-Product image with one storeless export.
 fn shared_product_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     build_shared_product(&mut draft);
     build_export(
         &mut draft,
@@ -423,7 +423,7 @@ fn a_duplicate_root_occurrence_is_rejected() {
 #[test]
 fn a_draft_refuses_to_encode_two_graphs_under_one_product() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let record = build_shared_product(&mut draft);
     let root_name = draft.intern_string("extra").expect("a within-domain mint");
     let int_value = draft

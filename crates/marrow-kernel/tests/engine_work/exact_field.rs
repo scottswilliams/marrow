@@ -8,7 +8,6 @@
 //! create with one present field each stage the same number of engine writes on a
 //! resource declaring one field and on one declaring twenty.
 
-use crate::common::{Counters, CountingEngine};
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{
@@ -16,6 +15,7 @@ use marrow_kernel::durable::{
     StoreProjection, StoreSchema, StoreSchemaBuilder,
 };
 use marrow_kernel::equality::ValueDomain;
+use marrow_test_support::{Counters, CountingEngine};
 
 /// The single-root projection a case opens under: the root, plus its sites resolved against
 /// it. Every site here names root 0 — the store's only root.

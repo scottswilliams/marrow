@@ -24,7 +24,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use crate::common::{MARROW_BIN, TempDir, write};
+use crate::common::{MARROW_BIN, write};
+use marrow_test_support::Scratch;
 
 /// The stock runner binary: built into the same deps/../ directory as the CLI
 /// test binary by a workspace `--all-targets` build.
@@ -127,7 +128,7 @@ pub fn two(): int {
 
 /// Build the project, generate the client, compile the image to a file, and
 /// return the project directory.
-fn prepare(temp: &TempDir) -> PathBuf {
+fn prepare(temp: &Scratch) -> PathBuf {
     let project = temp.join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(&project.join("src/main.mw"), FIXTURE);
@@ -164,7 +165,7 @@ fn prepare(temp: &TempDir) -> PathBuf {
 
 /// Generate and provision the native fixture whose complete entries collide in
 /// a runtime fault after a confirmed commit.
-fn prepare_durable(temp: &TempDir) -> PathBuf {
+fn prepare_durable(temp: &Scratch) -> PathBuf {
     let project = temp.join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(&project.join("src/main.mw"), DURABLE_FIXTURE);
@@ -270,7 +271,7 @@ function finish() {
 #[test]
 #[ignore = "spawns Node + Unix sockets; run with the sandbox disabled"]
 fn durable_incomplete_is_typed_and_retires_the_node_session() {
-    let temp = TempDir::new("incomplete");
+    let temp = Scratch::new("incomplete");
     let project = prepare_durable(&temp);
     let driver = format!(
         "{PRELUDE}\n{}",
@@ -334,7 +335,7 @@ finish();
 #[test]
 #[ignore = "spawns Node + Unix sockets; run with the sandbox disabled"]
 fn generated_client_performs_real_storeless_calls() {
-    let temp = TempDir::new("happy");
+    let temp = Scratch::new("happy");
     let project = prepare(&temp);
     let driver = format!(
         "{PRELUDE}\n{}",
@@ -398,7 +399,7 @@ finish();
 #[test]
 #[ignore = "spawns Node + Unix sockets; run with the sandbox disabled"]
 fn death_boundaries_classify_through_the_generated_client() {
-    let temp = TempDir::new("death");
+    let temp = Scratch::new("death");
     let project = prepare(&temp);
     let driver = format!(
         "{PRELUDE}\n{}",
@@ -458,7 +459,7 @@ finish();
 #[test]
 #[ignore = "spawns Node + Unix sockets; run with the sandbox disabled"]
 fn a_failed_launch_is_not_started() {
-    let temp = TempDir::new("badlaunch");
+    let temp = Scratch::new("badlaunch");
     let project = prepare(&temp);
     let driver = format!(
         "{PRELUDE}\n{}",
@@ -487,7 +488,7 @@ finish();
 #[test]
 #[ignore = "spawns Node + Unix sockets; run with the sandbox disabled"]
 fn hard_transfer_shapes_round_trip_through_the_generated_client() {
-    let temp = TempDir::new("hard");
+    let temp = Scratch::new("hard");
     let project = prepare(&temp);
     let driver = format!(
         "{PRELUDE}\n{}",

@@ -31,6 +31,8 @@ marrow-verify = { path = "../marrow-verify" }
 marrow-vm = { path = "../marrow-vm" }
 
 [dev-dependencies]
+# The workspace test scaffolding: the one scratch directory and the shared fixture builders.
+marrow-test-support = { path = "../marrow-test-support" }
 # The Cargo-metadata decoder for the CLI/LSP dependency-direction gate. A dev-only,
 # std-only edge that gains no LSP protocol or transport dependency.
 serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }

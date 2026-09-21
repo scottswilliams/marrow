@@ -22,7 +22,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use crate::common::TempDir;
+use marrow_test_support::Scratch;
 
 /// The pinned supervision module: the mirror under test.
 fn supervisor_path() -> PathBuf {
@@ -1341,7 +1341,7 @@ process.exit(failures === 0 ? 0 : 1);
 #[test]
 #[ignore = "spawns Node; run with the sandbox disabled"]
 fn mirror_agrees_with_authoritative_encoder_on_kat_vectors() {
-    let temp = TempDir::new("wire-kat");
+    let temp = Scratch::new("wire-kat");
     let driver = temp.join("driver.mjs");
     fs::write(&driver, DRIVER).expect("write driver");
 

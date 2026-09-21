@@ -8,16 +8,14 @@
 //! plants a FIFO under a custody open belongs in this binary alone. The window is
 //! per-process, so another crate's test binary shares none of it.
 
-mod common;
-
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use common::Scratch;
 use marrow_fs_journal::{
     AdmittedDir, CacheLock, CustodyError, CustodyOp, EntryName, LockError, NodeKind,
 };
+use marrow_test_support::Scratch;
 
 /// A planted non-regular lock entry is refused as the wrong node kind, with
 /// its mode untouched. The classification is asserted as its exact typed

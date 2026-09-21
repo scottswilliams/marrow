@@ -11,14 +11,13 @@ use marrow_verify::VerifyPhase;
 
 use super::tracer_schema::Verdict::{Refused, Verified};
 use super::tracer_schema::*;
-use marrow_test_support::admitted;
 use marrow_test_support::{admitted_plan, site};
 
 /// The verdict of `if exists(slot 0) { <between>; strict sparse set on slot 0 }`, where
 /// `between` may add functions to the draft and returns the instructions inside the guard.
 fn strict_set_after(between: impl FnOnce(&mut DraftTxn<'_>, &Sites) -> Vec<Instr>) -> Verdict {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let sites = durable_schema(&mut draft);
     let text = ok(draft.intern_text("x"));
     let middle = between(&mut draft, &sites);
@@ -96,7 +95,7 @@ fn a_strict_sparse_set_after_an_erase_through_another_slot_of_the_family_rejects
 #[test]
 fn a_required_field_set_through_a_proven_entry_verifies() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let sites = durable_schema(&mut draft);
     let seven = ok(draft.intern_int(7));
     let bytes = finish_two_key(
@@ -122,7 +121,7 @@ fn a_required_field_set_through_a_proven_entry_verifies() {
 fn a_read_only_required_field_read_needs_its_own_presence_check() {
     for guarded in [false, true] {
         let mut draft_owner = ImageDraft::new();
-        let mut draft = admitted(&mut draft_owner);
+        let mut draft = draft_owner.begin_transaction();
         let sites = durable_schema(&mut draft);
         let mut code = Vec::new();
         if guarded {
@@ -167,7 +166,7 @@ fn a_read_only_required_field_read_needs_its_own_presence_check() {
 #[test]
 fn a_field_set_with_an_optional_operand_rejects_at_function() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let sites = durable_schema(&mut draft);
     let text = ok(draft.intern_text("x"));
     let bytes = finish_two_key(
@@ -193,7 +192,7 @@ fn a_field_set_with_an_optional_operand_rejects_at_function() {
 #[test]
 fn a_create_record_constructor_cannot_lend_its_field_slot_as_an_entry_key() {
     let mut owner = ImageDraft::new();
-    let mut draft = admitted(&mut owner);
+    let mut draft = owner.begin_transaction();
     let name = ok(draft.intern_string("Counter"));
     let value_name = ok(draft.intern_string("value"));
     let record = ok(draft.add_record_type(RecordTypeDef {
@@ -273,7 +272,7 @@ fn a_create_record_constructor_cannot_lend_its_field_slot_as_an_entry_key() {
 #[test]
 fn a_composite_create_cannot_prove_a_key_load_bypassed_by_another_edge() {
     let mut owner = ImageDraft::new();
-    let mut draft = admitted(&mut owner);
+    let mut draft = owner.begin_transaction();
     let sites = durable_schema_with_keys(
         &mut draft,
         vec![

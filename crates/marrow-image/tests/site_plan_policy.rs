@@ -25,15 +25,11 @@ use marrow_image::{
     ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, PlannedSiteRef,
     RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget,
 };
-use marrow_test_support::{admitted, admitted_plan, site};
+use marrow_test_support::{admitted_plan, site};
 
-#[path = "common/ledger_ids.rs"]
-mod ledger_ids;
-use ledger_ids::{APPLICATION_ID, FIELD_ID, PRODUCT_ID, seeded_id};
+use marrow_test_support::ledger_ids::{APPLICATION_ID, FIELD_ID, PRODUCT_ID, seeded_id};
 
-#[path = "common/fixture_graph.rs"]
-mod fixture_graph;
-use fixture_graph::{admit_root, declare_product, empty_record};
+use marrow_test_support::fixture_graph::{admit_root, declare_product, empty_record};
 
 /// A field-member seed past every seed a wide declaration uses, so a divergent
 /// redeclaration names a node the bound declaration does not hold.
@@ -97,7 +93,7 @@ fn wide_root(draft: &mut DraftTxn<'_>, n: u8) -> AdmittedRoot {
 /// direct members in declaration order.
 fn wide_draft(fields: usize) -> (ImageDraft, AdmittedRoot, Vec<DeclarationMember>) {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     declare_wide_product(&mut draft, fields);
     let root = wide_root(&mut draft, 0x21);
     let members = draft.product_members(product()).expect("declared");
@@ -109,7 +105,7 @@ fn wide_draft(fields: usize) -> (ImageDraft, AdmittedRoot, Vec<DeclarationMember
 /// transactions with armed-rollback scopes.
 fn wide_owner(fields: usize) -> (ImageDraft, AdmittedRoot, Vec<DeclarationMember>) {
     let mut owner = ImageDraft::new();
-    let mut draft = admitted(&mut owner);
+    let mut draft = owner.begin_transaction();
     declare_wide_product(&mut draft, fields);
     let root = wide_root(&mut draft, 0x21);
     let members = draft.product_members(product()).expect("declared");
@@ -139,7 +135,7 @@ fn demand_every_leaf(draft: &mut DraftTxn<'_>, root: &AdmittedRoot, members: &[D
 #[test]
 fn a_draft_whose_demand_crosses_the_cap_cannot_be_encoded() {
     let (mut draft_owner, root, members) = wide_draft(MAX_SITES);
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     demand_every_leaf(&mut draft, &root, &members);
     // The exact verdict, not "not this one error": a negative match is satisfied by every
     // other failure, including ones meaning the demand never reached the site policy. A
@@ -171,7 +167,7 @@ fn a_draft_whose_demand_crosses_the_cap_cannot_be_encoded() {
 #[test]
 fn a_retained_demand_still_reuses_its_operand_after_the_cap_is_crossed() {
     let (mut draft_owner, root, members) = wide_draft(MAX_SITES);
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let first = site(
         &mut draft,
         root.occurrence(),
@@ -217,7 +213,7 @@ const COMPONENT_ID: [u8; 16] = [0x37; 16];
 /// (`IndexLookup`).
 fn every_target_draft() -> (ImageDraft, AdmittedRoot, Vec<DeclarationMember>) {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let record = empty_record(&mut draft, "R");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let branch_name = draft.intern_string("b").expect("a within-domain mint");
@@ -325,7 +321,7 @@ const PLACE_COUNT: usize = 6;
 fn one_demand_minted_eagerly_then_lazily_is_one_row_with_one_id() {
     for index in 0..PLACE_COUNT {
         let (mut draft_owner, root, members) = every_target_draft();
-        let mut draft = admitted(&mut draft_owner);
+        let mut draft = draft_owner.begin_transaction();
         let places = every_place(&root, &members);
         let (path, target) = &places[index];
         let eager = site(&mut draft, root.occurrence(), path, *target);
@@ -350,7 +346,7 @@ fn one_demand_minted_eagerly_then_lazily_is_one_row_with_one_id() {
 #[test]
 fn each_admitted_target_is_its_own_row() {
     let (mut draft_owner, root, members) = every_target_draft();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let places = every_place(&root, &members);
 
     let operands: Vec<PlannedSiteRef> = places
@@ -378,7 +374,7 @@ fn each_admitted_target_is_its_own_row() {
 #[test]
 fn one_declaration_path_under_two_occurrences_is_two_rows() {
     let (mut draft_owner, first_root, members) = wide_draft(2);
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let second_root = wide_root(&mut draft, 0x22);
 
     let first = site(
@@ -405,7 +401,7 @@ fn one_declaration_path_under_two_occurrences_is_two_rows() {
 #[test]
 fn a_fitting_operand_renders_its_logical_site_number() {
     let (mut draft_owner, root, members) = wide_draft(2);
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
 
     let zero = site(
         &mut draft,
@@ -431,7 +427,7 @@ fn a_fitting_operand_renders_its_logical_site_number() {
 #[test]
 fn every_over_policy_operand_renders_one_fixed_redacted_marker() {
     let (mut draft_owner, root, members) = wide_draft(MAX_SITES);
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     demand_every_leaf(&mut draft, &root, &members);
 
     let over = wide_root(&mut draft, 0x22);
@@ -471,7 +467,7 @@ fn every_over_policy_operand_renders_one_fixed_redacted_marker() {
 #[test]
 fn one_ordinal_from_two_independent_drafts_compares_equal() {
     let (mut left_owner, left_root, left_members) = wide_draft(1);
-    let mut left = admitted(&mut left_owner);
+    let mut left = left_owner.begin_transaction();
     let left_site = site(
         &mut left,
         left_root.occurrence(),
@@ -482,7 +478,7 @@ fn one_ordinal_from_two_independent_drafts_compares_equal() {
     // An independently built draft: its own tables, its own row stamps, and a placement
     // and member set that share nothing with the first.
     let mut right_owner = ImageDraft::new();
-    let mut right = admitted(&mut right_owner);
+    let mut right = right_owner.begin_transaction();
     let type_name = right.intern_string("S").expect("a within-domain mint");
     let record = right
         .add_record_type(RecordTypeDef {
@@ -548,7 +544,7 @@ fn one_ordinal_from_two_independent_drafts_compares_equal() {
 fn a_crossing_inside_a_discarded_proof_does_not_survive_it() {
     let (mut owner, root, members) = wide_owner(MAX_SITES);
     {
-        let mut proof = admitted(&mut owner);
+        let mut proof = owner.begin_transaction();
         demand_every_leaf(&mut proof, &root, &members);
         let excess = wide_root(&mut proof, 0x22);
         let over = site(
@@ -577,7 +573,7 @@ fn a_crossing_inside_a_discarded_proof_does_not_survive_it() {
 #[test]
 fn a_crossing_before_a_proof_survives_the_proof() {
     let (mut owner, root, members) = wide_owner(MAX_SITES);
-    let mut draft = admitted(&mut owner);
+    let mut draft = owner.begin_transaction();
     demand_every_leaf(&mut draft, &root, &members);
     let excess = wide_root(&mut draft, 0x22);
     let _ = site(
@@ -589,7 +585,7 @@ fn a_crossing_before_a_proof_survives_the_proof() {
     assert!(matches!(draft.encode(), Err(ImageBuildError::TooManySites)));
     draft.commit();
     {
-        let mut proof = admitted(&mut owner);
+        let mut proof = owner.begin_transaction();
         let _ = proof
             .intern_string("throwaway")
             .expect("a within-domain mint");
@@ -640,12 +636,12 @@ fn redeclare_divergent(draft: &mut DraftTxn<'_>) {
 #[test]
 fn a_product_conflict_inside_a_discarded_proof_does_not_survive_it() {
     let (mut owner, root, members) = wide_owner(4);
-    let mut draft = admitted(&mut owner);
+    let mut draft = owner.begin_transaction();
     demand_every_leaf(&mut draft, &root, &members);
     let before = draft.encode().expect("a fitting draft").bytes;
     draft.commit();
     {
-        let mut proof = admitted(&mut owner);
+        let mut proof = owner.begin_transaction();
         redeclare_divergent(&mut proof);
         assert!(matches!(
             proof.encode(),
@@ -665,7 +661,7 @@ fn a_product_conflict_inside_a_discarded_proof_does_not_survive_it() {
 #[test]
 fn a_product_conflict_before_a_proof_survives_the_proof() {
     let (mut owner, root, members) = wide_owner(4);
-    let mut draft = admitted(&mut owner);
+    let mut draft = owner.begin_transaction();
     demand_every_leaf(&mut draft, &root, &members);
     redeclare_divergent(&mut draft);
     assert!(matches!(
@@ -674,7 +670,7 @@ fn a_product_conflict_before_a_proof_survives_the_proof() {
     ));
     draft.commit();
     {
-        let mut proof = admitted(&mut owner);
+        let mut proof = owner.begin_transaction();
         let _ = proof
             .intern_string("throwaway")
             .expect("a within-domain mint");
@@ -690,12 +686,12 @@ fn a_product_conflict_before_a_proof_survives_the_proof() {
 #[test]
 fn a_discarded_proof_leaves_the_draft_byte_identical() {
     let (mut owner, root, members) = wide_owner(4);
-    let mut draft = admitted(&mut owner);
+    let mut draft = owner.begin_transaction();
     demand_every_leaf(&mut draft, &root, &members);
     let before = draft.encode().expect("a fitting draft").bytes;
     draft.commit();
     {
-        let mut proof = admitted(&mut owner);
+        let mut proof = owner.begin_transaction();
         let _ = proof
             .intern_string("throwaway")
             .expect("a within-domain mint");
@@ -720,7 +716,7 @@ fn a_rolled_back_roots_over_policy_ref_cannot_authenticate_after_ordinal_reuse()
     let (mut owner, root, members) = wide_owner(MAX_SITES);
     // Cross the cap and mint the control ref over a committed excess root: the receipt
     // and both occurrence rows predate every rollback below.
-    let mut draft = admitted(&mut owner);
+    let mut draft = owner.begin_transaction();
     demand_every_leaf(&mut draft, &root, &members);
     let excess = wide_root(&mut draft, 0x22);
     let control = site(
@@ -735,7 +731,7 @@ fn a_rolled_back_roots_over_policy_ref_cannot_authenticate_after_ordinal_reuse()
     // The escaped clone: its root row and demand are appended inside a rolled-back
     // transaction; the receipt it stands on predates that transaction and survives.
     let escaped = {
-        let mut txn = admitted(&mut owner);
+        let mut txn = owner.begin_transaction();
         let fresh = wide_root(&mut txn, 0x23);
         site(
             &mut txn,
@@ -749,7 +745,7 @@ fn a_rolled_back_roots_over_policy_ref_cannot_authenticate_after_ordinal_reuse()
     // A function-only rollback between the mint and the spend: no site, root, or path
     // row moves, so it must invalidate neither ref.
     {
-        let mut txn = admitted(&mut owner);
+        let mut txn = owner.begin_transaction();
         let name = txn
             .intern_string("discarded")
             .expect("a within-domain mint");
@@ -768,7 +764,7 @@ fn a_rolled_back_roots_over_policy_ref_cannot_authenticate_after_ordinal_reuse()
         .expect("a siteless body appends");
     }
 
-    let mut txn = admitted(&mut owner);
+    let mut txn = owner.begin_transaction();
     // Deterministic ordinal reuse: the byte-identical root re-appends at the ordinal the
     // rolled-back root held, with a fresh stamp.
     let _reused = wide_root(&mut txn, 0x23);
@@ -809,7 +805,7 @@ fn a_rolled_back_roots_over_policy_ref_cannot_authenticate_after_ordinal_reuse()
 fn a_sites_crossing_beside_a_consts_crossing_yields_the_canonical_minimum() {
     for consts_first in [false, true] {
         let (mut owner, root, members) = wide_owner(MAX_SITES);
-        let mut draft = admitted(&mut owner);
+        let mut draft = owner.begin_transaction();
         let cross_consts = |draft: &mut DraftTxn<'_>| {
             for value in 0..=(marrow_image::bounds::MAX_CONSTS as i64) {
                 draft.intern_int(value).expect("a within-domain mint");
@@ -860,7 +856,7 @@ fn one_thousand_roots_touching_sixty_four_fields_saturate_exactly_once() {
     assert_eq!(ROOTS * FIELDS + ROOTS, 66_560, "the logical demand count");
 
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     declare_wide_product(&mut draft, FIELDS);
     let members = draft.product_members(product()).expect("declared");
 
@@ -969,7 +965,7 @@ fn four_thousand_roots_over_a_hundred_unoperated_groups_cost_one_site_each() {
     let mut minted: BTreeSet<LedgerIdBytes> = BTreeSet::new();
 
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let type_name = draft.intern_string("R").expect("a within-domain mint");
     let record = draft
         .add_record_type(RecordTypeDef {
@@ -1099,7 +1095,7 @@ fn a_reversed_demand_sweep_yields_the_same_artifact() {
 
     // The demand key, observed. One plan, swept forward and then backward.
     let (mut owner, root, members) = wide_draft(ORDER_INDEPENDENCE_FIELDS);
-    let mut draft = admitted(&mut owner);
+    let mut draft = owner.begin_transaction();
     let forward: Vec<String> = members
         .iter()
         .map(|member| operand_for(&mut draft, &root, member))
@@ -1141,7 +1137,7 @@ fn a_reversed_demand_sweep_yields_the_same_artifact() {
     /// below drives the site cap itself, where the refusal is the artifact.
     fn swept_bytes(reverse: bool) -> Vec<u8> {
         let (mut owner, root, members) = wide_draft(ORDER_INDEPENDENCE_FIELDS);
-        let mut draft = admitted(&mut owner);
+        let mut draft = owner.begin_transaction();
         let order: Vec<&DeclarationMember> = if reverse {
             members.iter().rev().collect()
         } else {
@@ -1192,7 +1188,7 @@ fn a_reversed_demand_sweep_yields_the_same_artifact() {
     // happens to be the one past the cap cannot change the classification.
     for reverse in [false, true] {
         let (mut owner, root, members) = wide_draft(MAX_SITES);
-        let mut draft = admitted(&mut owner);
+        let mut draft = owner.begin_transaction();
         demand_every_leaf(&mut draft, &root, &members);
         let excess = wide_root(&mut draft, 0x22);
         let excess_members: Vec<_> = if reverse {
@@ -1239,7 +1235,7 @@ fn a_durable_batch_abandoned_after_zero_one_or_many_staged_sites_restores_all() 
         let clean = owner.encode().expect("the committed draft encodes").bytes;
 
         {
-            let mut draft = admitted(&mut owner);
+            let mut draft = owner.begin_transaction();
             let mut minted: BTreeSet<String> = BTreeSet::new();
             let mut requested = 0usize;
             let mut wrap = 0u8;

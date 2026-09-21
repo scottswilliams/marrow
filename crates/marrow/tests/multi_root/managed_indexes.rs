@@ -12,15 +12,12 @@
 //! the VM `index_read` fixtures.
 
 use marrow_verify::{
-    DurableIndexComponent, LedgerIdBytes, RootId, SealedIndexComponent, SealedSite,
-    SealedSiteTarget, SemanticNodeKind, SemanticStepKind, SemanticTarget, VerifiedImage,
+    DurableIndexComponent, RootId, SealedIndexComponent, SealedSite, SealedSiteTarget,
+    SemanticNodeKind, SemanticStepKind, SemanticTarget, VerifiedImage,
 };
 
 use crate::common::{Diagnostics, Project};
-
-fn rep(byte: u8) -> LedgerIdBytes {
-    LedgerIdBytes::from_bytes([byte; 16])
-}
+use marrow_test_support::id;
 
 /// A `Book` resource with an indexed `shelf` and a unique `isbn`, over a keyed root
 /// with two managed indexes: nonunique `byShelf(shelf, id)` and unique `byIsbn(isbn)`.
@@ -111,23 +108,23 @@ fn a_keyed_root_with_a_nonunique_and_a_unique_index_verifies_with_complete_ident
     assert_eq!(indexes.len(), 2, "two managed indexes seal");
 
     let by_shelf = &indexes[0];
-    assert_eq!(by_shelf.id(), rep(0x70));
+    assert_eq!(by_shelf.id(), id(0x70));
     assert_eq!(by_shelf.root(), RootId::from_index(0));
     assert!(!by_shelf.unique(), "byShelf is nonunique");
     assert_eq!(
         by_shelf.components(),
         &[
-            DurableIndexComponent::Field(rep(0x10)), // shelf
-            DurableIndexComponent::Key(rep(0x0c)),   // id (complete identity suffix)
+            DurableIndexComponent::Field(id(0x10)), // shelf
+            DurableIndexComponent::Key(id(0x0c)),   // id (complete identity suffix)
         ],
     );
 
     let by_isbn = &indexes[1];
-    assert_eq!(by_isbn.id(), rep(0x71));
+    assert_eq!(by_isbn.id(), id(0x71));
     assert!(by_isbn.unique(), "byIsbn is unique");
     assert_eq!(
         by_isbn.components(),
-        &[DurableIndexComponent::Field(rep(0x11))], // isbn (identity omitted)
+        &[DurableIndexComponent::Field(id(0x11))], // isbn (identity omitted)
     );
 }
 
@@ -189,7 +186,7 @@ fn each_managed_index_is_a_graph_node_with_a_three_step_semantic_path() {
         .filter(|node| node.kind == SemanticNodeKind::Index)
         .collect();
     assert_eq!(index_nodes.len(), 2, "one graph node per managed index");
-    for (node, index_id) in index_nodes.iter().zip([rep(0x70), rep(0x71)]) {
+    for (node, index_id) in index_nodes.iter().zip([id(0x70), id(0x71)]) {
         let steps = node.path.steps();
         // The index node's path is [Application, Placement, Index]: the root path
         // extended by the index step, ending in the index's own ledger id.

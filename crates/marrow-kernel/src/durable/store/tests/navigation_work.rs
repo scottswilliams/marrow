@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::durable::{ContentDigest, CreateOutcome};
-use crate::test_common::{Counters, CountingEngine};
 use marrow_store::{StoreError, StoreLimit};
+use marrow_test_support::{Counters, CountingEngine};
 
 #[derive(Debug)]
 struct Work {

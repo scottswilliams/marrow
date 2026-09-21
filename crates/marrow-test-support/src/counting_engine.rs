@@ -1,18 +1,11 @@
-// Each test executable uses a different subset of these shared helpers.
-#![allow(dead_code, unused_imports)]
-
-//! The kernel suites' shared fixtures: one scratch-directory owner, and operation
-//! counters over either production byte-engine implementation.
+//! Operation counters over either production byte-engine implementation, for the
+//! kernel suites that measure what a durable operation costs the engine.
 //!
 //! Opens, gets, scans, staged writes and commits are separate. Returned page cells
 //! and bytes measure the scan API's copies, not engine cache or allocation costs.
 
 use std::cell::Cell;
 use std::rc::Rc;
-
-mod scratch;
-
-pub use scratch::Scratch;
 
 use marrow_store::{
     ByteEngine, Cell as StoreCell, CommitOutcome, MemoryEngine, ReadView, StoreError, StoreOp,

@@ -2,9 +2,9 @@
 
 use super::tracer_schema::Verdict::{Refused, Verified};
 use super::{
-    APPLICATION_ID, PLACEMENT_ID, PRODUCT_ID, ROOT_KEY_ID, VALUE_FIELD_ID, add_fn, admitted,
-    admitted_plan, durable_schema, field_member, finish_two_key, ok, product_members, rehash,
-    scalar_shapes, sections, site, verdict_of,
+    APPLICATION_ID, PLACEMENT_ID, PRODUCT_ID, ROOT_KEY_ID, VALUE_FIELD_ID, add_fn, admitted_plan,
+    durable_schema, field_member, finish_two_key, ok, product_members, rehash, scalar_shapes,
+    sections, site, verdict_of,
 };
 use marrow_image::{
     DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId, FieldDef, FuncId, ImageDraft,
@@ -24,7 +24,7 @@ struct GroupSites {
 
 fn group_draft() -> (ImageDraft, GroupSites) {
     let mut owner = ImageDraft::new();
-    let mut draft = admitted(&mut owner);
+    let mut draft = owner.begin_transaction();
     let shapes = scalar_shapes(&mut draft);
     let pages = ok(draft.intern_string("pages"));
     let group_name = ok(draft.intern_string("Details"));
@@ -153,7 +153,7 @@ fn group_draft() -> (ImageDraft, GroupSites) {
 
 fn image(build: impl FnOnce(&mut DraftTxn<'_>, &GroupSites) -> Vec<Instr>) -> Vec<u8> {
     let (mut owner, sites) = group_draft();
-    let mut draft = admitted(&mut owner);
+    let mut draft = owner.begin_transaction();
     let code = build(&mut draft, &sites);
     let function = add_fn(
         &mut draft,
@@ -489,7 +489,7 @@ fn a_composite_group_guard_requires_its_complete_producer_window() {
 fn the_active_family_exists_opcode_still_verifies() {
     assert_eq!(marrow_image::OP_DUR_FAMILY_EXISTS, 0x39);
     let mut owner = ImageDraft::new();
-    let mut draft = admitted(&mut owner);
+    let mut draft = owner.begin_transaction();
     let sites = durable_schema(&mut draft);
     let bytes = finish_two_key(
         draft,
@@ -505,7 +505,7 @@ fn the_active_family_exists_opcode_still_verifies() {
 #[test]
 fn retired_entry_mutation_bytes_are_unknown_opcodes() {
     let mut owner = ImageDraft::new();
-    let mut draft = admitted(&mut owner);
+    let mut draft = owner.begin_transaction();
     let code = vec![Instr::Return];
     let function = add_fn(&mut draft, "empty", Vec::new(), ImageType::Unit, 0, code);
     draft.add_export(ExportId::of_local("", "empty"), function);

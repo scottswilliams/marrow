@@ -25,7 +25,6 @@
 //! rejection classes ordered before that first access — authority denial and the poison
 //! latch, both decided in memory. Once the session is open, ordinary engine access begins.
 
-use crate::common::{Counters, CountingEngine};
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{
@@ -34,6 +33,7 @@ use marrow_kernel::durable::{
     StoreSchemaBuilder,
 };
 use marrow_kernel::equality::ValueDomain;
+use marrow_test_support::{Counters, CountingEngine};
 
 /// The single-root projection a case opens under: the root, plus its sites resolved against
 /// it. Every site here names root 0 — the store's only root.

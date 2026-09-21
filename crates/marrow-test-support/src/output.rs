@@ -1,3 +1,6 @@
+//! A standard-output handle that refuses every write, for the suites that drive a
+//! companion whose output stream has gone away.
+
 use std::fs::File;
 use std::io::{ErrorKind, Write};
 use std::net::Shutdown;

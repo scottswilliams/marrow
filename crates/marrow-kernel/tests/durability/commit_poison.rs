@@ -19,11 +19,9 @@ use marrow_kernel::durable::{
 };
 use marrow_kernel::equality::ValueDomain;
 
-use crate::common::Scratch;
+use marrow_test_support::Scratch;
 
-#[path = "../common/fault_engine.rs"]
-mod fault_engine;
-use fault_engine::{
+use marrow_test_support::fault_engine::{
     FaultEngine, Mode, ModeHandle, WriteFaultHandle, project, schema, sites, unscoped_store, write,
 };
 
@@ -37,10 +35,10 @@ fn entry(v: i64) -> EntryValue {
 #[test]
 fn scoped_native_reopen_leaves_a_missing_engine_path_absent() {
     let scratch = Scratch::new("existing-reopen");
-    let dir = scratch.store();
+    let dir = scratch.path();
     let path = dir.join("store.redb");
     assert!(
-        NativeStore::acquire_existing(&dir)
+        NativeStore::acquire_existing(dir)
             .expect("acquire the owner over a store directory with no engine")
             .bind_and_open_existing(
                 marrow_kernel::durable::NativeOpenAccess::ReadWrite,

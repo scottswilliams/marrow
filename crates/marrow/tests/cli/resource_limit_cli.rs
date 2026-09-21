@@ -10,7 +10,8 @@
 
 use std::path::Path;
 
-use crate::common::{TempDir, marrow_in};
+use crate::common::marrow_in;
+use marrow_test_support::Scratch;
 
 /// A storeless program with more functions than the fixed limit admits: an aggregate
 /// exhaustion with no single offending declaration.
@@ -69,7 +70,7 @@ fn over_image_bytes_project(dir: &Path) {
 
 #[test]
 fn run_text_emits_the_kinded_resource_limit_record() {
-    let dir = TempDir::new("run-text");
+    let dir = Scratch::new("run-text");
     over_bound_project(&dir);
     let output = marrow_in(&dir, &["run", "main"]);
     assert!(!output.status.success(), "an exhausted bound fails the run");
@@ -83,7 +84,7 @@ fn run_text_emits_the_kinded_resource_limit_record() {
 
 #[test]
 fn run_jsonl_emits_the_kinded_operational_record() {
-    let dir = TempDir::new("run-jsonl");
+    let dir = Scratch::new("run-jsonl");
     over_bound_project(&dir);
     let output = marrow_in(&dir, &["run", "main", "--format", "jsonl"]);
     assert!(!output.status.success());
@@ -95,7 +96,7 @@ fn run_jsonl_emits_the_kinded_operational_record() {
 
 #[test]
 fn test_command_emits_the_kinded_operational_record() {
-    let dir = TempDir::new("test-jsonl");
+    let dir = Scratch::new("test-jsonl");
     over_bound_project(&dir);
     let output = marrow_in(&dir, &["test", "--format", "jsonl"]);
     assert!(!output.status.success());
@@ -107,7 +108,7 @@ fn test_command_emits_the_kinded_operational_record() {
 
 #[test]
 fn client_emits_the_kinded_stderr_line_and_no_stdout() {
-    let dir = TempDir::new("client");
+    let dir = Scratch::new("client");
     over_bound_project(&dir);
     let output = marrow_in(&dir, &["client", "typescript"]);
     assert!(!output.status.success());
@@ -127,7 +128,7 @@ fn client_emits_the_kinded_stderr_line_and_no_stdout() {
 /// cause: a reader had no way to tell an exhausted bound from any other refusal.
 #[test]
 fn check_emits_the_same_kinded_stderr_line_as_its_siblings() {
-    let dir = TempDir::new("check-stderr");
+    let dir = Scratch::new("check-stderr");
     over_bound_project(&dir);
     let checked = marrow_in(&dir, &["check", "."]);
     assert!(!checked.status.success());
@@ -153,7 +154,7 @@ fn check_emits_the_same_kinded_stderr_line_as_its_siblings() {
 /// adopted an image bound as a source-level problem.
 #[test]
 fn check_reports_an_export_ceiling_with_no_diagnostic() {
-    let dir = TempDir::new("check-exports");
+    let dir = Scratch::new("check-exports");
     over_export_project(&dir);
     let checked = marrow_in(&dir, &["check", "."]);
     assert!(
@@ -191,7 +192,7 @@ fn fmt_refuses_an_over_limit_file_before_reading_it() {
     use std::os::unix::fs::PermissionsExt;
 
     let limit = marrow_compile::MAX_PARSED_FILE_BYTES as u64;
-    let dir = TempDir::new("fmt-file-bound");
+    let dir = Scratch::new("fmt-file-bound");
     let path = dir.join("big.mw");
     let file = std::fs::File::create(&path).expect("create oversized source");
     file.set_len(limit + 1).expect("size oversized source");
@@ -227,7 +228,7 @@ fn fmt_admits_a_file_of_exactly_the_module_limit() {
     use std::os::unix::fs::PermissionsExt;
 
     let limit = marrow_compile::MAX_PARSED_FILE_BYTES as u64;
-    let dir = TempDir::new("fmt-file-at-bound");
+    let dir = Scratch::new("fmt-file-at-bound");
     let path = dir.join("exact.mw");
     let file = std::fs::File::create(&path).expect("create at-bound source");
     file.set_len(limit).expect("size at-bound source");
@@ -253,7 +254,7 @@ fn fmt_admits_a_file_of_exactly_the_module_limit() {
 /// distinguishes which aggregate bound fired, the DX finding this lane closes.
 #[test]
 fn run_jsonl_names_the_export_bound_kind() {
-    let dir = TempDir::new("run-exports");
+    let dir = Scratch::new("run-exports");
     over_export_project(&dir);
     let output = marrow_in(&dir, &["run", "main", "--format", "jsonl"]);
     assert!(!output.status.success());
@@ -270,7 +271,7 @@ fn run_jsonl_names_the_export_bound_kind() {
 /// difference is the documented contract, not an accident of either command.
 #[test]
 fn check_refuses_a_test_entry_ceiling_that_the_production_run_does_not_reach() {
-    let dir = TempDir::new("check-test-entries");
+    let dir = Scratch::new("check-test-entries");
     over_test_entries_project(&dir);
     let checked = marrow_in(&dir, &["check", "."]);
     assert!(
@@ -325,7 +326,7 @@ fn check_reports_the_image_byte_ceiling_in_one_sentence_from_either_owner() {
             over_image_bytes_through_strings_project,
         ),
     ] {
-        let dir = TempDir::new(name);
+        let dir = Scratch::new(name);
         project(&dir);
         let checked = marrow_in(&dir, &["check", "."]);
         assert!(!checked.status.success(), "{name}");

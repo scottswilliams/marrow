@@ -30,7 +30,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use crate::common::{MARROW_BIN, TempDir, write};
+use crate::common::{MARROW_BIN, write};
+use marrow_test_support::Scratch;
 
 fn runner_path() -> PathBuf {
     let path = Path::new(MARROW_BIN)
@@ -189,7 +190,7 @@ fn compile_image(source: &str) -> Vec<u8> {
 
 /// Write `source` as a project, generate the strict TypeScript client into `gen/`, and write
 /// the compiled image beside it. Returns the project directory.
-fn prepare(temp: &TempDir, dir: &str, source: &str) -> PathBuf {
+fn prepare(temp: &Scratch, dir: &str, source: &str) -> PathBuf {
     let project = temp.join(dir);
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(&project.join("src/main.mw"), source);
@@ -246,7 +247,7 @@ fn assert_driver_passed(output: &Output) {
 fn native_close_preserves_child_until_controlled_release() {
     use std::os::unix::fs::PermissionsExt;
     for mode in ["ordinary", "protocol", "startup", "abort"] {
-        let temp = TempDir::new("close");
+        let temp = Scratch::new("close");
         fs::set_permissions(&*temp, fs::Permissions::from_mode(0o700)).expect("private fixture");
         eprintln!("supervisor close fixture: {}", temp.display());
         write(
@@ -427,7 +428,7 @@ console.log('DRIVER: all passed');
 #[ignore = "requires Node and executable child fixtures"]
 fn native_startup_outcomes_preserve_activation_evidence() {
     use std::os::unix::fs::PermissionsExt;
-    let temp = TempDir::new("activation-startup");
+    let temp = Scratch::new("activation-startup");
     let project = prepare(&temp, "project", &read_only_source());
     let runner = project.join("startup-child.mjs");
     write(
@@ -561,7 +562,7 @@ console.log('DRIVER: all passed');
 fn provision_rejects_a_completed_child_without_a_valid_receipt() {
     use std::os::unix::fs::PermissionsExt;
 
-    let temp = TempDir::new("provision-receipt");
+    let temp = Scratch::new("provision-receipt");
     let project = prepare(&temp, "project", &read_only_source());
     let runner = project.join("receipt-child.mjs");
     write(&runner, RECEIPT_CHILD);
@@ -614,7 +615,7 @@ function finish() {
 #[test]
 #[ignore = "spawns Node + a runner + Unix sockets; run with the sandbox disabled"]
 fn workshop_journey_through_the_trusted_main() {
-    let temp = TempDir::new("journey");
+    let temp = Scratch::new("journey");
     let project = prepare(&temp, "app", &journey_source());
     let store = temp.join("store");
     let runner = runner_path();
@@ -717,7 +718,7 @@ finish();
 #[test]
 #[ignore = "spawns Node + a runner + Unix sockets; run with the sandbox disabled"]
 fn a_broadened_image_is_refused_through_the_trusted_main() {
-    let temp = TempDir::new("refuse");
+    let temp = Scratch::new("refuse");
     // The store is provisioned under the read-only image (its demand is the accepted ceiling).
     let read_only = prepare(&temp, "readonly", &read_only_source());
     // The client is generated from the broadened image, so it pins that image's identity and
@@ -785,7 +786,7 @@ finish();
 #[test]
 #[ignore = "spawns Node + a runner + Unix sockets; run with the sandbox disabled"]
 fn a_stale_client_fails_typed_against_a_newer_image() {
-    let temp = TempDir::new("drift");
+    let temp = Scratch::new("drift");
     // Revision A: `report` returns a scalar.
     let source_a = "pub fn report(): int {\n    return 1\n}\n";
     // Revision B: the same export now returns a `List<int>` — a changed transfer

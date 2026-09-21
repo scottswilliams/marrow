@@ -31,11 +31,6 @@ mod traversal;
 #[cfg(test)]
 mod conformance;
 
-/// The crate's one scratch-directory fixture. Only the native suites reach the
-/// filesystem, so it follows their feature gate.
-#[cfg(all(test, feature = "native"))]
-mod scratch_tests;
-
 pub use engine::limits::{MAX_KEY_LEN, MAX_VALUE_LEN, SCAN_MAX_AGGREGATE_BYTES, SCAN_MAX_RECORDS};
 pub use engine::{
     ByteEngine, Cell, CommitOutcome, ReadView, WriteTxn, batch_is_full, cell_within_limits,

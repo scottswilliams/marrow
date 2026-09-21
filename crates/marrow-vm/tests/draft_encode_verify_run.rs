@@ -6,7 +6,6 @@
 use marrow_image::{
     CollectionTypeDef, ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry,
 };
-use marrow_test_support::admitted;
 use marrow_verify::verify;
 use marrow_vm::{Value, run};
 
@@ -20,7 +19,7 @@ fn answer_id() -> ExportId {
 /// Build a one-function image `answer(): int = <value>` and return its bytes.
 fn return_const_image(value: i64) -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let name = draft.intern_string("answer").expect("a within-domain mint");
     let source = draft
         .intern_string("src/main.mw")
@@ -81,7 +80,7 @@ fn relocating_the_project_yields_identical_image_bytes() {
 /// verify → run with no compiler.
 fn range_guard_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let name = draft
         .intern_string("guarded")
         .expect("a within-domain mint");
@@ -119,7 +118,7 @@ fn range_guard_image() -> Vec<u8> {
 /// read; the VM's totality guard is what these images probe.
 fn forged_list_positional_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let name = draft.intern_string("forged").expect("a within-domain mint");
     let source = draft
         .intern_string("src/main.mw")
@@ -159,7 +158,7 @@ fn forged_list_positional_image() -> Vec<u8> {
 /// yields an `int` and the image verifies.
 fn forged_map_positional_image(read: Instr) -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let name = draft.intern_string("forged").expect("a within-domain mint");
     let source = draft
         .intern_string("src/main.mw")
@@ -226,7 +225,7 @@ fn a_forged_out_of_range_positional_read_faults_run_corruption() {
 /// the run yields `0` — the removal neither faults nor reads past the map.
 fn forged_map_remove_absent_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let name = draft.intern_string("forged").expect("a within-domain mint");
     let source = draft
         .intern_string("src/main.mw")
@@ -268,7 +267,7 @@ fn forged_map_remove_absent_image() -> Vec<u8> {
 /// function phase and never reaches the VM.
 fn forged_map_remove_wrong_key_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let name = draft.intern_string("forged").expect("a within-domain mint");
     let source = draft
         .intern_string("src/main.mw")
@@ -309,7 +308,7 @@ fn forged_map_remove_wrong_key_image() -> Vec<u8> {
 /// verifier owns the operand shape, so this image is rejected at the function phase.
 fn forged_map_remove_non_map_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let name = draft.intern_string("forged").expect("a within-domain mint");
     let source = draft
         .intern_string("src/main.mw")

@@ -2,8 +2,7 @@
 
 use super::tracer_schema::Verdict::{Refused, Verified};
 use super::{
-    ROOT_KEY_ID, add_fn, admitted, durable_schema, durable_schema_with_keys, finish_two_key, ok,
-    verdict_of,
+    ROOT_KEY_ID, add_fn, durable_schema, durable_schema_with_keys, finish_two_key, ok, verdict_of,
 };
 use marrow_image::{
     DraftTxn, ExportId, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, Scalar,
@@ -52,7 +51,7 @@ enum Arm {
 /// arms, the join, and the guard's own branch target stay consistent across the shapes.
 fn presence_image(guard: Guard, composite: bool, arm: Arm) -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let sites = if composite {
         durable_schema_with_keys(
             &mut draft,
@@ -202,7 +201,7 @@ fn a_presence_guard_needs_one_dominating_producer_per_key() {
 #[test]
 fn guard_provenance_rejects_entry_at_exists_conditional() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let sites = durable_schema(&mut draft);
     let flag = ok(draft.intern_bool(true));
     let text = ok(draft.intern_text("x"));
@@ -232,7 +231,7 @@ fn guard_provenance_rejects_entry_at_exists_conditional() {
 #[test]
 fn guard_provenance_rejects_entry_at_read_entry_conditional() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let sites = durable_schema(&mut draft);
     let flag = ok(draft.intern_bool(true));
     let text = ok(draft.intern_text("x"));
@@ -264,7 +263,7 @@ fn guard_provenance_rejects_entry_at_read_entry_conditional() {
 #[test]
 fn guard_provenance_rejects_entry_at_create() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let sites = durable_schema(&mut draft);
     let flag = ok(draft.intern_bool(true));
     let text = ok(draft.intern_text("x"));
@@ -306,7 +305,7 @@ fn guard_provenance_rejects_entry_at_create() {
 #[test]
 fn guard_provenance_rejects_late_backward_entry_with_unchanged_frame() {
     let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
+    let mut draft = draft_owner.begin_transaction();
     let sites = durable_schema(&mut draft);
     let falseflag = ok(draft.intern_bool(false));
     let text = ok(draft.intern_text("x"));
@@ -337,7 +336,7 @@ fn guard_provenance_rejects_late_backward_entry_with_unchanged_frame() {
 fn an_exists_guard_intersects_adjacent_successor_facts() {
     for (absent_target, expected) in [(4, Refused(VerifyPhase::Flow)), (6, Verified)] {
         let mut draft_owner = ImageDraft::new();
-        let mut draft = admitted(&mut draft_owner);
+        let mut draft = draft_owner.begin_transaction();
         let sites = durable_schema(&mut draft);
         let text = ok(draft.intern_text("x"));
         // Target 4 merges the absent and present edges before the strict use.
@@ -377,7 +376,7 @@ fn a_late_backedge_rechecks_presence_at_an_already_visited_strict_use() {
 
     for backedge in [Backedge::Erase, Backedge::Rebind, Backedge::Preserve] {
         let mut draft_owner = ImageDraft::new();
-        let mut draft = admitted(&mut draft_owner);
+        let mut draft = draft_owner.begin_transaction();
         let sites = durable_schema(&mut draft);
         let flag = ok(draft.intern_bool(false));
         let text = ok(draft.intern_text("x"));
