@@ -11,6 +11,9 @@ use crate::test_support::{
 };
 use crate::{LogicalHead, active_binding, prepare, provision};
 
+/// One deferred change to the store, run at the step a test arms it for.
+type Mutation = Box<dyn FnOnce(&AdmittedStoreDir)>;
+
 /// Replace `artifact` with `bytes` under the retained descriptor and sync the directory,
 /// as a writer racing the sequence would.
 fn replace_synced(store: &Path, dir: &AdmittedStoreDir, artifact: Artifact, bytes: &[u8]) {
@@ -919,7 +922,7 @@ fn binding_rechecks_old_metadata_and_location_after_service_preparation() {
             std::fs::read(scratch.store().join(crate::ENVELOPE_FILE)).expect("envelope");
         let changed_head = request(&edited, instance).head.encode();
         let store = scratch.store();
-        let (mutation, retained, expected_head): (Box<dyn FnOnce(&AdmittedStoreDir)>, _, _) =
+        let (mutation, retained, expected_head): (Mutation, _, _) =
             if move_directory {
                 let moved = scratch.base().join("moved");
                 let target = moved.clone();
