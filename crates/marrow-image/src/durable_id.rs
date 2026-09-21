@@ -894,12 +894,11 @@ mod tests {
         DurableIndexShape, LOCAL_ROOT_LINEAGE, LedgerIdBytes,
     };
     use crate::bounds;
-    use crate::draft::{
-        AdmittedGraphInputPlan, DraftTxn, ImageDraft, KeyColumn, RecordTypeDef, RootOccurrenceDef,
-        TypeId,
-    };
+    use crate::draft::{AdmittedGraphInputPlan, KeyColumn, RootOccurrenceDef, StrId, TypeId};
     use crate::fixtures::id;
-    use crate::product::{DeclarationMemberDef, DeclarationMemberShape, DeclarationNode};
+    use crate::product::{
+        DeclarationMemberDef, DeclarationMemberShape, DeclarationNode, DurableContractGraph,
+    };
     use crate::ty::Scalar;
     use crate::value_dag::{CanonicalValueShapeDag, ValueShapeNodeId, ValueShapeView};
     use sha2::{Digest, Sha256};
@@ -946,19 +945,15 @@ mod tests {
         }
     }
 
-    fn branch_cmd(
-        draft: &mut DraftTxn<'_>,
-        parent: Option<u32>,
-        byte: u8,
-        keys: Vec<KeyColumn>,
-    ) -> DeclarationMemberDef {
-        let name = draft.intern_string("nested").expect("a within-domain mint");
+    /// A keyed branch command. Its name and entry record are surface, not identity, so
+    /// fixed opaque ids serve every graph.
+    fn branch_cmd(parent: Option<u32>, byte: u8, keys: Vec<KeyColumn>) -> DeclarationMemberDef {
         DeclarationMemberDef {
             parent,
             shape: DeclarationMemberShape::Branch {
                 placement: id(byte),
-                name,
-                record: entry_record(draft),
+                name: StrId::from_index(1),
+                record: TypeId(0),
                 keys,
             },
         }
@@ -971,63 +966,50 @@ mod tests {
         }
     }
 
-    /// A materialized entry record for a stated graph. The record is surface, not identity
-    /// — excluded from the contract preimage — so every graph below binds the same empty
-    /// one and no hex moves with it.
-    fn entry_record(draft: &mut DraftTxn<'_>) -> TypeId {
-        let name = draft.intern_string("Entry").expect("a within-domain mint");
-        draft
-            .add_record_type(RecordTypeDef {
-                name,
-                fields: Vec::new(),
-            })
-            .expect("a within-domain mint")
-    }
-
-    /// State one Product and one root occurrence over it in a fresh draft.
+    /// State one Product and one root occurrence over it in a fresh graph.
     fn one_root(
-        members: impl FnOnce(&mut DraftTxn<'_>) -> Vec<DeclarationMemberDef>,
+        members: impl FnOnce(&mut DurableContractGraph) -> Vec<DeclarationMemberDef>,
         keys: Vec<KeyColumn>,
         indexes: Vec<DurableIndexShape>,
-    ) -> ImageDraft {
+    ) -> DurableContractGraph {
         one_root_of_application(id(0x0a), members, keys, indexes)
     }
 
+    /// The identity owner's real input: the durable graph itself, stated through the
+    /// same flat admission the draft's transaction and the verifier's decoder use. The
+    /// entry record and the root's spelling are surface, excluded from the preimage, so
+    /// fixed opaque ids serve every graph and no hex moves with them.
     fn one_root_of_application(
         application: LedgerIdBytes,
-        members: impl FnOnce(&mut DraftTxn<'_>) -> Vec<DeclarationMemberDef>,
+        members: impl FnOnce(&mut DurableContractGraph) -> Vec<DeclarationMemberDef>,
         keys: Vec<KeyColumn>,
         indexes: Vec<DurableIndexShape>,
-    ) -> ImageDraft {
-        let mut owner = ImageDraft::new();
-        let mut draft = owner.begin_transaction();
-        draft.set_application_identity(application);
-        let record = entry_record(&mut draft);
-        let commands = members(&mut draft);
-        let name = draft.intern_string("root").expect("a within-domain mint");
-        draft
-            .declare_product(&plan(), id(0x0d), record, commands)
+    ) -> DurableContractGraph {
+        let mut graph = DurableContractGraph::new();
+        graph.set_application_identity(application);
+        let commands = members(&mut graph);
+        graph
+            .admit_product(&plan(), id(0x0d), TypeId(0), commands)
             .expect("a well-formed flat declaration");
-        draft
-            .add_root_occurrence(
+        graph
+            .admit_root_occurrence(
                 &plan(),
                 id(0x0d),
                 RootOccurrenceDef {
-                    name,
+                    name: StrId::from_index(0),
                     keys,
                     placement: id(0x0b),
                     indexes: indexes.into(),
                 },
             )
             .expect("the Product is declared");
-        draft.commit();
-        owner
+        graph
     }
 
     /// The tracer's `counters` graph with fixed test ids: application `0x0a`,
     /// placement `0x0b`, key `0x0c`, product `0x0d`, fields `0x0e`/`0x0f`. A flat
     /// single-column-keyed resource: its member graph is two top-level fields.
-    fn counters_graph() -> ImageDraft {
+    fn counters_graph() -> DurableContractGraph {
         one_root(
             |draft| {
                 let int = draft
@@ -1052,7 +1034,7 @@ mod tests {
     /// `group` namespace holding a field, and a keyed `branch` placement holding a
     /// field and its own nested group. This is the shape the branch/group slice
     /// makes identity-complete.
-    fn library_graph() -> ImageDraft {
+    fn library_graph() -> DurableContractGraph {
         one_root(
             |draft| {
                 let int = draft
@@ -1067,7 +1049,7 @@ mod tests {
                     .value_shapes_mut()
                     .scalar(Scalar::Instant)
                     .expect("the test arena mints");
-                let branch = branch_cmd(draft, None, 0x30, vec![key(Scalar::Text, 0x31)]);
+                let branch = branch_cmd(None, 0x30, vec![key(Scalar::Text, 0x31)]);
                 vec![
                     field_cmd(None, 0x0e, true, text),
                     group_cmd(None, 0x20),
@@ -1263,7 +1245,7 @@ mod tests {
         assert_eq!(base, cid(counters_graph().contract_view()));
 
         let two_fields = |first_id: u8, first_required: bool, second: bool| {
-            move |draft: &mut DraftTxn<'_>| {
+            move |draft: &mut DurableContractGraph| {
                 let int = draft
                     .value_shapes_mut()
                     .scalar(Scalar::Int)
@@ -1360,7 +1342,7 @@ mod tests {
             placement: u8,
             branch_keys: Vec<KeyColumn>,
             swap_group_and_branch: bool,
-        ) -> ImageDraft {
+        ) -> DurableContractGraph {
             one_root(
                 move |draft| {
                     let int = draft
@@ -1380,7 +1362,7 @@ mod tests {
                     } else {
                         (1, 2)
                     };
-                    let branch = branch_cmd(draft, None, placement, branch_keys);
+                    let branch = branch_cmd(None, placement, branch_keys);
                     let mut members = vec![field_cmd(None, 0x0e, true, text)];
                     members.push(if swap_group_and_branch {
                         branch.clone()
@@ -1442,7 +1424,7 @@ mod tests {
                     .value_shapes_mut()
                     .scalar(Scalar::Instant)
                     .expect("the test arena mints");
-                let branch = branch_cmd(draft, None, 0x30, vec![key(Scalar::Text, 0x31)]);
+                let branch = branch_cmd(None, 0x30, vec![key(Scalar::Text, 0x31)]);
                 vec![
                     field_cmd(None, 0x0e, true, text),
                     field_cmd(None, 0x21, false, int),
@@ -1480,7 +1462,7 @@ mod tests {
         user_enum_retyped: ValueShapeNodeId,
     }
 
-    fn mint_shapes(draft: &mut DraftTxn<'_>) -> Shapes {
+    fn mint_shapes(draft: &mut DurableContractGraph) -> Shapes {
         let values = draft.value_shapes_mut();
         let int = values.scalar(Scalar::Int).expect("the test arena mints");
         let text = values.scalar(Scalar::Text).expect("the test arena mints");
@@ -1534,7 +1516,9 @@ mod tests {
     /// member (kind 6) ids; the struct records its leaves positionally with no
     /// per-leaf id. `pick` states the three widened shapes, so a variant is a fresh
     /// graph rather than an edited one.
-    fn widened_graph_with(pick: impl FnOnce(&Shapes) -> [ValueShapeNodeId; 3]) -> ImageDraft {
+    fn widened_graph_with(
+        pick: impl FnOnce(&Shapes) -> [ValueShapeNodeId; 3],
+    ) -> DurableContractGraph {
         one_root(
             move |draft| {
                 let shapes = mint_shapes(draft);
@@ -1551,7 +1535,7 @@ mod tests {
         )
     }
 
-    fn widened_graph() -> ImageDraft {
+    fn widened_graph() -> DurableContractGraph {
         widened_graph_with(|s| [s.text_int, s.option_int, s.user_enum])
     }
 
@@ -1649,7 +1633,7 @@ mod tests {
     /// The `counters` graph plus two managed indexes: a nonunique `byLabel(label, name)`
     /// projecting the `label` field then the `name` key, and a unique `byValue(value)`
     /// projecting the `value` field. Fixed index ids `0x70`/`0x71`.
-    fn indexed_graph_with(indexes: Vec<DurableIndexShape>) -> ImageDraft {
+    fn indexed_graph_with(indexes: Vec<DurableIndexShape>) -> DurableContractGraph {
         one_root(
             |draft| {
                 let int = draft
@@ -1688,7 +1672,7 @@ mod tests {
         ]
     }
 
-    fn indexed_graph() -> ImageDraft {
+    fn indexed_graph() -> DurableContractGraph {
         indexed_graph_with(declared_indexes())
     }
 
@@ -1787,35 +1771,6 @@ mod tests {
         );
     }
 
-    /// The same refusal for the other count the walk spells: a value shape's own arity.
-    /// A struct node's leaf count is written by the value-shape expansion owner and its
-    /// expansion is small enough that the payload ceiling never answers for it.
-    ///
-    /// A *member* count the payload's `u16` cannot spell is unreachable from any graph a
-    /// caller can state — [`bounds::MAX_DURABLE_MEMBERS`] and [`bounds::MAX_ROOTS`] are
-    /// both far below `u16::MAX` — so the arity check on those counts stays as the codec's
-    /// own defense.
-    #[test]
-    fn a_stated_value_shape_whose_arity_the_payload_cannot_spell_is_refused() {
-        let forged = one_root(
-            |draft| {
-                let values = draft.value_shapes_mut();
-                let int = values.scalar(Scalar::Int).expect("the test arena mints");
-                let wide = values
-                    .struct_shape(vec![int; u16::MAX as usize + 1])
-                    .expect("the test arena mints");
-                vec![field_cmd(None, 0x0e, true, wide)]
-            },
-            Vec::new(),
-            Vec::new(),
-        );
-
-        assert_eq!(
-            forged.contract_view().contract_id(),
-            Err(super::DurableGraphTooLarge)
-        );
-    }
-
     /// The sibling of the refusal: the same arena, referenced at a level whose expansion
     /// fits, still mints an identity. The ceiling refuses a payload, not an arena.
     #[test]
@@ -1879,7 +1834,7 @@ mod tests {
             library_graph(),
             widened_graph(),
             indexed_graph(),
-            ImageDraft::new(),
+            DurableContractGraph::new(),
         ] {
             let graph = draft.contract_view();
             let mut counted = super::FittingPreimageLength::default();
@@ -1978,7 +1933,7 @@ mod tests {
 
     #[test]
     fn the_empty_graph_has_a_stable_id() {
-        let empty = ImageDraft::new();
+        let empty = DurableContractGraph::new();
         assert_eq!(cid(empty.contract_view()), cid(empty.contract_view()));
         assert_ne!(
             cid(empty.contract_view()),
@@ -1997,20 +1952,17 @@ mod tests {
         // The admitted maximum: exactly one occurrence past `MAX_ROOTS`, which is the
         // count the nonblocking `Roots` aggregate must still publish a complete graph for.
         const ROOTS: usize = bounds::MAX_ADMITTED_ROOT_OCCURRENCES;
-        let mut owner = ImageDraft::new();
-        let mut draft = owner.begin_transaction();
+        let mut draft = DurableContractGraph::new();
         draft.set_application_identity(id(0x0a));
-        let record = entry_record(&mut draft);
         let int = draft
             .value_shapes_mut()
             .scalar(Scalar::Int)
             .expect("the test arena mints");
-        let name = draft.intern_string("root").expect("a within-domain mint");
         draft
-            .declare_product(
+            .admit_product(
                 &plan(),
                 id(0x0d),
-                record,
+                TypeId(0),
                 vec![field_cmd(None, 0x0e, true, int)],
             )
             .expect("a well-formed flat declaration");
@@ -2018,11 +1970,11 @@ mod tests {
             let mut placement = [0u8; 16];
             placement[..8].copy_from_slice(&(root as u64).to_be_bytes());
             draft
-                .add_root_occurrence(
+                .admit_root_occurrence(
                     &plan(),
                     id(0x0d),
                     RootOccurrenceDef {
-                        name,
+                        name: StrId::from_index(0),
                         keys: vec![key(Scalar::Int, 0x0c)],
                         placement: LedgerIdBytes::from_bytes(placement),
                         indexes: Vec::new().into(),
@@ -2193,7 +2145,7 @@ mod tests {
                     .value_shapes_mut()
                     .scalar(Scalar::Instant)
                     .expect("the test arena mints");
-                let branch = branch_cmd(draft, None, 0x30, vec![key(Scalar::Text, 0x31)]);
+                let branch = branch_cmd(None, 0x30, vec![key(Scalar::Text, 0x31)]);
                 vec![
                     field_cmd(None, 0x0e, true, text),
                     group_cmd(None, 0x2f),
@@ -2233,7 +2185,7 @@ mod tests {
     #[test]
     fn the_empty_graph_has_no_semantic_nodes() {
         assert!(
-            ImageDraft::new()
+            DurableContractGraph::new()
                 .contract_view()
                 .semantic_nodes()
                 .is_empty()

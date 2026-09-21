@@ -287,3 +287,17 @@ const _: () = {
 /// slack, plus the buffer it still holds while it copies into its successor. Stated
 /// once here so every accounting that charges growth reads one number.
 pub const GROWTH_AND_COPY: u64 = 3;
+
+#[cfg(test)]
+mod tests {
+    use super::MAX_IMAGE_BYTES;
+
+    /// The byte-exact ceiling corpora in `tests/ceiling_boundary.rs` are stated in the
+    /// constant and move with it, so this literal is the one visible diff a changed
+    /// ceiling must make. The table counts are pinned by literal corpora in
+    /// `tests/bound_boundaries.rs`.
+    #[test]
+    fn the_image_byte_ceiling_is_its_published_value() {
+        assert_eq!(MAX_IMAGE_BYTES, 512 * 1024);
+    }
+}

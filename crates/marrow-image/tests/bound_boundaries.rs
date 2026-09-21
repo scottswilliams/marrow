@@ -11,10 +11,11 @@ use marrow_image::bounds::{
     MAX_ADMITTED_ROOT_OCCURRENCES, MAX_DURABLE_DEPTH, MAX_INDEX_COMPONENTS, MAX_STRUCT_LEAVES,
 };
 use marrow_image::{
-    AdmittedGraphInputPlan, DeclarationMemberDef, DeclarationMemberShape, DraftStateError,
-    DraftTxn, DurableContractGraph, DurableGraphInputRefusal, DurableIndexComponent,
-    DurableIndexShape, ExportId, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr,
-    KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SpanEntry, TypeId,
+    AdmittedGraphInputPlan, CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape,
+    DraftStateError, DraftTxn, DurableContractGraph, DurableGraphInputRefusal,
+    DurableIndexComponent, DurableIndexShape, EnumTypeDef, ExportId, FunctionDef, ImageBuildError,
+    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef,
+    Scalar, SpanEntry, TypeId, VariantDef,
 };
 use marrow_test_support::{admitted, admitted_plan};
 
@@ -613,4 +614,108 @@ fn the_member_nesting_bound_admits_its_own_depth_and_refuses_one_more() {
             "the durable graph admits a body at depth {depth}: {within_bound}",
         );
     }
+}
+
+// ---- The counted tables sit at their published counts.
+
+/// The seeded-id tag for the members of the widest declaration.
+const MEMBER: u8 = 0x42;
+
+/// Encode a fresh storeless draft after `fill` has appended `rows` rows of one kind.
+fn encode_rows(
+    rows: usize,
+    fill: impl Fn(&mut DraftTxn<'_>, usize),
+) -> Result<(), ImageBuildError> {
+    let mut owner = ImageDraft::new();
+    let mut draft = admitted(&mut owner);
+    for row in 0..rows {
+        fill(&mut draft, row);
+    }
+    draft.commit();
+    owner.encode().map(|_| ())
+}
+
+/// A declaration of `rows` required int fields.
+fn members_of_width(draft: &mut DraftTxn<'_>, rows: usize) -> Vec<DeclarationMemberDef> {
+    let value = draft.value_scalar(Scalar::Int).expect("the arena mints");
+    (0..rows)
+        .map(|n| DeclarationMemberDef {
+            parent: None,
+            shape: DeclarationMemberShape::Field {
+                id: seeded_id(MEMBER, n),
+                required: true,
+                value,
+            },
+        })
+        .collect()
+}
+
+/// Each counted table admits exactly its published count and refuses one more, with the
+/// count spelled as a literal. The exact-N corpora elsewhere are stated in the constant
+/// and move with it; here a changed bound is a visible diff.
+#[test]
+fn the_counted_tables_sit_at_their_published_counts() {
+    let strings = |draft: &mut DraftTxn<'_>, row: usize| {
+        draft
+            .intern_string(&format!("{row:05}"))
+            .expect("a within-domain mint");
+    };
+    assert_eq!(encode_rows(8192, strings), Ok(()));
+    assert_eq!(
+        encode_rows(8193, strings),
+        Err(ImageBuildError::TooManyStrings)
+    );
+
+    let records = |draft: &mut DraftTxn<'_>, _: usize| {
+        let name = draft.intern_string("R").expect("a within-domain mint");
+        draft
+            .add_record_type(RecordTypeDef {
+                name,
+                fields: Vec::new(),
+            })
+            .expect("a within-domain mint");
+    };
+    assert_eq!(encode_rows(4096, records), Ok(()));
+    assert_eq!(
+        encode_rows(4097, records),
+        Err(ImageBuildError::TooManyTypes)
+    );
+
+    let enums = |draft: &mut DraftTxn<'_>, _: usize| {
+        let name = draft.intern_string("E").expect("a within-domain mint");
+        draft
+            .add_enum_type(EnumTypeDef {
+                name,
+                variants: vec![VariantDef {
+                    name,
+                    category: false,
+                    payload: Vec::new(),
+                }],
+            })
+            .expect("a within-domain mint");
+    };
+    assert_eq!(encode_rows(4096, enums), Ok(()));
+    assert_eq!(encode_rows(4097, enums), Err(ImageBuildError::TooManyEnums));
+
+    let collections = |draft: &mut DraftTxn<'_>, _: usize| {
+        draft
+            .add_collection_type(CollectionTypeDef::List {
+                elem: ImageType::scalar(Scalar::Int),
+            })
+            .expect("a within-domain mint");
+    };
+    assert_eq!(encode_rows(4096, collections), Ok(()));
+    assert_eq!(
+        encode_rows(4097, collections),
+        Err(ImageBuildError::TooManyCollections)
+    );
+
+    assert_eq!(
+        encode_root(|draft| members_of_width(draft, 8192), Vec::new()),
+        Ok(())
+    );
+    assert_eq!(
+        encode_root(|draft| members_of_width(draft, 8193), Vec::new()),
+        Err(ImageBuildError::TooManyDurableMembers)
+    );
 }

@@ -141,10 +141,7 @@ fn reservation_owns_the_full_carrier_and_invalid_fills_spend_nothing() {
     txn.fill_function(last, def.clone())
         .expect("valid fixture construction");
     assert_eq!(txn.function_payload_charge, 7);
-    assert_eq!(
-        txn.fill_function(last, def),
-        Err(DraftStateError::IncoherentToken)
-    );
+    assert_eq!(txn.fill_function(last, def), Err(DraftStateError::RowState));
     assert_eq!(txn.function_payload_charge, 7);
     assert_eq!(
         txn.function_code(last)
@@ -161,7 +158,7 @@ fn reservation_owns_the_full_carrier_and_invalid_fills_spend_nothing() {
     let def = body(&mut txn, 7, 0);
     assert_eq!(
         txn.fill_function(FuncId(0), def),
-        Err(DraftStateError::IncoherentToken)
+        Err(DraftStateError::ForeignDraft)
     );
     assert_eq!(txn.function_count(), 0);
     assert_eq!(txn.function_payload_charge, 0);

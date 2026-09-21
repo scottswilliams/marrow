@@ -509,7 +509,7 @@ fn a_complete_definition_is_not_replaceable_and_vacancy_is_fence_distinct() {
         .expect("a within-domain mint");
     assert_eq!(
         txn.set_record_fields(complete, Vec::new()),
-        Err(DraftStateError::IncoherentToken),
+        Err(DraftStateError::RowState),
         "a complete definition is not a reservation and admits no fill",
     );
     let enum_name = txn.intern_string("E").expect("a within-domain mint");
@@ -525,7 +525,7 @@ fn a_complete_definition_is_not_replaceable_and_vacancy_is_fence_distinct() {
         .expect("a within-domain mint");
     assert_eq!(
         txn.set_enum_variants(complete_enum, Vec::new()),
-        Err(DraftStateError::IncoherentToken),
+        Err(DraftStateError::RowState),
         "a complete enum definition is not a reservation and admits no fill",
     );
 }

@@ -586,6 +586,11 @@ impl std::error::Error for ImageBuildError {}
 /// [`Self::begin_transaction`] arms over an exclusive borrow. A draft is deliberately not
 /// `Clone`: every selector, handle, and site operand it mints carries its identity, so a
 /// copy would authenticate capabilities against both drafts.
+///
+/// ```compile_fail,E0599
+/// let draft = marrow_image::ImageDraft::new();
+/// let _copy = draft.clone();
+/// ```
 #[derive(Debug)]
 pub struct ImageDraft {
     /// The one durable-graph owner: this draft's strong identity and stamp source, its
@@ -662,10 +667,10 @@ pub enum DraftStateError {
     /// The id or reference was minted by another draft, or names a row this draft does
     /// not hold.
     ForeignDraft,
-    /// The id names a row that no longer admits the operation: a second fill of a
-    /// reserved row, a fill of a row never reserved, or a site the plan did not answer
-    /// for.
-    IncoherentToken,
+    /// The id names a row of this draft whose state refuses the operation: a fill of a
+    /// row already filled, or a site operand whose row or receipt the plan no longer
+    /// holds.
+    RowState,
     /// The argument exceeds the proved carrier/layout domain of the builder surface. The
     /// production compiler maps this to a compiler invariant — never a policy or source
     /// refusal.
@@ -676,7 +681,7 @@ impl std::fmt::Display for DraftStateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             DraftStateError::ForeignDraft => "the id was minted by another draft",
-            DraftStateError::IncoherentToken => "the id no longer admits the operation",
+            DraftStateError::RowState => "the row's state refuses the operation",
             DraftStateError::CarrierDomain => {
                 "the argument exceeds the proved carrier domain of the builder surface"
             }
@@ -686,12 +691,12 @@ impl std::fmt::Display for DraftStateError {
 
 impl std::error::Error for DraftStateError {}
 
-/// A site operation the draft did not answer for is an incoherent id at the builder
+/// A site operation the draft did not answer for is a row-state refusal at the builder
 /// surface. The site error's own private cases stay private: this crossing carries the
 /// classification, not the cause.
 impl From<crate::site_plan::SitePlanStateError> for DraftStateError {
     fn from(_: crate::site_plan::SitePlanStateError) -> Self {
-        DraftStateError::IncoherentToken
+        DraftStateError::RowState
     }
 }
 
@@ -897,9 +902,10 @@ impl<'d> DraftTxn<'d> {
     }
 
     /// Fill a live record reservation from this draft, exactly once. The caller owns the
-    /// same-draft precondition: ordinal IDs carry no foreign/stale provenance. The setter
-    /// checks ordinal range and refuses a second fill; a fill of a pre-transaction row
-    /// journals its displaced definition first.
+    /// same-draft precondition: ordinal IDs carry no foreign/stale provenance. An absent
+    /// row is [`DraftStateError::ForeignDraft`] and a filled one
+    /// [`DraftStateError::RowState`]; a fill of a pre-transaction row journals its
+    /// displaced definition first.
     pub fn set_record_fields(
         &mut self,
         ty: TypeId,
@@ -910,7 +916,7 @@ impl<'d> DraftTxn<'d> {
             return Err(DraftStateError::ForeignDraft);
         };
         if state == FillState::Filled {
-            return Err(DraftStateError::IncoherentToken);
+            return Err(DraftStateError::RowState);
         }
         if row < self.journal.at.types {
             self.journal.fills.reserve(1);
@@ -945,7 +951,7 @@ impl<'d> DraftTxn<'d> {
             return Err(DraftStateError::ForeignDraft);
         };
         if state == FillState::Filled {
-            return Err(DraftStateError::IncoherentToken);
+            return Err(DraftStateError::RowState);
         }
         if row < self.journal.at.enums {
             self.journal.fills.reserve(1);
@@ -1097,11 +1103,15 @@ impl<'d> DraftTxn<'d> {
     }
 
     /// Fill this draft's reserved function exactly once. The caller must supply an
-    /// identity from this draft; `FuncId` carries no foreign/stale-draft provenance.
+    /// identity from this draft; `FuncId` carries no foreign/stale-draft provenance. An
+    /// absent row is [`DraftStateError::ForeignDraft`] and a filled one
+    /// [`DraftStateError::RowState`].
     pub fn fill_function(&mut self, id: FuncId, def: FunctionDef) -> Result<(), DraftStateError> {
         let row = usize::from(id.index());
-        if !matches!(self.draft.functions.get(row), Some(None)) {
-            return Err(DraftStateError::IncoherentToken);
+        match self.draft.functions.get(row) {
+            None => return Err(DraftStateError::ForeignDraft),
+            Some(Some(_)) => return Err(DraftStateError::RowState),
+            Some(None) => {}
         }
         self.draft.validate_function(&def)?;
         if row < self.journal.at.functions {
@@ -1125,13 +1135,6 @@ impl<'d> DraftTxn<'d> {
     /// entries by their final name-string index.
     pub fn add_test_entry(&mut self, name: StrId, func: FuncId) {
         self.draft.test_entries.push(TestEntryDef { name, func });
-    }
-
-    /// The draft's arena, for a test to state a value shape past the checked surface's
-    /// arity bound and exercise the identity owner's own ceiling.
-    #[cfg(test)]
-    pub(crate) fn value_shapes_mut(&mut self) -> &mut CanonicalValueShapeDag {
-        self.draft.durable.value_shapes_mut()
     }
 
     /// Mint one scalar durable value shape into the draft's one arena.
@@ -1480,6 +1483,24 @@ impl ImageDraft {
     /// Arm the one mutation surface over this draft. The guard's journal restores the
     /// draft to exactly this state on rollback or unwind; [`DraftTxn::commit`] retains
     /// everything.
+    ///
+    /// The guard borrows its draft exclusively for its whole lifetime, so a second
+    /// admission cannot open while one is live and a guard cannot outlive its draft.
+    ///
+    /// ```compile_fail,E0499
+    /// let mut draft = marrow_image::ImageDraft::new();
+    /// let first = draft.begin_transaction();
+    /// let second = draft.begin_transaction();
+    /// drop(first);
+    /// drop(second);
+    /// ```
+    /// ```compile_fail,E0597
+    /// let txn = {
+    ///     let mut draft = marrow_image::ImageDraft::new();
+    ///     draft.begin_transaction()
+    /// };
+    /// drop(txn);
+    /// ```
     pub fn begin_transaction(&mut self) -> DraftTxn<'_> {
         DraftTxn {
             journal: DraftJournal {

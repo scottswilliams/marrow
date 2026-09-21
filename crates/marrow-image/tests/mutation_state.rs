@@ -352,7 +352,7 @@ fn a_second_fill_is_refused_and_the_draft_remains_encodable() {
         .expect("the reserved row fills once");
     assert_eq!(
         draft.set_record_fields(record, Vec::new()),
-        Err(DraftStateError::IncoherentToken),
+        Err(DraftStateError::RowState),
         "a second fill is refused",
     );
     draft.commit();
@@ -646,7 +646,7 @@ fn a_failed_function_append_leaves_no_function_row() {
     let before = draft.encode().expect("both slots are filled").bytes;
     assert_eq!(
         draft.fill_function(reserved, valid),
-        Err(DraftStateError::IncoherentToken)
+        Err(DraftStateError::RowState)
     );
     assert_eq!(
         draft.function_code(reserved),
