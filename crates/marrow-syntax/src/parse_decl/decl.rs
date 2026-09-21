@@ -5,7 +5,6 @@
 use super::FunctionHead;
 use super::head::{parse_enum_head, parse_resource_head, parse_store_head, parse_struct_head};
 use super::params::parse_function_head;
-use super::statement_capacity::outer_count;
 use super::stmt::StmtParser;
 use super::tokens::{
     PathNameError, comment_from_token, doc_comment_text, find_top_level_equal, gap_after,
@@ -30,15 +29,11 @@ pub(crate) struct DeclParser<'a, 'c> {
     pub(super) source: &'a str,
     pub(super) tokens: &'a [Token],
     pub(super) pos: usize,
-    /// The file's declarations, pre-reserved at its conservative outer statement-start
-    /// count. Every declaration opens at least one start, so parsing needs no amortized
-    /// growth; final boxing may shrink capacity left by starts that are not declarations.
     declarations: Vec<Declaration>,
     pub(super) sink: SyntaxSink<'c>,
-    /// Nested member-block depth (resource groups, enum categories). The lexer reports the
-    /// nesting-limit diagnostic; this second layer stops the recursive descent at
-    /// [`crate::NESTING_DEPTH_LIMIT`] so a deep nest skips its body rather than
-    /// overflowing the native stack.
+    /// Nested member-block depth (resource groups, enum categories). The descent stops
+    /// at [`crate::NESTING_DEPTH_LIMIT`], reporting the `{` it declines to open and
+    /// skipping that body whole rather than overflowing the native stack.
     pub(super) depth: usize,
     bodies: BodySelection,
 }
@@ -54,7 +49,7 @@ impl<'a, 'c> DeclParser<'a, 'c> {
             source,
             tokens,
             pos: 0,
-            declarations: Vec::with_capacity(outer_count(tokens)),
+            declarations: Vec::new(),
             sink,
             depth: 0,
             bodies: BodySelection::Full,

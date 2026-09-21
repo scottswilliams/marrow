@@ -105,7 +105,7 @@ const ORDINARY_QUERY_BUDGET_MS: u128 = 10;
 /// What the cap costs is admitted length, not a re-derived ceiling: the heap ceiling is
 /// declared independently of any file size, so raising this cap shortens the longest
 /// admitted file rather than raising the heap a query may claim.
-const MAX_SOURCE_BYTE_CHARGE: usize = 512;
+const MAX_SOURCE_BYTE_CHARGE: usize = 576;
 
 /// The exported term is exactly the stated fraction of the owned-heap ceiling — two
 /// thirds, keeping a third in reserve for everything a query holds beside the parse.
@@ -378,11 +378,11 @@ fn content_byte_charge() -> usize {
 /// does not, so the two-byte floor holds either way; it is pinned in `marrow-syntax`
 /// beside the pass that counts.
 ///
-/// The slot is charged once, not with the growth factor: a block's statement list is
-/// allocated at the measured count of starts the block opens directly and handed to
-/// `Box<[Statement]>` at close, so it neither grows nor keeps slack. Measuring each
-/// block's own starts rather than its whole extent is what keeps this sound — the other
-/// count would reserve a nested start once per enclosing block.
+/// The slot is charged with the growth factor: a block's statement list is grown by
+/// pushing and handed to `Box<[Statement]>` at close, so its peak holds the amortized
+/// slack. A pushed list of `n` elements peaks at `max(4, 2n) <= 2n + 2` slots; the two
+/// slots per statement are charged here and the two per list to the block that opens
+/// it (see [`statement_line_content_charges`]).
 fn statement_line_charge() -> usize {
     let content = content_byte_charge();
     // A line of `L` bytes charges `slot + (L - 1) * content`, so its per-byte rate is
@@ -390,7 +390,7 @@ fn statement_line_charge() -> usize {
     // is largest at `L = 2`; once a content byte is the wider of the two the rate rises
     // with `L` instead, approaching the content rate from below without reaching it, so
     // the content rate bounds it. Both are taken with `div_ceil`, like every other row.
-    (size_of::<Statement>() + content).div_ceil(2).max(content)
+    (GROWTH * size_of::<Statement>() + content).div_ceil(2).max(content)
 }
 
 /// The heap one source byte of a file can buy: a statement line, or anything the parser
@@ -436,6 +436,13 @@ fn statement_line_content_charges() -> Vec<(&'static str, usize, usize)> {
         ),
         // `else if`.
         ("ElseIf", vec_bytes::<ElseIf>(1), 7),
+        // A block's `{` and `}`: the two slots of a pushed statement list's four-slot
+        // minimum capacity that the per-statement growth term does not carry.
+        (
+            "a block's statement list",
+            (MIN_ELEMENT_CAPACITY - GROWTH) * size_of::<Statement>(),
+            2,
+        ),
         // The `const` keyword each chained binding carries.
         (
             "IfConstBinding",
@@ -463,11 +470,13 @@ fn statement_line_content_charges() -> Vec<(&'static str, usize, usize)> {
 /// Everything the parser builds outside a statement line, on the same terms.
 fn declaration_level_charges() -> Vec<(&'static str, usize, usize)> {
     vec![
-        // The shortest declaration keyword is `fn`. The slot is charged once for the
-        // same reason a statement's is: the declaration list is allocated at the file's
-        // top-level statement-start count, which a declaration always opens at least one
-        // of, and handed to `Box<[Declaration]>` at close.
-        ("Declaration", size_of::<Declaration>() + string_bytes(1), 2),
+        // The shortest declaration keyword is `fn`. The declaration list is pushed like a
+        // block's statement list; its two-slot floor is once per file, in the fixed term.
+        (
+            "Declaration",
+            GROWTH * size_of::<Declaration>() + string_bytes(1),
+            2,
+        ),
         // `use`. A path is a sequence of segments, so one segment's slot and its own
         // exact spelling are what a one-segment path adds.
         (
@@ -551,20 +560,15 @@ const TOKEN_VECTOR_SLACK: usize = 1;
 /// outside the per-byte term.
 const TOKEN_CHARGE: usize = LIVE_TOKEN_VECTORS * TOKEN_VECTOR_SLACK * size_of::<Token>();
 
-/// What measuring a body's statement capacities charges per source byte.
-///
-/// The parser measures each `{ … }` region's own statement-start count before parsing
-/// it, so a statement list is allocated once at its final size instead of growing. The
-/// measurement holds one `(token index, start count)` pair per region, still in the
-/// vector it was pushed into when the peak is taken, and a region costs at least the two
-/// source bytes of its own braces. Its open-region stack is bounded by the nesting limit
-/// rather than by the source, so it is a constant and not a per-byte charge.
-const STATEMENT_CAPACITY_CHARGE: usize = GROWTH * size_of::<(u32, u32)>() / 2;
-
 /// The syntax collector's own retention, which is live beside the tree until
 /// `parse_source` returns. Both of its ceilings are pinned by `marrow-syntax`; a row is
 /// charged at 256 bytes, comfortably above the `Diagnostic` it wraps.
 const DIAGNOSTIC_ROW_BYTES: usize = 256;
+
+/// The file's declaration list is pushed, so it holds the two slots of its four-slot
+/// minimum capacity beyond the two per declaration the per-byte rate carries, once per
+/// file.
+const DECLARATION_LIST_FLOOR: usize = (MIN_ELEMENT_CAPACITY - GROWTH) * size_of::<Declaration>();
 
 /// The collector's two pinned ceilings, each charged with the growth factor because both
 /// containers are grown by pushing.
@@ -577,10 +581,10 @@ const DIAGNOSTICS: usize = GROWTH * SYNTAX_DIAGNOSTIC_COUNT_LIMIT * DIAGNOSTIC_R
 /// declared cap, so the two differ in one factor only. It closes under the declared heap
 /// ceiling by the distance the cap sits above the derived maximum.
 fn accounted_query_parse_transient() -> usize {
-    MAX_ADMITTED_FILE_BYTES * (source_byte_charge() + TOKEN_CHARGE + STATEMENT_CAPACITY_CHARGE)
+    MAX_ADMITTED_FILE_BYTES * (source_byte_charge() + TOKEN_CHARGE)
         + TOKEN_CHARGE
         + DIAGNOSTICS
-        + marrow_syntax::MAX_STATEMENT_CAPACITY_BYTES
+        + DECLARATION_LIST_FLOOR
 }
 
 fn captured(files: Vec<(&str, Vec<u8>)>) -> Arc<ProjectInput> {
@@ -1445,12 +1449,12 @@ fn the_query_parse_transient_closes_under_the_exported_term() {
     );
     assert_eq!(
         statement_line_charge(),
-        481,
+        553,
         "the densest statement line's charge moved"
     );
     assert_eq!(
         source_byte_charge(),
-        481,
+        553,
         "the densest source byte's charge moved"
     );
     let accounted = accounted_query_parse_transient();
@@ -1969,12 +1973,12 @@ fn an_over_ceiling_file_is_refused_before_it_is_parsed() {
 #[test]
 fn the_admitted_length_and_the_exported_term_agree_with_the_derivation() {
     assert_eq!(
-        MAX_SOURCE_BYTE_CHARGE + TOKEN_CHARGE + STATEMENT_CAPACITY_CHARGE,
+        MAX_SOURCE_BYTE_CHARGE + TOKEN_CHARGE,
         marrow_syntax::MAX_PARSE_BYTES_PER_SOURCE_BYTE,
         "the rate `marrow-syntax` publishes drifted from the rate derived here"
     );
     assert_eq!(
-        TOKEN_CHARGE + DIAGNOSTICS + marrow_syntax::MAX_STATEMENT_CAPACITY_BYTES,
+        TOKEN_CHARGE + DIAGNOSTICS + DECLARATION_LIST_FLOOR,
         marrow_syntax::MAX_PARSE_FIXED_BYTES,
         "the length-independent parse charge drifted from the one derived here"
     );

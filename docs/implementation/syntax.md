@@ -46,26 +46,24 @@ caller with a heap bound of its own refuses a file before parsing it.
 published constant drifts from it.
 
 The AST keeps its final lists in boxed slices. A block's statement list, a
-`match` body's arm list, and a file's declaration list pre-reserve conservative
-statement-start capacities to avoid amortized growth during parsing. Final
-boxing may shrink spare capacity. Declaration allocation uses an outer
-statement-start count with one frame and lexical brace depth, without allocating
-nested-region measurements. Body parsing keeps its regional measurement, which
-also decides which nested regions the parser structures. Both traversals share
-the frame's token classification in `parse_decl/statement_capacity.rs`; their
-different scopes do not change the published parse charges. Every path is one
-`Box<[NameSegment]>` carrying spelling and span
+`match` body's arm list, and a file's declaration list are grown by pushing and
+boxed at close; the growth slack is part of the published per-source-byte
+charge. Every path is one `Box<[NameSegment]>` carrying spelling and span
 together. A binary expression holds its ordered left and right children in one
 `Box<BinaryOperands>`. Each child's expression slot remains part of the parse
 charge; sharing their allocation does not reduce the published heap term.
 
 ## Nesting depth
 
-Depth is a separate bound with a separate owner. A measurement is keyed on a
-`{`, and a trailing clause can nest without one: `else` followed by `if`, or a
-`match` arm whose body is one statement. The statement parser therefore counts
-frames on every descent and stops at the nesting limit, so the limit trips
-before the native stack does.
+Each recursive descent owns its own bound. The statement parser counts frames
+on every descent through `StmtParser::descend` — a braced block and a trailing
+clause's single inline statement (`else` followed by `if`, a `match` arm whose
+body is one statement) cost the same frame — and stops at the nesting limit,
+reporting the `{` or statement it declines to open and skipping that region
+whole. The declaration parser bounds nested member blocks the same way, the
+expression and type parsers bound token-level nesting, and the lexer bounds
+interpolation nesting. The limit trips before the native stack does on every
+path.
 
 The formatter consumes parser-owned structure. It preserves comments and
 reparses to an equivalent AST. Tests under `crates/marrow-syntax/tests/` cover

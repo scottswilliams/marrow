@@ -16,13 +16,11 @@ mod decl;
 mod head;
 mod members;
 mod params;
-mod statement_capacity;
 mod statement_lines;
 mod stmt;
 mod tokens;
 
 pub(crate) use decl::DeclParser;
-pub(crate) use statement_capacity::FIXED_BYTES as STATEMENT_CAPACITY_FIXED_BYTES;
 
 use crate::ast::{KeyParam, ParamDecl, TypeExpr, TypeParamDecl};
 use crate::diagnostic::{ParseDiagnosticReason, SourceSpan};

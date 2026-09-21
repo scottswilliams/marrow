@@ -62,13 +62,14 @@ pub const PARSE_SYNTAX: &str = Code::ParseSyntax.as_str();
 /// The maximum nesting depth the front end will structure before it stops and
 /// reports [`NESTING_LIMIT`].
 ///
-/// Four layers enforce it: the lexer on brace depth, the statement parser by counting
-/// descent frames (so a brace-free nest through a trailing inline clause is refused at
-/// the same depth), the declaration parser on nested member blocks, and the expression
-/// parser on token-level nesting. The AST — and every later walk over it — therefore
-/// stays bounded however deep or long the source is, and deeper source fails closed
-/// with a located diagnostic rather than overflowing the native stack. 256 follows the
-/// Clang/rustc convention; it is fixed in v0.1, not configurable.
+/// Each recursive descent enforces it where it deepens: the statement parser by
+/// counting frames (a braced block and a brace-free trailing inline clause cost the
+/// same frame), the declaration parser on nested member blocks, the expression and
+/// type parsers on token-level nesting, and the lexer on interpolation nesting. The
+/// AST — and every later walk over it — therefore stays bounded however deep or long
+/// the source is, and deeper source fails closed with a located diagnostic rather than
+/// overflowing the native stack. 256 follows the Clang/rustc convention; it is fixed in
+/// v0.1, not configurable.
 pub const NESTING_DEPTH_LIMIT: usize = 256;
 
 /// Reported when source nests deeper than [`NESTING_DEPTH_LIMIT`]. It renders as
@@ -82,30 +83,29 @@ pub const NESTING_LIMIT: &str = Code::CheckNestingLimit.as_str();
 /// **Declared, not measured**, and deliberately above the derived maximum so that adding
 /// one field to one node costs a review here rather than a re-derivation of every ceiling
 /// built on it. The figure caps every node family the parser builds — the widest decides
-/// it — plus the token slice and the statement capacity pass.
+/// it — plus the token slice.
 /// `marrow-compile`'s `no_node_family_exceeds_the_declared_source_byte_cap` re-derives it
 /// and fails if this constant drifts or a family widens past it.
 ///
 /// It charges allocated capacity, not resident pages, and excludes the borrowed source
-/// bytes and per-allocation allocator overhead. Container slots are charged at the
-/// standard library's minimum non-zero capacity of four elements, not the two a doubling
-/// growth would suggest.
-pub const MAX_PARSE_BYTES_PER_SOURCE_BYTE: usize = 552;
+/// bytes and per-allocation allocator overhead. Every list the parser builds, a block's
+/// statement list included, grows by pushing and is boxed at close: a list of `n`
+/// elements peaks at `max(4, 2n)` slots, the standard library's minimum non-zero
+/// capacity or its doubling, so a slot is charged with that growth.
+pub const MAX_PARSE_BYTES_PER_SOURCE_BYTE: usize = 608;
+
+/// The slots a pushed list holds beyond two per element: `max(4, 2n) <= 2n + 2`. A
+/// block's two are charged to its braces in the per-byte rate; the file's declaration
+/// list holds its two once, in [`MAX_PARSE_FIXED_BYTES`].
+const LIST_FLOOR_SLOTS: usize = 2;
 
 /// The heap [`parse_source`] allocates regardless of the file's length: the diagnostic
 /// collector's two ceilings, the token slice's zero-width `Eof` sentinel, which is the
-/// one token that covers no source byte, and the statement capacity pass's own working set,
-/// which the nesting limit bounds rather than the source.
+/// one token that covers no source byte, and the declaration list's capacity floor.
 pub const MAX_PARSE_FIXED_BYTES: usize = 2 * SYNTAX_DIAGNOSTIC_COUNT_LIMIT * 256
     + 2 * SYNTAX_DIAGNOSTIC_OWNED_BYTES_LIMIT
     + size_of::<Token>()
-    + MAX_STATEMENT_CAPACITY_BYTES;
-
-/// What sizing a body's statement lists holds beyond its per-source-byte charge: an
-/// open-region stack the nesting limit bounds, and the smallest non-zero capacity its
-/// region vector takes. Published as part of [`MAX_PARSE_FIXED_BYTES`] so a caller
-/// accounting the fixed charge consumes it rather than restating a private derivation.
-pub const MAX_STATEMENT_CAPACITY_BYTES: usize = parse_decl::STATEMENT_CAPACITY_FIXED_BYTES;
+    + LIST_FLOOR_SLOTS * size_of::<Declaration>();
 
 /// The heap [`parse_source`] can allocate for a file of `source_bytes`.
 ///
@@ -689,7 +689,7 @@ mod nesting_limit {
     fn nested_resource_groups(depth: usize) -> String {
         let mut source = String::from("module app\n\nresource R {\n");
         for level in 0..depth {
-            source.push_str(&format!("g{level}(k: int) {{\n"));
+            source.push_str(&format!("g{level}[k: int] {{\n"));
         }
         source.push_str("leaf: int\n");
         for _ in 0..depth {

@@ -56,13 +56,6 @@ struct Lexer<'a, 'c> {
     /// Open `(`/`[` depth. A `NEWLINE` is suppressed while this is non-zero, so a
     /// call or bracket group spans several physical lines as one logical line.
     open_delimiters: usize,
-    /// Open `{` block depth. A `{` that would open a block deeper than
-    /// [`NESTING_DEPTH_LIMIT`] reports [`crate::NESTING_LIMIT`]. Braces do not suppress
-    /// `NEWLINE`: a statement still ends at the line break inside a block.
-    brace_depth: usize,
-    /// Set once the brace nesting limit is first crossed, so a run of over-deep
-    /// braces reports [`crate::NESTING_LIMIT`] a single time rather than per brace.
-    reported_nesting_limit: bool,
 }
 
 impl<'a, 'c> Lexer<'a, 'c> {
@@ -73,8 +66,6 @@ impl<'a, 'c> Lexer<'a, 'c> {
             tokens: Vec::new(),
             sink,
             open_delimiters: 0,
-            brace_depth: 0,
-            reported_nesting_limit: false,
         }
     }
 
@@ -139,22 +130,6 @@ impl<'a, 'c> Lexer<'a, 'c> {
                         | TokenKind::Equal
                 )
             })
-    }
-
-    /// Report brace nesting past [`NESTING_DEPTH_LIMIT`] once, at the offending `{`, and
-    /// stay suppressed for the rest of the over-deep region. The braces are still tiled as
-    /// tokens (tiling stays lossless); bounding the recursive descent is the parser's job.
-    fn report_brace_nesting_limit(&mut self, span: SourceSpan) {
-        if self.reported_nesting_limit {
-            return;
-        }
-        self.reported_nesting_limit = true;
-        self.sink.push(SyntaxError::new(
-            DiagnosticReason::Parser(ParseDiagnosticReason::NestingLimit),
-            format!("source nests deeper than the limit of {NESTING_DEPTH_LIMIT}"),
-            None,
-            span,
-        ));
     }
 
     fn lex_line(&mut self, line: Line<'a>) {
@@ -610,20 +585,6 @@ impl<'a, 'c> Lexer<'a, 'c> {
             }
             TokenKind::RightParen | TokenKind::RightBracket => {
                 self.open_delimiters = self.open_delimiters.saturating_sub(1);
-            }
-            TokenKind::LeftBrace => {
-                self.brace_depth += 1;
-                if self.brace_depth > NESTING_DEPTH_LIMIT {
-                    self.report_brace_nesting_limit(span);
-                }
-            }
-            TokenKind::RightBrace => {
-                self.brace_depth = self.brace_depth.saturating_sub(1);
-                if self.brace_depth <= NESTING_DEPTH_LIMIT {
-                    // Left the over-deep region, so a later independent deep nest reports
-                    // its own overflow rather than being silenced.
-                    self.reported_nesting_limit = false;
-                }
             }
             _ => {}
         }

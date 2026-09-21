@@ -32,10 +32,8 @@ impl DeclParser<'_, '_> {
         let mut indexes = Vec::new();
         let mut comments = Vec::new();
         let mut docs: Vec<Token> = Vec::new();
-        // Fail closed past the nesting limit: skip the group body without recursing.
         if self.depth >= crate::NESTING_DEPTH_LIMIT {
-            self.advance(); // `{`
-            self.skip_to_block_end();
+            self.refuse_over_deep_block();
             return (members, indexes, comments);
         }
         self.depth += 1;
@@ -174,10 +172,8 @@ impl DeclParser<'_, '_> {
         let mut members = Vec::new();
         let mut comments = Vec::new();
         let mut docs: Vec<Token> = Vec::new();
-        // Fail closed past the nesting limit: skip the category body without recursing.
         if self.depth >= crate::NESTING_DEPTH_LIMIT {
-            self.advance(); // `{`
-            self.skip_to_block_end();
+            self.refuse_over_deep_block();
             return (members, comments);
         }
         self.depth += 1;

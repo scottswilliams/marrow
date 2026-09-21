@@ -4,7 +4,6 @@
 //! either a braced block or a single inline statement.
 
 use super::head::arm_pattern;
-use super::statement_capacity::StatementCapacity;
 use super::statement_lines::{parse_for_header, parse_if_const_head, parse_simple_statement};
 use super::tokens::{
     comment_from_token, expr_of, expr_of_after, find_top_level_equal, first_line_end,
@@ -73,11 +72,6 @@ pub(super) struct StmtParser<'a, 'c> {
     source: &'a str,
     tokens: &'a [Token],
     pos: usize,
-    /// How many statements the body and each of its blocks can hold, measured once
-    /// before parsing so every statement list is allocated at its final size. A list
-    /// grown by pushing would hold up to its own size again in amortized slack, and
-    /// the body's outermost block is the largest list a file can produce.
-    capacities: StatementCapacity,
     /// Line comments for the block currently being parsed, in source order.
     /// Each nested block swaps in a fresh accumulator (see `parse_nested_block`)
     /// so a comment lands in the block it appears in.
@@ -85,17 +79,12 @@ pub(super) struct StmtParser<'a, 'c> {
     /// The declaration parser's scoped sink, reborrowed for the body's duration
     /// so a malformed statement line reports directly to the one live collector.
     sink: &'a mut SyntaxSink<'c>,
-    /// How many statement bodies deep the descent currently sits — a different question
-    /// from which blocks the tree holds, which [`StatementCapacity`] owns.
-    ///
-    /// That measurement is keyed on a `{`, so it can only refuse a body that opens one.
-    /// A trailing clause takes a *single inline statement* in place of a block
-    /// (`else`\n`if …`, `b => match …`), and that statement may open a clause of its
-    /// own, so a nest can recurse as deep as the file is long without ever opening a
-    /// brace for the measurement to see. Bounding the native stack therefore means
-    /// counting frames. Every descent goes through [`StmtParser::descend`], which stops
-    /// at [`crate::NESTING_DEPTH_LIMIT`], so the typed limit trips first on every path
-    /// rather than only on the braced ones.
+    /// How many statement bodies deep the descent currently sits. A braced block and a
+    /// trailing clause's single inline statement (`else`\n`if …`, `b => match …`) each
+    /// cost one frame, so a nest that never opens a brace is bounded on the same terms
+    /// as one that does. Every descent goes through [`StmtParser::descend`], which
+    /// stops at [`crate::NESTING_DEPTH_LIMIT`] and is the sole owner of which bodies
+    /// the tree holds.
     depth: usize,
 }
 
@@ -105,7 +94,6 @@ impl<'a, 'c> StmtParser<'a, 'c> {
             source,
             tokens,
             pos: 0,
-            capacities: StatementCapacity::measure(tokens),
             comments: Vec::new(),
             sink,
             depth: 0,
@@ -127,10 +115,9 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         Some(value)
     }
 
-    /// Report the refusal to descend past [`crate::NESTING_DEPTH_LIMIT`]. The lexer
-    /// reports the same finding for a brace nest; a clause recursing through an inline
-    /// statement opens no brace, so for that shape this is the only reporter and the
-    /// refusal would otherwise be a silent truncation.
+    /// Report the refusal to descend past [`crate::NESTING_DEPTH_LIMIT`], at the `{` or
+    /// inline statement the descent declines to open. The refused region is then
+    /// skipped whole, so an over-deep nest reports once rather than per level.
     fn report_nesting_limit(&mut self, span: SourceSpan) {
         self.error_span_reason(
             span,
@@ -143,7 +130,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
     }
 
     pub(super) fn parse_block(mut self) -> (Box<[Statement]>, Vec<Comment>) {
-        let statements = self.statements(self.capacities.body());
+        let statements = self.statements();
         (statements, std::mem::take(&mut self.comments))
     }
 
@@ -233,8 +220,11 @@ impl<'a, 'c> StmtParser<'a, 'c> {
     /// Parse statements until the block closes. `capacity` is the measured number of
     /// statement starts this block opens, and at most one statement is structured per
     /// start, so the list is allocated once and never grows.
-    fn statements(&mut self, capacity: usize) -> Box<[Statement]> {
-        let mut statements = Vec::with_capacity(capacity);
+    /// Parse statements up to the enclosing `}` or the end of the body. The list is
+    /// grown by pushing and boxed at close; the growth slack is part of the published
+    /// per-source-byte parse charge.
+    fn statements(&mut self) -> Box<[Statement]> {
+        let mut statements = Vec::new();
         while let Some(kind) = self.peek() {
             match kind {
                 TokenKind::Eof | TokenKind::RightBrace => break,
@@ -683,12 +673,8 @@ impl<'a, 'c> StmtParser<'a, 'c> {
     }
 
     /// Parse a `match` statement's `{ <arms> }` and return its arms and closing span.
-    ///
-    /// A match body is a brace-delimited region like any other, so it asks the same two
-    /// questions a block does: the measurement decides whether the tree holds it and how
-    /// many arms it can hold, and the frame bound decides whether the descent has room.
-    /// An arm starts where a statement would, so the count that sizes a block's
-    /// statement list sizes the arm list too, exactly rather than by pushing.
+    /// A match body is a brace-delimited region like any other, so it costs the same
+    /// frame a block does.
     fn match_body(&mut self, start: SourceSpan) -> (Vec<MatchArm>, SourceSpan) {
         if !matches!(self.peek(), Some(TokenKind::LeftBrace)) {
             self.error_span_reason(
@@ -698,10 +684,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
             );
             return (Vec::new(), start);
         }
-        let Some(capacity) = self.capacities.region(self.pos) else {
-            return (Vec::new(), self.skipped_block().span);
-        };
-        match self.descend(|parser| parser.measured_match_arms(capacity)) {
+        match self.descend(Self::match_arms) {
             Some(parsed) => parsed,
             None => {
                 let span = self.tokens[self.pos].span;
@@ -711,11 +694,11 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         }
     }
 
-    /// Parse the arms of a match body the measurement sized as holding `capacity` of
-    /// them. Runs one level inside [`StmtParser::descend`]; the cursor is at the `{`.
-    fn measured_match_arms(&mut self, capacity: usize) -> (Vec<MatchArm>, SourceSpan) {
+    /// Parse the arms of a match body. Runs one level inside [`StmtParser::descend`];
+    /// the cursor is at the `{`.
+    fn match_arms(&mut self) -> (Vec<MatchArm>, SourceSpan) {
         let mut end = self.advance().span; // `{`
-        let mut arms = Vec::with_capacity(capacity);
+        let mut arms = Vec::new();
         loop {
             match self.peek() {
                 None | Some(TokenKind::RightBrace) => {
@@ -1217,17 +1200,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
     /// body token slice. A fresh comment accumulator is swapped in for the duration
     /// so this nested block's comments do not leak into the parent block.
     fn parse_braced_block(&mut self) -> Block {
-        // Fail closed on a block the measurement left unmeasured: it nests past the
-        // limit, so descending would grow a statement list it has no count for, and the
-        // lexer already reported the located finding. Asking the pass that sized the
-        // block keeps the two from disagreeing about which blocks the tree holds.
-        let Some(capacity) = self.capacities.region(self.pos) else {
-            return self.skipped_block();
-        };
-        // A brace at a depth the measurement admits can still sit under enough inline
-        // clauses to put the descent itself past the limit, so the frame bound is asked
-        // separately from the capacity.
-        match self.descend(|parser| parser.measured_block(capacity)) {
+        match self.descend(Self::braced_block) {
             Some(block) => block,
             None => {
                 let span = self.tokens[self.pos].span;
@@ -1237,12 +1210,12 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         }
     }
 
-    /// Parse `{ statement* }` at a `{` the measurement sized as holding `capacity`
-    /// statements. Runs one level inside [`StmtParser::descend`].
-    fn measured_block(&mut self, capacity: usize) -> Block {
+    /// Parse `{ statement* }` at the `{` under the cursor. Runs one level inside
+    /// [`StmtParser::descend`].
+    fn braced_block(&mut self) -> Block {
         let start = self.advance().span; // `{`
         let outer = std::mem::take(&mut self.comments);
-        let statements = self.statements(capacity);
+        let statements = self.statements();
         let comments = std::mem::replace(&mut self.comments, outer);
         let end = if matches!(self.peek(), Some(TokenKind::RightBrace)) {
             self.advance().span

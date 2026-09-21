@@ -142,6 +142,23 @@ impl<'a> DeclParser<'a, '_> {
 
     /// Report a stray `{ … }` block at the top level, where a declaration was
     /// expected, and consume it so the following declarations still parse.
+    /// Refuse the member block under the cursor because opening it would pass
+    /// [`crate::NESTING_DEPTH_LIMIT`]: report the located limit at its `{` and skip the
+    /// whole block, so an over-deep nest reports once and the descent never deepens.
+    pub(super) fn refuse_over_deep_block(&mut self) {
+        let span = self.tokens[self.pos].span;
+        self.error_span(
+            span,
+            ParseDiagnosticReason::NestingLimit,
+            format!(
+                "source nests deeper than the limit of {}",
+                crate::NESTING_DEPTH_LIMIT
+            ),
+        );
+        self.advance(); // `{`
+        self.skip_to_block_end();
+    }
+
     pub(super) fn report_stray_indented_lines(&mut self) {
         let span = self.content_span_of(self.tokens[self.pos]);
         self.error_span(
