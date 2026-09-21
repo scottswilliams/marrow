@@ -3466,7 +3466,7 @@ fn two_test_image() -> Vec<u8> {
 
 /// Point the one TEST-ENTRY row at function `func` and revalidate the digest: the shape a
 /// forged test role takes, since the producer never names an export or a non-unit function.
-fn retarget_test_entry(bytes: &mut Vec<u8>, func: u16) {
+fn retarget_test_entry(bytes: &mut [u8], func: u16) {
     let body = section_frame(bytes, 8).0;
     bytes[body + 4..body + 6].copy_from_slice(&func.to_be_bytes());
     rehash(bytes);
