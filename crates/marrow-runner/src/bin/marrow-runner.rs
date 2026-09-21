@@ -1398,9 +1398,9 @@ mod output_tests {
             receipt.into_json(),
             Json::Object(vec![("n".into(), Json::Int(i64::MAX))])
         );
-        let error = Receipt::default()
-            .count("n", i64::MAX as u64 + 1)
-            .expect_err("one past the range is refused");
+        let Err(error) = Receipt::default().count("n", i64::MAX as u64 + 1) else {
+            panic!("one past the range is refused");
+        };
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     }
 }
