@@ -838,20 +838,49 @@ fn recovery_output(
         Err(code) => return Ok(code),
     };
     let result = marrow_lifecycle::recover(store, marrow_lifecycle::prepare(image));
-    if let Err(error) = &result {
-        let _ = writeln!(std::io::stderr(), "{}: {error}", error.code().as_str());
+    let mut stdout = std::io::stdout().lock();
+    match format {
+        ReportFormat::Jsonl => deliver(
+            &mut stdout,
+            &mut std::io::stderr().lock(),
+            &recovery_receipt(store_text, &result).into_json(),
+            format,
+        )?,
+        ReportFormat::Text => write_recovery_text(&mut stdout, store_text, &result)?,
     }
-    deliver(
-        &mut std::io::stdout().lock(),
-        &mut std::io::stderr().lock(),
-        &recovery_receipt(store_text, &result).into_json(),
-        format,
-    )?;
     Ok(if result.is_ok() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
     })
+}
+
+/// The recovery report as an operator reads it: the activated store or the typed failure
+/// first, then one `preserved` line per artifact the recovery moved aside.
+fn write_recovery_text(
+    output: &mut dyn Write,
+    store: &str,
+    result: &Result<marrow_lifecycle::RecoveredStore, marrow_lifecycle::RecoveryError>,
+) -> std::io::Result<()> {
+    let preserved = match result {
+        Ok(recovered) => {
+            writeln!(
+                output,
+                "Activated store {store}\ninstance {}\nimage {}",
+                recovered.instance.to_hex(),
+                recovered.image_id.to_hex()
+            )?;
+            &recovered.preserved
+        }
+        Err(error) => {
+            writeln!(output, "{}: {error}", error.code().as_str())?;
+            &error.preserved
+        }
+    };
+    for name in preserved {
+        writeln!(output, "preserved {name}")?;
+    }
+    output.flush()
 }
 
 /// The recovery report: the store, every preserved artifact name, and the activated
@@ -1313,15 +1342,24 @@ mod output_tests {
                 .is_ok()
             );
             let mut text = Vec::new();
-            deliver(&mut text, &mut Vec::new(), &receipt, ReportFormat::Text).expect("text");
+            write_recovery_text(&mut text, "store", result).expect("text");
             let text = String::from_utf8(text).expect("UTF-8");
-            assert!(text.starts_with("kind: recovery\nstore: store\n"));
             if index < 2 {
-                assert!(text.contains(&format!("instance: {}\n", instance.to_hex())));
-                assert!(text.contains(&format!("\"{}\"", preserved[0])));
+                assert!(text.contains(&instance.to_hex()));
+                assert!(text.contains(&format!("preserved {}\n", preserved[0])));
+            } else {
+                assert!(!text.contains("preserved "));
             }
             if let Err(error) = result {
-                assert!(text.contains(&format!("code: {}\n", error.code().as_str())));
+                assert!(text.starts_with(error.code().as_str()));
+            }
+            for failure in [Failure::WriteAt(0), Failure::WriteAt(5), Failure::Flush] {
+                assert_eq!(
+                    write_recovery_text(&mut Sink::new(failure), "store", result)
+                        .unwrap_err()
+                        .kind(),
+                    std::io::ErrorKind::BrokenPipe
+                );
             }
         }
     }
