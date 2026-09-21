@@ -24,10 +24,10 @@ impl ParsedSource {
 pub struct SourceFile {
     pub module: Option<ModuleDecl>,
     pub uses: Vec<UseDecl>,
-    /// Exactly sized, on the same terms as [`Block::statements`]: a `Declaration` is
+    /// Kept as parsed, on the same terms as [`Block::statements`]: a `Declaration` is
     /// the widest node outside a statement list, and this is the one vector that holds
     /// them.
-    pub declarations: Box<[Declaration]>,
+    pub declarations: Vec<Declaration>,
     pub comments: Vec<Comment>,
 }
 
@@ -848,11 +848,12 @@ pub struct EnumPayloadField {
 /// An indented sequence of statements.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Block {
-    /// Exactly sized. A block's statement list is the largest allocation a parse
-    /// builds — a `Statement` is the widest node the parser stores in a vector — and a
-    /// `Box<[Statement]>` has no capacity field, so amortized growth slack cannot
-    /// survive the close.
-    pub statements: Box<[Statement]>,
+    /// Kept as parsed, growth slack included. A block's statement list is the largest
+    /// allocation a parse builds — a `Statement` is the widest node the parser stores
+    /// in a vector — and shrinking it at close would reallocate, letting the old and
+    /// new buffers coexist at the parse's peak; the published parse charge carries the
+    /// slack instead.
+    pub statements: Vec<Statement>,
     /// Line comments inside this block, in source order. Kept as block-level trivia
     /// rather than attached to statement nodes so the formatter can re-emit them and
     /// `parse -> format` round-trips comments losslessly.

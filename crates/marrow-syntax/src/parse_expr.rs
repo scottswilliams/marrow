@@ -1053,7 +1053,7 @@ impl<'a, 's> ExprParser<'a, 's> {
                 self.name_expr()
             }
             // A keyword constructor is only a value when called (`int(...)`,
-            // `Error(...)`, `Id(^root, ...)`).
+            // `Id(^root, ...)`).
             TokenKind::Keyword(keyword)
                 if is_expression_callable_keyword(keyword)
                     && matches!(self.peek_at(1), Some(TokenKind::LeftParen)) =>

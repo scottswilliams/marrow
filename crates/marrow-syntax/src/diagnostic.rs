@@ -566,7 +566,6 @@ pub enum ExpectedSyntax {
     EnumName,
     Expression,
     FieldType,
-    FunctionBody,
     FunctionHeader,
     FunctionName,
     FunctionParameterList,
@@ -598,7 +597,6 @@ pub enum ExpectedSyntax {
     Statement,
     StoreRoot,
     StoreResourceName,
-    TestBody,
     TestName,
     VariableName,
 }

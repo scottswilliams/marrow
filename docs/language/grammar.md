@@ -35,12 +35,15 @@ declaration     = {doc_comment},
                   | function_decl
                   | test_decl ) ;
 
-block           = "{", NEWLINE?, {statement, NEWLINE}, "}" ;
+block           = NEWLINE?, "{", NEWLINE?, {statement, NEWLINE}, "}" ;
 ```
 
 A `module_decl` is the first line of a file that has one. A `use_decl` names a
 module and may follow a declaration. A `doc_comment` run documents the
-declaration, member, or parameter directly below it.
+declaration, member, or parameter directly below it. A `block` may open on the
+line after its header, and the `else`, `else if`, and `on more` of a trailing
+clause may begin a line of their own; the formatter writes the header line
+ending in `{` and cuddles the clause.
 
 ## Declarations
 
@@ -234,15 +237,16 @@ if_stmt         = "if", if_head, block, {else_if}, else_clause? ;
 if_head         = expression
                 | const_binding, {"and", const_binding}, ("and", expression)? ;
 const_binding   = "const", identifier, local_annotation?, "=", expression ;
-else_if         = "else", "if", expression, block ;
-else_clause     = "else", clause_body ;
+else_if         = NEWLINE?, "else", "if", expression, block ;
+else_clause     = NEWLINE?, "else", clause_body ;
 
 while_stmt      = "while", expression, block ;
 
 for_stmt        = "for", identifier, {",", identifier}, "in",
                   ( expression, ("by", expression)?, block
                   | expression, "at", "most", expression,
-                    ("from", expression)?, block, "on", "more", clause_body ) ;
+                    ("from", expression)?, block, NEWLINE?, "on", "more",
+                    clause_body ) ;
 ```
 
 A trailing clause cuddles the closing brace before it: `} else {`,

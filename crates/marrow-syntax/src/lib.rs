@@ -88,15 +88,31 @@ pub const NESTING_LIMIT: &str = Code::CheckNestingLimit.as_str();
 ///
 /// It charges allocated capacity, not resident pages, and excludes the borrowed source
 /// bytes and per-allocation allocator overhead. Every list the parser builds, a block's
-/// statement list included, grows by pushing and is boxed at close: a list of `n`
-/// elements peaks at `max(4, 2n)` slots, the standard library's minimum non-zero
-/// capacity or its doubling, so a slot is charged with that growth.
+/// statement list and the file's declaration list included, grows by pushing and is
+/// kept as built: a list of `n` elements peaks at `max(4, 2n)` slots, the standard
+/// library's minimum non-zero capacity or its doubling, so a slot is charged with that
+/// growth, and nothing is shrunk at close, so no reallocation lets two buffers coexist.
+/// The lexer's own phase — its line table and token list, both pushed, and the exact
+/// token slice the tokens are copied into — ends before any tree exists and is bounded
+/// below this rate by the assertion beside [`LIST_GROWTH`].
 pub const MAX_PARSE_BYTES_PER_SOURCE_BYTE: usize = 608;
+
+/// The capacity a pushed list may hold beyond its length, as a factor of the length.
+const LIST_GROWTH: usize = 2;
 
 /// The slots a pushed list holds beyond two per element: `max(4, 2n) <= 2n + 2`. A
 /// block's two are charged to its braces in the per-byte rate; the file's declaration
 /// list holds its two once, in [`MAX_PARSE_FIXED_BYTES`].
 const LIST_FLOOR_SLOTS: usize = 2;
+
+/// The lexer phase peaks with its line table (at most one line per source byte), its
+/// token list (at most one token per source byte, pinned in `marrow-compile`), and
+/// the exact slice the tokens are copied into, all live at once; the parse phase then
+/// holds only the slice beside the tree, so the parse rate covers both phases.
+const _: () = assert!(
+    LIST_GROWTH * (size_of::<lexer::Line<'static>>() + size_of::<Token>()) + size_of::<Token>()
+        <= MAX_PARSE_BYTES_PER_SOURCE_BYTE
+);
 
 /// The heap [`parse_source`] allocates regardless of the file's length: the diagnostic
 /// collector's two ceilings, the token slice's zero-width `Eof` sentinel, which is the
@@ -636,7 +652,7 @@ mod nesting_limit {
     }
 
     /// A source with `depth` nested `if` blocks, the deep-statement form.
-    fn nested_ifs(depth: usize) -> String {
+    pub(super) fn nested_ifs(depth: usize) -> String {
         let mut source = String::from("module app\n\npub fn main() {\n");
         for level in 0..depth {
             source.push_str(&format!("if {level} < {} {{\n", level + 1));
@@ -763,6 +779,26 @@ mod nesting_limit {
             1
         );
         assert_eq!(nesting_limit_count(&nested_ifs(NESTING_DEPTH_LIMIT * 4)), 1);
+    }
+
+    /// The limit is reported on the paths that skip a region iteratively rather than
+    /// descending into it, counted from the enclosing body on the same terms: an
+    /// unclosed function body, a stray block where a statement was expected, and a
+    /// stray block where a declaration was expected.
+    #[test]
+    fn skipped_regions_report_the_limit_once_on_the_descents_terms() {
+        let opens = "if a {\n".repeat(NESTING_DEPTH_LIMIT);
+        let closes = "}\n".repeat(NESTING_DEPTH_LIMIT);
+        let unclosed_body = format!("module app\n\nfn main() {{\n{opens}");
+        let stray_in_body = format!("module app\n\nfn main() {{\n{{\n{opens}{closes}}}\n}}\n");
+        let stray_top_level = format!("module app\n\n{{\n{opens}{closes}}}\n");
+        for (label, source) in [
+            ("unclosed body", unclosed_body),
+            ("stray block in a body", stray_in_body),
+            ("stray block at the top level", stray_top_level),
+        ] {
+            assert_eq!(nesting_limit_count(&source), 1, "{label}");
+        }
     }
 
     /// Two independent over-deep enums each report their own overflow: leaving
@@ -1083,10 +1119,10 @@ mod statement_recursion_depth {
     }
 
     /// The deepest tree [`NESTING_DEPTH_LIMIT`] frames of descent can build, counted in
-    /// `Block` nodes. Two cost no frame: the function body the descent starts from, and
-    /// the empty block the refusal stands in place of. It is a constant — it must not
-    /// move with the length of the file.
-    const DEEPEST_BOUNDED_TREE: usize = NESTING_DEPTH_LIMIT + 2;
+    /// `Block` nodes: the function body is the first frame, and the empty block the
+    /// refusal stands in place of costs none. It is a constant — it must not move with
+    /// the length of the file.
+    const DEEPEST_BOUNDED_TREE: usize = NESTING_DEPTH_LIMIT + 1;
 
     /// The deepest statement nest in any function body of `source`.
     fn parsed_depth(source: String) -> (usize, bool) {
@@ -1187,25 +1223,25 @@ mod statement_recursion_depth {
         InlineClause {
             label: "inline match arms",
             frames_per_level: 2,
-            admitted_levels: 128,
+            admitted_levels: 127,
             build: inline_match_arms,
         },
         InlineClause {
             label: "brace-free else chain",
             frames_per_level: 1,
-            admitted_levels: 256,
+            admitted_levels: 255,
             build: brace_free_else_chain,
         },
         InlineClause {
             label: "on more chain",
             frames_per_level: 1,
-            admitted_levels: 256,
+            admitted_levels: 255,
             build: on_more_chain,
         },
         InlineClause {
             label: "checked arm chain",
             frames_per_level: 1,
-            admitted_levels: 256,
+            admitted_levels: 255,
             build: checked_arm_chain,
         },
     ];
@@ -1215,6 +1251,23 @@ mod statement_recursion_depth {
             .iter()
             .map(|clause| (clause.label, (clause.build)(levels)))
             .collect()
+    }
+
+    /// The enclosing body is the first of the limit's levels: one fewer nested block
+    /// than the limit fills it and is structured in full, and one more is refused, its
+    /// stood-in empty block the only node past the limit.
+    #[test]
+    fn the_enclosing_body_is_the_first_nesting_level() {
+        use super::nesting_limit::nested_ifs;
+
+        assert_eq!(
+            parsed_depth(nested_ifs(NESTING_DEPTH_LIMIT - 1)),
+            (NESTING_DEPTH_LIMIT, false)
+        );
+        assert_eq!(
+            parsed_depth(nested_ifs(NESTING_DEPTH_LIMIT)),
+            (NESTING_DEPTH_LIMIT + 1, true)
+        );
     }
 
     /// The recursion stops at the typed limit on every inline-clause path, and the tree
@@ -1269,9 +1322,10 @@ mod statement_recursion_depth {
                 admitted_levels,
                 build,
             } = clause;
+            // The enclosing body is the first frame, so the levels share the rest.
             assert_eq!(
                 *admitted_levels,
-                NESTING_DEPTH_LIMIT / frames_per_level,
+                (NESTING_DEPTH_LIMIT - 1) / frames_per_level,
                 "{label} holds {frames_per_level} frames a level, so a limit of \
                  {NESTING_DEPTH_LIMIT} pays for a level count other than the \
                  {admitted_levels} pinned here"

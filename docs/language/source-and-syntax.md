@@ -117,7 +117,10 @@ trailing clause cuddles the closing brace: `} else {`, `} else if c {`,
 src/main.mw:4:5: parse.syntax: expected a `{ … }` block
 ```
 
-There is no statement separator, so a `;` is a syntax error.
+The `{` may also open on the line after its header, and `else`, `else if`, and
+`on more` may begin a line of their own; `marrow fmt` writes the header line
+ending in `{` and cuddles the clause. There is no statement separator, so a
+`;` is a syntax error.
 
 A line break ends a statement. A logical line continues across a physical line
 break in exactly two cases: while inside an open `(` or `[`, and after a

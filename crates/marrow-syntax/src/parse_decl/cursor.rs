@@ -5,11 +5,18 @@
 use super::DeclParser;
 use super::ParseError;
 use super::tokens::{comment_from_token, first_line_end, is_line_comment, line_end};
-use crate::ast::{Comment, CommentMarker, CommentPlacement};
+use crate::ast::{Block, Comment, CommentMarker, CommentPlacement};
 use crate::diagnostic::{
     DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, SourceSpan, SyntaxError, nesting_limit,
 };
 use crate::token::{ContextualKeyword, Keyword, Token, TokenKind};
+
+/// Where a balanced-brace scan ended, and the first `{` inside it that would have
+/// nested past [`crate::NESTING_DEPTH_LIMIT`] had the region been parsed.
+pub(super) struct BalancedScan {
+    pub(super) end: usize,
+    pub(super) over_deep: Option<SourceSpan>,
+}
 
 impl<'a> DeclParser<'a, '_> {
     /// Collect the tokens of the current header line (up to the next
@@ -100,28 +107,35 @@ impl<'a> DeclParser<'a, '_> {
         }
     }
 
-    /// Consume a balanced `{ … }` run starting at the current `{`, returning the
-    /// exclusive index just past the matching `}`.
-    pub(super) fn consume_block(&mut self) -> usize {
+    /// Consume a balanced `{ … }` run starting at the current `{`, returning where it
+    /// ended and whether it nested past the limit.
+    pub(super) fn consume_block(&mut self) -> BalancedScan {
         self.consume_balanced_block(0)
     }
 
     /// Consume the rest of a `{ … }` block whose opening `{` was already advanced,
-    /// stopping after its matching `}`.
-    pub(super) fn skip_to_block_end(&mut self) {
-        self.consume_balanced_block(1);
+    /// stopping after its matching `}`. Returns the first `{` inside it that nested
+    /// past [`crate::NESTING_DEPTH_LIMIT`], for the caller that owns that report.
+    pub(super) fn skip_to_block_end(&mut self) -> Option<SourceSpan> {
+        self.consume_balanced_block(1).over_deep
     }
 
     /// Consume tokens until the `{`/`}` depth returns to zero, seeded at `open_depth`
-    /// (zero when the opening `{` is still ahead, one when it was already advanced).
-    /// Returns the exclusive index just past the matching `}`, tolerating end-of-file
-    /// before the block closes. `}` is the hard recovery sync anchor.
-    fn consume_balanced_block(&mut self, open_depth: usize) -> usize {
+    /// (zero when the opening `{` is still ahead, one when it was already advanced),
+    /// tolerating end-of-file before the block closes. `}` is the hard recovery sync
+    /// anchor. Depth is counted from the member level the parser is at, on the same
+    /// terms a descent would count it, so a skipped region nesting past the limit is
+    /// noticed where a parsed one would have been refused.
+    fn consume_balanced_block(&mut self, open_depth: usize) -> BalancedScan {
         let mut depth = open_depth;
+        let mut over_deep = None;
         while let Some(kind) = self.peek() {
             match kind {
                 TokenKind::LeftBrace => {
                     depth += 1;
+                    if over_deep.is_none() && self.depth + depth > crate::NESTING_DEPTH_LIMIT {
+                        over_deep = Some(self.tokens[self.pos].span);
+                    }
                     self.advance();
                 }
                 TokenKind::RightBrace => {
@@ -137,7 +151,54 @@ impl<'a> DeclParser<'a, '_> {
                 }
             }
         }
-        self.pos
+        BalancedScan {
+            end: self.pos,
+            over_deep,
+        }
+    }
+
+    /// The zero-width span where a declaration's block would open: the next token's
+    /// start, or just past the last consumed token at end of input, with a trailing
+    /// `NEWLINE` anchoring at its own start so the byte and the line agree.
+    pub(super) fn gap(&self) -> SourceSpan {
+        match self.tokens.get(self.pos) {
+            Some(token) => SourceSpan {
+                end_byte: token.span.start_byte,
+                ..token.span
+            },
+            None => match self.tokens.get(self.pos.saturating_sub(1)) {
+                Some(token) if token.kind == TokenKind::Newline => SourceSpan {
+                    end_byte: token.span.start_byte,
+                    ..token.span
+                },
+                Some(token) => {
+                    let width = token.text(self.source).chars().count();
+                    SourceSpan {
+                        start_byte: token.span.end_byte,
+                        end_byte: token.span.end_byte,
+                        line: token.span.line,
+                        column: token.span.column + width as u32,
+                    }
+                }
+                None => SourceSpan::default(),
+            },
+        }
+    }
+
+    /// Report a declaration header with no `{ … }` body at the gap the body would open
+    /// at, and stand an empty block there.
+    pub(super) fn missing_body(&mut self) -> Block {
+        let gap = self.gap();
+        self.error_span(
+            gap,
+            ParseDiagnosticReason::Expected(ExpectedSyntax::Block),
+            "expected a `{ … }` block",
+        );
+        Block {
+            statements: Vec::new(),
+            comments: Vec::new(),
+            span: gap,
+        }
     }
 
     /// Refuse the member block under the cursor because opening it would pass
@@ -147,6 +208,7 @@ impl<'a> DeclParser<'a, '_> {
         let span = self.tokens[self.pos].span;
         self.sink.push(nesting_limit(span));
         self.advance(); // `{`
+        // The skipped region's first over-deep `{` is the one reported above.
         self.skip_to_block_end();
     }
 
@@ -160,7 +222,9 @@ impl<'a> DeclParser<'a, '_> {
             "expected a top-level declaration",
         );
         self.advance(); // `{`
-        self.skip_to_block_end();
+        if let Some(span) = self.skip_to_block_end() {
+            self.sink.push(nesting_limit(span));
+        }
     }
 
     /// Whether the cursor is at a block-opening `{`.

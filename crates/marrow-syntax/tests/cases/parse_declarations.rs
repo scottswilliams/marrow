@@ -403,9 +403,7 @@ pub fn main()
             .complete()
             .iter()
             .any(|diagnostic| diagnostic.reason
-                == parse_reason(ParseDiagnosticReason::Expected(
-                    ExpectedSyntax::FunctionBody
-                )))
+                == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Block)))
     );
 }
 

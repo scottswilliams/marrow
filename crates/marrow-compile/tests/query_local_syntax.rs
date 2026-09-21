@@ -375,8 +375,9 @@ fn content_byte_charge() -> usize {
 /// beside the pass that counts.
 ///
 /// The slot is charged with the growth factor: a block's statement list is grown by
-/// pushing and handed to `Box<[Statement]>` at close, so its peak holds the amortized
-/// slack. A pushed list of `n` elements peaks at `max(4, 2n) <= 2n + 2` slots; the two
+/// pushing and kept as built, never shrunk, so its peak holds the amortized slack and no
+/// reallocation lets two buffers coexist. A pushed list of `n` elements peaks at
+/// `max(4, 2n) <= 2n + 2` slots; the two
 /// slots per statement are charged here and the two per list to the block that opens
 /// it (see [`statement_line_content_charges`]).
 fn statement_line_charge() -> usize {
@@ -546,7 +547,11 @@ fn declaration_level_charges() -> Vec<(&'static str, usize, usize)> {
 const LIVE_TOKEN_VECTORS: usize = 1;
 
 /// The capacity slack one live token allocation carries. The lexer hands its tokens to
-/// `Box<[Token]>` at close, and a `Box<[T]>` has no capacity field to hold slack in.
+/// `Box<[Token]>` at close, and a `Box<[T]>` has no capacity field to hold slack in. The
+/// growing vector, the copy that boxing makes, and the lexer's line table coexist only
+/// before any tree exists; that phase is bounded below the published rate by the const
+/// assertion beside `marrow_syntax::MAX_PARSE_BYTES_PER_SOURCE_BYTE`, so the parse
+/// phase, holding the exact slice beside the tree, is the peak this file accounts.
 const TOKEN_VECTOR_SLACK: usize = 1;
 
 /// What the lexed tokens charge per source byte.
@@ -1041,34 +1046,42 @@ fn name_chain_file() -> Vec<u8> {
     source.into_bytes()
 }
 
-/// The bytes a parsed file's block statement lists hold: the accounting's dominant term,
-/// and the one a corroborating sample can count exactly rather than sample through a
-/// resident set. Each list is exactly sized, so its length is its whole cost.
+/// The bytes a parsed file's statement and declaration lists hold, at the capacity they
+/// were built to: the accounting's dominant term, observed exactly rather than sampled
+/// through a resident set. No list is shrunk at close, so the capacity each list carries
+/// in the returned tree is the capacity it had at the parse's peak, growth slack
+/// included. A counting allocator would observe the whole peak more directly, but it
+/// needs `unsafe`, which the workspace forbids in every target; the lexer's transient
+/// phase, which this walk cannot see, is bounded below the published rate by the const
+/// assertion beside `marrow_syntax::MAX_PARSE_BYTES_PER_SOURCE_BYTE`. Allocator
+/// rounding and workspace are outside both this walk and the published charge.
 ///
 /// Every list counts, not only a body's outermost one. A shape can put its whole cost in
 /// nested blocks — the two desynchronizing shapes do — and summing only the top level
 /// would report such a file at one statement and call the bound met.
-fn statement_vector_bytes(source: &[u8]) -> usize {
+fn list_capacity_bytes(source: &[u8]) -> usize {
     let text = std::str::from_utf8(source).expect("the fixture is UTF-8");
-    marrow_syntax::parse_source(text)
-        .file
-        .declarations
-        .iter()
-        .map(|declaration| match declaration {
-            Declaration::Function(function) => block_statements(&function.body),
-            Declaration::Test(test) => block_statements(&test.body),
-            _ => 0,
-        })
-        .sum::<usize>()
-        * size_of::<Statement>()
+    let file = marrow_syntax::parse_source(text).file;
+    file.declarations.capacity() * size_of::<Declaration>()
+        + file
+            .declarations
+            .iter()
+            .map(|declaration| match declaration {
+                Declaration::Function(function) => block_statements(&function.body),
+                Declaration::Test(test) => block_statements(&test.body),
+                _ => 0,
+            })
+            .sum::<usize>()
+            * size_of::<Statement>()
 }
 
-/// The statements held by `block` and by every block nested inside it.
+/// The statement slots held by `block` and by every block nested inside it, at the
+/// capacity each list was built to.
 ///
 /// The match is exhaustive and names every field, so a new statement variant — or a new
 /// block on an existing one — fails to build here rather than being counted as zero.
 fn block_statements(block: &Block) -> usize {
-    block.statements.len()
+    block.statements.capacity()
         + block
             .statements
             .iter()
@@ -1447,12 +1460,12 @@ fn the_query_parse_transient_closes_under_the_exported_term() {
     );
     assert_eq!(
         statement_line_charge(),
-        553,
+        569,
         "the densest statement line's charge moved"
     );
     assert_eq!(
         source_byte_charge(),
-        553,
+        569,
         "the densest source byte's charge moved"
     );
     let accounted = accounted_query_parse_transient();
@@ -1901,12 +1914,13 @@ fn the_token_vector_holds_at_most_one_token_per_source_byte() {
     }
 }
 
-/// What the derivation predicts a maximum admitted file's statement lists can hold: one
-/// exactly-sized statement slot per two source bytes. It is the accounting's single
-/// largest sub-term, and the one a corroborating sample can count exactly rather than
-/// sample through a resident set.
+/// What the derivation admits a maximum admitted file's statement lists to hold: the
+/// growth-charged slots of one statement per two source bytes. It is the accounting's
+/// single largest sub-term, and the one a corroborating sample observes exactly through
+/// the capacities the tree retains. A pushed list's capacity is the doubling at or above
+/// its length, so a sample sits between half of this term and all of it.
 fn statement_list_term() -> usize {
-    MAX_ADMITTED_FILE_BYTES * size_of::<Statement>() / 2
+    MAX_ADMITTED_FILE_BYTES / 2 * GROWTH * size_of::<Statement>()
 }
 
 /// A file whose accounted parse charge is over the ceiling is refused **before** it is
@@ -2010,12 +2024,21 @@ fn the_statement_list_sample_counts_the_lists_inside_nested_blocks() {
     }
     source.push_str("}\n}\n");
 
-    let counted = statement_vector_bytes(source.as_bytes()) / size_of::<Statement>();
-    assert_eq!(
-        counted,
-        statements + 1,
-        "the sample counted {counted} statements where the file holds the `if` and the \
-         {statements} statements of its nested block, so it does not descend"
+    let parsed = marrow_syntax::parse_source(&source);
+    let Some(Declaration::Function(function)) = parsed.file.declarations.first() else {
+        panic!("the fixture declares one function");
+    };
+    let counted = block_statements(&function.body);
+    assert!(
+        counted >= statements + 1,
+        "the sample counted {counted} statement slots where the file holds the `if` and \
+         the {statements} statements of its nested block, so it does not descend"
+    );
+    assert!(
+        counted <= GROWTH * (statements + 1) + 2 * (MIN_ELEMENT_CAPACITY - GROWTH),
+        "the sample counted {counted} statement slots for {} statements in two blocks, \
+         over the growth and the two list floors the accounting admits",
+        statements + 1
     );
 }
 
@@ -2032,7 +2055,7 @@ fn a_desynchronizing_maximum_admitted_file_is_still_admitted_and_queryable() {
         .spawn(|| {
             let predicted = statement_list_term();
             for (label, bytes) in desynchronizing_shapes() {
-                let statements = statement_vector_bytes(&bytes);
+                let statements = list_capacity_bytes(&bytes);
                 eprintln!(
                     "{label}: statement lists hold {statements} bytes of a predicted {predicted}"
                 );
@@ -2071,7 +2094,7 @@ fn every_maximal_shape_inside_the_image_bound_stays_under_the_derived_bound() {
         .iter()
         .zip(maximum_admitted_snapshots())
     {
-        let statements = statement_vector_bytes(bytes);
+        let statements = list_capacity_bytes(bytes);
         eprintln!("{label}: statement lists hold {statements} bytes of a predicted {predicted}");
         assert!(
             statements <= predicted,
@@ -2084,8 +2107,11 @@ fn every_maximal_shape_inside_the_image_bound_stays_under_the_derived_bound() {
             "{label} answers the query whose parse the term bounds"
         );
     }
+    // A pushed list's capacity is the doubling at or above its length, so the densest
+    // sample sits between half of the term and all of it; below half, the derivation has
+    // drifted from what the parser builds and should be re-derived.
     assert!(
-        densest * 10 >= predicted * 9,
+        densest * 2 >= predicted,
         "the densest sample holds {densest} bytes against a predicted {predicted}, so the \
          derivation has drifted far from what the parser actually builds and should be \
          re-derived"

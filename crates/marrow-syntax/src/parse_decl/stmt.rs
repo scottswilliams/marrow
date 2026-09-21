@@ -65,6 +65,17 @@ fn is_stray_block_clause_keyword(keyword: Keyword) -> bool {
     matches!(keyword, Keyword::Else)
 }
 
+/// Whether an over-deep nest inside a region the parser skips without descending still
+/// needs [`crate::NESTING_DEPTH_LIMIT`] reported.
+#[derive(Clone, Copy)]
+enum SkipReport {
+    /// The region is skipped for a grammar reason, so a nest inside it past the limit
+    /// is this scan's to report, once.
+    Pending,
+    /// The region is the refused descent itself, already reported at its own `{`.
+    Reported,
+}
+
 /// Parses the statements of a function body over a token slice (the tokens
 /// strictly inside the enclosing `{ … }`). It frames nested `{ … }` blocks itself
 /// and delegates expression parsing to `ExprParser`.
@@ -79,12 +90,14 @@ pub(super) struct StmtParser<'a, 'c> {
     /// The declaration parser's scoped sink, reborrowed for the body's duration
     /// so a malformed statement line reports directly to the one live collector.
     sink: &'a mut SyntaxSink<'c>,
-    /// How many statement bodies deep the descent currently sits. A braced block and a
-    /// trailing clause's single inline statement (`else`\n`if …`, `b => match …`) each
-    /// cost one frame, so a nest that never opens a brace is bounded on the same terms
-    /// as one that does. Every descent goes through [`StmtParser::descend`], which
-    /// stops at [`crate::NESTING_DEPTH_LIMIT`] and is the sole owner of which bodies
-    /// the tree holds.
+    /// How many statement bodies deep the descent currently sits, counting the
+    /// enclosing function or test body as the first. A braced block and a trailing
+    /// clause's single inline statement (`else`\n`if …`, `b => match …`) each cost one
+    /// frame, so a nest that never opens a brace is bounded on the same terms as one
+    /// that does. Every descent goes through [`StmtParser::descend`], which stops at
+    /// [`crate::NESTING_DEPTH_LIMIT`] and is the sole owner of which bodies the tree
+    /// holds; a region skipped without descending counts its braces from here on the
+    /// same terms.
     depth: usize,
 }
 
@@ -96,7 +109,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
             pos: 0,
             comments: Vec::new(),
             sink,
-            depth: 0,
+            depth: 1,
         }
     }
 
@@ -119,7 +132,20 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         Some(value)
     }
 
-    pub(super) fn parse_block(mut self) -> (Box<[Statement]>, Vec<Comment>) {
+    /// Account one `{` a skip walks into, `depth` braces below the block being parsed:
+    /// the first one past the limit is reported unless the region was refused and
+    /// reported by the descent already, so a skipped nest and a parsed nest report the
+    /// limit at the same brace.
+    fn skip_into(&mut self, depth: usize, report: &mut SkipReport) {
+        if matches!(report, SkipReport::Pending) && self.depth + depth > crate::NESTING_DEPTH_LIMIT
+        {
+            let span = self.tokens[self.pos].span;
+            self.sink.push(nesting_limit(span));
+            *report = SkipReport::Reported;
+        }
+    }
+
+    pub(super) fn parse_block(mut self) -> (Vec<Statement>, Vec<Comment>) {
         let statements = self.statements();
         (statements, std::mem::take(&mut self.comments))
     }
@@ -208,9 +234,9 @@ impl<'a, 'c> StmtParser<'a, 'c> {
     }
 
     /// Parse statements up to the enclosing `}` or the end of the body. The list is
-    /// grown by pushing and boxed at close; the growth slack is part of the published
-    /// per-source-byte parse charge.
-    fn statements(&mut self) -> Box<[Statement]> {
+    /// grown by pushing and kept as built: shrinking it would reallocate, and the
+    /// growth slack is part of the published per-source-byte parse charge.
+    fn statements(&mut self) -> Vec<Statement> {
         let mut statements = Vec::new();
         while let Some(kind) = self.peek() {
             match kind {
@@ -226,7 +252,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
                 _ => statements.extend(self.statement()),
             }
         }
-        statements.into_boxed_slice()
+        statements
     }
 
     fn skip_newlines(&mut self) {
@@ -470,7 +496,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         let header = self.take_line();
         // The removed block form opens a `{ … }` body after the header.
         if matches!(self.peek(), Some(TokenKind::LeftBrace)) {
-            self.skip_block();
+            self.skip_block(SkipReport::Pending);
             self.consume_removed_try_clauses();
             self.error_span_reason(
                 start,
@@ -517,7 +543,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
             }
             self.consume_header_line();
             if matches!(self.peek(), Some(TokenKind::LeftBrace)) {
-                self.skip_block();
+                self.skip_block(SkipReport::Pending);
             }
         }
     }
@@ -546,7 +572,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         let start = self.tokens[self.pos].span;
         self.consume_header_line();
         if matches!(self.peek(), Some(TokenKind::LeftBrace)) {
-            self.skip_block();
+            self.skip_block(SkipReport::Pending);
         }
         self.error_span_reason(start, ParseDiagnosticReason::Unsupported(reason), message);
         None
@@ -692,7 +718,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
                 // A stray nested block where an arm header was expected is skipped
                 // rather than mis-parsed.
                 Some(TokenKind::LeftBrace) => {
-                    self.skip_block();
+                    self.skip_block(SkipReport::Pending);
                 }
                 _ => {
                     if let Some(arm) = self.match_arm() {
@@ -756,7 +782,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         let save = self.pos;
         self.skip_newlines();
         if matches!(self.peek(), Some(TokenKind::LeftBrace)) {
-            self.skip_block();
+            self.skip_block(SkipReport::Pending);
         } else {
             self.pos = save;
         }
@@ -1132,7 +1158,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
             let point = self.gap();
             self.report_missing_block(point);
             Block {
-                statements: Box::new([]),
+                statements: Vec::new(),
                 comments: leading.into_iter().collect(),
                 span: point,
             }
@@ -1211,9 +1237,9 @@ impl<'a, 'c> StmtParser<'a, 'c> {
     /// remaining tokens still parse. The cursor is at the opening `{`.
     fn skipped_block(&mut self) -> Block {
         let start = self.tokens[self.pos].span;
-        let end = self.skip_block();
+        let end = self.skip_block(SkipReport::Reported);
         Block {
-            statements: Box::new([]),
+            statements: Vec::new(),
             comments: Vec::new(),
             span: join_spans(start, end),
         }
@@ -1326,7 +1352,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
             }
         }
         if matches!(self.peek(), Some(TokenKind::LeftBrace)) {
-            end = self.skip_block();
+            end = self.skip_block(SkipReport::Pending);
         }
         self.error_span_reason(join_spans(start, end), reason, message);
     }
@@ -1349,13 +1375,14 @@ impl<'a, 'c> StmtParser<'a, 'c> {
     /// consumed. The cursor is at the opening `{`. On an unmatched leading `}` it
     /// breaks without consuming the token, leaving the enclosing block's close for
     /// the caller instead of swallowing it — `}` is the hard sync anchor.
-    fn skip_block(&mut self) -> SourceSpan {
+    fn skip_block(&mut self, mut report: SkipReport) -> SourceSpan {
         let mut depth = 0usize;
         let mut end = self.tokens[self.pos].span;
         while let Some(kind) = self.peek() {
             match kind {
                 TokenKind::LeftBrace => {
                     depth += 1;
+                    self.skip_into(depth, &mut report);
                     end = self.advance().span;
                 }
                 TokenKind::RightBrace => {
@@ -1379,6 +1406,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
     /// cursor is at the opening `{`.
     fn skip_unexpected_indented_block(&mut self) -> SourceSpan {
         let mut depth = 0usize;
+        let mut report = SkipReport::Pending;
         let mut end = self.tokens[self.pos].span;
         let mut line_has_content = false;
         let mut comments = Vec::new();
@@ -1387,6 +1415,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
             match kind {
                 TokenKind::LeftBrace => {
                     depth += 1;
+                    self.skip_into(depth, &mut report);
                     line_has_content = false;
                     end = self.advance().span;
                 }

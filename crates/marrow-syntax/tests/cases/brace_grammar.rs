@@ -558,7 +558,7 @@ fn a_header_without_a_block_reports_the_gap_and_stands_an_empty_block() {
     };
     assert!(
         matches!(
-            function.body.statements.as_ref(),
+            function.body.statements.as_slice(),
             [
                 Statement::If { then_block, .. },
                 Statement::Return { .. }

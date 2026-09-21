@@ -15,7 +15,9 @@ use crate::ast::{
     Expression, FunctionDecl, ModuleDecl, NominalDecl, ResourceDecl, SavedRoot, SourceFile,
     StoreDecl, StructDecl, SupportSpelling, TestDecl, TypeExpr, UseDecl,
 };
-use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, SourceSpan, SyntaxSink};
+use crate::diagnostic::{
+    ExpectedSyntax, ParseDiagnosticReason, SourceSpan, SyntaxSink, nesting_limit,
+};
 use crate::literal::decode_string_literal;
 use crate::parse_expr::{ExprParser, ParseComplete};
 use crate::token::{Keyword, Token, TokenKind, is_identifier, keyword};
@@ -91,7 +93,7 @@ impl<'a, 'c> DeclParser<'a, 'c> {
             }
         }
         self.flush_docs_as_comments(&mut docs, &mut file.comments);
-        file.declarations = self.declarations.into_boxed_slice();
+        file.declarations = self.declarations;
         file
     }
 
@@ -889,16 +891,7 @@ impl<'a, 'c> DeclParser<'a, 'c> {
         let body = if self.at_block_open() {
             self.parse_function_body()
         } else {
-            self.error_span(
-                span,
-                ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionBody),
-                "expected a `{ … }` function body",
-            );
-            Block {
-                statements: Box::new([]),
-                comments: Vec::new(),
-                span,
-            }
+            self.missing_body()
         };
         FunctionDecl {
             docs,
@@ -937,16 +930,7 @@ impl<'a, 'c> DeclParser<'a, 'c> {
         let body = if self.at_block_open() {
             self.parse_function_body()
         } else {
-            self.error_span(
-                span,
-                ParseDiagnosticReason::Expected(ExpectedSyntax::TestBody),
-                "expected a `{ … }` test body",
-            );
-            Block {
-                statements: Box::new([]),
-                comments: Vec::new(),
-                span,
-            }
+            self.missing_body()
         };
         TestDecl {
             docs,
@@ -963,15 +947,21 @@ impl<'a, 'c> DeclParser<'a, 'c> {
     pub(super) fn parse_function_body(&mut self) -> Block {
         let open = self.tokens[self.pos]; // `{`
         let start = self.pos;
-        let end = self.consume_block(); // index just past the matching `}`
+        let scan = self.consume_block();
+        let end = scan.end; // index just past the matching `}`
         let closed = end > start + 1 && self.tokens[end - 1].kind == TokenKind::RightBrace;
         if !closed {
             // An unclosed brace swallowed every following declaration as body content.
             // Reporting once at the open brace and skipping statement parsing over that
-            // leaked tail keeps one missing `}` from cascading onto each declaration.
+            // leaked tail keeps one missing `}` from cascading onto each declaration; a
+            // nest inside the tail past the limit is still reported, as the descent
+            // that never ran would have.
             self.report_unclosed_block(open.span);
+            if let Some(span) = scan.over_deep {
+                self.sink.push(nesting_limit(span));
+            }
             return Block {
-                statements: Box::new([]),
+                statements: Vec::new(),
                 comments: Vec::new(),
                 span: SourceSpan {
                     start_byte: open.span.start_byte,
@@ -992,7 +982,7 @@ impl<'a, 'c> DeclParser<'a, 'c> {
             && !(span.start_byte..=span.end_byte).contains(&offset)
         {
             return Block {
-                statements: Box::new([]),
+                statements: Vec::new(),
                 comments: Vec::new(),
                 span,
             };

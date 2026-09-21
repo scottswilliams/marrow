@@ -828,7 +828,7 @@ impl<'a, 'c> Lexer<'a, 'c> {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Line<'a> {
+pub(crate) struct Line<'a> {
     number: u32,
     start_byte: usize,
     end_byte: usize,

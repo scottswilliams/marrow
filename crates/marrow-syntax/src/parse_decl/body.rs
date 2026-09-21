@@ -6,7 +6,7 @@
 use super::tokens::{comment_from_token, is_line_comment};
 use super::{DeclParser, ParseError};
 use crate::ast::{Comment, CommentMarker, CommentPlacement};
-use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, SourceSpan};
+use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, SourceSpan, nesting_limit};
 use crate::token::{Token, TokenKind};
 
 /// The classification of the next line of a `{ … }` declaration body, after the shared
@@ -111,6 +111,8 @@ impl DeclParser<'_, '_> {
             let span = self.content_span();
             self.error_span(span, error.reason.clone(), error.message.clone());
         }
-        self.skip_to_block_end();
+        if let Some(span) = self.skip_to_block_end() {
+            self.sink.push(nesting_limit(span));
+        }
     }
 }

@@ -113,6 +113,7 @@ pub fn assert_formatter_faithful(source: &str) {
         "a faithful-formatter subject must parse cleanly:\n{source}\n{:#?}",
         parsed.diagnostics
     );
+    assert_formatter_total(&parsed, source);
     let once = format_source(source).expect("a complete parse formats");
     assert!(
         format_preserves_comments(source, &once).expect("complete parses are comparable"),
