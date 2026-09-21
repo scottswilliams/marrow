@@ -11,6 +11,11 @@
 //! render in source vocabulary — destination, durable roots by name, effects and ceiling in
 //! demand terms — never an identity hash, and a first provision writes nothing without the
 //! explicit `--yes` acceptance of the exact report it printed.
+//!
+//! Every report leaves through a fallible writer, so a closed pipe is an `io.write` failure
+//! rather than a panic; the print macros are refused at compile time.
+
+#![deny(clippy::print_stdout, clippy::print_stderr)]
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -87,7 +92,7 @@ fn main() -> ExitCode {
             store,
             format,
         }) => match operation {
-            StoreOperation::Audit => audit_command(&image, &store, format),
+            StoreOperation::Audit => finish_output(audit_output(&image, &store, format)),
             StoreOperation::Recover => finish_output(recovery_output(&image, &store, format)),
         },
         Some(Command::Provision {
@@ -167,6 +172,35 @@ fn finish_output(result: std::io::Result<ExitCode>) -> ExitCode {
 fn write_receipt(output: &mut dyn Write, receipt: &str) -> std::io::Result<()> {
     writeln!(output, "{receipt}")?;
     output.flush()
+}
+
+/// One command report under construction: named fields in the order the text rendering
+/// lists them. The JSON rendering is canonical, so field order carries no meaning there.
+#[derive(Default)]
+struct Receipt(Vec<(String, Json)>);
+
+impl Receipt {
+    /// A report tagged `kind`, the discriminator every multi-shape stream carries first.
+    fn kind(kind: &str) -> Self {
+        Self::default().text("kind", kind)
+    }
+
+    fn text(self, key: &str, value: impl Into<String>) -> Self {
+        self.field(key, Json::Str(value.into()))
+    }
+
+    fn count(self, key: &str, value: u64) -> Self {
+        self.field(key, Json::Int(i64::try_from(value).unwrap_or(i64::MAX)))
+    }
+
+    fn field(mut self, key: &str, value: Json) -> Self {
+        self.0.push((key.to_string(), value));
+        self
+    }
+
+    fn into_json(self) -> Json {
+        Json::Object(self.0)
+    }
 }
 
 /// Deliver one store-command receipt in `format`. A delivery failure does not undo the
@@ -269,16 +303,14 @@ fn provision_output(image_path: &Path, store: &Path, accept: bool) -> std::io::R
         Ok(provisioned) => {
             // The receipt names the store instance and destination in a canonical JSON line;
             // it prints no internal identity hash as its primary output.
-            let mut stdout = std::io::stdout().lock();
-            write_receipt(
-                &mut stdout,
-                &encode(&Json::Object(vec![
-                    (
-                        "instance".to_string(),
-                        Json::Str(provisioned.instance.to_hex()),
-                    ),
-                    ("store".to_string(), Json::Str(store_text.into())),
-                ])),
+            let receipt = Receipt::default()
+                .text("instance", provisioned.instance.to_hex())
+                .text("store", store_text);
+            deliver(
+                &mut std::io::stdout().lock(),
+                &mut stderr,
+                &receipt.into_json(),
+                ReportFormat::Jsonl,
             )?;
             Ok(ExitCode::SUCCESS)
         }
@@ -295,12 +327,10 @@ fn write_provision_failure(
     store: &Path,
     error: &marrow_lifecycle::ProvisionImageError,
 ) -> std::io::Result<()> {
-    let mut fields = if let Some((reason, instance)) = error.uncertainty() {
-        vec![
-            ("code".into(), Json::Str(reason.code().as_str().into())),
-            ("instance".into(), Json::Str(instance.to_hex())),
-            ("kind".into(), Json::Str("provision_uncertain".into())),
-        ]
+    let receipt = if let Some((reason, instance)) = error.uncertainty() {
+        Receipt::kind("provision_uncertain")
+            .text("code", reason.code().as_str())
+            .text("instance", instance.to_hex())
     } else if let Some(cleanup) = error.cleanup() {
         let stage = cleanup
             .stage
@@ -312,32 +342,24 @@ fn write_provision_failure(
                     "invalid provision stage component",
                 )
             })?;
-        vec![
-            (
-                "cleanup".into(),
-                Json::Object(vec![
-                    ("code".into(), Json::Str("store.io".into())),
-                    (
-                        "os_error".into(),
-                        cleanup
-                            .source
-                            .raw_os_error()
-                            .map_or(Json::Null, |value| Json::Int(i64::from(value))),
-                    ),
-                    ("stage".into(), Json::Str(stage.into())),
-                ]),
-            ),
-            ("code".into(), Json::Str(error.code().as_str().into())),
-            ("kind".into(), Json::Str("provision_failed".into())),
-        ]
+        let cleanup = Receipt::default()
+            .text("code", marrow_codes::Code::StoreIo.as_str())
+            .field(
+                "os_error",
+                cleanup
+                    .source
+                    .raw_os_error()
+                    .map_or(Json::Null, |value| Json::Int(i64::from(value))),
+            )
+            .text("stage", stage);
+        Receipt::kind("provision_failed")
+            .field("cleanup", cleanup.into_json())
+            .text("code", error.code().as_str())
     } else {
         return Ok(());
     };
-    fields.push((
-        "store".into(),
-        Json::Str(validate_store_output(store)?.into()),
-    ));
-    write_receipt(output, &encode(&Json::Object(fields)))
+    let receipt = receipt.text("store", validate_store_output(store)?);
+    write_receipt(output, &encode(&receipt.into_json()))
 }
 
 fn validate_store_output(store: &Path) -> std::io::Result<&str> {
@@ -787,19 +809,14 @@ fn import_output(
         marrow_lifecycle::ImportLimits::DEFAULT,
     ) {
         Ok(report) => {
-            let mut stdout = std::io::stdout().lock();
-            write_receipt(
-                &mut stdout,
-                &encode(&Json::Object(vec![
-                    (
-                        "rows_imported".to_string(),
-                        Json::Int(report.rows_imported as i64),
-                    ),
-                    (
-                        "batches_committed".to_string(),
-                        Json::Int(report.batches_committed as i64),
-                    ),
-                ])),
+            let receipt = Receipt::default()
+                .count("rows_imported", report.rows_imported)
+                .count("batches_committed", report.batches_committed);
+            deliver(
+                &mut std::io::stdout().lock(),
+                &mut std::io::stderr().lock(),
+                &receipt.into_json(),
+                ReportFormat::Jsonl,
             )?;
             Ok(ExitCode::SUCCESS)
         }
@@ -821,70 +838,15 @@ fn recovery_output(
         Err(code) => return Ok(code),
     };
     let result = marrow_lifecycle::recover(store, marrow_lifecycle::prepare(image));
-    write_recovery_result(&mut std::io::stdout().lock(), store_text, &result, format)
-}
-
-fn write_recovery_result(
-    output: &mut dyn Write,
-    store: &str,
-    result: &Result<marrow_lifecycle::RecoveredStore, marrow_lifecycle::RecoveryError>,
-    format: ReportFormat,
-) -> std::io::Result<ExitCode> {
-    let preserved = match result {
-        Ok(receipt) => &receipt.preserved,
-        Err(error) => &error.preserved,
-    };
-    match format {
-        ReportFormat::Jsonl => {
-            let mut fields = vec![
-                ("kind".into(), Json::Str("recovery".into())),
-                ("store".into(), Json::Str(store.into())),
-                (
-                    "preserved".into(),
-                    Json::Array(preserved.iter().cloned().map(Json::Str).collect()),
-                ),
-            ];
-            match result {
-                Ok(receipt) => fields.extend([
-                    ("outcome".into(), Json::Str("activated".into())),
-                    ("instance".into(), Json::Str(receipt.instance.to_hex())),
-                    ("image".into(), Json::Str(receipt.image_id.to_hex())),
-                ]),
-                Err(error) => {
-                    fields.extend([
-                        ("outcome".into(), Json::Str("error".into())),
-                        ("code".into(), Json::Str(error.code().as_str().into())),
-                    ]);
-                    let instance = match &error.fault {
-                        marrow_lifecycle::RecoveryFault::Completion { instance, .. } => {
-                            Some(*instance)
-                        }
-                        marrow_lifecycle::RecoveryFault::Logical(report) => Some(report.instance),
-                        _ => None,
-                    };
-                    if let Some(instance) = instance {
-                        fields.push(("instance".into(), Json::Str(instance.to_hex())));
-                    }
-                }
-            }
-            write_receipt(output, &encode(&Json::Object(fields)))?;
-        }
-        ReportFormat::Text => {
-            match result {
-                Ok(receipt) => writeln!(
-                    output,
-                    "Activated store {store}\ninstance {}\nimage {}",
-                    receipt.instance.to_hex(),
-                    receipt.image_id.to_hex()
-                )?,
-                Err(error) => writeln!(output, "{}: {error}", error.code().as_str())?,
-            }
-            for name in preserved {
-                writeln!(output, "preserved {name}")?;
-            }
-            output.flush()?;
-        }
+    if let Err(error) = &result {
+        let _ = writeln!(std::io::stderr(), "{}: {error}", error.code().as_str());
     }
+    deliver(
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+        &recovery_receipt(store_text, &result).into_json(),
+        format,
+    )?;
     Ok(if result.is_ok() {
         ExitCode::SUCCESS
     } else {
@@ -892,57 +854,97 @@ fn write_recovery_result(
     })
 }
 
+/// The recovery report: the store, every preserved artifact name, and the activated
+/// identities or the typed failure with the instance it concerned.
+fn recovery_receipt(
+    store: &str,
+    result: &Result<marrow_lifecycle::RecoveredStore, marrow_lifecycle::RecoveryError>,
+) -> Receipt {
+    let preserved = match result {
+        Ok(recovered) => &recovered.preserved,
+        Err(error) => &error.preserved,
+    };
+    let receipt = Receipt::kind("recovery").text("store", store).field(
+        "preserved",
+        Json::Array(preserved.iter().cloned().map(Json::Str).collect()),
+    );
+    match result {
+        Ok(recovered) => receipt
+            .text("outcome", "activated")
+            .text("instance", recovered.instance.to_hex())
+            .text("image", recovered.image_id.to_hex()),
+        Err(error) => {
+            let receipt = receipt
+                .text("outcome", "error")
+                .text("code", error.code().as_str());
+            match &error.fault {
+                marrow_lifecycle::RecoveryFault::Completion { instance, .. } => {
+                    receipt.text("instance", instance.to_hex())
+                }
+                marrow_lifecycle::RecoveryFault::Logical(report) => {
+                    receipt.text("instance", report.instance.to_hex())
+                }
+                _ => receipt,
+            }
+        }
+    }
+}
+
 /// Audit the store read-only against the image (the `audit` command). The lifecycle takes
 /// the store's single-owner lock, admits the image as the exact active binding, runs the
 /// kernel's logical walk through a read-only engine, and releases the lock; this command
 /// only renders the result. A logically clean report exits `0`; findings, engine errors,
 /// and refusals exit `1`. Physical integrity is not checked.
-fn audit_command(image_path: &Path, store: &Path, format: ReportFormat) -> ExitCode {
+fn audit_output(
+    image_path: &Path,
+    store: &Path,
+    format: ReportFormat,
+) -> std::io::Result<ExitCode> {
     let image = match load_image(image_path) {
         Ok(image) => image,
-        Err(code) => return code,
+        Err(code) => return Ok(code),
     };
     let store_text = store.display().to_string();
+    let mut stdout = std::io::stdout().lock();
     let audit = match marrow_lifecycle::audit(store, marrow_lifecycle::prepare(image)) {
         Ok(audit) => audit,
         Err(error) => {
             match format {
                 ReportFormat::Text => {
-                    let _ = writeln!(
-                        std::io::stderr().lock(),
-                        "{}: {error}",
-                        error.code().as_str()
-                    );
+                    let _ = writeln!(std::io::stderr(), "{}: {error}", error.code().as_str());
                 }
-                ReportFormat::Jsonl => println!(
-                    "{}",
-                    encode(&Json::Object(vec![
-                        (
-                            "code".to_string(),
-                            Json::Str(error.code().as_str().to_string())
-                        ),
-                        ("kind".to_string(), Json::Str("doctor".to_string())),
-                        ("outcome".to_string(), Json::Str("error".to_string())),
-                        ("store".to_string(), Json::Str(store_text)),
-                    ]))
-                ),
+                ReportFormat::Jsonl => {
+                    let receipt = Receipt::kind("doctor")
+                        .text("code", error.code().as_str())
+                        .text("outcome", "error")
+                        .text("store", store_text);
+                    deliver(
+                        &mut stdout,
+                        &mut std::io::stderr().lock(),
+                        &receipt.into_json(),
+                        format,
+                    )?;
+                }
             }
-            return ExitCode::FAILURE;
+            return Ok(ExitCode::FAILURE);
         }
     };
     match format {
-        ReportFormat::Text => print!("{}", render_audit(&audit, store)),
+        ReportFormat::Text => {
+            stdout.write_all(render_audit(&audit, store).as_bytes())?;
+            stdout.flush()?;
+        }
         ReportFormat::Jsonl => {
-            for line in audit_records(&audit, store_text) {
-                println!("{}", encode(&line));
+            for record in audit_records(&audit, store_text) {
+                write_receipt(&mut stdout, &encode(&record.into_json()))?;
             }
         }
     }
-    if audit.is_clean() {
+    Ok(if audit.is_clean() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
-    }
+    })
 }
 
 /// The logical report and its physical-integrity limitation.
@@ -988,47 +990,40 @@ fn render_audit(audit: &marrow_lifecycle::StoreAudit, store: &Path) -> String {
 /// The JSONL projection of an audit: one `doctor` record, then one `finding` record per
 /// retained finding. `findings` counts every finding; `listed` counts the records that
 /// follow, so a capped report is explicit.
-fn audit_records(audit: &marrow_lifecycle::StoreAudit, store: String) -> Vec<Json> {
-    let text = |value: &str| Json::Str(value.to_string());
-    let mut head = vec![
-        ("kind".to_string(), text("doctor")),
-        ("scope".to_string(), text("logical")),
-        ("physical_integrity".to_string(), text("not_checked")),
-        ("store".to_string(), Json::Str(store)),
-        ("instance".to_string(), Json::Str(audit.instance.to_hex())),
-        ("image".to_string(), Json::Str(audit.image_id.to_hex())),
-    ];
-    let mut records = Vec::new();
+fn audit_records(audit: &marrow_lifecycle::StoreAudit, store: String) -> Vec<Receipt> {
     let marrow_lifecycle::StoreAudit {
         summary,
         findings,
         digest,
         ..
     } = audit;
-    let count = |value: u64| Json::Int(i64::try_from(value).unwrap_or(i64::MAX));
-    head.push((
-        "outcome".to_string(),
-        text(if summary.findings == 0 {
-            "clean"
-        } else {
-            "findings"
-        }),
-    ));
-    head.push(("digest".to_string(), Json::Str(digest.to_hex())));
-    head.push(("entries".to_string(), count(summary.entries)));
-    head.push(("index_cells".to_string(), count(summary.index_cells)));
-    head.push(("cells".to_string(), count(summary.cells)));
-    head.push(("findings".to_string(), count(summary.findings)));
-    head.push(("listed".to_string(), count(findings.len() as u64)));
-    records.push(Json::Object(head));
-    for finding in findings {
-        records.push(Json::Object(vec![
-            ("kind".to_string(), text("finding")),
-            ("code".to_string(), text(finding.code.as_str())),
-            ("place".to_string(), Json::Str(audit.place(&finding.site))),
-        ]));
-    }
-    records
+    let head = Receipt::kind("doctor")
+        .text("scope", "logical")
+        .text("physical_integrity", "not_checked")
+        .text("store", store)
+        .text("instance", audit.instance.to_hex())
+        .text("image", audit.image_id.to_hex())
+        .text(
+            "outcome",
+            if summary.findings == 0 {
+                "clean"
+            } else {
+                "findings"
+            },
+        )
+        .text("digest", digest.to_hex())
+        .count("entries", summary.entries)
+        .count("index_cells", summary.index_cells)
+        .count("cells", summary.cells)
+        .count("findings", summary.findings)
+        .count("listed", findings.len() as u64);
+    std::iter::once(head)
+        .chain(findings.iter().map(|finding| {
+            Receipt::kind("finding")
+                .text("code", finding.code.as_str())
+                .text("place", audit.place(&finding.site))
+        }))
+        .collect()
 }
 
 fn nonce_from_env() -> Result<Option<Id32>, ()> {
@@ -1046,15 +1041,15 @@ fn nonce_from_env() -> Result<Option<Id32>, ()> {
 
 /// One canonical JSON launch-descriptor line.
 fn launch_descriptor(interface: Id32, nonce: Option<Id32>, session: Id32, socket: &str) -> String {
-    let mut pairs = vec![
-        ("interface".to_string(), Json::Str(interface.to_hex())),
-        ("session".to_string(), Json::Str(session.to_hex())),
-        ("socket".to_string(), Json::Str(socket.to_string())),
-    ];
-    if let Some(nonce) = nonce {
-        pairs.push(("nonce".to_string(), Json::Str(nonce.to_hex())));
-    }
-    encode(&Json::Object(pairs))
+    let descriptor = Receipt::default()
+        .text("interface", interface.to_hex())
+        .text("session", session.to_hex())
+        .text("socket", socket);
+    let descriptor = match nonce {
+        Some(nonce) => descriptor.text("nonce", nonce.to_hex()),
+        None => descriptor,
+    };
+    encode(&descriptor.into_json())
 }
 
 /// How a test [`Sink`] fails: after accepting `WriteAt(n)` bytes in total, or on flush.
@@ -1251,7 +1246,7 @@ mod output_tests {
     }
 
     #[test]
-    fn recovery_results_keep_identity_preservation_and_delivery_failures() {
+    fn recovery_receipts_keep_identity_and_preservation_in_both_formats() {
         let instance = marrow_lifecycle::StoreInstanceId::from_bytes([0x51; 16]);
         let image_id = marrow_image::ImageId([0x62; 32]);
         let preserved =
@@ -1277,106 +1272,56 @@ mod output_tests {
             }),
         ];
         for (index, result) in results.iter().enumerate() {
-            for format in [ReportFormat::Text, ReportFormat::Jsonl] {
-                let mut healthy = Vec::new();
-                assert_eq!(
-                    write_recovery_result(&mut healthy, "store", result, format).expect("output"),
-                    if result.is_ok() {
-                        ExitCode::SUCCESS
+            let receipt = recovery_receipt("store", result).into_json();
+            let mut fields = vec![
+                ("kind".into(), Json::Str("recovery".into())),
+                ("store".into(), Json::Str("store".into())),
+                (
+                    "preserved".into(),
+                    Json::Array(if index < 2 {
+                        preserved.iter().cloned().map(Json::Str).collect()
                     } else {
-                        ExitCode::FAILURE
-                    }
-                );
-                let rendered = std::str::from_utf8(&healthy).expect("UTF-8");
-                if format == ReportFormat::Jsonl {
-                    let mut fields = vec![
-                        ("kind".into(), Json::Str("recovery".into())),
-                        ("store".into(), Json::Str("store".into())),
-                        (
-                            "preserved".into(),
-                            Json::Array(if index < 2 {
-                                preserved.iter().cloned().map(Json::Str).collect()
-                            } else {
-                                Vec::new()
-                            }),
-                        ),
-                        (
-                            "outcome".into(),
-                            Json::Str(if index == 0 { "activated" } else { "error" }.into()),
-                        ),
-                    ];
-                    if index < 2 {
-                        fields.push(("instance".into(), Json::Str(instance.to_hex())));
-                    }
-                    match index {
-                        0 => fields.push(("image".into(), Json::Str(image_id.to_hex()))),
-                        1 => fields.push((
-                            "code".into(),
-                            Json::Str("store.activation_uncertain".into()),
-                        )),
-                        _ => fields.push(("code".into(), Json::Str("store.corruption".into()))),
-                    }
-                    assert_eq!(rendered, format!("{}\n", encode(&Json::Object(fields))));
-                    assert!(
-                        marrow_local_wire::parse_strict(
-                            healthy.strip_suffix(b"\n").expect("one record newline")
-                        )
-                        .is_ok()
-                    );
-                } else {
-                    if index < 2 {
-                        assert!(rendered.contains(&instance.to_hex()));
-                        assert!(rendered.contains(&format!("preserved {}\n", preserved[0])));
-                    } else {
-                        assert!(!rendered.contains("preserved "));
-                    }
-                    if let Err(error) = result {
-                        assert!(rendered.starts_with(error.code().as_str()));
-                    }
-                }
-                for failure in [Failure::WriteAt(0), Failure::WriteAt(5), Failure::Flush] {
-                    let mut sink = Sink::new(failure);
-                    assert_eq!(
-                        write_recovery_result(&mut sink, "store", result, format)
-                            .unwrap_err()
-                            .kind(),
-                        std::io::ErrorKind::BrokenPipe
-                    );
-                }
+                        Vec::new()
+                    }),
+                ),
+                (
+                    "outcome".into(),
+                    Json::Str(if index == 0 { "activated" } else { "error" }.into()),
+                ),
+            ];
+            match index {
+                0 => fields.extend([
+                    ("instance".into(), Json::Str(instance.to_hex())),
+                    ("image".into(), Json::Str(image_id.to_hex())),
+                ]),
+                1 => fields.extend([
+                    (
+                        "code".into(),
+                        Json::Str("store.activation_uncertain".into()),
+                    ),
+                    ("instance".into(), Json::Str(instance.to_hex())),
+                ]),
+                _ => fields.push(("code".into(), Json::Str("store.corruption".into()))),
             }
-        }
-    }
-
-    #[test]
-    fn durable_command_output_uses_fallible_writers() {
-        let source = include_str!("marrow-runner.rs");
-        let transfer = include_str!("store_transfer/mod.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .expect("command source");
-        for name in ["print", "println", "eprint", "eprintln"] {
+            assert_eq!(receipt, Json::Object(fields));
+            let mut jsonl = Vec::new();
+            deliver(&mut jsonl, &mut Vec::new(), &receipt, ReportFormat::Jsonl).expect("jsonl");
             assert!(
-                !transfer.contains(&format!("{name}!")),
-                "transfer contains {name}"
+                marrow_local_wire::parse_strict(
+                    jsonl.strip_suffix(b"\n").expect("one record newline")
+                )
+                .is_ok()
             );
-        }
-        for (start, end) in [
-            ("fn main()", "/// Read and verify"),
-            ("fn load_image(", "/// Serve the image"),
-            ("fn import_command(", "/// Audit the store"),
-        ] {
-            let body = source
-                .split_once(start)
-                .expect("owner start")
-                .1
-                .split_once(end)
-                .expect("owner end")
-                .0;
-            for name in ["print", "println", "eprint", "eprintln"] {
-                assert!(
-                    !body.contains(&format!("{name}!")),
-                    "{start} contains {name}"
-                );
+            let mut text = Vec::new();
+            deliver(&mut text, &mut Vec::new(), &receipt, ReportFormat::Text).expect("text");
+            let text = String::from_utf8(text).expect("UTF-8");
+            assert!(text.starts_with("kind: recovery\nstore: store\n"));
+            if index < 2 {
+                assert!(text.contains(&format!("instance: {}\n", instance.to_hex())));
+                assert!(text.contains(&format!("\"{}\"", preserved[0])));
+            }
+            if let Err(error) = result {
+                assert!(text.contains(&format!("code: {}\n", error.code().as_str())));
             }
         }
     }

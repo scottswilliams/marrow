@@ -9,7 +9,8 @@ use marrow_lifecycle::ApplyError;
 use marrow_local_wire::{Id32, Json};
 
 use super::{
-    ReportFormat, SharedFlag, deliver, load_image, shared_store_flag, validate_store_output,
+    Receipt, ReportFormat, SharedFlag, deliver, load_image, shared_store_flag,
+    validate_store_output,
 };
 
 pub(super) struct Command {
@@ -94,65 +95,55 @@ pub(super) fn run(command: Command) -> io::Result<ExitCode> {
         Err(code) => return Ok(code),
     };
     let result = marrow_lifecycle::apply(&command.store, old, new, command.accepted);
-    let mut fields = vec![
-        ("kind".into(), Json::Str("apply".into())),
-        (
-            "outcome".into(),
-            Json::Str(Outcome::of(&result).word().into()),
-        ),
-    ];
-    let text = |value: String| Json::Str(value);
-    match &result {
-        Ok(receipt) => fields.extend([
-            ("instance".into(), text(receipt.instance.to_hex())),
-            ("old_image".into(), text(receipt.old_image.to_hex())),
-            ("new_image".into(), text(receipt.new_image.to_hex())),
-            ("old_ceiling".into(), text(receipt.old_ceiling.to_hex())),
-            ("ceiling".into(), text(receipt.ceiling.to_hex())),
-        ]),
+    let receipt = Receipt::kind("apply").text("outcome", Outcome::of(&result).word());
+    let receipt = match &result {
+        Ok(applied) => receipt
+            .text("instance", applied.instance.to_hex())
+            .text("old_image", applied.old_image.to_hex())
+            .text("new_image", applied.new_image.to_hex())
+            .text("old_ceiling", applied.old_ceiling.to_hex())
+            .text("ceiling", applied.ceiling.to_hex()),
         Err(error) => {
-            fields.push(("code".into(), text(error.code().as_str().into())));
-            if let ApplyError::Lifecycle(marrow_lifecycle::LifecycleError::ActivationUncertain {
-                instance,
-                ..
-            }) = error
-            {
-                fields.push(("instance".into(), text(instance.to_hex())));
-            }
-            if let ApplyError::CeilingUnaccepted {
-                old,
-                proposed,
-                added,
-            } = error
-            {
-                fields.push(("old_ceiling".into(), text(old.to_hex())));
-                fields.push(("ceiling".into(), text(proposed.to_hex())));
-                fields.push((
-                    "added_effects".into(),
-                    Json::Array(
-                        added
-                            .iter()
-                            .map(|effect| {
-                                Json::Object(vec![
-                                    ("export".into(), text(effect.export.clone())),
-                                    ("effect".into(), text(effect.effect.word().into())),
-                                    (
-                                        "place".into(),
-                                        effect.place.clone().map_or(Json::Null, text),
-                                    ),
-                                ])
-                            })
-                            .collect(),
-                    ),
-                ));
-            }
             let _ = writeln!(io::stderr(), "{}: {error}", error.code().as_str());
+            let receipt = receipt.text("code", error.code().as_str());
+            match error {
+                ApplyError::Lifecycle(marrow_lifecycle::LifecycleError::ActivationUncertain {
+                    instance,
+                    ..
+                }) => receipt.text("instance", instance.to_hex()),
+                ApplyError::CeilingUnaccepted {
+                    old,
+                    proposed,
+                    added,
+                } => receipt
+                    .text("old_ceiling", old.to_hex())
+                    .text("ceiling", proposed.to_hex())
+                    .field(
+                        "added_effects",
+                        Json::Array(
+                            added
+                                .iter()
+                                .map(|effect| {
+                                    Receipt::default()
+                                        .text("export", effect.export.clone())
+                                        .text("effect", effect.effect.word())
+                                        .field(
+                                            "place",
+                                            effect.place.clone().map_or(Json::Null, Json::Str),
+                                        )
+                                        .into_json()
+                                })
+                                .collect(),
+                        ),
+                    ),
+                _ => receipt,
+            }
         }
-    }
+    };
     deliver(
         &mut io::stdout().lock(),
         &mut io::stderr().lock(),
-        &Json::Object(fields),
+        &receipt.into_json(),
         command.format,
     )?;
     Ok(if result.is_ok() {

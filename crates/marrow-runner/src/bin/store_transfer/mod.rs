@@ -7,7 +7,8 @@ use std::process::ExitCode;
 use marrow_local_wire::Json;
 
 use super::{
-    ReportFormat, SharedFlag, deliver, read_image_bytes, shared_store_flag, validate_store_output,
+    Receipt, ReportFormat, SharedFlag, deliver, read_image_bytes, shared_store_flag,
+    validate_store_output,
 };
 
 pub(super) enum Command {
@@ -80,27 +81,27 @@ pub(super) fn run(command: Command) -> io::Result<ExitCode> {
                 Err(code) => return Ok(code),
             };
             let result = marrow_lifecycle::backup(&store, &bytes, &output);
-            let mut fields = base("backup", store_text, destination);
-            match &result {
+            let receipt = base("backup", store_text, destination);
+            let receipt = match &result {
                 Ok(backup) => {
-                    success(&mut fields, &backup.audit);
-                    fields.push(("backup_digest".into(), Json::Str(backup.digest.to_hex())));
+                    success(receipt, &backup.audit).text("backup_digest", backup.digest.to_hex())
                 }
                 Err(error) => {
-                    failure(&mut fields, error.code().as_str());
+                    let _ = writeln!(io::stderr(), "{}: {error}", error.code().as_str());
+                    let mut receipt = failure(receipt, error.code().as_str());
                     if let Some(path) = &error.unpublished {
-                        retained(&mut fields, path)?;
+                        receipt = retained(receipt, path)?;
                     }
                     if error.cleanup.is_some() {
-                        fields.push(("cleanup_failed".into(), Json::Bool(true)));
+                        receipt = receipt.field("cleanup_failed", Json::Bool(true));
                     }
-                    let _ = writeln!(io::stderr(), "{}: {error}", error.code().as_str());
+                    receipt
                 }
-            }
+            };
             deliver(
                 &mut io::stdout().lock(),
                 &mut io::stderr().lock(),
-                &Json::Object(fields),
+                &receipt.into_json(),
                 format,
             )?;
             Ok(if result.is_ok() {
@@ -128,38 +129,36 @@ pub(super) fn run(command: Command) -> io::Result<ExitCode> {
                 }
             };
             let result = marrow_lifecycle::restore(&mut file, &store);
-            let mut fields = base("restore", destination, input_text);
-            match &result {
-                Ok(restored) => success(&mut fields, &restored.audit),
+            let receipt = base("restore", destination, input_text);
+            let receipt = match &result {
+                Ok(restored) => success(receipt, &restored.audit),
                 Err(error) => {
-                    failure(&mut fields, error.code().as_str());
+                    let _ = writeln!(io::stderr(), "{}: {error}", error.code().as_str());
+                    let mut receipt = failure(receipt, error.code().as_str());
                     if let Some(path) = &error.stage {
-                        retained(&mut fields, path)?;
+                        receipt = retained(receipt, path)?;
                     }
                     if let Some(instance) = error.published_instance() {
-                        fields.push(("instance".into(), Json::Str(instance.to_hex())));
+                        receipt = receipt.text("instance", instance.to_hex());
                     }
                     if let Some(outcome) = error.batch_outcome() {
-                        fields.push((
-                            "batch_outcome".into(),
-                            Json::Str(
-                                match outcome {
-                                    marrow_lifecycle::RestoreBatchOutcome::Aborted => "aborted",
-                                    marrow_lifecycle::RestoreBatchOutcome::Indeterminate => {
-                                        "indeterminate"
-                                    }
+                        receipt = receipt.text(
+                            "batch_outcome",
+                            match outcome {
+                                marrow_lifecycle::RestoreBatchOutcome::Aborted => "aborted",
+                                marrow_lifecycle::RestoreBatchOutcome::Indeterminate => {
+                                    "indeterminate"
                                 }
-                                .into(),
-                            ),
-                        ));
+                            },
+                        );
                     }
-                    let _ = writeln!(io::stderr(), "{}: {error}", error.code().as_str());
+                    receipt
                 }
-            }
+            };
             deliver(
                 &mut io::stdout().lock(),
                 &mut io::stderr().lock(),
-                &Json::Object(fields),
+                &receipt.into_json(),
                 format,
             )?;
             Ok(if result.is_ok() {
@@ -185,36 +184,26 @@ fn validate_destination(path: &Path) -> io::Result<&str> {
     Ok(text)
 }
 
-fn base(kind: &str, store: &str, artifact: &str) -> Vec<(String, Json)> {
-    vec![
-        ("kind".into(), Json::Str(kind.into())),
-        ("store".into(), Json::Str(store.into())),
-        ("backup".into(), Json::Str(artifact.into())),
-    ]
+fn base(kind: &str, store: &str, artifact: &str) -> Receipt {
+    Receipt::kind(kind)
+        .text("store", store)
+        .text("backup", artifact)
 }
 
-fn success(fields: &mut Vec<(String, Json)>, audit: &marrow_lifecycle::StoreAudit) {
-    fields.extend([
-        ("outcome".into(), Json::Str("complete".into())),
-        ("instance".into(), Json::Str(audit.instance.to_hex())),
-        ("image".into(), Json::Str(audit.image_id.to_hex())),
-        ("content_digest".into(), Json::Str(audit.digest.to_hex())),
-    ]);
+fn success(receipt: Receipt, audit: &marrow_lifecycle::StoreAudit) -> Receipt {
+    receipt
+        .text("outcome", "complete")
+        .text("instance", audit.instance.to_hex())
+        .text("image", audit.image_id.to_hex())
+        .text("content_digest", audit.digest.to_hex())
 }
 
-fn failure(fields: &mut Vec<(String, Json)>, code: &str) {
-    fields.extend([
-        ("outcome".into(), Json::Str("error".into())),
-        ("code".into(), Json::Str(code.into())),
-    ]);
+fn failure(receipt: Receipt, code: &str) -> Receipt {
+    receipt.text("outcome", "error").text("code", code)
 }
 
-fn retained(fields: &mut Vec<(String, Json)>, path: &Path) -> io::Result<()> {
-    fields.push((
-        "unpublished".into(),
-        Json::Str(validate_store_output(path)?.into()),
-    ));
-    Ok(())
+fn retained(receipt: Receipt, path: &Path) -> io::Result<Receipt> {
+    Ok(receipt.text("unpublished", validate_store_output(path)?))
 }
 
 #[cfg(test)]
@@ -253,10 +242,10 @@ mod tests {
         use marrow_local_wire::encode;
         for format in [ReportFormat::Text, ReportFormat::Jsonl] {
             for failure_at in [Failure::WriteAt(0), Failure::Flush] {
-                let mut fields = base("restore", "published", "input");
-                fields.push(("outcome".into(), Json::Str("complete".into())));
-                fields.push(("instance".into(), Json::Str("01".repeat(16))));
-                let receipt = Json::Object(fields);
+                let receipt = base("restore", "published", "input")
+                    .text("outcome", "complete")
+                    .text("instance", "01".repeat(16))
+                    .into_json();
                 let expected = encode(&receipt);
                 let mut diagnostic = Vec::new();
                 assert_eq!(
