@@ -65,12 +65,12 @@ pub fn make(n: int): int {
 }
 
 /// Every `supports`-gated operator that yields the nominal revalidates the
-/// interval: a supported `+`, `-`, or `*` whose int result leaves the interval
-/// faults `run.range` at the operation.
+/// interval: a supported `+` or `-` whose int result leaves the interval faults
+/// `run.range` at the operation.
 #[test]
 fn supported_arithmetic_revalidates_the_interval() {
     let workspace = Project::single(
-        r#"type Age: int in 0..=150 supports add, subtract, scale
+        r#"type Age: int in 0..=150 supports add, subtract
 
 pub fn older(n: int): int {
     const a = Age(140) + n
@@ -81,19 +81,10 @@ pub fn younger(n: int): int {
     const a = Age(10) - n
     return 0
 }
-
-pub fn scaled(n: int): int {
-    const a = Age(50) * n
-    return 0
-}
 "#,
     )
     .materialize("nominal-arith-fault");
-    for (export, ok_arg, fault_arg) in [
-        ("older", "10", "11"),
-        ("younger", "10", "11"),
-        ("scaled", "3", "4"),
-    ] {
+    for (export, ok_arg, fault_arg) in [("older", "10", "11"), ("younger", "10", "11")] {
         let output = workspace.marrow(&["run", export, "--format", "jsonl", "--", ok_arg]);
         assert!(
             output.status.success(),
@@ -140,46 +131,28 @@ fn a_missing_capability_is_a_check_type_diagnostic() {
     }
 }
 
-/// `step` admits exactly `N + 1` and `N - 1` with the int literal `1`: a
-/// computed or larger step needs `add`/`subtract`.
+/// The capability set is closed to `add` and `subtract`: `step` and `scale` are
+/// unknown capabilities, refused at the declaration.
 #[test]
-fn step_admits_only_the_literal_one() {
-    let workspace = Project::single(
-        r#"type Age: int in 0..=150 supports step
-
-pub fn next(): int {
-    const a = Age(1) + 1
-    const b = a - 1
-    return b - Age(0)
-}
-"#,
-    )
-    .materialize("nominal-step");
-    let output = workspace.marrow(&["run", "next", "--format", "jsonl"]);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // `b - Age(0)` needs subtract, which `step` does not grant: check.type at
-    // the subtraction on line 6.
-    assert!(!output.status.success(), "{stdout}");
-    let line = stdout
-        .lines()
-        .find(|line| line.contains(r#""code":"check.type""#))
-        .unwrap_or_else(|| panic!("no check.type: {stdout}"));
-    assert!(line.contains(r#""line":6"#), "{stdout}");
-
-    let workspace = Project::single(
-        r#"type Age: int in 0..=150 supports step
-
-pub fn skip(): int {
-    const a = Age(1) + 2
-    return 0
-}
-"#,
-    )
-    .materialize("nominal-step-two");
-    let output = workspace.marrow(&["run", "skip", "--format", "jsonl"]);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(!output.status.success(), "{stdout}");
-    assert!(stdout.contains(r#""code":"check.type""#), "{stdout}");
+fn step_and_scale_are_not_capabilities() {
+    for capability in ["step", "scale"] {
+        let workspace = Project::single(&format!(
+            "type Age: int in 0..=150 supports {capability}\n\
+             \n\
+             pub fn f(): int {{\n\
+             \x20   return 0\n\
+             }}\n"
+        ))
+        .materialize("nominal-retired-capability");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(!output.status.success(), "{capability}: {stdout}");
+        let line = stdout
+            .lines()
+            .find(|line| line.contains(r#""code":"check.type""#))
+            .unwrap_or_else(|| panic!("no check.type for {capability}: {stdout}"));
+        assert!(line.contains(r#""line":1"#), "{capability}: {stdout}");
+    }
 }
 
 /// The nominal is distinct from its base: a plain int where the nominal is

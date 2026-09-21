@@ -9,7 +9,7 @@
 
 /// A fixed-scale money amount in whole cents. The interval is the fixed-scale
 /// discipline; `supports` admits the money operators the accumulation needs.
-type Cents: int in 0..=100000000 supports add, subtract, scale
+type Cents: int in 0..=100000000 supports add, subtract
 
 resource Item {
     required name: string

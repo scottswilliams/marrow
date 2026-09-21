@@ -127,8 +127,8 @@ The base is a root such as `^books`, a branch beneath one entry such as
 `^books[id].notes`, or a branch beneath a place or a pin such as `book.notes`.
 `k` binds each key in ascending [key order](types-and-values.md#key-types).
 The body reads the entry through the key or the pin. `N` is a positive integer
-literal of at most 65,536. A durable `for` without `at most` or without
-`on more` is a `check.type` error.
+literal, or a module `const` of type `int`, of at most 65,536. A durable `for`
+without `at most` or without `on more` is a `check.type` error.
 
 The loop freezes the first `N` keys before the body runs, then runs the body
 once per frozen key. `on more` runs when an `(N + 1)`th key exists and every

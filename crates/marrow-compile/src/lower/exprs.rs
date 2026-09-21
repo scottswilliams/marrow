@@ -119,6 +119,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// Lower a single-segment name in value position: an integer-bound built-in, a local
     /// or parameter, a module-private constant, or an unresolved name.
     fn lower_value_name(&mut self, name: &str, span: SourceSpan) -> ConstructResult<LTy> {
+        if is_placeholder(name) {
+            self.fail(placeholder_value(self.file, span));
+            return Err(LoweringFailure::Recoverable);
+        }
         // An integer-bound value built-in (`maxInt`/`minInt`) folds to a
         // constant `int` load. It is reserved, so resolving it first keeps a
         // bare use of the bound unambiguous.
@@ -380,23 +384,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         left_ty: LTy,
         right: &Expression,
     ) -> ConstructResult<LTy> {
-        // The `step` capability admits only the literal `1`, so the right operand's
-        // shape is read before it is lowered.
-        let right_is_one = matches!(
-            right,
-            Expression::Literal {
-                kind: LiteralKind::Integer,
-                text,
-                ..
-            } if parse_int(text) == Some(1)
-        );
         let right_ty = self.lower_expr(right)?;
         let span = right.span();
         if left_ty.bare_param().is_some() || right_ty.bare_param().is_some() {
             return self.lower_param_binary(op, left_ty, right_ty, span);
         }
         if left_ty.bare_nominal().is_some() || right_ty.bare_nominal().is_some() {
-            return self.lower_nominal_binary(op, left_ty, right_ty, right_is_one, span);
+            return self.lower_nominal_binary(op, left_ty, right_ty, span);
         }
         if left_ty.bare_enum().is_some() || right_ty.bare_enum().is_some() {
             return self.lower_enum_binary(op, left_ty, right_ty, span);
@@ -497,9 +491,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     ///   (they construct nothing);
     /// - `add`: `N + int` and `int + N`, guarded to `N`;
     /// - `subtract`: `N - int` guarded to `N`; `N - N` to plain `int`, unguarded
-    ///   (a difference is a count, not a value of the type);
-    /// - `scale`: `N * int` and `int * N`, guarded to `N`;
-    /// - `step`: `N + 1` and `N - 1` (the int literal `1`), guarded to `N`.
+    ///   (a difference is a count, not a value of the type).
     ///
     /// Every operator that produces a nominal value re-guards the result, so no path
     /// constructs an out-of-interval value.
@@ -508,7 +500,6 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         op: BinaryOp,
         left_ty: LTy,
         right_ty: LTy,
-        right_is_one: bool,
         span: SourceSpan,
     ) -> ConstructResult<LTy> {
         let bool_ty = LTy::bare_scalar(ScalarType::Bool);
@@ -568,23 +559,15 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
         };
         let supports = self.nominal_supports(nominal);
-        let stepped = supports.step && nominal_on_left && right_is_one;
         let instr = match op {
-            BinaryOp::Add if supports.add || stepped => Instr::IntAdd,
-            BinaryOp::Subtract if nominal_on_left && (supports.subtract || stepped) => {
-                Instr::IntSub
-            }
-            BinaryOp::Multiply if supports.scale => Instr::IntMul,
+            BinaryOp::Add if supports.add => Instr::IntAdd,
+            BinaryOp::Subtract if nominal_on_left && supports.subtract => Instr::IntSub,
             BinaryOp::Add => {
                 self.fail_missing_capability(nominal, "add", op, span);
                 return Err(LoweringFailure::Recoverable);
             }
             BinaryOp::Subtract if nominal_on_left => {
                 self.fail_missing_capability(nominal, "subtract", op, span);
-                return Err(LoweringFailure::Recoverable);
-            }
-            BinaryOp::Multiply => {
-                self.fail_missing_capability(nominal, "scale", op, span);
                 return Err(LoweringFailure::Recoverable);
             }
             _ => {

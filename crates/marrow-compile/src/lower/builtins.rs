@@ -230,16 +230,49 @@ pub(crate) fn builtin_const_int(name: &str) -> Option<i64> {
 }
 
 /// The diagnostic for a value declaration whose name is a reserved built-in.
-pub(crate) fn reserved_builtin_name(
-    file: &ProjectFile,
-    span: SourceSpan,
-    name: &str,
-) -> SourceDiagnostic {
+fn reserved_builtin_name(file: &ProjectFile, span: SourceSpan, name: &str) -> SourceDiagnostic {
     SourceDiagnostic::at(
         Code::CheckNameConflict,
         file,
         span,
         format!("`{name}` is a built-in and cannot be redeclared"),
+    )
+}
+
+/// `_` is the placeholder: in a `match` arm's payload position it names nothing and
+/// may stand in more than one position. Everywhere else it neither declares a name
+/// nor denotes a value.
+pub(crate) fn is_placeholder(name: &str) -> bool {
+    name == "_"
+}
+
+/// The row refusing a name a declaration may not take: the `_` placeholder, which
+/// binds nothing, or a reserved built-in the compiler's own intercept would shadow.
+pub(crate) fn refused_binding_name(
+    file: &ProjectFile,
+    span: SourceSpan,
+    name: &str,
+) -> Option<SourceDiagnostic> {
+    if is_placeholder(name) {
+        return Some(SourceDiagnostic::at(
+            Code::CheckType,
+            file,
+            span,
+            "`_` is the placeholder and binds no name; it stands only for an unused payload \
+             field in a `match` arm"
+                .to_string(),
+        ));
+    }
+    is_reserved_builtin_name(name).then(|| reserved_builtin_name(file, span, name))
+}
+
+/// The row refusing `_` read as a value.
+pub(super) fn placeholder_value(file: &ProjectFile, span: SourceSpan) -> SourceDiagnostic {
+    SourceDiagnostic::at(
+        Code::CheckType,
+        file,
+        span,
+        "`_` is the placeholder and is not a value".to_string(),
     )
 }
 
@@ -644,6 +677,18 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             return Err(LoweringFailure::Recoverable);
         }
         let source = self.lower_expr(&arg.value)?;
+        // A nominal int is its base int in the image: `int(a)` is the value itself and
+        // `string(a)` renders that int.
+        if source.bare_nominal().is_some() {
+            match target {
+                "int" => return Ok(LTy::bare_scalar(ScalarType::Int)),
+                "string" => {
+                    self.push(Instr::ConvString, span)?;
+                    return Ok(LTy::bare_scalar(ScalarType::Text));
+                }
+                _ => {}
+            }
+        }
         // `string(value)` renders any interpolable value to its canonical text, the
         // same rendering interpolation and program output use.
         if target == "string" && is_interpolable(source) {

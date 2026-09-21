@@ -99,12 +99,8 @@ impl ConstRegistry {
             };
             // A reserved built-in name is refused before evaluation: the constant
             // would be shadowed by the compiler's own intercept and never reached.
-            if crate::lower::is_reserved_builtin_name(&decl.name) {
-                let refusal = refuse_row(
-                    diagnostics,
-                    declared,
-                    crate::lower::reserved_builtin_name(file, decl.span, &decl.name),
-                );
+            if let Some(row) = crate::lower::refused_binding_name(file, decl.span, &decl.name) {
+                let refusal = refuse_row(diagnostics, declared, row);
                 entries.declare(key, DeclarationOccurrence::Refused(refusal))?;
                 continue;
             }

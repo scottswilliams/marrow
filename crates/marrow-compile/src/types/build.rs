@@ -872,16 +872,12 @@ fn support_set(
         let flag = match spelling.name.as_str() {
             "add" => &mut supports.add,
             "subtract" => &mut supports.subtract,
-            "step" => &mut supports.step,
-            "scale" => &mut supports.scale,
             other => {
                 return Err(Box::new(SourceDiagnostic::at(
                     Code::CheckType,
                     file,
                     spelling.span,
-                    format!(
-                        "unknown capability `{other}`; the capabilities are add, subtract, step, scale"
-                    ),
+                    format!("unknown capability `{other}`; the capabilities are add, subtract"),
                 )));
             }
         };

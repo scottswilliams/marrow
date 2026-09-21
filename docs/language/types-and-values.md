@@ -569,9 +569,10 @@ The interval follows the range operators: `in 0..150` admits `0` through `149`,
 and `in 0..=150` admits `0` through `150`. Both bounds are `int` literals, and
 the interval admits at least one value. `Name(n)` constructs a value and faults
 `run.range` when `n` lies outside the interval. `Name.checked(n)` yields a
-`Name?` instead. A bare parameter of nominal type revalidates the interval on entry,
-so an export called from the terminal with an out-of-interval `int` faults
-`run.range`.
+`Name?` instead. `int(a)` yields the underlying `int` of a nominal value `a`, and
+`string(a)` renders it as that `int`'s canonical text. A bare parameter of
+nominal type revalidates the interval on entry, so an export called from the
+terminal with an out-of-interval `int` faults `run.range`.
 
 A public aggregate parameter containing a nominal value reports
 `check.unsupported` at its type annotation. This includes nested struct and
@@ -588,8 +589,6 @@ a `Name` revalidates the interval:
 | `add` | `Name + int`, `int + Name` | `Name`, revalidated |
 | `subtract` | `Name - int` | `Name`, revalidated |
 | `subtract` | `Name - Name` | plain `int`, no validation |
-| `step` | `Name + 1`, `Name - 1` (the literal `1`) | `Name`, revalidated |
-| `scale` | `Name * int`, `int * Name` | `Name`, revalidated |
 
 Comparisons between two values of one nominal type need no capability. An
 operator the type does not support, or a comparison mixing a nominal with a
@@ -615,6 +614,8 @@ pub fn tryAge(n: int): Age? {
 
 test "a nominal int keeps its interval" {
     assert older(Age(40), 2) == Age(42)
+    assert int(older(Age(40), 2)) == 42
+    assert string(Age(7)) == "7"
     assert gap(Age(42), Age(40)) == 2
     const missing = tryAge(200) ?? Age(0)
     assert missing == Age(0)

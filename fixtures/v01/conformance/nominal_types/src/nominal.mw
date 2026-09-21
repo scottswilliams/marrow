@@ -1,6 +1,6 @@
 module nominal
 
-type Age: int in 0..=150 supports add, subtract, step, scale
+type Age: int in 0..=150 supports add, subtract
 
 pub fn mk(n: int): Age {
     return Age(n)
@@ -27,7 +27,7 @@ pub fn next(a: Age): Age {
 }
 
 pub fn double(a: Age): Age {
-    return a * 2
+    return Age(int(a) * 2)
 }
 
 pub fn tryMk(n: int): Age? {

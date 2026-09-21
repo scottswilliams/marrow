@@ -352,8 +352,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         value: &Expression,
         mutable: bool,
     ) -> ConstructResult<()> {
-        if is_reserved_builtin_name(name) {
-            self.fail(reserved_builtin_name(self.file, value.span(), name));
+        if let Some(row) = refused_binding_name(self.file, value.span(), name) {
+            self.fail(row);
             return Ok(());
         }
         // A `const`/`var` never reuses an in-scope `place` name: the place and its
@@ -1069,8 +1069,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     ) -> ConstructResult<Vec<usize>> {
         let mut fail_jumps: Vec<usize> = Vec::new();
         for (name, annotation, value) in bindings.iter().copied() {
-            if is_reserved_builtin_name(name) {
-                self.fail(reserved_builtin_name(self.file, value.span(), name));
+            if let Some(row) = refused_binding_name(self.file, value.span(), name) {
+                self.fail(row);
                 return Err(LoweringFailure::Recoverable);
             }
             // A whole durable entry address reads the entry here and proves it present on
@@ -1326,6 +1326,56 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         false
     }
 
+    /// Bind an arm's payload positionally into fresh locals scoped to the arm. `_`
+    /// names nothing and may repeat; any other name binds once per arm.
+    fn bind_arm_payload(
+        &mut self,
+        arm: &MatchArm,
+        variant: usize,
+        payload: &[LTy],
+        scrut_slot: u16,
+    ) -> ConstructResult<Flow> {
+        let mut bound: Vec<&str> = Vec::with_capacity(arm.bindings.len());
+        for (field, (binding, leaf_ty)) in arm.bindings.iter().zip(payload).enumerate() {
+            if is_placeholder(&binding.name) {
+                continue;
+            }
+            if let Some(row) = refused_binding_name(self.file, binding.span, &binding.name) {
+                self.fail(row);
+                continue;
+            }
+            if bound.contains(&binding.name.as_str()) {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckNameConflict,
+                    self.file,
+                    binding.span,
+                    format!("`{}` is already bound in this arm", binding.name),
+                ));
+                continue;
+            }
+            bound.push(&binding.name);
+            let Some(slot) = self.alloc_slot(binding.span) else {
+                return Ok(Flow::Rejected);
+            };
+            self.push(Instr::LocalGet(scrut_slot), binding.span)?;
+            self.push(
+                Instr::EnumPayloadGet {
+                    variant: variant as u16,
+                    field: field as u16,
+                },
+                binding.span,
+            )?;
+            self.push(Instr::LocalSet(slot), binding.span)?;
+            self.locals.push(Local {
+                name: binding.name.clone(),
+                ty: *leaf_ty,
+                mutable: false,
+                slot,
+            });
+        }
+        Ok(Flow::Fallthrough)
+    }
+
     /// Lower a `match` over a flat enum scrutinee. The scrutinee is evaluated once into
     /// a fresh local; the arms dispatch through a branch chain over the enum tag
     /// (`EnumTag`, `EqInt`, `JumpIfFalse`), the simplest form the verifier admits without
@@ -1436,27 +1486,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 Some(self.push_jif(arm.span)?)
             };
 
-            // Bind the payload positionally into fresh locals scoped to the arm.
             let mark = self.locals.len();
-            for (field, (binding, leaf_ty)) in arm.bindings.iter().zip(&payload).enumerate() {
-                let Some(slot) = self.alloc_slot(binding.span) else {
-                    return Ok(Flow::Rejected);
-                };
-                self.push(Instr::LocalGet(scrut_slot), binding.span)?;
-                self.push(
-                    Instr::EnumPayloadGet {
-                        variant: variant_index as u16,
-                        field: field as u16,
-                    },
-                    binding.span,
-                )?;
-                self.push(Instr::LocalSet(slot), binding.span)?;
-                self.locals.push(Local {
-                    name: binding.name.clone(),
-                    ty: *leaf_ty,
-                    mutable: false,
-                    slot,
-                });
+            if self.bind_arm_payload(arm, variant_index, &payload, scrut_slot)? == Flow::Rejected {
+                return Ok(Flow::Rejected);
             }
             let flow = self.lower_block(&arm.block)?;
             self.locals.truncate(mark);
@@ -1499,6 +1531,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             body,
             span,
         } = statement;
+        for name in &binding.names {
+            if let Some(row) = refused_binding_name(self.file, name.span, &name.name) {
+                self.fail(row);
+                return Ok(Flow::Fallthrough);
+            }
+        }
         // An integer range iterates its counter directly onto a pure counter loop; it
         // takes neither a durable `at most` bound nor a reversed walk in the first ring.
         if let Some(range) = range_expr(iterable) {
@@ -2277,31 +2315,43 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         })
     }
 
-    /// Evaluate an `at most N` bound: a positive compile-time integer literal within
-    /// `MAX_TRAVERSAL_BOUND`. A non-literal, non-positive, or oversized bound is a
-    /// precise diagnostic.
+    /// Evaluate an `at most N` bound: a positive integer literal, or a module `const`
+    /// of type `int`, within `MAX_TRAVERSAL_BOUND`. Any other bound is a precise
+    /// diagnostic; a refused constant steers to its declaration's cause.
     fn traversal_limit(&mut self, expr: &Expression) -> Option<u32> {
-        let Expression::Literal {
-            kind: LiteralKind::Integer,
-            text,
-            span,
-        } = expr
-        else {
-            self.fail(SourceDiagnostic::at(
-                Code::CheckType,
-                self.file,
-                expr.span(),
-                "`at most` requires a positive integer literal".to_string(),
-            ));
-            return None;
+        let span = expr.span();
+        let consts = self.consts;
+        let bound = match expr {
+            Expression::Literal {
+                kind: LiteralKind::Integer,
+                text,
+                ..
+            } => parse_int(text),
+            Expression::Name { segments, .. } if segments.len() == 1 => {
+                match consts.lookup(self.module, segments[0].text()) {
+                    Ok(Binding::Accepted(ConstScalar::Int(value))) => Some(*value),
+                    Ok(Binding::Accepted(ConstScalar::Bool(_) | ConstScalar::Text(_)))
+                    | Ok(Binding::Absent) => None,
+                    Ok(Binding::Refused(id, refusal)) => {
+                        self.steer_refusal(id.namespace(), refusal, span);
+                        return None;
+                    }
+                    Err(drift) => {
+                        self.ledger_drift::<()>(drift);
+                        return None;
+                    }
+                }
+            }
+            _ => None,
         };
-        let value = parse_int(text).filter(|value| *value > 0);
-        let Some(value) = value else {
+        let Some(value) = bound.filter(|value| *value > 0) else {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType,
                 self.file,
-                *span,
-                "`at most N` requires a positive integer literal".to_string(),
+                span,
+                "`at most N` requires a positive integer literal or a module `const` of type \
+                 `int`"
+                    .to_string(),
             ));
             return None;
         };
@@ -2309,7 +2359,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType,
                 self.file,
-                *span,
+                span,
                 format!(
                     "`at most N` may not exceed {}",
                     marrow_image::bounds::MAX_TRAVERSAL_BOUND

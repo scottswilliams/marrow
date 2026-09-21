@@ -18,7 +18,7 @@ There are few of them, and each does one thing.
 | Dates and times | `date("…")`, `instant("…")`, `duration("…")` | A temporal value from its canonical text |
 | | `addDays(d, n): date` | The date `n` days after `d` |
 | | `daysBetween(a, b): int` | The signed number of days from `a` to `b` |
-| Presence and identity | `exists(place): bool` | Whether a durable place is present |
+| Presence and identity | `exists(place): bool`, `exists(value): bool` | Whether a durable place, or a `T?` value, is present |
 | | `Id(^root, key): Id(^root)` | The identity of an entry under `^root` |
 | Conversion and output | `string(value): string` | The canonical text of a scalar, enum value, or identity |
 | | `bytes(text): bytes` | The UTF-8 bytes of `text` |
@@ -147,8 +147,9 @@ is no clock built-in: the current day or instant is passed in as an argument.
 `exists(place)` reports whether a durable place is present and yields a
 `bool`. Its argument is a named place, a traversal pin, or a `^` path: a store
 root, an entry, a field, a keyed branch family, or a complete key of a `unique`
-index. A local optional is
-resolved with `??`, `if const`, or `?.` instead, described under
+index. `exists(value)` accepts any `T?` expression and reports whether it is
+present. It answers the question only: the value is not narrowed, so a later
+read still uses `??`, `if const`, or `?.`, described under
 [optionals](types-and-values.md#optionals).
 
 ```mw

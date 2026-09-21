@@ -433,9 +433,7 @@ pub(in crate::lower) use self::presence::*;
 pub(in crate::lower) use self::registry::*;
 pub(in crate::lower) use self::types::*;
 
-pub(crate) use self::builtins::{
-    builtin_const_int, builtin_value_names, is_reserved_builtin_name, reserved_builtin_name,
-};
+pub(crate) use self::builtins::{builtin_const_int, builtin_value_names, refused_binding_name};
 pub(crate) use self::diagnostics::requires_presence;
 pub(crate) use self::durable::{is_durable_place_op, is_mutation_instr};
 pub(crate) use self::presence::PresenceObligation;
@@ -758,8 +756,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             if !param.keys.is_empty() {
                 lowerer.fail(unsupported(file, function.span, "a keyed parameter"));
             }
-            if is_reserved_builtin_name(&param.name) {
-                lowerer.fail(reserved_builtin_name(file, function.span, &param.name));
+            if let Some(row) = refused_binding_name(file, function.span, &param.name) {
+                lowerer.fail(row);
             }
             let Some(ty) = lowerer.param_type(&param.ty) else {
                 if lowerer.terminal_rejection() {

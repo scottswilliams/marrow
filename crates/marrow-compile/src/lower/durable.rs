@@ -824,8 +824,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         name_span: SourceSpan,
         place_expr: &Expression,
     ) -> ConstructResult<()> {
-        if is_reserved_builtin_name(name) {
-            self.fail(reserved_builtin_name(self.file, name_span, name));
+        if let Some(row) = refused_binding_name(self.file, name_span, name) {
+            self.fail(row);
             return Ok(());
         }
         if self.lookup(name).is_some() || self.lookup_place(name).is_some() {
@@ -1307,10 +1307,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         })
     }
 
-    /// Lower `exists(place)`. A specific entry or field address (`^root(key)`,
-    /// `^root(key).field`, a named `place`) is a keyed presence probe; a store root
-    /// (`^root`) or a keyed branch family (`^root(key).notes`) instead asks whether that
-    /// family has at least one payload-bearing child.
+    /// Lower `exists(place)` or `exists(value)`. A specific entry or field address
+    /// (`^root(key)`, `^root(key).field`, a named `place`) is a keyed presence probe; a
+    /// store root (`^root`) or a keyed branch family (`^root(key).notes`) instead asks
+    /// whether that family has at least one payload-bearing child; any other `T?` value
+    /// answers whether it is present, establishing no narrowing.
     pub(super) fn lower_exists(
         &mut self,
         args: &[Argument],
@@ -1321,7 +1322,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 Code::CheckType,
                 self.file,
                 span,
-                "`exists` takes one store place".to_string(),
+                "`exists` takes one store place or optional value".to_string(),
             ));
             return Err(LoweringFailure::Recoverable);
         };
@@ -1414,15 +1415,38 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             self.failed = true;
             return Err(LoweringFailure::Recoverable);
         }
-        self.fail(SourceDiagnostic::at(
-            Code::CheckType,
-            self.file,
-            arg.value.span(),
-            "`exists` takes a store place such as `^root(key)`, a field, a store root, or a \
-             keyed branch family"
-                .to_string(),
-        ));
-        Err(LoweringFailure::Recoverable)
+        // An ordinary value: an optional answers whether it is present. The value is
+        // consumed by the probe, so no presence fact and no narrowing follows.
+        let ty = self.lower_expr(&arg.value)?;
+        if !ty.is_optional() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType,
+                self.file,
+                arg.value.span(),
+                format!(
+                    "`exists` takes a store place such as `^root(key)`, a field, a store root, \
+                     a keyed branch family, or an optional value; found {}",
+                    ty.spelling(self.records)
+                ),
+            ));
+            return Err(LoweringFailure::Recoverable);
+        }
+        let to_absent = self.push_branch_present(span)?;
+        self.push(Instr::Pop, span)?;
+        let present = self
+            .checked_mint(|draft| draft.intern_bool(true))
+            .ok_or(LoweringFailure::Recoverable)?;
+        self.push(Instr::ConstLoad(present), span)?;
+        let to_end = self.push_jump(span)?;
+        let absent = self.here();
+        self.patch(to_absent, absent);
+        let missing = self
+            .checked_mint(|draft| draft.intern_bool(false))
+            .ok_or(LoweringFailure::Recoverable)?;
+        self.push(Instr::ConstLoad(missing), span)?;
+        let end = self.here();
+        self.patch(to_end, end);
+        Ok(LTy::bare_scalar(ScalarType::Bool))
     }
 
     /// Lower `Id(^root, keys…)`: construct the entry identity of the declared store root

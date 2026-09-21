@@ -36,7 +36,7 @@ use crate::konst::ConstRegistry;
 use crate::lower::{
     BodyOutcome, BodyRole, DeclaredFn, FnLowerer, FunctionRegistry, GenericRegistry, LoweredFn,
     ModuleBinding, ModuleLedger, ModuleScope, Resolution, SignatureOutcome, dotted_module_path,
-    is_durable_place_op, is_mutation_instr, is_reserved_builtin_name, reserved_builtin_name,
+    is_durable_place_op, is_mutation_instr, refused_binding_name,
 };
 use crate::types::BuildError;
 use crate::types::{
@@ -2252,12 +2252,8 @@ fn reject_duplicate_functions(parsed: &[Module], diagnostics: &mut DiagnosticCol
             let Declaration::Function(function) = declaration else {
                 continue;
             };
-            if is_reserved_builtin_name(&function.name) {
-                diagnostics.push(reserved_builtin_name(
-                    &module.file,
-                    function.span,
-                    &function.name,
-                ));
+            if let Some(row) = refused_binding_name(&module.file, function.span, &function.name) {
+                diagnostics.push(row);
                 continue;
             }
             if seen.contains(&function.name.as_str()) {

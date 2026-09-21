@@ -1076,8 +1076,6 @@ impl Default for Monomorph {
 pub(crate) struct SupportSet {
     pub(crate) add: bool,
     pub(crate) subtract: bool,
-    pub(crate) step: bool,
-    pub(crate) scale: bool,
 }
 
 /// One nominal type: a distinct int-based type whose every value lies in the

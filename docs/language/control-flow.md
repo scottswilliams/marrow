@@ -326,7 +326,11 @@ test "area matches every member" {
 
 Each arm names one member of the enum, bare. A payload member's arm binds its
 payload positionally (`circle(r)`) or omits the bindings to ignore the payload
-(`circle`). A `match` covers every member exactly once and has no wildcard arm.
+(`circle`). A binding written `_` names nothing: `rect(_, h)` binds only the
+height, and `_` may stand in more than one position. `_` is admitted only there;
+as a declared name or as a value it is a `check.type` error. Binding one name
+twice in an arm (`rect(w, w)`) is a `check.name_conflict` error at the second
+binding. A `match` covers every member exactly once and has no wildcard arm.
 A missing member is `check.match_nonexhaustive`; a malformed arm is
 `check.match_arm`.
 

@@ -4,6 +4,7 @@
 //! fixture and inline invalid-source projects asserting typed diagnostics.
 
 use crate::common::{Project, conformance_dir, marrow_in};
+use marrow_vm::Value;
 
 /// The enum conformance fixture passes end to end: payloadless and payload
 /// construction, exhaustive `match` with positional payload binding, payload-
@@ -190,6 +191,77 @@ pub fn f(e: E): int {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""code":"check.match_arm""#), "{stdout}");
+}
+
+/// `_` in an arm's payload position binds nothing and may stand in more than one
+/// position.
+#[test]
+fn a_placeholder_binding_names_nothing_and_may_repeat() {
+    let session = Project::single(
+        r#"enum Shape {
+    dot
+    rect(width: int, height: int)
+}
+
+pub fn height(): int {
+    match Shape::rect(width: 2, height: 5) {
+        dot => return 0
+        rect(_, h) => return h
+    }
+}
+
+pub fn ignored(): int {
+    match Shape::rect(width: 2, height: 5) {
+        dot => return 0
+        rect(_, _) => return 1
+    }
+}
+"#,
+    )
+    .session();
+    let mut session = session;
+    assert_eq!(session.call("height", vec![]), Some(Value::Int(5)));
+    assert_eq!(session.call("ignored", vec![]), Some(Value::Int(1)));
+}
+
+/// One name bound twice in an arm is a `check.name_conflict` at the second binding.
+#[test]
+fn a_repeated_arm_binding_is_a_name_conflict() {
+    let diagnostics = Project::single(
+        r#"enum Shape {
+    dot
+    rect(width: int, height: int)
+}
+
+pub fn f(s: Shape): int {
+    match s {
+        dot => return 0
+        rect(w, w) => return w
+    }
+}
+"#,
+    )
+    .try_image()
+    .expect_err("the repeated binding is refused");
+    let row = diagnostics.only("check.name_conflict");
+    assert_eq!(
+        (row.line(), row.column()),
+        (9, 17),
+        "{:?}",
+        diagnostics.all()
+    );
+}
+
+/// Outside an arm, `_` declares nothing and is not a value.
+#[test]
+fn the_placeholder_is_refused_as_a_name_and_as_a_value() {
+    for body in ["const _ = 4\n    return 1", "return _"] {
+        let diagnostics = Project::single(&format!("pub fn f(): int {{\n    {body}\n}}\n"))
+            .try_image()
+            .expect_err("the placeholder is refused");
+        let row = diagnostics.only("check.type");
+        assert_eq!(row.line(), 2, "{body}: {:?}", diagnostics.all());
+    }
 }
 
 /// A malformed construction — an unknown payload field, a missing payload field,
