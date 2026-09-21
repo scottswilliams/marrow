@@ -4,12 +4,12 @@ Marrow is a statically typed compiled language in which durable data is
 ordinary program state.
 
 ```text
-task = Task(title: title, status: Status::done)
-^tasks[id] = Task(title: title, status: Status::done)
+book = Book(title: title, read: true)
+^books[id] = Book(title: title, read: true)
 ```
 
 The first assignment changes a local value. The second changes durable state.
-The `^` is the whole difference: both lines build the same `Task`, and a
+The `^` is the whole difference: both lines build the same `Book`, and a
 durable place is read and assigned like a local one.
 
 ## Example
@@ -17,49 +17,44 @@ durable place is read and assigned like a local one.
 A module with one durable root and two exported functions:
 
 ```mw
-module app::tasks
+module app::books
 
-enum Status {
-    open
-    done
-}
-
-resource Task {
+resource Book {
     required title: string
-    required status: Status
+    read: bool
 }
 
-store ^tasks[id: int]: Task
+store ^books[id: int]: Book
 
-pub fn add(id: Id(^tasks), title: string): Id(^tasks) {
+pub fn add(id: Id(^books), title: string): Id(^books) {
     transaction {
-        ^tasks[id] = Task(title: title, status: Status::open)
+        ^books[id] = Book(title: title)
     }
     return id
 }
 
-pub fn complete(id: Id(^tasks)): bool {
+pub fn finish(id: Id(^books)): bool {
     transaction {
-        place task = ^tasks[id]
-        if not exists(task) {
+        place book = ^books[id]
+        if not exists(book) {
             return false
         }
-        task.status = Status::done
+        book.read = true
         return true
     }
 }
 ```
 
-`resource Task` is an ordinary value shape, and `store ^tasks[id: int]: Task`
-gives it a durable root keyed by an `int`. `^tasks[id]` is one entry and
-`^tasks[id].title` is one field of it. Every durable write sits inside a
+`resource Book` is an ordinary value shape, and `store ^books[id: int]: Book`
+gives it a durable root keyed by an `int`. `^books[id]` is one entry and
+`^books[id].title` is one field of it. Every durable write sits inside a
 `transaction`; when the block ends, its writes commit together. `add` writes
-the entry whole, so it is complete from its first commit. `place task =
-^tasks[id]` names the entry once, and `exists(task)` proves it present, so
-`complete` returns `false` for an absent entry and updates `status` only on a
-present one. The caller passes the entry identity as an `Id(^tasks)`, the
-identity type of that root; `Id(^tasks, 7)` builds one from a key, so a caller
-writes `add(Id(^tasks, 7), "write docs")`.
+the entry whole, so it is complete from its first commit. `place book =
+^books[id]` names the entry once, and `exists(book)` proves it present, so
+`finish` returns `false` for an absent entry and updates `read` only on a
+present one. The caller passes the entry identity as an `Id(^books)`, the
+identity type of that root; `Id(^books, 7)` builds one from a key, so a caller
+writes `add(Id(^books, 7), "Small Gods")`.
 
 `marrow test` runs a project's tests against a fresh in-memory store, one store
 per test. Running an export against a store on disk needs the companion layout

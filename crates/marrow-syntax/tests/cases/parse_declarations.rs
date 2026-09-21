@@ -34,13 +34,13 @@ fn parses_all_documented_source_files() {
 }
 
 /// The repository front door is in the gated corpus: the root `README.md` durable-model
-/// tour parses cleanly like the reference pages. Its `enum Status` example distinguishes
-/// it from `docs/language/README.md`.
+/// tour parses cleanly like the reference pages. Its `module app::books` header pins the
+/// root page rather than another `Book` example.
 #[test]
 fn the_repo_readme_example_is_gated_by_the_corpus() {
     let gated = common::documented_source_blocks()
         .into_iter()
-        .any(|block| block.path == "README.md" && block.source.contains("module app::tasks"));
+        .any(|block| block.path == "README.md" && block.source.contains("module app::books"));
     assert!(
         gated,
         "the repository root README.md mw example must be part of the documented corpus"

@@ -266,14 +266,14 @@ store is opened by the companion runner installed beside `marrow`; without that
 layout the command stops with `cli.installation_damaged`
 ([install](../install.md#running-against-a-store)). A durable export run with
 no `--store` prints `cli.durable_unsupported` and exits `1`. This transcript
-is from an install with the layout, on the notes program of the
+is from an install with the layout, on the books program of the
 [quickstart](../quickstart.md); [operations](../operations/README.md) covers
 the store between runs:
 
 ```text
-$ marrow run textOf --store ./store -- 1
-imported note
-$ marrow run add --store ./store -- 3 "added via run"
+$ marrow run titleOf --store ./store -- 1
+Small Gods
+$ marrow run add --store ./store -- 3 Mort
 true
 ```
 
@@ -320,10 +320,10 @@ and the new store is bound to it. An existing store is filled only when the
 project is its active program: a code-only edit is `store.image_not_active`
 until `marrow run --store` rebinds the store, and a changed durable contract
 is `store.contract_changed`. Like `run --store`, `import` needs the
-companion layout. The transcript is from the quickstart's notes program:
+companion layout. The transcript is from the quickstart's books program:
 
 ```text
-$ marrow import --store ./store --jsonl seed.jsonl --root notes --keys id
+$ marrow import --store ./store --jsonl seed.jsonl --root books --keys id
 provisioned a fresh store at ./store
 {"batches_committed":1,"rows_imported":2}
 ```

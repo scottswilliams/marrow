@@ -142,23 +142,23 @@ Place a guard before mutation when rejection intends no change.
 ```mw
 module docs::idioms::lookup
 
-resource Patient {
-    required name: string
-    wardCode: string
+resource Book {
+    required title: string
+    shelfCode: string
 }
 
-store ^patients[pid: int]: Patient
+store ^books[id: int]: Book
 
-pub fn wardOf(pid: Id(^patients), wards: Map<string, string>): Result<string, string> {
-    require exists(^patients[pid]) else "unknown patient"
-    const name = ^patients[pid].name else {
-        return err("patient has no name")
+pub fn shelfOf(id: Id(^books), shelves: Map<string, string>): Result<string, string> {
+    require exists(^books[id]) else "unknown book"
+    const title = ^books[id].title else {
+        return err("book has no title")
     }
-    const code = ^patients[pid].wardCode else {
-        return err($"{name} has no ward")
+    const code = ^books[id].shelfCode else {
+        return err($"{title} has no shelf")
     }
-    const ward = wards[code] ?? "(unassigned)"
-    return ok(ward)
+    const shelf = shelves[code] ?? "(unassigned)"
+    return ok(shelf)
 }
 ```
 

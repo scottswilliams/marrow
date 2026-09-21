@@ -1,7 +1,7 @@
 # Quickstart
 
 Two programs, run from the terminal: one without a store, then one that keeps
-notes in a durable place. [Install](install.md) `marrow` first; `marrow
+books in a durable place. [Install](install.md) `marrow` first; `marrow
 --version` prints `marrow 0.1.0`.
 
 ## Create a project
@@ -76,59 +76,59 @@ ok    greet names the caller
 
 ## A durable program
 
-Replace `src/main.mw` with a store of notes:
+Replace `src/main.mw` with a store of books:
 
 ```mw
-resource Note {
-    required text: string
-    pinned: bool
+resource Book {
+    required title: string
+    read: bool
 }
 
-store ^notes[id: int]: Note
+store ^books[id: int]: Book
 
-pub fn add(id: int, text: string): bool {
+pub fn add(id: int, title: string): bool {
     transaction {
-        if exists(^notes[id]) {
+        if exists(^books[id]) {
             return false
         }
-        ^notes[id] = Note(text: text)
+        ^books[id] = Book(title: title)
     }
     return true
 }
 
-pub fn pin(id: int): bool {
+pub fn finish(id: int): bool {
     transaction {
-        place slot = ^notes[id]
-        if not exists(slot) {
+        place book = ^books[id]
+        if not exists(book) {
             return false
         }
-        slot.pinned = true
+        book.read = true
     }
     return true
 }
 
-pub fn textOf(id: int): string? {
-    return ^notes[id].text
+pub fn titleOf(id: int): string? {
+    return ^books[id].title
 }
 
 test "add and read back" {
-    assert add(1, "first note")
-    assert textOf(1) ?? "" == "first note"
-    assert not add(1, "duplicate")
+    assert add(1, "Small Gods")
+    assert titleOf(1) ?? "" == "Small Gods"
+    assert not add(1, "Pyramids")
 }
 ```
 
-`resource Note` declares the shape of a stored value: `text` is required and
-`pinned` is sparse. `store ^notes[id: int]: Note` declares a durable root keyed
-by an `int`; `^notes[id]` is one entry. Every durable write sits inside a
-`transaction` block, and `exists(^notes[id])` inside the block tests presence
-before `add` writes. `^notes[id] = Note(text: text)` creates the entry as a
+`resource Book` declares the shape of a stored value: `title` is required and
+`read` is sparse. `store ^books[id: int]: Book` declares a durable root keyed
+by an `int`; `^books[id]` is one entry. Every durable write sits inside a
+`transaction` block, and `exists(^books[id])` inside the block tests presence
+before `add` writes. `^books[id] = Book(title: title)` creates the entry as a
 whole: the constructor names every required field, so a present entry is
-complete from its first commit. `place slot = ^notes[id]` in `pin` names the
-entry once; the guard on `exists(slot)` returns when it is absent, which proves
-it present for the rest of the block, and `slot.pinned = true` updates one
+complete from its first commit. `place book = ^books[id]` in `finish` names the
+entry once; the guard on `exists(book)` returns when it is absent, which proves
+it present for the rest of the block, and `book.read = true` updates one
 field of the present entry. A field write never creates an entry.
-`textOf` returns `string?` because the entry may be absent, and `??` supplies a
+`titleOf` returns `string?` because the entry may be absent, and `??` supplies a
 default. The test drives the exports and checks the round trip against a fresh
 in-memory store.
 
@@ -167,13 +167,13 @@ marrow check .
 
 main: 3 exports
   add
-    reads ^notes
-    writes ^notes
-  pin
-    reads ^notes
-    writes ^notes.pinned
-  textOf
-    reads ^notes.text
+    reads ^books
+    writes ^books
+  finish
+    reads ^books
+    writes ^books.read
+  titleOf
+    reads ^books.title
 ```
 
 ```sh
@@ -199,8 +199,8 @@ carries the `marrow` command alone, so the transcripts below come from an
 installation that has it.
 
 ```sh
-printf '{"id": 1, "text": "imported note"}\n{"id": 2, "text": "second"}\n' > seed.jsonl
-marrow import --store ./store --jsonl seed.jsonl --root notes --keys id
+printf '{"id": 1, "title": "Small Gods"}\n{"id": 2, "title": "Pyramids"}\n' > seed.jsonl
+marrow import --store ./store --jsonl seed.jsonl --root books --keys id
 ```
 
 ```text
@@ -208,18 +208,18 @@ provisioned a fresh store at ./store
 {"batches_committed":1,"rows_imported":2}
 ```
 
-The store now holds the two notes. Later runs read and write the same data:
+The store now holds the two books. Later runs read and write the same data:
 
 ```sh
-marrow run textOf --store ./store -- 1
-marrow run add --store ./store -- 3 "added via run"
-marrow run textOf --store ./store -- 3
+marrow run titleOf --store ./store -- 1
+marrow run add --store ./store -- 3 Mort
+marrow run titleOf --store ./store -- 3
 ```
 
 ```text
-imported note
+Small Gods
 true
-added via run
+Mort
 ```
 
 `marrow run --store` reads `.marrow/ids` and leaves it unchanged; a missing

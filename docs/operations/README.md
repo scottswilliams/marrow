@@ -122,17 +122,17 @@ platforms that open a store; no current command assembles it.
 ## Running an export against a store
 
 `marrow run <export> --store <dir>` runs one exported function against the store
-and prints its result. The exports below are the notes program from the
+and prints its result. The exports below are the books program from the
 [quickstart](../quickstart.md):
 
 ```sh
-marrow run textOf --store ./store -- 1      # imported note
-marrow run add --store ./store -- 3 "added via run"   # true
-marrow run textOf --store ./store -- 3      # added via run
+marrow run titleOf --store ./store -- 1      # Small Gods
+marrow run add --store ./store -- 3 Mort     # true
+marrow run titleOf --store ./store -- 3      # Mort
 ```
 
 Each invocation is its own commit boundary. `add` commits its `transaction`
-block, and the next `textOf` reads what it wrote. A read-only export runs the
+block, and the next `titleOf` reads what it wrote. A read-only export runs the
 same way, since the values it reads live in the store.
 
 A returned value does not mean the companion has finished closing the store. The

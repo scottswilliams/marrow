@@ -10,38 +10,38 @@ to a served system.
 A local value and a durable place are written the same way:
 
 ```mw
-module docs::vision::tasks
+module docs::vision::books
 
-resource Task {
+resource Book {
     required title: string
-    done: bool
+    read: bool
 }
 
-store ^tasks[id: int]: Task
+store ^books[id: int]: Book
 
-pub fn record(id: int, title: string, done: bool) {
-    var task = Task(title: title)
-    task.done = done
+pub fn record(id: int, title: string, read: bool) {
+    var book = Book(title: title)
+    book.read = read
     transaction {
-        ^tasks[id] = task
+        ^books[id] = book
     }
 }
 
-pub fn isDone(id: int): bool {
-    return ^tasks[id].done ?? false
+pub fn isRead(id: int): bool {
+    return ^books[id].read ?? false
 }
 
 test "a durable write outlives the call" {
-    record(1, "write docs", true)
-    assert isDone(1)
-    assert not isDone(2)
+    record(1, "Small Gods", true)
+    assert isRead(1)
+    assert not isRead(2)
 }
 ```
 
-`task.done = done` changes a local value. `^tasks[id] = task` copies it to a
+`book.read = read` changes a local value. `^books[id] = book` copies it to a
 durable place, and the copy is still there after `record` returns. Both use the
 declared resource type; the durable write also requires a transaction.
-`isDone` reads the field as `bool?` and supplies a default, because the entry may
+`isRead` reads the field as `bool?` and supplies a default, because the entry may
 be absent. The test runs against a fresh in-memory store.
 
 ## Durable data as language data
