@@ -1,12 +1,7 @@
-//! The independent Marrow program-image verifier.
-//!
-//! This crate owns the only path from image bytes to a checked, sealed
-//! [`VerifiedImage`]: it is the single container decoder and the phased verifier
-//! The compiler emits bytes but never constructs a `VerifiedImage`;
-//! the VM accepts only one this crate produced. Verification reconstructs every
-//! executable claim from the bytes — it trusts no serialized compiler summary —
-//! and rejects a malformed or hostile image at the earliest phase whose invariant
-//! it violates, with a typed [`VerifyRejection`].
+//! The independent Marrow program-image verifier: the only path from image bytes to a
+//! sealed [`VerifiedImage`]. Every executable claim is rebuilt from the bytes, and a
+//! malformed or hostile image is refused at the earliest phase whose invariant it
+//! violates, with a typed [`VerifyRejection`].
 
 mod interface;
 mod reader;
@@ -34,21 +29,8 @@ pub use sealed::{
 };
 pub use verify::verify;
 
-/// The machine stack [`verify`] requires, whatever image it is given.
-///
-/// Verification's input is chosen by a hostile producer, so its frame use must be bounded
-/// by the image bounds and nothing else. Every walk over decoded structure drives an
-/// explicit stack except three, which recurse natively at a depth `marrow_image::bounds`
-/// fixes: value-shape decoding and the value-shape/record-type match at
-/// `MAX_DURABLE_VALUE_DEPTH` (32), and branch sealing at `MAX_DURABLE_DEPTH` (16). A frame
-/// count is not a stack bound, so the cost of those depths is measured rather than argued:
-/// `tests/stack_budget.rs` verifies the deepest image the bounds admit on a thread of
-/// exactly this size, and that image needs between 80 and 88 KiB unoptimized. The budget
-/// is set above the measurement with room for the frames a debug build spends, and the
-/// test fails if verification ever needs more.
-///
-/// It is stated here because it is the verifier's requirement, not its callers': a caller
-/// that spawns a thread for verification sizes it from this, and a caller that verifies on
-/// a thread it did not size — a default 2 MiB Rust thread, say — can read whether that is
-/// enough. It is.
+/// The machine stack [`verify`] requires, whatever image it is given. Three walks recurse to
+/// a declared image bound (value-shape decode and match, branch sealing); a frame count is
+/// not a byte bound, so `tests/stack_budget.rs` verifies the deepest admitted image on a
+/// thread of exactly this size.
 pub const VERIFY_STACK_BYTES: usize = 128 * 1024;
