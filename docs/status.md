@@ -165,6 +165,9 @@ packaged, or downloadable build.
 - A code-only rebind assumes cooperating access to the store directory: external
   writes to the same inode are not detected
   ([native owner](implementation/storage.md#native-owner)).
+- Store creation and publication check the stage and destination through
+  retained parent descriptors, and assume cooperating earlier path components;
+  they do not protect against arbitrary concurrent namespace substitution.
 - Kernel operations validate supplied keys and decoded traversal/index keys
   against their declared scalar kinds and supported ranges. Mismatched stored
   keys fault before entering typed VM values; these local checks complement

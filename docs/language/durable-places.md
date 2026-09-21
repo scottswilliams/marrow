@@ -43,8 +43,10 @@ together. `title` reads without one. The read yields `string?` because the entry
 may be absent, and the test supplies a default with `??`. Every test starts in a
 fresh store ([tests](tests.md#durable-tests)).
 
-A store root is visible from every module of the project by its name; `pub`
-applies to functions only ([visibility](modules-and-functions.md#visibility)).
+A store root is visible from every module of the project that declares it by its
+name, and is not addressable from a project that depends on that one; `pub`
+applies to functions only ([visibility](modules-and-functions.md#visibility),
+[dependencies](modules-and-functions.md#dependencies)).
 
 ## Keys
 

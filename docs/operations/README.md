@@ -175,7 +175,7 @@ result with that binding:
   first checks logical contents read-only, then prepares writable service under
   the same owner lock. An inconsistent store is refused before preparation.
   Preparation errors stop before binding metadata changes; physical recovery
-  may already have changed engine bookkeeping. The transition records the exact
+  may already have changed engine bookkeeping and the owner marker. The transition records the exact
   old and new heads before replacing the head; activation is confirmed only
   after the metadata barriers and final Head/envelope verification.
 - A program whose durable contract or exported interface changed is
