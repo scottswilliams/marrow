@@ -78,6 +78,14 @@ fn symbol_module(index: usize, members: usize, name_bytes: usize) -> (String, St
     module_file(index, source)
 }
 
+/// The most members one [`symbol_module`] can carry at `name_bytes` per name and stay
+/// inside the admitted file length, so a fixture tracks that length rather than
+/// restating it: a member line is four spaces, the padded name, and its line break.
+fn members_per_admitted_module(name_bytes: usize) -> usize {
+    const HEADER_AND_FOOTER_BYTES: usize = 64;
+    (marrow_compile::MAX_PARSED_FILE_BYTES - HEADER_AND_FOOTER_BYTES) / (name_bytes + 5)
+}
+
 fn analyze_files(files: Vec<(String, String)>, revision: u64) -> Result<(), AnalysisFailure> {
     analyze(captured(files), InputRevision::new(revision)).map(|_| ())
 }
@@ -162,7 +170,7 @@ fn the_count_ceiling_itself_is_admitted() {
 #[test]
 fn crossing_the_fact_bytes_refuses_with_the_byte_limit() {
     let name_bytes = 1_200usize;
-    let per_file = 600usize;
+    let per_file = members_per_admitted_module(name_bytes);
     let bytes_per_file = (per_file * name_bytes) as u64;
     let files_needed = (MAX_SNAPSHOT_FACT_BYTES / bytes_per_file) as usize + 2;
     let files = (0..files_needed)
@@ -184,9 +192,10 @@ fn crossing_the_fact_bytes_refuses_with_the_byte_limit() {
 /// the count limit, never the byte limit.
 #[test]
 fn count_wins_a_simultaneous_crossing() {
-    // Members per file sized to keep each module inside the admitted file length, so the
-    // fixture is not refused before it reaches the fact ceilings.
-    let per_file = 3_500usize;
+    // Members per file sized to keep each module inside the admitted file length and
+    // under the per-file symbol bound, so the fixture is neither refused before it
+    // reaches the fact ceilings nor bounded away from contributing facts.
+    let per_file = members_per_admitted_module(200).min(MAX_DOCUMENT_SYMBOLS_PER_FILE as usize - 1);
     let files_needed = (MAX_SNAPSHOT_FACT_COUNT as usize / per_file) + 2;
     let files = (0..files_needed)
         .map(|index| symbol_module(index, per_file, 200))
