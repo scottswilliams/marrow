@@ -1,29 +1,25 @@
-//! The closed public failure vocabulary of the physical project adapter and the
-//! opaque top-level [`CaptureFailure`].
+//! The closed failure vocabulary of the physical project adapter and the opaque
+//! top-level [`CaptureFailure`].
 //!
-//! The support enums are transparent and exhaustively matchable, but a producer
-//! value cannot be constructed outside this crate because the evidence that
-//! distinguishes it — a raw I/O error or a charged root-relative path — is
-//! private. The top-level [`CaptureFailure`] is opaque: its family is a private
-//! enum with no public accessor, constructor, destructuring surface, or
-//! family-bearing `Debug`. This module owns that closed boundary and its
-//! `Send + Sync + 'static` guarantees; the presentation facade is its only
-//! external reader.
+//! The support enums are crate-private: a consumer observes a failure only
+//! through the presentation facade, which renders the typed code and message.
+//! [`CaptureFailure`] is opaque: its family is a private enum with no public
+//! accessor, constructor, destructuring surface, or family-bearing `Debug`. This
+//! module owns that closed boundary and its `Send + Sync + 'static` guarantees.
 
 use std::fmt;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use marrow_project::{CaptureError, ManifestError};
 
 use crate::overlay::OverlayFailure;
-use crate::path::OperationalPath;
 use crate::presentation::CapturePresentation;
 use crate::publication::IdsPublicationMarker;
 
 /// A physical filesystem role the adapter admits while capturing a project.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PhysicalRole {
+pub(crate) enum PhysicalRole {
     /// The selected project root.
     Root,
     /// The required `marrow.toml` manifest.
@@ -42,28 +38,9 @@ pub enum PhysicalRole {
     Dependency,
 }
 
-/// A physical operation active when admission produced evidence.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PhysicalOperation {
-    /// Resolve the selected root to one canonical physical path.
-    Canonicalize,
-    /// Inspect a path without following symbolic links.
-    Inspect,
-    /// Open an inspected object.
-    Open,
-    /// Enumerate a source directory.
-    Enumerate,
-    /// Reserve or charge bounded adapter-owned storage or a native-path lease.
-    Retain,
-    /// Read bytes from an admitted handle.
-    Read,
-    /// Recheck retained physical evidence.
-    Recheck,
-}
-
 /// A filesystem object's observed kind, without following symbolic links.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PhysicalKind {
+pub(crate) enum PhysicalKind {
     /// A regular file.
     RegularFile,
     /// A directory.
@@ -74,7 +51,7 @@ pub enum PhysicalKind {
 
 /// Where a refused symbolic link appeared relative to a role's path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LinkPosition {
+pub(crate) enum LinkPosition {
     /// The role's terminal path component is a symbolic link.
     Terminal,
     /// A component before the role's terminal path is a symbolic link.
@@ -83,7 +60,7 @@ pub enum LinkPosition {
 
 /// A bounded physical resource the adapter enforces before retention.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PhysicalBound {
+pub(crate) enum PhysicalBound {
     /// Bounded `marrow.toml` bytes.
     ManifestBytes,
     /// Bounded `.marrow/ids` bytes.
@@ -104,29 +81,18 @@ pub enum PhysicalBound {
     PathWorkUnits,
 }
 
-/// An opaque operating-system I/O error. Only the typed kind and raw OS code are
-/// observable; the raw [`io::Error`] is private so operating-system prose never
-/// leaks through this boundary.
-pub struct PhysicalIoError(io::Error);
+/// An operating-system I/O error whose `Debug` carries only the typed kind and raw
+/// OS code, so operating-system prose reaches a consumer only through the CLI
+/// writer's exact `Display`.
+pub(crate) struct PhysicalIoError(io::Error);
 
 impl PhysicalIoError {
-    /// Wrap a raw operating-system error as opaque evidence.
     pub(crate) fn new(error: io::Error) -> Self {
         Self(error)
     }
 
-    /// The typed [`io::ErrorKind`] of the underlying error.
-    pub fn kind(&self) -> io::ErrorKind {
-        self.0.kind()
-    }
-
-    /// The raw operating-system error code, when the error carries one.
-    pub fn raw_os_error(&self) -> Option<i32> {
-        self.0.raw_os_error()
-    }
-
-    /// The raw error, available only to the crate's CLI presentation writer for
-    /// exact operating-system `Display` byte compatibility.
+    /// The raw error, for the CLI presentation writer's exact operating-system
+    /// `Display` byte compatibility.
     pub(crate) fn as_io_error(&self) -> &io::Error {
         &self.0
     }
@@ -143,64 +109,39 @@ impl fmt::Debug for PhysicalIoError {
 
 /// Why a physical role could not be admitted.
 #[derive(Debug)]
-pub enum PhysicalRefusal {
+pub(crate) enum PhysicalRefusal {
     /// A required object was absent at its inspection checkpoint.
-    Missing {
-        /// The opaque operating-system error.
-        error: PhysicalIoError,
-    },
+    Missing { error: PhysicalIoError },
     /// A symbolic link appeared at a prohibited component.
-    Link {
-        /// Whether the link was terminal or intermediate.
-        position: LinkPosition,
-    },
+    Link { position: LinkPosition },
     /// The observed object had the wrong role kind.
-    UnexpectedKind {
-        /// Kind required by the role.
-        expected: PhysicalKind,
-        /// Kind observed without following links.
-        actual: PhysicalKind,
-    },
+    UnexpectedKind { expected: PhysicalKind },
     /// A retained regular file had more than one hardlink.
     Hardlink,
     /// A selected operating-system path could not be represented as UTF-8.
     InvalidPathEncoding,
     /// An operating-system or checked-allocation operation failed.
-    Io {
-        /// The opaque operating-system or adapter-created error.
-        error: PhysicalIoError,
-    },
+    Io { error: PhysicalIoError },
     /// Physical evidence changed between checkpoints.
     Changed,
     /// A physical resource exceeded its fixed limit.
     Bound {
-        /// Resource that exceeded its limit.
         bound: PhysicalBound,
-        /// Inclusive limit.
         limit: usize,
-        /// Observed amount at refusal.
         actual: usize,
     },
     /// The identity ledger was found at its retired project-root path
     /// (`marrow.ids`) instead of its home (`.marrow/ids`).
-    LegacyLedgerPath {
-        /// Whether the ledger's home path also holds a file.
-        home: LedgerHome,
-    },
-    /// The target platform has no admitted physical-capture implementation.
-    UnsupportedPlatform,
+    LegacyLedgerPath { home: LedgerHome },
     /// A declared dependency resolved to a directory that cannot serve as one.
-    Dependency {
-        /// What the resolved directory was.
-        reason: DependencyRefusal,
-    },
+    Dependency { reason: DependencyRefusal },
 }
 
 /// Why a resolved dependency directory cannot serve as a dependency. The location
 /// faults a path spelling can carry — absolute, non-canonical, over-long — are
 /// refused by the pure manifest owner before any of these are reached.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DependencyRefusal {
+pub(crate) enum DependencyRefusal {
     /// The directory holds no `marrow.toml`, or no `src` source root.
     NotAProject,
     /// The directory's `marrow.toml` is not a valid manifest.
@@ -218,76 +159,21 @@ pub enum DependencyRefusal {
 /// remedies: a vacant home is a one-command move; an occupied home must be
 /// reconciled by hand before the root copy is deleted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LedgerHome {
+pub(crate) enum LedgerHome {
     /// `.marrow/ids` is absent; the ledger lives only at the retired root path.
     Vacant,
     /// `.marrow/ids` also holds a file; a project has exactly one ledger.
     Occupied,
 }
 
-/// A physical admission failure: the role, the operation active at refusal, the
-/// typed refusal, and — kept private — an already-charged root-relative path.
-///
-/// Role, operation, and refusal are publicly observable; the path is available
-/// only to the presentation facade, never to a consumer directly, and the
-/// selected root and every pre-lease path-budget refusal carry no path at all.
-pub struct PhysicalFailure {
-    role: PhysicalRole,
-    operation: PhysicalOperation,
-    // Already-charged root-relative evidence, read only by the presentation facade.
-    path: Option<OperationalPath>,
-    refusal: PhysicalRefusal,
-}
-
-impl PhysicalFailure {
-    /// Build a physical admission failure from its role, operation, root-relative
-    /// path evidence, and typed refusal.
-    pub(crate) fn new(
-        role: PhysicalRole,
-        operation: PhysicalOperation,
-        path: Option<OperationalPath>,
-        refusal: PhysicalRefusal,
-    ) -> Self {
-        Self {
-            role,
-            operation,
-            path,
-            refusal,
-        }
-    }
-
-    /// The physical role being admitted at refusal.
-    pub fn role(&self) -> PhysicalRole {
-        self.role
-    }
-
-    /// The physical operation active at refusal.
-    pub fn operation(&self) -> PhysicalOperation {
-        self.operation
-    }
-
-    /// The typed refusal evidence.
-    pub fn refusal(&self) -> &PhysicalRefusal {
-        &self.refusal
-    }
-
-    /// The already-charged root-relative path evidence, for the presentation
-    /// facade only.
-    pub(crate) fn path(&self) -> Option<&OperationalPath> {
-        self.path.as_ref()
-    }
-}
-
-impl fmt::Debug for PhysicalFailure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // The charged path is deliberately omitted: it never appears in direct
-        // formatting, only in facade rendering joined to the caller's root.
-        f.debug_struct("PhysicalFailure")
-            .field("role", &self.role)
-            .field("operation", &self.operation)
-            .field("refusal", &self.refusal)
-            .finish_non_exhaustive()
-    }
+/// A physical admission failure: the role, the caller-root-relative path the
+/// refusal names, and the typed refusal. The
+/// selected root and every pre-lease path-budget refusal carry no path.
+#[derive(Debug)]
+pub(crate) struct PhysicalFailure {
+    pub(crate) role: PhysicalRole,
+    pub(crate) path: Option<PathBuf>,
+    pub(crate) refusal: PhysicalRefusal,
 }
 
 /// The private family a [`CaptureFailure`] wraps. It is neither constructible nor
@@ -365,18 +251,9 @@ impl fmt::Debug for CaptureFailure {
     }
 }
 
+// The two failures a consumer holds are transferable.
 const _: fn() = || {
     fn assert_send_sync_static<T: Send + Sync + 'static>() {}
-    // The transferable public failures and their opaque I/O evidence.
     assert_send_sync_static::<CaptureFailure>();
-    assert_send_sync_static::<PhysicalFailure>();
     assert_send_sync_static::<OverlayFailure>();
-    assert_send_sync_static::<PhysicalIoError>();
-    assert_send_sync_static::<PhysicalRefusal>();
-    assert_send_sync_static::<PhysicalRole>();
-    assert_send_sync_static::<PhysicalOperation>();
-    assert_send_sync_static::<PhysicalKind>();
-    assert_send_sync_static::<PhysicalBound>();
-    assert_send_sync_static::<LinkPosition>();
-    assert_send_sync_static::<IdsPublicationMarker>();
 };

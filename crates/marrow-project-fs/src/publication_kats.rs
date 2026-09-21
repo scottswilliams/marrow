@@ -346,7 +346,7 @@ fn a_publication_refuses_while_another_is_claimed() {
     let refusal = guard
         .publish_ids(plan)
         .expect_err("a claimed publication refuses a fresh one");
-    assert_eq!(refusal.refusal(), IdsRefusal::Interrupted);
+    assert_eq!(refusal.refusal, IdsRefusal::Interrupted);
     assert_eq!(refusal.code(), Code::ProjectIdsPublicationPending);
 }
 
@@ -609,7 +609,7 @@ fn an_installed_successor_before_the_installing_record_is_retained() {
         .guard()
         .recover_ids()
         .expect_err("an installed successor with no `Installing` record is retained corruption");
-    assert_eq!(refusal.refusal(), IdsRefusal::Corrupt);
+    assert_eq!(refusal.refusal, IdsRefusal::Corrupt);
     assert_eq!(project.read_meta("ids").as_deref(), Some(&b"successor"[..]));
     assert!(project.exists("ids.pending"), "the marker keeps gating");
     assert_eq!(
@@ -723,7 +723,7 @@ fn a_third_inode_beside_an_installed_successor_is_retained() {
         .guard()
         .recover_ids()
         .expect_err("a third inode is retained corruption");
-    assert_eq!(refusal.refusal(), IdsRefusal::Corrupt);
+    assert_eq!(refusal.refusal, IdsRefusal::Corrupt);
     assert_eq!(
         project.read_meta("ids.publish.stage").as_deref(),
         Some(&b"third"[..]),
@@ -765,7 +765,7 @@ fn a_third_inode_on_the_bound_generation_s_recycled_number_is_retained() {
         .guard()
         .recover_ids()
         .expect_err("a recycled number under a foreign run is retained corruption");
-    assert_eq!(refusal.refusal(), IdsRefusal::Corrupt);
+    assert_eq!(refusal.refusal, IdsRefusal::Corrupt);
     assert_eq!(
         project.read_meta("ids.publish.stage").as_deref(),
         Some(&b"fake"[..]),
@@ -858,7 +858,7 @@ fn a_stranger_parked_under_the_quarantine_name_is_neither_swept_nor_deleted() {
         .guard()
         .recover_ids()
         .expect_err("a parked stranger retains the publication");
-    assert_eq!(refusal.refusal(), IdsRefusal::Custody);
+    assert_eq!(refusal.refusal, IdsRefusal::Custody);
     assert_eq!(
         project.read_meta("ids.publish.quarantine").as_deref(),
         Some(&b"someone else's file"[..]),
@@ -938,6 +938,57 @@ fn a_publication_retried_over_an_occupied_quarantine_does_not_read_the_cleanup_a
     assert!(!project.quarantine().exists());
 }
 
+/// The retry a pending publication hands back reconciles before it classifies.
+/// A cleanup can move its object to the quarantine name and then fail before
+/// the unlink; the value the CLI consumes to try again is a fresh classification
+/// of the filesystem, so it reconciles exactly as a fresh process does rather
+/// than reading the moved object's absent name as a removal already finished.
+#[test]
+fn a_retried_pending_publication_reconciles_the_quarantine_before_it_classifies() {
+    let _serial = serialized();
+    let project = Project::new("retry-reconciles");
+    let first = project.plan("Book", 1);
+    let mut guard = project.guard();
+    assert!(matches!(
+        guard
+            .publish_ids(first)
+            .expect("the first publication runs"),
+        IdsPublishOutcome::Settled(IdsPublication::Published)
+    ));
+
+    let second = project.plan("Shelf", 2);
+    let alias = project.meta().join("ids.alias");
+    fs::hard_link(project.meta().join("ids"), &alias).expect("plant the second link");
+    let pending = match guard
+        .publish_ids(second)
+        .expect("the claim is durable, so the interruption is not an ordinary refusal")
+    {
+        IdsPublishOutcome::Pending(pending) => pending,
+        IdsPublishOutcome::Settled(settled) => {
+            panic!("an off-map reading after the claim must be reported as pending: {settled:?}")
+        }
+    };
+
+    // The off-map second link goes, and the state an interrupted removal
+    // leaves is planted in its place.
+    fs::remove_file(&alias).expect("drop the foreign second link");
+    project.move_into_quarantine("ids.publish.stage");
+
+    assert_eq!(
+        pending.recover().expect("the retry settles"),
+        IdsPublication::Published
+    );
+    assert!(
+        !project.quarantine().exists(),
+        "the retry reconciled the quarantine name"
+    );
+    assert!(
+        !project.exists("ids.publish.stage"),
+        "the successor it put back was then installed and cleaned"
+    );
+    assert!(!project.exists("ids.pending"), "the publication finished");
+}
+
 /// A terminal already decided is not re-opened by putting its cleanup's object
 /// back. After a reverted terminal and a post-move crash, an outside writer can
 /// leave the target reading as the bound generation; restoring the successor to
@@ -1000,7 +1051,7 @@ fn a_publication_over_an_interrupted_removal_refuses_and_leaves_it_settleable() 
         .guard()
         .publish_ids(plan)
         .expect_err("a durably claimed project refuses a fresh publication");
-    assert_eq!(refusal.refusal(), IdsRefusal::Interrupted);
+    assert_eq!(refusal.refusal, IdsRefusal::Interrupted);
     assert_eq!(
         fs::read(project.quarantine()).ok().as_deref(),
         Some(&b"successor"[..]),
@@ -1031,7 +1082,7 @@ fn a_fresh_publication_reconciles_an_orphaned_quarantine_before_it_stages() {
         .guard()
         .publish_ids(plan)
         .expect_err("the restored transient is a retained manual state");
-    assert_eq!(refusal.refusal(), IdsRefusal::UnclaimedIncomplete);
+    assert_eq!(refusal.refusal, IdsRefusal::UnclaimedIncomplete);
     assert_eq!(
         project.read_meta("ids.publish.stage").as_deref(),
         Some(&b"orphaned successor"[..]),
@@ -1068,7 +1119,7 @@ fn a_taken_stage_name_makes_reconciliation_refuse_without_losing_either_object()
             .recover_ids()
             .expect_err("a taken destination refuses rather than overwriting");
         assert_eq!(
-            refusal.refusal(),
+            refusal.refusal,
             IdsRefusal::Custody,
             "attempt {attempt} refused with the wrong class"
         );
@@ -1090,7 +1141,7 @@ fn a_taken_stage_name_makes_reconciliation_refuse_without_losing_either_object()
         .guard()
         .recover_ids()
         .expect_err("the restored stranger retains the publication");
-    assert_eq!(refusal.refusal(), IdsRefusal::Corrupt);
+    assert_eq!(refusal.refusal, IdsRefusal::Corrupt);
     assert_eq!(
         project.read_meta("ids.publish.stage").as_deref(),
         Some(&b"someone else's file"[..]),
@@ -1121,7 +1172,7 @@ fn a_stranger_left_in_quarantine_by_a_rejected_removal_is_put_back_not_deleted()
         .guard()
         .recover_ids()
         .expect_err("the restored stranger retains the publication");
-    assert_eq!(refusal.refusal(), IdsRefusal::Corrupt);
+    assert_eq!(refusal.refusal, IdsRefusal::Corrupt);
     assert_eq!(
         project.read_meta("ids.publish.stage").as_deref(),
         Some(&b"someone else's file"[..]),
@@ -1148,7 +1199,7 @@ fn a_substituted_journal_inode_is_retained() {
         .guard()
         .recover_ids()
         .expect_err("substituted evidence is retained corruption");
-    assert_eq!(refusal.refusal(), IdsRefusal::Corrupt);
+    assert_eq!(refusal.refusal, IdsRefusal::Corrupt);
     assert!(!project.exists("ids"), "no artifact was written");
     assert_eq!(
         project.read_meta("ids.publish.stage").as_deref(),
@@ -1170,7 +1221,7 @@ fn a_foreign_parent_witness_is_retained() {
         .guard()
         .recover_ids()
         .expect_err("a foreign parent witness is retained corruption");
-    assert_eq!(refusal.refusal(), IdsRefusal::Corrupt);
+    assert_eq!(refusal.refusal, IdsRefusal::Corrupt);
     assert!(!project.exists("ids"));
     assert!(project.exists("ids.pending"));
 }
@@ -1189,7 +1240,7 @@ fn a_malformed_header_is_retained() {
         .guard()
         .recover_ids()
         .expect_err("a malformed header is retained corruption");
-    assert_eq!(refusal.refusal(), IdsRefusal::Corrupt);
+    assert_eq!(refusal.refusal, IdsRefusal::Corrupt);
     assert_eq!(refusal.code(), Code::ProjectIdsPublicationPending);
     assert!(!project.exists("ids"));
     assert_eq!(
@@ -1210,7 +1261,7 @@ fn a_never_claimed_create_is_the_manual_unclaimed_state() {
         .guard()
         .recover_ids()
         .expect_err("a never-claimed create is manual");
-    assert_eq!(refusal.refusal(), IdsRefusal::UnclaimedIncomplete);
+    assert_eq!(refusal.refusal, IdsRefusal::UnclaimedIncomplete);
     assert_eq!(refusal.code(), Code::ProjectIdsPublicationPending);
     assert_eq!(
         project.read_meta("ids.pending.create").as_deref(),
@@ -1233,7 +1284,7 @@ fn a_staged_successor_with_no_marker_is_the_manual_unclaimed_state() {
         .guard()
         .recover_ids()
         .expect_err("a stage with no marker is manual");
-    assert_eq!(refusal.refusal(), IdsRefusal::UnclaimedIncomplete);
+    assert_eq!(refusal.refusal, IdsRefusal::UnclaimedIncomplete);
     assert_eq!(
         project.read_meta("ids.publish.stage").as_deref(),
         Some(&b"successor"[..])
@@ -1339,7 +1390,7 @@ fn an_off_map_state_under_an_incomplete_tail_refuses_without_panicking() {
         .guard()
         .recover_ids()
         .expect_err("an unclassifiable map is retained corruption");
-    assert_eq!(refusal.refusal(), IdsRefusal::Corrupt);
+    assert_eq!(refusal.refusal, IdsRefusal::Corrupt);
     assert!(!project.exists("ids"), "no artifact was written");
     assert!(project.exists("ids.pending"), "the marker keeps gating");
 }
@@ -1356,7 +1407,7 @@ fn a_second_write_owner_on_one_project_reports_contention() {
 
     let refusal = ProjectMetadataWriteGuard::acquire(project.path())
         .expect_err("a second write owner refuses while the first holds the lock");
-    assert_eq!(refusal.refusal(), IdsRefusal::Contended);
+    assert_eq!(refusal.refusal, IdsRefusal::Contended);
     assert_eq!(refusal.code(), Code::IoWrite);
     assert!(
         refusal
@@ -1417,7 +1468,7 @@ fn concurrent_first_publications_serialize_on_the_write_lock() {
                         Err(refusal) => refusals
                             .lock()
                             .expect("collect")
-                            .push((refusal.refusal(), refusal.to_string())),
+                            .push((refusal.refusal, refusal.to_string())),
                     }
                 });
             }
@@ -1788,7 +1839,7 @@ fn an_unreadable_ignore_entry_refuses_the_acquisition() {
         let refusal = ProjectMetadataWriteGuard::acquire(project.path()).expect_err(
             "an ignore entry that cannot be read leaves the untracked contract unestablished",
         );
-        assert_eq!(refusal.refusal(), IdsRefusal::UntrackedContract);
+        assert_eq!(refusal.refusal, IdsRefusal::UntrackedContract);
 
         set_mode(&path, 0o600);
         assert_eq!(
@@ -1814,7 +1865,7 @@ fn an_oversized_ignore_entry_refuses_the_acquisition() {
 
     let refusal = ProjectMetadataWriteGuard::acquire(project.path())
         .expect_err("an ignore entry past the read bound leaves the contract unestablished");
-    assert_eq!(refusal.refusal(), IdsRefusal::UntrackedContract);
+    assert_eq!(refusal.refusal, IdsRefusal::UntrackedContract);
     assert_eq!(
         project.read_meta(".gitignore").as_deref(),
         Some(&oversized[..]),
@@ -1822,37 +1873,21 @@ fn an_oversized_ignore_entry_refuses_the_acquisition() {
     );
 }
 
-/// An ignore entry that negates one of this owner's names refuses the
-/// acquisition, however complete the rest of it is and however the negation is
-/// spelled.
+/// An ignore entry that negates one of this owner's names exactly refuses the
+/// acquisition, however complete the rest of it is.
 ///
 /// Git takes the last matching line, so a `!` line re-including a transient
-/// leaves it tracked no matter how many positive lines precede it. A negation
-/// need not spell the name to reach it, so each shape that can is refused:
-/// the exact name, the anchored name, a suffix wildcard, a prefix wildcard,
-/// bare `*`, a single-character wildcard, and a character set. Appending the
-/// name again would change nothing, and this owner does not rewrite a line a
-/// developer wrote.
+/// leaves it tracked no matter how many positive lines precede it. The name is
+/// read bare, anchored to this directory, and as a CRLF checkout leaves it.
+/// Appending the name again would change nothing, and this owner does not
+/// rewrite a line a developer wrote.
 #[test]
 fn an_ignore_entry_negating_a_transient_refuses_the_acquisition() {
     let _serial = serialized();
     for (tag, spelling) in [
         ("exact", "!ids.publish.stage\n"),
         ("anchored", "!/ids.publish.quarantine\n"),
-        ("prefix-glob", "!ids.publish.*\n"),
-        ("suffix-glob", "!*.stage\n"),
-        ("everything", "!*\n"),
-        ("single-char", "!ids.pendin?\n"),
-        ("char-set", "!ids.publish.[sq]*\n"),
-        ("trailing-slash", "!ids.publish.stage/\n"),
-        // `**` matches zero directories, so both of these name the entry
-        // sitting directly in `.marrow`.
-        ("double-star-exact", "!**/ids.publish.stage\n"),
-        ("double-star-glob", "!**/*.stage\n"),
-        // A POSIX class inside a set: the members are not read, and any set
-        // carrying one is taken as reaching the name.
-        ("posix-class", "!ids.publish.[[:alpha:]]*\n"),
-        ("negated-posix-class", "!ids.publish.[![:digit:]]*\n"),
+        ("carriage-return", "!ids.pending\r\n"),
     ] {
         let project = Project::new(&format!("ignore-negated-{tag}"));
         let mut planted = WRITTEN_IGNORE.to_vec();
@@ -1865,7 +1900,7 @@ fn an_ignore_entry_negating_a_transient_refuses_the_acquisition() {
                 panic!("the {tag} negation re-includes a transient and must refuse")
             });
         assert_eq!(
-            refusal.refusal(),
+            refusal.refusal,
             IdsRefusal::UntrackedContract,
             "the {tag} negation refused with the wrong class"
         );
@@ -1877,24 +1912,21 @@ fn an_ignore_entry_negating_a_transient_refuses_the_acquisition() {
     }
 }
 
-/// A negation that cannot reach one of this owner's names does not refuse.
+/// A negation line that does not name one of this owner's names exactly does
+/// not refuse.
 ///
-/// The check exists to catch a transient being re-included, not to make any
-/// developer's ignore file unusable. A pattern naming another suffix, another
-/// directory, or a path below this one reaches nothing here.
+/// The check exists to catch a transient a developer re-included by name in
+/// the file this owner writes, not to make any ignore file unusable. Another
+/// name, a path elsewhere, and gitignore pattern syntax are that developer's
+/// own policy; none is read here.
 #[test]
 fn an_ignore_entry_negating_something_else_leaves_the_owner_working() {
     let _serial = serialized();
     for (tag, spelling) in [
-        ("other-suffix", "!*.md\n"),
-        ("subdirectory", "!docs/*.md\n"),
+        ("other-name", "!notes.txt\n"),
         ("anchored-elsewhere", "!/build\n"),
         ("below-this-directory", "!ids.publish.stage/inner\n"),
-        ("other-name", "!notes.txt\n"),
-        // A real component survives the `**`, so the pattern still needs a
-        // subdirectory these entries never sit in.
-        ("double-star-subdirectory", "!**/docs/notes.md\n"),
-        ("double-star-other-suffix", "!**/*.md\n"),
+        ("pattern", "!*.stage\n"),
     ] {
         let project = Project::new(&format!("ignore-negation-elsewhere-{tag}"));
         let mut planted = WRITTEN_IGNORE.to_vec();
@@ -1933,7 +1965,7 @@ fn an_incomplete_unwritable_ignore_entry_refuses_the_acquisition() {
 
     let refusal = ProjectMetadataWriteGuard::acquire(project.path())
         .expect_err("an entry that cannot be completed leaves the contract unestablished");
-    assert_eq!(refusal.refusal(), IdsRefusal::UntrackedContract);
+    assert_eq!(refusal.refusal, IdsRefusal::UntrackedContract);
 
     set_mode(&path, 0o600);
     assert_eq!(
@@ -1970,7 +2002,7 @@ fn a_non_regular_ignore_entry_is_still_refused() {
             .err()
             .unwrap_or_else(|| panic!("a {kind} at the ignore entry's name was admitted"));
         assert_eq!(
-            refusal.refusal(),
+            refusal.refusal,
             IdsRefusal::Custody,
             "a {kind} at the ignore entry's name reported {refusal:?}"
         );
@@ -2018,7 +2050,7 @@ fn concurrent_acquisitions_write_one_ignore_entry() {
                         }
                         Err(refusal) => {
                             assert_eq!(
-                                refusal.refusal(),
+                                refusal.refusal,
                                 IdsRefusal::Contended,
                                 "seat {seat} of round {round} reported {refusal:?} rather than \
                                  the contention it is in"
@@ -2184,7 +2216,7 @@ fn a_refused_stage_creation_stages_and_claims_nothing() {
     let refusal = guard
         .publish_ids(plan)
         .expect_err("a refused create is an ordinary refusal");
-    assert_eq!(refusal.refusal(), IdsRefusal::Custody);
+    assert_eq!(refusal.refusal, IdsRefusal::Custody);
     assert_eq!(refusal.code(), Code::IoWrite);
     assert_eq!(
         refused_operation(&refusal),
@@ -2215,7 +2247,7 @@ fn a_refused_link_retains_the_claimed_publication() {
     let refusal = guard
         .recover_ids()
         .expect_err("a refused link cannot settle the publication");
-    assert_eq!(refusal.refusal(), IdsRefusal::Custody);
+    assert_eq!(refusal.refusal, IdsRefusal::Custody);
     assert_eq!(
         refused_operation(&refusal),
         Some(CustodyOp::Link),
@@ -2250,7 +2282,7 @@ fn a_refused_exchange_retains_the_bound_generation() {
     let refusal = guard
         .recover_ids()
         .expect_err("a refused exchange cannot settle the publication");
-    assert_eq!(refusal.refusal(), IdsRefusal::Custody);
+    assert_eq!(refusal.refusal, IdsRefusal::Custody);
     assert_eq!(
         refused_operation(&refusal),
         Some(CustodyOp::Exchange),
@@ -2290,7 +2322,7 @@ fn a_refused_stage_cleanup_keeps_the_publication_unfinished() {
     let refusal = guard
         .recover_ids()
         .expect_err("a refused cleanup cannot finish the publication");
-    assert_eq!(refusal.refusal(), IdsRefusal::Custody);
+    assert_eq!(refusal.refusal, IdsRefusal::Custody);
     assert_eq!(
         refused_operation(&refusal),
         Some(CustodyOp::RenameNoreplace),

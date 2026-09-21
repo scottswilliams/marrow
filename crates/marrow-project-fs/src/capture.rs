@@ -9,18 +9,20 @@
 //! [`PathBudget`]; an overlaid source retains overlay bytes and masks only disk-body
 //! state, never open, role, or identity. The pure owner alone publishes
 //! `FileIdentity`, `ModuleName`, and `ProjectInput`.
+//!
+//! [`PathBudget`]: crate::path::PathBudget
 
 use std::path::Path;
 
 use marrow_project::ProjectInput;
 
 use crate::failure::CaptureFailure;
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-use crate::failure::{PhysicalFailure, PhysicalOperation, PhysicalRefusal, PhysicalRole};
 use crate::limits::AdapterLimits;
 use crate::overlay::OverlaySnapshot;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!("marrow-project-fs admits physical capture on Linux and macOS only");
+
 pub(crate) mod unix;
 
 /// Read and capture the project rooted at `root` into an immutable [`ProjectInput`],
@@ -40,28 +42,10 @@ pub fn capture_project(
 
 /// The limit-parameterized capture seam. Production capture always uses
 /// [`AdapterLimits::DEFAULT`]; small policies drive owner tests only.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn capture_project_with_limits(
     root: &Path,
     overlay: OverlaySnapshot<'_>,
     limits: &AdapterLimits,
 ) -> Result<ProjectInput, CaptureFailure> {
     unix::capture(root, overlay, limits)
-}
-
-/// On a target with no admitted physical implementation, fail closed at the first
-/// capture boundary with the one canonical pathless tuple, before any filesystem
-/// operation.
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-pub(crate) fn capture_project_with_limits(
-    _root: &Path,
-    _overlay: OverlaySnapshot<'_>,
-    _limits: &AdapterLimits,
-) -> Result<ProjectInput, CaptureFailure> {
-    Err(CaptureFailure::from_physical(PhysicalFailure::new(
-        PhysicalRole::Root,
-        PhysicalOperation::Open,
-        None,
-        PhysicalRefusal::UnsupportedPlatform,
-    )))
 }

@@ -13,22 +13,15 @@ use marrow_project::{
 
 use crate::failure::{
     CaptureFailure, DependencyRefusal, LedgerHome, LinkPosition, PhysicalBound, PhysicalFailure,
-    PhysicalIoError, PhysicalKind, PhysicalOperation, PhysicalRefusal, PhysicalRole,
+    PhysicalIoError, PhysicalKind, PhysicalRefusal, PhysicalRole,
 };
 use crate::limits::AdapterLimits;
 use crate::overlay::OverlaySnapshot;
-use crate::path::{
-    CanonicalRoot, LiveNativePath, OperationalPath, PathBudget, ReserveError, SourceGuard,
-    native_units,
-};
+use crate::path::{PathBudget, PathLease, ReserveError, native_units};
 
 const MANIFEST_FILE: &str = "marrow.toml";
 const SOURCE_DIR: &str = "src";
 const READ_CHUNK_BYTES: usize = 8 * 1024;
-
-/// A bare admission refusal a primitive returns; the caller attaches the leased or
-/// pathless evidence and the role.
-type BareRefusal = (PhysicalOperation, PhysicalRefusal);
 
 pub(super) fn capture(
     root: &Path,
@@ -37,8 +30,8 @@ pub(super) fn capture(
 ) -> Result<ProjectInput, CaptureFailure> {
     let mut walk = Walk::new(overlay, limits);
 
-    let (canonical_root, root_admission) = walk.admit_root(root)?;
-    let root_tree = Tree::root(canonical_root.as_path().to_path_buf());
+    let root_admission = walk.admit_root(root)?;
+    let root_tree = Tree::root(root_admission.canonical.clone());
 
     let manifest = walk.manifest_stage(&root_tree)?;
     walk.source_stage(&root_tree)?;
@@ -63,8 +56,7 @@ pub(super) fn capture(
         .map(|(alias, ids, ..)| CapturedDependency::new(alias, ids.as_deref()))
         .collect();
 
-    let Walk { batch, overlay, .. } = walk;
-    let (files, guards) = batch.into_parts();
+    let Walk { files, overlay, .. } = walk;
     let input = marrow_project::capture_origins(
         &manifest,
         files,
@@ -73,9 +65,6 @@ pub(super) fn capture(
         &limits.source,
     )
     .map_err(CaptureFailure::from_project)?;
-    // The guards keep every source native-path lease live across the pure-capture
-    // call; only now may they drop.
-    drop(guards);
 
     // Only after a successful pure capture: settle the lowest-original unmatched
     // overlay entry.
@@ -100,8 +89,6 @@ pub(crate) struct Tree {
     canonical: PathBuf,
     prefix: PathBuf,
     alias: Option<DependencyAlias>,
-    /// The dependency prefix's native-path lease, held for the tree's life.
-    _live: Option<LiveNativePath>,
 }
 
 impl Tree {
@@ -110,7 +97,6 @@ impl Tree {
             canonical,
             prefix: PathBuf::new(),
             alias: None,
-            _live: None,
         }
     }
 
@@ -151,6 +137,9 @@ struct TreeAdmission {
     role: PhysicalRole,
     handle: File,
     identity: ObjectIdentity,
+    /// The tree's native-path lease — the root's canonical path or the
+    /// dependency's declared prefix — held until the recheck.
+    _lease: PathLease,
 }
 
 impl TreeAdmission {
@@ -158,17 +147,13 @@ impl TreeAdmission {
         let handle = self
             .handle
             .metadata()
-            .map_err(|error| pathless(self.role, PhysicalOperation::Recheck, io_refusal(error)))?;
+            .map_err(|error| pathless(self.role, io_refusal(error)))?;
         let path = fs::symlink_metadata(&self.canonical)
-            .map_err(|error| pathless(self.role, PhysicalOperation::Recheck, io_refusal(error)))?;
+            .map_err(|error| pathless(self.role, io_refusal(error)))?;
         if ObjectIdentity::from_metadata(&handle) != self.identity
             || ObjectIdentity::from_metadata(&path) != self.identity
         {
-            return Err(pathless(
-                self.role,
-                PhysicalOperation::Recheck,
-                PhysicalRefusal::Changed,
-            ));
+            return Err(pathless(self.role, PhysicalRefusal::Changed));
         }
         Ok(())
     }
@@ -177,8 +162,8 @@ impl TreeAdmission {
 // ===== One bounded walk over every admitted tree ==============================
 
 /// One capture's shared accumulators: the native-path budget, the visited-entry
-/// and source-byte counters, the borrowed overlay, and the one growing captured
-/// batch. Every admitted tree walks through this one value, so a second root
+/// and source-byte counters, the borrowed overlay, and the captured files. Every
+/// admitted tree walks through this one value, so a second root
 /// continues the bounds the first one spent rather than restarting them.
 struct Walk<'a, 'o> {
     limits: &'a AdapterLimits,
@@ -186,7 +171,7 @@ struct Walk<'a, 'o> {
     overlay: OverlaySnapshot<'o>,
     visited: usize,
     total_bytes: usize,
-    batch: CapturedBatch,
+    files: Vec<CapturedFile>,
 }
 
 impl<'a, 'o> Walk<'a, 'o> {
@@ -197,36 +182,57 @@ impl<'a, 'o> Walk<'a, 'o> {
             overlay,
             visited: 0,
             total_bytes: 0,
-            batch: CapturedBatch::new(),
+            files: Vec::new(),
         }
     }
 
-    /// Reserve the caller-root-relative evidence spelling of an in-tree path.
-    fn reserve(
-        &mut self,
-        tree: &Tree,
-        role: PhysicalRole,
-        relative: &Path,
-    ) -> Result<LiveNativePath, CaptureFailure> {
-        reserve_fixed(&mut self.budget, self.limits, role, tree.evidence(relative))
+    /// Reserve the native units of `path` against the live and aggregate bounds.
+    fn lease(&mut self, role: PhysicalRole, path: &Path) -> Result<PathLease, CaptureFailure> {
+        self.budget
+            .reserve(
+                native_units(path),
+                self.limits.max_retained_path_units,
+                self.limits.max_path_work_units,
+            )
+            .map_err(|error| pathless(role, reserve_refusal(error)))
     }
 
-    fn admit_root(
+    /// Admit an object by its path inside one admitted tree: reserve its
+    /// caller-root-relative evidence spelling, inspect every component without
+    /// following links, then admit the terminal object with an opened handle whose
+    /// identity matches. Any refusal carries the evidence spelling.
+    fn admit(
         &mut self,
-        root: &Path,
-    ) -> Result<(CanonicalRoot, TreeAdmission), CaptureFailure> {
+        tree: &Tree,
+        relative: &Path,
+        role: PhysicalRole,
+        expected: PhysicalKind,
+    ) -> Result<AdmittedObject, CaptureFailure> {
+        let evidence = tree.evidence(relative);
+        let lease = self.lease(role, &evidence)?;
+        if let Err(refusal) = inspect_components(&tree.canonical, relative) {
+            return Err(physical(role, evidence, refusal));
+        }
+        let absolute = tree.canonical.join(relative);
+        match open_terminal(&absolute, expected) {
+            Ok((file, identity)) => Ok(AdmittedObject {
+                file,
+                absolute,
+                evidence,
+                _lease: lease,
+                role,
+                identity,
+            }),
+            Err(refusal) => Err(physical(role, evidence, refusal)),
+        }
+    }
+
+    fn admit_root(&mut self, root: &Path) -> Result<TreeAdmission, CaptureFailure> {
         // Caller-root work charge before canonicalization.
         self.budget
             .charge_work(native_units(root), self.limits.max_path_work_units)
-            .map_err(|error| {
-                pathless(
-                    PhysicalRole::Root,
-                    PhysicalOperation::Retain,
-                    reserve_refusal(error),
-                )
-            })?;
-        let canonical = fs::canonicalize(root)
-            .map_err(|error| root_io(PhysicalOperation::Canonicalize, error))?;
+            .map_err(|error| pathless(PhysicalRole::Root, reserve_refusal(error)))?;
+        let canonical = fs::canonicalize(root).map_err(root_io)?;
         let lease = self
             .budget
             .reserve(
@@ -234,26 +240,16 @@ impl<'a, 'o> Walk<'a, 'o> {
                 self.limits.max_retained_path_units,
                 self.limits.max_path_work_units,
             )
-            .map_err(|error| {
-                pathless(
-                    PhysicalRole::Root,
-                    PhysicalOperation::Retain,
-                    reserve_refusal(error),
-                )
-            })?;
-        let canonical_root = CanonicalRoot::new(canonical.clone(), lease);
-
+            .map_err(|error| pathless(PhysicalRole::Root, reserve_refusal(error)))?;
         let (handle, identity) = open_terminal(&canonical, PhysicalKind::Directory)
-            .map_err(|(operation, refusal)| pathless(PhysicalRole::Root, operation, refusal))?;
-        Ok((
-            canonical_root,
-            TreeAdmission {
-                canonical,
-                role: PhysicalRole::Root,
-                handle,
-                identity,
-            },
-        ))
+            .map_err(|refusal| pathless(PhysicalRole::Root, refusal))?;
+        Ok(TreeAdmission {
+            canonical,
+            role: PhysicalRole::Root,
+            handle,
+            identity,
+            _lease: lease,
+        })
     }
 
     /// Admit one declared dependency: resolve its relative path from the root's
@@ -266,46 +262,23 @@ impl<'a, 'o> Walk<'a, 'o> {
         declared: &Dependency,
     ) -> Result<(Tree, TreeAdmission), CaptureFailure> {
         let prefix = PathBuf::from(declared.path().as_str());
-        let live = reserve_fixed(
-            &mut self.budget,
-            self.limits,
-            PhysicalRole::Dependency,
-            prefix.clone(),
-        )?;
-        let canonical = match resolve_dependency(&root.canonical, declared) {
-            Ok(canonical) => canonical,
-            Err((operation, refusal)) => {
-                return Err(physical(
-                    PhysicalRole::Dependency,
-                    operation,
-                    live.into_operational(),
-                    refusal,
-                ));
-            }
-        };
-
-        let (handle, identity) = match open_terminal(&canonical, PhysicalKind::Directory) {
-            Ok(admitted) => admitted,
-            Err((operation, refusal)) => {
-                return Err(physical(
-                    PhysicalRole::Dependency,
-                    operation,
-                    live.into_operational(),
-                    refusal,
-                ));
-            }
-        };
+        let lease = self.lease(PhysicalRole::Dependency, &prefix)?;
+        let located =
+            |refusal: PhysicalRefusal| physical(PhysicalRole::Dependency, prefix.clone(), refusal);
+        let canonical = resolve_dependency(&root.canonical, declared).map_err(located)?;
+        let (handle, identity) =
+            open_terminal(&canonical, PhysicalKind::Directory).map_err(located)?;
         let tree = Tree {
             canonical: canonical.clone(),
             prefix,
             alias: Some(declared.alias().clone()),
-            _live: Some(live),
         };
         let admission = TreeAdmission {
             canonical,
             role: PhysicalRole::Dependency,
             handle,
             identity,
+            _lease: lease,
         };
 
         // A directory with no manifest, or with no source root to contribute
@@ -327,8 +300,7 @@ impl<'a, 'o> Walk<'a, 'o> {
     fn dependency_refusal(&mut self, tree: &Tree, reason: DependencyRefusal) -> CaptureFailure {
         physical(
             PhysicalRole::Dependency,
-            PhysicalOperation::Inspect,
-            OperationalPath::new(tree.prefix.clone()),
+            tree.prefix.clone(),
             PhysicalRefusal::Dependency { reason },
         )
     }
@@ -341,8 +313,7 @@ impl<'a, 'o> Walk<'a, 'o> {
         }
         let role = tree.manifest_role();
         let relative = Path::new(MANIFEST_FILE);
-        let live = self.reserve(tree, role, relative)?;
-        let mut admitted = admit_in_tree(tree, relative, live, role, PhysicalKind::RegularFile)?;
+        let mut admitted = self.admit(tree, relative, role, PhysicalKind::RegularFile)?;
         let bytes = admitted.read_bounded(
             ReadBudget::new(PhysicalBound::ManifestBytes, self.limits.manifest_bytes),
             None,
@@ -378,8 +349,7 @@ impl<'a, 'o> Walk<'a, 'o> {
         if !optional_absent(&tree.canonical.join(marrow_project::LEGACY_IDS_FILE)) {
             return Err(physical(
                 PhysicalRole::IdentityLedger,
-                PhysicalOperation::Inspect,
-                OperationalPath::new(tree.evidence(Path::new(marrow_project::LEGACY_IDS_FILE))),
+                tree.evidence(Path::new(marrow_project::LEGACY_IDS_FILE)),
                 PhysicalRefusal::LegacyLedgerPath {
                     home: if home_present {
                         LedgerHome::Occupied
@@ -393,11 +363,9 @@ impl<'a, 'o> Walk<'a, 'o> {
             return Ok(None);
         }
         let relative = Path::new(marrow_project::IDS_FILE);
-        let live = self.reserve(tree, PhysicalRole::IdentityLedger, relative)?;
-        let mut admitted = admit_in_tree(
+        let mut admitted = self.admit(
             tree,
             relative,
-            live,
             PhysicalRole::IdentityLedger,
             PhysicalKind::RegularFile,
         )?;
@@ -419,11 +387,9 @@ impl<'a, 'o> Walk<'a, 'o> {
         if optional_absent(&tree.canonical.join(SOURCE_DIR)) {
             return Ok(());
         }
-        let live = self.reserve(tree, PhysicalRole::SourceRoot, relative)?;
-        let root_dir = admit_in_tree(
+        let root_dir = self.admit(
             tree,
             relative,
-            live,
             PhysicalRole::SourceRoot,
             PhysicalKind::Directory,
         )?;
@@ -443,7 +409,7 @@ struct DirectoryFrame {
 pub(crate) struct Child {
     absolute: PathBuf,
     relative: PathBuf,
-    _lease: LiveNativePath,
+    _lease: PathLease,
 }
 
 impl Child {
@@ -485,8 +451,7 @@ impl DirectoryAdmission {
             let absolute = entry.map_err(|error| {
                 physical(
                     PhysicalRole::SourceDirectory,
-                    PhysicalOperation::Enumerate,
-                    OperationalPath::new(tree.evidence(relative)),
+                    tree.evidence(relative),
                     io_refusal(error),
                 )
             })?;
@@ -496,7 +461,6 @@ impl DirectoryAdmission {
                 // applies only because this extra success was observed.
                 return Err(pathless(
                     PhysicalRole::SourceDirectory,
-                    PhysicalOperation::Enumerate,
                     bound_refusal(
                         PhysicalBound::VisitedEntries,
                         limits.visited_entries,
@@ -520,7 +484,6 @@ impl DirectoryAdmission {
         if prospective_retained > limits.max_retained_path_units {
             return Err(pathless(
                 PhysicalRole::SourceDirectory,
-                PhysicalOperation::Retain,
                 bound_refusal(
                     PhysicalBound::RetainedPathUnits,
                     limits.max_retained_path_units,
@@ -532,7 +495,6 @@ impl DirectoryAdmission {
         if prospective_work > limits.max_path_work_units {
             return Err(pathless(
                 PhysicalRole::SourceDirectory,
-                PhysicalOperation::Retain,
                 bound_refusal(
                     PhysicalBound::PathWorkUnits,
                     limits.max_path_work_units,
@@ -549,18 +511,12 @@ impl DirectoryAdmission {
             let units = native_units(&absolute);
             let lease = budget
                 .reserve_live(units, limits.max_retained_path_units)
-                .map_err(|error| {
-                    pathless(
-                        PhysicalRole::SourceDirectory,
-                        PhysicalOperation::Retain,
-                        reserve_refusal(error),
-                    )
-                })?;
+                .map_err(|error| pathless(PhysicalRole::SourceDirectory, reserve_refusal(error)))?;
             let name = absolute.file_name().map(PathBuf::from).unwrap_or_default();
             children.push(Child {
                 relative: relative.join(&name),
-                _lease: LiveNativePath::new(absolute.clone(), lease),
                 absolute,
+                _lease: lease,
             });
         }
         budget.commit_work(aggregate).map_err(|_| dir_oom())?;
@@ -598,8 +554,7 @@ impl Walk<'_, '_> {
             let metadata = fs::symlink_metadata(&absolute).map_err(|error| {
                 physical(
                     PhysicalRole::SourceDirectory,
-                    PhysicalOperation::Inspect,
-                    OperationalPath::new(tree.evidence(&relative)),
+                    tree.evidence(&relative),
                     io_refusal(error),
                 )
             })?;
@@ -612,8 +567,7 @@ impl Walk<'_, '_> {
             if file_type.is_symlink() {
                 return Err(physical(
                     PhysicalRole::SourceDirectory,
-                    PhysicalOperation::Inspect,
-                    OperationalPath::new(tree.evidence(&relative)),
+                    tree.evidence(&relative),
                     PhysicalRefusal::Link {
                         position: LinkPosition::Terminal,
                     },
@@ -624,8 +578,7 @@ impl Walk<'_, '_> {
                 if child_depth > self.limits.traversal_depth {
                     return Err(physical(
                         PhysicalRole::SourceDirectory,
-                        PhysicalOperation::Enumerate,
-                        OperationalPath::new(tree.evidence(&relative)),
+                        tree.evidence(&relative),
                         bound_refusal(
                             PhysicalBound::TraversalDepth,
                             self.limits.traversal_depth,
@@ -633,11 +586,9 @@ impl Walk<'_, '_> {
                         ),
                     ));
                 }
-                let live = self.reserve(tree, PhysicalRole::SourceDirectory, &relative)?;
-                let admitted = admit_in_tree(
+                let admitted = self.admit(
                     tree,
                     &relative,
-                    live,
                     PhysicalRole::SourceDirectory,
                     PhysicalKind::Directory,
                 )?;
@@ -671,8 +622,7 @@ impl Walk<'_, '_> {
         let read_dir = fs::read_dir(dir.absolute()).map_err(|error| {
             physical(
                 PhysicalRole::SourceDirectory,
-                PhysicalOperation::Enumerate,
-                OperationalPath::new(tree.evidence(&relative)),
+                tree.evidence(&relative),
                 io_refusal(error),
             )
         })?;
@@ -696,28 +646,27 @@ impl Walk<'_, '_> {
     /// borrowed spelling, allocation-free check, valid-only spelling bound, checked
     /// materialization, pure validation, then overlay or disk bytes.
     fn admit_source(&mut self, tree: &Tree, relative: &Path) -> Result<(), CaptureFailure> {
-        if self.batch.len() >= self.limits.source.max_files() {
+        if self.files.len() >= self.limits.source.max_files() {
             // The file-count bound fires before opening the next file; it joins the
             // caller root to the offending path. The count spans every admitted
             // tree, so the offender may sit in a dependency.
             return Err(physical(
                 PhysicalRole::SourceFile,
-                PhysicalOperation::Retain,
-                OperationalPath::new(tree.evidence(relative)),
+                tree.evidence(relative),
                 bound_refusal(
                     PhysicalBound::SourceFiles,
                     self.limits.source.max_files(),
-                    self.batch.len() + 1,
+                    self.files.len() + 1,
                 ),
             ));
         }
 
         let Some(spelling) = forward_slash_checked(relative) else {
-            let live = self.reserve(tree, PhysicalRole::SourceFile, relative)?;
+            let evidence = tree.evidence(relative);
+            let _lease = self.lease(PhysicalRole::SourceFile, &evidence)?;
             return Err(physical(
                 PhysicalRole::SourceFile,
-                PhysicalOperation::Inspect,
-                live.into_operational(),
+                evidence,
                 PhysicalRefusal::InvalidPathEncoding,
             ));
         };
@@ -730,11 +679,9 @@ impl Walk<'_, '_> {
         // forwarded unmatched: this adapter neither inspects nor reclassifies it.
         CapturedFile::check_identity_bound(&spelling).map_err(CaptureFailure::from_project)?;
 
-        let live = self.reserve(tree, PhysicalRole::SourceFile, relative)?;
-        let mut admitted = admit_in_tree(
+        let mut admitted = self.admit(
             tree,
             relative,
-            live,
             PhysicalRole::SourceFile,
             PhysicalKind::RegularFile,
         )?;
@@ -761,16 +708,11 @@ impl Walk<'_, '_> {
             None => self.read_disk_body(&mut admitted)?,
         };
 
-        let guard = admitted.into_guard();
-        self.batch
-            .push(tree.captured(spelling, bytes), guard)
-            .map_err(|error| {
-                pathless(
-                    PhysicalRole::SourceFile,
-                    PhysicalOperation::Retain,
-                    reserve_refusal(error),
-                )
-            })
+        self.files
+            .try_reserve_exact(1)
+            .map_err(|_| pathless(PhysicalRole::SourceFile, oom_refusal()))?;
+        self.files.push(tree.captured(spelling, bytes));
+        Ok(())
     }
 
     fn read_disk_body(&mut self, admitted: &mut AdmittedObject) -> Result<Vec<u8>, CaptureFailure> {
@@ -814,12 +756,14 @@ impl ObjectIdentity {
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct DiskContentLength(u64);
 
-/// One admitted opened object: its handle, canonical path, live leased path, role,
-/// and pre-observed identity separated from disk-content length.
+/// One admitted opened object: its handle, canonical path, caller-root-relative
+/// evidence spelling with its lease, role, and pre-observed identity separated from
+/// disk-content length.
 struct AdmittedObject {
     file: File,
     absolute: PathBuf,
-    live: LiveNativePath,
+    evidence: PathBuf,
+    _lease: PathLease,
     role: PhysicalRole,
     identity: ObjectIdentity,
 }
@@ -827,14 +771,6 @@ struct AdmittedObject {
 impl AdmittedObject {
     fn absolute(&self) -> &Path {
         &self.absolute
-    }
-
-    fn relative(&self) -> &Path {
-        self.live.as_path()
-    }
-
-    fn into_guard(self) -> SourceGuard {
-        self.live.into_guard()
     }
 
     fn read_bounded(
@@ -846,13 +782,11 @@ impl AdmittedObject {
             .file
             .metadata()
             .map(|metadata| DiskContentLength(metadata.len()))
-            .map_err(|error| self.io_failure(PhysicalOperation::Recheck, error))?;
-        // Disjoint field borrows: the read buffer borrows `file`, the evidence borrows
-        // `live`.
+            .map_err(|error| self.io_failure(error))?;
         let bytes = read_bounded_loop(
             &mut self.file,
             self.role,
-            self.live.as_path(),
+            &self.evidence,
             primary,
             aggregate,
         )?;
@@ -889,36 +823,24 @@ impl AdmittedObject {
         let handle = self
             .file
             .metadata()
-            .map_err(|error| self.io_failure(PhysicalOperation::Recheck, error))?;
-        let path = fs::symlink_metadata(&self.absolute)
-            .map_err(|error| self.io_failure(PhysicalOperation::Recheck, error))?;
+            .map_err(|error| self.io_failure(error))?;
+        let path = fs::symlink_metadata(&self.absolute).map_err(|error| self.io_failure(error))?;
         Ok((handle, path))
     }
 
     fn changed(&self) -> CaptureFailure {
-        physical(
-            self.role,
-            PhysicalOperation::Recheck,
-            OperationalPath::new(self.relative().to_path_buf()),
-            PhysicalRefusal::Changed,
-        )
+        physical(self.role, self.evidence.clone(), PhysicalRefusal::Changed)
     }
 
-    fn io_failure(&self, operation: PhysicalOperation, error: io::Error) -> CaptureFailure {
-        physical(
-            self.role,
-            operation,
-            OperationalPath::new(self.relative().to_path_buf()),
-            io_refusal(error),
-        )
+    fn io_failure(&self, error: io::Error) -> CaptureFailure {
+        physical(self.role, self.evidence.clone(), io_refusal(error))
     }
 
     fn decode_utf8(&self, bytes: Vec<u8>) -> Result<String, CaptureFailure> {
         String::from_utf8(bytes).map_err(|_| {
             physical(
                 self.role,
-                PhysicalOperation::Read,
-                OperationalPath::new(self.relative().to_path_buf()),
+                self.evidence.clone(),
                 PhysicalRefusal::Io {
                     error: PhysicalIoError::new(io::Error::from(io::ErrorKind::InvalidData)),
                 },
@@ -933,123 +855,68 @@ impl AdmittedObject {
 /// links, so a dependency cannot be reached through one. The result is canonical by
 /// construction and is never handed to `canonicalize`, which would follow a link
 /// silently.
-fn resolve_dependency(root: &Path, declared: &Dependency) -> Result<PathBuf, BareRefusal> {
+fn resolve_dependency(root: &Path, declared: &Dependency) -> Result<PathBuf, PhysicalRefusal> {
     let mut current = root.to_path_buf();
     let mut segments = declared.path().segments().peekable();
     while let Some(segment) = segments.next() {
         if segment == ".." {
             if !current.pop() {
-                return Err((
-                    PhysicalOperation::Inspect,
-                    PhysicalRefusal::Missing {
-                        error: PhysicalIoError::new(io::Error::from(io::ErrorKind::NotFound)),
-                    },
-                ));
+                return Err(PhysicalRefusal::Missing {
+                    error: PhysicalIoError::new(io::Error::from(io::ErrorKind::NotFound)),
+                });
             }
             continue;
         }
         current.push(segment);
-        let metadata = fs::symlink_metadata(&current)
-            .map_err(|error| (PhysicalOperation::Inspect, io_refusal(error)))?;
+        let metadata = fs::symlink_metadata(&current).map_err(io_refusal)?;
         if metadata.file_type().is_symlink() {
-            return Err((
-                PhysicalOperation::Inspect,
-                PhysicalRefusal::Link {
-                    position: if segments.peek().is_none() {
-                        LinkPosition::Terminal
-                    } else {
-                        LinkPosition::Intermediate
-                    },
+            return Err(PhysicalRefusal::Link {
+                position: if segments.peek().is_none() {
+                    LinkPosition::Terminal
+                } else {
+                    LinkPosition::Intermediate
                 },
-            ));
+            });
         }
         if !metadata.is_dir() {
-            return Err((
-                PhysicalOperation::Inspect,
-                PhysicalRefusal::UnexpectedKind {
-                    expected: PhysicalKind::Directory,
-                    actual: classify_kind(&metadata),
-                },
-            ));
+            return Err(PhysicalRefusal::UnexpectedKind {
+                expected: PhysicalKind::Directory,
+            });
         }
     }
     if current == root {
-        return Err((
-            PhysicalOperation::Inspect,
-            PhysicalRefusal::Dependency {
-                reason: DependencyRefusal::SelfReference,
-            },
-        ));
+        return Err(PhysicalRefusal::Dependency {
+            reason: DependencyRefusal::SelfReference,
+        });
     }
     Ok(current)
 }
 
-/// Admit an object by its path inside one admitted tree: inspect every component
-/// without following links, then admit the terminal object with an opened handle
-/// whose identity matches. The live path carries the caller-root-relative evidence
-/// spelling, which terminalizes into the failure on any refusal.
-fn admit_in_tree(
-    tree: &Tree,
-    relative: &Path,
-    live: LiveNativePath,
-    role: PhysicalRole,
-    expected: PhysicalKind,
-) -> Result<AdmittedObject, CaptureFailure> {
-    if let Err((operation, refusal)) = inspect_components(&tree.canonical, relative, expected) {
-        return Err(physical(role, operation, live.into_operational(), refusal));
-    }
-    let absolute = tree.canonical.join(relative);
-    match open_terminal(&absolute, expected) {
-        Ok((file, identity)) => Ok(AdmittedObject {
-            file,
-            absolute,
-            live,
-            role,
-            identity,
-        }),
-        Err((operation, refusal)) => {
-            Err(physical(role, operation, live.into_operational(), refusal))
-        }
-    }
-}
-
 /// Inspect each relative component without following links: a symlink or wrong-kind
 /// intermediate refuses, a missing component is `Missing`.
-fn inspect_components(
-    root: &Path,
-    relative: &Path,
-    _terminal_kind: PhysicalKind,
-) -> Result<(), BareRefusal> {
+fn inspect_components(root: &Path, relative: &Path) -> Result<(), PhysicalRefusal> {
     let mut components = relative.components().peekable();
     let mut current = root.to_path_buf();
     while let Some(component) = components.next() {
         let terminal = components.peek().is_none();
         let Component::Normal(segment) = component else {
-            return Err((PhysicalOperation::Inspect, PhysicalRefusal::Changed));
+            return Err(PhysicalRefusal::Changed);
         };
         current.push(segment);
-        let metadata = fs::symlink_metadata(&current)
-            .map_err(|error| (PhysicalOperation::Inspect, io_refusal(error)))?;
+        let metadata = fs::symlink_metadata(&current).map_err(io_refusal)?;
         if metadata.file_type().is_symlink() {
-            return Err((
-                PhysicalOperation::Inspect,
-                PhysicalRefusal::Link {
-                    position: if terminal {
-                        LinkPosition::Terminal
-                    } else {
-                        LinkPosition::Intermediate
-                    },
+            return Err(PhysicalRefusal::Link {
+                position: if terminal {
+                    LinkPosition::Terminal
+                } else {
+                    LinkPosition::Intermediate
                 },
-            ));
+            });
         }
         if !terminal && !metadata.is_dir() {
-            return Err((
-                PhysicalOperation::Inspect,
-                PhysicalRefusal::UnexpectedKind {
-                    expected: PhysicalKind::Directory,
-                    actual: classify_kind(&metadata),
-                },
-            ));
+            return Err(PhysicalRefusal::UnexpectedKind {
+                expected: PhysicalKind::Directory,
+            });
         }
     }
     Ok(())
@@ -1060,35 +927,25 @@ fn inspect_components(
 fn open_terminal(
     absolute: &Path,
     expected: PhysicalKind,
-) -> Result<(File, ObjectIdentity), BareRefusal> {
-    let before = fs::symlink_metadata(absolute)
-        .map_err(|error| (PhysicalOperation::Inspect, io_refusal(error)))?;
+) -> Result<(File, ObjectIdentity), PhysicalRefusal> {
+    let before = fs::symlink_metadata(absolute).map_err(io_refusal)?;
     if before.file_type().is_symlink() {
-        return Err((
-            PhysicalOperation::Inspect,
-            PhysicalRefusal::Link {
-                position: LinkPosition::Terminal,
-            },
-        ));
+        return Err(PhysicalRefusal::Link {
+            position: LinkPosition::Terminal,
+        });
     }
     let actual = classify_kind(&before);
     if actual != expected {
-        return Err((
-            PhysicalOperation::Inspect,
-            PhysicalRefusal::UnexpectedKind { expected, actual },
-        ));
+        return Err(PhysicalRefusal::UnexpectedKind { expected });
     }
     let identity = ObjectIdentity::from_metadata(&before);
     if expected == PhysicalKind::RegularFile && identity.nlink != 1 {
-        return Err((PhysicalOperation::Inspect, PhysicalRefusal::Hardlink));
+        return Err(PhysicalRefusal::Hardlink);
     }
-    let file =
-        File::open(absolute).map_err(|error| (PhysicalOperation::Open, io_refusal(error)))?;
-    let opened = file
-        .metadata()
-        .map_err(|error| (PhysicalOperation::Open, io_refusal(error)))?;
+    let file = File::open(absolute).map_err(io_refusal)?;
+    let opened = file.metadata().map_err(io_refusal)?;
     if ObjectIdentity::from_metadata(&opened) != identity {
-        return Err((PhysicalOperation::Open, PhysicalRefusal::Changed));
+        return Err(PhysicalRefusal::Changed);
     }
     Ok((file, identity))
 }
@@ -1118,26 +975,16 @@ fn read_bounded_loop(
                 Ok(read) => break read,
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) => {
-                    return Err(physical(
-                        role,
-                        PhysicalOperation::Read,
-                        OperationalPath::new(relative.to_path_buf()),
-                        io_refusal(error),
-                    ));
+                    return Err(physical(role, relative.to_path_buf(), io_refusal(error)));
                 }
             }
         };
         if read == 0 {
             return Ok(bytes);
         }
-        bytes.try_reserve_exact(read).map_err(|_| {
-            physical(
-                role,
-                PhysicalOperation::Read,
-                OperationalPath::new(relative.to_path_buf()),
-                oom_refusal(),
-            )
-        })?;
+        bytes
+            .try_reserve_exact(read)
+            .map_err(|_| physical(role, relative.to_path_buf(), oom_refusal()))?;
         bytes.extend_from_slice(&chunk[..read]);
         if primary.actual(bytes.len()) > primary.limit {
             return Err(read_bound(role, relative, primary, bytes.len()));
@@ -1182,45 +1029,6 @@ impl ReadBudget {
 
     fn actual(self, additional: usize) -> usize {
         self.already_used.saturating_add(additional)
-    }
-}
-
-// ===== Captured batch =========================================================
-
-/// The one-to-one captured files and live source guards. Both vectors are checked
-/// before a spelling relinquishes its owner, and the guards stay live across the
-/// synchronous pure-capture call.
-struct CapturedBatch {
-    files: Vec<CapturedFile>,
-    guards: Vec<SourceGuard>,
-}
-
-impl CapturedBatch {
-    fn new() -> Self {
-        Self {
-            files: Vec::new(),
-            guards: Vec::new(),
-        }
-    }
-
-    fn len(&self) -> usize {
-        self.files.len()
-    }
-
-    fn push(&mut self, file: CapturedFile, guard: SourceGuard) -> Result<(), ReserveError> {
-        self.files
-            .try_reserve_exact(1)
-            .map_err(|_| ReserveError::Overflow)?;
-        self.guards
-            .try_reserve_exact(1)
-            .map_err(|_| ReserveError::Overflow)?;
-        self.files.push(file);
-        self.guards.push(guard);
-        Ok(())
-    }
-
-    fn into_parts(self) -> (Vec<CapturedFile>, Vec<SourceGuard>) {
-        (self.files, self.guards)
     }
 }
 
@@ -1275,32 +1083,27 @@ fn reserve_refusal(error: ReserveError) -> PhysicalRefusal {
 }
 
 fn dir_oom() -> CaptureFailure {
-    pathless(
-        PhysicalRole::SourceDirectory,
-        PhysicalOperation::Retain,
-        oom_refusal(),
-    )
+    pathless(PhysicalRole::SourceDirectory, oom_refusal())
 }
 
-fn physical(
-    role: PhysicalRole,
-    operation: PhysicalOperation,
-    path: OperationalPath,
-    refusal: PhysicalRefusal,
-) -> CaptureFailure {
-    CaptureFailure::from_physical(PhysicalFailure::new(role, operation, Some(path), refusal))
+fn physical(role: PhysicalRole, path: PathBuf, refusal: PhysicalRefusal) -> CaptureFailure {
+    CaptureFailure::from_physical(PhysicalFailure {
+        role,
+        path: Some(path),
+        refusal,
+    })
 }
 
-fn pathless(
-    role: PhysicalRole,
-    operation: PhysicalOperation,
-    refusal: PhysicalRefusal,
-) -> CaptureFailure {
-    CaptureFailure::from_physical(PhysicalFailure::new(role, operation, None, refusal))
+fn pathless(role: PhysicalRole, refusal: PhysicalRefusal) -> CaptureFailure {
+    CaptureFailure::from_physical(PhysicalFailure {
+        role,
+        path: None,
+        refusal,
+    })
 }
 
-fn root_io(operation: PhysicalOperation, error: io::Error) -> CaptureFailure {
-    pathless(PhysicalRole::Root, operation, io_refusal(error))
+fn root_io(error: io::Error) -> CaptureFailure {
+    pathless(PhysicalRole::Root, io_refusal(error))
 }
 
 fn read_bound(
@@ -1311,27 +1114,9 @@ fn read_bound(
 ) -> CaptureFailure {
     physical(
         role,
-        PhysicalOperation::Read,
-        OperationalPath::new(relative.to_path_buf()),
+        relative.to_path_buf(),
         bound_refusal(budget.bound, budget.limit, budget.actual(additional)),
     )
-}
-
-fn reserve_fixed(
-    budget: &mut PathBudget,
-    limits: &AdapterLimits,
-    role: PhysicalRole,
-    relative: PathBuf,
-) -> Result<LiveNativePath, CaptureFailure> {
-    let units = native_units(&relative);
-    let lease = budget
-        .reserve(
-            units,
-            limits.max_retained_path_units,
-            limits.max_path_work_units,
-        )
-        .map_err(|error| pathless(role, PhysicalOperation::Retain, reserve_refusal(error)))?;
-    Ok(LiveNativePath::new(relative, lease))
 }
 
 /// Only `NotFound` means an absent optional role; any other error is admitted and

@@ -13,7 +13,7 @@
 use std::cmp::Ordering;
 use std::fmt;
 
-use marrow_project::FileIdentity;
+use marrow_project::{FileIdentity, SourcePathReason};
 
 use crate::failure::CaptureFailure;
 use crate::limits::AdapterLimits;
@@ -39,25 +39,8 @@ impl<'a> OverlayEntry<'a> {
 }
 
 /// The exact zero-based position of an entry in the consumer's original input slice.
-/// It carries no capability: a copied index may appear in a caller-fabricated
-/// failure, so a producer proves index provenance separately. No public or unchecked
-/// conversion creates one from a `usize`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct OverlayEntryIndex(usize);
-
-impl OverlayEntryIndex {
-    /// Brand one exact original-slice position. Crate-private: only the constructor
-    /// mints one while enumerating the borrowed input.
-    const fn new(index: usize) -> Self {
-        Self(index)
-    }
-
-    /// Recover the exact zero-based position in the caller's original slice.
-    #[must_use]
-    pub const fn get(self) -> usize {
-        self.0
-    }
-}
+pub(crate) struct OverlayEntryIndex(pub(crate) usize);
 
 /// The settlement disposition of one indexed overlay entry.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -124,7 +107,7 @@ impl<'a> OverlaySnapshot<'a> {
 
         let mut total_bytes = 0usize;
         for (position, entry) in entries.iter().enumerate() {
-            let original = OverlayEntryIndex::new(position);
+            let original = OverlayEntryIndex(position);
             if entry.relative_path.len() > limits.overlay_key_bytes {
                 return Err(bound(
                     OverlayBound::KeyBytes,
@@ -162,7 +145,7 @@ impl<'a> OverlaySnapshot<'a> {
         for (position, entry) in entries.iter().enumerate() {
             if !is_canonical_relative_path(entry.relative_path) {
                 return Err(OverlayFailure::new(OverlayReason::Noncanonical {
-                    entry: OverlayEntryIndex::new(position),
+                    entry: OverlayEntryIndex(position),
                 }));
             }
         }
@@ -174,7 +157,7 @@ impl<'a> OverlaySnapshot<'a> {
                 .iter()
                 .enumerate()
                 .map(|(position, entry)| OverlayIndexRow {
-                    original: OverlayEntryIndex::new(position),
+                    original: OverlayEntryIndex(position),
                     entry,
                     disposition: OverlayDisposition::Pending,
                 }),
@@ -267,30 +250,16 @@ fn first_duplicate(
 }
 
 /// Whether a key is a canonical consumer-neutral root-relative spelling: nonempty,
-/// no root/prefix/empty/`.`/`..` component, no trailing separator, backslash, control,
-/// or drive prefix. Case and Unicode-normalization variants are not excluded.
+/// relative, no empty, `.`, or `..` segment, no trailing separator, backslash, or
+/// control character. The pure identity owner classifies the spelling; where the
+/// key lies and what it names are membership questions capture settles.
 fn is_canonical_relative_path(path: &str) -> bool {
-    if path.is_empty()
-        || path.starts_with('/')
-        || path.ends_with('/')
-        || path.contains('\\')
-        || path.chars().any(|character| character.is_ascii_control())
-    {
-        return false;
-    }
-    let mut components = path.split('/');
-    let Some(first) = components.next() else {
-        return false;
-    };
-    if is_drive_prefix(first) || matches!(first, "" | "." | "..") {
-        return false;
-    }
-    components.all(|component| !matches!(component, "" | "." | ".."))
-}
-
-fn is_drive_prefix(component: &str) -> bool {
-    let bytes = component.as_bytes();
-    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+    !matches!(
+        FileIdentity::check(path),
+        Err(SourcePathReason::NonCanonical
+            | SourcePathReason::Absolute
+            | SourcePathReason::Escapes)
+    )
 }
 
 fn reserve_index<'a>(
@@ -329,7 +298,7 @@ fn bound(
 
 /// A bounded overlay resource enforced before physical membership.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OverlayBound {
+pub(crate) enum OverlayBound {
     /// Number of raw borrowed entries.
     Entries,
     /// Bytes in one root-relative key.
@@ -343,7 +312,7 @@ pub enum OverlayBound {
 /// Why an overlay snapshot or membership was refused. Per-entry evidence uses the
 /// zero-based original-slice [`OverlayEntryIndex`].
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum OverlayReason {
+pub(crate) enum OverlayReason {
     /// A raw overlay resource exceeded its fixed limit.
     Bound {
         /// Resource that exceeded its limit.
@@ -384,8 +353,9 @@ pub enum OverlayReason {
     },
 }
 
-/// A typed overlay refusal. All evidence is publicly observable through
-/// [`OverlayFailure::reason`].
+/// A typed overlay refusal. A consumer carries it through
+/// [`CaptureFailure::from_overlay_input`] and observes it through the
+/// presentation facade.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OverlayFailure {
     reason: OverlayReason,
@@ -398,7 +368,7 @@ impl OverlayFailure {
     }
 
     /// The typed refusal evidence.
-    pub fn reason(&self) -> &OverlayReason {
+    pub(crate) fn reason(&self) -> &OverlayReason {
         &self.reason
     }
 }

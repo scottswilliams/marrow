@@ -9,7 +9,7 @@
 //! presentation cap or truncation.
 
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use marrow_codes::Code;
 use marrow_project::Position;
@@ -19,7 +19,6 @@ use crate::failure::{
     PhysicalFailure, PhysicalKind, PhysicalRefusal, PhysicalRole,
 };
 use crate::overlay::{OverlayBound, OverlayReason};
-use crate::path::OperationalPath;
 use crate::publication::IdsPublicationMarker;
 
 /// The required manifest file, joined to the caller root for a located fault.
@@ -102,39 +101,33 @@ impl<'a> CapturePresentation<'a> {
         // A refusal met while locating a declared dependency reads as one sentence
         // about the declared path, whatever physical evidence produced it. A bound
         // or raw I/O fault keeps its own body, which already names its numbers.
-        if failure.role() == PhysicalRole::Dependency
-            && let Some(tail) = dependency_tail(failure.refusal())
+        if failure.role == PhysicalRole::Dependency
+            && let Some(tail) = location_tail(&failure.refusal)
         {
-            sink.write_str("dependency ")?;
-            self.write_joined(sink, failure.path())?;
-            return sink.write_str(tail);
+            return self.write_dependency(sink, failure, tail);
         }
-        match failure.refusal() {
-            PhysicalRefusal::Dependency { .. } => {
-                sink.write_str("dependency ")?;
-                self.write_joined(sink, failure.path())?;
-                sink.write_str(
-                    dependency_tail(failure.refusal()).expect("a dependency refusal has prose"),
-                )
+        match &failure.refusal {
+            PhysicalRefusal::Dependency { reason } => {
+                self.write_dependency(sink, failure, reason_tail(*reason))
             }
             PhysicalRefusal::Missing { error } | PhysicalRefusal::Io { error } => {
                 sink.write_str("failed to read ")?;
-                self.write_joined(sink, failure.path())?;
+                self.write_joined(sink, failure.path.as_deref())?;
                 if os_prose {
                     write!(sink, ": {}", error.as_io_error())?;
                 }
                 Ok(())
             }
-            PhysicalRefusal::Link { position } => match failure.role() {
+            PhysicalRefusal::Link { position } => match failure.role {
                 PhysicalRole::SourceRoot => {
                     sink.write_str("source root ")?;
-                    self.write_joined(sink, failure.path())?;
+                    self.write_joined(sink, failure.path.as_deref())?;
                     sink.write_str(
                         " is a symlink; a project's `src` must be a real directory inside the project",
                     )
                 }
                 PhysicalRole::IdentityLedger => {
-                    self.write_joined(sink, failure.path())?;
+                    self.write_joined(sink, failure.path.as_deref())?;
                     sink.write_str(
                         " is a symlink; the identity artifact must be a real file inside the project",
                     )
@@ -151,10 +144,10 @@ impl<'a> CapturePresentation<'a> {
                 bound,
                 limit,
                 actual,
-            } => self.write_bound(sink, failure.path(), *bound, *limit, *actual),
+            } => self.write_bound(sink, failure.path.as_deref(), *bound, *limit, *actual),
             PhysicalRefusal::InvalidPathEncoding => {
                 sink.write_str("source path ")?;
-                self.write_joined(sink, failure.path())?;
+                self.write_joined(sink, failure.path.as_deref())?;
                 sink.write_str(" is not valid UTF-8")
             }
             PhysicalRefusal::UnexpectedKind { expected, .. } => {
@@ -170,7 +163,7 @@ impl<'a> CapturePresentation<'a> {
                 sink.write_str(" changed during capture")
             }
             PhysicalRefusal::LegacyLedgerPath { home } => {
-                self.write_joined(sink, failure.path())?;
+                self.write_joined(sink, failure.path.as_deref())?;
                 sink.write_str(match home {
                     LedgerHome::Vacant => {
                         " is at the ledger's retired root location; its home is `.marrow/ids` — \
@@ -182,24 +175,35 @@ impl<'a> CapturePresentation<'a> {
                     }
                 })
             }
-            PhysicalRefusal::UnsupportedPlatform => Ok(()),
         }
+    }
+
+    /// Write the one-sentence dependency body: the declared path and its tail.
+    fn write_dependency(
+        &self,
+        sink: &mut impl fmt::Write,
+        failure: &PhysicalFailure,
+        tail: &str,
+    ) -> fmt::Result {
+        sink.write_str("dependency ")?;
+        self.write_joined(sink, failure.path.as_deref())?;
+        sink.write_str(tail)
     }
 
     /// Write the subject of a terse physical body: the caller root joined to the
     /// charged path when one is held, or a role noun for a pathless refusal, so a
     /// pathless fault never renders a dangling prefix.
     fn write_subject(&self, sink: &mut impl fmt::Write, failure: &PhysicalFailure) -> fmt::Result {
-        match failure.path() {
-            Some(path) => write!(sink, "{}", self.joined(path).display()),
-            None => sink.write_str(role_noun(failure.role())),
+        match &failure.path {
+            Some(path) => write!(sink, "{}", self.root.join(path).display()),
+            None => sink.write_str(role_noun(failure.role)),
         }
     }
 
     fn write_bound(
         &self,
         sink: &mut impl fmt::Write,
-        path: Option<&OperationalPath>,
+        path: Option<&Path>,
         bound: PhysicalBound,
         limit: usize,
         actual: usize,
@@ -273,7 +277,7 @@ impl<'a> CapturePresentation<'a> {
     fn write_capture_limit(
         &self,
         sink: &mut impl fmt::Write,
-        path: Option<&OperationalPath>,
+        path: Option<&Path>,
         actual: usize,
         limit: usize,
         explanation: &str,
@@ -282,32 +286,24 @@ impl<'a> CapturePresentation<'a> {
         sink.write_str("`")?;
         if join {
             self.write_joined(sink, path)?;
-        } else {
-            write_direct(sink, path)?;
+        } else if let Some(path) = path {
+            write!(sink, "{}", path.display())?;
         }
         write!(sink, "` capture is {actual}, {explanation} ({limit})")
     }
 
     /// Write the caller root joined to a root-relative path.
-    fn write_joined(
-        &self,
-        sink: &mut impl fmt::Write,
-        path: Option<&OperationalPath>,
-    ) -> fmt::Result {
+    fn write_joined(&self, sink: &mut impl fmt::Write, path: Option<&Path>) -> fmt::Result {
         match path {
-            Some(path) => write!(sink, "{}", self.joined(path).display()),
+            Some(path) => write!(sink, "{}", self.root.join(path).display()),
             None => Ok(()),
         }
-    }
-
-    fn joined(&self, path: &OperationalPath) -> PathBuf {
-        self.root.join(path.as_path())
     }
 }
 
 /// The one-sentence tail a dependency-location refusal renders after its declared
 /// path, or `None` for a refusal whose own body already stands on its numbers.
-fn dependency_tail(refusal: &PhysicalRefusal) -> Option<&'static str> {
+fn location_tail(refusal: &PhysicalRefusal) -> Option<&'static str> {
     Some(match refusal {
         PhysicalRefusal::Missing { .. } => " does not exist",
         PhysicalRefusal::Link { .. } => {
@@ -315,23 +311,25 @@ fn dependency_tail(refusal: &PhysicalRefusal) -> Option<&'static str> {
              relative to this project"
         }
         PhysicalRefusal::UnexpectedKind { .. } => " is not a directory",
-        PhysicalRefusal::Dependency { reason } => match reason {
-            DependencyRefusal::NotAProject => {
-                " is not a Marrow project; a dependency path names a directory holding \
-                 `marrow.toml` and `src`"
-            }
-            DependencyRefusal::InvalidManifest => {
-                " has an invalid `marrow.toml`; check that project on its own"
-            }
-            DependencyRefusal::SelfReference => {
-                " is this project; a project does not depend on itself"
-            }
-            DependencyRefusal::Transitive => {
-                " declares dependencies of its own; a dependency of a dependency is not admitted"
-            }
-        },
         _ => return None,
     })
+}
+
+/// The tail a resolved directory that cannot serve as a dependency renders.
+fn reason_tail(reason: DependencyRefusal) -> &'static str {
+    match reason {
+        DependencyRefusal::NotAProject => {
+            " is not a Marrow project; a dependency path names a directory holding \
+             `marrow.toml` and `src`"
+        }
+        DependencyRefusal::InvalidManifest => {
+            " has an invalid `marrow.toml`; check that project on its own"
+        }
+        DependencyRefusal::SelfReference => " is this project; a project does not depend on itself",
+        DependencyRefusal::Transitive => {
+            " declares dependencies of its own; a dependency of a dependency is not admitted"
+        }
+    }
 }
 
 /// The role noun that names the subject of a pathless physical refusal.
@@ -356,14 +354,6 @@ fn expected_noun(expected: PhysicalKind) -> &'static str {
     }
 }
 
-/// Write a root-relative path directly, without joining the caller root.
-fn write_direct(sink: &mut impl fmt::Write, path: Option<&OperationalPath>) -> fmt::Result {
-    match path {
-        Some(path) => write!(sink, "{}", path.as_path().display()),
-        None => Ok(()),
-    }
-}
-
 /// The Physical code classification: pure source families are preserved and the new
 /// physical faults use the operational `io.read` family.
 fn physical_code(failure: &PhysicalFailure) -> Code {
@@ -371,12 +361,12 @@ fn physical_code(failure: &PhysicalFailure) -> Code {
     // declared path names a usable project — so every refusal in that role carries
     // the one code, whatever physical evidence it holds. A dependency's own source,
     // directory, and ledger roles classify exactly as the root project's do.
-    if failure.role() == PhysicalRole::Dependency {
+    if failure.role == PhysicalRole::Dependency {
         return Code::ProjectDependencyPath;
     }
-    match failure.refusal() {
+    match &failure.refusal {
         PhysicalRefusal::Missing { .. } | PhysicalRefusal::Io { .. } => Code::IoRead,
-        PhysicalRefusal::Link { .. } => match failure.role() {
+        PhysicalRefusal::Link { .. } => match failure.role {
             PhysicalRole::IdentityLedger => Code::ProjectIdsCorrupt,
             PhysicalRole::SourceRoot => Code::ProjectSourcePath,
             _ => Code::IoRead,
@@ -397,14 +387,10 @@ fn physical_code(failure: &PhysicalFailure) -> Code {
         PhysicalRefusal::Dependency { .. } => Code::ProjectDependencyPath,
         PhysicalRefusal::UnexpectedKind { .. }
         | PhysicalRefusal::Hardlink
-        | PhysicalRefusal::Changed
-        | PhysicalRefusal::UnsupportedPlatform => Code::IoRead,
+        | PhysicalRefusal::Changed => Code::IoRead,
     }
 }
 
-/// The Overlay message. Overlay input faults are consumer-neutral and are not
-/// reachable through any current CLI capture; this rendering is for the later
-/// language-server consumer.
 /// Render a live publication marker. The two markers carry different remedies:
 /// a durable claim is recovered by `marrow run`, while an entry that was never
 /// durably claimed is retained for an operator because nothing can prove it
@@ -426,6 +412,9 @@ fn write_publication_pending(
     })
 }
 
+/// The Overlay message. Overlay input faults are consumer-neutral and are not
+/// reachable through any current CLI capture; this rendering is for the
+/// language-server consumer.
 fn write_overlay(sink: &mut impl fmt::Write, reason: &OverlayReason) -> fmt::Result {
     match reason {
         OverlayReason::Bound {

@@ -1,5 +1,5 @@
 //! The version-control ignore entry that keeps this project's publication
-//! transients untracked, and the matching that decides whether it does.
+//! transients untracked.
 //!
 //! Every removal the publication protocol performs rests on these names never
 //! being tracked: a committed transient is recreated by every checkout, and a
@@ -50,8 +50,8 @@ const IGNORE_READ_CEILING: usize = 4096;
 ///
 /// Four states refuse the acquisition with [`IdsRefusal::UntrackedContract`]:
 /// an entry that cannot be read, one past the read bound, one missing names
-/// that cannot be written, and one whose `!` line covers a name this owner
-/// would otherwise have kept ignored. An entry that already names every
+/// that cannot be written, and one carrying a `!` line that names one of them
+/// exactly. An entry that already names every
 /// transient is left exactly as found, whatever its mode.
 pub(super) fn install_untracked_ignore(meta: &AdmittedDir) -> Result<(), IdsPublicationError> {
     let name = admitted_name(IGNORE_NAME);
@@ -188,184 +188,20 @@ fn ignore_names_entry(found: &[u8], entry: &str) -> bool {
     ignore_lines(found).any(|line| line.strip_prefix(b"/").unwrap_or(line) == entry.as_bytes())
 }
 
-/// Whether the ignore entry re-includes one of this owner's names with a
-/// negation line.
+/// Whether the ignore entry re-includes `entry` with a negation line naming it
+/// exactly: `!name` or `!/name`.
 ///
 /// A positive line naming a transient does not settle the question on its own:
-/// a later `!` line covering the same name puts it back, and Git takes the last
-/// match, so such an entry does not establish the contract.
-///
-/// A negation need not spell the name to cover it — `!*`, `!*.stage`, and
-/// `!ids.publish.*` each re-include one. So the pattern is matched rather than
-/// compared, over the gitignore syntax that can reach a name in this directory:
-/// `*`, `?`, and `[...]`, with an optional leading or trailing `/`. A pattern
-/// naming a path below this directory cannot reach these entries, which sit
-/// directly in `.marrow`, so it does not refuse.
+/// a later `!` line naming it puts it back, and Git takes the last match, so
+/// such an entry does not establish the contract. The names are fixed and the
+/// file is this owner's, so the negation it can meet is one typed against a name
+/// in it; gitignore pattern syntax is not modelled here.
 fn ignore_negates_entry(found: &[u8], entry: &str) -> bool {
     ignore_lines(found).any(|line| {
-        let Some(pattern) = line.strip_prefix(b"!") else {
-            return false;
-        };
-        // A trailing slash names a directory; these entries are not one, and
-        // the slash is not part of the pattern either way.
-        let pattern = pattern.strip_suffix(b"/").unwrap_or(pattern);
-        // A leading slash anchors to the directory holding the ignore file,
-        // which is where these entries are.
-        let pattern = pattern.strip_prefix(b"/").unwrap_or(pattern);
-        pattern_reaches(pattern, entry.as_bytes())
+        line.strip_prefix(b"!")
+            .map(|name| name.strip_prefix(b"/").unwrap_or(name))
+            .is_some_and(|name| name == entry.as_bytes())
     })
-}
-
-/// Whether an ignore pattern can match an entry lying directly in the directory
-/// its ignore file governs.
-///
-/// A `**` component matches zero or more directories, so it can vanish
-/// entirely: `**/ids.publish.stage` names the entry sitting right here. Scope is
-/// therefore decided by what remains once those components are dropped. One
-/// component can still name a directly contained entry; two or more require a
-/// subdirectory, and these entries never sit in one.
-fn pattern_reaches(pattern: &[u8], name: &[u8]) -> bool {
-    let mut components = pattern
-        .split(|byte| *byte == b'/')
-        .filter(|component| !component.is_empty() && *component != b"**".as_slice());
-    let Some(only) = components.next() else {
-        // Nothing but `**` components: the pattern reaches everything.
-        return true;
-    };
-    if components.next().is_some() {
-        return false;
-    }
-    wildcard_covers(only, name)
-}
-
-/// Whether one ignore-file path-component pattern matches `name` exactly.
-///
-/// The supported syntax is what can appear in a single component: `*` for any
-/// run of characters, `?` for one, and `[...]` for a set, with `!` or `^`
-/// negating the set and a backslash escaping the next character. A `[` that
-/// never closes is a literal, as Git treats it.
-///
-/// # Which way this errs
-///
-/// A pattern wrongly read as reaching one of these names costs a refusal an
-/// operator clears by editing one line; one wrongly read as reaching nothing
-/// lets a transient stay tracked, which every removal bound in this protocol
-/// assumes away. So every approximation is deliberately toward refusing: a POSIX
-/// class inside a set matches any character rather than having its members read,
-/// and a trailing `/**` — which in Git names a directory's contents rather than
-/// the directory — is read as reaching the name.
-///
-/// Backtracking is bounded by construction: the only branch point is a `*`, and
-/// the greedy retry walks forward through `name` without ever revisiting an
-/// earlier star. Both inputs are bounded already — a name from this module's
-/// fixed set, and a line from a file read under a 4 KiB ceiling.
-fn wildcard_covers(pattern: &[u8], name: &[u8]) -> bool {
-    let (mut pattern_at, mut name_at) = (0usize, 0usize);
-    // Where to resume if the current `*` turns out to have matched too little.
-    let (mut star_at, mut retry_at) = (None, 0usize);
-    while name_at < name.len() {
-        let advanced = match pattern.get(pattern_at) {
-            Some(b'*') => {
-                star_at = Some(pattern_at);
-                pattern_at += 1;
-                retry_at = name_at;
-                continue;
-            }
-            Some(b'?') => {
-                pattern_at += 1;
-                name_at += 1;
-                continue;
-            }
-            Some(b'[') => match match_set(&pattern[pattern_at..], name[name_at]) {
-                Some((true, next)) => {
-                    pattern_at += next;
-                    name_at += 1;
-                    continue;
-                }
-                Some((false, _)) => false,
-                // An unclosed set is a literal `[`.
-                None => name[name_at] == b'[',
-            },
-            Some(b'\\') => pattern.get(pattern_at + 1) == Some(&name[name_at]),
-            Some(byte) => *byte == name[name_at],
-            None => false,
-        };
-        if advanced {
-            pattern_at += if pattern.get(pattern_at) == Some(&b'\\') {
-                2
-            } else {
-                1
-            };
-            name_at += 1;
-            continue;
-        }
-        // No match here: give the last `*` one more byte, or fail.
-        let Some(star) = star_at else {
-            return false;
-        };
-        pattern_at = star + 1;
-        retry_at += 1;
-        name_at = retry_at;
-    }
-    pattern[pattern_at..].iter().all(|byte| *byte == b'*')
-}
-
-/// Match one `[...]` set against `byte`, returning whether it matched and the
-/// pattern offset just past the set. `None` when the set never closes, which
-/// Git reads as a literal `[`.
-///
-/// A set carrying a POSIX class — `[[:alpha:]]` and its family — is answered as
-/// matching, whatever the byte and whatever the negation, rather than having the
-/// class's members read; see the over-approximation [`wildcard_covers`] states.
-fn match_set(pattern: &[u8], byte: u8) -> Option<(bool, usize)> {
-    let mut at = 1;
-    let negated = matches!(pattern.get(at), Some(b'!' | b'^'));
-    if negated {
-        at += 1;
-    }
-    let mut matched = false;
-    let mut carries_class = false;
-    let mut first = true;
-    while at < pattern.len() {
-        if pattern[at] == b']' && !first {
-            let verdict = if carries_class {
-                true
-            } else {
-                matched != negated
-            };
-            return Some((verdict, at + 1));
-        }
-        first = false;
-        if pattern[at] == b'[' && pattern.get(at + 1) == Some(&b':') {
-            let mut scan = at + 2;
-            loop {
-                let (colon, close) = (pattern.get(scan)?, pattern.get(scan + 1)?);
-                if *colon == b':' && *close == b']' {
-                    break;
-                }
-                scan += 1;
-            }
-            carries_class = true;
-            at = scan + 2;
-            continue;
-        }
-        let low = if pattern[at] == b'\\' {
-            at += 1;
-            *pattern.get(at)?
-        } else {
-            pattern[at]
-        };
-        // A range, unless the `-` is the set's last character.
-        if pattern.get(at + 1) == Some(&b'-') && pattern.get(at + 2).is_some_and(|end| *end != b']')
-        {
-            matched |= (low..=pattern[at + 2]).contains(&byte);
-            at += 3;
-        } else {
-            matched |= low == byte;
-            at += 1;
-        }
-    }
-    None
 }
 
 /// Whether the bytes read from the ignore entry already carry this owner's

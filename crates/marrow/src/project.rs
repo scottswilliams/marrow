@@ -55,7 +55,7 @@ pub(crate) fn capture_project(root: &Path) -> Result<ProjectInput, CaptureFailur
 /// names, creating nothing and taking no lock, so an ordinary run neither writes
 /// nor locks anything here.
 pub(crate) fn recover_identity_publication(root: &Path) -> Result<(), CaptureFailure> {
-    if marrow_project_fs::ids_publication_marker(root).is_none() {
+    if !marrow_project_fs::ids_publication_pending(root) {
         return Ok(());
     }
     let mut guard = ProjectMetadataWriteGuard::acquire(root).map_err(publication_projection)?;

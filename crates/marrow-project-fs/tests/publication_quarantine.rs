@@ -16,8 +16,7 @@ mod common;
 
 use common::Project;
 use marrow_project_fs::{
-    IdsPublication, IdsPublishOutcome, IdsRefusal, OverlaySnapshot, ProjectMetadataWriteGuard,
-    capture_project,
+    IdsPublication, IdsPublishOutcome, OverlaySnapshot, ProjectMetadataWriteGuard, capture_project,
 };
 
 /// A claim this process abandons costs it the capability to publish again.
@@ -60,7 +59,6 @@ fn dropping_a_durable_claim_quarantines_publication_in_this_process() {
             panic!("an off-map reading after the claim must be reported as pending: {settled:?}")
         }
     };
-    assert_eq!(pending.cause().refusal(), IdsRefusal::Corrupt);
     assert!(
         project.meta().join("ids.pending").exists(),
         "the durable marker is what makes the interruption affine"
@@ -72,7 +70,6 @@ fn dropping_a_durable_claim_quarantines_publication_in_this_process() {
 
     let refusal = ProjectMetadataWriteGuard::acquire(project.path())
         .expect_err("a quarantined process acquires no write owner");
-    assert_eq!(refusal.refusal(), IdsRefusal::Quarantined);
     assert_eq!(refusal.code(), Code::ProjectIdsPublicationPending);
     assert!(
         refusal.to_string().contains("publishes no more"),

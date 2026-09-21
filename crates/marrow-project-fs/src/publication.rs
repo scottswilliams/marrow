@@ -113,7 +113,7 @@ use marrow_project::{IDS_ENTRY, LedgerPublicationPlan, MAX_IDS_BYTES, META_DIR};
 
 use header::HeaderCorruption;
 
-pub use marker::IdsPublicationMarker;
+pub(crate) use marker::IdsPublicationMarker;
 
 /// The suffix the fixed stage entry adds to the ledger's entry name. The
 /// directory and ledger spellings themselves belong to [`marrow_project`]; this
@@ -177,12 +177,6 @@ pub enum IdsPublication {
 /// received one adopts whatever marker is on disk, and a finish that refused
 /// after its own unlink reports the terminal it had already recorded. Every arm
 /// is a publication this process claimed and did not conclude.
-///
-/// ```compile_fail
-/// fn duplicate(pending: marrow_project_fs::IdsPublicationPending<'_>) {
-///     let _second = pending.clone();
-/// }
-/// ```
 #[must_use = "a durably claimed publication advances only by consuming `recover`"]
 pub struct IdsPublicationPending<'a> {
     work: PendingWork<'a>,
@@ -232,11 +226,6 @@ impl<'a> IdsPublicationPending<'a> {
             cause,
             armed: true,
         }
-    }
-
-    /// The refusal that interrupted the publication.
-    pub fn cause(&self) -> &IdsPublicationError {
-        &self.cause
     }
 
     /// Consume the pending publication and drive it to its terminal state.
@@ -319,9 +308,9 @@ impl fmt::Debug for IdsPublishOutcome<'_> {
     }
 }
 
-/// The closed public classification of a publication or recovery refusal.
+/// The closed classification of a publication or recovery refusal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IdsRefusal {
+pub(crate) enum IdsRefusal {
     /// This build does not qualify the running platform for descriptor-rooted
     /// publication. Nothing was opened, created, or stated.
     UnqualifiedPlatform,
@@ -353,7 +342,7 @@ pub enum IdsRefusal {
 
 impl IdsRefusal {
     /// The stable outward code this refusal reports.
-    pub const fn code(self) -> Code {
+    pub(crate) const fn code(self) -> Code {
         match self {
             Self::UnclaimedIncomplete | Self::Corrupt | Self::Interrupted | Self::Quarantined => {
                 Code::ProjectIdsPublicationPending
@@ -367,12 +356,12 @@ impl IdsRefusal {
     }
 }
 
-/// Why an identity publication or its recovery could not proceed. The
-/// classification is public and closed; the underlying filesystem or frame
-/// evidence is private and reaches a consumer only through `Display`.
+/// Why an identity publication or its recovery could not proceed. A consumer
+/// observes the stable code and the `Display` message; the classification and
+/// the evidence behind it are crate-private.
 #[derive(Debug)]
 pub struct IdsPublicationError {
-    refusal: IdsRefusal,
+    pub(crate) refusal: IdsRefusal,
     detail: Detail,
 }
 
@@ -399,11 +388,6 @@ impl IdsPublicationError {
             refusal: IdsRefusal::Corrupt,
             detail: Detail::Retained(reason),
         }
-    }
-
-    /// The closed classification of this refusal.
-    pub fn refusal(&self) -> IdsRefusal {
-        self.refusal
     }
 
     /// The stable outward code this refusal reports.
@@ -657,6 +641,12 @@ fn admitted_name(name: &str) -> EntryName {
 /// refuses rather than reading a generation that recovery may replace. The
 /// probe fails closed — an entry whose existence cannot be determined counts as
 /// present.
-pub fn ids_publication_marker(root: &Path) -> Option<IdsPublicationMarker> {
+pub(crate) fn ids_publication_marker(root: &Path) -> Option<IdsPublicationMarker> {
     marker::probe(root)
+}
+
+/// Whether the project rooted at `root` carries a live publication marker, so a
+/// command knows to recover before it captures. The same fail-closed probe.
+pub fn ids_publication_pending(root: &Path) -> bool {
+    ids_publication_marker(root).is_some()
 }

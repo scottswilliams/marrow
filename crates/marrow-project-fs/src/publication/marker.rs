@@ -21,7 +21,7 @@ const PENDING_SUFFIX: &str = ".pending";
 
 /// A live `.marrow/ids` publication marker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IdsPublicationMarker {
+pub(crate) enum IdsPublicationMarker {
     /// `.marrow/ids.pending` exists: a publication was durably claimed. The
     /// committed ledger is whichever generation recovery settles on.
     Claimed,

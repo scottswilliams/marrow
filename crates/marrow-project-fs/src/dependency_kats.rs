@@ -211,14 +211,14 @@ fn a_dependency_path_that_names_no_usable_project_refuses() {
             "a dependency that is {label} refuses as a dependency-path fault"
         );
         let physical = as_physical(&failure);
-        assert_eq!(physical.role(), PhysicalRole::Dependency, "{label}");
+        assert_eq!(physical.role, PhysicalRole::Dependency, "{label}");
         assert!(
             matches!(
-                physical.refusal(),
+                &physical.refusal,
                 PhysicalRefusal::Dependency { reason: actual } if *actual == reason
             ),
             "{label}: got {:?}",
-            physical.refusal()
+            &physical.refusal
         );
         assert!(
             message(&root, &failure)
@@ -239,7 +239,7 @@ fn a_dependency_reached_through_a_symlink_refuses() {
     let failure = refusal(&root);
     assert_eq!(code(&root, &failure), Code::ProjectDependencyPath);
     assert!(matches!(
-        as_physical(&failure).refusal(),
+        &as_physical(&failure).refusal,
         PhysicalRefusal::Link { .. }
     ));
 }
@@ -255,7 +255,7 @@ fn a_dependency_path_that_escapes_to_nothing_refuses() {
     let failure = refusal(&root);
     assert_eq!(code(&root, &failure), Code::ProjectDependencyPath);
     assert!(matches!(
-        as_physical(&failure).refusal(),
+        &as_physical(&failure).refusal,
         PhysicalRefusal::Missing { .. }
     ));
 }
@@ -300,7 +300,7 @@ fn a_source_file_bound_crossed_only_in_the_sum_refuses_once() {
         "neither tree alone reaches the bound; their sum does"
     );
     assert!(matches!(
-        as_physical(&failure).refusal(),
+        &as_physical(&failure).refusal,
         PhysicalRefusal::Bound {
             bound: PhysicalBound::SourceFiles,
             limit: 2,
@@ -322,7 +322,7 @@ fn the_visited_entry_counter_is_not_reinitialised_per_tree() {
     let failure = capture_project_with_limits(&root, OverlaySnapshot::empty(), &limits)
         .expect_err("four visited entries refuse against a three-entry bound");
     assert!(matches!(
-        as_physical(&failure).refusal(),
+        &as_physical(&failure).refusal,
         PhysicalRefusal::Bound {
             bound: PhysicalBound::VisitedEntries,
             ..
@@ -344,7 +344,7 @@ fn a_source_byte_bound_crossed_only_in_the_sum_refuses_once() {
     let failure = capture_project_with_limits(&root, OverlaySnapshot::empty(), &limits)
         .expect_err("the two trees together pass the project byte bound");
     assert!(matches!(
-        as_physical(&failure).refusal(),
+        &as_physical(&failure).refusal,
         PhysicalRefusal::Bound {
             bound: PhysicalBound::SourceTotalBytes,
             ..
@@ -411,7 +411,7 @@ fn a_fault_inside_a_dependency_names_the_declared_path() {
     let failure = refusal(&root);
     let physical = as_physical(&failure);
     assert_eq!(
-        physical.role(),
+        physical.role,
         PhysicalRole::SourceDirectory,
         "a dependency's own source discipline is the root project's discipline"
     );

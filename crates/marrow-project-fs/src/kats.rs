@@ -23,11 +23,10 @@ use marrow_project::{CaptureLimits, CapturedFile, Manifest};
 use crate::capture::capture_project_with_limits;
 use crate::failure::{
     CaptureFailure, CaptureFailureKind, LedgerHome, LinkPosition, PhysicalBound, PhysicalFailure,
-    PhysicalIoError, PhysicalKind, PhysicalOperation, PhysicalRefusal, PhysicalRole,
+    PhysicalIoError, PhysicalKind, PhysicalRefusal, PhysicalRole,
 };
 use crate::limits::AdapterLimits;
 use crate::overlay::{OverlayBound, OverlayEntry, OverlayFailure, OverlayReason, OverlaySnapshot};
-use crate::path::OperationalPath;
 use crate::scratch::TempDir;
 
 const ROOT: &str = "/proj";
@@ -54,26 +53,20 @@ fn operational_message(failure: &CaptureFailure) -> String {
     sink
 }
 
-fn physical(
-    role: PhysicalRole,
-    operation: PhysicalOperation,
-    spelling: &str,
-    refusal: PhysicalRefusal,
-) -> CaptureFailure {
-    CaptureFailure::from_physical(PhysicalFailure::new(
+fn physical(role: PhysicalRole, spelling: &str, refusal: PhysicalRefusal) -> CaptureFailure {
+    CaptureFailure::from_physical(PhysicalFailure {
         role,
-        operation,
-        Some(OperationalPath::new(PathBuf::from(spelling))),
+        path: Some(PathBuf::from(spelling)),
         refusal,
-    ))
+    })
 }
 
-fn pathless(
-    role: PhysicalRole,
-    operation: PhysicalOperation,
-    refusal: PhysicalRefusal,
-) -> CaptureFailure {
-    CaptureFailure::from_physical(PhysicalFailure::new(role, operation, None, refusal))
+fn pathless(role: PhysicalRole, refusal: PhysicalRefusal) -> CaptureFailure {
+    CaptureFailure::from_physical(PhysicalFailure {
+        role,
+        path: None,
+        refusal,
+    })
 }
 
 fn io(kind: io::ErrorKind, message: &str) -> PhysicalIoError {
@@ -102,7 +95,6 @@ fn manifest_read_failure_renders_io_read_with_and_without_os_prose() {
     let display = error.to_string();
     let failure = physical(
         PhysicalRole::Manifest,
-        PhysicalOperation::Read,
         "marrow.toml",
         PhysicalRefusal::Io {
             error: PhysicalIoError::new(error),
@@ -120,323 +112,192 @@ fn manifest_read_failure_renders_io_read_with_and_without_os_prose() {
     assert!(present(&failure, Path::new(ROOT)).position().is_none());
 }
 
-#[test]
-fn identity_ledger_symlink_renders_ids_corrupt() {
-    let failure = physical(
-        PhysicalRole::IdentityLedger,
-        PhysicalOperation::Inspect,
-        ".marrow/ids",
-        PhysicalRefusal::Link {
-            position: LinkPosition::Terminal,
-        },
-    );
-    assert_eq!(
-        present(&failure, Path::new(ROOT)).code(),
-        Code::ProjectIdsCorrupt
-    );
-    assert_eq!(
-        cli_message(&failure),
-        "/proj/.marrow/ids is a symlink; the identity artifact must be a real file inside the project"
-    );
+/// Assert each pinned `(code, body)` the facade renders for the caller root
+/// `/proj`. Both writers agree on every terse physical body: only a raw I/O
+/// refusal carries operating-system prose, and that one is pinned above.
+fn assert_pins<'a>(pins: impl IntoIterator<Item = (&'a str, CaptureFailure, Code, &'a str)>) {
+    for (pin, failure, code, body) in pins {
+        let presentation = present(&failure, Path::new(ROOT));
+        assert_eq!(presentation.code(), code, "{pin}: code");
+        assert!(
+            presentation.position().is_none(),
+            "{pin}: a physical refusal is never located"
+        );
+        assert_eq!(both_messages(&failure), body, "{pin}: body");
+    }
 }
 
-#[test]
-fn ledger_at_retired_root_path_renders_ids_location_with_a_move_steer() {
-    let failure = physical(
-        PhysicalRole::IdentityLedger,
-        PhysicalOperation::Inspect,
-        "marrow.ids",
-        PhysicalRefusal::LegacyLedgerPath {
-            home: LedgerHome::Vacant,
-        },
-    );
-    assert_eq!(
-        present(&failure, Path::new(ROOT)).code(),
-        Code::ProjectIdsLocation
-    );
-    assert_eq!(
-        cli_message(&failure),
-        "/proj/marrow.ids is at the ledger's retired root location; its home is `.marrow/ids` — \
-         move it (`git mv marrow.ids .marrow/ids`) and commit the move"
-    );
+fn bound(bound: PhysicalBound, limit: usize, actual: usize) -> PhysicalRefusal {
+    PhysicalRefusal::Bound {
+        bound,
+        limit,
+        actual,
+    }
 }
 
-#[test]
-fn ledger_at_both_paths_renders_ids_location_with_a_reconcile_steer() {
-    let failure = physical(
-        PhysicalRole::IdentityLedger,
-        PhysicalOperation::Inspect,
-        "marrow.ids",
-        PhysicalRefusal::LegacyLedgerPath {
-            home: LedgerHome::Occupied,
-        },
-    );
-    assert_eq!(
-        present(&failure, Path::new(ROOT)).code(),
-        Code::ProjectIdsLocation
-    );
-    assert_eq!(
-        cli_message(&failure),
-        "/proj/marrow.ids also exists beside `.marrow/ids`; a project has exactly one ledger — \
-         keep the correct `.marrow/ids` and delete the root `marrow.ids`"
-    );
+fn link(position: LinkPosition) -> PhysicalRefusal {
+    PhysicalRefusal::Link { position }
 }
 
+/// The physical refusals that keep a pure source-family code.
 #[test]
-fn identity_ledger_byte_bound_renders_ids_corrupt() {
-    let failure = physical(
-        PhysicalRole::IdentityLedger,
-        PhysicalOperation::Retain,
-        ".marrow/ids",
-        PhysicalRefusal::Bound {
-            bound: PhysicalBound::IdentityLedgerBytes,
-            limit: 1_048_576,
-            actual: 1_048_577,
-        },
-    );
-    assert_eq!(
-        present(&failure, Path::new(ROOT)).code(),
-        Code::ProjectIdsCorrupt
-    );
-    assert_eq!(
-        cli_message(&failure),
-        "/proj/.marrow/ids is 1048577 bytes, over the 1048576-byte identity-artifact bound"
-    );
+fn project_family_physical_refusals_render_their_pinned_code_and_body() {
+    use LedgerHome::{Occupied, Vacant};
+    use PhysicalBound::*;
+    use PhysicalRole::*;
+    assert_pins([
+        (
+            "identity ledger symlink",
+            physical(IdentityLedger, ".marrow/ids", link(LinkPosition::Terminal)),
+            Code::ProjectIdsCorrupt,
+            "/proj/.marrow/ids is a symlink; the identity artifact must be a real file inside the project",
+        ),
+        (
+            "ledger at the retired root path, home vacant",
+            physical(
+                IdentityLedger,
+                "marrow.ids",
+                PhysicalRefusal::LegacyLedgerPath { home: Vacant },
+            ),
+            Code::ProjectIdsLocation,
+            "/proj/marrow.ids is at the ledger's retired root location; its home is `.marrow/ids` — \
+             move it (`git mv marrow.ids .marrow/ids`) and commit the move",
+        ),
+        (
+            "ledger at both paths",
+            physical(
+                IdentityLedger,
+                "marrow.ids",
+                PhysicalRefusal::LegacyLedgerPath { home: Occupied },
+            ),
+            Code::ProjectIdsLocation,
+            "/proj/marrow.ids also exists beside `.marrow/ids`; a project has exactly one ledger — \
+             keep the correct `.marrow/ids` and delete the root `marrow.ids`",
+        ),
+        (
+            "identity ledger byte bound",
+            physical(
+                IdentityLedger,
+                ".marrow/ids",
+                bound(IdentityLedgerBytes, 1_048_576, 1_048_577),
+            ),
+            Code::ProjectIdsCorrupt,
+            "/proj/.marrow/ids is 1048577 bytes, over the 1048576-byte identity-artifact bound",
+        ),
+        (
+            "source root symlink",
+            physical(SourceRoot, "src", link(LinkPosition::Terminal)),
+            Code::ProjectSourcePath,
+            "source root /proj/src is a symlink; a project's `src` must be a real directory inside the project",
+        ),
+        (
+            "per-file byte bound renders the forward-slash spelling directly",
+            physical(
+                SourceFile,
+                "src/big.mw",
+                bound(SourceFileBytes, 1_048_576, 1_048_577),
+            ),
+            Code::ProjectCaptureLimit,
+            "`src/big.mw` capture is 1048577, over the per-file byte limit (1048576)",
+        ),
+        (
+            "total byte bound renders the forward-slash spelling directly",
+            physical(SourceFile, "src/big.mw", bound(SourceTotalBytes, 6, 7)),
+            Code::ProjectCaptureLimit,
+            "`src/big.mw` capture is 7, over the project byte limit (6)",
+        ),
+        (
+            "source-file count bound joins the caller root",
+            physical(SourceFile, "src/d.mw", bound(SourceFiles, 3, 4)),
+            Code::ProjectCaptureLimit,
+            "`/proj/src/d.mw` capture is 4, over the source-file limit (3)",
+        ),
+        (
+            "invalid path encoding",
+            physical(
+                SourceFile,
+                "src/bad.mw",
+                PhysicalRefusal::InvalidPathEncoding,
+            ),
+            Code::ProjectSourcePath,
+            "source path /proj/src/bad.mw is not valid UTF-8",
+        ),
+    ]);
 }
 
+/// The payload-free physical refusals: each renders a terse typed body under the
+/// operational `io.read` code, with a role noun standing in for an absent path.
 #[test]
-fn source_root_symlink_renders_source_path() {
-    let failure = physical(
-        PhysicalRole::SourceRoot,
-        PhysicalOperation::Inspect,
-        "src",
-        PhysicalRefusal::Link {
-            position: LinkPosition::Terminal,
-        },
-    );
-    assert_eq!(
-        present(&failure, Path::new(ROOT)).code(),
-        Code::ProjectSourcePath
-    );
-    assert_eq!(
-        cli_message(&failure),
-        "source root /proj/src is a symlink; a project's `src` must be a real directory inside the project"
-    );
-}
-
-#[test]
-fn per_file_byte_bound_renders_the_forward_slash_spelling_directly() {
-    let failure = physical(
-        PhysicalRole::SourceFile,
-        PhysicalOperation::Retain,
-        "src/big.mw",
-        PhysicalRefusal::Bound {
-            bound: PhysicalBound::SourceFileBytes,
-            limit: 1_048_576,
-            actual: 1_048_577,
-        },
-    );
-    assert_eq!(
-        present(&failure, Path::new(ROOT)).code(),
-        Code::ProjectCaptureLimit
-    );
-    // The per-file bound renders the root-relative spelling directly, not joined.
-    assert_eq!(
-        cli_message(&failure),
-        "`src/big.mw` capture is 1048577, over the per-file byte limit (1048576)"
-    );
-}
-
-#[test]
-fn total_byte_bound_renders_the_forward_slash_spelling_directly() {
-    let failure = physical(
-        PhysicalRole::SourceFile,
-        PhysicalOperation::Retain,
-        "src/big.mw",
-        PhysicalRefusal::Bound {
-            bound: PhysicalBound::SourceTotalBytes,
-            limit: 6,
-            actual: 7,
-        },
-    );
-    assert_eq!(
-        cli_message(&failure),
-        "`src/big.mw` capture is 7, over the project byte limit (6)"
-    );
-}
-
-#[test]
-fn source_file_count_bound_joins_the_caller_root() {
-    let failure = physical(
-        PhysicalRole::SourceFile,
-        PhysicalOperation::Retain,
-        "src/d.mw",
-        PhysicalRefusal::Bound {
-            bound: PhysicalBound::SourceFiles,
-            limit: 3,
-            actual: 4,
-        },
-    );
-    // The count bound joins the caller root to the offending path.
-    assert_eq!(
-        cli_message(&failure),
-        "`/proj/src/d.mw` capture is 4, over the source-file limit (3)"
-    );
-}
-
-#[test]
-fn invalid_path_encoding_renders_source_path() {
-    let failure = physical(
-        PhysicalRole::SourceFile,
-        PhysicalOperation::Inspect,
-        "src/bad.mw",
-        PhysicalRefusal::InvalidPathEncoding,
-    );
-    assert_eq!(
-        present(&failure, Path::new(ROOT)).code(),
-        Code::ProjectSourcePath
-    );
-    assert_eq!(
-        cli_message(&failure),
-        "source path /proj/src/bad.mw is not valid UTF-8"
-    );
-    // The same body renders through the operational writer.
-    assert_eq!(
-        operational_message(&failure),
-        "source path /proj/src/bad.mw is not valid UTF-8"
-    );
-}
-
-// ===== Payload-free physical refusals render a terse typed body in both writers =
-
-#[test]
-fn hardlink_renders_a_terse_typed_body() {
-    let failure = physical(
-        PhysicalRole::Manifest,
-        PhysicalOperation::Inspect,
-        "marrow.toml",
-        PhysicalRefusal::Hardlink,
-    );
-    assert_eq!(present(&failure, Path::new(ROOT)).code(), Code::IoRead);
-    assert_eq!(both_messages(&failure), "/proj/marrow.toml is hard-linked");
-}
-
-#[test]
-fn terminal_link_renders_a_terse_typed_body() {
-    let failure = physical(
-        PhysicalRole::Manifest,
-        PhysicalOperation::Inspect,
-        "marrow.toml",
-        PhysicalRefusal::Link {
-            position: LinkPosition::Terminal,
-        },
-    );
-    assert_eq!(present(&failure, Path::new(ROOT)).code(), Code::IoRead);
-    assert_eq!(
-        both_messages(&failure),
-        "/proj/marrow.toml is a symbolic link"
-    );
-}
-
-#[test]
-fn intermediate_link_renders_a_terse_typed_body() {
-    let failure = physical(
-        PhysicalRole::SourceFile,
-        PhysicalOperation::Inspect,
-        "src/a.mw",
-        PhysicalRefusal::Link {
-            position: LinkPosition::Intermediate,
-        },
-    );
-    assert_eq!(present(&failure, Path::new(ROOT)).code(), Code::IoRead);
-    assert_eq!(
-        both_messages(&failure),
-        "/proj/src/a.mw lies below a symbolic link"
-    );
-}
-
-#[test]
-fn changed_renders_a_terse_typed_body() {
-    let failure = physical(
-        PhysicalRole::SourceFile,
-        PhysicalOperation::Open,
-        "src/main.mw",
-        PhysicalRefusal::Changed,
-    );
-    assert_eq!(present(&failure, Path::new(ROOT)).code(), Code::IoRead);
-    assert_eq!(
-        both_messages(&failure),
-        "/proj/src/main.mw changed during capture"
-    );
-}
-
-#[test]
-fn unexpected_kind_with_a_path_renders_a_terse_typed_body() {
-    let failure = physical(
-        PhysicalRole::SourceFile,
-        PhysicalOperation::Inspect,
-        "src/x",
-        PhysicalRefusal::UnexpectedKind {
-            expected: PhysicalKind::Directory,
-            actual: PhysicalKind::RegularFile,
-        },
-    );
-    assert_eq!(present(&failure, Path::new(ROOT)).code(), Code::IoRead);
-    assert_eq!(both_messages(&failure), "/proj/src/x is not a directory");
-}
-
-#[test]
-fn a_pathless_unexpected_root_kind_renders_a_role_subject() {
-    let failure = pathless(
-        PhysicalRole::Root,
-        PhysicalOperation::Inspect,
-        PhysicalRefusal::UnexpectedKind {
-            expected: PhysicalKind::Directory,
-            actual: PhysicalKind::RegularFile,
-        },
-    );
-    assert_eq!(present(&failure, Path::new(ROOT)).code(), Code::IoRead);
-    assert_eq!(
-        both_messages(&failure),
-        "the project root is not a directory"
-    );
-}
-
-#[test]
-fn a_manifest_byte_bound_renders_a_terse_typed_body() {
-    let failure = physical(
-        PhysicalRole::Manifest,
-        PhysicalOperation::Read,
-        "marrow.toml",
-        PhysicalRefusal::Bound {
-            bound: PhysicalBound::ManifestBytes,
-            limit: 6,
-            actual: 7,
-        },
-    );
-    assert_eq!(present(&failure, Path::new(ROOT)).code(), Code::IoRead);
-    assert_eq!(
-        both_messages(&failure),
-        "/proj/marrow.toml is 7 bytes, over the 6-byte manifest bound"
-    );
-}
-
-#[test]
-fn a_traversal_depth_bound_renders_a_terse_typed_body() {
-    let failure = physical(
-        PhysicalRole::SourceDirectory,
-        PhysicalOperation::Enumerate,
-        "src/deep",
-        PhysicalRefusal::Bound {
-            bound: PhysicalBound::TraversalDepth,
-            limit: 1,
-            actual: 2,
-        },
-    );
-    assert_eq!(present(&failure, Path::new(ROOT)).code(), Code::IoRead);
-    assert_eq!(
-        both_messages(&failure),
-        "/proj/src/deep is at depth 2, over the 1-directory traversal-depth bound"
+fn io_read_physical_refusals_render_a_terse_typed_body() {
+    use LinkPosition::{Intermediate, Terminal};
+    use PhysicalBound::*;
+    use PhysicalRole::*;
+    let not_a = |expected| PhysicalRefusal::UnexpectedKind { expected };
+    let pins = [
+        (
+            "hardlink",
+            physical(Manifest, "marrow.toml", PhysicalRefusal::Hardlink),
+            "/proj/marrow.toml is hard-linked",
+        ),
+        (
+            "terminal link",
+            physical(Manifest, "marrow.toml", link(Terminal)),
+            "/proj/marrow.toml is a symbolic link",
+        ),
+        (
+            "intermediate link",
+            physical(SourceFile, "src/a.mw", link(Intermediate)),
+            "/proj/src/a.mw lies below a symbolic link",
+        ),
+        (
+            "changed",
+            physical(SourceFile, "src/main.mw", PhysicalRefusal::Changed),
+            "/proj/src/main.mw changed during capture",
+        ),
+        (
+            "unexpected kind with a path",
+            physical(SourceFile, "src/x", not_a(PhysicalKind::Directory)),
+            "/proj/src/x is not a directory",
+        ),
+        (
+            "pathless unexpected root kind renders a role subject",
+            pathless(Root, not_a(PhysicalKind::Directory)),
+            "the project root is not a directory",
+        ),
+        (
+            "pathless unexpected kind of a regular-file role",
+            pathless(Manifest, not_a(PhysicalKind::RegularFile)),
+            "the manifest is not a regular file",
+        ),
+        (
+            "manifest byte bound",
+            physical(Manifest, "marrow.toml", bound(ManifestBytes, 6, 7)),
+            "/proj/marrow.toml is 7 bytes, over the 6-byte manifest bound",
+        ),
+        (
+            "traversal depth bound",
+            physical(SourceDirectory, "src/deep", bound(TraversalDepth, 1, 2)),
+            "/proj/src/deep is at depth 2, over the 1-directory traversal-depth bound",
+        ),
+        (
+            "visited entry bound is pathless",
+            pathless(SourceDirectory, bound(VisitedEntries, 3, 4)),
+            "capture visited 4 directory entries, over the 3-entry bound",
+        ),
+        (
+            "retained path bound is pathless",
+            pathless(SourceDirectory, bound(RetainedPathUnits, 1, 2)),
+            "capture retains 2 path units, over the 1-unit bound",
+        ),
+        (
+            "path work bound is pathless",
+            pathless(SourceDirectory, bound(PathWorkUnits, 1, 2)),
+            "capture works over 2 path units, over the 1-unit bound",
+        ),
+    ];
+    assert_pins(
+        pins.into_iter()
+            .map(|(pin, failure, body)| (pin, failure, Code::IoRead, body)),
     );
 }
 
@@ -465,60 +326,6 @@ fn an_over_long_identity_forwards_the_pathless_pure_source_path_family() {
     assert_eq!(cli_message(&failure), message);
     // A valid in-bound identity passes the projection with no refusal.
     assert!(CapturedFile::check_identity_bound("src/main.mw").is_ok());
-}
-
-#[test]
-fn a_visited_entry_bound_renders_a_pathless_terse_body() {
-    let failure = pathless(
-        PhysicalRole::SourceDirectory,
-        PhysicalOperation::Enumerate,
-        PhysicalRefusal::Bound {
-            bound: PhysicalBound::VisitedEntries,
-            limit: 3,
-            actual: 4,
-        },
-    );
-    assert_eq!(present(&failure, Path::new(ROOT)).code(), Code::IoRead);
-    assert_eq!(
-        both_messages(&failure),
-        "capture visited 4 directory entries, over the 3-entry bound"
-    );
-}
-
-#[test]
-fn a_retained_path_bound_renders_a_pathless_terse_body() {
-    let failure = pathless(
-        PhysicalRole::SourceDirectory,
-        PhysicalOperation::Retain,
-        PhysicalRefusal::Bound {
-            bound: PhysicalBound::RetainedPathUnits,
-            limit: 1,
-            actual: 2,
-        },
-    );
-    assert_eq!(present(&failure, Path::new(ROOT)).code(), Code::IoRead);
-    assert_eq!(
-        both_messages(&failure),
-        "capture retains 2 path units, over the 1-unit bound"
-    );
-}
-
-#[test]
-fn a_path_work_bound_renders_a_pathless_terse_body() {
-    let failure = pathless(
-        PhysicalRole::SourceDirectory,
-        PhysicalOperation::Retain,
-        PhysicalRefusal::Bound {
-            bound: PhysicalBound::PathWorkUnits,
-            limit: 1,
-            actual: 2,
-        },
-    );
-    assert_eq!(present(&failure, Path::new(ROOT)).code(), Code::IoRead);
-    assert_eq!(
-        both_messages(&failure),
-        "capture works over 2 path units, over the 1-unit bound"
-    );
 }
 
 #[test]
@@ -616,7 +423,6 @@ impl fmt::Write for BoundedSink {
 fn a_rejecting_sink_propagates_the_error_and_leaves_a_partial_prefix() {
     let failure = physical(
         PhysicalRole::Manifest,
-        PhysicalOperation::Read,
         "marrow.toml",
         PhysicalRefusal::Io {
             error: io(io::ErrorKind::NotFound, "absent"),
@@ -640,7 +446,6 @@ fn a_rejecting_sink_propagates_the_error_and_leaves_a_partial_prefix() {
 fn direct_debug_redacts_every_private_evidence() {
     let failure = physical(
         PhysicalRole::SourceFile,
-        PhysicalOperation::Read,
         "src/secret-path.mw",
         PhysicalRefusal::Io {
             error: io(io::ErrorKind::PermissionDenied, "secret-os-detail"),
@@ -649,19 +454,6 @@ fn direct_debug_redacts_every_private_evidence() {
     let opaque = format!("{failure:?}");
     assert_eq!(opaque, "CaptureFailure { .. }");
     assert!(!opaque.contains("secret"));
-
-    let inner = PhysicalFailure::new(
-        PhysicalRole::SourceFile,
-        PhysicalOperation::Read,
-        Some(OperationalPath::new(PathBuf::from("src/secret-path.mw"))),
-        PhysicalRefusal::Io {
-            error: io(io::ErrorKind::PermissionDenied, "secret-os-detail"),
-        },
-    );
-    let physical_debug = format!("{inner:?}");
-    assert!(physical_debug.contains("SourceFile"));
-    assert!(!physical_debug.contains("secret-path"));
-    assert!(!physical_debug.contains("secret-os-detail"));
 
     let opaque_io = io(io::ErrorKind::PermissionDenied, "secret-os-detail");
     let io_debug = format!("{opaque_io:?}");
@@ -735,12 +527,11 @@ fn missing_root_is_a_canonicalize_failure_not_a_manifest_failure() {
         .expect_err("a missing root refuses");
     let physical = as_physical(&failure);
     assert_eq!(
-        physical.role(),
+        physical.role,
         PhysicalRole::Root,
         "a missing root refuses in the root role, before the manifest is read"
     );
-    assert_eq!(physical.operation(), PhysicalOperation::Canonicalize);
-    assert!(physical.path().is_none(), "a root failure is pathless");
+    assert!(physical.path.is_none(), "a root failure is pathless");
 }
 
 #[test]
@@ -752,12 +543,12 @@ fn a_file_root_is_an_unexpected_kind_failure() {
         .expect_err("a file root refuses");
     let physical = as_physical(&failure);
     assert_eq!(
-        physical.role(),
+        physical.role,
         PhysicalRole::Root,
         "a non-directory root refuses in the root role, before the manifest is read"
     );
     assert!(matches!(
-        physical.refusal(),
+        &physical.refusal,
         PhysicalRefusal::UnexpectedKind { .. }
     ));
 }
@@ -774,14 +565,11 @@ fn a_symlinked_manifest_is_refused_as_a_link() {
         temp.path().join("marrow.toml"),
     )
     .expect("symlink manifest");
-    let result = capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &base_limits());
-    assert!(
-        result.is_err(),
-        "a symlinked manifest refuses; it is never followed and parsed"
-    );
-    let failure = result.unwrap_err();
+    let failure =
+        capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &base_limits())
+            .expect_err("a symlinked manifest refuses; it is never followed and parsed");
     assert!(matches!(
-        as_physical(&failure).refusal(),
+        &as_physical(&failure).refusal,
         PhysicalRefusal::Link { .. }
     ));
 }
@@ -796,13 +584,13 @@ fn a_hardlinked_manifest_is_refused_as_a_hardlink() {
         temp.path().join("marrow.toml"),
     )
     .expect("hardlink manifest");
-    let result = capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &base_limits());
-    assert!(
-        result.is_err(),
-        "a hardlinked manifest refuses; a second link to it is never read as the manifest"
-    );
+    let failure =
+        capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &base_limits())
+            .expect_err(
+                "a hardlinked manifest refuses; a second link to it is never read as the manifest",
+            );
     assert!(matches!(
-        as_physical(&result.unwrap_err()).refusal(),
+        &as_physical(&failure).refusal,
         PhysicalRefusal::Hardlink
     ));
 }
@@ -818,13 +606,11 @@ fn a_hardlinked_source_file_is_refused_as_a_hardlink() {
         temp.path().join("src/main.mw"),
     )
     .expect("hardlink source");
-    let result = capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &base_limits());
-    assert!(
-        result.is_err(),
-        "a hardlinked source file refuses; a second link to it is never captured"
-    );
+    let failure =
+        capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &base_limits())
+            .expect_err("a hardlinked source file refuses; a second link to it is never captured");
     assert!(matches!(
-        as_physical(&result.unwrap_err()).refusal(),
+        &as_physical(&failure).refusal,
         PhysicalRefusal::Hardlink
     ));
 }
@@ -865,11 +651,10 @@ fn expect_link_below_src(temp: &TempDir, spelling: &str) -> CaptureFailure {
             ),
         };
     let physical = as_physical(&failure);
-    assert_eq!(physical.role(), PhysicalRole::SourceDirectory);
-    assert_eq!(physical.operation(), PhysicalOperation::Inspect);
+    assert_eq!(physical.role, PhysicalRole::SourceDirectory);
     assert!(
         matches!(
-            physical.refusal(),
+            &physical.refusal,
             PhysicalRefusal::Link {
                 position: LinkPosition::Terminal,
             }
@@ -878,9 +663,9 @@ fn expect_link_below_src(temp: &TempDir, spelling: &str) -> CaptureFailure {
     );
     assert_eq!(
         physical
-            .path()
-            .expect("a link refusal carries the charged entry path")
-            .as_path(),
+            .path
+            .as_deref()
+            .expect("a link refusal carries the charged entry path"),
         Path::new(spelling),
         "the refusal names the link itself, not whatever it points at"
     );
@@ -954,7 +739,7 @@ fn a_symlink_escaping_the_project_root_is_refused_as_a_link() {
     let failure = capture_project_with_limits(&root, OverlaySnapshot::empty(), &base_limits())
         .expect_err("a link that escapes the project root refuses");
     assert!(matches!(
-        as_physical(&failure).refusal(),
+        &as_physical(&failure).refusal,
         PhysicalRefusal::Link {
             position: LinkPosition::Terminal,
         }
@@ -996,12 +781,11 @@ fn a_special_file_named_mw_below_src_is_refused_as_a_wrong_kind() {
             ),
         };
     let physical = as_physical(&failure);
-    assert_eq!(physical.role(), PhysicalRole::SourceFile);
+    assert_eq!(physical.role, PhysicalRole::SourceFile);
     assert!(matches!(
-        physical.refusal(),
+        &physical.refusal,
         PhysicalRefusal::UnexpectedKind {
             expected: PhysicalKind::RegularFile,
-            actual: PhysicalKind::Other,
         }
     ));
     assert_eq!(
@@ -1040,13 +824,10 @@ fn over_bound_aggregate_path_work_is_refused() {
     temp.write("src/main.mw", b"pub fn main()\n");
     let mut limits = base_limits();
     limits.max_path_work_units = 1;
-    let result = capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &limits);
-    assert!(
-        result.is_err(),
-        "path work is charged and refuses once the aggregate allowance is spent"
-    );
+    let failure = capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &limits)
+        .expect_err("path work is charged and refuses once the aggregate allowance is spent");
     assert!(matches!(
-        as_physical(&result.unwrap_err()).refusal(),
+        &as_physical(&failure).refusal,
         PhysicalRefusal::Bound {
             bound: PhysicalBound::PathWorkUnits,
             ..
@@ -1061,13 +842,10 @@ fn over_bound_retained_path_units_is_refused() {
     temp.write("src/main.mw", b"pub fn main()\n");
     let mut limits = base_limits();
     limits.max_retained_path_units = 1;
-    let result = capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &limits);
-    assert!(
-        result.is_err(),
-        "live retained native paths are charged and refuse past their allowance"
-    );
+    let failure = capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &limits)
+        .expect_err("live retained native paths are charged and refuse past their allowance");
     assert!(matches!(
-        as_physical(&result.unwrap_err()).refusal(),
+        &as_physical(&failure).refusal,
         PhysicalRefusal::Bound {
             bound: PhysicalBound::RetainedPathUnits,
             ..
@@ -1101,10 +879,10 @@ fn visiting_over_the_entry_bound_is_refused() {
     }
     let mut limits = base_limits();
     limits.visited_entries = 3;
-    let result = capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &limits);
-    assert!(result.is_err(), "a visit past the entry bound refuses");
+    let failure = capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &limits)
+        .expect_err("a visit past the entry bound refuses");
     assert!(matches!(
-        as_physical(&result.unwrap_err()).refusal(),
+        &as_physical(&failure).refusal,
         PhysicalRefusal::Bound {
             bound: PhysicalBound::VisitedEntries,
             ..
@@ -1119,13 +897,10 @@ fn descending_past_the_depth_bound_is_refused() {
     temp.write("src/a/b/c/deep.mw", b"");
     let mut limits = base_limits();
     limits.traversal_depth = 1;
-    let result = capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &limits);
-    assert!(
-        result.is_err(),
-        "the traversal refuses before descending past the depth bound"
-    );
+    let failure = capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &limits)
+        .expect_err("the traversal refuses before descending past the depth bound");
     assert!(matches!(
-        as_physical(&result.unwrap_err()).refusal(),
+        &as_physical(&failure).refusal,
         PhysicalRefusal::Bound {
             bound: PhysicalBound::TraversalDepth,
             ..
@@ -1163,12 +938,9 @@ fn an_over_count_overlay_is_rejected() {
         .iter()
         .map(|key| OverlayEntry::new(key, b"x"))
         .collect();
-    let result = OverlaySnapshot::try_new(&entries);
-    assert!(
-        result.is_err(),
-        "an overlay one entry over the count bound is rejected at construction"
-    );
-    match result.unwrap_err().reason() {
+    let failure = OverlaySnapshot::try_new(&entries)
+        .expect_err("an overlay one entry over the count bound is rejected at construction");
+    match failure.reason() {
         OverlayReason::Bound {
             bound: OverlayBound::Entries,
             limit,
@@ -1187,17 +959,14 @@ fn an_over_count_overlay_is_rejected() {
 fn an_over_long_key_is_rejected() {
     let key = "s".repeat(4097);
     let entries = [OverlayEntry::new(&key, b"x")];
-    let result = OverlaySnapshot::try_new(&entries);
-    assert!(
-        result.is_err(),
-        "a key one byte over the key bound is rejected at construction"
-    );
-    match result.unwrap_err().reason() {
+    let failure = OverlaySnapshot::try_new(&entries)
+        .expect_err("a key one byte over the key bound is rejected at construction");
+    match failure.reason() {
         OverlayReason::Bound {
             bound: OverlayBound::KeyBytes,
             entry: Some(index),
             ..
-        } => assert_eq!(index.get(), 0),
+        } => assert_eq!(index.0, 0),
         other => panic!("expected a KeyBytes bound at entry 0, got {other:?}"),
     }
 }
@@ -1206,13 +975,10 @@ fn an_over_long_key_is_rejected() {
 fn an_over_large_body_is_rejected() {
     let body = vec![0u8; (1 << 20) + 1];
     let entries = [OverlayEntry::new("src/main.mw", &body)];
-    let result = OverlaySnapshot::try_new(&entries);
-    assert!(
-        result.is_err(),
-        "a body one byte over the per-file bound is rejected at construction"
-    );
+    let failure = OverlaySnapshot::try_new(&entries)
+        .expect_err("a body one byte over the per-file bound is rejected at construction");
     assert!(matches!(
-        result.unwrap_err().reason(),
+        failure.reason(),
         OverlayReason::Bound {
             bound: OverlayBound::FileBytes,
             entry: Some(_),
@@ -1231,13 +997,10 @@ fn over_aggregate_body_bytes_are_rejected() {
         .iter()
         .map(|key| OverlayEntry::new(key, &chunk))
         .collect();
-    let result = OverlaySnapshot::try_new(&entries);
-    assert!(
-        result.is_err(),
-        "bodies within the per-file bound still reject once they exceed the aggregate"
-    );
+    let failure = OverlaySnapshot::try_new(&entries)
+        .expect_err("bodies within the per-file bound still reject once they exceed the aggregate");
     assert!(matches!(
-        result.unwrap_err().reason(),
+        failure.reason(),
         OverlayReason::Bound {
             bound: OverlayBound::TotalBytes,
             ..
@@ -1253,20 +1016,16 @@ fn lexically_invalid_keys_are_rejected() {
         "a//b.mw",
         "a/./b.mw",
         "a\\b.mw",
-        "C:/drive.mw",
         ".",
         "trailing/",
         "",
     ] {
         let entries = [OverlayEntry::new(key, b"x")];
-        let result = OverlaySnapshot::try_new(&entries);
-        assert!(
-            result.is_err(),
-            "the lexically invalid key {key:?} is rejected at construction"
-        );
+        let failure = OverlaySnapshot::try_new(&entries)
+            .expect_err("a lexically invalid key is rejected at construction");
         assert!(
             matches!(
-                result.unwrap_err().reason(),
+                failure.reason(),
                 OverlayReason::Bound { .. } | OverlayReason::Noncanonical { .. }
             ),
             "key {key:?} rejects lexically"
@@ -1300,14 +1059,11 @@ fn duplicate_overlay_keys_report_both_original_indices() {
         OverlayEntry::new("src/main.mw", b"x"),
         OverlayEntry::new("src/main.mw", b"y"),
     ];
-    let result = OverlaySnapshot::try_new(&entries);
-    assert!(
-        result.is_err(),
-        "two entries under one key are rejected at construction"
-    );
-    match result.unwrap_err().reason() {
+    let failure = OverlaySnapshot::try_new(&entries)
+        .expect_err("two entries under one key are rejected at construction");
+    match failure.reason() {
         OverlayReason::Duplicate { first, second } => {
-            assert_eq!((first.get(), second.get()), (0, 1));
+            assert_eq!((first.0, second.0), (0, 1));
         }
         other => panic!("expected a Duplicate with the two original indices, got {other:?}"),
     }
@@ -1338,7 +1094,7 @@ fn a_nonmember_overlay_reports_its_original_index() {
     let failure = capture_project_with_limits(temp.path(), snapshot, &base_limits())
         .expect_err("a nonmember overlay refuses");
     match as_overlay(&failure).reason() {
-        OverlayReason::Nonmember { entry } => assert_eq!(entry.get(), 0),
+        OverlayReason::Nonmember { entry } => assert_eq!(entry.0, 0),
         other => panic!("a nonmember overlay key must report Nonmember, got {other:?}"),
     }
 }
@@ -1355,11 +1111,11 @@ fn stage_a_missing_manifest_is_the_only_reported_role() {
         capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &base_limits())
             .expect_err("a missing manifest refuses");
     let physical = as_physical(&failure);
-    assert_eq!(physical.role(), PhysicalRole::Manifest);
+    assert_eq!(physical.role, PhysicalRole::Manifest);
     // An absent required manifest is an I/O refusal, which may also carry the
     // dedicated `Missing` classification.
     assert!(matches!(
-        physical.refusal(),
+        &physical.refusal,
         PhysicalRefusal::Io { .. } | PhysicalRefusal::Missing { .. }
     ));
 }
@@ -1376,9 +1132,9 @@ fn a_ledger_at_the_retired_root_path_fails_closed_before_any_ledger_read() {
         capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &base_limits())
             .expect_err("a root-path ledger refuses");
     let physical = as_physical(&failure);
-    assert_eq!(physical.role(), PhysicalRole::IdentityLedger);
+    assert_eq!(physical.role, PhysicalRole::IdentityLedger);
     assert!(matches!(
-        physical.refusal(),
+        &physical.refusal,
         PhysicalRefusal::LegacyLedgerPath {
             home: LedgerHome::Vacant
         }
@@ -1395,27 +1151,13 @@ fn a_ledger_at_both_paths_fails_closed_as_a_reconcile_fault() {
         capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &base_limits())
             .expect_err("two ledger locations refuse");
     let physical = as_physical(&failure);
-    assert_eq!(physical.role(), PhysicalRole::IdentityLedger);
+    assert_eq!(physical.role, PhysicalRole::IdentityLedger);
     assert!(matches!(
-        physical.refusal(),
+        &physical.refusal,
         PhysicalRefusal::LegacyLedgerPath {
             home: LedgerHome::Occupied
         }
     ));
-}
-
-#[test]
-fn stage_b_bounded_traversal_is_enforced() {
-    let temp = TempDir::new("stage-b-traversal");
-    valid_project(&temp);
-    temp.write("src/one/two/three.mw", b"");
-    let mut limits = base_limits();
-    limits.traversal_depth = 1;
-    let result = capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &limits);
-    assert!(
-        result.is_err(),
-        "stage B enforces the depth checkpoint before descent"
-    );
 }
 
 #[test]
@@ -1473,7 +1215,7 @@ mod directory_admission {
 
     fn bound_of(failure: &CaptureFailure) -> PhysicalBound {
         match failure.kind() {
-            CaptureFailureKind::Physical(physical) => match physical.refusal() {
+            CaptureFailureKind::Physical(physical) => match &physical.refusal {
                 PhysicalRefusal::Bound { bound, .. } => *bound,
                 other => panic!("expected a bound refusal, got {other:?}"),
             },
@@ -1485,7 +1227,7 @@ mod directory_admission {
         matches!(
             failure.kind(),
             CaptureFailureKind::Physical(physical)
-                if matches!(physical.refusal(), PhysicalRefusal::Io { .. } | PhysicalRefusal::Missing { .. })
+                if matches!(&physical.refusal, PhysicalRefusal::Io { .. } | PhysicalRefusal::Missing { .. })
         )
     }
 
@@ -1675,7 +1417,7 @@ mod directory_admission {
     /// The exact `(bound, limit, actual)` tuple of a bound refusal.
     fn bound_tuple(failure: &CaptureFailure) -> (PhysicalBound, usize, usize) {
         match failure.kind() {
-            CaptureFailureKind::Physical(physical) => match physical.refusal() {
+            CaptureFailureKind::Physical(physical) => match &physical.refusal {
                 PhysicalRefusal::Bound {
                     bound,
                     limit,
