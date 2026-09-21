@@ -232,17 +232,17 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         match statement {
             Statement::Const {
                 name,
-                name_span: _,
+                name_span,
                 ty,
                 value,
                 span: _,
             } => {
-                self.lower_binding(name, ty.as_deref(), value, Mutability::Const)?;
+                self.lower_binding(name, *name_span, ty.as_deref(), value, Mutability::Const)?;
                 Ok(Flow::Fallthrough)
             }
             Statement::Var {
                 name,
-                name_span: _,
+                name_span,
                 keys,
                 ty,
                 value,
@@ -260,7 +260,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     ));
                     return Ok(Flow::Fallthrough);
                 };
-                self.lower_binding(name, ty.as_deref(), value, Mutability::Var)?;
+                self.lower_binding(name, *name_span, ty.as_deref(), value, Mutability::Var)?;
                 Ok(Flow::Fallthrough)
             }
             Statement::Assign {
@@ -348,11 +348,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     fn lower_binding(
         &mut self,
         name: &str,
+        name_span: SourceSpan,
         annotation: Option<&TypeExpr>,
         value: &Expression,
         mutability: Mutability,
     ) -> ConstructResult<()> {
-        if let Some(row) = refused_binding_name(self.file, value.span(), name) {
+        if let Some(row) = refused_binding_name(self.file, name_span, name) {
             self.fail(row);
             return Ok(());
         }
@@ -2326,7 +2327,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 text,
                 ..
             } => parse_int(text),
-            Expression::Name { segments, .. } if segments.len() == 1 => {
+            // A local resolves before a module declaration of the same name, and a local
+            // is not a compile-time bound.
+            Expression::Name { segments, .. }
+                if segments.len() == 1 && self.lookup(segments[0].text()).is_none() =>
+            {
                 match self.module_const(segments[0].text(), span) {
                     Ok(Some(ConstScalar::Int(value))) => Some(*value),
                     Ok(Some(ConstScalar::Bool(_) | ConstScalar::Text(_)) | None) => None,
@@ -2715,6 +2720,19 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
         if self.terminal_rejection() {
             return Ok(Flow::Rejected);
+        }
+        // The binding's name is validated before any operand is lowered, so a refused
+        // name reports once, at the name, and nothing is emitted for its operands.
+        if let CheckedBind::Const {
+            name, name_span, ..
+        }
+        | CheckedBind::Var {
+            name, name_span, ..
+        } = bind
+            && let Some(row) = refused_binding_name(self.file, *name_span, name)
+        {
+            self.fail(row);
+            return Ok(Flow::Fallthrough);
         }
         let Some(wrapped) = self.classify_checked_op(op) else {
             return Ok(Flow::Fallthrough);

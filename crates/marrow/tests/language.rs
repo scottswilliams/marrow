@@ -5,6 +5,8 @@ mod common;
 
 #[path = "language/collections.rs"]
 mod collections;
+#[path = "language/conformance_digests.rs"]
+mod conformance_digests;
 #[path = "language/enum_types.rs"]
 mod enum_types;
 #[path = "language/generics.rs"]

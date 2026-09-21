@@ -99,8 +99,8 @@ pub fn younger(n: int): int {
 }
 
 /// An operator without its capability is a typed `check.type` at the
-/// operation, for each of add, subtract, scale, and the int+nominal
-/// orientation. The JSONL record (code + span) is the typed contract; the CLI
+/// operation, for each of add and subtract, for the product no capability
+/// admits, and for the int+nominal orientation. The JSONL record (code + span) is the typed contract; the CLI
 /// run surface carries no diagnostic prose by design.
 #[test]
 fn a_missing_capability_is_a_check_type_diagnostic() {

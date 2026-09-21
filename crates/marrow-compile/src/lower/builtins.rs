@@ -239,31 +239,16 @@ fn reserved_builtin_name(file: &ProjectFile, span: SourceSpan, name: &str) -> So
     )
 }
 
-/// `_` is the placeholder: in a `match` arm's payload position it names nothing and
-/// may stand in more than one position. Everywhere else it neither declares a name
-/// nor denotes a value.
-pub(crate) fn is_placeholder(name: &str) -> bool {
-    name == "_"
-}
-
-/// The row refusing a name a declaration may not take: the `_` placeholder, which
-/// binds nothing, or a reserved built-in the compiler's own intercept would shadow.
+/// The row refusing a name a value declaration may not take: the `_` placeholder,
+/// which binds nothing, or a reserved built-in the compiler's own intercept would
+/// shadow.
 pub(crate) fn refused_binding_name(
     file: &ProjectFile,
     span: SourceSpan,
     name: &str,
 ) -> Option<SourceDiagnostic> {
-    if is_placeholder(name) {
-        return Some(SourceDiagnostic::at(
-            Code::CheckType,
-            file,
-            span,
-            "`_` is the placeholder and binds no name; it stands only for an unused payload \
-             field in a `match` arm"
-                .to_string(),
-        ));
-    }
-    is_reserved_builtin_name(name).then(|| reserved_builtin_name(file, span, name))
+    placeholder_declared(file, span, name)
+        .or_else(|| is_reserved_builtin_name(name).then(|| reserved_builtin_name(file, span, name)))
 }
 
 /// The row refusing `_` read as a value.

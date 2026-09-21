@@ -62,3 +62,88 @@ fn exists_over_a_present_value_is_refused() {
         diagnostics.all()
     );
 }
+
+/// A sparse field of a local resource value is a `T?` like any other: absent until
+/// assigned, present after.
+#[test]
+fn exists_reads_a_sparse_field_of_a_local_value() {
+    let mut session = Project::single(
+        r#"resource Book {
+    required title: string
+    subtitle: string
+}
+
+pub fn bare(): bool {
+    const b = Book(title: "x")
+    return exists(b.subtitle)
+}
+
+pub fn subtitled(): bool {
+    var b = Book(title: "x")
+    b.subtitle = "y"
+    return exists(b.subtitle)
+}
+"#,
+    )
+    .session();
+    assert_eq!(session.call("bare", vec![]), Some(Value::Bool(false)));
+    assert_eq!(session.call("subtitled", vec![]), Some(Value::Bool(true)));
+}
+
+/// The subject is evaluated exactly once: an export that bumps a durable counter and
+/// returns the new count leaves the counter at one.
+#[test]
+fn exists_evaluates_its_subject_once() {
+    const IDS: &str = "marrow ids v0\n\
+         machine-written by marrow; do not edit\n\
+         id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+         id product Counter 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+         id field Counter.n 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+         id root counters 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+         id key counters.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+         high-water 0\n\
+         end\n";
+    let workspace = Project::single(
+        r#"resource Counter {
+    required n: int
+}
+
+store ^counters[id: int]: Counter
+
+pub fn bump(): int? {
+    var next = 0
+    transaction {
+        next = (^counters[1].n ?? 0) + 1
+        ^counters[1] = Counter(n: next)
+    }
+    return next
+}
+
+pub fn count(): int {
+    return ^counters[1].n ?? 0
+}
+
+test "the subject is evaluated once" {
+    assert exists(bump())
+    assert count() == 1
+}
+"#,
+    )
+    .ids(IDS)
+    .materialize("exists-once");
+    let output = workspace.marrow(&["test", "--format", "jsonl"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    assert!(stdout.contains(r#""failed":0"#), "{stdout}");
+}
+
+/// An optional parameter is refused at its annotation, and `exists(p)` over the
+/// refused name adds no second row.
+#[test]
+fn exists_over_a_refused_optional_parameter_adds_no_row() {
+    let diagnostics = Project::single("pub fn f(p: int?): bool {\n    return exists(p)\n}\n")
+        .try_image()
+        .expect_err("an optional parameter is refused");
+    assert_eq!(diagnostics.len(), 1, "{:?}", diagnostics.all());
+    assert_eq!(diagnostics.only("check.unsupported").line(), 1);
+}

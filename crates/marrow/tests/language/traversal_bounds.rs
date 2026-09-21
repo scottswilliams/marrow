@@ -91,3 +91,88 @@ fn a_bound_that_is_not_a_positive_int_is_refused() {
         );
     }
 }
+
+/// A named bound resolves as the reference states: a local resolves before a module
+/// declaration of the same name, a module `const` of type `int` is admitted only when
+/// positive and within the ceiling, and any other name is refused at the bound.
+#[test]
+fn a_named_bound_resolves_as_the_reference_states() {
+    use marrow_codes::Code;
+    let cases: [(&str, &str, &str, &str, Vec<(Code, u32)>); 7] = [
+        (
+            "a folded expression",
+            "const limit = 1 + 1",
+            "const other = 2",
+            "limit",
+            vec![(Code::CheckUnsupported, 7), (Code::CheckUnsupported, 11)],
+        ),
+        (
+            "a named zero",
+            "const zero = 0",
+            "const other = 2",
+            "zero",
+            vec![(Code::CheckType, 11)],
+        ),
+        (
+            "a named negative",
+            "const neg = -1",
+            "const other = 2",
+            "neg",
+            vec![(Code::CheckType, 11)],
+        ),
+        (
+            "the exact ceiling",
+            "const cap = 65536",
+            "const other = 2",
+            "cap",
+            vec![],
+        ),
+        (
+            "one over the ceiling",
+            "const over = 65537",
+            "const other = 2",
+            "over",
+            vec![(Code::CheckType, 11)],
+        ),
+        (
+            "a const of another type",
+            "const label = \"two\"",
+            "const other = 2",
+            "label",
+            vec![(Code::CheckType, 11)],
+        ),
+        (
+            "a local shadowing the module const",
+            "const n = 3",
+            "const n = 2",
+            "n",
+            vec![(Code::CheckType, 11)],
+        ),
+    ];
+    for (label, declaration, local, bound, expected) in cases {
+        let outcome = Project::single(&format!(
+            "resource Book {{\n    required title: string\n}}\n\n\
+             store ^books[id: int]: Book\n\n\
+             {declaration}\n\n\
+             pub fn walk(): int {{\n\
+             \x20   {local}\n\
+             \x20   for id in ^books at most {bound} {{\n\
+             \x20       return 1\n\
+             \x20   }} on more {{\n\
+             \x20       return 2\n\
+             \x20   }}\n\
+             \x20   return 0\n\
+             }}\n"
+        ))
+        .ids(SHELF_IDS)
+        .try_image();
+        let actual: Vec<(Code, u32)> = match &outcome {
+            Ok(_) => Vec::new(),
+            Err(diagnostics) => diagnostics
+                .iter()
+                .map(|row| (row.code(), row.line()))
+                .collect(),
+        };
+        assert_eq!(actual, expected, "{label}");
+    }
+}

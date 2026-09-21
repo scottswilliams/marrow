@@ -40,7 +40,8 @@ use marrow_syntax::{
 
 use crate::decl::{
     Binding, DeclarationIndexDrift, DeclarationNamespace, DeclarationRefusalId,
-    DeclarationRefusalSummary, MemberNamespace, declaration_refused,
+    DeclarationRefusalSummary, MemberNamespace, declaration_refused, is_placeholder,
+    placeholder_declared,
 };
 use crate::diag::{
     DiagnosticCollector, NameFamily, SourceDiagnostic, operator_symbol, unsupported,

@@ -30,7 +30,8 @@ use crate::compile::admitted;
 use crate::decl::{
     Binding, DeclarationBudget, DeclarationIndexDrift, DeclarationLedger, DeclarationNamespace,
     DeclarationOccurrence, DeclarationRefusalId, DeclarationRefusalSummary, DeclarationSite,
-    DeclareError, RefusalReport, refuse_covered, refuse_row,
+    DeclareError, PLACEHOLDER_DECLARED, RefusalReport, is_placeholder, placeholder_declared,
+    refuse_covered, refuse_row,
 };
 use crate::demand::{DurableNaming, PathSigil};
 use crate::diag::{DiagnosticCollector, IdentityGap, SourceDiagnostic, unsupported};
@@ -748,6 +749,13 @@ impl DurableRegistry {
                 // refused declaration still occupies its name, so the repeat conflicts
                 // whichever of the two the compiler could admit.
                 let placement = ScopedName::new(file.origin(), &store.root.root);
+                if let Some(row) = placeholder_declared(file, store.root.span, &store.root.root) {
+                    let refusal = refuse_row(&mut settled, declared, row);
+                    registry
+                        .declared
+                        .declare(placement, DeclarationOccurrence::Refused(refusal))?;
+                    continue;
+                }
                 if registry.declared.declared(&placement) {
                     settled.push(SourceDiagnostic::at(
                         Code::CheckType,
@@ -2300,6 +2308,10 @@ impl<'a> IdentityResolver<'a> {
                         bounds::MAX_INDEX_COMPONENTS
                     ),
                 );
+                continue;
+            }
+            if is_placeholder(index.name) {
+                self.reject_index(index.span, PLACEHOLDER_DECLARED.to_string());
                 continue;
             }
             // The index name shares the root's source namespace with the identity keys,

@@ -236,22 +236,22 @@ pub(super) fn register_type_templates(
     Ok(())
 }
 
-/// Whether a declaration may take its name: a reserved spelling is refused into the
-/// ledger, and a name `taken` already holds is reported as a conflict. The one owner
-/// of the checks every declaration pass runs before it reserves a row, so the passes
-/// cannot drift on what a reserved or conflicting name reports.
+/// Whether a declaration may take its name: the placeholder and a reserved spelling
+/// are refused into the ledger, and a name `taken` already holds is reported as a
+/// conflict. The one owner of the checks every declaration pass runs before it
+/// reserves a row, so the passes cannot drift on what a refused name reports.
 fn claim_name(
     named: &mut DeclarationLedger<ScopedName, NamedTypeKind>,
     declared: DeclarationSite<'_>,
     taken: Option<NameHolder>,
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<bool, DeclareError> {
-    if is_reserved_type_name(declared.name) {
-        let refusal = refuse_row(
-            diagnostics,
-            declared,
-            reserved_name(declared.file, declared.span, declared.name),
-        );
+    let refused = placeholder_declared(declared.file, declared.span, declared.name).or_else(|| {
+        is_reserved_type_name(declared.name)
+            .then(|| reserved_name(declared.file, declared.span, declared.name))
+    });
+    if let Some(row) = refused {
+        let refusal = refuse_row(diagnostics, declared, row);
         named.declare(
             ScopedName::declared(&declared),
             DeclarationOccurrence::Refused(refusal),

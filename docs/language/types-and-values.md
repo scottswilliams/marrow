@@ -130,10 +130,12 @@ present value or the fallback. `if const name = value` enters its block with
 binding diverges when the value is absent. `value?.field` reads a field through
 an optional struct or resource and yields an optional.
 
-`exists(place)` is not one of them: it tests a durable place and yields a `bool`.
-An explicit guard over a named place proves its entry present and gives required
-field reads their declared types ([named places](durable-places.md#named-places)).
-It does not unwrap a local optional or make a sparse field required.
+`exists` is not one of them: it inspects and yields a `bool`. `exists(place)`
+tests a durable place; `exists(value)` tests any `T?` expression. Neither unwraps
+the optional nor narrows it: after `if exists(v)`, `v` is still a `T?`. An
+explicit guard over a named place proves its entry present and gives required
+field reads their declared types ([named places](durable-places.md#named-places));
+it does not unwrap a local optional or make a sparse field required.
 
 ```mw
 module docs::types::optionals

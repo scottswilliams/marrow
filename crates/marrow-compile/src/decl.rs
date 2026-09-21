@@ -293,6 +293,34 @@ pub(crate) fn refuse_first(
 
 /// One layer of declared members, refusing a repeated name at the repeat.
 ///
+/// `_` is the placeholder: it stands only for an unused payload field in a `match` arm,
+/// names nothing anywhere a name is declared, and is not a value. The one classifier
+/// every declaration gate and every binding gate consults.
+pub(crate) fn is_placeholder(name: &str) -> bool {
+    name == "_"
+}
+
+/// The message refusing `_` where a declaration would take it as a name.
+pub(crate) const PLACEHOLDER_DECLARED: &str = "`_` is the placeholder and binds no name; it \
+                                              stands only for an unused payload field in a \
+                                              `match` arm";
+
+/// The row refusing `_` where the declaration at `span` would take it as its name.
+pub(crate) fn placeholder_declared(
+    file: &ProjectFile,
+    span: SourceSpan,
+    name: &str,
+) -> Option<SourceDiagnostic> {
+    is_placeholder(name).then(|| {
+        SourceDiagnostic::at(
+            Code::CheckType,
+            file,
+            span,
+            PLACEHOLDER_DECLARED.to_string(),
+        )
+    })
+}
+
 /// Every namespace of members a declaration opens — struct or resource fields, enum
 /// members and payload fields, a type-parameter list, a parameter list, a root's or
 /// branch's key tuple — takes its names through one of these, in declaration order.
@@ -314,14 +342,17 @@ impl<'a> MemberNamespace<'a> {
         }
     }
 
-    /// Claim `name` for the member declared at `span` in `file`; a repeat is
-    /// answered with the row refusing it.
+    /// Claim `name` for the member declared at `span` in `file`; the placeholder and
+    /// a repeat are each answered with the row refusing it.
     pub(crate) fn claim(
         &mut self,
         file: &ProjectFile,
         name: &'a str,
         span: SourceSpan,
     ) -> Option<SourceDiagnostic> {
+        if let Some(row) = placeholder_declared(file, span, name) {
+            return Some(row);
+        }
         if self.taken.insert(name) {
             return None;
         }

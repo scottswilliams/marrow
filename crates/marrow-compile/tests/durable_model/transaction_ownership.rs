@@ -12,7 +12,7 @@
 //! - explicit and propagated returns commit only their own active region.
 
 use marrow_codes::Code;
-use marrow_compile::{CompileFailure, SourceDiagnostic, compile};
+use marrow_compile::{CompileFailure, SourceDiagnostic, compile, compile_with_tests};
 
 use super::project;
 
@@ -103,6 +103,42 @@ fn borrowed_instruction_bodies_keep_complete_transaction_coordinates() {
     }
     let early_return = "pub fn owner(id: int): int {\n    if identity(true) { return 0 }\n    transaction { ^counters[id] = Counter(value: 7) }\n    return 1\n}\n";
     assert!(diagnostics(&format!("{prelude}{early_return}")).is_empty());
+}
+
+/// The role-by-region matrix: a `test` body owning a region and a generic instance
+/// owning one are each a misplaced marker, and a `test` calling a generic helper that
+/// requires an ambient transaction is refused at the call.
+#[test]
+fn test_and_instance_bodies_answer_to_the_ownership_laws() {
+    let cases = [
+        (
+            Code::CheckTransactionMisplaced,
+            "fn bump(id: int) {\n    ^counters[id] = Counter(value: 1)\n}\ntest \"owns\" {\n    transaction {\n        bump(1)\n    }\n}\n",
+            "transaction {",
+        ),
+        (
+            Code::CheckTransactionMisplaced,
+            "fn tagged<T>(id: int, tag: T) {\n    transaction {\n        ^counters[id] = Counter(value: 1)\n    }\n}\ntest \"drives\" {\n    tagged(1, true)\n}\n",
+            "transaction {",
+        ),
+        (
+            Code::CheckRequiresTransaction,
+            "fn bumpTagged<T>(id: int, tag: T) {\n    ^counters[id] = Counter(value: 1)\n}\ntest \"calls\" {\n    bumpTagged(1, true)\n}\n",
+            "bumpTagged(1, true)",
+        ),
+    ];
+    for (code, ops, needle) in cases {
+        let source = format!("{SCHEMA}{ops}");
+        let mut diagnostics = match compile_with_tests(&project(&source, Some(IDS.as_bytes()))) {
+            Ok(_) => Vec::new(),
+            Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
+            Err(other) => panic!("source-triggered failure must remain diagnostics, got {other:?}"),
+        };
+        assert_eq!(diagnostics.len(), 1, "{code:?}: {diagnostics:#?}");
+        let diagnostic = diagnostics.pop().expect("one diagnostic");
+        assert_eq!(diagnostic.code(), code, "{diagnostic:#?}");
+        assert_eq!(diagnostic.line(), line_of(ops, needle), "{diagnostic:#?}");
+    }
 }
 
 /// An empty region commits nothing and opens no store session.

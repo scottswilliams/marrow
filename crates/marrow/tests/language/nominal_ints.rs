@@ -4,27 +4,37 @@
 use crate::common::Project;
 use marrow_vm::Value;
 
+/// `int(a)` and `string(a)` read a nominal value under every capability set: they
+/// are conversions, not operators, so no capability admits or withholds them.
 #[test]
-fn int_and_string_read_a_nominal_value() {
-    let mut session = Project::single(
-        r#"type Age: int in 0..=150 supports add
-
-pub fn base(): int {
-    const a = Age(41) + 1
-    return int(a)
-}
-
-pub fn rendered(): string {
-    return string(Age(7))
-}
-"#,
-    )
-    .session();
-    assert_eq!(session.call("base", vec![]), Some(Value::Int(42)));
-    assert_eq!(
-        session.call("rendered", vec![]),
-        Some(Value::Text("7".into()))
-    );
+fn int_and_string_read_a_nominal_value_under_every_capability_set() {
+    for supports in [
+        "",
+        " supports add",
+        " supports subtract",
+        " supports add, subtract",
+    ] {
+        let mut session = Project::single(&format!(
+            "type Age: int in 0..=150{supports}\n\n\
+             pub fn base(): int {{\n\
+             \x20   return int(Age(41))\n\
+             }}\n\n\
+             pub fn rendered(): string {{\n\
+             \x20   return string(Age(7))\n\
+             }}\n"
+        ))
+        .session();
+        assert_eq!(
+            session.call("base", vec![]),
+            Some(Value::Int(41)),
+            "{supports}"
+        );
+        assert_eq!(
+            session.call("rendered", vec![]),
+            Some(Value::Text("7".into())),
+            "{supports}"
+        );
+    }
 }
 
 /// No capability admits a product: `Name * int` is an operator defined for no pair of
