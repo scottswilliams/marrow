@@ -753,7 +753,6 @@ mod post_staging_custody_tests {
             &crate::durable::OriginLedgers::of(&committed),
             &mut diagnostics,
             DeclarationBudget::default(),
-            &mut Vec::new(),
         );
         Built {
             outcome: outcome.map(|_| ()),

@@ -334,9 +334,9 @@ fn signature_registry(functions: &[crate::lower::DeclaredFn<'_>]) -> FunctionReg
         &crate::durable::OriginLedgers::of(crate::test_input()),
         &mut diagnostics,
         budget.clone(),
-        &mut Vec::new(),
     )
-    .expect("an empty project builds an empty durable registry");
+    .expect("an empty project builds an empty durable registry")
+    .0;
     let mut draft = admitted(&mut draft_owner);
     crate::lower::FunctionRegistry::build(
         &mut records,
@@ -706,7 +706,6 @@ fn a_store_refused_after_real_staging_rolls_back_to_the_unstaged_image() {
             &crate::durable::OriginLedgers::of(&committed),
             &mut diagnostics,
             budget,
-            &mut Vec::new(),
         )
         .expect("the durable build settles refusals as diagnostics, not errors");
         let rows: Vec<String> = diagnostics
@@ -793,7 +792,6 @@ fn a_registry_slice_drift_is_a_typed_invariant_not_a_user_error() {
         &crate::durable::OriginLedgers::of(crate::test_input()),
         &mut diagnostics,
         budget,
-        &mut Vec::new(),
     );
     assert!(
         matches!(

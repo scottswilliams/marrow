@@ -30,10 +30,10 @@ use crate::compile::admitted;
 use crate::decl::{
     Binding, DeclarationBudget, DeclarationIndexDrift, DeclarationLedger, DeclarationNamespace,
     DeclarationOccurrence, DeclarationRefusalId, DeclarationRefusalSummary, DeclarationSite,
-    RefusalReport, refuse_covered, refuse_row,
+    DeclareError, RefusalReport, refuse_covered, refuse_row,
 };
 use crate::demand::{DurableNaming, PathSigil};
-use crate::diag::{DiagnosticCollector, IdentityGap, SourceDiagnostic};
+use crate::diag::{DiagnosticCollector, IdentityGap, SourceDiagnostic, unsupported};
 use crate::scalar::ScalarType;
 use crate::types::{
     BuildError, GArg, GenericInvariant, NominalBoundaryKind, NominalBoundaryRoot,
@@ -41,13 +41,11 @@ use crate::types::{
 };
 
 mod rows;
-mod staging;
 
 use rows::{
     AdmittedKeyColumn, GroupRow, IndexArgReach, IndexArgRow, IndexRow, IndexTable, KeyColumns,
     KeyTable, ProductKey, ResourceDirectory, ResourceRow, StoreResourceBinding, StoreRow,
 };
-use staging::StagedStoreTxn;
 
 /// The application's fixed ledger anchor path: one local application per
 /// project, so the anchor is the project itself.
@@ -710,7 +708,6 @@ impl DurableRegistry {
     /// store's gap never erases the whole registry. The compiler only *reads* the ledger;
     /// minting lives in the `marrow run` convenience action (and in the accepted apply
     /// action when it lands).
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn build<'source>(
         draft: &mut ImageDraft,
         records: &TypeRegistry,
@@ -719,10 +716,9 @@ impl DurableRegistry {
         ledgers: &OriginLedgers<'_>,
         diagnostics: &mut DiagnosticCollector,
         budget: DeclarationBudget,
-        boundary_roots: &mut Vec<NominalBoundaryRoot<'source>>,
-    ) -> Result<Self, BuildError> {
+    ) -> Result<(Self, Vec<NominalBoundaryRoot<'source>>), BuildError> {
         if stores.is_empty() {
-            return Ok(Self::empty(budget));
+            return Ok((Self::empty(budget), Vec::new()));
         }
         // A Product's occurrence multiplicity is a property of the whole declaration set,
         // so it is decided before the first store is built and no root emits a site under
@@ -739,6 +735,7 @@ impl DurableRegistry {
         let plan = census.plan();
         records.with_metadata_session(|metadata| {
             let mut registry = Self::empty(budget.clone());
+            let mut boundary_roots = Vec::new();
             // Whole-build custody: a store that returns an invariant leaves through `?`
             // with this collector still owned by the build, so an earlier store's rows are
             // dropped with it rather than published beside a build that produced no
@@ -777,11 +774,13 @@ impl DurableRegistry {
                 }
                 // One admitted transaction per store: an accepted store commits its
                 // interned spelling, root, sites, and application identity as one unit,
-                // and a checked refusal runs the guard's total inverse, so a refused store
-                // leaves no orphan row behind. The aggregate owns the armed transaction
-                // and its private rows together: an invariant abort drops both.
-                let staged = StagedStoreTxn::new(draft);
-                let (built, released) = staged.build_one(
+                // and a refused store rolls the transaction back, so it leaves no orphan
+                // row behind. Its rows stage beside the armed transaction, so an
+                // invariant abort drops both.
+                let mut txn = admitted(draft);
+                let mut staged = DiagnosticCollector::new();
+                let built = build_one(
+                    &mut txn,
                     &plan,
                     &mut type_metadata,
                     &directory,
@@ -792,86 +791,100 @@ impl DurableRegistry {
                         declared,
                     },
                     &mut identity_build,
+                    &mut staged,
                 )?;
-                let occurrence = match built {
-                    StoreBuild::Admitted(built) => {
-                        if let StoreResourceBinding::Accepted(bound) = row.binding {
-                            boundary_roots.push(NominalBoundaryRoot {
-                                value: NominalBoundaryValue::Resource(
-                                    directory.row(bound).record.type_id,
-                                ),
-                                kind: NominalBoundaryKind::Durable,
-                                file,
-                                span: store.span,
-                            });
-                        }
-                        let built = *built;
-                        registry.naming.extend(built.naming);
-                        let executable = built.executable.map(|root| {
-                            registry.roots.push(root);
-                            registry.roots.len() - 1
-                        });
-                        DeclarationOccurrence::Accepted(DeclaredRoot { executable })
-                    }
-                    StoreBuild::Refused(refusal) => {
-                        // The consuming build ran the total inverse before returning this
-                        // store's refusal and diagnostics.
-                        DeclarationOccurrence::Refused(refusal)
-                    }
-                };
-                settled.absorb(released);
-                // The resource projection is appended in the same statement as the
-                // ledger entry, so a store cannot be declared without being reachable
-                // by the resource it binds.
-                // A Product belongs to the tree that declares its resource; a store
-                // whose spelling bound no resource has no Product of another tree to
-                // reach, so it keys under its own.
-                let product_origin = match row.binding {
-                    StoreResourceBinding::Accepted(bound) => directory.row(bound).file.origin(),
-                    _ => file.origin(),
-                };
-                let product_key = ScopedName::new(product_origin, row.resource);
-                let stores = registry
-                    .products
-                    .entry(product_key.clone())
-                    .or_insert_with(|| ProductStores {
-                        admitted: Vec::new(),
-                        first_refused: None,
-                        declared_branches: false,
+                match &built {
+                    StoreBuild::Admitted(_) => txn.commit(),
+                    StoreBuild::Refused(_) => txn.rollback(),
+                }
+                settled.absorb(staged.finish());
+                if matches!(built, StoreBuild::Admitted(_))
+                    && let StoreResourceBinding::Accepted(bound) = row.binding
+                {
+                    boundary_roots.push(NominalBoundaryRoot {
+                        value: NominalBoundaryValue::Resource(directory.row(bound).record.type_id),
+                        kind: NominalBoundaryKind::Durable,
+                        file,
+                        span: store.span,
                     });
-                let mut declare_branches = None;
-                let mut declare_branch_paths = false;
-                match &occurrence {
-                    DeclarationOccurrence::Accepted(DeclaredRoot { executable }) => {
-                        declare_branch_paths = stores.admitted.is_empty();
-                        stores.admitted.push(store.root.root.clone());
-                        // A Product mints one materialized entry record per declared
-                        // branch however many roots project it, so the branch record
-                        // table is written at its first executable root and never again.
-                        if let Some(at) = executable
-                            && !std::mem::replace(&mut stores.declared_branches, true)
-                        {
-                            declare_branches = Some(*at);
-                        }
-                    }
-                    DeclarationOccurrence::Refused(_) => {
-                        stores.first_refused.get_or_insert(store.root.root.clone());
-                    }
                 }
-                if declare_branch_paths && let StoreResourceBinding::Accepted(bound) = row.binding {
-                    let resource = directory.row(bound);
-                    registry.record_declared_branch_paths(resource.file.origin(), &resource.groups);
-                }
-                if let Some(at) = declare_branches {
-                    let branches = std::mem::take(&mut registry.roots[at].branches);
-                    registry.record_branch_declarations(&product_key, &branches);
-                    registry.roots[at].branches = branches;
-                }
-                registry.declared.declare(placement, occurrence)?;
+                registry.admit_store(file, store, row, &directory, built)?;
             }
             diagnostics.absorb(settled.finish());
-            Ok(registry)
+            Ok((registry, boundary_roots))
         })
+    }
+
+    /// Admit one built store: its ledger occurrence, its executable root, the naming
+    /// entries its graph admitted, and the Product projection that reaches it. The
+    /// projection is appended in the same statement as the ledger entry, so a store
+    /// cannot be declared without being reachable by the resource it binds.
+    fn admit_store(
+        &mut self,
+        file: &ProjectFile,
+        store: &StoreDecl,
+        row: &StoreRow<'_>,
+        directory: &ResourceDirectory<'_>,
+        built: StoreBuild,
+    ) -> Result<(), DeclareError> {
+        let occurrence = match built {
+            StoreBuild::Admitted(built) => {
+                self.naming.extend(built.naming);
+                let executable = built.executable.map(|root| {
+                    self.roots.push(root);
+                    self.roots.len() - 1
+                });
+                DeclarationOccurrence::Accepted(DeclaredRoot { executable })
+            }
+            StoreBuild::Refused(refusal) => DeclarationOccurrence::Refused(refusal),
+        };
+        // A Product belongs to the tree that declares its resource; a store whose
+        // spelling bound no resource has no Product of another tree to reach, so it keys
+        // under its own.
+        let product_origin = match row.binding {
+            StoreResourceBinding::Accepted(bound) => directory.row(bound).file.origin(),
+            StoreResourceBinding::Unbound => file.origin(),
+        };
+        let product_key = ScopedName::new(product_origin, row.resource);
+        let stores = self
+            .products
+            .entry(product_key.clone())
+            .or_insert_with(|| ProductStores {
+                admitted: Vec::new(),
+                first_refused: None,
+                declared_branches: false,
+            });
+        let mut declare_branches = None;
+        let mut declare_branch_paths = false;
+        match &occurrence {
+            DeclarationOccurrence::Accepted(DeclaredRoot { executable }) => {
+                declare_branch_paths = stores.admitted.is_empty();
+                stores.admitted.push(store.root.root.clone());
+                // A Product mints one materialized entry record per declared branch
+                // however many roots project it, so the branch record table is written
+                // at its first executable root and never again.
+                if let Some(at) = executable
+                    && !std::mem::replace(&mut stores.declared_branches, true)
+                {
+                    declare_branches = Some(*at);
+                }
+            }
+            DeclarationOccurrence::Refused(_) => {
+                stores.first_refused.get_or_insert(store.root.root.clone());
+            }
+        }
+        if declare_branch_paths && let StoreResourceBinding::Accepted(bound) = row.binding {
+            let resource = directory.row(bound);
+            self.record_declared_branch_paths(resource.file.origin(), &resource.groups);
+        }
+        if let Some(at) = declare_branches {
+            let branches = std::mem::take(&mut self.roots[at].branches);
+            self.record_branch_declarations(&product_key, &branches);
+            self.roots[at].branches = branches;
+        }
+        let placement = ScopedName::new(file.origin(), &store.root.root);
+        self.declared.declare(placement, occurrence)?;
+        Ok(())
     }
 }
 
@@ -2944,15 +2957,6 @@ fn identity_gap(file: &ProjectFile, span: SourceSpan, gap: &IdentityGap) -> Sour
         span,
         message,
         gap.clone(),
-    )
-}
-
-fn unsupported(file: &ProjectFile, span: SourceSpan, subject: &str) -> SourceDiagnostic {
-    SourceDiagnostic::at(
-        Code::CheckUnsupported,
-        file,
-        span,
-        format!("{subject} is not yet supported on the beta line"),
     )
 }
 

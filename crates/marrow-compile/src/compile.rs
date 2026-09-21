@@ -1512,8 +1512,7 @@ fn run_semantic(
         Declaration::Store(store) => Some(store),
         _ => None,
     });
-    let mut boundary_roots = Vec::new();
-    let durable = match DurableRegistry::build(
+    let (durable, mut boundary_roots) = match DurableRegistry::build(
         &mut draft,
         &records,
         &resources,
@@ -1521,9 +1520,8 @@ fn run_semantic(
         &OriginLedgers::of(project),
         &mut diagnostics,
         budget.clone(),
-        &mut boundary_roots,
     ) {
-        Ok(durable) => durable,
+        Ok(built) => built,
         Err(error) => return error.into(),
     };
 
