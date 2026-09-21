@@ -19,6 +19,8 @@ mod image_command;
 mod lsp_not_in_cli_graph;
 #[path = "cli/resource_limit_cli.rs"]
 mod resource_limit_cli;
+#[path = "cli/run_command.rs"]
+mod run_command;
 #[path = "cli/shared_product_cli.rs"]
 mod shared_product_cli;
 #[path = "cli/test_command.rs"]

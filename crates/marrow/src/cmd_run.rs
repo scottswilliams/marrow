@@ -26,19 +26,32 @@ use marrow_verify::{
 };
 use marrow_vm::Value;
 
+use crate::Command;
+use crate::command_output::{OutputFormat, flag_value, format_flag, once, unknown_option, usage};
 use crate::outcome::{MAX_TEXT_BYTES, Record};
 use crate::project::capture_project;
+use crate::term_style::{Palette, Stream, Style};
 
-/// The output format for `marrow run`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Format {
-    Text,
-    Jsonl,
-}
+pub(crate) const HELP: &str = "\
+Usage:
+  marrow run <export> [--stdin] [--store <dir>] [--format text|jsonl] [-- <args>...]
+
+Compile and verify the project at the working directory, then run one exported
+function, named bare or as `module.item`. Arguments after `--` are decoded in order
+against the export's scalar parameters; --stdin instead supplies one string of at
+most 65536 UTF-8 bytes to an export taking exactly one string parameter. A durable
+export runs against the store named by --store through the companion runner; without
+--store a durable export is `cli.durable_unsupported`. The first storeless run of a
+project with durable declarations writes `.marrow/ids`.
+
+Text output is the returned value: a top-level `ok(v)` prints `v`, and a top-level
+`err(e)` prints `error: e` on standard error and exits 1. JSONL output is one
+record. A diagnostic prints as `file:line:column: code: message`.
+";
 
 struct RunArgs {
     export: String,
-    format: Format,
+    format: OutputFormat,
     call_args: CallArgs,
     /// The persistent store to run against (`--store <dir>`). When present, the run is
     /// served by a companion attached to the store and no identity is auto-minted; when
@@ -86,6 +99,21 @@ impl Outcome {
             exit,
         }
     }
+
+    /// The exit the records imply once the invocation has settled: success only when
+    /// every record is a completed value — a returned top-level `err` is a failure —
+    /// and the exit already recorded was success.
+    fn settled(self, enums: &[SealedEnumType]) -> Outcome {
+        let completed = self.records.iter().all(|record| record.completed(enums));
+        Outcome {
+            exit: if completed {
+                self.exit
+            } else {
+                ExitCode::FAILURE
+            },
+            records: self.records,
+        }
+    }
 }
 
 pub(crate) fn run(rest: &[String]) -> ExitCode {
@@ -102,6 +130,14 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
         None => ([].as_slice(), [].as_slice()),
     };
     emit(args.format, &outcome.records, types, enums, outcome.exit)
+}
+
+/// The two sinks text output is delivered to, each with the palette its stream admits.
+struct Sinks<'a, O: Write, E: Write> {
+    out: &'a mut O,
+    out_palette: Palette,
+    err: &'a mut E,
+    err_palette: Palette,
 }
 
 fn run_inner(args: &RunArgs, image_slot: &mut Option<VerifiedImage>) -> Result<Outcome, Outcome> {
@@ -121,7 +157,7 @@ fn run_inner(args: &RunArgs, image_slot: &mut Option<VerifiedImage>) -> Result<O
     // directory, before verification, so no source string reaches the image. The VM
     // dispatches only on this verified id.
     let export_id = resolve_export(&compiled.exports, &args.export)
-        .map_err(|message| Outcome::reported(crate::command_output::usage(&message)))?;
+        .map_err(|message| Outcome::reported(usage(Command::Run, &message)))?;
 
     // Family 2: artifact decode/verify rejection. The compiler cannot mint a
     // verified image — only `marrow_verify::verify` can.
@@ -153,7 +189,8 @@ fn run_inner(args: &RunArgs, image_slot: &mut Option<VerifiedImage>) -> Result<O
             store_dir,
             function.body().params(),
             &args.call_args,
-        );
+        )
+        .map(|outcome| outcome.settled(image.enums()));
     }
 
     // Durable execution needs a store, and the terminal opens none. Durable source
@@ -167,16 +204,13 @@ fn run_inner(args: &RunArgs, image_slot: &mut Option<VerifiedImage>) -> Result<O
 
     let call_args = decode_call_args(function.body().params(), &args.call_args)?;
 
-    // Family 3: source-mapped runtime fault, or the value.
+    // Family 3: source-mapped runtime fault, the value, or the program's own `err`.
     let record = run_storeless(function, call_args);
-    let exit = match &record {
-        Record::Value(_) => ExitCode::SUCCESS,
-        _ => ExitCode::FAILURE,
-    };
     Ok(Outcome {
         records: vec![record],
-        exit,
-    })
+        exit: ExitCode::SUCCESS,
+    }
+    .settled(image.enums()))
 }
 
 /// Compile the captured project. Family 1 is source diagnostics; when compilation
@@ -365,7 +399,8 @@ fn run_persistent(
     // Installation discovery precedes argument consumption on the persistent path.
     let values = decode_call_args(params, call_args)?;
     let Some(args) = values.iter().map(value_to_wire).collect::<Option<Vec<_>>>() else {
-        return Err(Outcome::reported(crate::command_output::usage(
+        return Err(Outcome::reported(usage(
+            Command::Run,
             "this export cannot be called from the terminal",
         )));
     };
@@ -396,7 +431,7 @@ fn attached_records(completion: marrow_runner::AttachCompletion) -> Outcome {
             detail: None,
         },
     };
-    let exit = if matches!(record, Record::Value(_)) && completion.cleanup.is_ok() {
+    let exit = if completion.cleanup.is_ok() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
@@ -485,7 +520,7 @@ fn value_to_wire(value: &Value) -> Option<marrow_runner::Json> {
 
 fn decode_call_args(params: &[ImageType], args: &CallArgs) -> Result<Vec<Value>, Outcome> {
     materialize_args(params, args, &mut io::stdin().lock()).map_err(|error| match error {
-        ArgumentError::Usage(message) => Outcome::reported(crate::command_output::usage(&message)),
+        ArgumentError::Usage(message) => Outcome::reported(usage(Command::Run, &message)),
         ArgumentError::Limit(len) => Outcome::operational(
             marrow_codes::Code::CliArgumentLimit,
             Some(format!(
@@ -607,8 +642,9 @@ fn decode_arg(scalar: Scalar, text: &str) -> Result<Value, String> {
 }
 
 fn parse_args(rest: &[String]) -> Result<RunArgs, ExitCode> {
+    const COMMAND: Command = Command::Run;
     let mut export: Option<String> = None;
-    let mut format = Format::Text;
+    let mut format: Option<OutputFormat> = None;
     let mut call_args = CallArgs::Positional(Vec::new());
     let mut store: Option<PathBuf> = None;
     let mut iter = rest.iter();
@@ -618,7 +654,8 @@ fn parse_args(rest: &[String]) -> Result<RunArgs, ExitCode> {
                 match &mut call_args {
                     CallArgs::Positional(args) => args.extend(iter.by_ref().cloned()),
                     CallArgs::Stdin if iter.next().is_some() => {
-                        return Err(crate::command_output::usage(
+                        return Err(usage(
+                            COMMAND,
                             "`--stdin` cannot be combined with positional arguments",
                         ));
                     }
@@ -627,101 +664,114 @@ fn parse_args(rest: &[String]) -> Result<RunArgs, ExitCode> {
                 break;
             }
             "--stdin" => call_args = CallArgs::Stdin,
-            "--store" => match iter.next() {
-                Some(dir) => store = Some(PathBuf::from(dir)),
-                None => {
-                    return Err(crate::command_output::usage(
-                        "`--store` needs a store directory",
-                    ));
-                }
-            },
-            "--format" => match iter.next().map(String::as_str) {
-                Some("jsonl") => format = Format::Jsonl,
-                Some("text") => format = Format::Text,
-                _ => {
-                    return Err(crate::command_output::usage(
-                        "`--format` must be `text` or `jsonl`",
-                    ));
-                }
-            },
-            other if other.starts_with('-') => {
-                return Err(crate::command_output::usage(&format!(
-                    "unknown run option: {other}"
-                )));
-            }
-            other => {
-                if export.replace(other.to_string()).is_some() {
-                    return Err(crate::command_output::usage(
-                        "marrow run takes one export name",
-                    ));
-                }
-            }
+            "--store" => once(
+                &mut store,
+                PathBuf::from(flag_value(&mut iter, COMMAND, "--store")?),
+                COMMAND,
+                "`--store` directory",
+            )?,
+            "--format" => once(
+                &mut format,
+                format_flag(&mut iter, COMMAND)?,
+                COMMAND,
+                "`--format` value",
+            )?,
+            other if other.starts_with('-') => return Err(unknown_option(COMMAND, other)),
+            other => once(&mut export, other.to_string(), COMMAND, "export name")?,
         }
     }
-    let Some(export) = export else {
-        return Err(crate::command_output::usage(
-            "marrow run needs an export name",
-        ));
-    };
     Ok(RunArgs {
-        export,
-        format,
+        export: export.ok_or_else(|| usage(COMMAND, "marrow run takes an export name"))?,
+        format: format.unwrap_or(OutputFormat::Text),
         call_args,
         store,
     })
 }
 
-/// Report a sink failure on stderr if that channel remains writable. The call
-/// may already have completed; output failure never dispatches it again.
+/// Deliver the records: JSONL to standard output; text to standard output, except the
+/// program's own `err` report, which goes to standard error. A sink failure is reported
+/// on stderr if that channel remains writable. The call may already have completed;
+/// output failure never dispatches it again.
 fn emit(
-    format: Format,
+    format: OutputFormat,
     records: &[Record],
     types: &[SealedRecordType],
     enums: &[SealedEnumType],
     exit: ExitCode,
 ) -> ExitCode {
-    crate::command_output::finish(emit_to(
-        &mut io::stdout().lock(),
-        format,
-        records,
-        types,
-        enums,
-        exit,
-    ))
+    let sinks = Sinks {
+        out: &mut io::stdout().lock(),
+        out_palette: Palette::for_stream(Stream::Stdout),
+        err: &mut io::stderr().lock(),
+        err_palette: Palette::for_stream(Stream::Stderr),
+    };
+    crate::command_output::finish(emit_to(sinks, format, records, types, enums, exit))
 }
 
 fn emit_to(
-    writer: &mut impl Write,
-    format: Format,
+    sinks: Sinks<'_, impl Write, impl Write>,
+    format: OutputFormat,
     records: &[Record],
     types: &[SealedRecordType],
     enums: &[SealedEnumType],
     mut exit: ExitCode,
 ) -> io::Result<ExitCode> {
     for record in records {
-        let rendered = match format {
-            Format::Jsonl => record.to_jsonl(types, enums),
-            Format::Text => record.to_text(types, enums),
-        };
-        let text = rendered.unwrap_or_else(|()| {
-            exit = ExitCode::FAILURE;
-            let failure = Record::OperationalError {
-                code: marrow_codes::Code::IoWrite,
-                detail: None,
-            };
-            match format {
-                Format::Jsonl => failure.to_jsonl(types, enums),
-                Format::Text => failure.to_text(types, enums),
+        match format {
+            OutputFormat::Jsonl => {
+                let text = record.to_jsonl(types, enums).unwrap_or_else(|()| {
+                    exit = ExitCode::FAILURE;
+                    render_refusal().to_jsonl(types, enums).expect(PAYLOAD_FREE)
+                });
+                sinks.out.write_all(text.as_bytes())?;
+                sinks.out.write_all(b"\n")?;
             }
-            .expect("a payload-free operational error always renders")
-        });
-        if format == Format::Jsonl || !text.is_empty() {
-            writer.write_all(text.as_bytes())?;
-            writer.write_all(b"\n")?;
+            OutputFormat::Text if record.is_program_error(enums) => {
+                let text = record
+                    .to_text(sinks.err_palette, types, enums)
+                    .unwrap_or_else(|()| {
+                        exit = ExitCode::FAILURE;
+                        render_refusal()
+                            .to_text(sinks.err_palette, types, enums)
+                            .expect(PAYLOAD_FREE)
+                    });
+                let text = text.replacen(
+                    "error: ",
+                    &sinks.err_palette.paint(Style::Error, "error: "),
+                    1,
+                );
+                sinks.err.write_all(text.as_bytes())?;
+                sinks.err.write_all(b"\n")?;
+            }
+            OutputFormat::Text => {
+                let text = record
+                    .to_text(sinks.out_palette, types, enums)
+                    .unwrap_or_else(|()| {
+                        exit = ExitCode::FAILURE;
+                        render_refusal()
+                            .to_text(sinks.out_palette, types, enums)
+                            .expect(PAYLOAD_FREE)
+                    });
+                if !text.is_empty() {
+                    sinks.out.write_all(text.as_bytes())?;
+                    sinks.out.write_all(b"\n")?;
+                }
+            }
         }
     }
-    writer.flush()?;
+    sinks.out.flush()?;
+    sinks.err.flush()?;
     Ok(exit)
+}
+
+const PAYLOAD_FREE: &str = "a payload-free operational error always renders";
+
+/// The record that stands in for a value whose rendering the output bound refused.
+fn render_refusal() -> Record {
+    Record::OperationalError {
+        code: marrow_codes::Code::IoWrite,
+        detail: None,
+    }
 }
 
 #[cfg(test)]
@@ -729,6 +779,28 @@ mod terminal_tests {
     use super::*;
 
     const TEXT_LIMIT: usize = 65_536;
+
+    /// Both sinks as plain byte buffers.
+    fn sinks<'a, O: Write, E: Write>(out: &'a mut O, err: &'a mut E) -> Sinks<'a, O, E> {
+        Sinks {
+            out,
+            out_palette: Palette::for_test(false),
+            err,
+            err_palette: Palette::for_test(false),
+        }
+    }
+
+    /// Emit into fresh buffers, returning `(exit, stdout, stderr)`.
+    fn emitted(
+        format: OutputFormat,
+        records: &[Record],
+        exit: ExitCode,
+    ) -> (ExitCode, Vec<u8>, Vec<u8>) {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let exit = emit_to(sinks(&mut out, &mut err), format, records, &[], &[], exit)
+            .expect("buffers accept every write");
+        (exit, out, err)
+    }
 
     #[test]
     fn attach_emits_known_outcome_and_cleanup_failure_as_separate_records() {
@@ -766,11 +838,8 @@ mod terminal_tests {
             assert!(
                 matches!(&records[1], Record::CompanionStaging { path, .. } if path == "/tmp/retained")
             );
-            let mut bytes = Vec::new();
-            assert_eq!(
-                emit_to(&mut bytes, Format::Jsonl, &records, &[], &[], exit).expect("emit"),
-                ExitCode::FAILURE
-            );
+            let (exit, bytes, _) = emitted(OutputFormat::Jsonl, &records, exit);
+            assert_eq!(exit, ExitCode::FAILURE);
             let text = String::from_utf8(bytes).expect("UTF-8 output");
             let lines: Vec<_> = text.lines().collect();
             assert_eq!(lines.len(), 2);
@@ -892,36 +961,23 @@ mod terminal_tests {
     #[test]
     fn render_refusal_sets_failed_status_before_any_value_bytes() {
         for (format, expected) in [
-            (Format::Text, "io.write\n"),
+            (OutputFormat::Text, "io.write\n"),
             (
-                Format::Jsonl,
+                OutputFormat::Jsonl,
                 "{\"code\":\"io.write\",\"kind\":\"run\",\"outcome\":\"error\"}\n",
             ),
         ] {
-            let mut output = Vec::new();
-            let exit = emit_to(
-                &mut output,
+            let (exit, output, err) = emitted(
                 format,
                 &[text(&"a".repeat(TEXT_LIMIT + 1))],
-                &[],
-                &[],
                 ExitCode::SUCCESS,
-            )
-            .expect("error record writes");
+            );
             assert_eq!(exit, ExitCode::FAILURE);
             assert_eq!(output, expected.as_bytes());
+            assert!(err.is_empty());
         }
-        let mut output = Vec::new();
         let bytes = Record::Value(Some(Value::Bytes(vec![0; TEXT_LIMIT / 2].into())));
-        let exit = emit_to(
-            &mut output,
-            Format::Jsonl,
-            &[bytes],
-            &[],
-            &[],
-            ExitCode::SUCCESS,
-        )
-        .expect("non-text data refusal writes");
+        let (exit, output, _) = emitted(OutputFormat::Jsonl, &[bytes], ExitCode::SUCCESS);
         assert_eq!(exit, ExitCode::FAILURE);
         assert_eq!(
             output,
@@ -932,29 +988,17 @@ mod terminal_tests {
     #[test]
     fn output_keeps_existing_empty_and_newline_framing() {
         for (value, expected) in [("", ""), ("a", "a\n"), ("a\n", "a\n\n")] {
-            let mut output = Vec::new();
-            let exit = emit_to(
-                &mut output,
-                Format::Text,
-                &[text(value)],
-                &[],
-                &[],
-                ExitCode::SUCCESS,
-            )
-            .expect("text writes");
+            let (exit, output, err) =
+                emitted(OutputFormat::Text, &[text(value)], ExitCode::SUCCESS);
             assert_eq!(exit, ExitCode::SUCCESS);
             assert_eq!(output, expected.as_bytes());
+            assert!(err.is_empty());
         }
-        let mut output = Vec::new();
-        emit_to(
-            &mut output,
-            Format::Jsonl,
+        let (_, output, _) = emitted(
+            OutputFormat::Jsonl,
             &[text(&"\0".repeat(TEXT_LIMIT))],
-            &[],
-            &[],
             ExitCode::SUCCESS,
-        )
-        .expect("maximally escaped string writes");
+        );
         assert_eq!(output.len(), 393_259);
         assert!(output.ends_with(b"\n"));
     }
@@ -984,9 +1028,10 @@ mod terminal_tests {
                 remaining: accepted,
                 bytes: Vec::new(),
             };
+            let mut err = Vec::new();
             let error = emit_to(
-                &mut writer,
-                Format::Text,
+                sinks(&mut writer, &mut err),
+                OutputFormat::Text,
                 &[text("report")],
                 &[],
                 &[],

@@ -12,14 +12,14 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use marrow_codes::Code;
-use marrow_compile::ProjectFile;
+use marrow_compile::{ProjectFile, SourceDiagnostic};
 use marrow_project::{LedgerPublicationPlan, ProjectInput};
 use marrow_project_fs::{
     CaptureFailure as PhysicalCaptureFailure, IdsPublication, IdsPublicationError,
     IdsPublishOutcome, OverlaySnapshot, ProjectMetadataWriteGuard,
 };
 
-use crate::term_style::{Stream, Style};
+use crate::term_style::{Palette, Stream};
 
 /// The manifest file at a project root. Retained for `cmd_init`.
 pub(crate) const MANIFEST_FILE: &str = "marrow.toml";
@@ -146,13 +146,15 @@ pub(crate) fn compile_project<T>(
     })
 }
 
-/// Report a compile failure on standard error: every source diagnostic with its span,
-/// or the one fixed code line an exhausted bound or a failed internal check earns.
+/// Report a compile failure on standard error: every source diagnostic in the one
+/// diagnostic form, or the one fixed code line an exhausted bound or a failed internal
+/// check earns.
 fn report_compile_failure(failure: &marrow_compile::CompileFailure, hint: Option<&str>) {
     match failure {
         marrow_compile::CompileFailure::Diagnostics(diagnostics) => {
+            let palette = Palette::for_stream(Stream::Stderr);
             for diagnostic in diagnostics {
-                eprintln!("{}", diagnostic_line(diagnostic));
+                eprintln!("{}", diagnostic_line(palette, diagnostic));
             }
             if let Some(hint) = hint {
                 eprintln!("{hint}");
@@ -169,21 +171,20 @@ fn report_compile_failure(failure: &marrow_compile::CompileFailure, hint: Option
     }
 }
 
-/// One diagnostic rendered as `file:line:column: code: message`, painted for a terminal.
-/// The file spelling is the compiler's own, so a file a dependency declares carries that
-/// dependency's alias: `graphtext:src/text.mw`.
-fn diagnostic_line(diagnostic: &marrow_compile::SourceDiagnostic) -> String {
-    let file = ProjectFile::new(diagnostic.origin().clone(), diagnostic.file().clone());
-    format!(
-        "{}:{}:{}: {}: {}",
-        paint(Style::Muted, &file.spelling()),
+/// One compile diagnostic through the one renderer, under the compiler's own file
+/// spelling: a file a dependency declares carries that dependency's alias, as in
+/// `graphtext:src/text.mw`.
+pub(crate) fn diagnostic_line(palette: Palette, diagnostic: &SourceDiagnostic) -> String {
+    palette.diagnostic(
+        &diagnostic_file(diagnostic),
         diagnostic.line(),
         diagnostic.column(),
-        paint(Style::Code, diagnostic.code().as_str()),
+        diagnostic.code().as_str(),
         diagnostic.message(),
     )
 }
 
-fn paint(style: Style, text: &str) -> String {
-    crate::term_style::paint(Stream::Stderr, style, text)
+/// The compiler's spelling of the file a diagnostic is located in.
+pub(crate) fn diagnostic_file(diagnostic: &SourceDiagnostic) -> String {
+    ProjectFile::new(diagnostic.origin().clone(), diagnostic.file().clone()).spelling()
 }

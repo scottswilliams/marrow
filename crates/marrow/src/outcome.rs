@@ -13,6 +13,8 @@ use marrow_verify::{SealedEnumType, SealedRecordType};
 use marrow_vm::Value;
 use marrow_vm::render::{TextLimit, ValueSink};
 
+use crate::term_style::Palette;
+
 /// Raw UTF-8 bytes admitted for stdin and a returned bare string. JSON escaping
 /// can expand each byte sixfold; this is not an encoded-record bound.
 pub(crate) const MAX_TEXT_BYTES: usize = 64 * 1024;
@@ -37,8 +39,16 @@ pub(crate) enum Record {
     ActivationOutcomeUnknown { cause_code: Code },
     /// A successful value (or `None` for a Unit return).
     Value(Option<Value>),
-    /// Family 1: a source diagnostic (parse/check).
-    Diagnostic { code: Code, line: u32, column: u32 },
+    /// Family 1: a source diagnostic (parse/check). `file` is the compiler's spelling
+    /// of the located file and `message` its prose; both render in text only, the
+    /// JSONL surface stays the code and span.
+    Diagnostic {
+        code: Code,
+        file: String,
+        line: u32,
+        column: u32,
+        message: String,
+    },
     /// Family 2: an image decode/verify rejection.
     ArtifactRejected { code: Code },
     /// Family 3: a source-mapped runtime fault. `detail` is the static author text
@@ -107,8 +117,10 @@ impl Record {
             .iter()
             .map(|diagnostic| Record::Diagnostic {
                 code: diagnostic.code(),
+                file: crate::project::diagnostic_file(diagnostic),
                 line: diagnostic.line(),
                 column: diagnostic.column(),
+                message: diagnostic.message().to_string(),
             })
             .collect()
     }
@@ -121,11 +133,25 @@ impl Record {
         }
     }
 
+    /// Whether the invocation completed with a value the caller can use: a returned
+    /// value other than a top-level `err`. Everything else exits 1.
+    pub(crate) fn completed(&self, enums: &[SealedEnumType]) -> bool {
+        matches!(self, Record::Value(_)) && !self.is_program_error(enums)
+    }
+
+    /// Whether this is the program's own failure report — a returned top-level `err(e)`
+    /// — which text output writes to standard error.
+    pub(crate) fn is_program_error(&self, enums: &[SealedEnumType]) -> bool {
+        matches!(self, Record::Value(Some(value)) if matches!(top_level_result(value, enums), Some(TopLevel::Err(_))))
+    }
+
     /// The plain-text rendering for the default (non-JSONL) format. `types` supplies
     /// the field names of a returned record value; it is empty for the non-value
-    /// families, which never render a record.
+    /// families, which never render a record. A diagnostic renders through `palette`
+    /// in the one diagnostic form.
     pub(crate) fn to_text(
         &self,
+        palette: Palette,
         types: &[SealedRecordType],
         enums: &[SealedEnumType],
     ) -> Result<String, ()> {
@@ -151,15 +177,30 @@ impl Record {
                 "activation outcome unknown: attach may have changed the binding; no invocation was sent (cause: {})",
                 cause_code.as_str(),
             ),
-            Record::Value(Some(Value::Text(text))) if text.len() > MAX_TEXT_BYTES => return Err(()),
-            // Aggregate text has no byte ceiling; the bare-string limit is checked above.
             Record::Value(Some(value)) => {
-                marrow_vm::render::value_text(value, types, enums, usize::MAX).map_err(|_| ())?
+                let (prefix, value) = match top_level_result(value, enums) {
+                    Some(TopLevel::Ok(inner)) => ("", inner),
+                    Some(TopLevel::Err(inner)) => ("error: ", inner),
+                    None => ("", value),
+                };
+                if let Value::Text(text) = value
+                    && text.len() > MAX_TEXT_BYTES
+                {
+                    return Err(());
+                }
+                // Aggregate text has no byte ceiling; the bare-string limit is checked above.
+                let text = marrow_vm::render::value_text(value, types, enums, usize::MAX)
+                    .map_err(|_| ())?;
+                format!("{prefix}{text}")
             }
             Record::Value(None) => String::new(),
-            Record::Diagnostic { code, line, column } => {
-                format!("{} at {line}:{column}", code.as_str())
-            }
+            Record::Diagnostic {
+                code,
+                file,
+                line,
+                column,
+                message,
+            } => palette.diagnostic(file, *line, *column, code.as_str(), message),
             Record::Fault {
                 code,
                 line,
@@ -227,7 +268,9 @@ impl Record {
                 let data = render_data(value.as_ref(), types, enums)?;
                 format!(r#"{{"data":{data},"kind":"run","outcome":"value"}}"#)
             }
-            Record::Diagnostic { code, line, column } => format!(
+            Record::Diagnostic {
+                code, line, column, ..
+            } => format!(
                 r#"{{"code":{},"kind":"run","outcome":"diagnostic","span":{}}}"#,
                 json_string(code.as_str()),
                 span_object(*line, *column)
@@ -289,10 +332,13 @@ impl Record {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TestOutcome {
     Passed,
+    /// A false `assert`, carrying the assertion's own trimmed source line for the
+    /// text report.
     Failed {
         code: Code,
         line: u32,
         column: u32,
+        source_line: String,
     },
     Errored {
         code: Code,
@@ -330,9 +376,9 @@ impl TestRecord {
                 json_string(&self.name),
                 span_object(self.decl_line, self.decl_column),
             ),
-            TestOutcome::Failed { code, line, column } => {
-                self.fault_jsonl("failed", *code, *line, *column)
-            }
+            TestOutcome::Failed {
+                code, line, column, ..
+            } => self.fault_jsonl("failed", *code, *line, *column),
             TestOutcome::Errored { code, line, column } => {
                 self.fault_jsonl("errored", *code, *line, *column)
             }
@@ -366,9 +412,16 @@ impl TestRecord {
     pub(crate) fn to_text(&self) -> String {
         match &self.outcome {
             TestOutcome::Passed => format!("ok    {}", self.name),
-            TestOutcome::Failed { code, line, column } => {
-                format!("FAIL  {} ({} at {line}:{column})", self.name, code.as_str())
-            }
+            TestOutcome::Failed {
+                code,
+                line,
+                column,
+                source_line,
+            } => format!(
+                "FAIL  {} ({} at {line}:{column})\n    {source_line}",
+                self.name,
+                code.as_str()
+            ),
             TestOutcome::Errored { code, line, column } => {
                 format!("ERROR {} ({} at {line}:{column})", self.name, code.as_str())
             }
@@ -429,6 +482,37 @@ impl TestSummary {
 
 fn span_object(line: u32, column: u32) -> String {
     format!(r#"{{"column":{column},"line":{line}}}"#)
+}
+
+/// A returned value's outermost `Result` constructor, split from its payload. The
+/// terminal renders a top-level `ok(v)` as `v` and a top-level `err(e)` as the program's
+/// failure report; a `Result` nested anywhere below keeps its constructor spelling.
+enum TopLevel<'a> {
+    Ok(&'a Value),
+    Err(&'a Value),
+}
+
+fn top_level_result<'a>(value: &'a Value, enums: &[SealedEnumType]) -> Option<TopLevel<'a>> {
+    let Value::Enum(idx, variant, payload) = value else {
+        return None;
+    };
+    let enum_def = enums.get(usize::from(*idx))?;
+    if enum_def.name() != "Result" {
+        return None;
+    }
+    let [inner] = payload.as_ref() else {
+        return None;
+    };
+    match enum_def
+        .variants()
+        .get(usize::from(*variant))?
+        .name()
+        .as_ref()
+    {
+        "ok" => Some(TopLevel::Ok(inner)),
+        "err" => Some(TopLevel::Err(inner)),
+        _ => None,
+    }
 }
 
 /// Render a value as the JSONL `data` field, or `Err` when it exceeds the data
@@ -590,8 +674,13 @@ fn json_string(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{JsonData, MAX_DATA_BYTES, Record, TextLimit, json_string, render_data};
+    use crate::term_style::Palette;
     use marrow_codes::Code;
     use marrow_vm::Value;
+
+    fn plain() -> Palette {
+        Palette::for_test(false)
+    }
 
     #[test]
     fn cleanup_records_preserve_observation_and_staging_without_reclassifying_the_call() {
@@ -639,7 +728,7 @@ mod tests {
         for record in [reported, missing] {
             assert!(
                 record
-                    .to_text(&[], &[])
+                    .to_text(plain(), &[], &[])
                     .unwrap()
                     .contains("no invocation was sent")
             );
@@ -687,7 +776,7 @@ mod tests {
             cause: marrow_runner::CauseKind::Wire,
             cause_code: Code::WireMalformed,
         }
-        .to_text(&[], &[])
+        .to_text(plain(), &[], &[])
         .expect("record renders");
         assert!(
             text.contains("run.outcome_unknown"),
@@ -717,8 +806,10 @@ mod tests {
         assert!(
             Record::Diagnostic {
                 code: Code::CheckType,
+                file: "src/main.mw".into(),
                 line: 3,
-                column: 5
+                column: 5,
+                message: "found bool where int is required".into(),
             }
             .to_jsonl(&[], &[])
             .expect("record renders")
@@ -785,7 +876,7 @@ mod tests {
             detail: Some(".marrow/ids: unresolved Git conflict markers".to_string()),
         };
         assert_eq!(
-            record.to_text(&[], &[]).expect("record renders"),
+            record.to_text(plain(), &[], &[]).expect("record renders"),
             "project.ids_corrupt: .marrow/ids: unresolved Git conflict markers"
         );
         assert_eq!(
@@ -808,7 +899,7 @@ mod tests {
             r#"{"code":"cli.compiler_resource_limit","kind":"run","kind_detail":"Exports","outcome":"error"}"#
         );
         assert_eq!(
-            record.to_text(&[], &[]).expect("record renders"),
+            record.to_text(plain(), &[], &[]).expect("record renders"),
             "cli.compiler_resource_limit: the export table is full"
         );
     }
@@ -948,7 +1039,7 @@ mod tests {
         let nested = Value::list(0, Rc::new(vec![raw]));
         assert_eq!(render_data(Some(&nested), &[], &[]), Err(()));
         assert_eq!(
-            Record::Value(Some(nested)).to_text(&[], &[]),
+            Record::Value(Some(nested)).to_text(plain(), &[], &[]),
             Ok(format!("[{}]", "\0".repeat(MAX_DATA_BYTES))),
         );
 
@@ -1002,7 +1093,10 @@ mod tests {
     fn bare_string_bounds_precede_text_and_json_rendering() {
         for input in ["é".repeat(32_768), "\0".repeat(65_536)] {
             let record = Record::Value(Some(Value::Text(input.as_str().into())));
-            assert_eq!(record.to_text(&[], &[]).expect("exact raw limit"), input);
+            assert_eq!(
+                record.to_text(plain(), &[], &[]).expect("exact raw limit"),
+                input
+            );
             let json = record
                 .to_jsonl(&[], &[])
                 .expect("escaping remains admitted");
@@ -1010,7 +1104,7 @@ mod tests {
             assert_eq!(parsed["data"], input);
         }
         let record = Record::Value(Some(Value::Text("a".repeat(65_537).into())));
-        assert_eq!(record.to_text(&[], &[]), Err(()));
+        assert_eq!(record.to_text(plain(), &[], &[]), Err(()));
         assert_eq!(record.to_jsonl(&[], &[]), Err(()));
     }
 

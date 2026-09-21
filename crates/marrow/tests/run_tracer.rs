@@ -289,7 +289,8 @@ pub fn retNested(): Option<Option<int>> {
     for (export, expected) in [
         ("retOpt", "Option::some({x: 1, y: 2})\n"),
         ("retNone", "Option::none\n"),
-        ("retResult", "Result::ok({x: 3, y: 4})\n"),
+        // A top-level `ok` is unwrapped; the record inside renders on its own.
+        ("retResult", "{x: 3, y: 4}\n"),
         ("retNested", "Option::some(Option::some(7))\n"),
     ] {
         let outcome = workspace.marrow(&["run", export]);

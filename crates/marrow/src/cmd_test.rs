@@ -16,19 +16,30 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use marrow_codes::Code;
-use marrow_compile::compile_with_tests;
+use marrow_compile::{ProjectFile, compile_with_tests};
+use marrow_project::ProjectInput;
 
+use crate::Command;
+use crate::command_output::{OutputFormat, flag_value, format_flag, once, unknown_option, usage};
 use crate::outcome::{Record, TestOutcome, TestRecord, TestSummary};
 use crate::project::capture_project;
+use crate::term_style::{Palette, Stream};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Format {
-    Text,
-    Jsonl,
-}
+pub(crate) const HELP: &str = "\
+Usage:
+  marrow test [--format text|jsonl] [--filter <substring>]
+
+Run every `test` declaration in the project at the working directory and report each
+outcome: `passed`, `failed` for a false `assert`, `errored` for any other runtime
+fault, or `incomplete` for a durable fault that interrupts a commit. A test that
+touches no durable place runs with no store; one that does runs against its own
+fresh in-memory store. --filter selects the tests whose title contains the substring
+and refuses a substring no test matches. The command exits 0 when every selected
+test passes, 1 when any fails or errors, and 2 on a usage error.
+";
 
 struct TestArgs {
-    format: Format,
+    format: OutputFormat,
     filter: Option<String>,
 }
 
@@ -98,7 +109,7 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
         // the trough.
         let test = marrow_vm::fresh_test(&prepared, index)
             .expect("the entry index came from the prepared image's own test table");
-        let outcome = durable_outcome(marrow_vm::run_test(test), meta);
+        let outcome = durable_outcome(marrow_vm::run_test(test), meta, &project);
         match &outcome {
             TestOutcome::Passed => passed += 1,
             TestOutcome::Failed { .. } => failed += 1,
@@ -116,7 +127,7 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
     // A `--filter` that selects nothing is a usage failure, so a mistyped filter is
     // not silently reported as an all-clear.
     if args.filter.is_some() && records.is_empty() {
-        return crate::command_output::usage("no test matches the filter");
+        return usage(Command::Test, "no test matches the filter");
     }
 
     let summary = TestSummary {
@@ -136,9 +147,13 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
 /// Map a durable VM run into a test outcome. A run classifies by its result; a
 /// durable shape the ephemeral kernel does not yet execute, or an operational mint
 /// failure, reports at the test's declaration position.
-fn durable_outcome(run: marrow_vm::DurableRun, meta: &marrow_compile::TestEntry) -> TestOutcome {
+fn durable_outcome(
+    run: marrow_vm::DurableRun,
+    meta: &marrow_compile::TestEntry,
+    project: &ProjectInput,
+) -> TestOutcome {
     match run {
-        marrow_vm::DurableRun::Ran(result) => classify(result),
+        marrow_vm::DurableRun::Ran(result) => classify(result, meta, project),
         marrow_vm::DurableRun::Parked => TestOutcome::Errored {
             code: Code::CliDurableUnsupported,
             line: meta.line,
@@ -153,10 +168,12 @@ fn durable_outcome(run: marrow_vm::DurableRun, meta: &marrow_compile::TestEntry)
 }
 
 /// Classify a VM run result into a test outcome: a value or unit return passes, a
-/// false `assert` (`run.assert`) fails, and any other source-mapped runtime fault
-/// errors.
+/// false `assert` (`run.assert`) fails and carries the assertion's own source line, and
+/// any other source-mapped runtime fault errors.
 fn classify(
     result: Result<Option<marrow_vm::Value>, marrow_vm::DurableExecutionFault>,
+    meta: &marrow_compile::TestEntry,
+    project: &ProjectInput,
 ) -> TestOutcome {
     match result {
         Ok(_) => TestOutcome::Passed,
@@ -167,6 +184,7 @@ fn classify(
                 code: fault.code(),
                 line: fault.line(),
                 column: fault.column(),
+                source_line: source_line(project, &meta.file, fault.line()),
             }
         }
         Err(marrow_vm::DurableExecutionFault::Runtime(fault)) => TestOutcome::Errored {
@@ -195,39 +213,57 @@ fn classify(
     }
 }
 
+/// The trimmed source line a failed assertion sits on. The test's file is one of the
+/// captured modules and the fault's line is inside it, because the image the VM ran was
+/// compiled from this capture.
+fn source_line(project: &ProjectInput, file: &str, line: u32) -> String {
+    let module = project
+        .modules()
+        .iter()
+        .find(|module| ProjectFile::from(*module).spelling() == file)
+        .expect("a test's file is a captured module");
+    std::str::from_utf8(module.source())
+        .expect("a compiled module is UTF-8")
+        .lines()
+        .nth(line as usize - 1)
+        .expect("a fault's line is inside its source")
+        .trim()
+        .to_string()
+}
+
 fn parse_args(rest: &[String]) -> Result<TestArgs, ExitCode> {
-    let mut format = Format::Text;
+    const COMMAND: Command = Command::Test;
+    let mut format: Option<OutputFormat> = None;
     let mut filter: Option<String> = None;
     let mut iter = rest.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--format" => match iter.next().map(String::as_str) {
-                Some("jsonl") => format = Format::Jsonl,
-                Some("text") => format = Format::Text,
-                _ => {
-                    return Err(crate::command_output::usage(
-                        "`--format` must be `text` or `jsonl`",
-                    ));
-                }
-            },
-            "--filter" => match iter.next() {
-                Some(value) => filter = Some(value.clone()),
-                None => return Err(crate::command_output::usage("`--filter` needs a substring")),
-            },
-            other => {
-                return Err(crate::command_output::usage(&format!(
-                    "unknown test option: {other}"
-                )));
-            }
+            "--format" => once(
+                &mut format,
+                format_flag(&mut iter, COMMAND)?,
+                COMMAND,
+                "`--format` value",
+            )?,
+            "--filter" => once(
+                &mut filter,
+                flag_value(&mut iter, COMMAND, "--filter")?.to_string(),
+                COMMAND,
+                "`--filter` substring",
+            )?,
+            other => return Err(unknown_option(COMMAND, other)),
         }
     }
-    Ok(TestArgs { format, filter })
+    Ok(TestArgs {
+        format: format.unwrap_or(OutputFormat::Text),
+        filter,
+    })
 }
 
 /// Emit typed failure records (capture/compile/verify) and return `exit`.
-fn emit_records(format: Format, records: &[Record], exit: ExitCode) -> ExitCode {
+fn emit_records(format: OutputFormat, records: &[Record], exit: ExitCode) -> ExitCode {
     crate::command_output::finish(emit_records_to(
         &mut io::stdout().lock(),
+        Palette::for_stream(Stream::Stdout),
         format,
         records,
         exit,
@@ -236,7 +272,8 @@ fn emit_records(format: Format, records: &[Record], exit: ExitCode) -> ExitCode 
 
 fn emit_records_to(
     writer: &mut impl Write,
-    format: Format,
+    palette: Palette,
+    format: OutputFormat,
     records: &[Record],
     exit: ExitCode,
 ) -> io::Result<ExitCode> {
@@ -244,13 +281,15 @@ fn emit_records_to(
     // record types to render.
     for record in records {
         match format {
-            Format::Jsonl => writeln!(
+            OutputFormat::Jsonl => writeln!(
                 writer,
                 "{}",
                 record.to_jsonl(&[], &[]).expect("non-value failure record")
             )?,
-            Format::Text => {
-                let text = record.to_text(&[], &[]).expect("non-value failure record");
+            OutputFormat::Text => {
+                let text = record
+                    .to_text(palette, &[], &[])
+                    .expect("non-value failure record");
                 if !text.is_empty() {
                     writeln!(writer, "{text}")?;
                 }
@@ -263,7 +302,7 @@ fn emit_records_to(
 
 /// Emit each test record then the summary in the selected format, returning `exit`.
 fn emit_tests(
-    format: Format,
+    format: OutputFormat,
     records: &[TestRecord],
     summary: &TestSummary,
     exit: ExitCode,
@@ -279,19 +318,19 @@ fn emit_tests(
 
 fn emit_tests_to(
     writer: &mut impl Write,
-    format: Format,
+    format: OutputFormat,
     records: &[TestRecord],
     summary: &TestSummary,
     exit: ExitCode,
 ) -> io::Result<ExitCode> {
     match format {
-        Format::Jsonl => {
+        OutputFormat::Jsonl => {
             for record in records {
                 writeln!(writer, "{}", record.to_jsonl())?;
             }
             writeln!(writer, "{}", summary.to_jsonl())?;
         }
-        Format::Text => {
+        OutputFormat::Text => {
             for record in records {
                 writeln!(writer, "{}", record.to_text())?;
             }
@@ -346,11 +385,12 @@ mod output_tests {
             errored: 0,
             total: 1,
         };
-        for format in [Format::Text, Format::Jsonl] {
+        let palette = Palette::for_test(false);
+        for format in [OutputFormat::Text, OutputFormat::Jsonl] {
             for failure_records in [false, true] {
                 let mut expected = Vec::new();
                 if failure_records {
-                    emit_records_to(&mut expected, format, &records, ExitCode::FAILURE)
+                    emit_records_to(&mut expected, palette, format, &records, ExitCode::FAILURE)
                 } else {
                     emit_tests_to(&mut expected, format, &tests, &summary, ExitCode::SUCCESS)
                 }
@@ -361,7 +401,7 @@ mod output_tests {
                         bytes: Vec::new(),
                     };
                     let error = if failure_records {
-                        emit_records_to(&mut writer, format, &records, ExitCode::FAILURE)
+                        emit_records_to(&mut writer, palette, format, &records, ExitCode::FAILURE)
                     } else {
                         emit_tests_to(&mut writer, format, &tests, &summary, ExitCode::SUCCESS)
                     }

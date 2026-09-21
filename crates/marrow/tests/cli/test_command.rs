@@ -113,6 +113,24 @@ test "one is two" {
     assert!(summary.contains(r#""total":2"#), "{summary}");
 }
 
+/// The text report prints a failed assertion's own source line under its `FAIL` line,
+/// so the report names what was asserted, not only where.
+#[test]
+fn a_failed_assert_prints_its_source_line() {
+    let output = Project::single(
+        "test \"one is two\" {\n    assert 1 == 2\n}\n\ntest \"one is one\" {\n    assert 1 == 1\n}\n",
+    )
+    .run_cli("assert-source-line", &["test"]);
+    assert_eq!(output.code(), Some(1), "{output:?}");
+    assert_eq!(
+        output.stdout_text(),
+        "ok    one is one\n\
+         FAIL  one is two (run.assert at 2:5)\n\
+         \x20   assert 1 == 2\n\
+         1 passed, 1 failed, 0 errored (2/2 selected)\n"
+    );
+}
+
 /// `assert` outside a `test` body is a source diagnostic, not a runtime concept.
 #[test]
 fn assert_outside_a_test_is_a_check_diagnostic() {

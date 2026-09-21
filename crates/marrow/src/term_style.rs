@@ -51,6 +51,24 @@ impl Palette {
     pub(crate) fn code_message(self, code: Code, message: impl std::fmt::Display) -> String {
         format!("{}: {message}", self.paint(Style::Code, code.as_str()))
     }
+
+    /// One source diagnostic as every command prints it: `file:line:column: code:
+    /// message`, the file muted and the code styled. `file` is the compiler's own
+    /// spelling, so a file a dependency declares carries that dependency's alias.
+    pub(crate) fn diagnostic(
+        self,
+        file: &str,
+        line: u32,
+        column: u32,
+        code: &str,
+        message: &str,
+    ) -> String {
+        format!(
+            "{}:{line}:{column}: {}: {message}",
+            self.paint(Style::Muted, file),
+            self.paint(Style::Code, code),
+        )
+    }
 }
 
 pub(crate) fn paint(stream: Stream, style: Style, text: impl AsRef<str>) -> String {
@@ -138,6 +156,18 @@ mod tests {
         assert_eq!(
             Palette::for_test(false).code_message(Code::IoWrite, "failed to write output"),
             "io.write: failed to write output"
+        );
+    }
+
+    #[test]
+    fn diagnostic_line_styles_the_file_and_the_code() {
+        assert_eq!(
+            Palette::for_test(false).diagnostic("src/a.mw", 3, 5, "check.type", "found int"),
+            "src/a.mw:3:5: check.type: found int"
+        );
+        assert_eq!(
+            Palette::for_test(true).diagnostic("lib:src/a.mw", 3, 5, "check.type", "found int"),
+            "\x1b[2mlib:src/a.mw\x1b[0m:3:5: \x1b[36mcheck.type\x1b[0m: found int"
         );
     }
 

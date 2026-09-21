@@ -16,7 +16,7 @@ The command exits `0` when every selected test passes, `1` when any test fails o
 
 ```text
 $ marrow test --filter zzz
-no test matches the filter; run marrow --help for usage
+no test matches the filter; run marrow test --help for usage
 ```
 
 ## Reports
@@ -30,10 +30,11 @@ $ marrow test
 ok    add then read back
 ERROR overflow (run.overflow at 29:24)
 FAIL  shelf count (run.assert at 20:5)
+    assert shelfCount("fiction") == 2
 1 passed, 1 failed, 1 errored (3/3 selected)
 ```
 
-A passing line carries the title. A failing or erroring line adds the fault's code and position. An incomplete test prints as `ERROR` with `incomplete, durable <state>` after the position. The summary counts the selected tests against the total the project declares.
+A passing line carries the title. A failing or erroring line adds the fault's code and position, and a failing line is followed by the assertion's own source line, indented. An incomplete test prints as `ERROR` with `incomplete, durable <state>` after the position. The summary counts the selected tests against the total the project declares.
 
 JSONL output emits one `kind: "test"` object per test and a final `kind: "summary"` object, with each object's keys in ascending byte order:
 
@@ -47,10 +48,10 @@ $ marrow test --format jsonl
 
 A passed test's `span` is its declaration; a failed, errored, or incomplete test's `span` and `code` are the fault's. An incomplete test also carries a `durable` field. Dotted codes are defined in the [error code reference](../error-codes.md).
 
-A project that does not compile runs no test. The command prints each diagnostic as a `kind: "run"` record and exits `1`. In text that is `check.type at 4:12`. In JSONL it is:
+A project that does not compile runs no test. The command prints each diagnostic as a `kind: "run"` record and exits `1`. In text that is the line `check` prints, `src/docs/tests/report.mw:4:12: check.type: found int where string is required`. In JSONL it is:
 
 ```text
 {"code":"check.type","kind":"run","outcome":"diagnostic","span":{"column":12,"line":4}}
 ```
 
-`marrow check .` shows the same diagnostic with its file and message.
+`marrow check .` prints the same line.

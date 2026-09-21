@@ -13,7 +13,7 @@ name.
 ```text
 marrow init <projectdir>
 marrow fmt [--check | --write] <file.mw | projectdir>
-marrow check [--demand] [projectdir]
+marrow check [projectdir]
 marrow run <export> [--stdin] [--store <dir>] [--format text | jsonl] [-- <args>...]
 marrow test [--format text | jsonl] [--filter <substring>]
 marrow import --store <dir> --jsonl <path> --root <name> [--keys <key,...>]
@@ -26,10 +26,15 @@ marrow image --out <dir> --accept-ceiling <id>
 marrow client typescript [--out <dir>]
 marrow --version
 marrow --help
+marrow <command> --help
 ```
 
 A flag takes its value as the next argument, as in `--store ./store`;
-`--store=./store` is a usage error. `marrow --version` prints `marrow 0.1.0`.
+`--store=./store` is a usage error. `marrow --version` prints `marrow 0.1.0`;
+`-V` and `version` are the same command, as `-h` and `help` are for `--help`.
+Every subcommand prints its own usage on `--help` or `-h`. A usage error names
+the problem and the command's help, as in `unknown option `--bogus`; run marrow
+run --help for usage`, and exits `2`.
 The transcripts below come from one project holding this file at
 `src/docs/cli/shelf.mw`:
 
@@ -80,7 +85,8 @@ $ marrow init shelf
 created shelf
 next steps:
   cd shelf
-  marrow fmt --check shelf
+  marrow check
+  marrow test
 ```
 
 A directory that already exists is `config.invalid`. `init` creates no store.
@@ -133,8 +139,7 @@ snapshot fact retention bound is not consulted by `check`.
 
 A project that checks clean prints its access demand: the durable places each
 export reads and writes ([access
-demand](../language/durable-places.md#access-demand)). The default form groups
-exports by module and counts the places under each root:
+demand](../language/durable-places.md#access-demand)), grouped by module:
 
 ```text
 $ marrow check .
@@ -142,26 +147,23 @@ $ marrow check .
 
 docs.cli.shelf: 3 exports
   lookup
-    reads ^books (+2 places)
+    reads ^books.byIsbn, ^books.title
   put
     reads ^books
     writes ^books
   storeless: greet
 ```
 
+Each export names every place it reads and every place it writes, in source
+spelling and ordered by spelling. Exports of one module that share an identical
+demand are listed once, as `setColor, tint (2 exports, one shared demand)`, and
+the exports that touch no durable place collapse to one `storeless:` note; a
+module with only such exports folds to its header line.
+
 Every export listed is the project's own. A dependency's `pub fn` is callable from
 source across the boundary but takes no export slot here, so it appears in no demand
 listing and `marrow run` does not name it; a library's exports are run where the
 library is.
-
-`--demand` names every place, one line per export:
-
-```text
-$ marrow check --demand .
-docs.cli.shelf.greet reads or writes no durable data
-docs.cli.shelf.lookup reads ^books.byIsbn and ^books.title
-docs.cli.shelf.put reads ^books; writes ^books
-```
 
 The two places `lookup` reads are the index and one field. Demand describes
 the access a program requires; it grants nothing. A fresh durable project
@@ -208,11 +210,24 @@ $ marrow run greet --format jsonl -- Ann
 ```
 
 Text output is the returned value, or `absent` for an absent optional. A
-nonempty rendering gains one LF; an empty string or unit emits no text. JSONL
+nonempty rendering gains one LF; an empty string or unit emits no text. A
+returned `Result` is split at the top level: `ok(v)` prints `v` alone, and
+`err(e)` prints `error: ` followed by `e` on standard error and exits `1`. A
+`Result` nested inside another value keeps its constructor spelling, as in
+`Option::some(Result::err(odd))`. A source diagnostic prints as
+`file:line:column: code: message`, the same line `check` prints. JSONL
 output is one object whose `outcome` is `value`, `diagnostic`,
 `artifact_rejected`, `fault`, `incomplete`, `outcome_unknown`, or `error`; a
 diagnostic or fault carries its code and span
-([error codes](../error-codes.md)).
+([error codes](../error-codes.md)). A returned `err` is a `value` record in
+JSONL, told apart only by the exit status.
+
+```text
+$ marrow run half -- 3
+error: odd
+$ marrow run half --format jsonl -- 3
+{"data":{"enum":"Result","member":"err","payload":["odd"]},"kind":"run","outcome":"value"}
+```
 
 A returned bare string is limited to 65,536 raw UTF-8 bytes in either format.
 JSON escaping can expand each byte sixfold: the complete string value record
@@ -476,5 +491,5 @@ transfer type, so a project that verifies also generates.
 | Code | Meaning |
 |---:|---|
 | `0` | The command completed. |
-| `1` | A diagnostic, fault, or operational error was reported, or `doctor` found something wrong with the store. |
+| `1` | A diagnostic, fault, or operational error was reported, `run` returned a top-level `err`, or `doctor` found something wrong with the store. |
 | `2` | The command line was wrong: a bare `marrow`, an unknown command or export, a bad flag or argument, or a filter that matches nothing. |
