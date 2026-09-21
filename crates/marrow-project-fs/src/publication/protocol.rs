@@ -13,7 +13,7 @@ use marrow_fs_journal::{
     FsIdentity, LiveJournal, MarkerStats, OpenedFile, PendingState, PhaseRecord, TailState, claim,
     classify, encode_record,
 };
-use marrow_project::{LedgerExpectedArtifact, LedgerPublicationPlan, LedgerPublicationView};
+use marrow_project::LedgerPublicationPlan;
 
 use super::header::{PlannedHeader, RowHeader};
 use super::{
@@ -241,7 +241,7 @@ pub(super) fn publish(
     plan: LedgerPublicationPlan,
 ) -> Result<IdsPublishOutcome<'_>, IdsPublicationError> {
     preflight(guard)?;
-    plan.visit(|view| publish_admitted(guard, view))
+    publish_admitted(guard, &plan)
 }
 
 /// Settle any durably claimed publication under `guard`.
@@ -335,21 +335,17 @@ fn require_clear_stage(guard: &ProjectMetadataWriteGuard) -> Result<(), IdsPubli
 
 fn publish_admitted<'a>(
     guard: &'a ProjectMetadataWriteGuard,
-    view: LedgerPublicationView<'_>,
+    plan: &LedgerPublicationPlan,
 ) -> Result<IdsPublishOutcome<'a>, IdsPublicationError> {
     let meta = guard.meta();
-    let next = view.next();
+    let next = plan.next();
 
     // Recapture under the guard: the plan may only be installed over the exact
     // state it was admitted against.
     let observed = read_entry(meta, guard.ledger_name())?;
-    let base = match (view.expected(), &observed) {
-        (LedgerExpectedArtifact::Absent, None) => None,
-        (LedgerExpectedArtifact::Present(expected), Some((identity, seen)))
-            if expected == seen.as_slice() =>
-        {
-            Some(*identity)
-        }
+    let base = match (plan.expected(), &observed) {
+        (None, None) => None,
+        (Some(expected), Some((identity, seen))) if expected == seen.as_slice() => Some(*identity),
         _ => return Ok(IdsPublishOutcome::Settled(IdsPublication::ConcurrentChange)),
     };
 

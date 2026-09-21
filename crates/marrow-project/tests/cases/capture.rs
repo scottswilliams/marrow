@@ -3,8 +3,8 @@
 use marrow_codes::Code;
 use marrow_project::{
     CaptureBound, CaptureErrorKind, CaptureLimits, CapturedFile, CollisionReason,
-    DurableIdentityId, IdentityAnchor, IdentityKind, LedgerExpectedArtifact,
-    MAX_FILE_IDENTITY_BYTES, Manifest, ProjectInput,
+    DurableIdentityId, IdentityAnchor, IdentityKind, MAX_FILE_IDENTITY_BYTES, Manifest,
+    ProjectInput,
 };
 
 fn manifest() -> Manifest {
@@ -140,20 +140,18 @@ fn public_admission_binds_the_exact_captured_witness_to_a_canonical_successor() 
             },
         )
         .expect("admission succeeds");
-    plan.visit(|view| {
-        assert_eq!(
-            view.expected(),
-            LedgerExpectedArtifact::Present(shuffled),
-            "the exact valid captured bytes remain the expected witness",
-        );
-        let next = std::str::from_utf8(view.next()).expect("canonical successor UTF-8");
-        assert!(
-            next.find("id application .").expect("application row")
-                < next.find("id product Thing").expect("product row")
-        );
-        assert!(next.contains("id field Thing.value 03030303030303030303030303030303"));
-        marrow_project::IdentityLedger::parse(view.next()).expect("successor parses");
-    });
+    assert_eq!(
+        plan.expected(),
+        Some(&shuffled[..]),
+        "the exact valid captured bytes remain the expected witness",
+    );
+    let next = std::str::from_utf8(plan.next()).expect("canonical successor UTF-8");
+    assert!(
+        next.find("id application .").expect("application row")
+            < next.find("id product Thing").expect("product row")
+    );
+    assert!(next.contains("id field Thing.value 03030303030303030303030303030303"));
+    marrow_project::IdentityLedger::parse(plan.next()).expect("successor parses");
 }
 
 #[test]

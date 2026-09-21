@@ -669,12 +669,10 @@ impl CaptureError {
     }
 
     fn ids(error: IdsError) -> Self {
-        let message = format!("{IDS_FILE} is corrupt: {}", error.message);
-        let code = Code::from_code(error.code).expect("a ledger fault carries a registered code");
         Self {
-            code,
+            code: error.code(),
+            message: format!("{IDS_FILE} is corrupt: {}", error.message()),
             kind: CaptureErrorKind::IdsCorrupt { error },
-            message,
         }
     }
 

@@ -19,7 +19,9 @@ use std::rc::Rc;
 
 use marrow_codes::Code;
 use marrow_compile::{CompileFailure, ExportEntry, ExportId, SourceDiagnostic, compile};
-use marrow_project::{DurableIdentityId, IdentityAnchor, ProjectInput, SourceOrigin};
+use marrow_project::{
+    DurableIdentityId, IdentityAnchor, IdentityMintFailure, ProjectInput, SourceOrigin,
+};
 use marrow_project_fs::IdsPublication;
 use marrow_verify::{
     ImageType, Scalar, SealedEnumType, SealedRecordType, VerifiedFunction, VerifiedImage,
@@ -306,7 +308,7 @@ fn mint_missing_identities(
         Ok::<_, std::io::Error>(candidates)
     }) {
         Ok(publication) => publication,
-        Err(_) => return MintOutcome::Failed(marrow_codes::Code::ProjectIdsMint),
+        Err(failure) => return MintOutcome::Failed(mint_failure_code(&failure)),
     };
     match crate::project::publish_identity_ledger(Path::new("."), publication) {
         Ok(IdsPublication::Published) => MintOutcome::Minted,
@@ -316,6 +318,15 @@ fn mint_missing_identities(
             MintOutcome::Failed(marrow_codes::Code::ProjectIdsMint)
         }
         Err(failure) => MintOutcome::Failed(failure.code),
+    }
+}
+
+/// The code a refused mint reports: a candidate-supply failure is the entropy
+/// read's own operational failure, and an admission refusal is the ledger's.
+fn mint_failure_code(failure: &IdentityMintFailure<io::Error>) -> Code {
+    match failure {
+        IdentityMintFailure::Supply(_) => Code::IoRead,
+        IdentityMintFailure::Mutation(refusal) => refusal.code(),
     }
 }
 
@@ -1006,5 +1017,23 @@ mod terminal_tests {
             assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
             assert_eq!(writer.bytes, b"report\n"[..accepted.min(7)]);
         }
+    }
+}
+
+#[cfg(test)]
+mod mint_tests {
+    use super::*;
+
+    #[test]
+    fn a_supply_failure_reports_the_read_code_and_a_refusal_the_mint_code() {
+        let supply = IdentityMintFailure::Supply(io::Error::from(io::ErrorKind::PermissionDenied));
+        assert_eq!(mint_failure_code(&supply), Code::IoRead);
+
+        let refusal =
+            IdentityMintFailure::Mutation(marrow_project::IdentityMutationError::CandidateCount {
+                expected: 1,
+                actual: 0,
+            });
+        assert_eq!(mint_failure_code(&refusal), Code::ProjectIdsMint);
     }
 }

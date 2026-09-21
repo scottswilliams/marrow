@@ -167,7 +167,7 @@ Operational I/O faults from the command line and the runner.
 
 | Code | Meaning |
 |---|---|
-| `io.read` | An operational read failed, such as reading a project source file, `marrow.toml`, a runner launch artifact, or a runner protocol frame. |
+| `io.read` | An operational read failed, such as reading a project source file, `marrow.toml`, the entropy source for a `marrow run` identity mint, a runner launch artifact, or a runner protocol frame. |
 | `io.thread` | The CLI could not spawn the worker thread it uses for parsing, checking, and running. |
 | `io.write` | An operational write failed, such as creating an initialized project file, publishing a generated client or identity artifact, writing command output, or writing a runner protocol frame. |
 
@@ -193,7 +193,7 @@ dependencies its manifest declares, and reading its identity ledger
 | `project.dependency_alias` | A `[dependencies]` alias cannot name a dependency: it is not an identifier (a letter or `_` followed by letters, digits, or `_`), it is longer than 64 bytes, or it collides with the first segment of a module the root project already declares. The consumer chooses the alias; the dependency's directory name and its own manifest supply none. |
 | `project.dependency_path` | A `[dependencies]` path does not name a usable local project: it is absolute, not a canonical relative path, or longer than 4096 bytes; it is absent, is not a directory, or holds no `marrow.toml`; it reaches through a symbolic link; it names the consuming project itself; or it declares `[dependencies]` of its own, which this build does not admit. |
 | `project.ids_corrupt` | `.marrow/ids` is corrupt and is rejected whole: unresolved Git conflict markers, a malformed or duplicate line, two lines claiming one `(kind, path)` or one id (a double mint on parallel branches), a retired id reissued, an inconsistent retirement high-water, a truncated file missing its end marker, or a size past the fixed bound. Restore the file from version control. |
-| `project.ids_mint` | `marrow run` could not mint missing identities: an anchor was invalid, duplicated, live, or retired; the ledger would exceed its fixed size; the entropy source failed; or a candidate id collided. `.marrow/ids` is unchanged. Fix the source or the ledger state, then run again; an entropy failure or a collision may pass on another attempt. |
+| `project.ids_mint` | `marrow run` could not mint missing identities: an anchor was invalid, duplicated, live, or retired; the ledger would exceed its fixed size; or a candidate id collided. `.marrow/ids` is unchanged. Fix the source or the ledger state, then run again; a collision may pass on another attempt. |
 | `project.ids_location` | The identity ledger was found at the retired path `marrow.ids`. Its home is `.marrow/ids`: move it with `git mv marrow.ids .marrow/ids` and commit the move. When both exist, keep `.marrow/ids` and delete the root file; a project has exactly one ledger. |
 | `project.ids_publication_pending` | A `.marrow/ids` publication marker is live, so no command reads the ledger. `.marrow/ids.pending` means a publication was interrupted; `marrow run` settles it before it reads the project. A stray `.marrow/ids.pending.create` is not settled automatically: delete it and `.marrow/ids.publish.stage`, then run again. |
 
