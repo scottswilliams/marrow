@@ -964,7 +964,7 @@ mod tests {
         for row in 0..rows {
             let prefix = format!("p{row:04}");
             let path = format!("{prefix}{}", "x".repeat(path_bytes - prefix.len()));
-            out.push_str(&format!("id field {path} {}\n", id_number(row).to_string()));
+            out.push_str(&format!("id field {path} {}\n", id_number(row)));
         }
         out.push_str(&format!("high-water {high_water}\nend\n"));
         let bytes = out.into_bytes();
@@ -977,7 +977,7 @@ mod tests {
         for row in 0..rows {
             out.push_str(&format!(
                 "retired field Old.f{row:04} {} {}\n",
-                id_number(row).to_string(),
+                id_number(row),
                 row + 1,
             ));
         }
@@ -1010,7 +1010,7 @@ mod tests {
                 "{prefix}{}",
                 "x".repeat(minimum_path + extra - prefix.len())
             );
-            out.push_str(&format!("id field {path} {}\n", id_number(row).to_string()));
+            out.push_str(&format!("id field {path} {}\n", id_number(row)));
         }
         assert_eq!(remaining_extra, 0);
         out.push_str("high-water 0\nend\n");
@@ -1040,7 +1040,7 @@ mod tests {
             let extra = remaining_extra.min(super::MAX_PATH_BYTES - base.len());
             remaining_extra -= extra;
             let path = format!("{base}{}", "x".repeat(extra));
-            out.push_str(&format!("id field {path} {}\n", id_number(row).to_string()));
+            out.push_str(&format!("id field {path} {}\n", id_number(row)));
         }
         assert_eq!(remaining_extra, 0);
         out.push_str(&tail);
@@ -1201,7 +1201,7 @@ mod tests {
     fn live_row_suffixes_are_malformed_before_insertion() {
         let canonical = counter_bytes();
         let text = String::from_utf8(canonical.clone()).unwrap();
-        let target_row = format!("id field Counter.label {}\n", id(0x0f).to_string());
+        let target_row = format!("id field Counter.label {}\n", id(0x0f));
         let target_without_newline = target_row
             .strip_suffix('\n')
             .expect("the target row has its artifact newline");
@@ -1220,7 +1220,7 @@ mod tests {
 
         let duplicate_with_suffix = text.replacen(
             &target_row,
-            &format!("id application . {} extra\n", id(0x0a).to_string()),
+            &format!("id application . {} extra\n", id(0x0a)),
             1,
         );
         assert_eq!(
@@ -1839,8 +1839,8 @@ mod tests {
     #[test]
     fn reversed_valid_tombstones_are_semantically_equal_but_keep_exact_witnesses() {
         let header = "marrow ids v0\nmachine-written by marrow; do not edit\n";
-        let first = format!("retired field Old.a {} 1\n", id(0x11).to_string(),);
-        let second = format!("retired field Old.b {} 2\n", id(0x22).to_string(),);
+        let first = format!("retired field Old.a {} 1\n", id(0x11),);
+        let second = format!("retired field Old.b {} 2\n", id(0x22),);
         let tail = "high-water 2\nend\n";
         let canonical = format!("{header}{first}{second}{tail}").into_bytes();
         let reversed = format!("{header}{second}{first}{tail}").into_bytes();
