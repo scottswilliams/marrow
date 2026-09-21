@@ -950,72 +950,26 @@ mod tests {
         }
     }
 
-    /// A key of the given width, distinct per index.
-    fn wide_key(index: usize) -> String {
-        format!("{}{index}", "n".repeat(4096))
-    }
-
-    /// A ledger filled to its last admissible byte: wide refusals until the ceiling
-    /// binds, then one-byte-named refusals until even those are refused. Every key
-    /// declared is retained, so a later charge of any size crosses the ceiling.
-    fn full_ledger() -> DeclarationLedger<String, u32> {
-        let mut ledger = ledger();
-        let mut wide = 0usize;
-        while ledger
-            .declare(
-                wide_key(wide),
-                DeclarationOccurrence::Refused(refusal(&wide_key(wide))),
-            )
-            .is_ok()
-        {
-            wide += 1;
-            assert!(wide < 4096, "the ceiling must bind before this");
-        }
-        let mut narrow = 0usize;
-        while ledger
-            .declare(
-                narrow.to_string(),
-                DeclarationOccurrence::Refused(refusal(&narrow.to_string())),
-            )
-            .is_ok()
-        {
-            narrow += 1;
-            assert!(narrow < 8192, "the ceiling must bind before this");
-        }
-        ledger
+    /// A refusal name that fills the ledger to `headroom` bytes under its ceiling: one
+    /// summary's fixed size plus this name charges exactly the budget less `headroom`.
+    fn filling_name(headroom: usize) -> String {
+        let fixed = std::mem::size_of::<DeclarationRefusalSummary>();
+        "n".repeat(MAX_DECLARATION_LEDGER_BYTES - fixed - headroom)
     }
 
     /// A merge retains nothing new, so it charges nothing: it is admitted by a ledger
-    /// that has no room left for a single further byte.
+    /// whose one refusal already sits exactly on the ceiling.
     #[test]
     fn re_refusing_a_key_merges_and_charges_nothing() {
-        let mut full = full_ledger();
-        full.declare(
-            wide_key(0),
-            DeclarationOccurrence::Refused(refusal(&wide_key(0))),
-        )
-        .expect("a merge charges nothing");
-        match full.lookup(&wide_key(0)) {
-            // One retained summary and one reportable cause, with a bounded count
-            // of the occurrences behind it.
-            Ok(Binding::Refused(_, summary)) => assert_eq!(summary.further, 1),
-            other => panic!("expected a refusal, got {other:?}"),
-        }
-
+        let name = filling_name(0);
         let mut ledger = ledger();
         ledger
-            .declare(
-                "a".to_string(),
-                DeclarationOccurrence::Refused(refusal("a")),
-            )
-            .expect("within budget");
+            .declare(name.clone(), DeclarationOccurrence::Refused(refusal(&name)))
+            .expect("the first refusal lands exactly on the ceiling");
         ledger
-            .declare(
-                "a".to_string(),
-                DeclarationOccurrence::Refused(refusal("a")),
-            )
-            .expect("within budget");
-        match ledger.lookup(&"a".to_string()) {
+            .declare(name.clone(), DeclarationOccurrence::Refused(refusal(&name)))
+            .expect("a merge charges nothing");
+        match ledger.lookup(&name) {
             // One retained summary and one reportable cause, with a bounded count
             // of the occurrences behind it.
             Ok(Binding::Refused(_, summary)) => assert_eq!(summary.further, 1),
@@ -1110,45 +1064,42 @@ mod tests {
         }
     }
 
-    /// The ceiling bounds what the pass retains, not what it first charged, so a
-    /// merge that adopted the path for free would let the ceiling be crossed by
-    /// exactly those bytes: a full ledger refuses the merge that adopts a gap.
+    /// The ceiling bounds what the pass retains, not what it first charged: a merge
+    /// that adopts a gap charges exactly the path's bytes, so with headroom of the
+    /// path's length it lands on the ceiling, and one byte more is refused.
     #[test]
     fn adopting_a_gap_on_merge_charges_its_path() {
-        let gap = |path: String| IdentityGap {
+        let path = "holders.id";
+        let gap = |path: &str| IdentityGap {
             kind: marrow_project::IdentityKind::Root,
-            path,
+            path: path.to_string(),
             retired: false,
             origin: marrow_project::SourceOrigin::Root,
         };
-        // A full ledger has less than one summary's headroom left, so a path wider than
-        // a summary is refused exactly when it is charged.
-        let mut full = full_ledger();
-        let wide_path = "holders.id".repeat(64);
+        let name = filling_name(path.len());
+        let mut crossed = ledger();
+        crossed
+            .declare(name.clone(), DeclarationOccurrence::Refused(refusal(&name)))
+            .expect("the refusal leaves the path's headroom");
         assert!(matches!(
-            full.declare(
-                wide_key(0),
-                DeclarationOccurrence::Refused(refusal(&wide_key(0)).with_gap(gap(wide_path))),
+            crossed.declare(
+                name.clone(),
+                DeclarationOccurrence::Refused(refusal(&name).with_gap(gap(&format!("{path}x")))),
             ),
             Err(DeclareError::LedgerFull(DeclarationLedgerFull))
         ));
 
         let mut ledger = ledger();
         ledger
-            .declare(
-                "a".to_string(),
-                DeclarationOccurrence::Refused(refusal("a")),
-            )
-            .expect("within budget");
+            .declare(name.clone(), DeclarationOccurrence::Refused(refusal(&name)))
+            .expect("the refusal leaves the path's headroom");
         ledger
             .declare(
-                "a".to_string(),
-                DeclarationOccurrence::Refused(
-                    refusal("a").with_gap(gap("holders.id".to_string())),
-                ),
+                name.clone(),
+                DeclarationOccurrence::Refused(refusal(&name).with_gap(gap(path))),
             )
-            .expect("within budget");
-        match ledger.lookup(&"a".to_string()) {
+            .expect("the path fills the headroom exactly");
+        match ledger.lookup(&name) {
             Ok(Binding::Refused(_, summary)) => {
                 assert_eq!(
                     summary.gap().map(|gap| gap.path.as_str()),

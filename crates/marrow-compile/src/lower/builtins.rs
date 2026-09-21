@@ -208,7 +208,7 @@ impl Builtin {
 ///
 /// Struct fields and enum variants are excluded: both are reached only through member
 /// syntax (`r.none`, `Color::err`), never a bare or unqualified-call use.
-pub(crate) fn is_reserved_builtin_name(name: &str) -> bool {
+fn is_reserved_builtin_name(name: &str) -> bool {
     Builtin::from_name(name).is_some()
 }
 

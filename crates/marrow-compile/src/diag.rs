@@ -855,17 +855,6 @@ pub(crate) enum CompileDiagnosticLimit {
     OwnedBytes { limit: usize },
 }
 
-/// A by-value view of one live collector's exact state, so a registry-state snapshot
-/// can compare owners without widening the production operation set.
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CollectorProbe {
-    count: usize,
-    owned_bytes: usize,
-    limit: Option<CompileDiagnosticLimit>,
-    rows: Vec<SourceDiagnostic>,
-}
-
 /// The one live compiler diagnostic owner. Private, concrete, non-`Clone`, and
 /// non-`Default`, so a collector can only be moved whole.
 #[derive(Debug)]
@@ -903,7 +892,7 @@ impl Ceiling for DiagnosticCeiling {
 /// The finished terminal of one collector: the complete ordered payload with
 /// its exact byte total, or the typed limit with saturated totals and no
 /// payload.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BoundedDiagnostics {
     Complete {
         owned_bytes: usize,
@@ -1010,22 +999,6 @@ impl DiagnosticCollector {
                 self.state
                     .absorb_limited(count as u64, charge(count), inherited);
             }
-        }
-    }
-
-    /// The by-value view a registry-state snapshot compares.
-    #[cfg(test)]
-    pub(crate) fn probe(&self) -> CollectorProbe {
-        let (count, owned_bytes) = self.state.totals();
-        let (limit, rows) = match &self.state {
-            Bounded::Retaining { payload, .. } => (None, payload.clone()),
-            Bounded::Limited { limit, .. } => (Some(*limit), Vec::new()),
-        };
-        CollectorProbe {
-            count: count as usize,
-            owned_bytes: owned_bytes as usize,
-            limit,
-            rows,
         }
     }
 

@@ -37,7 +37,7 @@ use crate::decl::{
     DeclarationSite, DeclareError, MemberNamespace, declaration_refused, refuse, refuse_covered,
     refuse_first, refuse_row,
 };
-use crate::diag::{BoundedDiagnostics, DiagnosticCollector, SourceDiagnostic};
+use crate::diag::{BoundedDiagnostics, DiagnosticCollector, SourceDiagnostic, unsupported};
 use crate::scalar::ScalarType;
 
 mod aliases;
@@ -4238,15 +4238,6 @@ fn reserved_name(file: &ProjectFile, span: SourceSpan, name: &str) -> SourceDiag
         file,
         span,
         format!("`{name}` is a built-in generic type and cannot be redeclared"),
-    )
-}
-
-fn unsupported(file: &ProjectFile, span: SourceSpan, subject: &str) -> SourceDiagnostic {
-    SourceDiagnostic::at(
-        Code::CheckUnsupported,
-        file,
-        span,
-        format!("{subject} is not yet supported on the beta line"),
     )
 }
 

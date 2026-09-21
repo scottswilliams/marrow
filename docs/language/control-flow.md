@@ -317,10 +317,25 @@ pub fn area(s: Shape): int {
     }
 }
 
+pub fn height(s: Shape): int {
+    match s {
+        dot => {
+            return 0
+        }
+        circle(r) => {
+            return r + r
+        }
+        rect(_, h) => {
+            return h
+        }
+    }
+}
+
 test "area matches every member" {
     assert area(Shape::dot) == 0
     assert area(Shape::circle(radius: 3)) == 9
     assert area(Shape::rect(width: 2, height: 5)) == 10
+    assert height(Shape::rect(width: 2, height: 5)) == 5
 }
 ```
 

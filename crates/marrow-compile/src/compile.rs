@@ -19,7 +19,7 @@ use marrow_syntax::{
 };
 
 use crate::analysis::{
-    AnalysisFactCollector, BodySite, BoundedAnalysisFacts, FileRef, StagedBodyTxn,
+    AnalysisFactCollector, BodySite, BodyToLower, BoundedAnalysisFacts, FileRef, StagedBodyTxn,
 };
 use crate::call_graph::AcyclicCallOrder;
 use crate::decl::{
@@ -564,11 +564,10 @@ struct UnparsedModule {
     stage: SourceStage,
 }
 
-/// A parsed module: its file identity, its dotted module name, the parse tree, and
-/// whether its parse was broken. Only the tree and that status survive parsing: the
-/// module's syntax diagnostics are absorbed into the drive's parse collector the moment
-/// the file is parsed, so no per-module diagnostic state accumulates with the file
-/// count.
+/// A cleanly parsed module: its file identity, its dotted module name, and the parse
+/// tree. Only the tree survives parsing: the module's syntax diagnostics are absorbed
+/// into the drive's parse collector the moment the file is parsed, so no per-module
+/// diagnostic state accumulates with the file count.
 struct Module {
     file: ProjectFile,
     /// This module's position in the project's own module order — the coordinate every
@@ -576,15 +575,6 @@ struct Module {
     at: FileRef,
     name: String,
     ast: SourceFile,
-    parse: ParseStatus,
-}
-
-/// Whether a module's parse reported a syntax error. A broken module is still a module
-/// of the project, so the ledger declares it refused; only a clean one is analyzed.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ParseStatus {
-    Clean,
-    Broken,
 }
 
 /// One settled body's metadata coupled to its sole draft-owned instruction slice.
@@ -619,8 +609,7 @@ impl LoweredFn {
 pub fn compile(project: &ProjectInput) -> Result<Compiled, CompileFailure> {
     let built = drive(project, TestMode::Exclude)
         .map_err(CompileFailure::ResourceLimit)?
-        .resolve(StageJoin::First)?
-        .encode()?;
+        .build(StageJoin::First)?;
     Ok(Compiled {
         image: built.image,
         exports: built.exports,
@@ -633,10 +622,9 @@ pub fn compile(project: &ProjectInput) -> Result<Compiled, CompileFailure> {
 /// each test's title with its location for `marrow test`. Failure uses the same
 /// source-diagnostic or opaque compiler-invariant boundary as [`compile`].
 pub fn compile_with_tests(project: &ProjectInput) -> Result<CompiledTests, CompileFailure> {
-    Ok(drive(project, TestMode::Include)
+    drive(project, TestMode::Include)
         .map_err(CompileFailure::ResourceLimit)?
-        .resolve(StageJoin::First)?
-        .encode()?)
+        .build(StageJoin::First)
 }
 
 /// Check a captured project as `marrow check` does: one drive with tests included,
@@ -648,10 +636,9 @@ pub fn compile_with_tests(project: &ProjectInput) -> Result<CompiledTests, Compi
 /// [`compile`] still fits. The editor-fact retention bound is not consulted: no editor
 /// fact is published.
 pub fn check(project: &ProjectInput) -> Result<CompiledTests, CompileFailure> {
-    Ok(drive(project, TestMode::Include)
+    drive(project, TestMode::Include)
         .map_err(CompileFailure::ResourceLimit)?
-        .resolve(StageJoin::Union)?
-        .encode()?)
+        .build(StageJoin::Union)
 }
 
 /// The staged outcome of one analysis/lowering pass over a project. Diagnostics are
@@ -935,6 +922,12 @@ impl Driven {
             Analyzed::Invariant(invariant) => Err(CompileFailure::Invariant(invariant)),
         }
     }
+
+    /// The checked program under `join`, encoded: the image, export directory and test
+    /// directory, or the failure either step forces.
+    fn build(self, join: StageJoin) -> Result<CompiledTests, CompileFailure> {
+        Ok(self.resolve(join)?.encode()?)
+    }
 }
 
 /// Parse every module, then analyze the cleanly-parsed ones. A module with a parse
@@ -980,45 +973,35 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
     }
 
     // Pass two parses one valid module at a time and immediately consumes its syntax
-    // terminal through the one bridge, retaining only the AST and the logical broken
-    // status: no collection of un-absorbed parse results ever exists, so retained
-    // diagnostic state is bounded by the compiler collector plus the one in-flight
-    // file's syntax collector. Every syntax producer constructs `Severity::Error`, so
-    // absorbing the complete payload admits nothing weaker.
-    let mut parsed: Vec<Module> = Vec::new();
+    // terminal through the one bridge, retaining only a clean module's AST: no
+    // collection of un-absorbed parse results ever exists, so retained diagnostic state
+    // is bounded by the compiler collector plus the one in-flight file's syntax
+    // collector. Every syntax producer constructs `Severity::Error`, so absorbing the
+    // complete payload admits nothing weaker. A module with a parse error is a
+    // dependent unit the semantic pass never sees; its tree is dropped here rather
+    // than carried, since no query reads a retained tree.
+    let mut clean: Vec<Module> = Vec::new();
     for (file, at, name, source) in decoded {
         let result = parse_source(source);
-        let status = if result.diagnostics.summary().count() == 0 {
-            ParseStatus::Clean
-        } else {
-            ParseStatus::Broken
-        };
+        let broken = result.diagnostics.summary().count() != 0;
         parse.absorb_syntax(&file, result.diagnostics);
-        if status == ParseStatus::Broken {
+        if broken {
             facts.admit_broken(at);
             unparsed.push(UnparsedModule {
-                name: name.clone(),
-                file: file.clone(),
+                name,
+                file,
                 at,
                 stage: SourceStage::Parse,
             });
+            continue;
         }
-        parsed.push(Module {
+        clean.push(Module {
             file,
             at,
             name,
             ast: result.file,
-            parse: status,
         });
     }
-
-    // Only cleanly-parsed modules enter analysis; a module with a parse error is skipped
-    // as a dependent unit, its parse diagnostics and broken status already recorded. Its
-    // tree is dropped here rather than carried: no query reads a retained tree.
-    let clean: Vec<Module> = parsed
-        .into_iter()
-        .filter(|module| module.parse == ParseStatus::Clean)
-        .collect();
 
     // Each clean module's declaration outline is an analysis byproduct the production
     // projection ignores. A per-file count or depth bound refuses only that file's
@@ -1849,10 +1832,20 @@ fn registry_phases(
         // The instance's editor facts were collected once at its template's proof, so
         // its staged fact payload stays empty.
         let batch = StagedBodyTxn::begin(records, draft)?;
-        let (released, outcome) = batch.lower_instance(resolution, template, &args, reserved)?;
+        let (released, outcome) = batch.lower(
+            resolution,
+            facts,
+            BodyToLower::Instance {
+                template,
+                args: &args,
+                func: reserved,
+            },
+        )?;
         released.absorb(diagnostics, facts);
         records.consume_fn_pending();
-        settle_body(outcome, records, draft, &mut lowered)?;
+        // The loop condition reads the instantiation limit and a refused instance
+        // leaves only its own slot vacant, so the settlement carries nothing further.
+        let _ = settle_body(outcome, records, draft, &mut lowered)?;
     }
 
     lowered.0.resize_with(draft.function_count(), || None);
@@ -1966,17 +1959,19 @@ fn lower_declared_functions(
                 BodyRole::Helper
             };
             let batch = StagedBodyTxn::begin(records, draft)?;
-            let (released, outcome) = batch.lower_function(
+            let (released, outcome) = batch.lower(
                 resolution,
                 facts,
-                BodySite {
-                    at: module.at,
-                    file: &module.file,
-                    module: &module.name,
+                BodyToLower::Function {
+                    site: BodySite {
+                        at: module.at,
+                        file: &module.file,
+                        module: &module.name,
+                    },
+                    function,
+                    func,
+                    role,
                 },
-                function,
-                func,
-                role,
             )?;
             released.absorb(diagnostics, facts);
             match settle_body(outcome, records, draft, lowered)? {
@@ -2071,16 +2066,18 @@ fn lower_declared_tests(
             continue;
         }
         let batch = StagedBodyTxn::begin(records, draft)?;
-        let (released, outcome) = batch.lower_test(
+        let (released, outcome) = batch.lower(
             resolution,
             facts,
-            BodySite {
-                at: module.at,
-                file: &module.file,
-                module: &module.name,
+            BodyToLower::Test {
+                site: BodySite {
+                    at: module.at,
+                    file: &module.file,
+                    module: &module.name,
+                },
+                test,
+                func,
             },
-            test,
-            func,
         )?;
         released.absorb(diagnostics, facts);
         match settle_body(outcome, records, draft, lowered)? {
@@ -2206,13 +2203,12 @@ fn resolve_stages(
         }
         SemanticOutcome::ResourceLimit(limit) => (None, Beside::Stopped(limit)),
     };
-    let stages = [Some(parse), Some(structural), semantic]
+    let mut stages = [Some(parse), Some(structural), semantic]
         .into_iter()
         .flatten();
     let terminal = match join {
         // The stage's own terminal is the failure, allocation and all.
         StageJoin::First => stages
-            .into_iter()
             .find(|stage| !stage.is_empty())
             .unwrap_or_else(|| DiagnosticCollector::new().finish()),
         StageJoin::Union => {

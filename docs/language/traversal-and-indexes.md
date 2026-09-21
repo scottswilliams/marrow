@@ -20,9 +20,11 @@ resource Book {
 
 store ^books[id: int]: Book
 
+const pageSize = 100
+
 pub fn noteTotal(): Result<int, string> {
     var total = 0
-    for id, book in ^books at most 100 {
+    for id, book in ^books at most pageSize {
         for pos in book.notes at most 100 {
             total += 1
         } on more {
@@ -103,7 +105,8 @@ test "the visited keys are frozen before the body runs" {
 }
 ```
 
-`for id, book in ^books at most 100` visits at most 100 books. `id` is the key
+`for id, book in ^books at most pageSize` visits at most `pageSize` books,
+the module constant `100`. `id` is the key
 of each entry and `book` is a pin, an address for the entry at that key.
 `for pos in book.notes` walks the notes beneath the pinned book. In
 `notesFrom`, a named [place](durable-places.md#named-places) is the base

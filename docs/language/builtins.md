@@ -20,7 +20,8 @@ There are few of them, and each does one thing.
 | | `daysBetween(a, b): int` | The signed number of days from `a` to `b` |
 | Presence and identity | `exists(place): bool`, `exists(value): bool` | Whether a durable place, or a `T?` value, is present |
 | | `Id(^root, key): Id(^root)` | The identity of an entry under `^root` |
-| Conversion and output | `string(value): string` | The canonical text of a scalar, enum value, or identity |
+| Conversion and output | `string(value): string` | The canonical text of a scalar, nominal value, enum value, or identity |
+| | `int(a): int` | The underlying `int` of a nominal value `a` |
 | | `bytes(text): bytes` | The UTF-8 bytes of `text` |
 | Faults | `unreachable("…")`, `todo("…")` | A statement that stops the program |
 | Option and Result | `some(v)`, `none`, `ok(v)`, `err(e)` | A member of `Option<T>` or `Result<T, E>` |
@@ -172,17 +173,24 @@ pub fn known(id: Id(^books)): bool {
     return exists(^books[id])
 }
 
+pub fn subtitled(id: Id(^books)): bool {
+    const subtitle = ^books[id].subtitle
+    return exists(subtitle)
+}
+
 test "presence" {
     const id = Id(^books, 7)
     assert not known(id)
     add(id, "Small Gods")
     assert known(id)
+    assert not subtitled(id)
 }
 ```
 
 `Id(^books, 7)` wraps a key as an identity and reads nothing: the entry is
 absent until `add` commits. `exists(^books[id].subtitle)` asks about one
-sparse field. `exists(^books.byIsbn[isbn])` asks a unique index whether some
+sparse field, and `subtitled` asks the same of the `string?` that field read
+into a local. `exists(^books.byIsbn[isbn])` asks a unique index whether some
 entry carries that key. An explicit guard over a named place or traversal pin
 proves its entry present; required field reads through that binding then have
 their declared types ([named places](durable-places.md#named-places)). Inline
@@ -194,8 +202,9 @@ that needs a fresh key keeps its own durable counter
 
 ## Conversion and output
 
-`string(value)` renders a scalar, an enum value, or an entry identity as its
-canonical text. `bytes(text)` encodes a string as UTF-8. There are no implicit
+`string(value)` renders a scalar, a nominal value, an enum value, or an entry
+identity as its canonical text; `int(a)` yields a nominal value's underlying
+`int`. `bytes(text)` encodes a string as UTF-8. There are no implicit
 conversions.
 
 An enum renders as `Enum::member`, bytes as lowercase hexadecimal with a `0x`

@@ -5,42 +5,12 @@ use crate::compile::admitted;
 
 use super::valid_export_path;
 use super::{
-    Analyzed, BoundedDiagnostics, CheckedProgram, CompileFailure, CompileStage, CompiledTests,
-    DeclarationExit, Driven, InvariantCause, SemanticOutcome, StageJoin, resolve_stages,
+    Analyzed, BoundedDiagnostics, CompileFailure, CompileStage, CompiledTests, DeclarationExit,
+    Driven, InvariantCause, SemanticOutcome, StageJoin, resolve_stages,
 };
-use crate::lower::BodyRole;
-
-/// The two projections as the public entry points take them, spelled once for the
-/// driver fixtures below.
-trait Projections {
-    fn production(self) -> Result<Box<CheckedProgram>, CompileFailure>;
-    fn production_built(self) -> Result<CompiledTests, CompileFailure>;
-    fn check_built(self) -> Result<CompiledTests, CompileFailure>;
-}
-
-impl Projections for Driven {
-    fn production(self) -> Result<Box<CheckedProgram>, CompileFailure> {
-        self.resolve(StageJoin::First)
-    }
-
-    fn production_built(self) -> Result<CompiledTests, CompileFailure> {
-        Ok(self.production()?.encode()?)
-    }
-
-    fn check_built(self) -> Result<CompiledTests, CompileFailure> {
-        Ok(self.resolve(StageJoin::Union)?.encode()?)
-    }
-}
-
-fn analyze_outcome(
-    parse: BoundedDiagnostics,
-    structural: BoundedDiagnostics,
-    semantic: SemanticOutcome,
-) -> Analyzed {
-    resolve_stages(parse, structural, semantic, StageJoin::Union)
-}
 use crate::compile::Declaration;
 use crate::diag::{DiagnosticCollector, MAX_DIAGNOSTIC_COUNT, SourceDiagnostic};
+use crate::lower::BodyRole;
 use crate::lower::FunctionRegistry;
 use crate::types::{GenericInvariant, TemplateProofError};
 use marrow_codes::Code;
@@ -200,7 +170,7 @@ fn a_semantic_invariant_is_opaque_at_the_public_boundary() {
         empty_terminal(),
         SemanticOutcome::Invariant(template_proof_cause()),
     )
-    .production_built();
+    .build(StageJoin::First);
     let Err(failure) = outcome else {
         panic!("an invariant must not produce a partial image")
     };
@@ -238,7 +208,7 @@ fn an_earlier_stage_dominates_a_later_semantic_failure() {
             empty_terminal(),
             semantic,
         )
-        .production_built()
+        .build(StageJoin::First)
         .map(|_| ())
         .expect_err("a parse-stage row fails compilation");
         let CompileFailure::Diagnostics(diagnostics) = failure else {
@@ -263,7 +233,7 @@ fn diagnostic_failure_preserves_order_allocation_and_iteration_views() {
         BoundedDiagnostics::Limited { .. } => panic!("two rows stay complete"),
     };
     let failure = driven(terminal, empty_terminal(), image_bytes_stop())
-        .production_built()
+        .build(StageJoin::First)
         .map(|_| ())
         .expect_err("a nonempty parse stage fails compilation");
     assert_eq!(
@@ -407,7 +377,7 @@ fn an_empty_semantic_terminal_is_an_exact_invariant_at_every_stage() {
             empty_terminal(),
             SemanticOutcome::Diagnostics(empty_terminal(), stage),
         )
-        .production_built()
+        .build(StageJoin::First)
         .map(|_| ())
         .expect_err("an empty semantic terminal must not build");
         let CompileFailure::Invariant(invariant) = empty else {
@@ -429,28 +399,31 @@ fn the_analysis_union_follows_the_stage_table() {
 
     // Empty prechecks pass the semantic failure through.
     assert!(matches!(
-        analyze_outcome(
+        resolve_stages(
             empty_terminal(),
             empty_terminal(),
             SemanticOutcome::Invariant(template_proof_cause()),
+            StageJoin::Union,
         ),
         Analyzed::Invariant(_)
     ));
 
     // A precheck row does not suppress an executed semantic invariant.
     assert!(matches!(
-        analyze_outcome(
+        resolve_stages(
             finished(vec![row(3)]),
             empty_terminal(),
             SemanticOutcome::Invariant(template_proof_cause()),
+            StageJoin::Union,
         ),
         Analyzed::Invariant(_)
     ));
 
-    let Analyzed::Invariant(invariant) = analyze_outcome(
+    let Analyzed::Invariant(invariant) = resolve_stages(
         empty_terminal(),
         empty_terminal(),
         SemanticOutcome::Diagnostics(empty_terminal(), CompileStage::BodyLowering),
+        StageJoin::Union,
     ) else {
         panic!("an empty semantic terminal is not a clean union")
     };
@@ -460,10 +433,11 @@ fn the_analysis_union_follows_the_stage_table() {
     ));
 
     // The ordered union: parse, then structural, then semantic rows.
-    let Analyzed::Diagnostics(rows) = analyze_outcome(
+    let Analyzed::Diagnostics(rows) = resolve_stages(
         finished(vec![row(1)]),
         finished(vec![row(2)]),
         SemanticOutcome::Diagnostics(finished(vec![row(3)]), CompileStage::BodyLowering),
+        StageJoin::Union,
     ) else {
         panic!("a bounded union is a producible snapshot")
     };
@@ -479,10 +453,11 @@ fn the_analysis_union_follows_the_stage_table() {
         },
     };
     let semantic_rows: Vec<SourceDiagnostic> = (0..10).map(|line| row(line + 1)).collect();
-    let Analyzed::ResourceLimit(limit) = analyze_outcome(
+    let Analyzed::ResourceLimit(limit) = resolve_stages(
         byte_limited,
         empty_terminal(),
         SemanticOutcome::Diagnostics(finished(semantic_rows), CompileStage::BodyLowering),
+        StageJoin::Union,
     ) else {
         panic!("a limited union is the displacing resource limit")
     };
@@ -532,7 +507,7 @@ fn a_limited_stage_terminal_is_the_displacing_resource_limit() {
         collector.push(diagnostic(Code::CheckType, line + 1));
     }
     let failure = driven(collector.finish(), empty_terminal(), image_bytes_stop())
-        .production_built()
+        .build(StageJoin::First)
         .map(|_| ())
         .expect_err("an over-ceiling stage must not build");
     let CompileFailure::ResourceLimit(limit) = failure else {
@@ -881,7 +856,7 @@ pub fn addB(id: int, t: string) {
         let driven = super::drive(&project, super::TestMode::Exclude);
         let checked = driven
             .expect("the fixture fits the drive envelope")
-            .production()
+            .resolve(StageJoin::First)
             .expect("the whole-entry exports compile");
         assert_eq!(
             checked
@@ -998,7 +973,7 @@ pub fn readWeight(id: int, noteId: int, tagId: int): int? {
     );
     let checked = super::drive(&project, super::TestMode::Exclude)
         .expect("the typed-read fixture fits the envelope")
-        .production()
+        .resolve(StageJoin::First)
         .expect("each branch field read has its declared type");
     assert_eq!(
         checked
@@ -1092,8 +1067,12 @@ fn check_encodes_the_same_image_over_complete_and_limited_editor_facts() {
         },
     };
 
-    let complete = complete.check_built().expect("complete facts check");
-    let limited = limited.check_built().expect("limited facts still check");
+    let complete = complete
+        .build(StageJoin::Union)
+        .expect("complete facts check");
+    let limited = limited
+        .build(StageJoin::Union)
+        .expect("limited facts still check");
     assert_eq!(complete.image.bytes, limited.image.bytes);
     assert_eq!(complete.exports.len(), 1);
     assert_eq!(limited.tests.len(), 1);
@@ -1341,36 +1320,43 @@ fn an_executed_invariant_dominates_the_stop_and_precheck_findings() {
         finished(vec![row()]),
         SemanticOutcome::Invariant(template_proof_cause()),
     )
-    .production_built();
+    .build(StageJoin::First);
     assert!(matches!(production, Err(CompileFailure::Invariant(_))));
     assert!(matches!(
-        analyze_outcome(
+        resolve_stages(
             finished(vec![row()]),
             finished(vec![row()]),
             SemanticOutcome::Invariant(template_proof_cause()),
+            StageJoin::Union,
         ),
         Analyzed::Invariant(_)
     ));
 
     let production =
-        driven(empty_terminal(), empty_terminal(), image_bytes_stop()).production_built();
+        driven(empty_terminal(), empty_terminal(), image_bytes_stop()).build(StageJoin::First);
     let Err(CompileFailure::ResourceLimit(limit)) = production else {
         panic!("the stop is the image-bytes resource limit")
     };
     assert_eq!(limit.kind(), super::ResourceLimitKind::ImageBytes);
-    let Analyzed::ResourceLimit(limit) =
-        analyze_outcome(empty_terminal(), empty_terminal(), image_bytes_stop())
-    else {
+    let Analyzed::ResourceLimit(limit) = resolve_stages(
+        empty_terminal(),
+        empty_terminal(),
+        image_bytes_stop(),
+        StageJoin::Union,
+    ) else {
         panic!("analysis reports the same stop")
     };
     assert_eq!(limit.kind(), super::ResourceLimitKind::ImageBytes);
 
     let production =
-        driven(finished(vec![row()]), empty_terminal(), image_bytes_stop()).production_built();
+        driven(finished(vec![row()]), empty_terminal(), image_bytes_stop()).build(StageJoin::First);
     assert!(matches!(production, Err(CompileFailure::Diagnostics(_))));
-    let Analyzed::Diagnostics(rows) =
-        analyze_outcome(finished(vec![row()]), empty_terminal(), image_bytes_stop())
-    else {
+    let Analyzed::Diagnostics(rows) = resolve_stages(
+        finished(vec![row()]),
+        empty_terminal(),
+        image_bytes_stop(),
+        StageJoin::Union,
+    ) else {
         panic!("a precheck finding is reported over the stop")
     };
     assert_eq!(rows.as_slice(), &[row()]);

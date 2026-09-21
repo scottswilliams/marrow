@@ -108,3 +108,40 @@ pub(crate) fn test_file(path: &str) -> &'static ProjectFile {
         .find(|file| file.identity().as_str() == path)
         .expect("the captured test fixture holds this path")
 }
+
+#[cfg(doctest)]
+pub mod public_type_pins {
+    //! Properties of the public types a consumer cannot circumvent: a diagnostic and a
+    //! compiler invariant are constructed only by the compiler, and a retained fact's
+    //! file coordinate and the fact it indexes are not nameable outside the snapshot
+    //! that minted them.
+    //!
+    //! ```compile_fail
+    //! fn build(file: marrow_project::FileIdentity) -> marrow_compile::SourceDiagnostic {
+    //!     marrow_compile::SourceDiagnostic::at(
+    //!         marrow_codes::Code::CheckType,
+    //!         &file,
+    //!         marrow_syntax::SourceSpan::default(),
+    //!         "forged".to_string(),
+    //!     )
+    //! }
+    //! ```
+    //!
+    //! ```compile_fail
+    //! use marrow_compile::CompileInvariant;
+    //!
+    //! let _ = CompileInvariant(());
+    //! ```
+    //!
+    //! ```compile_fail
+    //! fn coordinate() -> marrow_compile::FileRef {
+    //!     unimplemented!()
+    //! }
+    //! ```
+    //!
+    //! ```compile_fail
+    //! fn fact() -> marrow_compile::HoverFact {
+    //!     unimplemented!()
+    //! }
+    //! ```
+}

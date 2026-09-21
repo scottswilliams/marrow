@@ -229,7 +229,7 @@ table is the one place to see them together.
 | A public aggregate parameter containing a nominal int | `check.unsupported` | [Types and values](types-and-values.md#aliases-and-nominal-ints) |
 | A resource containing a nominal value bound to a store | `check.unsupported` | [Durable places](durable-places.md) |
 | A nominal type as a store-root key, branch key, or module constant | `check.unsupported` | [Types and values](types-and-values.md#aliases-and-nominal-ints) |
-| A call pairing two scalar names, `int("1")` or `bool(1)` | `check.unsupported` | [Types and values](types-and-values.md) |
+| A call pairing two scalar names, `int("1")` or `bool(1)`, other than `int(a)` and `string(a)` over a nominal value | `check.unsupported` | [Types and values](types-and-values.md) |
 | A type annotation of more than two segments, `graphtext::text::Pair` | `check.unsupported`; a type name is one or two segments | [Modules and functions](modules-and-functions.md#dependencies) |
 | An enum path longer than that type name plus one member, `graphtext::text::Color::red` | `check.unsupported` | [Modules and functions](modules-and-functions.md#dependencies) |
 | An expression, call, `bytes`, or temporal value in a module `const` | `check.unsupported` | [Modules and functions](modules-and-functions.md) |

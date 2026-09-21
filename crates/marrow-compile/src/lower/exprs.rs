@@ -116,6 +116,28 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Ok(None)
     }
 
+    /// The folded value the module-private constant `name` binds, or `None` for a name
+    /// no constant declares. A constant the declaration pass refused still holds its
+    /// name, so the use is steered to that cause rather than told the name is unknown.
+    pub(super) fn module_const(
+        &mut self,
+        name: &str,
+        span: SourceSpan,
+    ) -> ConstructResult<Option<&'a ConstScalar>> {
+        match self.consts.lookup(self.module, name) {
+            Ok(Binding::Accepted(value)) => Ok(Some(value)),
+            Ok(Binding::Absent) => Ok(None),
+            Ok(Binding::Refused(id, refusal)) => {
+                self.steer_refusal(id.namespace(), refusal, span);
+                Err(LoweringFailure::Recoverable)
+            }
+            Err(drift) => {
+                self.ledger_drift::<()>(drift);
+                Err(LoweringFailure::Recoverable)
+            }
+        }
+    }
+
     /// Lower a single-segment name in value position: an integer-bound built-in, a local
     /// or parameter, a module-private constant, or an unresolved name.
     fn lower_value_name(&mut self, name: &str, span: SourceSpan) -> ConstructResult<LTy> {
@@ -160,27 +182,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             ));
             return Err(LoweringFailure::Recoverable);
         }
-        // A module-private constant, folded to a constant load. A constant the
-        // declaration pass refused still holds its name here, so the use is
-        // steered to that cause rather than told the name is unknown.
-        let consts = self.consts;
-        let constant = match consts.lookup(self.module, name) {
-            Ok(binding) => binding,
-            Err(drift) => {
-                self.ledger_drift::<()>(drift);
-                return Err(LoweringFailure::Recoverable);
-            }
-        };
-        match constant {
-            Binding::Accepted(value) => {
-                let value = value.clone();
-                return self.lower_const_value(&value, span);
-            }
-            Binding::Refused(id, refusal) => {
-                self.steer_refusal(id.namespace(), refusal, span);
-                return Err(LoweringFailure::Recoverable);
-            }
-            Binding::Absent => {}
+        // A module-private constant, folded to a constant load.
+        if let Some(value) = self.module_const(name, span)? {
+            return self.lower_const_value(value, span);
         }
         // A binding whose initializer failed left this name unbound; the
         // initializer already reported the cause, so a later use is silent.
@@ -193,7 +197,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             .iter()
             .map(|local| local.name.as_str())
             .chain(self.functions.module_function_names(self.module))
-            .chain(consts.names_in(self.module));
+            .chain(self.consts.names_in(self.module));
         let suggestion = nearest_name(name, candidates);
         self.fail(name_not_in_scope(
             self.file,

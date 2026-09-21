@@ -6,7 +6,7 @@
 //! release consumes that aggregate after its producer has committed or erased.
 
 use crate::source::ProjectFile;
-use marrow_image::ImageDraft;
+use marrow_image::{FuncId, ImageDraft};
 use marrow_syntax::{FunctionDecl, TestDecl};
 
 use super::{
@@ -22,6 +22,29 @@ pub(crate) struct BodySite<'a> {
     pub(crate) at: FileRef,
     pub(crate) file: &'a ProjectFile,
     pub(crate) module: &'a str,
+}
+
+/// One body to lower under an armed producer: the lowerer entry it takes and where its
+/// editor facts go. A generic instance's facts were collected once at its template's
+/// proof, so it stages none.
+#[derive(Clone, Copy)]
+pub(crate) enum BodyToLower<'a> {
+    Function {
+        site: BodySite<'a>,
+        function: &'a FunctionDecl,
+        func: FuncId,
+        role: BodyRole,
+    },
+    Test {
+        site: BodySite<'a>,
+        test: &'a TestDecl,
+        func: FuncId,
+    },
+    Instance {
+        template: &'a GenericTemplate<'a>,
+        args: &'a [GArg],
+        func: FuncId,
+    },
 }
 
 /// One generic-owner producer and both payloads it may publish.
@@ -57,102 +80,52 @@ impl<'r, 'd> StagedBodyTxn<'r, 'd> {
         }
     }
 
-    pub(crate) fn lower_function<'a>(
+    /// Lower one body under this armed producer and commit: the body's interns, site
+    /// requests, function fill and every registry row its mints appended land as one
+    /// unit, and an ordinary refusal commits too, since the rows it minted can be
+    /// referenced from outside it.
+    pub(crate) fn lower<'a>(
         self,
         resolution: Resolution<'a, 'a>,
         settled_facts: &'a AnalysisFactCollector,
-        site: BodySite<'a>,
-        function: &'a FunctionDecl,
-        func: marrow_image::FuncId,
-        role: BodyRole,
+        body: BodyToLower<'a>,
     ) -> Result<(ReleasedBody, BodyOutcome), GenericInvariant> {
         let Self {
             mut owner,
             mut staged_diagnostics,
             mut staged_facts,
         } = self;
-        let BodySite { at, file, module } = site;
         let outcome = {
             let (registry, draft) = owner.parts();
-            FnLowerer::lower(
-                LowerCtx {
-                    draft,
-                    records: registry,
-                    resolution,
-                    diagnostics: &mut staged_diagnostics,
-                    facts: staged_facts.sink(settled_facts, at),
-                },
-                file,
-                module,
-                function,
-                func,
-                role,
-            )?
-        };
-        owner.commit();
-        Ok((Self::release(staged_diagnostics, staged_facts), outcome))
-    }
-
-    pub(crate) fn lower_instance<'a>(
-        self,
-        resolution: Resolution<'a, 'a>,
-        template: &'a GenericTemplate<'a>,
-        args: &[GArg],
-        func: marrow_image::FuncId,
-    ) -> Result<(ReleasedBody, BodyOutcome), GenericInvariant> {
-        let Self {
-            mut owner,
-            mut staged_diagnostics,
-            staged_facts,
-        } = self;
-        let outcome = {
-            let (registry, draft) = owner.parts();
-            FnLowerer::lower_instance(
-                LowerCtx {
-                    draft,
-                    records: registry,
-                    resolution,
-                    diagnostics: &mut staged_diagnostics,
-                    facts: FactSink::discarding(),
-                },
-                template,
-                args,
-                func,
-            )?
-        };
-        owner.commit();
-        Ok((Self::release(staged_diagnostics, staged_facts), outcome))
-    }
-
-    pub(crate) fn lower_test<'a>(
-        self,
-        resolution: Resolution<'a, 'a>,
-        settled_facts: &'a AnalysisFactCollector,
-        site: BodySite<'a>,
-        test: &'a TestDecl,
-        func: marrow_image::FuncId,
-    ) -> Result<(ReleasedBody, BodyOutcome), GenericInvariant> {
-        let Self {
-            mut owner,
-            mut staged_diagnostics,
-            mut staged_facts,
-        } = self;
-        let BodySite { at, file, module } = site;
-        let outcome = {
-            let (registry, draft) = owner.parts();
-            FnLowerer::lower_test(
-                LowerCtx {
-                    draft,
-                    records: registry,
-                    resolution,
-                    diagnostics: &mut staged_diagnostics,
-                    facts: staged_facts.sink(settled_facts, at),
-                },
-                file,
-                module,
-                test,
-                func,
-            )?
+            let facts = match body {
+                BodyToLower::Function { site, .. } | BodyToLower::Test { site, .. } => {
+                    staged_facts.sink(settled_facts, site.at)
+                }
+                BodyToLower::Instance { .. } => FactSink::discarding(),
+            };
+            let ctx = LowerCtx {
+                draft,
+                records: registry,
+                resolution,
+                diagnostics: &mut staged_diagnostics,
+                facts,
+            };
+            match body {
+                BodyToLower::Function {
+                    site,
+                    function,
+                    func,
+                    role,
+                } => FnLowerer::lower(ctx, site.file, site.module, function, func, role)?,
+                BodyToLower::Test { site, test, func } => {
+                    FnLowerer::lower_test(ctx, site.file, site.module, test, func)?
+                }
+                BodyToLower::Instance {
+                    template,
+                    args,
+                    func,
+                } => FnLowerer::lower_instance(ctx, template, args, func)?,
+            }
         };
         owner.commit();
         Ok((Self::release(staged_diagnostics, staged_facts), outcome))

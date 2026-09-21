@@ -197,7 +197,7 @@ pub fn f(e: E): int {
 /// position.
 #[test]
 fn a_placeholder_binding_names_nothing_and_may_repeat() {
-    let session = Project::single(
+    let mut session = Project::single(
         r#"enum Shape {
     dot
     rect(width: int, height: int)
@@ -219,7 +219,6 @@ pub fn ignored(): int {
 "#,
     )
     .session();
-    let mut session = session;
     assert_eq!(session.call("height", vec![]), Some(Value::Int(5)));
     assert_eq!(session.call("ignored", vec![]), Some(Value::Int(1)));
 }

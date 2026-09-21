@@ -2,6 +2,7 @@
 //! any optional expression and narrows nothing.
 
 use crate::common::Project;
+use marrow_vm::Value;
 
 const MAYBE: &str = "fn maybe(present: bool): int? {\n\
     \x20   if present {\n\
@@ -12,7 +13,7 @@ const MAYBE: &str = "fn maybe(present: bool): int? {\n\
 
 #[test]
 fn exists_answers_presence_for_an_optional_value() {
-    let workspace = Project::single(&format!(
+    let mut session = Project::single(&format!(
         "{MAYBE}\n\
          pub fn present(): bool {{\n\
          \x20   return exists(maybe(true))\n\
@@ -22,16 +23,9 @@ fn exists_answers_presence_for_an_optional_value() {
          \x20   return exists(v)\n\
          }}\n"
     ))
-    .materialize("exists-optional");
-    for (export, expected) in [("present", "true"), ("missing", "false")] {
-        let output = workspace.marrow(&["run", export, "--format", "jsonl"]);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(output.status.success(), "{export}: {stdout}");
-        assert!(
-            stdout.contains(&format!(r#""data":{expected}"#)),
-            "{export}: {stdout}"
-        );
-    }
+    .session();
+    assert_eq!(session.call("present", vec![]), Some(Value::Bool(true)));
+    assert_eq!(session.call("missing", vec![]), Some(Value::Bool(false)));
 }
 
 /// The probe establishes no narrowing: the value keeps its optional type inside the

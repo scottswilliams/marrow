@@ -22,7 +22,7 @@ enum DivisorClass {
     MayBeZero,
 }
 
-/// Whether a let-else binding may be reassigned: `const x = … else` or `var x = … else`.
+/// Whether a binding may be reassigned: `const` or `var`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mutability {
     Const,
@@ -237,7 +237,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 value,
                 span: _,
             } => {
-                self.lower_binding(name, ty.as_deref(), value, false)?;
+                self.lower_binding(name, ty.as_deref(), value, Mutability::Const)?;
                 Ok(Flow::Fallthrough)
             }
             Statement::Var {
@@ -260,7 +260,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     ));
                     return Ok(Flow::Fallthrough);
                 };
-                self.lower_binding(name, ty.as_deref(), value, true)?;
+                self.lower_binding(name, ty.as_deref(), value, Mutability::Var)?;
                 Ok(Flow::Fallthrough)
             }
             Statement::Assign {
@@ -350,7 +350,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         name: &str,
         annotation: Option<&TypeExpr>,
         value: &Expression,
-        mutable: bool,
+        mutability: Mutability,
     ) -> ConstructResult<()> {
         if let Some(row) = refused_binding_name(self.file, value.span(), name) {
             self.fail(row);
@@ -408,7 +408,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         self.locals.push(Local {
             name: name.to_string(),
             ty,
-            mutable,
+            mutable: mutability == Mutability::Var,
             slot,
         });
         Ok(())
@@ -2320,7 +2320,6 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// diagnostic; a refused constant steers to its declaration's cause.
     fn traversal_limit(&mut self, expr: &Expression) -> Option<u32> {
         let span = expr.span();
-        let consts = self.consts;
         let bound = match expr {
             Expression::Literal {
                 kind: LiteralKind::Integer,
@@ -2328,16 +2327,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 ..
             } => parse_int(text),
             Expression::Name { segments, .. } if segments.len() == 1 => {
-                match consts.lookup(self.module, segments[0].text()) {
-                    Ok(Binding::Accepted(ConstScalar::Int(value))) => Some(*value),
-                    Ok(Binding::Accepted(ConstScalar::Bool(_) | ConstScalar::Text(_)))
-                    | Ok(Binding::Absent) => None,
-                    Ok(Binding::Refused(id, refusal)) => {
-                        self.steer_refusal(id.namespace(), refusal, span);
-                        return None;
-                    }
-                    Err(drift) => {
-                        self.ledger_drift::<()>(drift);
+                match self.module_const(segments[0].text(), span) {
+                    Ok(Some(ConstScalar::Int(value))) => Some(*value),
+                    Ok(Some(ConstScalar::Bool(_) | ConstScalar::Text(_)) | None) => None,
+                    Err(LoweringFailure::Recoverable | LoweringFailure::CodeLimitReached) => {
                         return None;
                     }
                 }

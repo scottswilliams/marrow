@@ -184,7 +184,7 @@ pub(super) struct StableSnapshot {
     pending_fills: Vec<PendingFill>,
     fill_failures: Vec<(usize, ResolveRefusal)>,
     limit: StableLimit,
-    payloads: crate::diag::CollectorProbe,
+    payloads: crate::diag::BoundedDiagnostics,
     build_invariant: Option<GenericInvariant>,
     // The lockstep secondary indexes and the swapped argument domain: an isolation probe
     // must observe a missed index purge or a stuck `TemplateProof` domain, not only the
@@ -199,6 +199,18 @@ pub(super) struct StableSnapshot {
 /// Every registry owner the generic-owner transaction's inverse must restore, in a
 /// shape that compares by value.
 pub(super) fn stable_snapshot(registry: &TypeRegistry) -> StableSnapshot {
+    // The live collector is read through its sealed terminal, then rebuilt from that
+    // terminal by the absorb law, which restores the exact state.
+    let payloads = {
+        let mut generics = registry.generics.borrow_mut();
+        let sealed = std::mem::replace(
+            &mut generics.collection_payloads,
+            crate::diag::DiagnosticCollector::new(),
+        )
+        .finish();
+        generics.collection_payloads.absorb(sealed.clone());
+        sealed
+    };
     let generics = registry.generics.borrow();
     let rows = generics
         .type_insts
@@ -260,7 +272,7 @@ pub(super) fn stable_snapshot(registry: &TypeRegistry) -> StableSnapshot {
         pending_fills: generics.pending_fills.iter().copied().collect(),
         fill_failures: generics.fill_failures.clone(),
         limit,
-        payloads: generics.collection_payloads.probe(),
+        payloads,
         build_invariant: generics.build_invariant,
         type_index: generics.type_index.clone(),
         fn_index: generics.fn_index.clone(),

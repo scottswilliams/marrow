@@ -92,9 +92,8 @@ pub fn applyMarkupPercent(sku: string, percent: int): Result<int, string> {
 }
 
 // The fixed-scale money idiom. `Cents.checked` validates the unit price against the
-// fixed-scale interval; recovering the underlying int needs `unit - Cents(0)`
-// because a nominal type has no value accessor and money*money / money+money are
-// not expressible, so the line total is accumulated in plain int.
+// fixed-scale interval and `int(unit)` recovers the underlying int; money*money and
+// money+money are not expressible, so the line total is accumulated in plain int.
 pub fn extendedPriceCents(unitCents: int, qty: int): Result<int, string> {
     const unit = Cents.checked(unitCents) else {
         return err("unit price out of fixed-scale range")
@@ -102,7 +101,7 @@ pub fn extendedPriceCents(unitCents: int, qty: int): Result<int, string> {
     if qty < 0 {
         return err("negative quantity")
     }
-    const base = unit - Cents(0)
+    const base = int(unit)
     const total = checked base * qty
         on out_of_range {
             return err("line total overflow")
