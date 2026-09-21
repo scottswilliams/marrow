@@ -4,15 +4,15 @@
 
 use super::super::model::DecodedRoot;
 use super::super::reject;
-use super::seal::is_flat_executable_root;
+use super::project::is_flat_executable_root;
 use crate::reader::Reader;
 use crate::reject::{
     Bound, Duplicate, Region, RejectionKind as Kind, SiteFault, Tag, VerifyPhase, VerifyRejection,
 };
 use crate::sealed::{SealedSite, SealedSiteTarget};
 use marrow_image::{
-    LedgerIdBytes, SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind,
-    SemanticTarget,
+    LedgerIdBytes, RootId, SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep,
+    SemanticStepKind, SemanticTarget,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -183,7 +183,7 @@ fn resolve_site(
         path: path.clone(),
         target,
     };
-    if !graph.flat_roots[node.root as usize] {
+    if !graph.flat_roots[node.root.index() as usize] {
         return Ok(parked());
     }
     let sealed = match &node.coordinates {
@@ -237,7 +237,7 @@ struct ProjectedNode {
     kind: SemanticNodeKind,
     /// The DURABLE-table position of the root occurrence this node hangs under. Every
     /// node's path carries that root's placement as its second step.
-    root: u16,
+    root: RootId,
     coordinates: NodeCoordinates,
 }
 
@@ -299,9 +299,9 @@ const _: () = assert!(
 /// coordinates are its parent's extended by its own ordinal among its same-kind siblings,
 /// and both are already known when it is reached. Nothing is re-derived per site.
 fn project_graph<'a>(nodes: &'a [SemanticNode], roots: &[DecodedRoot]) -> GraphProjection<'a> {
-    let mut root_positions: HashMap<LedgerIdBytes, u16> = HashMap::with_capacity(roots.len());
+    let mut root_positions: HashMap<LedgerIdBytes, RootId> = HashMap::with_capacity(roots.len());
     for (position, root) in roots.iter().enumerate() {
-        root_positions.insert(root.placement, position as u16);
+        root_positions.insert(root.placement, RootId::from_index(position as u16));
     }
     // Each managed index by its ledger id: its position in the image-wide index table,
     // assembled by iterating the roots in order and each root's indexes in order — the

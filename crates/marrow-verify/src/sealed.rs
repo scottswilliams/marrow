@@ -119,7 +119,10 @@ pub enum SealedSiteTarget {
 pub enum SealedSite {
     /// Executable on the flat keyed root: the root index it resolved to
     /// and the whole-payload or resolved-field-index target.
-    Flat { root: u16, target: SealedSiteTarget },
+    Flat {
+        root: RootId,
+        target: SealedSiteTarget,
+    },
     /// A sealed but not-yet-executable site over the wider durable graph. It carries the
     /// resolved node path and target so a widened kernel can derive its physical
     /// coordinates without re-parsing the image.

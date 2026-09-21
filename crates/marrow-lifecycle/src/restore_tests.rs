@@ -20,10 +20,7 @@ fn populated_transfer(scratch: &Scratch, count: i64) -> (Header, Vec<Cell>) {
         .position(|site| {
             matches!(
                 site,
-                marrow_verify::SealedSite::Flat {
-                    root: 0,
-                    target: marrow_verify::SealedSiteTarget::WholePayload
-                }
+                marrow_verify::SealedSite::Flat { root, target: marrow_verify::SealedSiteTarget::WholePayload } if *root == marrow_verify::RootId::from_index(0)
             )
         })
         .unwrap() as u16;

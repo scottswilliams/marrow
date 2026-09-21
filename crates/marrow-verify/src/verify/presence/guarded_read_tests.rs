@@ -2,7 +2,7 @@ use crate::{SealedConst, SealedInstr, SealedSite, SealedSiteTarget, VerifyPhase}
 use marrow_codes::Code;
 use marrow_image::{
     DeclarationMemberDef, DeclarationMemberShape, ExportId, FieldDef, FunctionDef, ImageDraft,
-    ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar,
+    ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootId, RootOccurrenceDef, Scalar,
     SemanticTarget, SpanEntry,
 };
 use marrow_test_support::{admitted_plan, site};
@@ -259,11 +259,11 @@ fn the_guarded_function_shape_is_sealed(verified: &crate::VerifiedImage) {
         verified.sites(),
         &[
             SealedSite::Flat {
-                root: 0,
+                root: RootId::from_index(0),
                 target: SealedSiteTarget::WholePayload,
             },
             SealedSite::Flat {
-                root: 0,
+                root: RootId::from_index(0),
                 target: SealedSiteTarget::FieldLeaf(0),
             },
         ],

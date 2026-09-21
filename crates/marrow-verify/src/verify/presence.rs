@@ -9,7 +9,7 @@ use super::reject;
 use super::spans::map_spans;
 use crate::reject::{RejectionKind as Kind, VerifyPhase, VerifyRejection};
 use crate::sealed::{SealedConst, SealedFunction, SealedInstr, SealedSite, SealedSiteTarget};
-use marrow_image::{OperationClass, SemanticPath};
+use marrow_image::{OperationClass, RootId, SemanticPath};
 use std::collections::BTreeSet;
 use std::rc::Rc;
 
@@ -25,7 +25,7 @@ mod guarded_read_tests;
 /// Rows borrow both paths and branch coordinates; no key-column reconstruction is
 /// needed to invalidate a family. The index is built once and is not published.
 pub(super) struct EntryFamilies<'a> {
-    rows: Vec<(&'a SemanticPath, u16, &'a [u16])>,
+    rows: Vec<(&'a SemanticPath, RootId, &'a [u16])>,
 }
 
 impl<'a> EntryFamilies<'a> {
@@ -40,7 +40,7 @@ impl<'a> EntryFamilies<'a> {
         Self { rows }
     }
 
-    fn get(&self, path: &SemanticPath) -> Option<(u16, &'a [u16])> {
+    fn get(&self, path: &SemanticPath) -> Option<(RootId, &'a [u16])> {
         self.rows
             .binary_search_by(|(candidate, _, _)| candidate.cmp(&path))
             .ok()
@@ -157,7 +157,7 @@ pub(super) fn check_presence_flow(
 /// branches of equal key arity that share slot values under one root. The first two
 /// components are the entry's *family*, the unit an erase or an entry-erasing call
 /// ends proofs over.
-type PresenceFact = (u16, Vec<u16>, Vec<u16>);
+type PresenceFact = (RootId, Vec<u16>, Vec<u16>);
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct FactId(u32);
@@ -199,7 +199,9 @@ impl PresenceFacts {
                 occurrences.push((fact, index));
             }
         }
-        occurrences.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+        occurrences.sort_unstable_by(|(left, _), (right, _)| {
+            (left.0.index(), &left.1, &left.2).cmp(&(right.0.index(), &right.1, &right.2))
+        });
         let mut tuples = Vec::new();
         let mut at = vec![None; code.len()];
         for (fact, index) in occurrences {
@@ -295,7 +297,7 @@ fn presence_edges(
 }
 
 /// Exact entry identity; field, group and index sites are not entry families.
-fn entry_family(site: &SealedSite) -> Option<(u16, &[u16])> {
+fn entry_family(site: &SealedSite) -> Option<(RootId, &[u16])> {
     let SealedSite::Flat { root, target } = site else {
         return None;
     };
@@ -310,9 +312,9 @@ fn entry_family(site: &SealedSite) -> Option<(u16, &[u16])> {
 /// root index it lives under, its branch path (empty for the root), and its whole
 /// key-path column arity. `None` for a non-entry site (a field leaf or index), which
 /// names no entry to prove present.
-fn entry_site(ctx: &Ctx, site: u16) -> Option<(u16, Vec<u16>, usize)> {
+fn entry_site(ctx: &Ctx, site: u16) -> Option<(RootId, Vec<u16>, usize)> {
     let (root_index, branch) = entry_family(ctx.sites.get(site as usize)?)?;
-    let root = ctx.roots.get(root_index as usize)?;
+    let root = ctx.roots.get(root_index.index() as usize)?;
     let extra = branch_key_columns(root, branch).ok()?;
     Some((root_index, branch.to_vec(), root.keys.len() + extra.len()))
 }
@@ -321,7 +323,7 @@ fn entry_site(ctx: &Ctx, site: u16) -> Option<(u16, Vec<u16>, usize)> {
 /// branch path of a field leaf (empty for a root field, the branch placement path for a
 /// branch field), or the root and an empty path for a root-level group. `None` for a
 /// site that is not a field or group.
-fn payload_site_family(ctx: &Ctx, site: u16) -> Option<(u16, Vec<u16>)> {
+fn payload_site_family(ctx: &Ctx, site: u16) -> Option<(RootId, Vec<u16>)> {
     let SealedSite::Flat { root, target } = ctx.sites.get(site as usize)? else {
         return None;
     };
@@ -405,7 +407,7 @@ fn read_entry_guard_fact(
             (
                 *root,
                 Vec::new(),
-                ctx.roots.get(usize::from(*root))?.keys.len(),
+                ctx.roots.get(root.index() as usize)?.keys.len(),
             )
         }
         _ => return None,
@@ -477,7 +479,7 @@ mod presence_root_discrimination {
     use std::collections::BTreeSet;
     use std::rc::Rc;
 
-    use marrow_image::{Scalar, TypeId};
+    use marrow_image::{RootId, Scalar, TypeId};
 
     use super::super::context::{CallGraph, Ctx, Effects};
     use super::{EntryFamilies, PresenceFacts, presence_edges};
@@ -499,11 +501,11 @@ mod presence_root_discrimination {
         let roots = [keyed_root("assets"), keyed_root("tallies")];
         let sites = [
             SealedSite::Flat {
-                root: 0,
+                root: RootId::from_index(0),
                 target: SealedSiteTarget::WholePayload,
             },
             SealedSite::Flat {
-                root: 1,
+                root: RootId::from_index(1),
                 target: SealedSiteTarget::WholePayload,
             },
         ];

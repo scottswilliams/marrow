@@ -1,5 +1,6 @@
 use super::{EntryFamilies, entry_family};
 use crate::sealed::{SealedSite, SealedSiteTarget};
+use marrow_image::RootId;
 use marrow_image::{
     DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId, FieldDef, FuncId,
     FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
@@ -26,7 +27,7 @@ fn entry_lookup_finds_every_family_from_reverse_ordered_sites() {
         let sites: Vec<_> = (0..entries)
             .rev()
             .map(|index| SealedSite::Flat {
-                root: index as u16,
+                root: RootId::from_index(index as u16),
                 target: SealedSiteTarget::BranchEntry(vec![3, 7].into_boxed_slice()),
             })
             .collect();
@@ -35,7 +36,7 @@ fn entry_lookup_finds_every_family_from_reverse_ordered_sites() {
         for index in 0..entries {
             assert_eq!(
                 families.get(&path(index)),
-                Some((index as u16, &[3, 7][..]))
+                Some((RootId::from_index(index as u16), &[3, 7][..]))
             );
         }
     }
@@ -45,42 +46,42 @@ fn entry_lookup_finds_every_family_from_reverse_ordered_sites() {
 fn entry_lookup_borrows_branch_storage_and_excludes_non_entries() {
     let sites = [
         SealedSite::Flat {
-            root: 0,
+            root: RootId::from_index(0),
             target: SealedSiteTarget::WholePayload,
         },
         SealedSite::Flat {
-            root: 3,
+            root: RootId::from_index(3),
             target: SealedSiteTarget::BranchEntry(vec![2, 7].into_boxed_slice()),
         },
         SealedSite::Flat {
-            root: 4,
+            root: RootId::from_index(4),
             target: SealedSiteTarget::BranchEntry(vec![2, 7].into_boxed_slice()),
         },
         SealedSite::Flat {
-            root: 3,
+            root: RootId::from_index(3),
             target: SealedSiteTarget::BranchEntry(vec![2, 8].into_boxed_slice()),
         },
         SealedSite::Flat {
-            root: 0,
+            root: RootId::from_index(0),
             target: SealedSiteTarget::FieldLeaf(0),
         },
         SealedSite::Flat {
-            root: 3,
+            root: RootId::from_index(3),
             target: SealedSiteTarget::BranchField {
                 branch: vec![2, 7].into_boxed_slice(),
                 field: 0,
             },
         },
         SealedSite::Flat {
-            root: 0,
+            root: RootId::from_index(0),
             target: SealedSiteTarget::GroupEntry(0),
         },
         SealedSite::Flat {
-            root: 0,
+            root: RootId::from_index(0),
             target: SealedSiteTarget::IndexScan(0),
         },
         SealedSite::Flat {
-            root: 0,
+            root: RootId::from_index(0),
             target: SealedSiteTarget::IndexLookup(0),
         },
         SealedSite::Parked {
@@ -91,8 +92,14 @@ fn entry_lookup_borrows_branch_storage_and_excludes_non_entries() {
     let paths: Vec<_> = (0..sites.len()).map(path).collect();
     let families = EntryFamilies::new(&sites, &paths);
     assert_eq!(families.rows.len(), 4);
-    assert_eq!(families.get(&paths[0]), Some((0, &[][..])));
-    assert_eq!(entry_family(&sites[0]), Some((0, &[][..])));
+    assert_eq!(
+        families.get(&paths[0]),
+        Some((RootId::from_index(0), &[][..]))
+    );
+    assert_eq!(
+        entry_family(&sites[0]),
+        Some((RootId::from_index(0), &[][..]))
+    );
     for index in 1..4 {
         let SealedSite::Flat {
             root,

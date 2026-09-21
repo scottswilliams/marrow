@@ -336,6 +336,17 @@ pub enum TypeRefFault {
     TagNotAdmitted,
 }
 
+impl fmt::Display for TypeRefFault {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            TypeRefFault::Truncated => "that is truncated",
+            TypeRefFault::Optionality => "with an inadmissible optional flag",
+            TypeRefFault::IndexOutOfRange => "index out of range",
+            TypeRefFault::TagNotAdmitted => "tag not admitted there",
+        })
+    }
+}
+
 /// The durable member tree a materialized record is tied to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TieNode {
@@ -600,67 +611,31 @@ pub enum RejectionKind {
 
 impl fmt::Display for RejectionKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Truncated(region) => write!(f, "truncated {region}"),
-            Self::Trailing(region) => write!(f, "trailing bytes in {region}"),
-            Self::Unsorted(region) => write!(f, "unsorted or repeated rows in {region}"),
-            Self::OutOfRange(what) => write!(f, "a {what} index out of range"),
-            Self::OverBound(bound) => write!(f, "over the {bound} bound"),
-            Self::Duplicate(what) => write!(f, "a duplicate {what}"),
-            Self::Unknown(tag) => write!(f, "an unknown {tag}"),
-            Self::Flag(flag) => write!(f, "a {flag} flag that is not 0 or 1"),
-            Self::TypeRef { position, fault } => match fault {
-                TypeRefFault::Truncated => write!(f, "a truncated {position} type"),
-                TypeRefFault::Optionality => {
-                    write!(f, "a {position} type with an inadmissible optional flag")
-                }
-                TypeRefFault::IndexOutOfRange => write!(f, "a {position} type index out of range"),
-                TypeRefFault::TagNotAdmitted => {
-                    write!(f, "a {position} type tag not admitted there")
-                }
-            },
+        let sentence = match self {
+            Self::Truncated(region) => return write!(f, "truncated {region}"),
+            Self::Trailing(region) => return write!(f, "trailing bytes in {region}"),
+            Self::Unsorted(region) => return write!(f, "unsorted or repeated rows in {region}"),
+            Self::OutOfRange(what) => return write!(f, "a {what} index out of range"),
+            Self::OverBound(bound) => return write!(f, "over the {bound} bound"),
+            Self::Duplicate(what) => return write!(f, "a duplicate {what}"),
+            Self::Unknown(tag) => return write!(f, "an unknown {tag}"),
+            Self::Flag(flag) => return write!(f, "a {flag} flag that is not 0 or 1"),
+            Self::TypeRef { position, fault } => return write!(f, "a {position} type {fault}"),
             Self::ConstDomain(scalar) => {
-                write!(
+                return write!(
                     f,
                     "a {} constant outside its supported range",
                     scalar_name(*scalar)
-                )
+                );
             }
-            Self::DurableGraph(refusal) => f.write_str(graph_refusal(*refusal)),
-            Self::RecordTie { node, fault } => write!(f, "a {node} member tree that {fault}"),
-            Self::IndexProjection(fault) => write!(f, "a managed-index projection {fault}"),
-            Self::Site(fault) => fault.fmt(f),
-            Self::RequiresSite(kind) => kind.fmt(f),
-            Self::OperandType(want) => write!(f, "an operand that is not {want}"),
-            unit => f.write_str(unit.sentence()),
-        }
-    }
-}
-
-fn graph_refusal(refusal: DurableGraphInputRefusal) -> &'static str {
-    match refusal {
-        DurableGraphInputRefusal::OverPlan | DurableGraphInputRefusal::UnaddressableOccurrence => {
-            "more durable roots than admitted"
-        }
-        DurableGraphInputRefusal::MalformedCommands
-        | DurableGraphInputRefusal::UndeclaredProduct => {
-            "a durable member graph that is not a well-formed declaration"
-        }
-        DurableGraphInputRefusal::OverDepth => "a durable member tree past the depth bound",
-        DurableGraphInputRefusal::DivergentGraph => {
-            "a repeated durable Product declaring a different member graph"
-        }
-        DurableGraphInputRefusal::DivergentEntryRecord => {
-            "a repeated durable Product declaring a different entry record"
-        }
-    }
-}
-
-impl RejectionKind {
-    /// The sentence of a kind that carries no payload; a kind with one is rendered by
-    /// `Display` around its payload and never reaches here.
-    fn sentence(&self) -> &'static str {
-        match self {
+            Self::DurableGraph(refusal) => graph_refusal(*refusal),
+            Self::RecordTie { node, fault } => {
+                return write!(f, "a {node} member tree that {fault}");
+            }
+            Self::IndexProjection(fault) => return write!(f, "a managed-index projection {fault}"),
+            Self::Site(fault) => return fault.fmt(f),
+            Self::RequiresSite(kind) => return kind.fmt(f),
+            Self::OperandType(want) => return write!(f, "an operand that is not {want}"),
             Self::DigestMismatch => "a digest that does not cover the payload",
             Self::SectionCount => "a section count other than 10",
             Self::SectionIds => "section ids other than 1..10 in order",
@@ -740,22 +715,26 @@ impl RejectionKind {
             Self::TestCallsUnownedMutation => {
                 "a test calling a mutating function without its own transaction"
             }
-            Self::Truncated(_)
-            | Self::Trailing(_)
-            | Self::Unsorted(_)
-            | Self::OutOfRange(_)
-            | Self::OverBound(_)
-            | Self::Duplicate(_)
-            | Self::Unknown(_)
-            | Self::Flag(_)
-            | Self::TypeRef { .. }
-            | Self::ConstDomain(_)
-            | Self::DurableGraph(_)
-            | Self::RecordTie { .. }
-            | Self::IndexProjection(_)
-            | Self::Site(_)
-            | Self::RequiresSite(_)
-            | Self::OperandType(_) => unreachable!("a kind with a payload is rendered by Display"),
+        };
+        f.write_str(sentence)
+    }
+}
+
+fn graph_refusal(refusal: DurableGraphInputRefusal) -> &'static str {
+    match refusal {
+        DurableGraphInputRefusal::OverPlan | DurableGraphInputRefusal::UnaddressableOccurrence => {
+            "more durable roots than admitted"
+        }
+        DurableGraphInputRefusal::MalformedCommands
+        | DurableGraphInputRefusal::UndeclaredProduct => {
+            "a durable member graph that is not a well-formed declaration"
+        }
+        DurableGraphInputRefusal::OverDepth => "a durable member tree past the depth bound",
+        DurableGraphInputRefusal::DivergentGraph => {
+            "a repeated durable Product declaring a different member graph"
+        }
+        DurableGraphInputRefusal::DivergentEntryRecord => {
+            "a repeated durable Product declaring a different entry record"
         }
     }
 }

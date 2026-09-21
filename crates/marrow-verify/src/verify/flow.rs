@@ -1148,7 +1148,7 @@ pub(super) fn is_mutation(instr: &SealedInstr) -> bool {
 /// whole-entry operation reads or writes, the addressed layer's own key arity, and the
 /// whole key-path in stack-pop order (deepest last column first).
 struct DurablePlace<'a> {
-    root_index: u16,
+    root_index: RootId,
     root: &'a SealedRoot,
     target: &'a SealedSiteTarget,
     entry_record: TypeId,
@@ -1185,7 +1185,7 @@ fn apply_durable(
     };
     let root = ctx
         .roots
-        .get(site_root as usize)
+        .get(site_root.index() as usize)
         .ok_or(reject(VerifyPhase::Function, Kind::OutOfRange(Ref::Root)))?;
     // A managed-index read touches only the index cell family, not the entry tree, so it
     // is handled before the whole-entry key-path logic (and is admitted over a root whose
@@ -1547,7 +1547,7 @@ fn apply_index_read(
     ctx: &Ctx,
     instr: &SealedInstr,
     frame: &mut Frame,
-    site_root: u16,
+    site_root: RootId,
     root: &SealedRoot,
     index_position: u16,
 ) -> Result<Control, VerifyRejection> {
@@ -1555,7 +1555,7 @@ fn apply_index_read(
         .indexes
         .get(index_position as usize)
         .ok_or(reject(VerifyPhase::Function, Kind::OutOfRange(Ref::Index)))?;
-    if index.root != RootId::from_index(site_root) {
+    if index.root != site_root {
         return Err(reject(VerifyPhase::Function, Kind::IndexRootMismatch));
     }
     let projection: Vec<Scalar> = index
@@ -1626,7 +1626,7 @@ fn apply_index_read(
                 expect(pop(stack)?, VType::bare_scalar(*scalar))?;
             }
             stack.push(VType::Identity {
-                root: RootId::from_index(site_root),
+                root: site_root,
                 optional: true,
             });
         }
@@ -1660,7 +1660,7 @@ fn apply_index_read(
 fn pop_key_path(
     stack: &mut Vec<VType>,
     key_path: &[VType],
-    site_root: u16,
+    site_root: RootId,
 ) -> Result<(), VerifyRejection> {
     for ty in key_path {
         pop_key_column(stack, *ty, site_root)?;
@@ -1679,7 +1679,7 @@ fn require_key_slots(
     frame: &Frame,
     key_slots: &[u16],
     key_path: &[VType],
-    site_root: u16,
+    site_root: RootId,
 ) -> Result<(), VerifyRejection> {
     let columns_root_first = key_path.iter().rev();
     if key_slots.len() != key_path.len() {
@@ -1709,11 +1709,11 @@ fn require_key_slots(
 fn pop_key_column(
     stack: &mut Vec<VType>,
     want: VType,
-    site_root: u16,
+    site_root: RootId,
 ) -> Result<(), VerifyRejection> {
     match pop(stack)? {
         VType::IdentityColumn { root, scalar } => {
-            if root != RootId::from_index(site_root) {
+            if root != site_root {
                 return Err(reject(VerifyPhase::Function, Kind::ForeignIdentityKey));
             }
             expect(VType::bare_scalar(scalar), want)
@@ -1727,10 +1727,10 @@ fn pop_key_column(
 /// column; it keys the column only when it addresses the same root and its scalar matches.
 /// The slot-reading counterpart of [`pop_key_column`] for the strict present-entry set,
 /// which reads its key-path from local slots rather than the stack.
-fn slot_keys_column(have: VType, want: VType, site_root: u16) -> bool {
+fn slot_keys_column(have: VType, want: VType, site_root: RootId) -> bool {
     match have {
         VType::IdentityColumn { root, scalar } => {
-            root == RootId::from_index(site_root) && VType::bare_scalar(scalar) == want
+            root == site_root && VType::bare_scalar(scalar) == want
         }
         other => other == want,
     }

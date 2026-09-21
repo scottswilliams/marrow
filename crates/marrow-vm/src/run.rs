@@ -17,7 +17,7 @@ use marrow_kernel::durable::{
 };
 use marrow_kernel::equality::ValueDomain;
 use marrow_verify::{
-    FunctionIndex, SealedConst, SealedFunction, SealedGroup, SealedInstr, SealedSite,
+    FunctionIndex, RootId, SealedConst, SealedFunction, SealedGroup, SealedInstr, SealedSite,
     SealedSiteTarget, TypeId, VerifiedFunction, VerifiedImage,
 };
 
@@ -1932,7 +1932,7 @@ fn site_groups(image: &VerifiedImage, site: u16) -> &[SealedGroup] {
         unreachable!("the verifier admits a durable opcode only over a flat site")
     };
     match target {
-        SealedSiteTarget::WholePayload => image.roots()[*root as usize].groups(),
+        SealedSiteTarget::WholePayload => image.roots()[root.index() as usize].groups(),
         _ => &[],
     }
 }
@@ -1941,7 +1941,7 @@ fn site_groups(image: &VerifiedImage, site: u16) -> &[SealedGroup] {
 /// a flat executable site, so the referenced site is `Flat`.
 fn site_root(image: &VerifiedImage, site: u16) -> u16 {
     match &image.sites()[site as usize] {
-        SealedSite::Flat { root, .. } => *root,
+        SealedSite::Flat { root, .. } => root_ordinal(*root),
         SealedSite::Parked { .. } => {
             unreachable!("the verifier admits a durable opcode only over a flat site")
         }
@@ -1953,6 +1953,11 @@ fn site_root(image: &VerifiedImage, site: u16) -> u16 {
 /// over a flat executable site, so the referenced site is `Flat`.
 /// The `u16` a [`Value::Record`] carries for a sealed record type; every sealed reference
 /// was decoded from a `u16` wire read, so the narrowing is total.
+fn root_ordinal(root: RootId) -> u16 {
+    u16::try_from(root.index())
+        .expect("a verified table reference was decoded from a u16 wire read")
+}
+
 fn record_ordinal(record: TypeId) -> u16 {
     u16::try_from(record.index())
         .expect("a verified table reference was decoded from a u16 wire read")
@@ -1965,7 +1970,7 @@ fn entry_record_type(image: &VerifiedImage, site: u16) -> u16 {
             unreachable!("the verifier admits a durable opcode only over a flat site")
         }
     };
-    let root = &image.roots()[root as usize];
+    let root = &image.roots()[root.index() as usize];
     let record = match target {
         SealedSiteTarget::BranchEntry(path) => {
             // Walk the branch path level by level through the recursive sealed branch tree;

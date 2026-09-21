@@ -329,10 +329,7 @@ fn operand_bool(reader: &mut Reader) -> Result<bool, VerifyRejection> {
 /// are bounds-checked by the abstract interpreter against the sealed tables.
 const VACANT_LOAD: TypeRules = TypeRules::new(
     TypePosition::VacantLoad,
-    TagSet::SCALAR
-        .with(TagSet::RECORD)
-        .with(TagSet::ENUM)
-        .with(TagSet::COLLECTION),
+    TagSet::VALUE,
     Optionality::Optional,
 )
 .in_phase(VerifyPhase::Function);

@@ -501,7 +501,7 @@ pub(crate) fn derive_projection(image: &VerifiedImage) -> Option<StoreProjection
     let mut index_offsets = Vec::with_capacity(image.roots().len());
     let mut running_indexes = 0u16;
     for (root_index, root) in image.roots().iter().enumerate() {
-        let schema = derive_root_schema(image, root_index as u16, root)?;
+        let schema = derive_root_schema(image, RootId::from_index(root_index as u16), root)?;
         index_offsets.push(running_indexes);
         running_indexes = running_indexes.checked_add(schema.indexes().len() as u16)?;
         projection.root(schema);
@@ -530,7 +530,7 @@ pub(crate) fn derive_projection(image: &VerifiedImage) -> Option<StoreProjection
 /// machine stack, and the builder returns a typed refusal that parks the root.
 fn derive_root_schema(
     image: &VerifiedImage,
-    root_index: u16,
+    root_index: RootId,
     root: &marrow_verify::SealedRoot,
 ) -> Option<StoreSchema> {
     // The executable layout is the keyed root (any key arity, its fields scalar or widened
@@ -600,7 +600,7 @@ fn derive_root_schema(
     for index in image
         .indexes()
         .iter()
-        .filter(|index| index.root() == RootId::from_index(root_index))
+        .filter(|index| index.root() == root_index)
     {
         builder.index(
             *index.id().bytes(),
@@ -695,7 +695,7 @@ fn emit_site(
     index_offsets: &[u16],
 ) -> Option<()> {
     let (root, target) = match site {
-        SealedSite::Flat { root, target } => (*root, target),
+        SealedSite::Flat { root, target } => (root_ordinal(*root), target),
         SealedSite::Parked { .. } => {
             projection.parked_site();
             return Some(());
@@ -727,6 +727,13 @@ fn emit_site(
 /// root-local position the kernel's site targets carry. `None` when the position sits below
 /// its root's first index or the root is unknown — either way the image's shape and the
 /// derived projection disagree, and the caller parks.
+/// The `u16` the kernel projection names a root by; every sealed root reference was decoded
+/// from a `u16` wire read, so the narrowing is total.
+fn root_ordinal(root: RootId) -> u16 {
+    u16::try_from(root.index())
+        .expect("a verified table reference was decoded from a u16 wire read")
+}
+
 fn root_local_index(index: u16, root: u16, index_offsets: &[u16]) -> Option<u16> {
     index.checked_sub(*index_offsets.get(root as usize)?)
 }

@@ -63,10 +63,7 @@ pub(crate) fn populate_counter(dir: &Path, image: &VerifiedImage) {
         .position(|site| {
             matches!(
                 site,
-                marrow_verify::SealedSite::Flat {
-                    root: 0,
-                    target: marrow_verify::SealedSiteTarget::WholePayload,
-                }
+                marrow_verify::SealedSite::Flat { root, target: marrow_verify::SealedSiteTarget::WholePayload } if *root == marrow_verify::RootId::from_index(0)
             )
         })
         .expect("compiled entry write") as u16;

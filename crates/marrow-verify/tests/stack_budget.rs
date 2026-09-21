@@ -10,7 +10,7 @@
 //! |---|---|---|
 //! | `durable::members::decode_value_shape` | `MAX_DURABLE_VALUE_DEPTH` | 32 |
 //! | `durable::members::value_shape_matches` | the shape that decode admitted | 32 |
-//! | `durable::seal::seal_branch_run` | `MAX_DURABLE_DEPTH` | 16 |
+//! | `durable::project::seal_branch_run` | `MAX_DURABLE_DEPTH` | 16 |
 //!
 //! A frame count alone is not a stack bound, so [`VERIFY_STACK_BYTES`] states what those
 //! depths are allowed to cost and this file measures it on one image that reaches all

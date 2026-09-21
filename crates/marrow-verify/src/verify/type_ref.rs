@@ -26,6 +26,11 @@ impl TagSet {
     pub(super) const ENUM: Self = Self(1 << 3);
     pub(super) const COLLECTION: Self = Self(1 << 4);
     pub(super) const IDENTITY: Self = Self(1 << 5);
+    /// The value types: a scalar, record, enum, or collection.
+    pub(super) const VALUE: Self = Self::SCALAR
+        .with(Self::RECORD)
+        .with(Self::ENUM)
+        .with(Self::COLLECTION);
 
     pub(super) const fn with(self, other: Self) -> Self {
         Self(self.0 | other.0)

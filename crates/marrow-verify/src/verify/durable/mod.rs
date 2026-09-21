@@ -2,10 +2,10 @@
 //! against the reconstructed graph, and the recomputed contract id.
 
 mod members;
-mod seal;
+mod project;
 mod sites;
 
-pub(crate) use seal::{
+pub(crate) use project::{
     is_flat_executable_root, member_flat_at_root, seal_branches, seal_groups, seal_root_indexes,
 };
 

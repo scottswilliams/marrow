@@ -166,14 +166,8 @@ pub(super) fn decode_bare_scalar(tag: u8) -> Option<Scalar> {
 /// Never optional — sparseness is the `required` flag, not the type — and its
 /// referenced indices are checked by `validate_record_field_refs` once the tables
 /// they name have decoded.
-const FIELD: TypeRules = TypeRules::new(
-    TypePosition::RecordField,
-    TagSet::SCALAR
-        .with(TagSet::RECORD)
-        .with(TagSet::ENUM)
-        .with(TagSet::COLLECTION),
-    Optionality::Bare,
-);
+const FIELD: TypeRules =
+    TypeRules::new(TypePosition::RecordField, TagSet::VALUE, Optionality::Bare);
 
 /// An enum payload leaf: a bare scalar, record or enum reference.
 const PAYLOAD_LEAF: TypeRules = TypeRules::new(
@@ -188,10 +182,7 @@ const PAYLOAD_LEAF: TypeRules = TypeRules::new(
 fn collection_leaf(type_count: usize, enum_count: usize, row: usize) -> TypeRules {
     TypeRules::new(
         TypePosition::CollectionLeaf,
-        TagSet::SCALAR
-            .with(TagSet::RECORD)
-            .with(TagSet::ENUM)
-            .with(TagSet::COLLECTION),
+        TagSet::VALUE,
         Optionality::Bare,
     )
     .types(type_count)

@@ -140,6 +140,34 @@ fn section_range(bytes: &[u8], wanted: u8) -> Range<usize> {
     panic!("section {wanted:#04x} is present in a canonical image");
 }
 
+/// A record at `MAX_RECORD_FIELDS` seals every field in declaration order with its name,
+/// type, and required flag.
+#[test]
+fn a_full_width_record_seals_its_fields_in_order() {
+    let verified = crate::verify::verify(&record_image()).expect("the full record verifies");
+    let fields = verified.record_types()[0].fields();
+    assert_eq!(fields.len(), RECORD_WIDTH);
+    for (index, field) in fields.iter().enumerate() {
+        assert_eq!(field.name.as_ref(), format!("field{index:04}"));
+        assert_eq!(field.ty, ImageType::scalar(Scalar::Int));
+        assert_eq!(field.required, index % 2 == 0);
+    }
+}
+
+/// An enum at `MAX_VARIANTS` seals every variant in declaration order with its name and
+/// category flag.
+#[test]
+fn a_full_width_enum_seals_its_variants_in_order() {
+    let verified = crate::verify::verify(&enum_image()).expect("the full enum verifies");
+    let variants = verified.enums()[0].variants();
+    assert_eq!(variants.len(), ENUM_WIDTH);
+    for (index, variant) in variants.iter().enumerate() {
+        assert_eq!(variant.name.as_ref(), format!("variant{index:03}"));
+        assert_eq!(variant.category, index % 2 == 1);
+        assert!(variant.payload.is_empty());
+    }
+}
+
 #[test]
 fn the_same_name_in_distinct_rows_is_admitted() {
     let verified =

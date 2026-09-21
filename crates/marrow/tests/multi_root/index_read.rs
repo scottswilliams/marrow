@@ -432,10 +432,10 @@ fn key_only_scan(source: &str, ids: &str) {
     else {
         panic!("the executed scan must name an executable index site");
     };
-    assert_eq!(*root, 0);
+    assert_eq!(*root, RootId::from_index(0));
     let index = &image.indexes()[usize::from(*index)];
     assert_eq!(index.id(), LedgerIdBytes::from_bytes([0x23; 16]));
-    assert_eq!(index.root(), RootId::from_index(*root));
+    assert_eq!(index.root(), *root);
     assert!(!index.unique());
 
     assert_eq!(session.call("scanOrder", vec![]), Some(Value::Int(0)));

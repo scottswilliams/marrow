@@ -108,23 +108,14 @@ pub(super) fn decode_consts(
 /// emits.
 const PARAM: TypeRules = TypeRules::new(
     TypePosition::Param,
-    TagSet::SCALAR
-        .with(TagSet::RECORD)
-        .with(TagSet::ENUM)
-        .with(TagSet::COLLECTION)
-        .with(TagSet::IDENTITY),
+    TagSet::VALUE.with(TagSet::IDENTITY),
     Optionality::Bare,
 );
 
 /// A function return: any value type, optional or bare, plus unit.
 const RETURN: TypeRules = TypeRules::new(
     TypePosition::Return,
-    TagSet::UNIT
-        .with(TagSet::SCALAR)
-        .with(TagSet::RECORD)
-        .with(TagSet::ENUM)
-        .with(TagSet::COLLECTION)
-        .with(TagSet::IDENTITY),
+    TagSet::UNIT.with(TagSet::VALUE).with(TagSet::IDENTITY),
     Optionality::Either,
 );
 
