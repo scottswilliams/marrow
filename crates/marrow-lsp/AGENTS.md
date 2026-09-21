@@ -19,23 +19,25 @@ diagnostics or formatting. It opens no store. The
   `marrow-project` edge. Capture failures are rendered only through the allowlisted
   `CapturePresentation::{code, write_operational_message}` into a bounded sink — never
   reclassified, never rendered through another writer, never located.
-- **Bounded and affine.** Charge resources owned by `capacities` before admission.
-  Its compile-time `M_owned <= H_owned` inequality covers its named retained and
-  reserved populations, not whole-process memory. Concurrency is bounded by
-  move-only `credit` tokens minted in fixed counts.
+- **Bounded.** Charge resources owned by `capacities` before admission; they bound
+  what the server itself retains and reserves, not whole-process memory. Outbound
+  concurrency is the coordinator's count of frames handed to the writer and not yet
+  receipted, capped at `OUTBOUND_CREDITS`.
 - **The DAG gate** (`marrow-codes/tests/tidy.rs`) forbids direct dependencies on
   this crate from compiler/syntax/project owners. It also forbids this crate's
   direct dependencies on kernel, store, VM, image, verifier or wire owners.
 
 ## Coverage
 
-Public journeys use real stdio in `tests/lsp_stdio.rs`. Keep coordinator laws in
-deterministic in-crate tests, with no timing dependence or test-only production
-entry point. Preserve receipt-gated initialization, bounded live and anonymous
-request admission, delivery/terminal classification, capture notification
-episodes, exclusive publication with tombstones derived from delivered state,
-and query reauthorization across edits. Framing, identity, positions, lifecycle,
-outbound serialization and credits retain their boundary tests.
+`tests/lsp_stdio.rs` exercises the stdio boundary of the real binary: framing, the
+handshake, the not-initialized refusal, shutdown and termination. Every payload is
+pinned in-process. Keep coordinator laws in deterministic in-crate tests, with no
+timing dependence or test-only production entry point. Preserve receipt-gated
+initialization, bounded live and anonymous request admission, delivery/terminal
+classification, capture notification episodes, exclusive publication with
+tombstones derived from delivered state, query reauthorization across edits, and
+termination on a lost thread. Framing, identity, positions, lifecycle and outbound
+serialization retain their boundary tests.
 
 ## Scope
 

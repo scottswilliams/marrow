@@ -11,9 +11,9 @@
 //! `serde_json::Value`, and no `json!`: a hand-written [`serde::de::Visitor`] over the
 //! envelope map detects duplicate recognized fields, skips unknown members within the
 //! decoded-value bounds, and captures method-specific parameters as an owned
-//! [`RawValue`] for the method router to decode.
+//! [`RawValue`], which [`decode_params`] decodes into one standard payload type.
 
-use serde::de::{self, Deserializer, IgnoredAny, MapAccess, Visitor};
+use serde::de::{self, DeserializeOwned, Deserializer, IgnoredAny, MapAccess, Visitor};
 use serde_json::value::RawValue;
 
 use crate::capacities::MAX_REQUEST_ID_STRING_BYTES;
@@ -124,6 +124,12 @@ pub(crate) fn decode(bytes: &[u8]) -> Inbound {
         // valid first message.
         Err(_) => Inbound::Reject(Reject::ParseError),
     }
+}
+
+/// Decode a message's captured parameters as one standard payload type. `None` for
+/// absent or malformed parameters.
+pub(crate) fn decode_params<T: DeserializeOwned>(params: Option<&RawValue>) -> Option<T> {
+    serde_json::from_str(params?.get()).ok()
 }
 
 /// The three top-level JSON shapes the decoder distinguishes. An array is consumed in

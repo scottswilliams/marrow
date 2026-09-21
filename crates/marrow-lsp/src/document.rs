@@ -10,6 +10,7 @@
 //! coordinator's one [`RevisionCounter`]; an invalid notification consumes no revision.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use marrow_compile::InputRevision;
 
@@ -63,8 +64,9 @@ pub(crate) enum DocumentState {
     OpenText {
         /// The client-assigned version.
         version: i32,
-        /// The whole-document text.
-        text: String,
+        /// The whole-document text, shared with the recompute jobs that overlay it so
+        /// dispatching one copies no body.
+        text: Arc<str>,
     },
     /// The document is open but its last transition was refused by overlay admission.
     OpenUnavailable {
@@ -124,10 +126,10 @@ impl DocumentLedger {
         self.entries.values().all(DocumentState::is_text)
     }
 
-    /// Iterate the open text entries as `(relative key, text)` for overlay construction.
-    pub(crate) fn text_entries(&self) -> impl Iterator<Item = (&DocumentKey, &str)> {
+    /// Iterate the open text entries as `(key, text)` for overlay construction.
+    pub(crate) fn text_entries(&self) -> impl Iterator<Item = (&DocumentKey, &Arc<str>)> {
         self.entries.iter().filter_map(|(key, state)| match state {
-            DocumentState::OpenText { text, .. } => Some((key, text.as_str())),
+            DocumentState::OpenText { text, .. } => Some((key, text)),
             DocumentState::OpenUnavailable { .. } => None,
         })
     }
@@ -199,7 +201,7 @@ mod tests {
     fn text(version: i32, body: &str) -> DocumentState {
         DocumentState::OpenText {
             version,
-            text: body.to_owned(),
+            text: Arc::from(body),
         }
     }
 

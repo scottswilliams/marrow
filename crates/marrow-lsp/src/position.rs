@@ -9,32 +9,18 @@
 //! The mapping is total and defensive: an offset past the source end clamps to the end
 //! position, so a stale or out-of-range span can never panic the server.
 
-/// A zero-based LSP position: a line and a UTF-16 code-unit offset within that line.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct Position {
-    /// Zero-based line number.
-    pub(crate) line: u32,
-    /// Zero-based UTF-16 code-unit offset within the line.
-    pub(crate) character: u32,
-}
-
-/// A zero-based half-open LSP range.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct Range {
-    /// Inclusive start.
-    pub(crate) start: Position,
-    /// Exclusive end.
-    pub(crate) end: Position,
-}
+use lsp_types::{Position, Range};
 
 /// Maps UTF-8 byte offsets in one source string to LSP UTF-16 positions.
 ///
-/// Built once per source; `position_at` is a linear scan bounded by the byte offset.
-/// For the small spans the analysis facts carry, this is well within the instant-
-/// response requirement; a source is re-scanned only per query, never retained beyond
-/// the snapshot it maps.
+/// The line-start table is built in one pass over the source. Each lookup then binary
+/// searches its line and counts UTF-16 units over that line alone, so projecting every
+/// span of a document costs one scan of the source plus one scan of each addressed line.
 pub(crate) struct LineMap<'a> {
     source: &'a str,
+    /// The byte offset at which each line begins. The first entry is `0`; a trailing
+    /// newline opens one final empty line.
+    line_starts: Vec<usize>,
 }
 
 impl<'a> LineMap<'a> {
@@ -42,79 +28,55 @@ impl<'a> LineMap<'a> {
     /// input files that parsed always are; a non-UTF-8 file is never queried for a
     /// span-bearing fact).
     pub(crate) fn new(source: &'a str) -> Self {
-        Self { source }
+        let line_starts = std::iter::once(0)
+            .chain(source.match_indices('\n').map(|(index, _)| index + 1))
+            .collect();
+        Self {
+            source,
+            line_starts,
+        }
     }
 
     /// The LSP position of a UTF-8 byte offset. An offset past the end clamps to the
     /// end-of-source position; an offset that falls inside a multi-byte character
     /// snaps to that character's start.
     pub(crate) fn position_at(&self, byte_offset: usize) -> Position {
-        let clamped = byte_offset.min(self.source.len());
-        let mut line = 0u32;
-        let mut line_start_byte = 0usize;
-        // Advance line count up to the byte offset.
-        for (index, byte) in self.source.as_bytes()[..clamped].iter().enumerate() {
-            if *byte == b'\n' {
-                line += 1;
-                line_start_byte = index + 1;
-            }
+        let mut clamped = byte_offset.min(self.source.len());
+        while !self.source.is_char_boundary(clamped) {
+            clamped -= 1;
         }
-        // UTF-16 code units from the line start to the clamped offset, snapping to a
-        // character boundary at or before the offset.
-        let line_text = &self.source[line_start_byte..];
-        let mut character = 0u32;
-        for (index, ch) in line_text.char_indices() {
-            // Count a character only when it lies wholly before the offset. A character
-            // that starts at or straddles the offset ends the count, so an offset that
-            // falls inside a multi-byte character snaps to that character's start.
-            if line_start_byte + index + ch.len_utf8() > clamped {
-                break;
-            }
-            character += ch.len_utf16() as u32;
-        }
-        Position { line, character }
+        let line = self.line_starts.partition_point(|&start| start <= clamped) - 1;
+        let character = self.source[self.line_starts[line]..clamped]
+            .encode_utf16()
+            .count();
+        Position::new(line as u32, character as u32)
     }
 
     /// The LSP range spanning a half-open byte range.
     pub(crate) fn range_of(&self, start_byte: usize, end_byte: usize) -> Range {
-        Range {
-            start: self.position_at(start_byte),
-            end: self.position_at(end_byte),
-        }
+        Range::new(self.position_at(start_byte), self.position_at(end_byte))
     }
 
     /// The UTF-8 byte offset of an LSP position. A line past the end clamps to the end
     /// of source; a character past the line end clamps to the line end (the LSP
     /// convention). Total and defensive: a stale client position never panics.
     pub(crate) fn byte_at(&self, position: Position) -> usize {
-        // Find the byte offset of the requested line's start.
-        let mut line = 0u32;
-        let mut line_start = 0usize;
-        if position.line > 0 {
-            for (index, byte) in self.source.as_bytes().iter().enumerate() {
-                if *byte == b'\n' {
-                    line += 1;
-                    if line == position.line {
-                        line_start = index + 1;
-                        break;
-                    }
-                }
-            }
-            if line < position.line {
-                // The line is past the end of source.
-                return self.source.len();
-            }
-        }
-        // Advance UTF-16 code units within the line up to the requested character.
-        let line_text = &self.source[line_start..];
-        let mut character = 0u32;
-        for (index, ch) in line_text.char_indices() {
-            if character >= position.character || ch == '\n' {
+        let line = position.line as usize;
+        let Some(&line_start) = self.line_starts.get(line) else {
+            return self.source.len();
+        };
+        let line_end = self
+            .line_starts
+            .get(line + 1)
+            .map_or(self.source.len(), |next| next - 1);
+        let mut units = 0u32;
+        for (index, ch) in self.source[line_start..line_end].char_indices() {
+            if units >= position.character {
                 return line_start + index;
             }
-            character += ch.len_utf16() as u32;
+            units += ch.len_utf16() as u32;
         }
-        line_start + line_text.trim_end_matches('\n').len()
+        line_end
     }
 
     /// The end-of-source position — the range end of a whole-document edit.
@@ -130,86 +92,42 @@ mod tests {
     #[test]
     fn start_of_source_is_origin() {
         let map = LineMap::new("hello");
-        assert_eq!(
-            map.position_at(0),
-            Position {
-                line: 0,
-                character: 0
-            }
-        );
+        assert_eq!(map.position_at(0), Position::new(0, 0));
     }
 
     #[test]
     fn counts_lines_and_ascii_columns() {
         let map = LineMap::new("ab\ncd\nef");
-        assert_eq!(
-            map.position_at(4),
-            Position {
-                line: 1,
-                character: 1
-            }
-        );
-        assert_eq!(
-            map.position_at(7),
-            Position {
-                line: 2,
-                character: 1
-            }
-        );
+        assert_eq!(map.position_at(4), Position::new(1, 1));
+        assert_eq!(map.position_at(7), Position::new(2, 1));
     }
 
     #[test]
     fn astral_character_is_two_utf16_units() {
         // "a😀b": 'a' (1 byte), '😀' U+1F600 (4 bytes, 2 UTF-16 units), 'b'.
-        let source = "a😀b";
-        let map = LineMap::new(source);
+        let map = LineMap::new("a😀b");
         // Offset at 'b' (byte 5): character = 1 (a) + 2 (astral) = 3.
-        assert_eq!(
-            map.position_at(5),
-            Position {
-                line: 0,
-                character: 3
-            }
-        );
+        assert_eq!(map.position_at(5), Position::new(0, 3));
     }
 
     #[test]
     fn bmp_multibyte_is_one_utf16_unit() {
         // "é" is U+00E9 (2 UTF-8 bytes, 1 UTF-16 unit).
-        let source = "é!";
-        let map = LineMap::new(source);
-        assert_eq!(
-            map.position_at(2),
-            Position {
-                line: 0,
-                character: 1
-            }
-        );
+        let map = LineMap::new("é!");
+        assert_eq!(map.position_at(2), Position::new(0, 1));
     }
 
     #[test]
     fn offset_past_end_clamps() {
         let map = LineMap::new("ab\ncd");
-        assert_eq!(
-            map.position_at(999),
-            Position {
-                line: 1,
-                character: 2
-            }
-        );
+        assert_eq!(map.position_at(999), Position::new(1, 2));
     }
 
     #[test]
     fn offset_inside_multibyte_snaps_to_start() {
         // Offset 1 is inside the 4-byte astral char at byte 0.
         let map = LineMap::new("😀x");
-        assert_eq!(
-            map.position_at(1),
-            Position {
-                line: 0,
-                character: 0
-            }
-        );
+        assert_eq!(map.position_at(1), Position::new(0, 0));
     }
 
     #[test]
@@ -228,51 +146,29 @@ mod tests {
     #[test]
     fn byte_at_clamps_line_and_character() {
         let map = LineMap::new("ab\ncd");
-        assert_eq!(
-            map.byte_at(Position {
-                line: 9,
-                character: 0
-            }),
-            5
-        );
-        assert_eq!(
-            map.byte_at(Position {
-                line: 0,
-                character: 99
-            }),
-            2
-        );
+        assert_eq!(map.byte_at(Position::new(9, 0)), 5);
+        assert_eq!(map.byte_at(Position::new(0, 99)), 2);
     }
 
     #[test]
     fn end_position_is_source_end() {
         let map = LineMap::new("ab\ncde");
-        assert_eq!(
-            map.end_position(),
-            Position {
-                line: 1,
-                character: 3
-            }
-        );
+        assert_eq!(map.end_position(), Position::new(1, 3));
+    }
+
+    #[test]
+    fn trailing_newline_opens_an_empty_last_line() {
+        let map = LineMap::new("ab\n");
+        assert_eq!(map.end_position(), Position::new(1, 0));
+        assert_eq!(map.byte_at(Position::new(1, 0)), 3);
+        assert_eq!(map.byte_at(Position::new(0, 5)), 2);
     }
 
     #[test]
     fn range_of_spans_start_and_end() {
         let map = LineMap::new("abc\ndef");
         let range = map.range_of(1, 6);
-        assert_eq!(
-            range.start,
-            Position {
-                line: 0,
-                character: 1
-            }
-        );
-        assert_eq!(
-            range.end,
-            Position {
-                line: 1,
-                character: 2
-            }
-        );
+        assert_eq!(range.start, Position::new(0, 1));
+        assert_eq!(range.end, Position::new(1, 2));
     }
 }

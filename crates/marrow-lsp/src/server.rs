@@ -5,8 +5,8 @@
 //! construction, latest-wins edit coalescing, and outbound ordering; it never blocks on
 //! I/O, downstream sends, or joins — it idles only on a cap-1 lost-wakeup-safe wake
 //! channel and drains receipts, then results, then ingress. One analysis worker owns all
-//! capture/analyze work behind the single worker credit. One writer accepts immutable
-//! framed bytes and returns a delivery receipt that frees the outbound credit it consumed.
+//! capture/analyze work. One writer accepts immutable framed bytes and returns a delivery
+//! receipt that frees the outbound credit it consumed.
 //!
 //! [`Coordinator`] is a pure event machine: it consumes typed events (`on_frame`,
 //! `on_worker_result`, `on_receipt`, `on_terminal`) and produces outbound frames into
@@ -17,15 +17,14 @@
 use std::collections::VecDeque;
 use std::io::{BufReader, Write};
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::thread::JoinHandle;
 
 use lsp_types::{
-    CompletionOptions, CompletionParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DocumentFormattingParams, DocumentSymbolParams,
-    GotoDefinitionParams, HoverParams, InitializeParams, InitializeResult, OneOf,
-    ServerCapabilities, ServerInfo, SignatureHelpOptions, SignatureHelpParams,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
+    CompletionOptions, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, InitializeParams, InitializeResult, OneOf, ServerCapabilities,
+    ServerInfo, SignatureHelpOptions, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextDocumentSyncOptions,
 };
 use marrow_compile::{AnalysisResourceLimit, AnalysisSnapshot, InputRevision, ProjectFile};
 
@@ -34,24 +33,22 @@ use crate::analysis::{
 };
 use crate::capacities::{
     MAX_ANONYMOUS_ERROR_SLOTS, MAX_LIVE_REQUEST_ENTRIES, MAX_PUBLICATION_PLAN_BYTES,
-    OUTBOUND_QUEUE_CAPACITY, RECEIPT_QUEUE_CAPACITY, THREAD_STACK_BYTES,
+    OUTBOUND_CREDITS, OUTBOUND_QUEUE_CAPACITY, RECEIPT_QUEUE_CAPACITY, THREAD_STACK_BYTES,
 };
-use crate::credit::{OutboundCredit, OutboundCredits, PublicationPlanCredit};
 use crate::document::{DocumentLedger, DocumentState, RevisionCounter, UnavailableEvidence};
 use crate::facts;
-use crate::lifecycle::{
-    CONTENT_MODIFIED, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, IngressGate, Lifecycle,
-    METHOD_NOT_FOUND, PARSE_ERROR, Phase, REQUEST_FAILED, RequestGate, SERVER_NOT_INITIALIZED,
-};
-use crate::outbound::{MessageType, Outbound, encode};
-use crate::protocol::{Inbound, InvalidReason, Reject, RequestId, decode};
+use crate::lifecycle::{IngressGate, Lifecycle, Phase, RequestGate};
+use crate::outbound::{ErrorCode, MessageType, Outbound, ResponseResult, encode};
+use crate::protocol::{Inbound, InvalidReason, Reject, RequestId, decode, decode_params};
+use crate::query::{MalformedParams, QueryRefusal, SemanticQuery};
 use crate::uri::{DocumentKey, OriginRoots, SelectedRoot, UriError};
 
-/// A unit of capture/analyze work handed to the worker.
+/// A unit of capture/analyze work handed to the worker. The overlay shares the ledger's
+/// document text, so dispatching a recompute copies no document body.
 struct WorkerJob {
     root: SelectedRoot,
     revision: InputRevision,
-    overlay: Vec<(String, Vec<u8>)>,
+    overlay: Vec<(String, Arc<str>)>,
 }
 
 /// A writer delivery receipt: one completed and flushed frame.
@@ -59,10 +56,6 @@ struct Receipt;
 
 /// Run the language server over stdio, returning the process exit code.
 pub fn serve() -> u8 {
-    // Install a payload-free no-I/O panic hook before any thread or input, so a producer
-    // panic cannot deadlock the process on a formatting or I/O attempt.
-    std::panic::set_hook(Box::new(|_| {}));
-
     let (ingress_tx, ingress_rx) = sync_channel::<ReaderEvent>(1);
     let (work_tx, work_rx) = sync_channel::<WorkerJob>(1);
     let (result_tx, result_rx) = sync_channel::<AnalysisOutcome>(1);
@@ -122,18 +115,11 @@ fn drive(
     frame_tx: &SyncSender<Vec<u8>>,
 ) -> u8 {
     while coordinator.running {
-        let mut progressed = false;
-        while let Ok(Receipt) = receipts.try_recv() {
+        let mut progressed = drain(receipts, coordinator, |coordinator, Receipt| {
             coordinator.on_receipt();
-            progressed = true;
-        }
-        while let Ok(result) = results.try_recv() {
-            coordinator.on_worker_result(result);
-            progressed = true;
-        }
-        if receive_ingress(coordinator, ingress) {
-            progressed = true;
-        }
+        });
+        progressed |= drain(results, coordinator, Coordinator::on_worker_result);
+        progressed |= receive_ingress(coordinator, ingress);
         // Move coordinator outputs downstream without blocking on a full channel.
         if let Some(job) = coordinator.job_out.take()
             && work_tx.try_send(job).is_err()
@@ -159,17 +145,40 @@ fn drive(
     coordinator.exit_code
 }
 
-/// Receive at most one inbound event and apply it to the coordinator.
+/// Drain one producer's channel into the coordinator. A disconnected channel means its
+/// thread is gone — it panicked, or its stream closed without a terminal event — which
+/// ends the server rather than leaving it idle forever.
+fn drain<T>(
+    events: &Receiver<T>,
+    coordinator: &mut Coordinator,
+    mut apply: impl FnMut(&mut Coordinator, T),
+) -> bool {
+    let mut progressed = false;
+    loop {
+        match events.try_recv() {
+            Ok(event) => {
+                apply(coordinator, event);
+                progressed = true;
+            }
+            Err(TryRecvError::Empty) => return progressed,
+            Err(TryRecvError::Disconnected) => {
+                coordinator.terminate(1);
+                return true;
+            }
+        }
+    }
+}
+
+/// Receive at most one inbound event and apply it to the coordinator. A reader that is
+/// gone without a terminal event is the same terminal.
 fn receive_ingress(coordinator: &mut Coordinator, ingress: &Receiver<ReaderEvent>) -> bool {
     if coordinator.lifecycle.ingress_gate() == IngressGate::AwaitInitializeDelivery {
         return false;
     }
-    let Ok(event) = ingress.try_recv() else {
-        return false;
-    };
-    match event {
-        ReaderEvent::Frame(body) => coordinator.on_frame(&body),
-        ReaderEvent::Terminal => coordinator.on_terminal(),
+    match ingress.try_recv() {
+        Ok(ReaderEvent::Frame(body)) => coordinator.on_frame(&body),
+        Ok(ReaderEvent::Terminal) | Err(TryRecvError::Disconnected) => coordinator.on_terminal(),
+        Err(TryRecvError::Empty) => return false,
     }
     true
 }
@@ -213,9 +222,9 @@ fn worker_loop(
         let overlay: Vec<OverlayInput<'_>> = job
             .overlay
             .iter()
-            .map(|(key, bytes)| OverlayInput {
+            .map(|(key, text)| OverlayInput {
                 key: key.as_str(),
-                bytes: bytes.as_slice(),
+                bytes: text.as_bytes(),
             })
             .collect();
         let outcome = run_analysis(&job.root, &overlay, job.revision);
@@ -333,43 +342,6 @@ impl RequestLedger {
 
 // ---- held queries ----
 
-/// The six semantic requests the server answers from analysis facts. The method names
-/// are spelled once here, so the admission guard and the request parser cannot drift.
-#[derive(Clone, Copy)]
-enum SemanticMethod {
-    Hover,
-    Definition,
-    Formatting,
-    Completion,
-    SignatureHelp,
-    DocumentSymbol,
-}
-
-impl SemanticMethod {
-    fn from_method(method: &str) -> Option<Self> {
-        Some(match method {
-            "textDocument/hover" => Self::Hover,
-            "textDocument/definition" => Self::Definition,
-            "textDocument/formatting" => Self::Formatting,
-            "textDocument/completion" => Self::Completion,
-            "textDocument/signatureHelp" => Self::SignatureHelp,
-            "textDocument/documentSymbol" => Self::DocumentSymbol,
-            _ => return None,
-        })
-    }
-}
-
-/// The kind of a held semantic query, parsed to fixed-size fields at admission so a held
-/// query never retains unbounded raw parameters.
-enum HeldKind {
-    Hover(lsp_types::Position),
-    Definition(lsp_types::Position),
-    Formatting,
-    Completion(lsp_types::Position),
-    SignatureHelp(lsp_types::Position),
-    DocumentSymbol,
-}
-
 /// A semantic request held until current analysis completes and outbound credit is
 /// available. It is bound to the admission-time revision and document version, and
 /// reauthorized before either a success or resource refusal: changed input produces
@@ -377,7 +349,7 @@ enum HeldKind {
 /// so the held set is bounded by the request-ledger capacity, not the inbound frame size.
 struct HeldQuery {
     id: RequestId,
-    kind: HeldKind,
+    query: SemanticQuery,
     revision: InputRevision,
     key: DocumentKey,
     version: i32,
@@ -400,11 +372,11 @@ enum CaptureEpisode {
 
 // ---- publication ----
 
-/// The in-flight analysis publication set holding the exclusive plan credit until every
-/// frame delivers. Only a successful snapshot records the capture-episode latch it
-/// observed at commit; a resource-stop publication cannot reset that latch.
+/// The in-flight analysis publication set. It is exclusive: no other plan reads the
+/// delivered ledger until every frame of this one delivers. Only a successful snapshot
+/// records the capture-episode latch it observed at commit; a resource-stop publication
+/// cannot reset that latch.
 struct PublicationState {
-    credit: PublicationPlanCredit,
     /// Pre-encoded frames not yet handed off, charged against the publication-plan bound.
     pending: VecDeque<Vec<u8>>,
     /// Handed-off frames awaiting a delivery receipt.
@@ -440,11 +412,10 @@ struct Coordinator {
     anonymous_capacity: usize,
     held_queries: Vec<HeldQuery>,
 
-    outbound_credits: OutboundCredits,
-    /// Handed-off frames awaiting a delivery receipt, each carrying the affine outbound
-    /// credit it consumed. FIFO: the front is the oldest, matching the single writer.
-    in_flight: VecDeque<(FrameOwner, OutboundCredit)>,
-    /// Frames waiting for an outbound credit, in order. They hold no credit yet.
+    /// The owners of handed-off frames awaiting a delivery receipt. FIFO: the front is
+    /// the oldest, matching the single writer. Its length is the spent outbound credit.
+    in_flight: VecDeque<FrameOwner>,
+    /// Frames waiting for outbound credit, in order.
     pending_frames: VecDeque<(Vec<u8>, FrameOwner)>,
 
     worker_busy: bool,
@@ -453,7 +424,6 @@ struct Coordinator {
     episode: CaptureEpisode,
     next_episode: u64,
 
-    publication_credit: Option<PublicationPlanCredit>,
     publication: Option<PublicationState>,
     pending_publication: Option<InputRevision>,
 
@@ -485,14 +455,12 @@ impl Coordinator {
             anonymous_slots: 0,
             anonymous_capacity: MAX_ANONYMOUS_ERROR_SLOTS,
             held_queries: Vec::new(),
-            outbound_credits: OutboundCredits::new(),
             in_flight: VecDeque::new(),
             pending_frames: VecDeque::new(),
             worker_busy: false,
             pending_recompute: false,
             episode: CaptureEpisode::Eligible,
             next_episode: 0,
-            publication_credit: Some(PublicationPlanCredit::mint()),
             publication: None,
             pending_publication: None,
             outbox: VecDeque::new(),
@@ -516,24 +484,21 @@ impl Coordinator {
 
     fn on_reject(&mut self, reject: Reject) {
         match reject {
-            Reject::ParseError => self.send_null_error(PARSE_ERROR, "parse error"),
+            Reject::ParseError => self.send_null_error(ErrorCode::ParseError),
             Reject::InvalidRequest {
                 recovered_id,
                 reason,
             } => {
-                let message = match reason {
-                    InvalidReason::NoBatch => "batch requests are not supported",
-                    InvalidReason::Structural => "invalid request",
+                let code = match reason {
+                    InvalidReason::NoBatch => ErrorCode::BatchUnsupported,
+                    InvalidReason::Structural => ErrorCode::InvalidRequest,
                 };
                 match recovered_id {
                     // A recovered-id invalid request reserves a known-id error-only entry
                     // before its frame is handed off; a collision with a live entry uses
                     // the anonymous slot instead.
-                    Some(id) if self.requests.is_live(&id) => {
-                        self.send_null_error(INVALID_REQUEST, message)
-                    }
-                    Some(id) => self.reserve_and_error(id, INVALID_REQUEST, message),
-                    None => self.send_null_error(INVALID_REQUEST, message),
+                    Some(id) if !self.requests.is_live(&id) => self.reserve_and_error(id, code),
+                    _ => self.send_null_error(code),
                 }
             }
         }
@@ -547,7 +512,7 @@ impl Coordinator {
     ) {
         // Duplicate-live classification precedes reservation and consumes no new entry.
         if self.requests.is_live(&id) {
-            self.send_null_error(INVALID_REQUEST, "duplicate request id");
+            self.send_null_error(ErrorCode::DuplicateRequestId);
             return;
         }
         // Reserve the shared live-entry budget before any lifecycle or method routing.
@@ -559,18 +524,16 @@ impl Coordinator {
         match method {
             "initialize" => self.on_initialize(id, params),
             "shutdown" => self.on_shutdown(id),
-            _ => match SemanticMethod::from_method(method) {
-                Some(semantic) => self.on_semantic_request(id, semantic, params),
+            _ => match SemanticQuery::parse(method, params.as_deref()) {
+                Some(parsed) => self.on_semantic_request(id, parsed),
                 None => match self.lifecycle.gate_request() {
                     RequestGate::NotInitialized => {
-                        self.answer_error(&id, SERVER_NOT_INITIALIZED, "server not initialized")
+                        self.answer_error(&id, ErrorCode::ServerNotInitialized)
                     }
                     RequestGate::InvalidInPhase => {
-                        self.answer_error(&id, INVALID_REQUEST, "invalid request in current state")
+                        self.answer_error(&id, ErrorCode::InvalidInPhase)
                     }
-                    RequestGate::Route => {
-                        self.answer_error(&id, METHOD_NOT_FOUND, "method not found")
-                    }
+                    RequestGate::Route => self.answer_error(&id, ErrorCode::MethodNotFound),
                 },
             },
         }
@@ -578,21 +541,21 @@ impl Coordinator {
 
     fn on_initialize(&mut self, id: RequestId, params: Option<Box<serde_json::value::RawValue>>) {
         if self.lifecycle.on_initialize() != RequestGate::Route {
-            self.answer_error(&id, INVALID_REQUEST, "initialize already handled");
+            self.answer_error(&id, ErrorCode::InitializeRepeated);
             return;
         }
-        let root = match params.as_deref().and_then(parse::<InitializeParams>) {
+        let root = match decode_params::<InitializeParams>(params.as_deref()) {
             Some(params) => match select_root(&params) {
                 Ok(root) => root,
                 Err(_) => {
                     self.lifecycle = restore_after_rejected_initialize();
-                    self.answer_error(&id, INVALID_PARAMS, "malformed workspace root");
+                    self.answer_error(&id, ErrorCode::MalformedWorkspaceRoot);
                     return;
                 }
             },
             None => {
                 self.lifecycle = restore_after_rejected_initialize();
-                self.answer_error(&id, INVALID_PARAMS, "malformed initialize params");
+                self.answer_error(&id, ErrorCode::MalformedInitializeParams);
                 return;
             }
         };
@@ -600,13 +563,11 @@ impl Coordinator {
         // Receipt-gated: the lifecycle advances on the delivery receipt, not at handoff.
         // The initialize response is a fixed small frame, so a serialization failure is a
         // defect and fail-stops.
-        if !self.hand_off(
-            &Outbound::Initialize {
-                id: id.clone(),
-                result: Box::new(initialize_result()),
-            },
-            FrameOwner::Initialize(id),
-        ) {
+        let response = Outbound::Result {
+            id: id.clone(),
+            result: ResponseResult::Initialize(Box::new(initialize_result())),
+        };
+        if !self.hand_off(&response, FrameOwner::Initialize(id)) {
             self.terminate(1);
         }
     }
@@ -614,56 +575,58 @@ impl Coordinator {
     fn on_shutdown(&mut self, id: RequestId) {
         match self.lifecycle.on_shutdown() {
             RequestGate::Route => {
-                if !self.hand_off(&Outbound::Null { id: id.clone() }, FrameOwner::Shutdown(id)) {
+                let response = Outbound::Result {
+                    id: id.clone(),
+                    result: ResponseResult::Null,
+                };
+                if !self.hand_off(&response, FrameOwner::Shutdown(id)) {
                     self.terminate(1);
                 }
             }
-            RequestGate::NotInitialized => {
-                self.answer_error(&id, SERVER_NOT_INITIALIZED, "server not initialized")
-            }
-            RequestGate::InvalidInPhase => {
-                self.answer_error(&id, INVALID_REQUEST, "invalid request in current state")
-            }
+            RequestGate::NotInitialized => self.answer_error(&id, ErrorCode::ServerNotInitialized),
+            RequestGate::InvalidInPhase => self.answer_error(&id, ErrorCode::InvalidInPhase),
         }
     }
 
     fn on_semantic_request(
         &mut self,
         id: RequestId,
-        method: SemanticMethod,
-        params: Option<Box<serde_json::value::RawValue>>,
+        parsed: Result<(SemanticQuery, lsp_types::Uri), MalformedParams>,
     ) {
         if self.lifecycle.gate_request() != RequestGate::Route {
-            self.answer_error(&id, SERVER_NOT_INITIALIZED, "server not initialized");
+            self.answer_error(&id, ErrorCode::ServerNotInitialized);
             return;
         }
         // An unavailable project makes every semantic request the same fixed -32803.
         if !self.ledger.all_available() {
-            self.answer_error(&id, REQUEST_FAILED, "project capture unavailable");
+            self.answer_error(&id, ErrorCode::CaptureUnavailable);
             return;
         }
         let Some(root) = self.root.clone() else {
-            self.answer_error(&id, INVALID_PARAMS, "no selected root");
+            self.answer_error(&id, ErrorCode::NoWorkspaceRoot);
             return;
         };
-        // Parse the request into a minimal typed kind and target key at admission, so a
-        // held query retains only fixed-size fields — never the unbounded raw params.
-        let Some((kind, key)) = parse_semantic(&root, method, params.as_deref()) else {
-            self.answer_error(&id, INVALID_PARAMS, "malformed params");
+        // The query was decoded to fixed-size fields at admission; binding it to a
+        // document key here is what a held query retains, never the raw params.
+        let key = parsed.ok().and_then(|(query, uri)| {
+            Some((query, DocumentKey::from_uri(uri.as_str(), &root).ok()?))
+        });
+        let Some((query, key)) = key else {
+            self.answer_error(&id, ErrorCode::MalformedParams);
             return;
         };
         let Some(DocumentState::OpenText { version, .. }) = self.ledger.get(&key) else {
-            self.answer_error(&id, CONTENT_MODIFIED, "content modified");
+            self.answer_error(&id, ErrorCode::ContentModified);
             return;
         };
         let held = HeldQuery {
             id,
-            kind,
+            query,
             revision: self.current_revision,
             key,
             version: *version,
         };
-        // Every semantic reply is deferred as a held query and served only against an
+        // Every semantic reply is deferred as a held query and served only against
         // available outbound credit, so a burst of requests cannot materialize a burst of
         // possibly large reply frames.
         self.held_queries.push(held);
@@ -675,106 +638,63 @@ impl Coordinator {
     /// never invoked in that case, so no reply can carry facts for text the client has
     /// already replaced.
     fn answer_held(&mut self, held: HeldQuery) {
-        let current = self.current_revision;
         let doc_ok = matches!(
             self.ledger.get(&held.key),
             Some(DocumentState::OpenText { version, .. }) if *version == held.version
         );
-        if held.revision != current || !doc_ok {
-            self.answer_error(&held.id, CONTENT_MODIFIED, "content modified");
+        if held.revision != self.current_revision || !doc_ok {
+            self.answer_error(&held.id, ErrorCode::ContentModified);
             return;
         }
-        let Some(root) = self.root.clone() else {
-            self.answer_error(&held.id, INTERNAL_ERROR, "internal error");
-            return;
-        };
         let answer = match &self.analysis {
-            CurrentAnalysis::Ready(snapshot) => {
-                self.answer_kind(snapshot, &root, &held.kind, &held.key, held.id.clone())
-            }
-            CurrentAnalysis::ResourceLimited(_) => SemanticAnswer::ResourceLimit,
-            CurrentAnalysis::Pending => {
-                self.answer_error(&held.id, REQUEST_FAILED, "analysis not ready");
-                return;
-            }
+            CurrentAnalysis::Ready(snapshot) => self.answer_ready(snapshot, &held),
+            CurrentAnalysis::ResourceLimited(_) => Err(ErrorCode::AnalysisResourceLimit),
+            CurrentAnalysis::Pending => Err(ErrorCode::AnalysisNotReady),
         };
         match answer {
-            SemanticAnswer::Reply(outbound) => self.respond(held.id, outbound),
-            SemanticAnswer::ContentModified => {
-                self.answer_error(&held.id, CONTENT_MODIFIED, "content modified")
+            Ok(result) => {
+                let id = held.id.clone();
+                self.respond(
+                    id,
+                    Outbound::Result {
+                        id: held.id,
+                        result,
+                    },
+                );
             }
-            SemanticAnswer::ResourceLimit => {
-                self.answer_error(&held.id, REQUEST_FAILED, "analysis resource limit")
-            }
-            SemanticAnswer::Internal => {
-                self.answer_error(&held.id, INTERNAL_ERROR, "internal error")
-            }
+            Err(code) => self.answer_error(&held.id, code),
         }
     }
 
-    /// Build the reply for a resolved held-query kind against the current snapshot. The
-    /// document is resolved from the bound key (not a re-parsed URI); a closed document is
+    /// The reply for a held query against the ready snapshot. The document is resolved
+    /// from the bound key, never a re-parsed URI; a document no longer open is
     /// `ContentModified`.
-    fn answer_kind(
+    fn answer_ready(
         &self,
         snapshot: &AnalysisSnapshot,
-        root: &SelectedRoot,
-        kind: &HeldKind,
-        key: &DocumentKey,
-        id: RequestId,
-    ) -> SemanticAnswer {
-        let Some((identity, source)) = self.resolve_by_key(key) else {
-            return SemanticAnswer::ContentModified;
-        };
-        match kind {
-            HeldKind::Hover(position) => SemanticAnswer::Reply(Outbound::Hover {
-                id,
-                result: facts::hover(snapshot, &identity, &source, *position),
-            }),
-            HeldKind::Definition(position) => {
-                let uri_lookup = |file: &ProjectFile| lsp_uri(root, &self.origins, &key_of(file));
-                match facts::definition(snapshot, &identity, &source, uri_lookup, *position) {
-                    Ok(result) => SemanticAnswer::Reply(Outbound::Definition { id, result }),
-                    Err(_) => SemanticAnswer::Internal,
-                }
-            }
-            HeldKind::Formatting => SemanticAnswer::Reply(Outbound::Formatting {
-                id,
-                result: facts::formatting(snapshot, &identity, &source),
-            }),
-            HeldKind::Completion(position) => {
-                match facts::completion(snapshot, &identity, &source, *position) {
-                    Ok(result) => SemanticAnswer::Reply(Outbound::Completion { id, result }),
-                    Err(facts::ResourceLimited) => SemanticAnswer::ResourceLimit,
-                }
-            }
-            HeldKind::SignatureHelp(position) => {
-                match facts::signature_help(snapshot, &identity, &source, *position) {
-                    Ok(result) => SemanticAnswer::Reply(Outbound::SignatureHelp { id, result }),
-                    Err(facts::ResourceLimited) => SemanticAnswer::ResourceLimit,
-                }
-            }
-            HeldKind::DocumentSymbol => SemanticAnswer::Reply(Outbound::DocumentSymbol {
-                id,
-                result: facts::document_symbols(snapshot, &identity, &source),
-            }),
-        }
+        held: &HeldQuery,
+    ) -> Result<ResponseResult, ErrorCode> {
+        let root = self.root.as_ref().ok_or(ErrorCode::InternalError)?;
+        let (identity, source) = self
+            .resolve_by_key(&held.key)
+            .ok_or(ErrorCode::ContentModified)?;
+        let target_uri = |file: &ProjectFile| lsp_uri(root, &self.origins, &key_of(file));
+        held.query
+            .answer(snapshot, &identity, source, target_uri)
+            .map_err(|refusal| match refusal {
+                QueryRefusal::ResourceLimit => ErrorCode::AnalysisResourceLimit,
+                QueryRefusal::Internal => ErrorCode::InternalError,
+            })
     }
 
     /// The file identity and current open text for a document key, if it is still an open
     /// text document.
-    fn resolve_by_key(&self, key: &DocumentKey) -> Option<(ProjectFile, String)> {
-        match self.ledger.get(key) {
-            Some(DocumentState::OpenText { text, .. }) => {
-                let (identity, _) =
-                    marrow_project_fs::FileIdentity::validate(key.relative()).ok()?;
-                Some((
-                    ProjectFile::new(key.origin().clone(), identity),
-                    text.clone(),
-                ))
-            }
-            _ => None,
-        }
+    fn resolve_by_key(&self, key: &DocumentKey) -> Option<(ProjectFile, &str)> {
+        let Some(DocumentState::OpenText { text, .. }) = self.ledger.get(key) else {
+            return None;
+        };
+        let (identity, _) = marrow_project_fs::FileIdentity::validate(key.relative()).ok()?;
+        Some((ProjectFile::new(key.origin().clone(), identity), text))
     }
 
     fn on_notification(&mut self, method: &str, params: Option<Box<serde_json::value::RawValue>>) {
@@ -800,10 +720,7 @@ impl Coordinator {
         let Some(root) = self.root.clone() else {
             return;
         };
-        let Some(params) = params
-            .as_deref()
-            .and_then(parse::<DidOpenTextDocumentParams>)
-        else {
+        let Some(params) = decode_params::<DidOpenTextDocumentParams>(params.as_deref()) else {
             return;
         };
         let document = params.text_document;
@@ -829,10 +746,7 @@ impl Coordinator {
         let Some(root) = self.root.clone() else {
             return;
         };
-        let Some(params) = params
-            .as_deref()
-            .and_then(parse::<DidChangeTextDocumentParams>)
-        else {
+        let Some(params) = decode_params::<DidChangeTextDocumentParams>(params.as_deref()) else {
             return;
         };
         let version = params.text_document.version;
@@ -864,10 +778,7 @@ impl Coordinator {
         let Some(root) = self.root.clone() else {
             return;
         };
-        let Some(params) = params
-            .as_deref()
-            .and_then(parse::<DidCloseTextDocumentParams>)
-        else {
+        let Some(params) = decode_params::<DidCloseTextDocumentParams>(params.as_deref()) else {
             return;
         };
         let Ok(key) = DocumentKey::from_uri(params.text_document.uri.as_str(), &root) else {
@@ -900,23 +811,14 @@ impl Coordinator {
         version: i32,
         text: String,
     ) {
-        let candidate = self.candidate_overlay(&key, text.as_bytes());
-        let inputs: Vec<OverlayInput<'_>> = candidate
-            .iter()
-            .map(|(key, bytes)| OverlayInput {
-                key: key.as_str(),
-                bytes: bytes.as_slice(),
-            })
-            .collect();
-        let state = match validate_overlay(root, &inputs) {
+        let text: Arc<str> = Arc::from(text);
+        let state = match validate_overlay(root, &self.candidate_overlay(&key, &text)) {
             Ok(()) => DocumentState::OpenText { version, text },
             Err(evidence) => DocumentState::OpenUnavailable {
                 version,
                 failure: evidence.unwrap_or_else(unrenderable_overlay_evidence),
             },
         };
-        drop(inputs);
-        drop(candidate);
         let available = state.is_text();
         self.ledger.insert(key, state);
         if available && self.ledger.all_available() {
@@ -924,18 +826,26 @@ impl Coordinator {
         }
     }
 
-    /// Build the full candidate overlay: every other open text entry plus this key's new
-    /// body. The changed key's prior state (text or unavailable) is excluded so the
+    /// The full candidate overlay, borrowed: every other open text entry plus this key's
+    /// new body. The changed key's prior state (text or unavailable) is excluded so the
     /// candidate body is the one under validation.
-    fn candidate_overlay(&self, changed: &DocumentKey, body: &[u8]) -> Vec<(String, Vec<u8>)> {
-        let mut overlay: Vec<(String, Vec<u8>)> = self
-            .ledger
+    fn candidate_overlay<'a>(
+        &'a self,
+        changed: &'a DocumentKey,
+        body: &'a str,
+    ) -> Vec<OverlayInput<'a>> {
+        self.ledger
             .text_entries()
             .filter(|(key, _)| *key != changed)
-            .map(|(key, text)| (key.relative().to_owned(), text.as_bytes().to_vec()))
-            .collect();
-        overlay.push((changed.relative().to_owned(), body.to_vec()));
-        overlay
+            .map(|(key, text)| OverlayInput {
+                key: key.relative(),
+                bytes: text.as_bytes(),
+            })
+            .chain(std::iter::once(OverlayInput {
+                key: changed.relative(),
+                bytes: body.as_bytes(),
+            }))
+            .collect()
     }
 
     fn enter_running(&mut self) {
@@ -953,10 +863,10 @@ impl Coordinator {
     }
 
     fn dispatch_recompute(&mut self, root: &SelectedRoot) {
-        let overlay: Vec<(String, Vec<u8>)> = self
+        let overlay = self
             .ledger
             .text_entries()
-            .map(|(key, text)| (key.relative().to_owned(), text.as_bytes().to_vec()))
+            .map(|(key, text)| (key.relative().to_owned(), Arc::clone(text)))
             .collect();
         self.job_out = Some(WorkerJob {
             root: root.clone(),
@@ -1006,14 +916,12 @@ impl Coordinator {
         }
     }
 
-    /// Answer held queries while analysis for the current revision is complete and an
+    /// Answer held queries while analysis for the current revision is complete and
     /// outbound credit is available. A potentially large reply is only ever materialized
-    /// against a free credit, so replies never enter the pending-frame queue; the
+    /// against free credit, so replies never enter the pending-frame queue; the
     /// unanswered remainder stays held at fixed-size cost, bounded by the request ledger.
     fn serve_ready_queries(&mut self) {
-        while !matches!(self.analysis, CurrentAnalysis::Pending)
-            && self.outbound_credits.available() > 0
-        {
+        while !matches!(self.analysis, CurrentAnalysis::Pending) && self.outbound_capacity() > 0 {
             let Some(query) = self.held_queries.pop() else {
                 break;
             };
@@ -1046,17 +954,13 @@ impl Coordinator {
     // ---- publication (exclusive) ----
 
     fn begin_publication(&mut self) {
-        // Publication exclusivity: only one plan builds/commits at a time. A newer result
+        // Publication exclusivity: only one plan is in flight at a time. A newer result
         // while a plan is in flight waits (latest-wins) and derives its tombstones only
         // after the prior final receipt.
         if self.publication.is_some() {
             self.pending_publication = Some(self.current_revision);
             return;
         }
-        let Some(credit) = self.publication_credit.take() else {
-            self.pending_publication = Some(self.current_revision);
-            return;
-        };
         let (frames, new_published, observed_episode) = match &self.analysis {
             CurrentAnalysis::Ready(snapshot) => {
                 let (frames, published) = self.plan_publication(snapshot);
@@ -1069,44 +973,35 @@ impl Coordinator {
             CurrentAnalysis::ResourceLimited(limit) => {
                 (self.plan_resource_stop(limit), Vec::new(), None)
             }
-            CurrentAnalysis::Pending => {
-                self.publication_credit = Some(credit);
-                return;
-            }
+            CurrentAnalysis::Pending => return,
         };
         // Pre-encode the whole set fallibly before committing anything. A serialization
         // failure, or a plan whose retained bytes exceed the publication-plan bound,
-        // releases the credit and fail-stops with the delivered ledger and capture episode
-        // unchanged, so an oversized frame cannot strand the exclusive credit.
+        // fail-stops with the delivered ledger and capture episode unchanged.
         let mut encoded = VecDeque::new();
         let mut retained: u64 = 0;
         for outbound in &frames {
             let Ok(bytes) = encode(outbound) else {
-                self.publication_credit = Some(credit);
                 self.terminate(1);
                 return;
             };
             retained = retained.saturating_add(bytes.len() as u64);
             if retained > MAX_PUBLICATION_PLAN_BYTES {
-                self.publication_credit = Some(credit);
                 self.terminate(1);
                 return;
             }
             encoded.push_back(bytes);
         }
+        // Commit the ledger only after every frame encodes.
+        self.published = new_published;
         if encoded.is_empty() {
-            // A zero-frame commit resets the episode immediately (no frame to await), and
-            // still commits the (empty) ledger transition.
-            self.published = new_published;
-            self.publication_credit = Some(credit);
+            // A zero-frame commit has no delivery to await: the episode resets now.
             self.reset_episode_if_observed(observed_episode);
             return;
         }
-        // Commit the ledger only after every frame encodes. The exclusive credit keeps
-        // the next plan from reading it until this plan's final delivery receipt.
-        self.published = new_published;
+        // The in-flight plan keeps the next plan from reading the ledger until this
+        // plan's final delivery receipt.
         self.publication = Some(PublicationState {
-            credit,
             pending: encoded,
             in_flight_count: 0,
             observed_episode,
@@ -1201,22 +1096,16 @@ impl Coordinator {
     /// so publication retention stays bounded by the plan buffer and never floods the
     /// pending-frame queue past `W`.
     fn feed_publication(&mut self) {
-        loop {
-            let has_pending = self
-                .publication
-                .as_ref()
-                .is_some_and(|state| !state.pending.is_empty());
-            if !has_pending {
-                break;
-            }
-            let Some(credit) = self.outbound_credits.acquire() else {
+        while self.outbound_capacity() > 0 {
+            let Some(state) = self.publication.as_mut() else {
                 break;
             };
-            let state = self.publication.as_mut().expect("publication present");
-            let bytes = state.pending.pop_front().expect("pending frame present");
+            let Some(bytes) = state.pending.pop_front() else {
+                break;
+            };
             state.in_flight_count += 1;
             self.outbox.push_back(bytes);
-            self.in_flight.push_back((FrameOwner::Publication, credit));
+            self.in_flight.push_back(FrameOwner::Publication);
         }
     }
 
@@ -1230,10 +1119,9 @@ impl Coordinator {
             .as_ref()
             .is_some_and(|state| state.pending.is_empty() && state.in_flight_count == 0);
         if done {
-            // The whole committed set is delivered: release the exclusive credit and reset
-            // the episode only if the commit observed the still-current latch.
+            // The whole committed set is delivered: the next plan may build, and the
+            // episode resets only if the commit observed the still-current latch.
             let state = self.publication.take().expect("publication present");
-            self.publication_credit = Some(state.credit);
             self.reset_episode_if_observed(state.observed_episode);
             if self
                 .pending_publication
@@ -1255,10 +1143,16 @@ impl Coordinator {
 
     // ---- outbound plumbing ----
 
-    /// Encode and hand off one frame, acquiring an outbound credit. Returns whether the
-    /// frame was handed off. A pre-handoff encode failure emits zero bytes and returns
-    /// `false`, so the caller reconciles its own bookkeeping rather than stranding it. The
-    /// credit is held until the delivery receipt, whether the frame is written immediately
+    /// The outbound credit not yet spent: a frame may be handed to the writer while fewer
+    /// than `OUTBOUND_CREDITS` frames await their delivery receipts.
+    fn outbound_capacity(&self) -> usize {
+        OUTBOUND_CREDITS - self.in_flight.len()
+    }
+
+    /// Encode and hand off one frame against outbound credit. Returns whether the frame
+    /// was handed off. A pre-handoff encode failure emits zero bytes and returns `false`,
+    /// so the caller reconciles its own bookkeeping rather than stranding it. The credit
+    /// stays spent until the delivery receipt, whether the frame is written immediately
     /// or queued.
     #[must_use]
     fn hand_off(&mut self, outbound: &Outbound, owner: FrameOwner) -> bool {
@@ -1268,12 +1162,11 @@ impl Coordinator {
         if let Some(id) = owner.owned_id() {
             self.requests.set_awaiting(id);
         }
-        match self.outbound_credits.acquire() {
-            Some(credit) => {
-                self.outbox.push_back(bytes);
-                self.in_flight.push_back((owner, credit));
-            }
-            None => self.pending_frames.push_back((bytes, owner)),
+        if self.outbound_capacity() > 0 {
+            self.outbox.push_back(bytes);
+            self.in_flight.push_back(owner);
+        } else {
+            self.pending_frames.push_back((bytes, owner));
         }
         true
     }
@@ -1288,34 +1181,32 @@ impl Coordinator {
         }
         let fallback = Outbound::Error {
             id: Some(id.clone()),
-            code: INTERNAL_ERROR,
-            message: "internal error".to_owned(),
+            code: ErrorCode::InternalError,
         };
         if !self.hand_off(&fallback, FrameOwner::Request(id)) {
             self.terminate(1);
         }
     }
 
-    fn answer_error(&mut self, id: &RequestId, code: i32, message: &str) {
+    fn answer_error(&mut self, id: &RequestId, code: ErrorCode) {
         self.respond(
             id.clone(),
             Outbound::Error {
                 id: Some(id.clone()),
                 code,
-                message: message.to_owned(),
             },
         );
     }
 
-    fn reserve_and_error(&mut self, id: RequestId, code: i32, message: &str) {
+    fn reserve_and_error(&mut self, id: RequestId, code: ErrorCode) {
         if !self.requests.reserve(id.clone()) {
             self.terminate(1);
             return;
         }
-        self.answer_error(&id, code, message);
+        self.answer_error(&id, code);
     }
 
-    fn send_null_error(&mut self, code: i32, message: &str) {
+    fn send_null_error(&mut self, code: ErrorCode) {
         if self.anonymous_slots >= self.anonymous_capacity {
             // Anonymous-slot exhaustion is the same zero-response terminal outcome.
             self.terminate(1);
@@ -1324,14 +1215,7 @@ impl Coordinator {
         self.anonymous_slots += 1;
         // A null-id protocol error has no recursive fallback: a pre-handoff encode failure
         // is a fixed `OutboundEncodingFailed` terminal, and the reserved slot is released.
-        if !self.hand_off(
-            &Outbound::Error {
-                id: None,
-                code,
-                message: message.to_owned(),
-            },
-            FrameOwner::Anonymous,
-        ) {
+        if !self.hand_off(&Outbound::Error { id: None, code }, FrameOwner::Anonymous) {
             self.anonymous_slots -= 1;
             self.terminate(1);
         }
@@ -1346,10 +1230,9 @@ impl Coordinator {
     }
 
     fn on_receipt(&mut self) {
-        let Some((owner, credit)) = self.in_flight.pop_front() else {
+        let Some(owner) = self.in_flight.pop_front() else {
             return;
         };
-        self.outbound_credits.release(credit);
         match owner {
             FrameOwner::Request(id) => self.requests.retire(&id),
             FrameOwner::Anonymous => self.anonymous_slots = self.anonymous_slots.saturating_sub(1),
@@ -1370,14 +1253,11 @@ impl Coordinator {
         // then a ready held query, then a queued small frame.
         self.feed_publication();
         self.serve_ready_queries();
-        if let Some((bytes, owner)) = self.pending_frames.pop_front() {
-            match self.outbound_credits.acquire() {
-                Some(credit) => {
-                    self.outbox.push_back(bytes);
-                    self.in_flight.push_back((owner, credit));
-                }
-                None => self.pending_frames.push_front((bytes, owner)),
-            }
+        if self.outbound_capacity() > 0
+            && let Some((bytes, owner)) = self.pending_frames.pop_front()
+        {
+            self.outbox.push_back(bytes);
+            self.in_flight.push_back(owner);
         }
     }
 
@@ -1386,7 +1266,7 @@ impl Coordinator {
     fn on_terminal(&mut self) {
         // First-wins terminal: every unretired request is classified exactly once.
         let mut awaiting: Vec<RequestId> = Vec::new();
-        for (owner, _credit) in &self.in_flight {
+        for owner in &self.in_flight {
             if let Some(id) = owner.owned_id() {
                 awaiting.push(id.clone());
             }
@@ -1421,62 +1301,6 @@ impl Coordinator {
         self.exit_code = code;
         self.running = false;
     }
-}
-
-/// The body of a semantic reply before it is bound to an id.
-enum SemanticAnswer {
-    Reply(Outbound),
-    ContentModified,
-    /// A whole-analysis stop or a query-local resource refusal, mapped to the
-    /// recoverable `-32803` law — never a truncated result.
-    ResourceLimit,
-    Internal,
-}
-
-/// Parse a semantic request into its minimal typed kind and target document key. Returns
-/// `None` for a malformed request, an unknown method, or a URI outside the selected root.
-fn parse_semantic(
-    root: &SelectedRoot,
-    method: SemanticMethod,
-    params: Option<&serde_json::value::RawValue>,
-) -> Option<(HeldKind, DocumentKey)> {
-    let (kind, uri) = match method {
-        SemanticMethod::Hover => {
-            let params = parse::<HoverParams>(params?)?.text_document_position_params;
-            (HeldKind::Hover(params.position), params.text_document.uri)
-        }
-        SemanticMethod::Definition => {
-            let params = parse::<GotoDefinitionParams>(params?)?.text_document_position_params;
-            (
-                HeldKind::Definition(params.position),
-                params.text_document.uri,
-            )
-        }
-        SemanticMethod::Formatting => {
-            let params = parse::<DocumentFormattingParams>(params?)?;
-            (HeldKind::Formatting, params.text_document.uri)
-        }
-        SemanticMethod::Completion => {
-            let params = parse::<CompletionParams>(params?)?.text_document_position;
-            (
-                HeldKind::Completion(params.position),
-                params.text_document.uri,
-            )
-        }
-        SemanticMethod::SignatureHelp => {
-            let params = parse::<SignatureHelpParams>(params?)?.text_document_position_params;
-            (
-                HeldKind::SignatureHelp(params.position),
-                params.text_document.uri,
-            )
-        }
-        SemanticMethod::DocumentSymbol => {
-            let params = parse::<DocumentSymbolParams>(params?)?;
-            (HeldKind::DocumentSymbol, params.text_document.uri)
-        }
-    };
-    let key = DocumentKey::from_uri(uri.as_str(), root).ok()?;
-    Some((kind, key))
 }
 
 /// The fallback unavailable-evidence when even the bounded operational message overflows
@@ -1546,10 +1370,6 @@ fn lsp_uri(
     lsp_types::Uri::from_str(&crate::uri::document_uri(root, origins, key)?).ok()
 }
 
-fn parse<T: serde::de::DeserializeOwned>(raw: &serde_json::value::RawValue) -> Option<T> {
-    serde_json::from_str(raw.get()).ok()
-}
-
 fn initialize_result() -> InitializeResult {
     InitializeResult {
         capabilities: ServerCapabilities {
@@ -1593,6 +1413,7 @@ fn initialize_result() -> InitializeResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::position::LineMap;
     use crate::scratch::{self, TempDir};
     use std::fs;
     use std::path::Path;
@@ -1689,18 +1510,65 @@ mod tests {
         )
     }
 
-    fn hover_body(dir: &Path, id: i64, line: u32, character: u32) -> String {
+    /// A position-addressed semantic request against `src/main.mw`.
+    fn position_body(dir: &Path, id: i64, method: &str, position: lsp_types::Position) -> String {
         format!(
-            r#"{{"jsonrpc":"2.0","id":{id},"method":"textDocument/hover","params":{{"textDocument":{{"uri":"{}/src/main.mw"}},"position":{{"line":{line},"character":{character}}}}}}}"#,
-            root_uri(dir)
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"textDocument/{method}","params":{{"textDocument":{{"uri":"{}/src/main.mw"}},"position":{{"line":{},"character":{}}}}}}}"#,
+            root_uri(dir),
+            position.line,
+            position.character
         )
     }
 
+    fn hover_body(dir: &Path, id: i64, line: u32, character: u32) -> String {
+        position_body(dir, id, "hover", lsp_types::Position::new(line, character))
+    }
+
     fn completion_body(dir: &Path, id: i64, line: u32, character: u32) -> String {
-        format!(
-            r#"{{"jsonrpc":"2.0","id":{id},"method":"textDocument/completion","params":{{"textDocument":{{"uri":"{}/src/main.mw"}},"position":{{"line":{line},"character":{character}}}}}}}"#,
-            root_uri(dir)
+        position_body(
+            dir,
+            id,
+            "completion",
+            lsp_types::Position::new(line, character),
         )
+    }
+
+    /// The library the dependency fixtures reach through a `[dependencies]` alias.
+    const GRAPH_TEXT: &str =
+        include_str!("../../../fixtures/v01/conformance/graph_report_lib/src/text.mw");
+
+    /// A workspace whose project declares one local dependency nested inside it, so both
+    /// trees sit under the one selected root and the server must tell them apart by
+    /// origin rather than by containment.
+    fn temp_dependency_project(tag: &str, main: &str) -> TempDir {
+        let dir = temp_project(tag, main);
+        dir.write("lib/graphtext/marrow.toml", "edition = \"2026\"\n");
+        dir.write("lib/graphtext/src/text.mw", GRAPH_TEXT);
+        dir.write(
+            "marrow.toml",
+            "edition = \"2026\"\n\n[dependencies]\ngraphtext = { path = \"lib/graphtext\" }\n",
+        );
+        dir
+    }
+
+    /// The byte offset immediately after `needle`'s first occurrence in `source`.
+    fn after(source: &str, needle: &str) -> usize {
+        source.find(needle).expect("needle present") + needle.len()
+    }
+
+    /// A running coordinator with its first analysis delivered and `main` open at version
+    /// 1, whose analysis result has arrived but not yet been delivered.
+    fn opened(dir: &Path, main: &str) -> Coordinator {
+        let mut coordinator = running(dir);
+        coordinator.outbox.clear();
+        let initial = run_next_job(&mut coordinator);
+        coordinator.on_worker_result(initial);
+        deliver_frames(&mut coordinator);
+        coordinator.on_frame(open_body(dir, 1, main).as_bytes());
+        let outcome = run_next_job(&mut coordinator);
+        assert!(matches!(outcome, AnalysisOutcome::Snapshot(_)));
+        coordinator.on_worker_result(outcome);
+        coordinator
     }
 
     fn cleanup(dir: &Path) {
@@ -1785,6 +1653,32 @@ mod tests {
             "didOpen is admitted after delivery"
         );
         cleanup(&dir);
+    }
+
+    // ---- Law: a lost producer thread is terminal, never a hang ----
+
+    #[test]
+    fn a_lost_worker_is_terminal() {
+        let mut coordinator = Coordinator::new();
+        let (_ingress_tx, ingress_rx) = sync_channel(1);
+        let (result_tx, result_rx) = sync_channel(1);
+        let (_receipt_tx, receipt_rx) = sync_channel(1);
+        let (_wake_tx, wake_rx) = sync_channel(1);
+        let (work_tx, _work_rx) = sync_channel(1);
+        let (frame_tx, _frame_rx) = sync_channel(1);
+        // The worker unwound: its result sender is gone while every other thread lives.
+        drop(result_tx);
+        let exit = drive(
+            &mut coordinator,
+            &ingress_rx,
+            &result_rx,
+            &receipt_rx,
+            &wake_rx,
+            &work_tx,
+            &frame_tx,
+        );
+        assert_eq!(exit, 1, "a lost worker ends the server nonzero");
+        assert!(!coordinator.running);
     }
 
     // ---- Law: shared live-entry budget and IngressOverload N/N+1 ----
@@ -2105,7 +1999,10 @@ mod tests {
         let overlay: Vec<_> = job
             .overlay
             .iter()
-            .map(|(key, bytes)| OverlayInput { key, bytes })
+            .map(|(key, text)| OverlayInput {
+                key,
+                bytes: text.as_bytes(),
+            })
             .collect();
         run_analysis(&job.root, &overlay, job.revision)
     }
@@ -2501,7 +2398,7 @@ mod tests {
                 format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"noSuchMethod"}}"#).as_bytes(),
             );
         }
-        assert_eq!(coordinator.outbound_credits.available(), 0);
+        assert_eq!(coordinator.outbound_capacity(), 0);
         coordinator.on_frame(hover_body(&dir, 20, 0, 0).as_bytes());
         coordinator.on_worker_result(stopped);
         coordinator.on_frame(hover_body(&dir, 21, 0, 0).as_bytes());
@@ -2750,6 +2647,107 @@ mod tests {
         cleanup(&dir);
     }
 
+    // ---- Law: dependency files are read-only and addressed at their own location ----
+
+    /// A dependency's file is reported at its own location. The library sits at
+    /// `lib/graphtext`, so its `src/text.mw` publishes under that directory rather than
+    /// under the consuming project's `src`, where no such file exists. Identities are
+    /// relative to their own tree; the origin is what places them.
+    #[test]
+    fn a_dependency_file_publishes_under_its_own_root() {
+        let main = "module main\n\nuse graphtext::text\n\npub fn f(): int {\n    return 1\n}\n";
+        let dir = temp_dependency_project("dependency-uri", main);
+        let mut coordinator = opened(&dir, main);
+        let publications = diagnostic_publications(&deliver_frames(&mut coordinator));
+        let library = publications
+            .iter()
+            .find(|params| {
+                params.uri.as_str() == format!("{}/lib/graphtext/src/text.mw", root_uri(&dir))
+            })
+            .expect("the library file publishes at its own location");
+        assert_eq!(
+            library.version, None,
+            "a dependency file names no open document, so it publishes unversioned"
+        );
+        assert!(publications.iter().any(|params| {
+            params.uri.as_str() == format!("{}/src/main.mw", root_uri(&dir))
+                && params.version == Some(1)
+        }));
+    }
+
+    /// A dependency file is read-only: opening one never places its body in the capture
+    /// overlay, so the workspace keeps analysing. An overlay entry naming a file the root
+    /// project does not declare refuses the whole capture, which is exactly what must not
+    /// happen when a developer opens a library file to read it.
+    #[test]
+    fn opening_a_dependency_file_leaves_the_workspace_analysing() {
+        let main = "module main\n\nuse graphtext::text\n\npub fn f(): int {\n    return 1\n}\n";
+        let dir = temp_dependency_project("dependency-readonly", main);
+        let mut coordinator = opened(&dir, main);
+        deliver_frames(&mut coordinator);
+
+        let library = open_body(&dir, 1, "module text\n\nthis is not Marrow source\n")
+            .replace("/src/main.mw", "/lib/graphtext/src/text.mw");
+        coordinator.on_frame(library.as_bytes());
+        assert_eq!(
+            coordinator.ledger.text_entries().count(),
+            1,
+            "the library file never enters the ledger"
+        );
+        assert!(
+            coordinator.job_out.is_none(),
+            "an ignored open dispatches nothing"
+        );
+
+        // The project's own edit still analyses, against the library's committed bytes.
+        let edited = main.replace("return 1", "return 2");
+        coordinator.on_frame(change_body(&dir, 2, &edited).as_bytes());
+        let overlay: Vec<&str> = coordinator
+            .job_out
+            .as_ref()
+            .expect("the edit dispatches a recompute")
+            .overlay
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .collect();
+        assert_eq!(overlay, ["src/main.mw"]);
+        let outcome = run_next_job(&mut coordinator);
+        assert!(matches!(outcome, AnalysisOutcome::Snapshot(_)));
+        coordinator.on_worker_result(outcome);
+        let publications = diagnostic_publications(&deliver_frames(&mut coordinator));
+        assert!(publications.iter().any(|params| {
+            params.uri.as_str() == format!("{}/src/main.mw", root_uri(&dir))
+                && params.version == Some(2)
+                && params.diagnostics.is_empty()
+        }));
+    }
+
+    /// Definition from the application into a library function returns the library's
+    /// own file URI. The target resolves through the existing definition fact: the
+    /// boundary needs no new canonical fact, only the origin the snapshot carries.
+    #[test]
+    fn definition_across_a_dependency_boundary_names_the_library_file() {
+        let main = "module main\n\nuse graphtext::text\n\npub fn f(): bool {\n    return text::startsWith(\"ab\", \"a\")\n}\n";
+        let dir = temp_dependency_project("dependency-definition", main);
+        let mut coordinator = opened(&dir, main);
+        deliver_frames(&mut coordinator);
+
+        let position = LineMap::new(main).position_at(after(main, "text::start"));
+        coordinator.on_frame(position_body(&dir, 40, "definition", position).as_bytes());
+        let delivered = deliver_frames(&mut coordinator);
+        let reply = delivered
+            .iter()
+            .find(|frame| frame.contains(r#""id":40,"#))
+            .expect("the definition is answered");
+        assert!(
+            reply.contains(&format!(
+                r#""uri":"{}/lib/graphtext/src/text.mw""#,
+                root_uri(&dir)
+            )),
+            "the definition names the library's own file: {reply}"
+        );
+    }
+
     // ---- Soundness: a credit freed by a non-publication receipt feeds a starved plan ----
 
     #[test]
@@ -2767,7 +2765,7 @@ mod tests {
                 format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"noSuchMethod"}}"#).as_bytes(),
             );
         }
-        assert_eq!(coordinator.outbound_credits.available(), 0);
+        assert_eq!(coordinator.outbound_capacity(), 0);
 
         // A snapshot commits its publication plan but is credit-starved: the plan holds the
         // exclusive credit with frames pending and nothing in flight.
@@ -2819,7 +2817,7 @@ mod tests {
                 format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"noSuchMethod"}}"#).as_bytes(),
             );
         }
-        assert_eq!(coordinator.outbound_credits.available(), 0);
+        assert_eq!(coordinator.outbound_capacity(), 0);
         let pending_before = coordinator.pending_frames.len();
 
         // A burst of semantic requests with no free credit: they are held, not materialized.

@@ -19,20 +19,21 @@
 //! admission, document versions, overlay construction, edit coalescing, and outbound
 //! ordering; one analysis worker owns all parse/format/compile/snapshot work; one
 //! writer accepts immutable framed bytes. The threads communicate over bounded
-//! standard-library channels and move-only affine credits (`credit`).
+//! standard-library channels; the coordinator hands the writer at most a fixed number
+//! of frames ahead of their delivery receipts.
 //!
 //! The single public entry point is [`serve`]; every module below is a private
 //! implementation owner.
 
 mod analysis;
 mod capacities;
-mod credit;
 mod document;
 mod facts;
 mod lifecycle;
 mod outbound;
 mod position;
 mod protocol;
+mod query;
 mod server;
 mod transport;
 mod uri;

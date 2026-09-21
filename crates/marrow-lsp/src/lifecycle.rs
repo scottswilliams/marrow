@@ -57,24 +57,6 @@ pub(crate) enum IngressGate {
     AwaitInitializeDelivery,
 }
 
-/// `-32002`: a request arrived before the server was initialized.
-pub(crate) const SERVER_NOT_INITIALIZED: i32 = -32002;
-/// `-32600`: the request is structurally invalid or invalid in the current phase.
-pub(crate) const INVALID_REQUEST: i32 = -32600;
-/// `-32601`: an unknown request method.
-pub(crate) const METHOD_NOT_FOUND: i32 = -32601;
-/// `-32602`: malformed parameters for an otherwise-known request.
-pub(crate) const INVALID_PARAMS: i32 = -32602;
-/// `-32801`: a query result was invalidated by a newer revision or document state.
-pub(crate) const CONTENT_MODIFIED: i32 = -32801;
-/// `-32803`: a request could not be served (capture unavailable or analysis
-/// resource-limited); recoverable.
-pub(crate) const REQUEST_FAILED: i32 = -32803;
-/// `-32603`: an internal server error.
-pub(crate) const INTERNAL_ERROR: i32 = -32603;
-/// `-32700`: the message was not valid JSON.
-pub(crate) const PARSE_ERROR: i32 = -32700;
-
 /// The lifecycle owner. First-wins termination is enforced by the coordinator (which
 /// stops on the first terminal event); this owner only maps events to phases and exit
 /// codes.

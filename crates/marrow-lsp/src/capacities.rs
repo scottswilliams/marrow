@@ -53,10 +53,11 @@ pub(crate) const OUTBOUND_QUEUE_CAPACITY: usize = 8;
 /// to the coordinator.
 pub(crate) const RECEIPT_QUEUE_CAPACITY: usize = 8;
 
-/// `W`: the number of non-`Clone` outbound credits. Equals outbound-queue capacity
-/// plus one active writer plus receipt-queue capacity. Every frame acquires one
-/// before handoff to the writer. Pre-encoded publication frames remain charged to
-/// their exclusive plan until handoff; unanswered semantic queries remain held.
+/// `W`: the outbound credits, the number of frames the coordinator may hand to the
+/// writer ahead of their delivery receipts. Equals outbound-queue capacity plus one
+/// active writer plus receipt-queue capacity. A frame is handed off only while fewer
+/// than `W` await receipts. Pre-encoded publication frames remain charged to their
+/// exclusive plan until handoff; unanswered semantic queries remain held.
 pub(crate) const OUTBOUND_CREDITS: usize = OUTBOUND_QUEUE_CAPACITY + 1 + RECEIPT_QUEUE_CAPACITY;
 
 /// The stack size for each spawned server thread. The analysis worker parses untrusted

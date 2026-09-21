@@ -10,9 +10,9 @@
 use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionResponse, Diagnostic, DiagnosticSeverity,
     DocumentSymbol, DocumentSymbolResponse, Hover, HoverContents, Location, MarkupContent,
-    MarkupKind, NumberOrString, ParameterInformation, ParameterLabel, Position as LspPosition,
-    PublishDiagnosticsParams, Range as LspRange, SignatureHelp, SignatureInformation, SymbolKind,
-    TextEdit, Uri,
+    MarkupKind, NumberOrString, ParameterInformation, ParameterLabel, Position,
+    PublishDiagnosticsParams, Range, SignatureHelp, SignatureInformation, SymbolKind, TextEdit,
+    Uri,
 };
 use marrow_compile::ProjectFile;
 use marrow_compile::{
@@ -21,7 +21,7 @@ use marrow_compile::{
 };
 use marrow_syntax::{Severity, SourceSpan};
 
-use crate::position::{LineMap, Position, Range};
+use crate::position::LineMap;
 
 /// Why a payload could not be projected. Both are refusals, never a repaired result: a
 /// misplaced range would point an editor at the wrong text.
@@ -34,16 +34,6 @@ pub(crate) enum ProjectionRefusal {
     NotUtf8,
 }
 
-fn to_lsp_position(position: Position) -> LspPosition {
-    LspPosition::new(position.line, position.character)
-}
-
-fn to_lsp_range(range: Range) -> LspRange {
-    LspRange::new(to_lsp_position(range.start), to_lsp_position(range.end))
-}
-
-/// The LSP severity of a diagnostic, projected from the payload's typed severity —
-/// the one severity owner — never reconstructed by classifying the code.
 /// The snapshot's own bytes for one captured file, decoded. A fact's spans index the
 /// exact source the snapshot was computed from, so a range projects through these bytes
 /// and never through an open buffer that may already have moved past them.
@@ -56,6 +46,8 @@ fn captured_source(snapshot: &AnalysisSnapshot, file: &ProjectFile) -> Option<St
     std::str::from_utf8(module.source()).ok().map(str::to_owned)
 }
 
+/// The LSP severity of a diagnostic, projected from the payload's typed severity —
+/// the one severity owner — never reconstructed by classifying the code.
 fn to_lsp_severity(severity: Severity) -> DiagnosticSeverity {
     match severity {
         Severity::Error => DiagnosticSeverity::ERROR,
@@ -80,7 +72,7 @@ pub(crate) fn diagnostics_for_file(
         .diagnostics_for(file)
         .map(|diagnostic| {
             let span = diagnostic.span();
-            let range = to_lsp_range(map.range_of(span.start_byte, span.end_byte));
+            let range = map.range_of(span.start_byte, span.end_byte);
             Diagnostic {
                 range,
                 severity: Some(to_lsp_severity(diagnostic.severity())),
@@ -110,12 +102,9 @@ pub(crate) fn hover(
     snapshot: &AnalysisSnapshot,
     file: &ProjectFile,
     source: &str,
-    position: LspPosition,
+    position: Position,
 ) -> Option<Hover> {
-    let offset = LineMap::new(source).byte_at(Position {
-        line: position.line,
-        character: position.character,
-    });
+    let offset = LineMap::new(source).byte_at(position);
     match snapshot.hover(file, offset) {
         Ok(Fact::Present(hover)) => Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
@@ -138,12 +127,9 @@ pub(crate) fn definition(
     file: &ProjectFile,
     source: &str,
     target_uri: impl Fn(&ProjectFile) -> Option<Uri>,
-    position: LspPosition,
+    position: Position,
 ) -> Result<Option<Location>, ProjectionRefusal> {
-    let offset = LineMap::new(source).byte_at(Position {
-        line: position.line,
-        character: position.character,
-    });
+    let offset = LineMap::new(source).byte_at(position);
     let target = match snapshot.definition(file, offset) {
         Ok(Fact::Present(definition)) => definition,
         Ok(Fact::Absent | Fact::Unavailable(_)) | Err(_) => return Ok(None),
@@ -159,8 +145,7 @@ pub(crate) fn definition(
     let Some(text) = captured_source(snapshot, &target_file) else {
         return Ok(None);
     };
-    let range =
-        to_lsp_range(LineMap::new(&text).range_of(name_span.start_byte, name_span.end_byte));
+    let range = LineMap::new(&text).range_of(name_span.start_byte, name_span.end_byte);
     Ok(Some(Location {
         uri: target_uri(&target_file).ok_or(ProjectionRefusal::Uri)?,
         range,
@@ -182,8 +167,7 @@ pub(crate) fn formatting(
                 // Already formatted: no edit.
                 return Some(Vec::new());
             }
-            let map = LineMap::new(source);
-            let whole = LspRange::new(LspPosition::new(0, 0), to_lsp_position(map.end_position()));
+            let whole = Range::new(Position::new(0, 0), LineMap::new(source).end_position());
             Some(vec![TextEdit::new(whole, formatted)])
         }
         Ok(
@@ -207,12 +191,9 @@ pub(crate) fn completion(
     snapshot: &AnalysisSnapshot,
     file: &ProjectFile,
     source: &str,
-    position: LspPosition,
+    position: Position,
 ) -> Result<Option<CompletionResponse>, ResourceLimited> {
-    let offset = LineMap::new(source).byte_at(Position {
-        line: position.line,
-        character: position.character,
-    });
+    let offset = LineMap::new(source).byte_at(position);
     match snapshot.completions(file, offset) {
         Ok(CompletionOutcome::Ready(Fact::Present(completions))) => {
             Ok(Some(to_completion_response(&completions)))
@@ -267,12 +248,9 @@ pub(crate) fn signature_help(
     snapshot: &AnalysisSnapshot,
     file: &ProjectFile,
     source: &str,
-    position: LspPosition,
+    position: Position,
 ) -> Result<Option<SignatureHelp>, ResourceLimited> {
-    let offset = LineMap::new(source).byte_at(Position {
-        line: position.line,
-        character: position.character,
-    });
+    let offset = LineMap::new(source).byte_at(position);
     match snapshot.active_call(file, offset) {
         Ok(ActiveCallOutcome::Ready(Fact::Present(active))) => Ok(Some(to_signature_help(&active))),
         Ok(ActiveCallOutcome::Ready(Fact::Absent | Fact::Unavailable(_))) | Err(_) => Ok(None),
@@ -325,8 +303,8 @@ pub(crate) fn document_symbols(
     }
 }
 
-fn span_range(span: SourceSpan, map: &LineMap) -> LspRange {
-    to_lsp_range(map.range_of(span.start_byte, span.end_byte))
+fn span_range(span: SourceSpan, map: &LineMap) -> Range {
+    map.range_of(span.start_byte, span.end_byte)
 }
 
 #[allow(deprecated)]
@@ -460,10 +438,8 @@ mod tests {
         let (snapshot, _root, _dir) = analyze_source("hover", main);
         // Find the byte offset of the `g` in `g()` on the return line.
         let call = main.rfind("g()").unwrap();
-        let map = LineMap::new(main);
-        let pos = map.position_at(call);
-        let lsp_pos = LspPosition::new(pos.line, pos.character);
-        let result = hover(&snapshot, &main_file(), main, lsp_pos);
+        let position = LineMap::new(main).position_at(call);
+        let result = hover(&snapshot, &main_file(), main, position);
         // Hover may be present (a function signature) or absent depending on fact
         // coverage; when present it carries a nonempty display.
         if let Some(hover) = result {
@@ -480,7 +456,7 @@ mod tests {
         let (snapshot, _root, _dir) = analyze_source("fmt", main);
         let edits = formatting(&snapshot, &main_file(), main).unwrap();
         assert_eq!(edits.len(), 1, "one whole-document replacement");
-        assert_eq!(edits[0].range.start, LspPosition::new(0, 0));
+        assert_eq!(edits[0].range.start, Position::new(0, 0));
     }
 
     #[test]
@@ -488,5 +464,88 @@ mod tests {
         let main = "module main\n\npub fn f(: {\n";
         let (snapshot, _root, _dir) = analyze_source("fmtbad", main);
         assert!(formatting(&snapshot, &main_file(), main).is_none());
+    }
+
+    /// The Graph Report conformance fixture: structs, an enum with members, monomorphic
+    /// helpers, and tests — the earning caller for completion, signature help, and
+    /// document symbols.
+    const GRAPH_REPORT: &str =
+        include_str!("../../../fixtures/v01/conformance/graph_report/src/graph_report.mw");
+
+    /// The byte offset immediately after `needle`'s first occurrence in `source`.
+    fn after(source: &str, needle: &str) -> usize {
+        source.find(needle).expect("needle present") + needle.len()
+    }
+
+    #[test]
+    fn completion_at_enum_path_offers_the_members() {
+        // The in-progress edit the feature serves: `Role::` typed, the member not yet.
+        // The incomplete path does not parse; the bounded parser recovery still
+        // classifies the enum-path position.
+        let editing = GRAPH_REPORT.replacen("return Role::isolated", "return Role::", 1);
+        let (snapshot, _root, _dir) = analyze_source("completion", &editing);
+        let position = LineMap::new(&editing).position_at(after(&editing, "return Role::"));
+        let Ok(Some(CompletionResponse::Array(items))) =
+            completion(&snapshot, &main_file(), &editing, position)
+        else {
+            panic!("an enum-path position completes to the enum's members");
+        };
+        let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+        for member in ["source", "sink", "internal", "isolated"] {
+            assert!(labels.contains(&member), "enum member {member} offered");
+        }
+    }
+
+    #[test]
+    fn signature_help_inside_a_call_marks_the_active_parameter() {
+        let (snapshot, _root, _dir) = analyze_source("sighelp", GRAPH_REPORT);
+        // Inside `classifyRole(o, i)` at the second argument slot.
+        let position =
+            LineMap::new(GRAPH_REPORT).position_at(after(GRAPH_REPORT, "classifyRole(o, "));
+        let Ok(Some(help)) = signature_help(&snapshot, &main_file(), GRAPH_REPORT, position) else {
+            panic!("a position inside a call has signature help");
+        };
+        assert_eq!(help.signatures.len(), 1, "one active signature");
+        assert!(
+            help.signatures[0].label.contains("classifyRole"),
+            "the callee signature is `classifyRole`"
+        );
+        assert_eq!(
+            help.active_parameter,
+            Some(1),
+            "the cursor sits at the second parameter"
+        );
+    }
+
+    #[test]
+    fn document_symbols_outline_declarations_with_nested_members() {
+        let (snapshot, _root, _dir) = analyze_source("symbols", GRAPH_REPORT);
+        let Some(DocumentSymbolResponse::Nested(symbols)) =
+            document_symbols(&snapshot, &main_file(), GRAPH_REPORT)
+        else {
+            panic!("a parsed file has a declaration outline");
+        };
+        let names: Vec<&str> = symbols.iter().map(|symbol| symbol.name.as_str()).collect();
+        for name in ["Edge", "Role", "classifyRole", "topoOrder", "report"] {
+            assert!(
+                names.contains(&name),
+                "top-level declaration {name} present"
+            );
+        }
+        // The enum carries its members as nested children.
+        let role = symbols
+            .iter()
+            .find(|symbol| symbol.name == "Role")
+            .expect("Role symbol");
+        let members: Vec<&str> = role
+            .children
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|child| child.name.as_str())
+            .collect();
+        for member in ["source", "sink", "internal", "isolated"] {
+            assert!(members.contains(&member), "enum member {member} nested");
+        }
     }
 }

@@ -25,8 +25,9 @@ is a single `-32700` error.
 The server follows the standard LSP lifecycle. It answers `initialize`, then
 enters normal operation after the `initialized` notification. Before
 initialization every other request receives `-32002`. `shutdown` followed by
-`exit` terminates with exit code `0`; an `exit` before `shutdown`, or end of input
-without `exit`, terminates with a nonzero code.
+`exit` terminates with exit code `0`. An `exit` before `shutdown`, end of input
+without `exit`, or a fault inside the server terminates with a nonzero code; a
+fault is reported on standard error.
 
 At initialization the server takes one workspace root: a single
 `workspaceFolders` entry, or `rootUri` when no folder is given. Two or more
