@@ -307,10 +307,11 @@ pub enum LifecycleError {
     /// corrupt).
     Open(OpenError),
     /// The admission gate refused the presented image under the lock and before any engine
-    /// call: an over-demanding image, a changed contract (pointing at `marrow apply`), a
-    /// disagreeing head-map pin, or a persisted ceiling payload that does not decode. Head,
-    /// envelope, engine data and the owner marker are unchanged. Only the undecodable
-    /// ceiling is corruption; the others are typed lifecycle verdicts.
+    /// call; head, envelope, engine data and the owner marker are unchanged. The refusals
+    /// fall in two groups. Actionable: a demand beyond the accepted ceiling, a changed
+    /// contract (pointing at `marrow apply`), and a code-only edit the store is not bound
+    /// to. Corruption-shaped, reporting `store.corruption`: a head-map pin or binding facts
+    /// that disagree with the image, and an accepted-ceiling payload that does not decode.
     Refused(AdmissionRefusal),
     /// The read-only logical audit or prepublication metadata verification failed.
     /// Metadata verification follows writable preparation and may observe its bookkeeping.

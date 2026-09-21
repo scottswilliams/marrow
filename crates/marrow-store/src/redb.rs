@@ -2,10 +2,10 @@
 //!
 //! redb's `&[u8]` keys order byte-lexicographically, the same order as the
 //! in-memory `BTreeMap`, so range scans need no custom comparator. A
-//! [`NativeEngine`] hands out a [`RedbView`] backed by a redb read transaction (a
-//! stable version, so its reads are coherent) and one [`RedbTxn`] backed by a
-//! redb write transaction (which reads its own staged writes and either commits
-//! durably or aborts).
+//! [`NativeEngine`] hands out a [`RedbView`] backed by a redb read transaction and
+//! bound to the engine borrow, so no write interleaves with its reads, and one
+//! [`RedbTxn`] backed by a redb write transaction (which reads its own staged
+//! writes and either commits durably or aborts).
 //!
 //! ## Filesystem durability envelope
 //!
@@ -726,9 +726,9 @@ impl ByteEngine for NativeEngine {
     }
 }
 
-/// A coherent read view over a redb read transaction — a stable version whose
-/// reads are unaffected by later commits. Bound to the engine borrow that
-/// produced it, so no write can interleave for its life.
+/// A coherent read view over one redb read transaction. It is bound to the engine
+/// borrow that produced it, so no write can interleave for its life; that borrow,
+/// not the engine's version history, is what the conformance laws hold it to.
 pub(crate) struct RedbView<'a> {
     read: ReadTransaction,
     _engine: PhantomData<&'a NativeEngine>,

@@ -163,17 +163,21 @@ fn a_committed_transaction_persists<E: ByteEngine>(engine: &mut E) -> Result<(),
     Ok(())
 }
 
+/// A transaction dropped without a commit publishes nothing: not a replaced value, not
+/// a new key, and not a removal.
 fn a_dropped_transaction_aborts<E: ByteEngine>(engine: &mut E) -> Result<(), StoreError> {
-    seed(engine, &[(b"k", b"old")])?;
+    seed(engine, &[(b"k", b"old"), (b"kept", b"stays")])?;
     {
         let mut txn = engine.begin()?;
         txn.put(b"k", b"new".to_vec())?;
         txn.put(b"temp", b"gone".to_vec())?;
+        txn.remove(b"kept")?;
         // No commit: the transaction aborts on drop.
     }
     let view = engine.read_view()?;
     assert_eq!(view.get(b"k")?, Some(b"old".to_vec()));
     assert_eq!(view.get(b"temp")?, None);
+    assert_eq!(view.get(b"kept")?, Some(b"stays".to_vec()));
     Ok(())
 }
 

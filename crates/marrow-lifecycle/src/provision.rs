@@ -393,6 +393,13 @@ pub struct OpenStore {
     pub(crate) head_digest: marrow_image::StoreHeadDigest,
 }
 
+// An open store moves between threads as the runner's service does; the seam it carries
+// must not take that away.
+const _: () = {
+    fn assert_send_sync<T: Send + Sync>() {}
+    let _ = assert_send_sync::<OpenStore>;
+};
+
 impl SessionHost for OpenStore {
     type Engine = <NativeStore as SessionHost>::Engine;
 

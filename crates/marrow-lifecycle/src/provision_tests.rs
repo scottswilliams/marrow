@@ -1,8 +1,7 @@
 //! The persistent provision and open flow over real directories: one winner, complete or
 //! not at all, and custody of the stage across its rename.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use super::*;
 use crate::head::ActiveBinding;
@@ -66,7 +65,7 @@ fn occupied_files_and_dangling_links_refuse_without_replacement() {
 struct Construction {
     cut: Option<Step>,
     removal: Option<std::io::ErrorKind>,
-    observed: RefCell<Option<(PathBuf, Vec<std::ffi::OsString>)>>,
+    observed: Mutex<Option<(PathBuf, Vec<std::ffi::OsString>)>>,
 }
 
 impl Observer for Construction {
@@ -81,7 +80,7 @@ impl Observer for Construction {
                     .map(|entry| entry.expect("stage entry").file_name())
                     .collect();
                 names.sort();
-                *self.observed.borrow_mut() = Some((stage.to_path_buf(), names));
+                *self.observed.lock().expect("observed stage") = Some((stage.to_path_buf(), names));
                 match self.removal {
                     Some(kind) => Err(marrow_fs_journal::CustodyError::Io {
                         op: CustodyOp::Unlink,
@@ -95,11 +94,11 @@ impl Observer for Construction {
     }
 }
 
-fn construction(cut: Option<Step>, removal: Option<std::io::ErrorKind>) -> Rc<Construction> {
-    Rc::new(Construction {
+fn construction(cut: Option<Step>, removal: Option<std::io::ErrorKind>) -> Arc<Construction> {
+    Arc::new(Construction {
         cut,
         removal,
-        observed: RefCell::new(None),
+        observed: Mutex::new(None),
     })
 }
 
@@ -123,7 +122,8 @@ fn provision_retains_the_original_failure_and_failed_cleanup_location() {
             .expect_err("provision failed");
         let stage = observer
             .observed
-            .borrow()
+            .lock()
+            .expect("observed stage")
             .as_ref()
             .expect("observed stage")
             .0
@@ -196,7 +196,8 @@ fn construction_failures_remove_only_the_stage_this_invocation_created() {
         ));
         let (stage, names) = observer
             .observed
-            .borrow_mut()
+            .lock()
+            .expect("observed stage")
             .take()
             .expect("actual stage observed");
         let mut expected: Vec<std::ffi::OsString> = vec![store_dir::ENVELOPE_FILE.into()];
@@ -305,8 +306,8 @@ enum PublicationMutation {
 #[cfg(unix)]
 struct PublicationObservation {
     destination: PathBuf,
-    seen: RefCell<Vec<(StagePoint, u64, u64)>>,
-    mutation: RefCell<Option<(StagePoint, PublicationMutation)>>,
+    seen: Mutex<Vec<(StagePoint, u64, u64)>>,
+    mutation: Mutex<Option<(StagePoint, PublicationMutation)>>,
 }
 
 #[cfg(unix)]
@@ -337,15 +338,18 @@ impl Observer for PublicationObservation {
             ))
         ));
         self.seen
-            .borrow_mut()
+            .lock()
+            .expect("seen")
             .push((at, actual.dev(), actual.ino()));
         let armed = self
             .mutation
-            .borrow()
+            .lock()
+            .expect("mutation")
             .as_ref()
             .is_some_and(|(point, _)| *point == at);
         if armed {
-            match self.mutation.borrow_mut().take().unwrap().1 {
+            let taken = self.mutation.lock().expect("mutation").take();
+            match taken.expect("armed mutation").1 {
                 PublicationMutation::Occupy => std::fs::create_dir(&self.destination).unwrap(),
                 PublicationMutation::Substitute(saved) => {
                     std::fs::rename(location, saved).unwrap();
@@ -362,11 +366,11 @@ impl Observer for PublicationObservation {
 fn publication_observation(
     destination: &Path,
     mutation: Option<(StagePoint, PublicationMutation)>,
-) -> Rc<PublicationObservation> {
-    Rc::new(PublicationObservation {
+) -> Arc<PublicationObservation> {
+    Arc::new(PublicationObservation {
         destination: destination.to_path_buf(),
-        seen: RefCell::new(Vec::new()),
-        mutation: RefCell::new(mutation),
+        seen: Mutex::new(Vec::new()),
+        mutation: Mutex::new(mutation),
     })
 }
 
@@ -379,7 +383,7 @@ fn public_provision_holds_the_same_directory_owner_across_rename() {
     let observer = publication_observation(&destination, None);
     provision_observed(&destination, request, Seam::armed(observer.clone()))
         .expect("public provision");
-    let seen = observer.seen.borrow();
+    let seen = observer.seen.lock().expect("seen");
     assert_eq!(seen.len(), 2);
     let (point, device, inode) = seen[0];
     assert_eq!(point, StagePoint::Built);

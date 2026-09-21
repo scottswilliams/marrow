@@ -1,6 +1,8 @@
 //! Owner-lock controls: exclusion, the unclean obligation, quarantine, and the
 //! multi-process coordination protocol.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use super::*;
 // Nothing here names `Database`: every redb open in this crate routes through
 // `open_past_lock_release`. That is a property of what is written, not an enforced
@@ -62,30 +64,41 @@ fn assert_handoff_excludes_contenders(dir: &Path) {
 }
 
 /// Promote `owner` to service, asserting while its marker descriptor is handed off that a
-/// contender is still refused by the directory lock alone.
+/// contender is still refused by the directory lock alone. A promotion that succeeds must
+/// have passed that handoff.
 fn promote(
     mut owner: NativeEngineOwner,
     instance: [u8; 16],
 ) -> Result<NativeEngineOwner, NativeOwnerOpenError<NativePromotionRefusal>> {
-    owner.seam = OwnerSeam::armed(|dir, step| {
+    let handoff = Arc::new(AtomicBool::new(false));
+    let reached = Arc::clone(&handoff);
+    owner.seam = OwnerSeam::armed(move |dir, step| {
         if step == OwnerStep::MarkerHandoff {
             assert_handoff_excludes_contenders(dir);
+            reached.store(true, Ordering::SeqCst);
         }
     });
-    owner.into_service(instance)
+    let result = owner.into_service(instance);
+    if result.is_ok() {
+        assert!(
+            handoff.load(Ordering::SeqCst),
+            "a successful promotion passes the marker handoff"
+        );
+    }
+    result
 }
 
 /// A seam that corrupts the live engine once, right after it opens, and reports whether
 /// that point was reached. A marker handoff it sees is held to the same exclusion check
 /// as [`promote`].
 #[cfg(unix)]
-fn corrupt_after_open() -> (OwnerSeam, Rc<std::cell::Cell<bool>>) {
-    let fired = Rc::new(std::cell::Cell::new(false));
-    let armed = Rc::clone(&fired);
+fn corrupt_after_open() -> (OwnerSeam, Arc<AtomicBool>) {
+    let fired = Arc::new(AtomicBool::new(false));
+    let armed = Arc::clone(&fired);
     let seam = OwnerSeam::armed(move |dir, step| match step {
         OwnerStep::MarkerHandoff => assert_handoff_excludes_contenders(dir),
         OwnerStep::EngineOpened => {
-            if !armed.replace(true) {
+            if !armed.swap(true, Ordering::SeqCst) {
                 corrupt_live_engine_for_audit(dir);
             }
         }
@@ -106,7 +119,10 @@ fn service_promotion_preserves_the_inherited_physical_audit_obligation() {
     let (seam, corrupted) = corrupt_after_open();
     owner.seam = seam;
     let result = owner.into_service([0x71; 16]);
-    assert!(corrupted.get(), "mutation followed the service engine open");
+    assert!(
+        corrupted.load(Ordering::SeqCst),
+        "mutation followed the service engine open"
+    );
     match result {
         Err(NativeOwnerOpenError::Store(StoreError::Corruption { .. })) => {}
         Err(error) => panic!("expected the physical audit refusal: {error:?}"),
@@ -1289,7 +1305,10 @@ fn explicit_recovery_audits_even_after_a_clean_shutdown() {
     pending.seam = seam;
     let result =
         pending.bind_and_open_existing(NativeOpenAccess::Recovery, [0x70; 16], || Ok::<(), ()>(()));
-    assert!(corrupted.get(), "mutation followed successful engine open");
+    assert!(
+        corrupted.load(Ordering::SeqCst),
+        "mutation followed successful engine open"
+    );
     if let Ok(owner) = result {
         let path = scratch.path().to_path_buf();
         std::mem::forget(owner);

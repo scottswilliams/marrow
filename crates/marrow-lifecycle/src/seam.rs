@@ -9,7 +9,7 @@
 //! runs rather than a second program interleaved with it.
 
 use std::path::Path;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use marrow_fs_journal::CustodyError;
 use marrow_kernel::durable::PendingNativeStoreOwner;
@@ -91,21 +91,23 @@ pub(crate) enum Event<'a> {
 }
 
 /// A test's view of a sequence. An error returned for an event stands in for the operation
-/// the event precedes failing with it.
-pub(crate) trait Observer {
+/// the event precedes failing with it. An observer is shared by the values a sequence hands
+/// across threads, so it is `Send + Sync` like the store types that carry it.
+pub(crate) trait Observer: Send + Sync {
     fn at(&self, event: Event<'_>) -> Result<(), CustodyError>;
 }
 
 /// The seam a sequence runs through: no observer in production, one in a test.
 #[derive(Clone)]
-pub(crate) struct Seam(Option<Rc<dyn Observer>>);
+pub(crate) struct Seam(Option<Arc<dyn Observer>>);
 
 impl Seam {
     /// The production seam: every event passes.
     pub(crate) const NONE: Self = Self(None);
 
-    #[cfg(test)]
-    pub(crate) fn armed(observer: Rc<dyn Observer>) -> Self {
+    /// A seam that shows every event to `observer`.
+    #[cfg_attr(not(test), expect(dead_code, reason = "armed only by tests"))]
+    pub(crate) fn armed(observer: Arc<dyn Observer>) -> Self {
         Self(Some(observer))
     }
 

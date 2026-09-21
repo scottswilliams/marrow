@@ -12,7 +12,7 @@ use crate::test_support::{
 use crate::{LogicalHead, active_binding, prepare, provision};
 
 /// One deferred change to the store, run at the step a test arms it for.
-type Mutation = Box<dyn FnOnce(&AdmittedStoreDir)>;
+type Mutation = Box<dyn FnOnce(&AdmittedStoreDir) + Send>;
 
 /// Replace `artifact` with `bytes` under the retained descriptor and sync the directory,
 /// as a writer racing the sequence would.

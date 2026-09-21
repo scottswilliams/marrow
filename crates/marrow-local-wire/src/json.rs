@@ -888,6 +888,8 @@ mod tests {
             "99999999999999999999", // out of i64 range
             "\"\\x\"",              // bad escape
             "01x",                  // trailing bytes outrank a non-minimal number
+            "00.1",                 // a fraction after a leading zero is still malformed
+            "01e3",                 // as is an exponent
         ] {
             assert_eq!(
                 parse_strict(input.as_bytes()),

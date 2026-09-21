@@ -26,7 +26,7 @@
 use std::fs::{File, Metadata, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use marrow_codes::Code;
 
@@ -245,18 +245,20 @@ pub(crate) enum OwnerStep {
     EngineOpened,
 }
 
-/// A test's view of the open sequence over one store directory.
-type OwnerObserver = dyn Fn(&Path, OwnerStep);
+/// A test's view of the open sequence over one store directory. The owners that carry it
+/// cross threads, so it is `Send + Sync` like them.
+type OwnerObserver = dyn Fn(&Path, OwnerStep) + Send + Sync;
 
 /// The one seam the open sequence exposes.
-pub(crate) struct OwnerSeam(Option<Rc<OwnerObserver>>);
+pub(crate) struct OwnerSeam(Option<Arc<OwnerObserver>>);
 
 impl OwnerSeam {
     const NONE: Self = Self(None);
 
-    #[cfg(test)]
-    pub(crate) fn armed(observer: impl Fn(&Path, OwnerStep) + 'static) -> Self {
-        Self(Some(Rc::new(observer)))
+    /// A seam that shows every step to `observer`.
+    #[cfg_attr(not(test), expect(dead_code, reason = "armed only by tests"))]
+    pub(crate) fn armed(observer: impl Fn(&Path, OwnerStep) + Send + Sync + 'static) -> Self {
+        Self(Some(Arc::new(observer)))
     }
 
     fn at(&self, dir: &Path, step: OwnerStep) {
@@ -535,6 +537,14 @@ pub struct PendingNativeEngineOwner {
     directory: PathBuf,
     seam: OwnerSeam,
 }
+
+// Both owners cross threads with the service that holds them; the seam they carry must
+// not take that away.
+const _: () = {
+    fn assert_send_sync<T: Send + Sync>() {}
+    let _ = assert_send_sync::<NativeEngineOwner>;
+    let _ = assert_send_sync::<PendingNativeEngineOwner>;
+};
 
 /// The engine capability requested under an existing store's owner lock.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -7,9 +7,9 @@
 //! with another about what a populated store contains. The scratch directory and the
 //! compile helpers are the same files the integration suites use.
 
-use std::cell::{Cell, RefCell};
 use std::path::Path;
-use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use marrow_fs_journal::{CustodyError, CustodyOp};
 use marrow_verify::VerifiedImage;
@@ -104,48 +104,53 @@ pub(crate) fn populate_counter(dir: &Path, image: &VerifiedImage) {
 /// An observer that acts on the first event `select` accepts and passes every other one.
 struct Once<S, H> {
     select: S,
-    hit: RefCell<Option<H>>,
-    fired: Rc<Cell<bool>>,
+    hit: Mutex<Option<H>>,
+    fired: Arc<AtomicBool>,
 }
 
 impl<S, H> Observer for Once<S, H>
 where
-    S: Fn(&Event<'_>) -> bool,
-    H: FnOnce(Event<'_>) -> Result<(), CustodyError>,
+    S: Fn(&Event<'_>) -> bool + Send + Sync,
+    H: FnOnce(Event<'_>) -> Result<(), CustodyError> + Send,
 {
     fn at(&self, event: Event<'_>) -> Result<(), CustodyError> {
         if !(self.select)(&event) {
             return Ok(());
         }
-        let Some(hit) = self.hit.borrow_mut().take() else {
+        // The guard is released before `hit` runs: a mutation may re-enter this seam.
+        let hit = self.hit.lock().expect("armed hit").take();
+        let Some(hit) = hit else {
             return Ok(());
         };
-        self.fired.set(true);
+        self.fired.store(true, Ordering::SeqCst);
         hit(event)
     }
 }
 
 /// Whether an armed seam reached its event.
-pub(crate) struct Reached(Rc<Cell<bool>>);
+pub(crate) struct Reached(Arc<AtomicBool>);
 
 impl Reached {
     pub(crate) fn assert(&self) {
-        assert!(self.0.get(), "the armed checkpoint was not reached");
+        assert!(
+            self.0.load(Ordering::SeqCst),
+            "the armed checkpoint was not reached"
+        );
     }
 }
 
 /// A seam that runs `hit` at the first event `select` accepts; later events pass.
 pub(crate) fn once(
-    select: impl Fn(&Event<'_>) -> bool + 'static,
-    hit: impl FnOnce(Event<'_>) -> Result<(), CustodyError> + 'static,
+    select: impl Fn(&Event<'_>) -> bool + Send + Sync + 'static,
+    hit: impl FnOnce(Event<'_>) -> Result<(), CustodyError> + Send + 'static,
 ) -> (Seam, Reached) {
-    let fired = Rc::new(Cell::new(false));
+    let fired = Arc::new(AtomicBool::new(false));
     let observer = Once {
         select,
-        hit: RefCell::new(Some(hit)),
-        fired: Rc::clone(&fired),
+        hit: Mutex::new(Some(hit)),
+        fired: Arc::clone(&fired),
     };
-    (Seam::armed(Rc::new(observer)), Reached(fired))
+    (Seam::armed(Arc::new(observer)), Reached(fired))
 }
 
 /// The I/O refusal a cut step's operation reports.
@@ -185,7 +190,7 @@ pub(crate) fn cut_parent_sync() -> Seam {
 /// A seam that runs `mutation` over the directory when the sequence first reaches `step`.
 pub(crate) fn mutate_at(
     step: Step,
-    mutation: impl FnOnce(&AdmittedStoreDir) + 'static,
+    mutation: impl FnOnce(&AdmittedStoreDir) + Send + 'static,
 ) -> (Seam, Reached) {
     once(
         move |event| is_step(event, step),
