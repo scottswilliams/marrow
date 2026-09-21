@@ -88,13 +88,20 @@ pub fn serve() -> u8 {
         &frame_tx,
     );
 
-    // Close every channel end the coordinator holds, so a producer blocked on a send or
-    // a receive returns, then wait for the threads whose remaining work is bounded. The
-    // reader may sit in a stdin read nothing here can interrupt, so it is left to the
-    // process exit rather than joined.
-    drop((
-        ingress_rx, result_rx, receipt_rx, wake_rx, work_tx, frame_tx,
-    ));
+    // The terminal drain, bounded by the outbound credit: every frame already admitted
+    // reaches the writer, which keeps writing once its receipts have no taker — so the
+    // receipt end closes first, and the frame end only after the last frame is queued.
+    drop(receipt_rx);
+    for bytes in coordinator.outbound.outbox.drain(..) {
+        if frame_tx.send(bytes).is_err() {
+            break;
+        }
+    }
+    // Close the channel ends the coordinator still holds, so a producer blocked on a
+    // send or a receive returns, then wait for the threads whose remaining work is
+    // bounded. The reader may sit in a stdin read nothing here can interrupt, so it is
+    // left to the process exit rather than joined.
+    drop((ingress_rx, result_rx, wake_rx, work_tx, frame_tx));
     for handle in [worker, writer] {
         let _ = handle.join();
     }
@@ -310,9 +317,9 @@ fn writer_loop(frames: &Receiver<Vec<u8>>, link: &Link<Receipt>) {
             return;
         }
         drop(handle);
-        if !link.send(Receipt) {
-            return;
-        }
+        // A receipt with no taker is the terminal drain: the coordinator has stopped and
+        // waits for every frame still queued to be written.
+        link.send(Receipt);
     }
 }
 
@@ -1758,18 +1765,22 @@ mod tests {
     // ---- Law: a lost producer thread is terminal, never a hang ----
 
     /// A worker that unwinds while the coordinator is parked still ends the server: its
-    /// link disconnects and then wakes the coordinator into observing the loss.
+    /// link disconnects and then wakes the coordinator into observing the loss. Every
+    /// other producer, and a spare wake sender, stay alive for the whole test, so neither
+    /// a closed wake channel nor any other event can end the server: only the loss can.
     #[test]
     fn a_lost_worker_is_terminal() {
+        let dir = temp_project("lost-worker", "module main\n");
         let (wake_tx, wake_rx) = sync_channel(1);
         let (_ingress_tx, ingress_rx) = sync_channel(1);
         let (result_tx, result_rx) = sync_channel(1);
         let (_receipt_tx, receipt_rx) = sync_channel(1);
         let (work_tx, _work_rx) = sync_channel(1);
-        let (frame_tx, _frame_rx) = sync_channel(1);
+        let (frame_tx, frame_rx) = sync_channel(1);
         let worker = Link::new(result_tx, &wake_tx);
+        let mut coordinator = Coordinator::new();
+        coordinator.on_frame(initialize_body(&root_uri(&dir)).as_bytes());
         let server = std::thread::spawn(move || {
-            let mut coordinator = Coordinator::new();
             drive(
                 &mut coordinator,
                 &ingress_rx,
@@ -1780,18 +1791,19 @@ mod tests {
                 &frame_tx,
             )
         });
-        // Let the server park: the wake slot holds one, so the second send returns only
-        // once the loop has taken the first from inside its wait. The loss below then
-        // lands on a loop that has already parked, with nothing else to wake it.
-        wake_tx.send(()).unwrap();
-        wake_tx.send(()).unwrap();
-        drop(wake_tx);
+        // The initialize response is forwarded immediately before the loop waits, so
+        // receiving it is the rendezvous with a server about to park with nothing to
+        // wake it but the loss below.
+        frame_rx
+            .recv()
+            .expect("the initialize response is forwarded before the wait");
         drop(worker);
         assert_eq!(
             server.join().unwrap(),
             1,
             "a lost worker ends the server nonzero"
         );
+        drop(wake_tx);
     }
 
     /// The first terminal transition wins: an `exit` queued behind a lost worker cannot

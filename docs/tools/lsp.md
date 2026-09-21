@@ -28,7 +28,8 @@ initialization every other request receives `-32002`. After `shutdown`, a
 semantic request receives `-32002` and any other request `-32600`. `shutdown`
 followed by `exit` terminates with exit code `0`. An `exit` before `shutdown`, end of input
 without `exit`, or a fault inside the server terminates with a nonzero code; a
-fault is reported on standard error.
+fault is reported on standard error. Responses and notifications already
+accepted when the server stops are written before it exits.
 
 At initialization the server takes one workspace root: a single
 `workspaceFolders` entry, or `rootUri` when no folder is given. Two or more
@@ -73,7 +74,8 @@ of the offset. An unfinished edit (a bare `Enum::`, a `receiver.`, an open call
 argument) still classifies through the parser's recovery.
 
 Positions are exchanged in the LSP UTF-16 encoding; the server maps them to and
-from the compiler's UTF-8 spans. A line ends before its `\n` or `\r\n` terminator. The advertised trigger characters (`.`, `:`, `(`,
+from the compiler's UTF-8 spans. A line ends before its `\n`, `\r\n`, or `\r`
+terminator. The advertised trigger characters (`.`, `:`, `(`,
 `,`) are an editor hint; classification is positional.
 
 ## Overlays and staleness

@@ -177,6 +177,37 @@ fn exit_ends_the_process_while_stdin_stays_open() {
     );
 }
 
+/// Responses already admitted when an immediate `exit` arrives all reach the client:
+/// the terminal drain writes everything queued before the process ends.
+#[test]
+fn immediate_exit_drains_every_admitted_response() {
+    let dir = temp_project("exit-drain", "module main\n");
+    let mut conn = Connection::spawn();
+    initialize(&mut conn, &dir);
+    conn.request(9, "shutdown", Value::Null);
+    let ids: Vec<i64> = (10..24).collect();
+    for id in &ids {
+        conn.request(*id, "noSuchMethod", Value::Null);
+    }
+    conn.notify("exit", Value::Null);
+    let mut answered = Vec::new();
+    while let Some(message) = conn.recv() {
+        if let Some(id) = message.get("id").and_then(Value::as_i64) {
+            answered.push(id);
+        }
+    }
+    let expected: Vec<i64> = std::iter::once(9).chain(ids).collect();
+    assert_eq!(
+        answered, expected,
+        "every admitted response arrives, in order"
+    );
+    assert_eq!(
+        conn.wait_keeping_stdin_open(),
+        0,
+        "exit after shutdown is zero"
+    );
+}
+
 #[test]
 fn eof_without_exit_is_nonzero() {
     let dir = temp_project("eof", "module main\n");

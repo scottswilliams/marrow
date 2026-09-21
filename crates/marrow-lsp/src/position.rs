@@ -19,7 +19,8 @@ use lsp_types::{Position, Range};
 pub(crate) struct LineMap<'a> {
     source: &'a str,
     /// The byte offset at which each line begins. The first entry is `0`; a trailing
-    /// newline opens one final empty line.
+    /// terminator opens one final empty line. A line ends at `\n`, `\r\n`, or a lone
+    /// `\r`, the three terminators the protocol recognizes.
     line_starts: Vec<usize>,
 }
 
@@ -28,9 +29,22 @@ impl<'a> LineMap<'a> {
     /// input files that parsed always are; a non-UTF-8 file is never queried for a
     /// span-bearing fact).
     pub(crate) fn new(source: &'a str) -> Self {
-        let line_starts = std::iter::once(0)
-            .chain(source.match_indices('\n').map(|(index, _)| index + 1))
-            .collect();
+        let bytes = source.as_bytes();
+        let mut line_starts = vec![0];
+        let mut index = 0;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'\n' => line_starts.push(index + 1),
+                b'\r' => {
+                    if bytes.get(index + 1) == Some(&b'\n') {
+                        index += 1;
+                    }
+                    line_starts.push(index + 1);
+                }
+                _ => {}
+            }
+            index += 1;
+        }
         Self {
             source,
             line_starts,
@@ -53,19 +67,16 @@ impl<'a> LineMap<'a> {
         Position::new(line as u32, character as u32)
     }
 
-    /// The byte at which line `line`'s content ends: before its `\n` or `\r\n`
+    /// The byte at which line `line`'s content ends: before its `\n`, `\r\n`, or `\r`
     /// terminator, or at the end of source for the last line. An offset inside the
     /// terminator maps to the line's end, as the protocol's line end is the content end.
     fn content_end(&self, line: usize) -> usize {
         let Some(&next) = self.line_starts.get(line + 1) else {
             return self.source.len();
         };
-        let terminator = if self.source.as_bytes()[..next - 1].ends_with(b"\r") {
-            2
-        } else {
-            1
-        };
-        next - terminator
+        let bytes = self.source.as_bytes();
+        let crlf = bytes[next - 1] == b'\n' && next >= 2 && bytes[next - 2] == b'\r';
+        next - if crlf { 2 } else { 1 }
     }
 
     /// The LSP range spanning a half-open byte range.
@@ -202,6 +213,28 @@ mod tests {
         assert_eq!(empty.position_at(1), Position::new(0, 0));
         assert_eq!(empty.byte_at(Position::new(0, 5)), 0);
         assert_eq!(empty.end_position(), Position::new(1, 0));
+    }
+
+    #[test]
+    fn a_lone_carriage_return_ends_a_line() {
+        let map = LineMap::new("ab\rcd");
+        assert_eq!(map.position_at(2), Position::new(0, 2));
+        assert_eq!(map.position_at(3), Position::new(1, 0));
+        assert_eq!(map.end_position(), Position::new(1, 2));
+        assert_eq!(map.byte_at(Position::new(0, 9)), 2, "clamps before the CR");
+        assert_eq!(map.byte_at(Position::new(1, 1)), 4);
+        let trailing = LineMap::new("ab\r");
+        assert_eq!(trailing.position_at(2), Position::new(0, 2));
+        assert_eq!(trailing.end_position(), Position::new(1, 0));
+        assert_eq!(trailing.byte_at(Position::new(0, 9)), 2);
+        assert_eq!(trailing.byte_at(Position::new(1, 0)), 3);
+        // A CR before a CRLF is its own terminator, not part of the next one.
+        let mixed = LineMap::new("a\r\r\nb");
+        assert_eq!(mixed.position_at(2), Position::new(1, 0));
+        assert_eq!(mixed.position_at(3), Position::new(1, 0));
+        assert_eq!(mixed.position_at(4), Position::new(2, 0));
+        assert_eq!(mixed.byte_at(Position::new(1, 5)), 2);
+        assert_eq!(mixed.byte_at(Position::new(2, 0)), 4);
     }
 
     #[test]
