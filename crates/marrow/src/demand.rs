@@ -1,20 +1,18 @@
 //! Shared durable-demand rendering: one owner for the lines that describe each
 //! export's verifier-reconstructed durable access in source spelling.
 //!
-//! Two renderings project from the same demand facts. [`demand_lines`] is the full
-//! per-export `module.item <sentence>` form — every read and write atom, one line per
-//! export. `marrow image` prints it on standard error while the owner reviews the
-//! authority a deployment ceiling accepts, and `marrow check --demand` prints it on
-//! standard output for downstream consumers. [`demand_summary_lines`] is the default
-//! `marrow check` view: the same facts grouped by module, exports that share an
-//! identical demand listed once, each demand rolled up to its roots with a child-place
-//! count, and storeless exports collapsed to one note per module. Neither rendering
-//! reclassifies demand — both join the compiler's export directory to the verified
-//! image and consume the compiler-owned spelling projection.
+//! Two renderings project from the same demand facts. [`demand_report_lines`] is the
+//! `marrow check` report: exports grouped by module, each naming every durable place it
+//! reads and writes, exports that share an identical demand listed once, and storeless
+//! exports collapsed to one note per module. [`demand_lines`] is the per-export
+//! `module.item <sentence>` form `marrow image` prints on standard error while the owner
+//! reviews the authority a deployment ceiling accepts. Neither rendering reclassifies
+//! demand — both join the compiler's export directory to the verified image and consume
+//! the compiler-owned spelling projection.
 
 use std::collections::BTreeMap;
 
-use marrow_compile::{DemandSummary, DurableNaming, ExportEntry, RootDemand};
+use marrow_compile::{DemandPlaces, DurableNaming, ExportEntry};
 use marrow_verify::VerifiedImage;
 
 /// A coherence failure building the demand lines: the compiler's export directory
@@ -51,17 +49,9 @@ pub(crate) fn demand_lines(
     naming: &DurableNaming,
     image: &VerifiedImage,
 ) -> Result<Vec<String>, DemandNamingError> {
-    let mut ordered: Vec<&ExportEntry> = exports.iter().collect();
-    ordered.sort_by(|a, b| (&a.module, &a.item).cmp(&(&b.module, &b.item)));
-    let mut lines = Vec::with_capacity(ordered.len());
-    for entry in ordered {
-        let export = image
-            .export_by_id(entry.id)
-            .ok_or(DemandNamingError::DirectoryImageDisagree)?;
-        let demand = image
-            .function(export.function())
-            .expect("verified export function")
-            .demand();
+    let mut lines = Vec::with_capacity(exports.len());
+    for entry in ordered(exports) {
+        let demand = demand_of(entry, image)?;
         let sentence = naming
             .demand_sentence(demand)
             .ok_or(DemandNamingError::UnnameablePlace)?;
@@ -70,23 +60,25 @@ pub(crate) fn demand_lines(
     Ok(lines)
 }
 
-/// One export paired with the demand facts a summary renders it from: its full sentence
-/// (the identity that groups exports with an identical demand, and the exact `--demand`
-/// line) and its root rollup. `storeless` is the empty demand — those exports collapse
-/// into one per-module note rather than each printing a line.
+/// One export paired with the exact places it reads and writes. `places` is also the
+/// identity that groups exports with an identical demand; an empty demand is storeless,
+/// and those exports collapse into one per-module note rather than each printing a line.
 struct ExportRecord {
     module: String,
     item: String,
-    sentence: String,
-    summary: DemandSummary,
-    storeless: bool,
+    places: DemandPlaces,
 }
 
-/// Build the human-shaped default `marrow check` summary. Modules and exports are
-/// ordered by spelling and grouping is a pure function of the demand facts, so the
-/// output is byte-stable across runs. The full per-export atom sentences stay available
-/// through [`demand_lines`] (`marrow check --demand`).
-pub(crate) fn demand_summary_lines(
+impl ExportRecord {
+    fn storeless(&self) -> bool {
+        self.places.reads.is_empty() && self.places.writes.is_empty()
+    }
+}
+
+/// Build the `marrow check` report. Modules and exports are ordered by spelling and
+/// grouping is a pure function of the demand facts, so the output is byte-stable across
+/// runs.
+pub(crate) fn demand_report_lines(
     exports: &[ExportEntry],
     naming: &DurableNaming,
     image: &VerifiedImage,
@@ -112,54 +104,60 @@ pub(crate) fn demand_summary_lines(
     Ok(lines)
 }
 
-/// Resolve every export to its demand facts, in `module.item` order. The sentence and
-/// the summary come from the same demand through the same compiler-owned join, so the
-/// grouping key and the rendered rollup never disagree.
+/// The export directory in `module.item` order.
+fn ordered(exports: &[ExportEntry]) -> Vec<&ExportEntry> {
+    let mut ordered: Vec<&ExportEntry> = exports.iter().collect();
+    ordered.sort_by(|a, b| (&a.module, &a.item).cmp(&(&b.module, &b.item)));
+    ordered
+}
+
+/// One export's verifier-reconstructed demand, joined through the compiler's directory.
+fn demand_of<'a>(
+    entry: &ExportEntry,
+    image: &'a VerifiedImage,
+) -> Result<marrow_image::DemandView<'a>, DemandNamingError> {
+    let export = image
+        .export_by_id(entry.id)
+        .ok_or(DemandNamingError::DirectoryImageDisagree)?;
+    Ok(image
+        .function(export.function())
+        .expect("verified export function")
+        .demand())
+}
+
+/// Resolve every export to its exact places, in `module.item` order.
 fn collect_records(
     exports: &[ExportEntry],
     naming: &DurableNaming,
     image: &VerifiedImage,
 ) -> Result<Vec<ExportRecord>, DemandNamingError> {
-    let mut ordered: Vec<&ExportEntry> = exports.iter().collect();
-    ordered.sort_by(|a, b| (&a.module, &a.item).cmp(&(&b.module, &b.item)));
-    let mut records = Vec::with_capacity(ordered.len());
-    for entry in ordered {
-        let export = image
-            .export_by_id(entry.id)
-            .ok_or(DemandNamingError::DirectoryImageDisagree)?;
-        let demand = image
-            .function(export.function())
-            .expect("verified export function")
-            .demand();
-        let sentence = naming
-            .demand_sentence(demand)
-            .ok_or(DemandNamingError::UnnameablePlace)?;
-        let summary = naming
-            .demand_summary(demand)
+    let mut records = Vec::with_capacity(exports.len());
+    for entry in ordered(exports) {
+        let places = naming
+            .demand_places(demand_of(entry, image)?)
             .ok_or(DemandNamingError::UnnameablePlace)?;
         records.push(ExportRecord {
             module: entry.module.clone(),
             item: entry.item.clone(),
-            sentence,
-            summary,
-            storeless: demand.is_empty(),
+            places,
         });
     }
     Ok(records)
 }
 
 /// Render one module: a header, one entry per distinct demand (exports that share a
-/// demand listed together), and a single trailing note for any storeless exports. A
-/// module whose exports are all storeless folds to its header line alone.
+/// demand listed together) naming every place read and written, and a single trailing
+/// note for any storeless exports. A module whose exports are all storeless folds to its
+/// header line alone.
 fn render_module(lines: &mut Vec<String>, module: &str, records: &[&ExportRecord]) {
     let storeless: Vec<&str> = records
         .iter()
-        .filter(|record| record.storeless)
+        .filter(|record| record.storeless())
         .map(|record| record.item.as_str())
         .collect();
     let durable: Vec<&ExportRecord> = records
         .iter()
-        .filter(|record| !record.storeless)
+        .filter(|record| !record.storeless())
         .copied()
         .collect();
 
@@ -183,12 +181,12 @@ fn render_module(lines: &mut Vec<String>, module: &str, records: &[&ExportRecord
                 count(items.len(), "export"),
             ));
         }
-        let summary = &group[0].summary;
-        if let Some(rendered) = render_roots(&summary.reads) {
-            lines.push(format!("    reads {rendered}"));
+        let places = &group[0].places;
+        if !places.reads.is_empty() {
+            lines.push(format!("    reads {}", places.reads.join(", ")));
         }
-        if let Some(rendered) = render_roots(&summary.writes) {
-            lines.push(format!("    writes {rendered}"));
+        if !places.writes.is_empty() {
+            lines.push(format!("    writes {}", places.writes.join(", ")));
         }
     }
     if !storeless.is_empty() {
@@ -196,51 +194,21 @@ fn render_module(lines: &mut Vec<String>, module: &str, records: &[&ExportRecord
     }
 }
 
-/// Group durable exports that share an identical demand, keyed by their full sentence.
-/// Groups appear in first-appearance order over the `module.item`-sorted input, so both
-/// the group order and each group's member order are deterministic.
+/// Group durable exports that share an identical demand. Groups appear in
+/// first-appearance order over the `module.item`-sorted input, so both the group order
+/// and each group's member order are deterministic.
 fn group_by_demand<'a>(records: &[&'a ExportRecord]) -> Vec<Vec<&'a ExportRecord>> {
-    let mut groups: Vec<(&str, Vec<&'a ExportRecord>)> = Vec::new();
+    let mut groups: Vec<Vec<&'a ExportRecord>> = Vec::new();
     for &record in records {
         match groups
             .iter_mut()
-            .find(|(sentence, _)| *sentence == record.sentence.as_str())
+            .find(|members| members[0].places == record.places)
         {
-            Some((_, members)) => members.push(record),
-            None => groups.push((record.sentence.as_str(), vec![record])),
+            Some(members) => members.push(record),
+            None => groups.push(vec![record]),
         }
     }
-    groups.into_iter().map(|(_, members)| members).collect()
-}
-
-/// Render one coverage's roots as `^a (+2 places), ^b (+1), ^c`, or `None` for no roots.
-/// The count is distinct child places under the root — stored fields, managed indexes,
-/// static groups, or keyed branches — so the kind-neutral noun "place" is used rather than
-/// "field", which the full `--demand` form names exactly (`^root.index`). The unit is
-/// spelled on the first root that carries a count and abbreviated after, so a reader learns
-/// it once without repeating it down a long list.
-fn render_roots(roots: &[RootDemand]) -> Option<String> {
-    if roots.is_empty() {
-        return None;
-    }
-    let mut unit_spelled = false;
-    let mut parts = Vec::with_capacity(roots.len());
-    for root in roots {
-        if root.child_count == 0 {
-            parts.push(root.root.clone());
-        } else if unit_spelled {
-            parts.push(format!("{} (+{})", root.root, root.child_count));
-        } else {
-            let unit = if root.child_count == 1 {
-                "place"
-            } else {
-                "places"
-            };
-            parts.push(format!("{} (+{} {unit})", root.root, root.child_count));
-            unit_spelled = true;
-        }
-    }
-    Some(parts.join(", "))
+    groups
 }
 
 /// `1 export` / `3 exports`: a count with its noun pluralized. The nouns this renderer

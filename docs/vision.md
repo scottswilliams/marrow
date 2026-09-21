@@ -69,8 +69,8 @@ exported interface is refused, and the
 Evolving stored data under new declarations is described under
 [durable programming](future/durable-programming.md).
 
-Running code needs authority. `marrow check --demand` lists the durable places
-each export reads and writes. That demand describes; it grants nothing. Attaching
+Running code needs authority. `marrow check` lists the durable places each
+export reads and writes. That demand describes; it grants nothing. Attaching
 deployment authority to the same paths is described under
 [path effects and authority](future/path-effects-and-authority.md).
 

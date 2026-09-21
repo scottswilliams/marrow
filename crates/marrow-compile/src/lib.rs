@@ -61,7 +61,7 @@ pub use compile::{
     ResourceLimitKind, TestEntry, check, compile, compile_with_tests,
 };
 pub use decl::{DeclarationNamespace, RefusalReport, SourceStage};
-pub use demand::{DemandSummary, DurableNaming, RootDemand};
+pub use demand::{DemandPlaces, DurableNaming};
 pub use diag::{
     IdentityGap, NameFamily, RefusedDeclaration, SourceDiagnostic, Steer, TypeMismatch,
     TypeSpelling, Unresolved,

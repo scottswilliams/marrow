@@ -71,135 +71,67 @@ impl DurableNaming {
     }
 
     /// The per-export demand sentence: which durable places the export reads and which it
-    /// writes, each named by its durable path in source spelling.
-    ///
-    /// Access is grouped by read/write coverage — a presence probe, a field or entry
-    /// read, and an ordered index or family traversal are all *reads*; a write and an
-    /// erase are *writes* — the same projection the store ceiling checks. A place a
-    /// read-modify-write export both reads and writes appears in both clauses. Paths are
-    /// ordered by spelling and de-duplicated, so the sentence is a stable function of the
-    /// demand set. `None` only if a demanded node is unspellable, which cannot happen for
-    /// a demand reconstructed from an admitted graph.
+    /// writes, each named by its durable path in source spelling, as prose:
+    /// `reads ^a and ^a.b; writes ^a.b`. The places are those of
+    /// [`Self::demand_places`], so the sentence and the place lists never disagree.
     pub fn demand_sentence(&self, demand: DemandView<'_>) -> Option<String> {
         if demand.is_empty() {
             return Some("reads or writes no durable data".to_string());
         }
-        let mut reads: Vec<String> = Vec::new();
-        let mut writes: Vec<String> = Vec::new();
-        for atom in demand.atoms() {
-            let spelled = self.spell(atom.path())?;
-            if atom.class().mutates() {
-                writes.push(spelled);
-            } else {
-                reads.push(spelled);
-            }
-        }
+        let places = self.demand_places(demand)?;
         let mut clauses: Vec<String> = Vec::new();
-        if let Some(list) = joined(reads) {
+        if let Some(list) = joined(&places.reads) {
             clauses.push(format!("reads {list}"));
         }
-        if let Some(list) = joined(writes) {
+        if let Some(list) = joined(&places.writes) {
             clauses.push(format!("writes {list}"));
         }
         Some(clauses.join("; "))
     }
 
-    /// The per-export demand projected to durable **roots**: each touched root and how
-    /// many distinct child places under it the export touches, rather than every child
-    /// atom. Derived from the same atoms and coverage classification as
-    /// [`Self::demand_sentence`], so the two never disagree. `None` only for an
-    /// unspellable node, which an admitted graph cannot produce.
-    pub fn demand_summary(&self, demand: DemandView<'_>) -> Option<DemandSummary> {
-        Some(DemandSummary {
-            reads: self.roll_up(demand, false)?,
-            writes: self.roll_up(demand, true)?,
+    /// The per-export demand as exact places in source spelling, split by coverage.
+    ///
+    /// Access is grouped by read/write coverage — a presence probe, a field or entry
+    /// read, and an ordered index or family traversal are all *reads*; a write and an
+    /// erase are *writes* — the same projection the store ceiling checks. A place a
+    /// read-modify-write export both reads and writes appears in both lists. Each list is
+    /// ordered by spelling with each place once, so the result is a stable function of the
+    /// demand set. `None` only if a demanded node is unspellable, which cannot happen for
+    /// a demand reconstructed from an admitted graph.
+    pub fn demand_places(&self, demand: DemandView<'_>) -> Option<DemandPlaces> {
+        let mut reads = BTreeSet::new();
+        let mut writes = BTreeSet::new();
+        for atom in demand.atoms() {
+            let spelled = self.spell(atom.path())?;
+            if atom.class().mutates() {
+                writes.insert(spelled);
+            } else {
+                reads.insert(spelled);
+            }
+        }
+        Some(DemandPlaces {
+            reads: reads.into_iter().collect(),
+            writes: writes.into_iter().collect(),
         })
     }
-
-    /// Collect one coverage's atoms into per-root [`RootDemand`]s: the roots this export
-    /// reads (or writes) in spelling order, each carrying the count of distinct child
-    /// places it touches under that root with that coverage. A root touched only as a
-    /// whole entry carries a zero child count.
-    fn roll_up(&self, demand: DemandView<'_>, mutating: bool) -> Option<Vec<RootDemand>> {
-        // Root spelling -> distinct child extensions under it. The child key is the
-        // atom's spelled remainder below the root, so two atoms of the same field under
-        // different operation classes count once, as in the sentence.
-        let mut roots: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        for atom in demand.atoms() {
-            if atom.class().mutates() != mutating {
-                continue;
-            }
-            let (root, child) = self.split_root(atom.path())?;
-            let children = roots.entry(root).or_default();
-            if let Some(child) = child {
-                children.insert(child);
-            }
-        }
-        Some(
-            roots
-                .into_iter()
-                .map(|(root, children)| RootDemand {
-                    root,
-                    child_count: children.len(),
-                })
-                .collect(),
-        )
-    }
-
-    /// Split one durable node's [`SemanticPath`] into its root spelling (`^name`) and the
-    /// spelled remainder below the root (`.a.b`, or `None` for a whole-entry atom).
-    /// Reuses the same ledger-id join and sigils as [`Self::spell`], so a summary and a
-    /// sentence spell the same node identically, and is `None` on an unknown step.
-    fn split_root(&self, path: &SemanticPath) -> Option<(String, Option<String>)> {
-        let mut root: Option<String> = None;
-        let mut child = String::new();
-        for step in path.steps() {
-            if step.kind == SemanticStepKind::Application {
-                continue;
-            }
-            let (sigil, name) = self.by_id.get(&step.id)?;
-            match sigil {
-                PathSigil::Root => root = Some(format!("^{name}")),
-                PathSigil::Child => {
-                    child.push('.');
-                    child.push_str(name);
-                }
-            }
-        }
-        Some((root?, (!child.is_empty()).then_some(child)))
-    }
 }
 
-/// One durable root in an export's demand summary: the root in source spelling and how
-/// many distinct child places under it the export touches with one coverage.
+/// An export's durable demand as exact places, split by read/write coverage: the same
+/// facts [`DurableNaming::demand_sentence`] renders as prose, exposed as typed lists so
+/// a renderer never re-derives spelling or coverage.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RootDemand {
-    /// The store root in source spelling, e.g. `^patients`.
-    pub root: String,
-    /// Distinct demanded child places under this root with this coverage — stored
-    /// fields, managed indexes, static groups, or keyed branches. Zero when the export
-    /// touches only the root's whole entry.
-    pub child_count: usize,
+pub struct DemandPlaces {
+    /// The places this export reads, in spelling order, each once.
+    pub reads: Vec<String>,
+    /// The places this export writes, in spelling order, each once.
+    pub writes: Vec<String>,
 }
 
-/// An export's durable demand projected to roots, split by read/write coverage: the same
-/// projection [`DurableNaming::demand_sentence`] renders as prose, exposed as typed facts
-/// so a renderer never re-derives spelling or coverage.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DemandSummary {
-    /// The roots this export reads, in spelling order.
-    pub reads: Vec<RootDemand>,
-    /// The roots this export writes, in spelling order.
-    pub writes: Vec<RootDemand>,
-}
-
-/// Sort, de-duplicate, and join one clause's paths in the steady reference register:
-/// `A`, `A and B`, or `A, B, and C`. `None` for an empty clause, so a clause with no
-/// paths is dropped rather than rendered empty.
-fn joined(mut paths: Vec<String>) -> Option<String> {
-    paths.sort();
-    paths.dedup();
-    match paths.as_slice() {
+/// Join one clause's places in the steady reference register: `A`, `A and B`, or
+/// `A, B, and C`. `None` for an empty clause, so a clause with no places is dropped
+/// rather than rendered empty.
+fn joined(paths: &[String]) -> Option<String> {
+    match paths {
         [] => None,
         [only] => Some(only.clone()),
         [first, second] => Some(format!("{first} and {second}")),
@@ -209,7 +141,7 @@ fn joined(mut paths: Vec<String>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DurableNaming, PathSigil, RootDemand};
+    use super::{DemandPlaces, DurableNaming, PathSigil};
     use marrow_image::{
         DemandAtom, ExportDemand, LedgerIdBytes, OperationClass, SemanticPath, SemanticStep,
         SemanticStepKind,
@@ -330,141 +262,32 @@ mod tests {
     }
 
     #[test]
-    fn demand_summary_rolls_child_reads_up_to_their_root_with_a_child_count() {
-        // A managed index counts as a child place alongside the two fields, so the
-        // whole-entry read plus three child reads roll up to one root with a count of 3.
-        let summary = naming()
-            .demand_summary(
+    fn demand_places_split_coverage_and_name_every_place_once() {
+        // The same field read and written appears in both lists; a whole-entry read, a
+        // field, and an index are each one place; a repeated atom is listed once.
+        let places = naming()
+            .demand_places(
                 ExportDemand::from_atoms(vec![
                     DemandAtom::new(root_path(), OperationClass::Read),
                     DemandAtom::new(field_path(TITLE), OperationClass::Read),
-                    DemandAtom::new(field_path(SHELF), OperationClass::Read),
+                    DemandAtom::new(field_path(TITLE), OperationClass::Read),
                     DemandAtom::new(index_path(), OperationClass::IndexRead),
+                    DemandAtom::new(field_path(TITLE), OperationClass::Write),
+                    DemandAtom::new(field_path(SHELF), OperationClass::Erase),
                 ])
                 .as_view(),
             )
             .expect("every demanded node is nameable");
         assert_eq!(
-            summary.reads,
-            vec![RootDemand {
-                root: "^books".to_string(),
-                child_count: 3,
-            }],
+            places,
+            DemandPlaces {
+                reads: vec![
+                    "^books".to_string(),
+                    "^books.byIsbn".to_string(),
+                    "^books.title".to_string(),
+                ],
+                writes: vec!["^books.shelf".to_string(), "^books.title".to_string()],
+            }
         );
-        assert!(summary.writes.is_empty());
-    }
-
-    #[test]
-    fn demand_summary_splits_read_and_write_coverage_per_root() {
-        // Each coverage counts only its own children, so one root appears under both.
-        let summary = naming()
-            .demand_summary(
-                ExportDemand::from_atoms(vec![
-                    DemandAtom::new(field_path(TITLE), OperationClass::Read),
-                    DemandAtom::new(field_path(SHELF), OperationClass::Write),
-                ])
-                .as_view(),
-            )
-            .expect("every demanded node is nameable");
-        assert_eq!(
-            summary.reads,
-            vec![RootDemand {
-                root: "^books".to_string(),
-                child_count: 1,
-            }],
-        );
-        assert_eq!(
-            summary.writes,
-            vec![RootDemand {
-                root: "^books".to_string(),
-                child_count: 1,
-            }],
-        );
-    }
-
-    #[test]
-    fn demand_summary_counts_a_whole_entry_root_with_no_fields_as_zero() {
-        let summary = naming()
-            .demand_summary(
-                ExportDemand::from_atoms(vec![DemandAtom::new(root_path(), OperationClass::Write)])
-                    .as_view(),
-            )
-            .expect("every demanded node is nameable");
-        assert_eq!(
-            summary.writes,
-            vec![RootDemand {
-                root: "^books".to_string(),
-                child_count: 0,
-            }],
-        );
-    }
-
-    #[test]
-    fn demand_summary_de_duplicates_a_field_touched_under_two_classes() {
-        // Both classes are non-mutating reads of one child, so the field counts once.
-        let summary = naming()
-            .demand_summary(
-                ExportDemand::from_atoms(vec![
-                    DemandAtom::new(field_path(TITLE), OperationClass::Presence),
-                    DemandAtom::new(field_path(TITLE), OperationClass::Read),
-                ])
-                .as_view(),
-            )
-            .expect("every demanded node is nameable");
-        assert_eq!(
-            summary.reads,
-            vec![RootDemand {
-                root: "^books".to_string(),
-                child_count: 1,
-            }],
-        );
-    }
-
-    #[test]
-    fn an_empty_demand_summarizes_to_no_roots() {
-        let summary = naming()
-            .demand_summary(ExportDemand::from_atoms([]).as_view())
-            .expect("the empty demand is nameable");
-        assert!(summary.reads.is_empty());
-        assert!(summary.writes.is_empty());
-    }
-
-    #[test]
-    fn a_demand_summary_over_an_unknown_node_is_unnameable() {
-        let unknown = SemanticPath::root(id(APP), id(0x77));
-        let demand = ExportDemand::from_atoms([DemandAtom::new(unknown, OperationClass::Read)]);
-        assert!(naming().demand_summary(demand.as_view()).is_none());
-    }
-
-    #[test]
-    fn a_demand_over_an_unknown_node_is_unspellable() {
-        // The whole sentence is `None` rather than a partial or invented spelling.
-        let unknown = SemanticPath::root(id(APP), id(0x77));
-        let demand = ExportDemand::from_atoms([DemandAtom::new(unknown, OperationClass::Read)]);
-        assert!(naming().demand_sentence(demand.as_view()).is_none());
-    }
-
-    #[test]
-    fn naming_visits_only_selected_atoms() {
-        let known = DemandAtom::new(root_path(), OperationClass::Read);
-        let unknown = DemandAtom::new(SemanticPath::root(id(APP), id(0x77)), OperationClass::Read);
-        let owner = ExportDemand::from_atoms([unknown, known.clone()]);
-        let known_row = marrow_image::DemandSelection::from_ordinals(vec![0]);
-        let unknown_row = marrow_image::DemandSelection::from_ordinals(vec![1]);
-        let selected = owner.selected(&known_row).expect("known selection");
-        let expected = ExportDemand::from_atoms([known]);
-        assert_eq!(
-            naming().demand_sentence(selected),
-            naming().demand_sentence(expected.as_view())
-        );
-        assert_eq!(
-            naming().demand_summary(selected),
-            naming().demand_summary(expected.as_view())
-        );
-        let selected = owner
-            .selected(&unknown_row)
-            .expect("unknown selection is canonical");
-        assert!(naming().demand_sentence(selected).is_none());
-        assert!(naming().demand_summary(selected).is_none());
     }
 }

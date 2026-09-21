@@ -100,15 +100,27 @@ pub fn label(id: Id(^books)): string {
 
 `label` reads outside any transaction. A read needs no transaction and sees the last committed state. `$"{id}: {title}"` renders the identity without its root, so `label(Id(^books, 1))` returns `Id(1): Small Gods`, and an absent book renders as `Id(1): (absent)`.
 
-`marrow check --demand .` lists the durable places each export reads and writes:
+`marrow check .` lists the durable places each export reads and writes:
 
 ```text
-shelf.sample.add reads ^books and ^books.versions; writes ^books and ^books.versions
-shelf.sample.addNote reads ^books and ^books.notes; writes ^books.notes
-shelf.sample.label reads ^books.title
-shelf.sample.moveToShelf reads ^books and ^books.versions; writes ^books.currentVersion, ^books.shelf, and ^books.versions
-shelf.sample.remove writes ^books
-shelf.sample.shelfCount reads ^books.byShelf
+6 exports across 1 module
+
+shelf.sample: 6 exports
+  add
+    reads ^books, ^books.versions
+    writes ^books, ^books.versions
+  addNote
+    reads ^books, ^books.notes
+    writes ^books.notes
+  label
+    reads ^books.title
+  moveToShelf
+    reads ^books, ^books.versions
+    writes ^books.currentVersion, ^books.shelf, ^books.versions
+  remove
+    writes ^books
+  shelfCount
+    reads ^books.byShelf
 ```
 
 A whole-entry write is listed as a read and a write of its family, so `add`, `addNote`, and `remove` demand whole entries. `moveToShelf` names the two fields it updates and the `versions` family it creates an entry in, and `shelfCount` touches only the index.

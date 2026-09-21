@@ -75,8 +75,8 @@ states its bound with `at most N` and its overflow behavior with `on more`.
 Related writes belong together, so they share one `transaction` block and
 commit as one. A new program meets data the previous program wrote, so a store
 checks the program's durable shape before it opens. Running code needs authority
-over the places it touches, so `marrow check --demand` reports the durable
-places each export reads and writes.
+over the places it touches, so `marrow check` reports the durable places each
+export reads and writes.
 
 Data is navigated, not queried. A program reads or changes one durable element
 by its path and walks an explicit subtree with an ordinary loop. No mapping

@@ -65,15 +65,14 @@ fn a_durable_root_is_read_and_written_across_modules() {
     );
 }
 
-/// `marrow check --demand` describes each export's durable access demand in source
-/// spelling and exits 0. Both modules appear: `teller`'s read and write of `^accounts` —
-/// a root it does not declare — is the project-wide-roots law made visible in the report.
-/// The bytes are frozen so a regression that regionalizes root visibility is
-/// conspicuous.
+/// `marrow check` describes each export's durable access demand in source spelling and
+/// exits 0. Both modules appear: `teller`'s read and write of `^accounts` — a root it does
+/// not declare — is the project-wide-roots law made visible in the report. The bytes are
+/// frozen so a regression that regionalizes root visibility is conspicuous.
 #[test]
 fn check_reports_cross_module_root_demand() {
-    let output = Project::from_fixture("cross_module_roots")
-        .run_cli("cross-module-check", &["check", "--demand"]);
+    let output =
+        Project::from_fixture("cross_module_roots").run_cli("cross-module-check", &["check"]);
     assert!(
         output.status.success(),
         "check must succeed on the clean cross-module project: {}",
@@ -82,13 +81,23 @@ fn check_reports_cross_module_root_demand() {
     assert_eq!(output.stdout_text(), CROSS_MODULE_DEMAND_REPORT);
 }
 
-/// The frozen per-export demand report, one line per export in `module.item` order.
-/// `teller.deposit` reading `^accounts.balance` and writing the whole `^accounts` entry
-/// — and `teller.balanceOf` reading the field — pins that a root declared in `bank` is
-/// demandable from `teller`.
+/// The frozen demand report, exports grouped by module. `teller.deposit` reading
+/// `^accounts.balance` and writing the whole `^accounts` entry — and `teller.balanceOf`
+/// reading the field — pins that a root declared in `bank` is demandable from `teller`.
 const CROSS_MODULE_DEMAND_REPORT: &str = "\
-bank.openAccount reads ^accounts; writes ^accounts
-bank.ownerBalance reads ^accounts.balance
-teller.balanceOf reads ^accounts.balance
-teller.deposit reads ^accounts and ^accounts.balance; writes ^accounts
+4 exports across 2 modules
+
+bank: 2 exports
+  openAccount
+    reads ^accounts
+    writes ^accounts
+  ownerBalance
+    reads ^accounts.balance
+
+teller: 2 exports
+  balanceOf
+    reads ^accounts.balance
+  deposit
+    reads ^accounts, ^accounts.balance
+    writes ^accounts
 ";

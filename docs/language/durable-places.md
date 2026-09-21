@@ -622,11 +622,17 @@ has no whole-subtree delete or traversal that enumerates absent ancestors
 ## Access demand
 
 Every export has a demand: the durable places it reads and writes, through every
-function it calls. `marrow check --demand .` prints it for the first example:
+function it calls. `marrow check .` prints it for the first example:
 
 ```text
-docs.durable.shelf.put reads ^books; writes ^books
-docs.durable.shelf.title reads ^books.title
+2 exports across 1 module
+
+docs.durable.shelf: 2 exports
+  put
+    reads ^books
+    writes ^books
+  title
+    reads ^books.title
 ```
 
 A whole-entry write is listed as a read and a write. `writes ^books` names

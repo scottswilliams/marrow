@@ -12,7 +12,7 @@ publishes facts the parser owns and defines none of its own.
 |---|---|---|
 | Command outcomes | `marrow run` and `marrow test` with `--format jsonl` | One canonical JSON object per line. A `run` record's `outcome` is `value`, `diagnostic`, `artifact_rejected`, `fault`, `incomplete`, `outcome_unknown`, or `error`; a `test` record's is `passed`, `failed`, `errored`, or `incomplete`, followed by one `summary` object. The [failure kinds](../language/errors-and-transactions.md#failure-kinds) stay distinct. |
 | Diagnostics | every command | A dotted code (`check.type`, `parse.syntax`) with a 1-based source span; the closed registry is the [error code reference](../error-codes.md). |
-| Durable access demand | `marrow check` and `marrow check --demand` | The summary groups each export's reads and writes by module. `--demand` prints one line per export naming every durable place its call graph reads and writes, in source spelling: `main.put reads ^books; writes ^books`. |
+| Durable access demand | `marrow check` | Exports grouped by module, each naming every durable place its call graph reads and writes, in source spelling: `reads ^books` and `writes ^books` under `put`. |
 | Editor facts | `marrow-lsp` | Diagnostics, formatting, hover, definition, completion, signature help, and document symbols over the Language Server Protocol, from the [language server](lsp.md). |
 | Wire interface | `marrow client typescript` | A generated strict client whose method signatures and transfer types come from the verified image, described under [TypeScript client](typescript-client.md). |
 

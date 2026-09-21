@@ -1,96 +1,73 @@
-//! `marrow check`: the human-shaped default demand summary and the full per-export
-//! `--demand` form.
+//! `marrow check`: the demand report a clean project prints.
 //!
 //! A project travels the real production path through the built binary — capture, one
-//! compiler drive with tests included, then encode and verify. On a clean check the default
-//! output summarizes each export's verifier-reconstructed durable demand grouped by
-//! module: exports that share an identical demand are listed once, each demand names its
-//! roots with a child-place count, and storeless exports collapse to one note per
-//! module. `--demand` prints the full per-export sentence form instead — the exact
-//! bytes downstream consumers and the deployment-ceiling review read — so both surfaces
-//! are frozen here.
+//! compiler drive with tests included, then encode and verify. On a clean check the output
+//! reports each export's verifier-reconstructed durable demand grouped by module: every
+//! place the export reads and writes, in source spelling; exports that share an identical
+//! demand are listed once; storeless exports collapse to one note per module. This is the
+//! surface downstream consumers and the acceptance suite read, so it is frozen here.
 
 use crate::common::Project;
 
-/// The full per-export demand form for the bookstore fixture, printed by
-/// `marrow check --demand`: one line per export in `module.item` order, each naming every
-/// durable place it reads and writes. This is the frozen surface downstream consumers and
-/// `marrow image`'s ceiling review depend on; the default summary must never change it.
-const BOOKSTORE_DEMAND: &str = "bookstore.lookup reads ^books and ^books.byIsbn\n\
-     bookstore.put reads ^books; writes ^books\n";
-
-/// The default summary for the bookstore fixture: the module header, one entry per
-/// export, and each demand rolled up to its roots. The read-only `lookup` reads the
-/// entry and its one index (rolled to `^books (+1 place)`); `put` reads and writes the
-/// whole entry.
-const BOOKSTORE_SUMMARY: &str = "2 exports across 1 module\n\
+/// The report for the bookstore fixture: the header, the module, one entry per export
+/// naming every place it reads and writes. The read-only `lookup` reads the entry and
+/// its index; `put` reads and writes the whole entry.
+const BOOKSTORE_REPORT: &str = "2 exports across 1 module\n\
      \n\
      bookstore: 2 exports\n\
      \x20 lookup\n\
-     \x20   reads ^books (+1 place)\n\
+     \x20   reads ^books, ^books.byIsbn\n\
      \x20 put\n\
      \x20   reads ^books\n\
      \x20   writes ^books\n";
 
-/// The default summary for the `demand_summary` fixture, which exercises every collapse:
-/// an all-storeless module folds to its header line, two exports that share a demand are
-/// listed once, a root with several touched child places rolls up to a child-place count,
-/// and a storeless export in a durable module collapses to one note.
-const DEMAND_SUMMARY_REPORT: &str = "6 exports across 2 modules\n\
+/// The report for the `demand_summary` fixture, which exercises every grouping: an
+/// all-storeless module folds to its header line, two exports that share a demand are
+/// listed once, every child place is named under its root, and a storeless export in a
+/// durable module collapses to one note.
+const DEMAND_REPORT: &str = "6 exports across 2 modules\n\
      \n\
      checks: 2 exports, all storeless\n\
      \n\
      ledger: 4 exports\n\
      \x20 accountBalance\n\
-     \x20   reads ^accounts (+1 place)\n\
+     \x20   reads ^accounts.balance\n\
      \x20 alpha, beta (2 exports, one shared demand)\n\
-     \x20   reads ^accounts (+2 places), ^events\n\
-     \x20   writes ^accounts (+2 places), ^events\n\
+     \x20   reads ^accounts, ^accounts.balance, ^accounts.name, ^events\n\
+     \x20   writes ^accounts.balance, ^accounts.name, ^events\n\
      \x20 storeless: double\n";
 
-/// The default `check` prints the module-grouped demand summary and exits 0 on a clean
-/// project.
+/// A clean project prints the module-grouped demand report and exits 0.
 #[test]
-fn check_default_summarizes_demand_grouped_by_module() {
+fn check_reports_exact_places_grouped_by_module() {
     let output = Project::from_fixture("bookstore").run_cli("bookstore", &["check"]);
     assert!(
         output.success(),
         "check must succeed on a clean project: {}",
         output.stderr_text()
     );
-    assert_eq!(output.stdout_text(), BOOKSTORE_SUMMARY);
+    assert_eq!(output.stdout_text(), BOOKSTORE_REPORT);
 }
 
-/// An explicit project-directory argument summarizes the same project as the working
+/// An explicit project-directory argument reports the same project as the working
 /// directory.
 #[test]
 fn check_accepts_an_explicit_project_directory() {
     let output = Project::from_fixture("bookstore").run_cli("bookstore-arg", &["check", "."]);
     assert!(output.success(), "{output:?}");
-    assert_eq!(output.stdout_text(), BOOKSTORE_SUMMARY);
+    assert_eq!(output.stdout_text(), BOOKSTORE_REPORT);
 }
 
-/// `marrow check --demand` prints the full per-export sentence form, byte-for-byte the
-/// frozen surface downstream consumers read. Pinning it here guards the default summary
-/// from disturbing that surface.
+/// The report folds an all-storeless module, lists a shared demand once, names every
+/// child place, and collapses a storeless export, all on one fixture. The frozen snapshot
+/// pairs with typed assertions on each grouping so the contract, not only the bytes, is
+/// enforced.
 #[test]
-fn check_demand_prints_the_full_per_export_sentences() {
-    let output =
-        Project::from_fixture("bookstore").run_cli("bookstore-demand", &["check", "--demand"]);
-    assert!(output.success(), "{}", output.stderr_text());
-    assert_eq!(output.stdout_text(), BOOKSTORE_DEMAND);
-}
-
-/// The summary collapses an all-storeless module, de-duplicates a shared demand, rolls
-/// children up to their root, and collapses a storeless export, all on one fixture. The
-/// frozen snapshot pairs with typed assertions on each collapse so the contract, not
-/// only the bytes, is enforced.
-#[test]
-fn check_summary_dedups_collapses_and_rolls_up() {
-    let output = Project::from_fixture("demand_summary").run_cli("demand-summary", &["check"]);
+fn check_report_folds_shares_and_names_every_place() {
+    let output = Project::from_fixture("demand_summary").run_cli("demand-report", &["check"]);
     assert!(output.success(), "{}", output.stderr_text());
     let report = output.stdout_text();
-    assert_eq!(report, DEMAND_SUMMARY_REPORT);
+    assert_eq!(report, DEMAND_REPORT);
 
     // All-storeless module: one folded header line, and no per-export storeless line —
     // the collapsed export names do not appear at all.
@@ -106,34 +83,21 @@ fn check_summary_dedups_collapses_and_rolls_up() {
     );
     assert!(!report.contains("\n  beta\n"), "not listed alone: {report}");
 
-    // Root rollup: the summary names roots with a child-place count, never the child
-    // atoms — those stay behind `--demand`.
-    assert!(report.contains("^accounts (+2 places)"));
-    assert!(
-        !report.contains("^accounts.balance"),
-        "atoms hidden: {report}"
-    );
+    // Every place is named: the presence probe on `^accounts` that proves the entry,
+    // then each field, with no count standing in for them. A bare field read names
+    // only the field.
+    assert!(report.contains("^accounts, ^accounts.balance, ^accounts.name"));
+    assert!(report.contains("\n    reads ^accounts.balance\n"));
+    assert!(!report.contains("place"), "no roll-up: {report}");
 
     // A storeless export inside a durable module collapses to one note.
     assert!(report.contains("  storeless: double"));
-
-    // The `--demand` form of the same project keeps every atom the summary rolled away:
-    // the presence probe on `^accounts` that proves the entry, then each field.
-    let full = Project::from_fixture("demand_summary")
-        .run_cli("demand-summary-full", &["check", "--demand"]);
-    assert!(full.success(), "{}", full.stderr_text());
-    let atoms = full.stdout_text();
-    assert!(
-        atoms.contains("ledger.alpha reads ^accounts, ^accounts.balance"),
-        "{atoms}"
-    );
-    assert!(atoms.contains("^accounts.name"), "{atoms}");
 }
 
-/// The summary is a pure function of the demand facts: two runs of the same project
+/// The report is a pure function of the demand facts: two runs of the same project
 /// produce byte-identical output.
 #[test]
-fn check_summary_is_byte_stable_across_runs() {
+fn check_report_is_byte_stable_across_runs() {
     let project = Project::from_fixture("demand_summary");
     let first = project.run_cli("stable-a", &["check"]);
     let second = project.run_cli("stable-b", &["check"]);
@@ -170,44 +134,6 @@ fn check_reports_a_diagnostic_with_its_span_and_exits_nonzero() {
     let stderr = output.stderr_text();
     assert!(stderr.contains("src/main.mw:2:12"), "{stderr}");
     assert!(stderr.contains("check.type"), "{stderr}");
-}
-
-/// A duplicate `--demand` flag is a usage error and exits 2.
-#[test]
-fn check_rejects_a_duplicate_demand_flag() {
-    let output = Project::single("pub fn answer(): int {\n    return 1\n}\n")
-        .run_cli("dup-demand", &["check", "--demand", "--demand"]);
-    assert_eq!(output.code(), Some(2), "{}", output.stderr_text());
-}
-
-/// The default summary rolls each demand up to its roots, so no line is a wall of
-/// atoms. The `demand_wall` fixture has one export that reads and writes every field
-/// of three roots: its `--demand` sentence runs past 600 columns, and the summary that
-/// describes the same export stays under 300. The wall this collapses is asserted to
-/// exist, so a shorter fixture cannot pass this law vacuously.
-#[test]
-fn check_summary_rolls_a_wide_demand_up_to_its_roots() {
-    let project = Project::from_fixture("demand_wall");
-    let sentences = project.run_cli("demand-wall-sentences", &["check", "--demand"]);
-    assert!(sentences.status.success(), "{}", sentences.stderr_text());
-    let widest_sentence = widest_line(&sentences.stdout_text());
-    assert!(
-        widest_sentence >= 600,
-        "the per-export sentence is no longer a wall ({widest_sentence} cols)"
-    );
-
-    let summary = project.run_cli("demand-wall-summary", &["check"]);
-    assert!(summary.status.success(), "{}", summary.stderr_text());
-    let widest = widest_line(&summary.stdout_text());
-    assert!(
-        widest < 300,
-        "a summary line is still a wall ({widest} cols): {}",
-        summary.stdout_text()
-    );
-}
-
-fn widest_line(text: &str) -> usize {
-    text.lines().map(str::len).max().unwrap_or(0)
 }
 
 /// The `(file, code)` pairs of a `check` run's diagnostic lines, in report order.

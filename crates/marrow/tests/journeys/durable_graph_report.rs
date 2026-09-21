@@ -104,21 +104,37 @@ const ISOLATED: &str = "Graph Report\n\
      -- cycle --\n\
      \x20 none";
 
-/// The frozen per-export demand report `marrow check` prints, one line per export in
-/// `module.item` order. The read-only `report` reads both roots, the node's sparse and
-/// required fields, and the edge branch and its field; the build exports write what they
-/// mutate. Demand describes access and never grants it.
-const DEMAND: &str = "graph_report.addEdge reads ^nodes and ^nodes.edges; writes ^nodes and ^nodes.edges\n\
-     graph_report.addNode reads ^nodes; writes ^nodes\n\
-     graph_report.colorOf reads ^nodes.color\n\
-     graph_report.edgeWeight reads ^nodes.edges.weight\n\
-     graph_report.nodeExists reads ^nodes\n\
-     graph_report.outDegree reads ^nodes.edges\n\
-     graph_report.removeEdge writes ^nodes.edges\n\
-     graph_report.report reads ^config, ^nodes, ^nodes.color, ^nodes.edges, ^nodes.edges.weight, and ^nodes.label\n\
-     graph_report.setColor reads ^nodes; writes ^nodes.color\n\
-     graph_report.setRoot reads ^config; writes ^config\n\
-     graph_report.tint reads ^nodes; writes ^nodes.color\n";
+/// The frozen demand report `marrow check` prints, exports in `module.item` order and
+/// the two that share a demand listed once. The read-only `report` reads both roots, the
+/// node's sparse and required fields, and the edge branch and its field; the build
+/// exports write what they mutate. Demand describes access and never grants it.
+const DEMAND: &str = "11 exports across 1 module\n\
+     \n\
+     graph_report: 11 exports\n\
+     \x20 addEdge\n\
+     \x20   reads ^nodes, ^nodes.edges\n\
+     \x20   writes ^nodes, ^nodes.edges\n\
+     \x20 addNode\n\
+     \x20   reads ^nodes\n\
+     \x20   writes ^nodes\n\
+     \x20 colorOf\n\
+     \x20   reads ^nodes.color\n\
+     \x20 edgeWeight\n\
+     \x20   reads ^nodes.edges.weight\n\
+     \x20 nodeExists\n\
+     \x20   reads ^nodes\n\
+     \x20 outDegree\n\
+     \x20   reads ^nodes.edges\n\
+     \x20 removeEdge\n\
+     \x20   writes ^nodes.edges\n\
+     \x20 report\n\
+     \x20   reads ^config, ^nodes, ^nodes.color, ^nodes.edges, ^nodes.edges.weight, ^nodes.label\n\
+     \x20 setColor, tint (2 exports, one shared demand)\n\
+     \x20   reads ^nodes\n\
+     \x20   writes ^nodes.color\n\
+     \x20 setRoot\n\
+     \x20   reads ^config\n\
+     \x20   writes ^config\n";
 
 /// A rooted chain built across several committed transactions is observable by the
 /// read-only report and the read probes: each `addEdge`/`setRoot`/`setColor` commits to
@@ -270,12 +286,12 @@ fn the_fixture_tests_pass_through_marrow_test() {
     assert!(summary.contains(r#""total":7"#), "{summary}");
 }
 
-/// `marrow check --demand` describes each export's verifier-reconstructed durable demand
-/// in source spelling and exits 0 for the clean fixture. The sentence bytes are frozen.
+/// `marrow check` describes each export's verifier-reconstructed durable demand in
+/// source spelling and exits 0 for the clean fixture. The report bytes are frozen.
 #[test]
 fn check_reports_the_frozen_per_export_demand() {
     let output = Project::from_fixture("durable_graph_report")
-        .run_cli("durable-graph-report-check", &["check", "--demand"]);
+        .run_cli("durable-graph-report-check", &["check"]);
     assert!(
         output.success(),
         "check must succeed on the clean fixture: {}",

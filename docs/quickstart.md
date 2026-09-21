@@ -155,18 +155,25 @@ run. `marrow run` mints the ids before it looks the export up, so any name
 works: `marrow run mint` writes `.marrow/ids` and then reports that no such
 export exists.
 
-`marrow check .` is now clean: it groups the three exports under `main` and
-counts the places each one touches. `--demand` names every place, one line per
-export:
+`marrow check .` is now clean and names every place each export reads and
+writes:
 
 ```sh
-marrow check --demand .
+marrow check .
 ```
 
 ```text
-main.add reads ^notes; writes ^notes.text
-main.pin reads ^notes; writes ^notes.pinned
-main.textOf reads ^notes.text
+3 exports across 1 module
+
+main: 3 exports
+  add
+    reads ^notes
+    writes ^notes.text
+  pin
+    reads ^notes
+    writes ^notes.pinned
+  textOf
+    reads ^notes.text
 ```
 
 ```sh

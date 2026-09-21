@@ -3,8 +3,8 @@
 //! A resource is a declaration and a store root is an occurrence of it, so declaring the
 //! same resource at two placements is an ordinary program. Every other test of that split
 //! reaches it through the library; these reach it the way a person does — `marrow check`,
-//! `marrow check --demand`, `marrow run`, and `marrow image` over a project directory —
-//! because a split the CLI cannot carry is not one a program can use.
+//! `marrow run`, and `marrow image` over a project directory — because a split the CLI
+//! cannot carry is not one a program can use.
 //!
 //! Before this row the whole family stopped at the same place: the compiled image did not
 //! verify, so `check` printed `image.table`, `run` never reached its export, and `image`
@@ -97,13 +97,19 @@ fn single() -> Project {
 }
 
 /// Red R1: `marrow check` over a project whose two keyed roots share one resource with a
-/// nested branch prints the ordinary two-export demand summary and exits 0.
+/// nested branch prints the ordinary two-export demand report and exits 0, and each
+/// occurrence's demand stays qualified by the root it names.
 ///
 /// At the lane base this printed `image.table: the compiled image did not verify` and
 /// exited 1 — the compiler emitted the Product's branch entry record once per root, and the
-/// independent verifier rejected the duplicate durable identity.
+/// independent verifier rejected the duplicate durable identity. The two exports touch the
+/// same Product-scoped declaration nodes — `Book.notes` (the guard's presence probe) and
+/// `Book.notes.text` (the field write) carry one ledger identity between them — so a
+/// demand keyed on the declaration rather than the occurrence would render one entry for
+/// both roots, or the same root twice. The places must name `^a` and `^b`, and the child
+/// places each reaches must be spelled identically from either root.
 #[test]
-fn check_reports_a_clean_two_export_summary_for_two_roots_over_one_resource() {
+fn check_reports_each_root_of_a_shared_resource_under_its_own_name() {
     let output = shared().run_cli("shared-check", &["check"]);
     assert!(
         output.success(),
@@ -116,30 +122,11 @@ fn check_reports_a_clean_two_export_summary_for_two_roots_over_one_resource() {
          \n\
          main: 2 exports\n\
          \x20 addA\n\
-         \x20   reads ^a (+1 place)\n\
-         \x20   writes ^a (+1 place)\n\
+         \x20   reads ^a.notes\n\
+         \x20   writes ^a.notes.text\n\
          \x20 addB\n\
-         \x20   reads ^b (+1 place)\n\
-         \x20   writes ^b (+1 place)\n",
-    );
-}
-
-/// Each occurrence's demand sentence stays qualified by the root it names.
-///
-/// The two exports touch the same Product-scoped declaration nodes — `Book.notes` (the
-/// guard's presence probe) and `Book.notes.text` (the field write) carry one ledger
-/// identity between them — so a demand keyed on the declaration rather than the
-/// occurrence would render one sentence for both roots, or the same root twice. The
-/// sentences must name `^a` and `^b`, and the child places each reaches must be spelled
-/// identically from either root.
-#[test]
-fn each_occurrence_demand_sentence_names_its_own_root() {
-    let output = shared().run_cli("shared-demand", &["check", "--demand"]);
-    assert!(output.success(), "{}", output.stderr_text());
-    assert_eq!(
-        output.stdout_text(),
-        "main.addA reads ^a.notes; writes ^a.notes.text\n\
-         main.addB reads ^b.notes; writes ^b.notes.text\n",
+         \x20   reads ^b.notes\n\
+         \x20   writes ^b.notes.text\n",
     );
 }
 
