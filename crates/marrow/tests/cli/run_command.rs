@@ -2,7 +2,9 @@
 //! and the command-line surface every subcommand shares — usage on `--help`, and one
 //! usage-error form.
 
-use crate::common::{Project, TempDir, marrow_in};
+use crate::common::{
+    MARROW_BIN, Project, TempDir, marrow_in, stage_toolchain, staged_marrow_in, write,
+};
 
 const HALF: &str = "\
 pub fn half(n: int): Result<int, string> {
@@ -163,4 +165,167 @@ fn usage_errors_name_the_problem_and_the_commands_help() {
         assert!(output.stdout.is_empty(), "{args:?}: {output:?}");
         assert_eq!(output.stderr_text(), expected, "{args:?}");
     }
+}
+
+/// A flag given twice is a usage error for every command: exit 2, nothing on standard
+/// output, one rule rather than a silent last-value-wins.
+#[test]
+fn a_repeated_flag_is_refused() {
+    let workspace =
+        Project::single("test \"t\" {\n    assert true\n}\n").materialize("repeated-flag");
+    let cases: [&[&str]; 4] = [
+        &["test", "--format", "text", "--format", "jsonl"],
+        &["test", "--filter", "t", "--filter", "t"],
+        &["run", "main", "--store", "a", "--store", "b"],
+        &[
+            "import", "--store", "s", "--jsonl", "a", "--jsonl", "b", "--root", "r",
+        ],
+    ];
+    for args in cases {
+        let output = workspace.marrow(args);
+        assert_eq!(output.code(), Some(2), "{args:?}: {output:?}");
+        assert!(output.stdout.is_empty(), "{args:?}: {output:?}");
+        assert!(
+            output.stderr_text().contains("takes one `--"),
+            "{args:?}: {output:?}"
+        );
+    }
+}
+
+/// Usage is answered before the arguments are decoded as text: `--help` beside an
+/// argument that is not UTF-8 still prints the usage, while the same argument after
+/// `--` is the export's and is refused as undecodable.
+#[cfg(unix)]
+#[test]
+fn help_is_recognized_before_arguments_are_decoded_as_text() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    use std::process::Command;
+
+    let undecodable = OsStr::from_bytes(b"\xff");
+    let help = Command::new(MARROW_BIN)
+        .args([OsStr::new("check"), undecodable, OsStr::new("--help")])
+        .output()
+        .expect("run marrow binary");
+    assert_eq!(help.status.code(), Some(0), "{help:?}");
+    assert!(
+        String::from_utf8_lossy(&help.stdout).starts_with("Usage:\n  marrow check"),
+        "{help:?}"
+    );
+
+    let positional = Command::new(MARROW_BIN)
+        .args([
+            OsStr::new("run"),
+            OsStr::new("echo"),
+            OsStr::new("--"),
+            undecodable,
+            OsStr::new("--help"),
+        ])
+        .output()
+        .expect("run marrow binary");
+    assert_eq!(positional.status.code(), Some(1), "{positional:?}");
+    assert!(
+        String::from_utf8_lossy(&positional.stderr).starts_with("config.invalid: "),
+        "{positional:?}"
+    );
+}
+
+const COUNTER_SOURCE: &str = "\
+resource Counter {
+    required value: int
+}
+
+store ^counters[id: int]: Counter
+
+pub fn setOdd(id: int, v: int): Result<int, string> {
+    transaction {
+        ^counters[id] = Counter(value: v)
+        if v % 2 == 1 {
+            return err(\"odd\")
+        }
+        return ok(v)
+    }
+}
+
+pub fn divide(id: int, d: int): int {
+    transaction {
+        ^counters[id] = Counter(value: 99)
+        return 10 / d
+    }
+}
+
+pub fn valueOf(id: int): int? {
+    return ^counters[id].value
+}
+";
+
+const COUNTER_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Counter 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field Counter.value 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id root counters 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id key counters.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     high-water 0\n\
+     end\n";
+
+/// A durable export whose transaction block exits with `err` has committed: the run
+/// reports `error: e` on standard error and exits 1, the written value is readable
+/// afterwards, and JSONL carries the exact `value` record with `member` `err`. A fault
+/// inside the block is the contrast: a `fault` record, and the write is discarded.
+#[test]
+fn a_durable_top_level_err_commits_and_exits_one() {
+    let toolchain = stage_toolchain();
+    let temp = TempDir::new("durable-err");
+    let project = temp.join("app");
+    write(&project.join("marrow.toml"), "edition = \"2026\"\n");
+    write(&project.join("src/main.mw"), COUNTER_SOURCE);
+    write(&project.join(".marrow/ids"), COUNTER_IDS);
+    write(&project.join("seed.jsonl"), "{\"id\":1,\"value\":0}\n");
+    let store = temp.join("store");
+    let store = store.to_str().expect("store path");
+    let imported = staged_marrow_in(
+        &toolchain,
+        &project,
+        &[
+            "import",
+            "--store",
+            store,
+            "--jsonl",
+            "seed.jsonl",
+            "--root",
+            "counters",
+            "--keys",
+            "id",
+        ],
+    );
+    assert!(imported.success(), "{}", imported.stderr_text());
+    let run = |args: &[&str]| staged_marrow_in(&toolchain, &project, args);
+
+    let err = run(&["run", "setOdd", "--store", store, "--", "1", "3"]);
+    assert_eq!(err.code(), Some(1), "{err:?}");
+    assert!(err.stdout.is_empty(), "{err:?}");
+    assert_eq!(err.stderr_text(), "error: odd\n");
+    let committed = run(&["run", "valueOf", "--store", store, "--", "1"]);
+    assert_eq!(committed.stdout_text(), "3\n", "{committed:?}");
+
+    let jsonl = run(&[
+        "run", "setOdd", "--store", store, "--format", "jsonl", "--", "1", "5",
+    ]);
+    assert_eq!(jsonl.code(), Some(1), "{jsonl:?}");
+    assert_eq!(
+        jsonl.stdout_text(),
+        "{\"data\":{\"enum\":\"Result\",\"member\":\"err\",\"payload\":[\"odd\"]},\"kind\":\"run\",\"outcome\":\"value\"}\n"
+    );
+
+    let fault = run(&[
+        "run", "divide", "--store", store, "--format", "jsonl", "--", "1", "0",
+    ]);
+    assert_eq!(fault.code(), Some(1), "{fault:?}");
+    assert!(
+        fault.stdout_text().contains("\"outcome\":\"fault\""),
+        "{fault:?}"
+    );
+    let discarded = run(&["run", "valueOf", "--store", store, "--", "1"]);
+    assert_eq!(discarded.stdout_text(), "5\n", "{discarded:?}");
 }

@@ -168,7 +168,7 @@ marrow check .
 main: 3 exports
   add
     reads ^notes
-    writes ^notes.text
+    writes ^notes
   pin
     reads ^notes
     writes ^notes.pinned

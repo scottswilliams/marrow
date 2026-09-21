@@ -63,17 +63,53 @@ fn main() -> ExitCode {
 }
 
 fn dispatch_os(command: &OsStr, rest: &[OsString]) -> ExitCode {
-    let Some(command) = command.to_str() else {
+    let Some(name) = command.to_str() else {
         return command_output::top_level_usage(&format!(
             "unknown command `{}`",
             command.to_string_lossy()
         ));
     };
-    let Some(rest) = utf8_args(rest) else {
-        report_simple_error(Code::ConfigInvalid, "command arguments must be valid UTF-8");
-        return ExitCode::FAILURE;
-    };
-    dispatch(command, &rest)
+    match name {
+        "--help" | "-h" | "help" => {
+            print!("{}", term_style::render_help(Stream::Stdout, HELP));
+            ExitCode::SUCCESS
+        }
+        "--version" | "-V" | "version" => {
+            println!(
+                "{} {}",
+                term_style::paint(Stream::Stdout, Style::Code, "marrow"),
+                env!("CARGO_PKG_VERSION"),
+            );
+            ExitCode::SUCCESS
+        }
+        name => match Command::parse(name) {
+            // Usage is answered before the arguments are read as text, so an
+            // undecodable argument beside `--help` still gets the usage.
+            Some(command) if asks_for_help(rest) => {
+                print!("{}", command.help());
+                ExitCode::SUCCESS
+            }
+            Some(command) => match utf8_args(rest) {
+                Some(rest) => command.run(&rest),
+                None => {
+                    report_simple_error(
+                        Code::ConfigInvalid,
+                        "command arguments must be valid UTF-8",
+                    );
+                    ExitCode::FAILURE
+                }
+            },
+            None => command_output::top_level_usage(&format!("unknown command `{name}`")),
+        },
+    }
+}
+
+/// Whether the arguments ask for the command's usage: `--help` or `-h` anywhere before
+/// a `--` separator. What follows the separator belongs to the export being run.
+fn asks_for_help(rest: &[OsString]) -> bool {
+    rest.iter()
+        .take_while(|arg| arg.as_os_str() != "--")
+        .any(|arg| arg == "--help" || arg == "-h")
 }
 
 fn utf8_args(args: &[OsString]) -> Option<Vec<String>> {
@@ -180,39 +216,6 @@ impl Command {
             Command::Image => cmd_image::image(rest),
         }
     }
-}
-
-fn dispatch(command: &str, rest: &[String]) -> ExitCode {
-    match command {
-        "--help" | "-h" | "help" => {
-            print!("{}", term_style::render_help(Stream::Stdout, HELP));
-            ExitCode::SUCCESS
-        }
-        "--version" | "-V" | "version" => {
-            println!(
-                "{} {}",
-                term_style::paint(Stream::Stdout, Style::Code, "marrow"),
-                env!("CARGO_PKG_VERSION"),
-            );
-            ExitCode::SUCCESS
-        }
-        name => match Command::parse(name) {
-            Some(command) if asks_for_help(rest) => {
-                print!("{}", command.help());
-                ExitCode::SUCCESS
-            }
-            Some(command) => command.run(rest),
-            None => command_output::top_level_usage(&format!("unknown command `{name}`")),
-        },
-    }
-}
-
-/// Whether the arguments ask for the command's usage: `--help` or `-h` anywhere before
-/// a `--` separator. What follows the separator belongs to the export being run.
-fn asks_for_help(rest: &[String]) -> bool {
-    rest.iter()
-        .take_while(|arg| *arg != "--")
-        .any(|arg| arg == "--help" || arg == "-h")
 }
 
 /// The stack the parse/format pipeline runs on. 256 MiB comfortably holds the

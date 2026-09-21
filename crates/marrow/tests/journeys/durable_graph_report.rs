@@ -104,8 +104,9 @@ const ISOLATED: &str = "Graph Report\n\
      -- cycle --\n\
      \x20 none";
 
-/// The frozen demand report `marrow check` prints, exports in `module.item` order and
-/// the two that share a demand listed once. The read-only `report` reads both roots, the
+/// The frozen demand report `marrow check` prints, exports in `module.item` order;
+/// `setColor` and `tint` share a demand but `setRoot` sorts between them, so each is
+/// listed on its own. The read-only `report` reads both roots, the
 /// node's sparse and required fields, and the edge branch and its field; the build
 /// exports write what they mutate. Demand describes access and never grants it.
 const DEMAND: &str = "11 exports across 1 module\n\
@@ -129,12 +130,15 @@ const DEMAND: &str = "11 exports across 1 module\n\
      \x20   writes ^nodes.edges\n\
      \x20 report\n\
      \x20   reads ^config, ^nodes, ^nodes.color, ^nodes.edges, ^nodes.edges.weight, ^nodes.label\n\
-     \x20 setColor, tint (2 exports, one shared demand)\n\
+     \x20 setColor\n\
      \x20   reads ^nodes\n\
      \x20   writes ^nodes.color\n\
      \x20 setRoot\n\
      \x20   reads ^config\n\
-     \x20   writes ^config\n";
+     \x20   writes ^config\n\
+     \x20 tint\n\
+     \x20   reads ^nodes\n\
+     \x20   writes ^nodes.color\n";
 
 /// A rooted chain built across several committed transactions is observable by the
 /// read-only report and the read probes: each `addEdge`/`setRoot`/`setColor` commits to

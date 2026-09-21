@@ -9,12 +9,13 @@
 //! [`crate::demand`]. The demand describes access and never grants it; `check` opens no
 //! store and runs no code.
 
+use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use crate::Command;
-use crate::command_output::{once, unknown_option};
-use crate::demand::demand_report_lines;
+use crate::command_output::{finish, once, unknown_option};
+use crate::demand::{demand_report, write_demand_report};
 use crate::project::compile_project;
 use crate::report_simple_error;
 
@@ -24,9 +25,9 @@ Usage:
 
 Capture and check a project's source, reporting every diagnostic with its span. A
 project that checks clean prints its durable access demand grouped by module: every
-durable place each exported function reads and writes, in source spelling. Exports
-that share an identical demand are listed once, and storeless exports collapse to one
-note per module. Demand describes access and never grants it. `check` opens no store
+durable place each exported function reads and writes, in source spelling. Adjacent
+exports that share an identical demand are listed once, and storeless exports collapse
+to one note per module. Demand describes access and never grants it. `check` opens no store
 and runs no code. It exits 0 when the project checks clean, 1 when any diagnostic is
 reported or a fixed bound is reached, and 2 on a usage error.
 ";
@@ -66,19 +67,16 @@ pub(crate) fn check(rest: &[String]) -> ExitCode {
     };
 
     // Every export listed is the project's own: a dependency's `pub fn` takes no export
-    // slot here and is run where the dependency is.
-    match demand_report_lines(&compiled.exports, &compiled.naming, &image) {
-        Ok(lines) => {
-            for line in lines {
-                println!("{line}");
-            }
-            ExitCode::SUCCESS
-        }
-        // A compiler-coherence failure, not a user error: the same compilation produced
-        // the export directory and the verified image.
+    // slot here and is run where the dependency is. The report is resolved whole before
+    // a byte is written, so a coherence failure — the same compilation produced the
+    // export directory and the verified image, so it is never a user error — prints its
+    // one internal-error line and nothing else.
+    let report = match demand_report(&compiled.exports, &compiled.naming, &image) {
+        Ok(report) => report,
         Err(error) => {
             eprintln!("{}", error.internal_message());
-            ExitCode::FAILURE
+            return ExitCode::FAILURE;
         }
-    }
+    };
+    finish(write_demand_report(&mut io::stdout().lock(), &report).map(|()| ExitCode::SUCCESS))
 }

@@ -32,8 +32,9 @@ marrow <command> --help
 A flag takes its value as the next argument, as in `--store ./store`;
 `--store=./store` is a usage error. `marrow --version` prints `marrow 0.1.0`;
 `-V` and `version` are the same command, as `-h` and `help` are for `--help`.
-Every subcommand prints its own usage on `--help` or `-h`. A usage error names
-the problem and the command's help, and exits `2`:
+Every subcommand prints its own usage on `--help` or `-h`. A flag given twice is
+a usage error. A usage error names the problem and the command's help, and exits
+`2`:
 
 ```text
 $ marrow run --bogus
@@ -167,10 +168,11 @@ docs.cli.shelf: 4 exports
 ```
 
 Each export names every place it reads and every place it writes, in source
-spelling and ordered by spelling. Exports of one module that share an identical
-demand are listed once, as `setColor, tint (2 exports, one shared demand)`, and
-the exports that touch no durable place collapse to one `storeless:` note; a
-module with only such exports folds to its header line.
+spelling and ordered by spelling; a `reads` or `writes` line continues on an
+indented line rather than run past 96 columns. Adjacent exports of one module
+that share an identical demand are listed once, as `alpha, beta (2 exports, one
+shared demand)`, and the exports that touch no durable place collapse to one
+`storeless:` note; a module with only such exports folds to its header line.
 
 Every export listed is the project's own. A dependency's `pub fn` is callable from
 source across the boundary but takes no export slot here, so it appears in no demand
@@ -233,7 +235,10 @@ output is one object whose `outcome` is `value`, `diagnostic`,
 `artifact_rejected`, `fault`, `incomplete`, `outcome_unknown`, or `error`; a
 diagnostic or fault carries its code and span
 ([error codes](../error-codes.md)). A returned `err` is a `value` record in
-JSONL, told apart only by the exit status.
+JSONL whose `member` is `err`, and the exit status is `1`. An export whose
+`transaction` block exits with `err` has committed its writes, because the block
+commits on every normal exit ([transactions](../language/errors-and-transactions.md));
+only a fault discards them.
 
 ```text
 $ marrow run half -- 3

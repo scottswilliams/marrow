@@ -525,9 +525,9 @@ enum ImageDigest {
         exports: Vec<(String, String, String)>,
         /// `(title, module, file, line, column)`.
         tests: Vec<(String, String, String, u32, u32)>,
-        /// The compiler-owned ledger-id-to-spelling join. It publishes no typed
-        /// enumeration — `demand_sentence` is its whole public surface — so this one
-        /// field is still a rendering, and the only golden a derive can churn.
+        /// The compiler-owned ledger-id-to-spelling join. Its typed surface is
+        /// `DemandPlaces`; the sentence rendered from those places is what this field
+        /// pins, and the only golden a derive can churn.
         naming: String,
     },
     /// No corpus entry may report a diagnostic or an invariant; both are named so a

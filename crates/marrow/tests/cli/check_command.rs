@@ -118,6 +118,71 @@ fn check_describes_a_storeless_project_as_an_all_storeless_module() {
     );
 }
 
+/// The report is linear in the demand facts and never a wall. Sixteen roots of 64 fields
+/// with one export each reading every field: every place is spelled exactly once, no line
+/// runs past the row width, and the whole report stays under three times the bytes of
+/// its place spellings plus 128 bytes for each export, module, and header line — the
+/// law the renderer states.
+#[test]
+fn check_report_of_a_wide_demand_is_complete_and_bounded() {
+    const ROOTS: usize = 16;
+    const FIELDS: usize = 64;
+    const ROW_WIDTH: usize = 96;
+    let mut source = String::new();
+    for root in 0..ROOTS {
+        source.push_str(&format!("resource R{root} {{\n"));
+        for field in 0..FIELDS {
+            source.push_str(&format!("    required f{field}: int\n"));
+        }
+        source.push_str(&format!("}}\n\nstore ^r{root}[id: int]: R{root}\n\n"));
+        source.push_str(&format!("pub fn read{root}(id: int): int {{\n"));
+        for field in 0..FIELDS {
+            source.push_str(&format!(
+                "    if exists(^r{root}[id].f{field}) {{\n        return {field}\n    }}\n"
+            ));
+        }
+        source.push_str(&format!("    return {FIELDS}\n}}\n\n"));
+    }
+    let workspace = Project::single(&source).materialize("demand-wide");
+    // The one mint path: the ledger is written before the export lookup fails.
+    workspace.marrow(&["run", "mint"]);
+    let output = workspace.marrow(&["check"]);
+    assert!(output.success(), "{}", output.stderr_text());
+    let report = output.stdout_text();
+    assert!(
+        report.starts_with(&format!("{ROOTS} exports across 1 module\n")),
+        "{report}"
+    );
+
+    let tokens: Vec<&str> = report.split([' ', ',', '\n']).collect();
+    let mut place_bytes = 0;
+    let mut longest = 0;
+    for root in 0..ROOTS {
+        for field in 0..FIELDS {
+            let place = format!("^r{root}.f{field}");
+            assert_eq!(
+                tokens.iter().filter(|token| **token == place).count(),
+                1,
+                "{place} is spelled once: {report}"
+            );
+            place_bytes += place.len();
+            longest = longest.max(place.len());
+        }
+    }
+    for line in report.lines() {
+        assert!(
+            line.len() <= ROW_WIDTH.max(6 + longest),
+            "a line is a wall ({} bytes): {line}",
+            line.len()
+        );
+    }
+    assert!(
+        report.len() <= 3 * place_bytes + 128 * (ROOTS + 2),
+        "{} bytes for {place_bytes} bytes of places",
+        report.len()
+    );
+}
+
 /// A project with a diagnostic reports it with its span and typed code on standard
 /// error, writes no demand report, and exits nonzero — the code and span are the
 /// contract, not the message prose.
