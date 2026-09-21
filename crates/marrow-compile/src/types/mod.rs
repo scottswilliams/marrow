@@ -51,8 +51,8 @@ mod owner_txn;
 mod render;
 
 use build::{
-    build_alias_table, build_nominals, declare_enums, declare_records, declare_structs, fill_enums,
-    fill_records, fill_structs, register_type_templates, reserved_templates,
+    build_alias_table, build_nominals, declare_enums, declare_records, declare_structs,
+    fill_records, fill_rows, register_type_templates, reserved_templates,
     validate_alias_targets,
 };
 use decl_coords::{AdmittedRecords, DeclarationCoordinates};
@@ -3628,10 +3628,10 @@ impl TypeRegistry {
         // in the named-type ledger, so pass one's reservation never stands as the
         // answer for a name pass two went on to refuse.
         let result = fill_records(draft, &mut registry, &record_decls, diagnostics)
-            .and_then(|()| fill_structs(draft, &mut registry, &struct_decls, diagnostics));
+            .and_then(|()| fill_rows(draft, &mut registry, &struct_decls, diagnostics));
         match result {
             Ok(()) => {
-                fill_enums(draft, &mut registry, &enum_decls, diagnostics)?;
+                fill_rows(draft, &mut registry, &enum_decls, diagnostics)?;
                 validate_alias_targets(&mut registry, aliases, diagnostics)?;
             }
             // A coherence failure is recorded on the registry rather than

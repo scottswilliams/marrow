@@ -157,7 +157,8 @@ pub(super) fn register_type_templates(
             at: *at,
             span: decl.name_span,
         };
-        if !claim_template_name(registry, declared, taken(registry, &declared)?, diagnostics)? {
+        let taken = taken(registry, &declared)?;
+        if !claim_name(&mut registry.named, declared, taken, diagnostics)? {
             continue;
         }
         let mut refusal = None;
@@ -198,7 +199,8 @@ pub(super) fn register_type_templates(
             at: *at,
             span: decl.name_span,
         };
-        if !claim_template_name(registry, declared, taken(registry, &declared)?, diagnostics)? {
+        let taken = taken(registry, &declared)?;
+        if !claim_name(&mut registry.named, declared, taken, diagnostics)? {
             continue;
         }
         let mut refusal = None;
@@ -234,10 +236,12 @@ pub(super) fn register_type_templates(
     Ok(())
 }
 
-/// Whether this template may take its declared name, refusing a reserved one and
-/// reporting a conflict against `taken`.
-fn claim_template_name(
-    registry: &mut TypeRegistry,
+/// Whether a declaration may take its name: a reserved spelling is refused into the
+/// ledger, and a name `taken` already holds is reported as a conflict. The one owner
+/// of the checks every declaration pass runs before it reserves a row, so the passes
+/// cannot drift on what a reserved or conflicting name reports.
+fn claim_name(
+    named: &mut DeclarationLedger<ScopedName, NamedTypeKind>,
     declared: DeclarationSite<'_>,
     taken: Option<NameHolder>,
     diagnostics: &mut DiagnosticCollector,
@@ -248,7 +252,7 @@ fn claim_template_name(
             declared,
             reserved_name(declared.file, declared.span, declared.name),
         );
-        registry.named.declare(
+        named.declare(
             ScopedName::declared(&declared),
             DeclarationOccurrence::Refused(refusal),
         )?;
@@ -563,33 +567,19 @@ pub(super) fn build_alias_table(
         // A parse error blocks compilation before this runs, so a missing target means
         // the declaration was already reported; skip it quietly.
         let Some(ty) = &decl.ty else { continue };
-        if is_reserved_type_name(&decl.name) {
-            let refusal = refuse_row(
-                diagnostics,
-                declared,
-                reserved_name(file, decl.name_span, &decl.name),
-            );
-            named.declare(scope, DeclarationOccurrence::Refused(refusal))?;
-            continue;
-        }
-        if raw.contains_key(&scope) || named.declared(&scope) {
-            diagnostics.push(SourceDiagnostic::at(
-                Code::CheckNameConflict,
-                file,
-                decl.name_span,
-                format!("an alias named `{}` is already declared", decl.name),
-            ));
-            continue;
-        }
         // Aliases resolve first, so every other declaration form is still only source
         // here and an alias yields its name to all of them.
-        if let Some(holder) = pending_name(
-            &decl.name,
-            in_origin(resources, scope.origin()).map(|r| r.name.as_str()),
-            in_origin(structs, scope.origin()).map(|d| d.name.as_str()),
-            in_origin(enums, scope.origin()).map(|d| d.name.as_str()),
-        ) {
-            name_conflict(diagnostics, file, decl.name_span, &decl.name, holder);
+        let taken = if raw.contains_key(&scope) || named.declared(&scope) {
+            Some(NameHolder::Kind(NamedTypeKind::Alias))
+        } else {
+            pending_name(
+                &decl.name,
+                in_origin(resources, scope.origin()).map(|r| r.name.as_str()),
+                in_origin(structs, scope.origin()).map(|d| d.name.as_str()),
+                in_origin(enums, scope.origin()).map(|d| d.name.as_str()),
+            )
+        };
+        if !claim_name(named, declared, taken, diagnostics)? {
             continue;
         }
         let target = match ty {
@@ -721,20 +711,9 @@ pub(super) fn build_nominals(
         let (Some(base), Some(interval)) = (&decl.base, &decl.interval) else {
             continue;
         };
-        if is_reserved_type_name(&decl.name) {
-            let refusal = refuse_row(
-                diagnostics,
-                declared,
-                reserved_name(file, decl.name_span, &decl.name),
-            );
-            registry
-                .named
-                .declare(scope, DeclarationOccurrence::Refused(refusal))?;
-            continue;
-        }
         // Nominals yield to every declaration form the later passes bind, and a nominal
         // this pass already refused holds its name too.
-        let holder = registry.name_conflict(&scope)?.or_else(|| {
+        let taken = registry.name_conflict(&scope)?.or_else(|| {
             pending_name(
                 &decl.name,
                 in_origin(resources, scope.origin()).map(|r| r.name.as_str()),
@@ -742,8 +721,7 @@ pub(super) fn build_nominals(
                 in_origin(enums, scope.origin()).map(|d| d.name.as_str()),
             )
         });
-        if let Some(holder) = holder {
-            name_conflict(diagnostics, file, decl.name_span, &decl.name, holder);
+        if !claim_name(&mut registry.named, declared, taken, diagnostics)? {
             continue;
         }
         let refused = match registry.scalar_annotation(file.origin(), base) {
@@ -922,11 +900,162 @@ fn support_set(
 
 /// One struct reserved in pass one: the file it was declared in, its declaration,
 /// and the image record index it will fill in pass two.
-pub(super) struct ReservedStruct<'a> {
-    pub(super) file: ProjectFile,
-    pub(super) at: FileRef,
-    pub(super) decl: &'a StructDecl,
-    pub(super) type_id: TypeId,
+/// A struct or enum declaration whose image row pass one reserved, addressed by its
+/// position in the registry table its kind fills.
+pub(super) struct ReservedRow<'a, D> {
+    file: ProjectFile,
+    at: FileRef,
+    decl: &'a D,
+    index: usize,
+}
+
+/// A declaration kind pass two fills: how its members resolve, how an accepted
+/// resolution commits to the image row and the registry table, and how a refusal
+/// marks the row it leaves in place.
+pub(super) trait DeclaredRow {
+    type Members;
+    const KIND: NamedTypeKind;
+    fn name(&self) -> &str;
+    fn name_span(&self) -> SourceSpan;
+    fn resolve(
+        draft: &mut DraftTxn<'_>,
+        registry: &mut TypeRegistry,
+        declared: DeclarationSite<'_>,
+        decl: &Self,
+        diagnostics: &mut DiagnosticCollector,
+    ) -> Result<DeclarationOccurrence<Self::Members>, BuildError>;
+    fn commit(
+        draft: &mut DraftTxn<'_>,
+        registry: &mut TypeRegistry,
+        index: usize,
+        members: Self::Members,
+    );
+    fn refuse(registry: &mut TypeRegistry, index: usize);
+}
+
+impl DeclaredRow for StructDecl {
+    type Members = ResolvedStructFields;
+    const KIND: NamedTypeKind = NamedTypeKind::Struct;
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn name_span(&self) -> SourceSpan {
+        self.name_span
+    }
+
+    fn resolve(
+        draft: &mut DraftTxn<'_>,
+        registry: &mut TypeRegistry,
+        declared: DeclarationSite<'_>,
+        decl: &Self,
+        diagnostics: &mut DiagnosticCollector,
+    ) -> Result<DeclarationOccurrence<Self::Members>, BuildError> {
+        Ok(struct_fields(draft, registry, declared, decl, diagnostics)?)
+    }
+
+    fn commit(
+        draft: &mut DraftTxn<'_>,
+        registry: &mut TypeRegistry,
+        index: usize,
+        (fields, field_defs): Self::Members,
+    ) {
+        let info = &mut registry.structs[index];
+        #[expect(
+            clippy::expect_used,
+            reason = "reserve-then-fill law: the row was reserved in this batch and fills exactly once"
+        )]
+        draft
+            .set_record_fields(info.type_id, field_defs)
+            .expect("a reserved row fills once");
+        info.fields = fields;
+    }
+
+    fn refuse(registry: &mut TypeRegistry, index: usize) {
+        registry.structs[index].verdict = DeclarationVerdict::Refused;
+    }
+}
+
+impl DeclaredRow for EnumDecl {
+    type Members = EnumVariants;
+    const KIND: NamedTypeKind = NamedTypeKind::Enum;
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn name_span(&self) -> SourceSpan {
+        self.name_span
+    }
+
+    fn resolve(
+        draft: &mut DraftTxn<'_>,
+        registry: &mut TypeRegistry,
+        declared: DeclarationSite<'_>,
+        decl: &Self,
+        diagnostics: &mut DiagnosticCollector,
+    ) -> Result<DeclarationOccurrence<Self::Members>, BuildError> {
+        enum_variants(draft, registry, declared, decl, diagnostics)
+    }
+
+    fn commit(
+        draft: &mut DraftTxn<'_>,
+        registry: &mut TypeRegistry,
+        index: usize,
+        (variants, variant_defs): Self::Members,
+    ) {
+        let info = &mut registry.enums[index];
+        #[expect(
+            clippy::expect_used,
+            reason = "reserve-then-fill law: the row was reserved in this batch and fills exactly once"
+        )]
+        draft
+            .set_enum_variants(info.enum_id, variant_defs)
+            .expect("a reserved row fills once");
+        info.variants = variants;
+    }
+
+    fn refuse(registry: &mut TypeRegistry, index: usize) {
+        registry.enums[index].verdict = DeclarationVerdict::Refused;
+    }
+}
+
+/// Pass two for the dense struct and closed enum types: resolve each reserved row's
+/// members against the full registry and fill both the registry info and the image
+/// row, addressed by the index the reservation recorded. A declaration with a member
+/// defect is refused whole (its reserved image row stays empty and its name leaves
+/// the accepted set) so a later construction or match cannot resolve against a broken
+/// type. Its reserved row stays in place carrying [`DeclarationVerdict::Refused`], so
+/// a reference an earlier fill pass minted against the reservation addresses a refused
+/// declaration rather than dangling.
+pub(super) fn fill_rows<D: DeclaredRow>(
+    draft: &mut DraftTxn<'_>,
+    registry: &mut TypeRegistry,
+    reserved: &[ReservedRow<'_, D>],
+    diagnostics: &mut DiagnosticCollector,
+) -> Result<(), BuildError> {
+    for item in reserved {
+        let declared = DeclarationSite {
+            name: item.decl.name(),
+            file: &item.file,
+            at: item.at,
+            span: item.decl.name_span(),
+        };
+        let occurrence = D::resolve(draft, registry, declared, item.decl, diagnostics)?
+            .map_accepted(|members| {
+                D::commit(draft, registry, item.index, members);
+                D::KIND
+            });
+        if matches!(occurrence, DeclarationOccurrence::Refused(_)) {
+            D::refuse(registry, item.index);
+        }
+        registry.named.declare(
+            ScopedName::new(item.file.origin(), item.decl.name()),
+            occurrence,
+        )?;
+    }
+    Ok(())
 }
 
 /// Pass one for the dense struct types: reserve each admitted struct's image
@@ -939,8 +1068,8 @@ pub(super) fn declare_structs<'a>(
     registry: &mut TypeRegistry,
     structs: &'a [(FileRef, ProjectFile, &StructDecl)],
     diagnostics: &mut DiagnosticCollector,
-) -> Result<Vec<ReservedStruct<'a>>, DeclareError> {
-    let mut reserved: Vec<ReservedStruct<'a>> = Vec::new();
+) -> Result<Vec<ReservedRow<'a, StructDecl>>, DeclareError> {
+    let mut reserved: Vec<ReservedRow<'a, StructDecl>> = Vec::new();
     for (at, file, decl) in structs {
         let declared = DeclarationSite {
             name: &decl.name,
@@ -948,20 +1077,8 @@ pub(super) fn declare_structs<'a>(
             at: *at,
             span: decl.name_span,
         };
-        let scope = ScopedName::declared(&declared);
-        if is_reserved_type_name(&decl.name) {
-            let refusal = refuse_row(
-                diagnostics,
-                declared,
-                reserved_name(file, decl.name_span, &decl.name),
-            );
-            registry
-                .named
-                .declare(scope, DeclarationOccurrence::Refused(refusal))?;
-            continue;
-        }
-        if let Some(holder) = registry.name_conflict(&scope)? {
-            name_conflict(diagnostics, file, decl.name_span, &decl.name, holder);
+        let taken = registry.name_conflict(&ScopedName::declared(&declared))?;
+        if !claim_name(&mut registry.named, declared, taken, diagnostics)? {
             continue;
         }
         let name_id = draft.intern_string(&decl.name)?;
@@ -969,6 +1086,7 @@ pub(super) fn declare_structs<'a>(
         registry
             .coordinates
             .declare(type_id, *at, file, decl.name_span);
+        let index = registry.structs.len();
         registry.structs.push(StructInfo {
             type_id,
             origin: file.origin().clone(),
@@ -976,69 +1094,14 @@ pub(super) fn declare_structs<'a>(
             fields: Vec::new(),
             verdict: DeclarationVerdict::Accepted,
         });
-        reserved.push(ReservedStruct {
+        reserved.push(ReservedRow {
             file: file.clone(),
             at: *at,
             decl,
-            type_id,
+            index,
         });
     }
     Ok(reserved)
-}
-
-/// Pass two for the dense struct types: resolve each reserved struct's fields against
-/// the full registry and fill both the registry info and the image record. A struct
-/// field is the bare `name: Type` form over any value type — a scalar, nominal, another
-/// struct, or a closed enum; anything else is `check.unsupported`. A declaration with a
-/// member defect is refused whole (its reserved image record stays empty and its name
-/// leaves the accepted set) so a later construction or match cannot resolve against a
-/// broken struct. Its reserved row stays in place carrying
-/// [`DeclarationVerdict::Refused`], so a reference an earlier fill pass minted against
-/// the reservation addresses a refused declaration rather than dangling.
-pub(super) fn fill_structs(
-    draft: &mut DraftTxn<'_>,
-    registry: &mut TypeRegistry,
-    reserved: &[ReservedStruct<'_>],
-    diagnostics: &mut DiagnosticCollector,
-) -> Result<(), BuildError> {
-    for item in reserved {
-        let declared = DeclarationSite {
-            name: &item.decl.name,
-            file: &item.file,
-            at: item.at,
-            span: item.decl.name_span,
-        };
-        let occurrence = struct_fields(draft, registry, declared, item.decl, diagnostics)?
-            .map_accepted(|(fields, field_defs)| {
-                #[expect(
-                    clippy::expect_used,
-                    reason = "reserve-then-fill law: the row was reserved in this batch and fills exactly once"
-                )]
-                draft.set_record_fields(item.type_id, field_defs)
-                    .expect("a reserved row fills once");
-                if let Some(info) = registry
-                    .structs
-                    .iter_mut()
-                    .find(|info| info.type_id == item.type_id)
-                {
-                    info.fields = fields;
-                }
-                NamedTypeKind::Struct
-            });
-        if matches!(occurrence, DeclarationOccurrence::Refused(_))
-            && let Some(info) = registry
-                .structs
-                .iter_mut()
-                .find(|info| info.type_id == item.type_id)
-        {
-            info.verdict = DeclarationVerdict::Refused;
-        }
-        registry.named.declare(
-            ScopedName::new(item.file.origin(), &item.decl.name),
-            occurrence,
-        )?;
-    }
-    Ok(())
 }
 
 /// Resolve a struct's members to its required value fields and their image
@@ -1122,13 +1185,6 @@ fn struct_fields(
 
 /// One enum reserved in pass one: the file it was declared in, its declaration,
 /// and the image ENUMS index it will fill in pass two.
-pub(super) struct ReservedEnum<'a> {
-    pub(super) file: ProjectFile,
-    pub(super) at: FileRef,
-    pub(super) decl: &'a EnumDecl,
-    pub(super) enum_id: EnumId,
-}
-
 /// Pass one for the closed flat enum types: reserve each admitted enum's image
 /// [`EnumTypeDef`] index (empty for now) and register its name. A name collision with a
 /// scalar, alias, nominal, resource, struct, or earlier enum is a `check.name_conflict`,
@@ -1140,8 +1196,8 @@ pub(super) fn declare_enums<'a>(
     registry: &mut TypeRegistry,
     enums: &'a [(FileRef, ProjectFile, &EnumDecl)],
     diagnostics: &mut DiagnosticCollector,
-) -> Result<Vec<ReservedEnum<'a>>, DeclareError> {
-    let mut reserved: Vec<ReservedEnum<'a>> = Vec::new();
+) -> Result<Vec<ReservedRow<'a, EnumDecl>>, DeclareError> {
+    let mut reserved: Vec<ReservedRow<'a, EnumDecl>> = Vec::new();
     for (at, file, decl) in enums {
         let declared = DeclarationSite {
             name: &decl.name,
@@ -1150,19 +1206,8 @@ pub(super) fn declare_enums<'a>(
             span: decl.name_span,
         };
         let scope = ScopedName::declared(&declared);
-        if is_reserved_type_name(&decl.name) {
-            let refusal = refuse_row(
-                diagnostics,
-                declared,
-                reserved_name(file, decl.name_span, &decl.name),
-            );
-            registry
-                .named
-                .declare(scope, DeclarationOccurrence::Refused(refusal))?;
-            continue;
-        }
-        if let Some(holder) = registry.name_conflict(&scope)? {
-            name_conflict(diagnostics, file, decl.name_span, &decl.name, holder);
+        let taken = registry.name_conflict(&scope)?;
+        if !claim_name(&mut registry.named, declared, taken, diagnostics)? {
             continue;
         }
         if decl.members.len() > marrow_image::bounds::MAX_VARIANTS {
@@ -1186,6 +1231,7 @@ pub(super) fn declare_enums<'a>(
         registry
             .coordinates
             .declare_enum(enum_id, *at, file, decl.name_span);
+        let index = registry.enums.len();
         registry.enums.push(EnumInfo {
             enum_id,
             origin: file.origin().clone(),
@@ -1193,68 +1239,14 @@ pub(super) fn declare_enums<'a>(
             variants: Vec::new(),
             verdict: DeclarationVerdict::Accepted,
         });
-        reserved.push(ReservedEnum {
+        reserved.push(ReservedRow {
             file: file.clone(),
             at: *at,
             decl,
-            enum_id,
+            index,
         });
     }
     Ok(reserved)
-}
-
-/// Pass two for the closed flat enum types: resolve each reserved enum's variants and
-/// fill both the registry info and the image ENUMS entry. Hierarchy is deferred: a
-/// `category` member or a member with nested members is `check.unsupported`. A member's
-/// payload is the dense `name: Type` form over bare payload types. A declaration with a
-/// defect is refused whole (its reserved image entry stays empty and its name leaves
-/// the accepted set) so a later match cannot resolve against a broken enum. Its
-/// reserved row stays in place carrying [`DeclarationVerdict::Refused`], for the reason
-/// given at [`fill_structs`].
-pub(super) fn fill_enums(
-    draft: &mut DraftTxn<'_>,
-    registry: &mut TypeRegistry,
-    reserved: &[ReservedEnum<'_>],
-    diagnostics: &mut DiagnosticCollector,
-) -> Result<(), BuildError> {
-    for item in reserved {
-        let declared = DeclarationSite {
-            name: &item.decl.name,
-            file: &item.file,
-            at: item.at,
-            span: item.decl.name_span,
-        };
-        let occurrence = enum_variants(draft, registry, declared, item.decl, diagnostics)?
-            .map_accepted(|(variants, variant_defs)| {
-                #[expect(
-                    clippy::expect_used,
-                    reason = "reserve-then-fill law: the row was reserved in this batch and fills exactly once"
-                )]
-                draft.set_enum_variants(item.enum_id, variant_defs)
-                    .expect("a reserved row fills once");
-                if let Some(info) = registry
-                    .enums
-                    .iter_mut()
-                    .find(|info| info.enum_id == item.enum_id)
-                {
-                    info.variants = variants;
-                }
-                NamedTypeKind::Enum
-            });
-        if matches!(occurrence, DeclarationOccurrence::Refused(_))
-            && let Some(info) = registry
-                .enums
-                .iter_mut()
-                .find(|info| info.enum_id == item.enum_id)
-        {
-            info.verdict = DeclarationVerdict::Refused;
-        }
-        registry.named.declare(
-            ScopedName::new(item.file.origin(), &item.decl.name),
-            occurrence,
-        )?;
-    }
-    Ok(())
 }
 
 /// One enum's selectable variants and the image definitions that carry them.
@@ -1445,18 +1437,7 @@ pub(super) fn declare_records<'a>(
             span: resource.name_span,
         };
         let scope = ScopedName::declared(&declared);
-        if is_reserved_type_name(&resource.name) {
-            let refusal = refuse_row(
-                diagnostics,
-                declared,
-                reserved_name(file, resource.name_span, &resource.name),
-            );
-            registry
-                .named
-                .declare(scope, DeclarationOccurrence::Refused(refusal))?;
-            continue;
-        }
-        match registry.name_conflict(&scope)? {
+        let taken = match registry.name_conflict(&scope)? {
             // Two resources of the same name have no unambiguous record identity,
             // so a repeat is a precise typed rejection and the first stands.
             Some(NameHolder::Kind(NamedTypeKind::Resource)) => {
@@ -1468,17 +1449,10 @@ pub(super) fn declare_records<'a>(
                 ));
                 continue;
             }
-            Some(holder) => {
-                name_conflict(
-                    diagnostics,
-                    file,
-                    resource.name_span,
-                    &resource.name,
-                    holder,
-                );
-                continue;
-            }
-            None => {}
+            taken => taken,
+        };
+        if !claim_name(&mut registry.named, declared, taken, diagnostics)? {
+            continue;
         }
         let name_id = draft.intern_string(&resource.name)?;
         let type_id = draft.reserve_record_type(name_id)?;
