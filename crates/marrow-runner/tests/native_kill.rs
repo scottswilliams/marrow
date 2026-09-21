@@ -205,7 +205,7 @@ fn add_request(image: &VerifiedImage, id: i64, name: &str) -> ClientMessage {
 /// reopening performs the unclean-owner audit but cannot invent or replay a call.
 #[test]
 #[ignore = "spawns a runner that binds a Unix socket; run with the sandbox disabled"]
-fn native_death_before_request_is_not_started_and_leaves_the_old_state() {
+fn native_death_before_request_leaves_the_exact_old_state() {
     let program::Program { image, bytes } = program::workshop();
     let store = scratch::path("native-kill-before-send").join("store");
     std::fs::create_dir_all(store.parent().expect("parent")).expect("scratch dir");
@@ -271,7 +271,7 @@ fn native_death_after_reply_preserves_the_exact_committed_state() {
 /// the one dispatched mutation is never replayed.
 #[test]
 #[ignore = "spawns a runner that binds a Unix socket; run with the sandbox disabled"]
-fn a_native_call_lost_to_runner_death_after_dispatch_is_outcome_unknown() {
+fn native_death_after_dispatch_sends_no_reply_and_leaves_one_atomic_state() {
     let program::Program { image, bytes } = program::workshop();
     let store = scratch::path("native-kill").join("store");
     std::fs::create_dir_all(store.parent().expect("parent")).expect("scratch dir");

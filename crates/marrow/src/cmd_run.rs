@@ -418,7 +418,6 @@ fn cleanup_record(error: marrow_runner::CompanionCleanupError) -> Record {
             pid: child.id(),
             staging: staging.display().to_string(),
             cause: cause.to_string(),
-            kill_error: None,
         },
         marrow_runner::CompanionCleanupError::Staging { path, cause } => Record::CompanionStaging {
             path: path.display().to_string(),

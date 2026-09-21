@@ -617,7 +617,7 @@ fn a_partial_frame_ends_the_session() {
 /// client never received `Ready`, so its call provably never ran.
 #[test]
 #[ignore = "binds a Unix socket; run with the sandbox disabled"]
-fn death_before_send_classifies_not_started() {
+fn a_refused_handshake_sends_no_ready_and_receives_no_request() {
     let (service, _export) = service_for(ADD);
     let channel = Channel::bind().expect("bind");
     let path = channel.socket_path().to_path_buf();
@@ -649,7 +649,7 @@ fn death_before_send_classifies_not_started() {
 /// `OutcomeUnknown`: the call may have run, and its result is unknowable.
 #[test]
 #[ignore = "binds a Unix socket; run with the sandbox disabled"]
-fn death_after_dispatch_classifies_outcome_unknown() {
+fn a_runner_that_dies_after_dispatch_sends_no_reply() {
     let (service, export) = service_for(ADD);
     let channel = Channel::bind().expect("bind");
     let path = channel.socket_path().to_path_buf();

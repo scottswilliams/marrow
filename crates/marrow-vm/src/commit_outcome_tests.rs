@@ -12,7 +12,7 @@ use marrow_kernel::equality::ValueDomain;
 use marrow_lifecycle::{MemoryAttachment, MintOutcome, mint_ephemeral, prepare};
 use marrow_verify::verify;
 
-use crate::attach::{DurableRun, run_export};
+use crate::attach::{DurableRun, run_export, run_on_host};
 use crate::fault::{DurableExecutionFault, IncompleteDisposition};
 use crate::run::run_durable;
 use crate::value::Value;
@@ -466,4 +466,55 @@ fn read_only_region_followed_by_pure_fault_is_an_ordinary_runtime_fault() {
         panic!("a read-only region was misreported as a confirmed durable write")
     };
     assert_eq!(fault.code(), Code::RunDivideByZero);
+}
+
+/// A host that refuses every session: the authority resolved against ceiling ∩ grant denied
+/// the demand.
+struct RefusingHost;
+
+impl marrow_kernel::durable::SessionHost for RefusingHost {
+    type Engine = <marrow_kernel::durable::EphemeralAttachment as marrow_kernel::durable::SessionHost>::Engine;
+
+    fn read_session(
+        &mut self,
+        _grant: InvocationGrant,
+        _demand: DemandCoverage,
+    ) -> Result<
+        marrow_kernel::durable::ReadSession<'_, Self::Engine>,
+        marrow_kernel::durable::SessionError,
+    > {
+        Err(marrow_kernel::durable::SessionError::Denied)
+    }
+
+    fn txn_session(
+        &mut self,
+        _grant: InvocationGrant,
+        _demand: DemandCoverage,
+    ) -> Result<
+        marrow_kernel::durable::TxnSession<'_, Self::Engine>,
+        marrow_kernel::durable::SessionError,
+    > {
+        Err(marrow_kernel::durable::SessionError::Denied)
+    }
+}
+
+/// A refused session open on the export path is the same source-positioned `run.authority`
+/// fault the test-driver path reports: an invocation that ran nothing, never a reject that
+/// names the CLI.
+#[test]
+fn a_refused_session_open_on_an_export_is_a_run_authority_fault() {
+    let bytes = commit_image(PostCommitFault::None, true);
+    let image = verify(&bytes).expect("verify");
+    let export = image.exports().first().expect("one mutating export");
+    let function = image.function(export.function()).expect("export function");
+    let DurableRun::Ran(Err(DurableExecutionFault::Runtime(fault))) =
+        run_on_host(function, Vec::new(), &mut RefusingHost)
+    else {
+        panic!("a refused session open must surface as a runtime fault");
+    };
+    assert_eq!(fault.code(), Code::RunAuthority);
+    assert_eq!(
+        (fault.line(), fault.column()),
+        function.body().span_at(0).unwrap_or((1, 1))
+    );
 }

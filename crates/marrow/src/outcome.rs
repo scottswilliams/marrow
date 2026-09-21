@@ -28,7 +28,6 @@ pub(crate) enum Record {
         pid: u32,
         staging: String,
         cause: String,
-        kill_error: Option<String>,
     },
     /// No child remains to reap, but stage removal failed.
     CompanionStaging { path: String, cause: String },
@@ -135,13 +134,8 @@ impl Record {
                 pid,
                 staging,
                 cause,
-                kill_error,
             } => format!(
-                "companion cleanup unconfirmed: observed child PID {pid}, retained staging {staging}: {cause}{}",
-                kill_error
-                    .as_ref()
-                    .map(|error| format!("; kill request: {error}"))
-                    .unwrap_or_default(),
+                "companion cleanup unconfirmed: observed child PID {pid}, retained staging {staging}: {cause}"
             ),
             Record::CompanionStaging { path, cause } => {
                 format!(
@@ -219,14 +213,9 @@ impl Record {
                 pid,
                 staging,
                 cause,
-                kill_error,
             } => format!(
-                r#"{{"cause":{},"kill_error":{},"kind":"cleanup","outcome":"unreaped","pid":{pid},"staging":{}}}"#,
+                r#"{{"cause":{},"kind":"cleanup","outcome":"unreaped","pid":{pid},"staging":{}}}"#,
                 json_string(cause.as_str()),
-                kill_error
-                    .as_ref()
-                    .map(|error| json_string(error))
-                    .unwrap_or_else(|| "null".into()),
                 json_string(staging),
             ),
             Record::CompanionStaging { path, cause } => format!(
@@ -610,11 +599,10 @@ mod tests {
             pid: 123,
             staging: "/tmp/retained".into(),
             cause: "deadline".into(),
-            kill_error: Some("signal failed".into()),
         };
         assert_eq!(
             retained.to_jsonl(&[], &[]).unwrap(),
-            r#"{"cause":"deadline","kill_error":"signal failed","kind":"cleanup","outcome":"unreaped","pid":123,"staging":"/tmp/retained"}"#
+            r#"{"cause":"deadline","kind":"cleanup","outcome":"unreaped","pid":123,"staging":"/tmp/retained"}"#
         );
         let removal = Record::CompanionStaging {
             path: "/tmp/stage".into(),

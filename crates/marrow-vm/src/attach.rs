@@ -93,7 +93,7 @@ pub fn run_test(mut test: FreshTest) -> DurableRun {
 
 /// Run one export as its own invocation: a fresh budget, and the one session its demand
 /// requires on `host`.
-fn run_on_host<H: SessionHost + ?Sized>(
+pub(crate) fn run_on_host<H: SessionHost + ?Sized>(
     func: VerifiedFunction<'_>,
     args: Vec<Value>,
     host: &mut H,

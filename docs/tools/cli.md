@@ -251,8 +251,9 @@ publication can occur before input is read; input refusal is not a guarantee
 that project metadata was untouched.
 
 The invocation result and companion cleanup are reported separately. After a
-native call the CLI waits up to 1.1 seconds for the companion to exit on its own
-and never terminates it, because the store close may still be running.
+native call the CLI waits up to 10.1 seconds (a 100 ms grace period plus the 10 s
+per-call deadline) for the companion to exit on its own and never terminates it,
+because the store close may still be running.
 Unconfirmed cleanup reports the observed PID and the retained staging path and
 exits `1` without reclassifying or retrying the invocation. The PID is an
 observation, not authority to signal a later process reusing that number. See
