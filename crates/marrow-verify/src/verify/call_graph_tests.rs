@@ -1,4 +1,4 @@
-use crate::{FunctionIndex, SealedInstr, VerifiedImage, VerifyPhase};
+use crate::{FunctionIndex, RejectionKind, SealedInstr, VerifiedImage, VerifyPhase};
 use marrow_image::{
     ConstId, DeclarationMemberDef, DeclarationMemberShape, DemandAtom, ExportDemand, ExportId,
     FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, OP_CALL,
@@ -497,11 +497,11 @@ fn the_two_root_entry_points_carry_their_own_demands(
     assert!(std::ptr::eq(leaf_b, atom(verified, 0, &b.atoms()[0])));
 }
 
-fn assert_refusal(bytes: &[u8], phase: VerifyPhase, detail: &str) {
+fn assert_refusal(bytes: &[u8], phase: VerifyPhase, kind: RejectionKind) {
     let refusal = crate::verify(bytes).expect_err("the artifact violates this phase");
     assert_eq!(refusal.phase(), phase);
     assert_eq!(refusal.code(), phase.code());
-    assert_eq!(refusal.detail(), detail);
+    assert_eq!(refusal.kind(), &kind);
 }
 
 #[test]
@@ -515,11 +515,7 @@ fn self_and_disconnected_cycles_are_rejected() {
         ],
     ] {
         let bytes = image(|_, _| bodies, Some(0), None);
-        assert_refusal(
-            &bytes,
-            VerifyPhase::Closure,
-            "the call graph contains a cycle",
-        );
+        assert_refusal(&bytes, VerifyPhase::Closure, RejectionKind::CallCycle);
     }
 }
 
@@ -542,16 +538,16 @@ fn an_unrelated_function_error_precedes_cycle_rejection() {
 
 #[test]
 fn cycle_rejection_precedes_transaction_flow() {
-    for (first, phase, detail) in [
+    for (first, phase, kind) in [
         (
             vec![Instr::Return],
             VerifyPhase::Flow,
-            "a transaction marker sits outside its owning export",
+            RejectionKind::MarkerOutsideOwner,
         ),
         (
             vec![Instr::Call(0), Instr::Return],
             VerifyPhase::Closure,
-            "the call graph contains a cycle",
+            RejectionKind::CallCycle,
         ),
     ] {
         let bytes = image(
@@ -564,7 +560,7 @@ fn cycle_rejection_precedes_transaction_flow() {
             Some(0),
             None,
         );
-        assert_refusal(&bytes, phase, detail);
+        assert_refusal(&bytes, phase, kind);
     }
 }
 
@@ -600,7 +596,7 @@ fn a_transitive_presence_read_must_precede_commit() {
             assert_refusal(
                 &bytes,
                 VerifyPhase::Flow,
-                "a durable operation follows the transaction's commit",
+                RejectionKind::OperationAfterCommit,
             );
         } else {
             let verified = crate::verify(&bytes).expect("read through a helper in the region");
@@ -652,14 +648,10 @@ fn a_call_into_a_test_entry_reaches_the_verifier_after_cycle_checking() {
     assert_refusal(
         &bytes,
         VerifyPhase::TestEntry,
-        "a test entry may not be called",
+        RejectionKind::TestEntryCalled,
     );
     replace_terminal_call(&mut bytes, 4, 3);
-    assert_refusal(
-        &bytes,
-        VerifyPhase::Closure,
-        "the call graph contains a cycle",
-    );
+    assert_refusal(&bytes, VerifyPhase::Closure, RejectionKind::CallCycle);
 }
 
 #[test]

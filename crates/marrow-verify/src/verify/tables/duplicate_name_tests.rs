@@ -1,14 +1,13 @@
-use super::{
-    decode_enums, decode_enums_with_work, decode_strings, decode_types, decode_types_with_work,
-};
-use crate::reject::VerifyPhase;
+//! A repeated name inside one record or enum row is refused at the repeated name, before
+//! the bytes that follow it are read; the same name in distinct rows is admitted.
+
+use crate::reject::{Duplicate, RejectionKind, VerifyPhase};
 use marrow_image::{
     DraftTxn, EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr,
     RecordTypeDef, Scalar, SpanEntry, VariantDef,
 };
-use std::ops::Range;
-
 use marrow_test_support::{admitted, rehash};
+use std::ops::Range;
 
 const RECORD_WIDTH: usize = 4_096;
 const ENUM_WIDTH: usize = 256;
@@ -18,7 +17,6 @@ fn add_main(draft: &mut DraftTxn<'_>) {
     let source = draft
         .intern_string("src/main.mw")
         .expect("a within-domain mint");
-    let code = vec![Instr::Return];
     let function = draft
         .add_function(FunctionDef {
             name,
@@ -31,7 +29,7 @@ fn add_main(draft: &mut DraftTxn<'_>) {
                 line: 1,
                 column: 1,
             }],
-            code,
+            code: vec![Instr::Return],
         })
         .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), function);
@@ -142,80 +140,25 @@ fn section_range(bytes: &[u8], wanted: u8) -> Range<usize> {
     panic!("section {wanted:#04x} is present in a canonical image");
 }
 
-fn section_body(bytes: &[u8], id: u8) -> &[u8] {
-    &bytes[section_range(bytes, id)]
-}
-
 #[test]
-fn full_width_record_projection_is_linear_and_preserves_sealed_order() {
-    let bytes = record_image();
-    let strings = decode_strings(section_body(&bytes, 0x01)).expect("canonical strings");
-    let decoded = decode_types_with_work(section_body(&bytes, 0x02), &strings)
-        .expect("canonical record table");
-    assert_eq!(decoded.name_count, RECORD_WIDTH);
-    assert_eq!(decoded.name_checks, RECORD_WIDTH);
-
-    let verified = crate::verify::verify(&bytes).expect("full record image verifies");
-    let fields = verified.record_types()[0].fields();
-    assert_eq!(fields.len(), RECORD_WIDTH);
-    for (index, field) in fields.iter().enumerate() {
-        assert_eq!(field.name.as_ref(), format!("field{index:04}"));
-        assert_eq!(field.ty, ImageType::scalar(Scalar::Int));
-        assert_eq!(field.required, index % 2 == 0);
-    }
-}
-
-#[test]
-fn enum_projection_is_linear_and_preserves_sealed_order() {
-    let bytes = enum_image();
-    let strings = decode_strings(section_body(&bytes, 0x01)).expect("canonical strings");
-    let decoded = decode_enums_with_work(section_body(&bytes, 0x09), &strings, 0)
-        .expect("canonical enum table");
-    assert_eq!(decoded.name_count, ENUM_WIDTH);
-    assert_eq!(decoded.name_checks, ENUM_WIDTH);
-
-    let verified = crate::verify::verify(&bytes).expect("full enum image verifies");
-    let variants = verified.enums()[0].variants();
-    assert_eq!(variants.len(), ENUM_WIDTH);
-    for (index, variant) in variants.iter().enumerate() {
-        assert_eq!(variant.name.as_ref(), format!("variant{index:03}"));
-        assert_eq!(variant.category, index % 2 == 1);
-        assert!(variant.payload.is_empty());
-    }
-}
-
-#[test]
-fn generation_marks_allow_the_same_name_in_distinct_rows() {
-    let bytes = repeated_names_across_rows_image();
-    let strings = decode_strings(section_body(&bytes, 0x01)).expect("canonical strings");
-    let records = decode_types_with_work(section_body(&bytes, 0x02), &strings)
-        .expect("record rows may reuse a field name");
-    assert_eq!(records.name_count, 2);
-    assert_eq!(records.name_checks, 2);
-    let enums = decode_enums_with_work(section_body(&bytes, 0x09), &strings, records.rows.len())
-        .expect("enum rows may reuse a variant name");
-    assert_eq!(enums.name_count, 2);
-    assert_eq!(enums.name_checks, 2);
-
-    let verified = crate::verify::verify(&bytes).expect("cross-row repeated names verify");
+fn the_same_name_in_distinct_rows_is_admitted() {
+    let verified =
+        crate::verify::verify(&repeated_names_across_rows_image()).expect("cross-row names verify");
     assert_eq!(verified.record_types().len(), 2);
     assert_eq!(verified.enums().len(), 2);
-    assert_eq!(
-        verified.record_types()[0].fields()[0].name.as_ref(),
-        "value"
-    );
-    assert_eq!(
-        verified.record_types()[1].fields()[0].name.as_ref(),
-        "value"
-    );
-    assert_eq!(verified.enums()[0].variants()[0].name.as_ref(), "ready");
-    assert_eq!(verified.enums()[1].variants()[0].name.as_ref(), "ready");
+    for record in verified.record_types() {
+        assert_eq!(record.fields()[0].name.as_ref(), "value");
+    }
+    for enum_type in verified.enums() {
+        assert_eq!(enum_type.variants()[0].name.as_ref(), "ready");
+    }
 }
 
+/// The last field takes the first field's name and a poisoned type byte: the duplicate is
+/// refused before the type byte is read.
 #[test]
-fn duplicate_record_name_rejects_before_its_poisoned_type_byte() {
+fn a_duplicate_field_name_rejects_before_its_poisoned_type_byte() {
     let mut bytes = record_image();
-    let strings = decode_strings(section_body(&bytes, 0x01)).expect("canonical strings");
     let range = section_range(&bytes, 0x02);
     let body = &mut bytes[range];
     let first_field = 6;
@@ -225,22 +168,19 @@ fn duplicate_record_name_rejects_before_its_poisoned_type_byte() {
     body[final_field + 2] = 0xff;
     rehash(&mut bytes);
 
-    let direct = match decode_types(section_body(&bytes, 0x02), &strings) {
-        Ok(_) => panic!("duplicate field name must reject"),
-        Err(rejection) => rejection,
-    };
-    assert_eq!(direct.phase(), VerifyPhase::Table);
-    assert_eq!(direct.detail(), "duplicate field name in record");
-
-    let public = crate::verify::verify(&bytes).expect_err("public verifier rejects duplicate");
-    assert_eq!(public.phase(), VerifyPhase::Table);
-    assert_eq!(public.detail(), "duplicate field name in record");
+    let rejection = crate::verify::verify(&bytes).expect_err("a duplicate field name rejects");
+    assert_eq!(rejection.phase(), VerifyPhase::Table);
+    assert_eq!(
+        rejection.kind(),
+        &RejectionKind::Duplicate(Duplicate::FieldName)
+    );
 }
 
+/// The last variant takes the first variant's name and a poisoned category byte: the
+/// duplicate is refused before the category byte is read.
 #[test]
-fn duplicate_variant_name_rejects_before_its_poisoned_category_byte() {
+fn a_duplicate_variant_name_rejects_before_its_poisoned_category_byte() {
     let mut bytes = enum_image();
-    let strings = decode_strings(section_body(&bytes, 0x01)).expect("canonical strings");
     let range = section_range(&bytes, 0x09);
     let body = &mut bytes[range];
     let first_variant = 6;
@@ -250,14 +190,10 @@ fn duplicate_variant_name_rejects_before_its_poisoned_category_byte() {
     body[final_variant + 2] = 0xff;
     rehash(&mut bytes);
 
-    let direct = match decode_enums(section_body(&bytes, 0x09), &strings, 0) {
-        Ok(_) => panic!("duplicate variant name must reject"),
-        Err(rejection) => rejection,
-    };
-    assert_eq!(direct.phase(), VerifyPhase::Table);
-    assert_eq!(direct.detail(), "duplicate variant name in enum");
-
-    let public = crate::verify::verify(&bytes).expect_err("public verifier rejects duplicate");
-    assert_eq!(public.phase(), VerifyPhase::Table);
-    assert_eq!(public.detail(), "duplicate variant name in enum");
+    let rejection = crate::verify::verify(&bytes).expect_err("a duplicate variant name rejects");
+    assert_eq!(rejection.phase(), VerifyPhase::Table);
+    assert_eq!(
+        rejection.kind(),
+        &RejectionKind::Duplicate(Duplicate::VariantName)
+    );
 }

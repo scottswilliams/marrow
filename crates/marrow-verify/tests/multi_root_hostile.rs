@@ -13,7 +13,7 @@ use marrow_image::{
     RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, TypeId, ValueShapeNodeId,
 };
 use marrow_test_support::{admitted, admitted_plan, forge, rehash, site};
-use marrow_verify::{VerifyPhase, verify};
+use marrow_verify::{Duplicate, DurableGraphInputRefusal, RejectionKind, VerifyPhase, verify};
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 // Root A ("assets"): placement/product/key/field ledger ids.
@@ -198,8 +198,8 @@ fn two_roots_sharing_a_name_are_rejected() {
         .expect_err("two roots sharing a name must be rejected");
     assert_eq!(rejection.phase(), VerifyPhase::Table);
     assert_eq!(
-        rejection.detail(),
-        "two durable roots share a name",
+        rejection.kind(),
+        &RejectionKind::Duplicate(Duplicate::RootName),
         "expected a root-name-collision rejection, got {rejection:?}"
     );
 }
@@ -257,8 +257,8 @@ fn a_cross_root_identity_reaching_a_foreign_site_is_rejected() {
         "the cross-root identity confusion is a per-function stack-effect rejection",
     );
     assert_eq!(
-        rejection.detail(),
-        "an entry identity keys a durable operation on a different store root",
+        rejection.kind(),
+        &RejectionKind::ForeignIdentityKey,
         "expected a cross-root identity rejection, got {rejection:?}",
     );
 }
@@ -374,8 +374,8 @@ fn a_repeated_product_declaring_another_graph_is_rejected() {
     let rejection = verify(&bytes).expect_err("a divergent repeated Product must be rejected");
     assert_eq!(rejection.phase(), VerifyPhase::Table);
     assert_eq!(
-        rejection.detail(),
-        "a repeated durable Product declares a different member graph"
+        rejection.kind(),
+        &RejectionKind::DurableGraph(DurableGraphInputRefusal::DivergentGraph)
     );
 }
 
@@ -396,8 +396,8 @@ fn a_repeated_product_declaring_another_entry_record_is_rejected() {
     let rejection = verify(&bytes).expect_err("a rebound entry record must be rejected");
     assert_eq!(rejection.phase(), VerifyPhase::Table);
     assert_eq!(
-        rejection.detail(),
-        "a repeated durable Product declares a different entry record"
+        rejection.kind(),
+        &RejectionKind::DurableGraph(DurableGraphInputRefusal::DivergentEntryRecord)
     );
 }
 
@@ -410,7 +410,10 @@ fn a_duplicate_root_occurrence_is_rejected() {
     forge(&mut bytes, &B_PLACEMENT, 0, &A_PLACEMENT);
     let rejection = verify(&bytes).expect_err("a duplicate root occurrence must be rejected");
     assert_eq!(rejection.phase(), VerifyPhase::Table);
-    assert_eq!(rejection.detail(), "duplicate durable root occurrence");
+    assert_eq!(
+        rejection.kind(),
+        &RejectionKind::Duplicate(Duplicate::RootPlacement)
+    );
 }
 
 /// The producer half of the same law: the draft holds one declaration row per Product

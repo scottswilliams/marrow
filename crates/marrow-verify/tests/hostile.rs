@@ -15,7 +15,10 @@ use marrow_image::{
     RootOccurrenceDef, Scalar, SemanticStepKind, SemanticTarget, SpanEntry, TypeId, VariantDef,
 };
 use marrow_test_support::{admitted, admitted_plan, rehash, site};
-use marrow_verify::{VerifyPhase, verify};
+use marrow_verify::{
+    Bound, Duplicate, Flag, Projection, Ref, Region, RejectionKind, SiteFault, SiteKind, Tag,
+    TieFault, TieNode, TypePosition, TypeRefFault, VerifyPhase, verify,
+};
 
 #[path = "hostile/group_presence.rs"]
 mod group_presence;
@@ -144,8 +147,15 @@ fn retargeted(mut site: Vec<u8>, target: u8) -> Vec<u8> {
     site
 }
 
-/// One byte-poke case: a good image, the bytes poked into it, and the phase that owns
-/// the invariant the poke breaks. A case that rehashes repairs the envelope digest, so
+/// The phase and kind a hostile image is refused with, or `None` when it verifies.
+fn refusal_of(bytes: &[u8]) -> Option<(VerifyPhase, RejectionKind)> {
+    verify(bytes)
+        .err()
+        .map(|rejection| (rejection.phase(), *rejection.kind()))
+}
+
+/// One byte-poke case: a good image, the bytes poked into it, and the phase and kind
+/// that own the invariant the poke breaks. A case that rehashes repairs the envelope digest, so
 /// exactly one later invariant is violated; a case that does not leaves the digest stale,
 /// which the envelope alone must answer whatever else the poked bytes would have meant.
 struct Poke {
@@ -154,6 +164,7 @@ struct Poke {
     poke: fn(&mut Vec<u8>),
     rehash: bool,
     phase: VerifyPhase,
+    kind: RejectionKind,
 }
 
 const POKES: &[Poke] = &[
@@ -163,6 +174,7 @@ const POKES: &[Poke] = &[
         poke: |bytes| bytes[10] ^= 0xFF,
         rehash: false,
         phase: VerifyPhase::Envelope,
+        kind: RejectionKind::DigestMismatch,
     },
     Poke {
         what: "a section-body flip with a stale digest",
@@ -173,6 +185,7 @@ const POKES: &[Poke] = &[
         },
         rehash: false,
         phase: VerifyPhase::Envelope,
+        kind: RejectionKind::DigestMismatch,
     },
     Poke {
         what: "a truncation with a stale digest",
@@ -180,6 +193,7 @@ const POKES: &[Poke] = &[
         poke: |bytes| bytes.truncate(bytes.len() - 3),
         rehash: false,
         phase: VerifyPhase::Envelope,
+        kind: RejectionKind::DigestMismatch,
     },
     Poke {
         what: "an unknown format version",
@@ -187,6 +201,7 @@ const POKES: &[Poke] = &[
         poke: |bytes| bytes[4] = 0xFF,
         rehash: true,
         phase: VerifyPhase::Envelope,
+        kind: RejectionKind::Unknown(Tag::Version),
     },
     Poke {
         what: "a section count the frame run contradicts",
@@ -194,6 +209,7 @@ const POKES: &[Poke] = &[
         poke: |bytes| bytes[37] = 6,
         rehash: true,
         phase: VerifyPhase::Envelope,
+        kind: RejectionKind::SectionCount,
     },
     // EXPORTS (id 6): count(u16), then per export id(32) func(u16), ids strictly ascending
     // and no function the target of two exports.
@@ -206,6 +222,7 @@ const POKES: &[Poke] = &[
         },
         rehash: true,
         phase: VerifyPhase::Table,
+        kind: RejectionKind::OutOfRange(Ref::Function),
     },
     Poke {
         what: "export ids out of ascending order",
@@ -218,6 +235,7 @@ const POKES: &[Poke] = &[
         },
         rehash: true,
         phase: VerifyPhase::Table,
+        kind: RejectionKind::Unsorted(Region::Exports),
     },
     Poke {
         what: "two exports of one function",
@@ -228,6 +246,7 @@ const POKES: &[Poke] = &[
         },
         rehash: true,
         phase: VerifyPhase::Table,
+        kind: RejectionKind::Duplicate(Duplicate::ExportFunction),
     },
     // CONSTS (id 4): count(u16), then per const tag(u8) + payload.
     Poke {
@@ -239,6 +258,7 @@ const POKES: &[Poke] = &[
         },
         rehash: true,
         phase: VerifyPhase::Table,
+        kind: RejectionKind::Unknown(Tag::Const),
     },
     // The DURABLE section (id 3) closes with the 32-byte contract id, which the verifier
     // recomputes from the decoded graph rather than trusting.
@@ -251,6 +271,7 @@ const POKES: &[Poke] = &[
         },
         rehash: true,
         phase: VerifyPhase::Table,
+        kind: RejectionKind::ContractMismatch,
     },
     // TYPES (id 2): count(2) | type: name(2) field_count(2) | field0: name(2) tag(1)
     // required(1). The contract binds the field profile, not only the root and its key.
@@ -263,6 +284,10 @@ const POKES: &[Poke] = &[
         },
         rehash: true,
         phase: VerifyPhase::Table,
+        kind: RejectionKind::RecordTie {
+            node: TieNode::Root,
+            fault: TieFault::FieldMismatch,
+        },
     },
     // DURABLE: count(2) | application(16) | root: name(2) key_count(2)
     // [key-tag(1) key_id(16)] record(2) placement(16)… The contract binds the ledger
@@ -276,6 +301,7 @@ const POKES: &[Poke] = &[
         },
         rehash: true,
         phase: VerifyPhase::Table,
+        kind: RejectionKind::Site(SiteFault::Unresolved),
     },
     Poke {
         what: "a mutated key-column ledger id",
@@ -286,6 +312,7 @@ const POKES: &[Poke] = &[
         },
         rehash: true,
         phase: VerifyPhase::Table,
+        kind: RejectionKind::ContractMismatch,
     },
     // Entropy-minted ids are pairwise distinct by construction, so two equal identities in
     // one durable table are refused before the contract recomputation runs.
@@ -300,6 +327,7 @@ const POKES: &[Poke] = &[
         },
         rehash: true,
         phase: VerifyPhase::Table,
+        kind: RejectionKind::Duplicate(Duplicate::LedgerId),
     },
     // The site table's own copy of a ledger id is the *last* occurrence, after the member
     // tree. Flipping it leaves the graph — and so the contract id — intact, isolating the
@@ -310,6 +338,7 @@ const POKES: &[Poke] = &[
         poke: |bytes| flip_last_ledger_id(bytes, VALUE_FIELD_ID),
         rehash: true,
         phase: VerifyPhase::Table,
+        kind: RejectionKind::Site(SiteFault::Unresolved),
     },
     // Each id below is part of the durable member tree the contract binds, so append-only
     // evolution keeps stable codes: index identity, group structure, branch placement, and
@@ -320,6 +349,7 @@ const POKES: &[Poke] = &[
         poke: |bytes| flip_ledger_id(bytes, BY_VALUE_INDEX_ID),
         rehash: true,
         phase: VerifyPhase::Table,
+        kind: RejectionKind::ContractMismatch,
     },
     Poke {
         what: "a mutated group id",
@@ -327,6 +357,7 @@ const POKES: &[Poke] = &[
         poke: |bytes| flip_ledger_id(bytes, GROUP_ID),
         rehash: true,
         phase: VerifyPhase::Table,
+        kind: RejectionKind::ContractMismatch,
     },
     Poke {
         what: "a mutated branch placement id",
@@ -334,6 +365,7 @@ const POKES: &[Poke] = &[
         poke: |bytes| flip_ledger_id(bytes, BRANCH_PLACEMENT_ID),
         rehash: true,
         phase: VerifyPhase::Table,
+        kind: RejectionKind::ContractMismatch,
     },
     Poke {
         what: "a mutated enum member id",
@@ -341,6 +373,7 @@ const POKES: &[Poke] = &[
         poke: |bytes| flip_ledger_id(bytes, ACCESS_READER_ID),
         rehash: true,
         phase: VerifyPhase::Table,
+        kind: RejectionKind::ContractMismatch,
     },
     // The durable value shape is self-describing (scalar 0, struct 1, enum 2); the `kind`
     // field's id is followed by its required flag and that tag, so an unknown tag there is
@@ -359,6 +392,7 @@ const POKES: &[Poke] = &[
         },
         rehash: true,
         phase: VerifyPhase::Table,
+        kind: RejectionKind::Unknown(Tag::DurableValue),
     },
     // TEST-ENTRY (id 8): count(u16), then per row name(u16) func(u16), names strictly
     // ascending and no two names aliasing one function.
@@ -371,6 +405,7 @@ const POKES: &[Poke] = &[
         },
         rehash: true,
         phase: VerifyPhase::Table,
+        kind: RejectionKind::OutOfRange(Ref::Function),
     },
     Poke {
         what: "a test entry naming no string row",
@@ -381,6 +416,7 @@ const POKES: &[Poke] = &[
         },
         rehash: true,
         phase: VerifyPhase::Table,
+        kind: RejectionKind::OutOfRange(Ref::String),
     },
     Poke {
         what: "two test entries of one name",
@@ -391,6 +427,7 @@ const POKES: &[Poke] = &[
         },
         rehash: true,
         phase: VerifyPhase::Table,
+        kind: RejectionKind::Unsorted(Region::TestEntries),
     },
     Poke {
         what: "test entry names out of ascending order",
@@ -403,6 +440,7 @@ const POKES: &[Poke] = &[
         },
         rehash: true,
         phase: VerifyPhase::Table,
+        kind: RejectionKind::Unsorted(Region::TestEntries),
     },
     Poke {
         what: "a test entry count past the section body",
@@ -413,6 +451,7 @@ const POKES: &[Poke] = &[
         },
         rehash: true,
         phase: VerifyPhase::Table,
+        kind: RejectionKind::Truncated(Region::TestEntries),
     },
     Poke {
         what: "a test entry count short of the section body",
@@ -423,6 +462,7 @@ const POKES: &[Poke] = &[
         },
         rehash: true,
         phase: VerifyPhase::Table,
+        kind: RejectionKind::Trailing(Region::TestEntries),
     },
     // Assert-free bodies isolate the aliasing rule: the orphaned function carries no
     // `Assert`, so only the two-names-one-function check can answer here. An
@@ -437,6 +477,7 @@ const POKES: &[Poke] = &[
         },
         rehash: true,
         phase: VerifyPhase::TestEntry,
+        kind: RejectionKind::Duplicate(Duplicate::TestEntryFunction),
     },
 ];
 
@@ -455,9 +496,13 @@ fn every_byte_poke_rejects_at_the_phase_owning_its_invariant() {
         if case.rehash {
             rehash(&mut bytes);
         }
-        let answer = verdict_of(&bytes);
-        if answer != Refused(case.phase) {
-            wrong.push(format!("{}: {answer:?}, want {:?}", case.what, case.phase));
+        let answer = refusal_of(&bytes);
+        if answer != Some((case.phase, case.kind)) {
+            wrong.push(format!(
+                "{}: {answer:?}, want {:?}",
+                case.what,
+                (case.phase, case.kind)
+            ));
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
@@ -476,6 +521,7 @@ struct SiteForgery {
     image: fn() -> Vec<u8>,
     original: fn() -> Vec<u8>,
     forged: fn() -> Vec<u8>,
+    kind: RejectionKind,
 }
 
 const SITE_FORGERIES: &[SiteForgery] = &[
@@ -483,6 +529,7 @@ const SITE_FORGERIES: &[SiteForgery] = &[
     // scan target over it would traverse a unique index and observe siblings.
     SiteForgery {
         what: "a scan target over a unique index",
+        kind: RejectionKind::IndexReadKind,
         image: unique_index_site_image,
         original: || encoded_index_site(BY_VALUE_INDEX_ID, 0x03),
         forged: || encoded_index_site(BY_VALUE_INDEX_ID, 0x02),
@@ -490,6 +537,7 @@ const SITE_FORGERIES: &[SiteForgery] = &[
     // The mirror: the nonunique `byLabel` admits only a progressive-prefix scan.
     SiteForgery {
         what: "an exact-lookup target over a nonunique index",
+        kind: RejectionKind::IndexReadKind,
         image: nonunique_index_site_image,
         original: || encoded_index_site(BY_LABEL_INDEX_ID, 0x02),
         forged: || encoded_index_site(BY_LABEL_INDEX_ID, 0x03),
@@ -497,6 +545,7 @@ const SITE_FORGERIES: &[SiteForgery] = &[
     // A GroupEntry target must resolve to a group node; `details.pages` is a field leaf.
     SiteForgery {
         what: "a whole-group target over a field node",
+        kind: RejectionKind::Site(SiteFault::TargetKind),
         image: group_field_site_image,
         original: || encoded_group_field_site(0x01),
         forged: || encoded_group_field_site(0x04),
@@ -504,6 +553,7 @@ const SITE_FORGERIES: &[SiteForgery] = &[
     // A ledger id absent from the durable graph resolves against no reconstructed node.
     SiteForgery {
         what: "a site path naming no graph node",
+        kind: RejectionKind::Site(SiteFault::Unresolved),
         image: good_durable_image,
         original: || encoded_field_site(LABEL_FIELD_ID),
         forged: || encoded_field_site([0xbb; 16]),
@@ -512,6 +562,7 @@ const SITE_FORGERIES: &[SiteForgery] = &[
     // node while the target claims a keyed placement.
     SiteForgery {
         what: "a whole-payload target over a field path",
+        kind: RejectionKind::Site(SiteFault::TargetKind),
         image: good_durable_image,
         original: || encoded_field_site(LABEL_FIELD_ID),
         forged: || retargeted(encoded_field_site(LABEL_FIELD_ID), 0x00),
@@ -519,6 +570,7 @@ const SITE_FORGERIES: &[SiteForgery] = &[
     // The mirror: a stored-field target over the root's own placement path.
     SiteForgery {
         what: "a field-leaf target over the root path",
+        kind: RejectionKind::Site(SiteFault::TargetKind),
         image: good_durable_image,
         original: encoded_root_site,
         forged: || retargeted(encoded_root_site(), 0x01),
@@ -527,6 +579,7 @@ const SITE_FORGERIES: &[SiteForgery] = &[
     // branch child, so the path names no node.
     SiteForgery {
         what: "a branch path routed through a field",
+        kind: RejectionKind::Site(SiteFault::Unresolved),
         image: nested_branch_site_image,
         original: || encoded_tag_entry_site(&[BRANCH_PLACEMENT_ID, TAG_PLACEMENT_ID]),
         forged: || {
@@ -545,6 +598,7 @@ const SITE_FORGERIES: &[SiteForgery] = &[
     // A second hop naming a placement that is no branch of `notes`.
     SiteForgery {
         what: "a branch path naming a nonexistent hop",
+        kind: RejectionKind::Site(SiteFault::Unresolved),
         image: nested_branch_site_image,
         original: || encoded_tag_entry_site(&[BRANCH_PLACEMENT_ID, TAG_PLACEMENT_ID]),
         forged: || encoded_tag_entry_site(&[BRANCH_PLACEMENT_ID, [0x99; 16]]),
@@ -563,9 +617,9 @@ fn every_forged_site_is_refused_where_the_table_resolves_it() {
             case.what
         );
         forge_site(&mut bytes, &(case.original)(), &(case.forged)());
-        let answer = verdict_of(&bytes);
-        if answer != Refused(VerifyPhase::Table) {
-            wrong.push(format!("{}: {answer:?}", case.what));
+        let answer = refusal_of(&bytes);
+        if answer != Some((VerifyPhase::Table, case.kind)) {
+            wrong.push(format!("{}: {answer:?}, want {:?}", case.what, case.kind));
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
@@ -876,10 +930,7 @@ fn a_zero_or_oversized_traversal_bound_is_refused() {
         let rejection = verify(&iterate_root_export(limit, false).encode().unwrap().bytes)
             .expect_err("an out-of-range traversal bound is refused");
         assert_eq!(rejection.phase(), VerifyPhase::Function);
-        assert_eq!(
-            rejection.detail(),
-            "bounded traversal bound is out of range"
-        );
+        assert_eq!(rejection.kind(), &RejectionKind::TraversalBound);
     }
 }
 
@@ -910,10 +961,7 @@ fn a_bounded_traversal_with_a_mismatched_list_type_rejects() {
     let rejection = verify(&draft.encode().unwrap().bytes)
         .expect_err("a mismatched frozen-list type is refused");
     assert_eq!(rejection.phase(), VerifyPhase::Function);
-    assert_eq!(
-        rejection.detail(),
-        "bounded traversal list type does not name a list of the traversed key"
-    );
+    assert_eq!(rejection.kind(), &RejectionKind::FrozenListType);
 }
 
 #[test]
@@ -951,7 +999,7 @@ fn a_bounded_branch_traversal_missing_its_ancestor_key_rejects() {
     let rejection =
         verify(&draft.encode().unwrap().bytes).expect_err("a missing ancestor key is refused");
     assert_eq!(rejection.phase(), VerifyPhase::Function);
-    assert_eq!(rejection.detail(), "operand stack underflow");
+    assert_eq!(rejection.kind(), &RejectionKind::StackUnderflow);
 }
 
 #[test]
@@ -981,7 +1029,10 @@ fn a_bounded_traversal_over_a_field_leaf_site_rejects() {
     let rejection = verify(&draft.encode().unwrap().bytes)
         .expect_err("a traversal over a field-leaf site is refused");
     assert_eq!(rejection.phase(), VerifyPhase::Function);
-    assert_eq!(rejection.detail(), "operation requires an entry site");
+    assert_eq!(
+        rejection.kind(),
+        &RejectionKind::RequiresSite(SiteKind::Entry)
+    );
 }
 
 #[test]
@@ -1002,7 +1053,10 @@ fn a_family_populated_probe_over_a_field_leaf_site_rejects() {
     let rejection = verify(&draft.encode().unwrap().bytes)
         .expect_err("a family probe over a field site is refused");
     assert_eq!(rejection.phase(), VerifyPhase::Function);
-    assert_eq!(rejection.detail(), "operation requires an entry site");
+    assert_eq!(
+        rejection.kind(),
+        &RejectionKind::RequiresSite(SiteKind::Entry)
+    );
 }
 
 #[test]
@@ -1033,8 +1087,8 @@ fn a_managed_index_probe_over_a_field_leaf_site_rejects() {
         .expect_err("a managed-index probe over a field site is refused");
     assert_eq!(rejection.phase(), VerifyPhase::Function);
     assert_eq!(
-        rejection.detail(),
-        "a managed-index opcode over a non-index site"
+        rejection.kind(),
+        &RejectionKind::RequiresSite(SiteKind::Index)
     );
 }
 
@@ -1071,8 +1125,8 @@ fn a_non_index_opcode_over_a_managed_index_site_rejects() {
         .expect_err("a non-index opcode over an index site is refused");
     assert_eq!(rejection.phase(), VerifyPhase::Function);
     assert_eq!(
-        rejection.detail(),
-        "a non-index opcode over a managed-index site"
+        rejection.kind(),
+        &RejectionKind::RequiresSite(SiteKind::NotIndex)
     );
 }
 
@@ -1118,10 +1172,7 @@ fn a_bounded_traversal_after_commit_rejects() {
     let rejection =
         verify(&draft.encode().unwrap().bytes).expect_err("a post-commit traversal is refused");
     assert_eq!(rejection.phase(), VerifyPhase::Flow);
-    assert_eq!(
-        rejection.detail(),
-        "a durable operation follows the transaction's commit"
-    );
+    assert_eq!(rejection.kind(), &RejectionKind::OperationAfterCommit);
 }
 
 #[test]
@@ -1160,10 +1211,7 @@ fn a_traversal_list_type_naming_a_map_rejects() {
     let rejection = verify(&build(0).encode().unwrap().bytes)
         .expect_err("a non-List[K] frozen type is refused");
     assert_eq!(rejection.phase(), VerifyPhase::Function);
-    assert_eq!(
-        rejection.detail(),
-        "bounded traversal list type does not name a list of the traversed key"
-    );
+    assert_eq!(rejection.kind(), &RejectionKind::FrozenListType);
 }
 
 #[test]
@@ -1182,7 +1230,7 @@ fn substituting_family_exists_leaves_invalid_bounded_traversal_operands() {
     rehash(&mut bytes);
     let rejection = verify(&bytes).expect_err("the leftover traversal operands are refused");
     assert_eq!(rejection.phase(), VerifyPhase::Function);
-    assert_eq!(rejection.detail(), "unknown or not-yet-supported opcode");
+    assert_eq!(rejection.kind(), &RejectionKind::Unknown(Tag::Opcode));
 }
 
 #[test]
@@ -1204,7 +1252,7 @@ fn a_malformed_from_flag_byte_is_refused_at_decode() {
     rehash(&mut bytes);
     let rejection = verify(&bytes).expect_err("a malformed from flag is refused");
     assert_eq!(rejection.phase(), VerifyPhase::Function);
-    assert_eq!(rejection.detail(), "malformed bool operand");
+    assert_eq!(rejection.kind(), &RejectionKind::Flag(Flag::BoolOperand));
 }
 
 #[test]
@@ -1329,8 +1377,8 @@ fn a_composite_root_write_opcode_with_a_truncated_key_path_rejects() {
     );
 }
 
-const NON_INDEX_ELIGIBLE_FIELD_DETAIL: &str =
-    "durable index field component names a field that is not index-eligible";
+const NON_INDEX_ELIGIBLE_FIELD: RejectionKind =
+    RejectionKind::IndexProjection(Projection::FieldNotEligible);
 
 /// One managed index of the tracer root, as encoded site bytes: `application ->
 /// placement -> index`, with the read target the index's unique flag admits.
@@ -1549,7 +1597,7 @@ fn a_duration_field_is_not_a_managed_index_component() {
     let rejection = verify(&bytes).expect_err("a duration-field managed index is refused");
     assert_eq!(rejection.phase(), VerifyPhase::Table);
     assert_eq!(rejection.phase(), VerifyPhase::Table);
-    assert_eq!(rejection.detail(), NON_INDEX_ELIGIBLE_FIELD_DETAIL);
+    assert_eq!(rejection.kind(), &NON_INDEX_ELIGIBLE_FIELD);
 }
 
 /// A `Counter` root whose `owner` field is a widened dense struct, with a unique index
@@ -1662,7 +1710,7 @@ fn an_index_component_over_a_widened_field_rejects() {
     let rejection = verify(&bytes).expect_err("a widened-field managed index is refused");
     assert_eq!(rejection.phase(), VerifyPhase::Table);
     assert_eq!(rejection.phase(), VerifyPhase::Table);
-    assert_eq!(rejection.detail(), NON_INDEX_ELIGIBLE_FIELD_DETAIL);
+    assert_eq!(rejection.kind(), &NON_INDEX_ELIGIBLE_FIELD);
 }
 
 /// Flip the first occurrence of a 16-byte ledger id in `bytes`. The distinct test
@@ -1798,8 +1846,11 @@ fn a_root_member_tree_with_a_field_after_a_group_rejects() {
         .expect_err("a field member after a group member is refused");
     assert_eq!(rejection.phase(), VerifyPhase::Table);
     assert_eq!(
-        rejection.detail(),
-        "root member tree places a field after a group"
+        rejection.kind(),
+        &RejectionKind::RecordTie {
+            node: TieNode::Root,
+            fault: TieFault::FieldAfterGroup
+        }
     );
 }
 
@@ -1861,8 +1912,11 @@ fn a_root_member_tree_with_more_members_than_record_slots_rejects() {
         .expect_err("more members than record slots is refused");
     assert_eq!(rejection.phase(), VerifyPhase::Table);
     assert_eq!(
-        rejection.detail(),
-        "root member tree has more top-level members than the record"
+        rejection.kind(),
+        &RejectionKind::RecordTie {
+            node: TieNode::Root,
+            fault: TieFault::MoreMembers
+        }
     );
 }
 
@@ -1874,8 +1928,11 @@ fn a_root_member_tree_with_fewer_members_than_record_slots_rejects() {
         .expect_err("fewer members than record slots is refused");
     assert_eq!(rejection.phase(), VerifyPhase::Table);
     assert_eq!(
-        rejection.detail(),
-        "root member tree has fewer top-level members than the record"
+        rejection.kind(),
+        &RejectionKind::RecordTie {
+            node: TieNode::Root,
+            fault: TieFault::FewerMembers
+        }
     );
 }
 
@@ -2257,8 +2314,8 @@ fn a_site_path_at_the_maximum_depth_is_admitted_by_the_bound() {
     let rejection = verify(&bytes).expect_err("the unresolved maximum-depth path must reject");
     assert_eq!(rejection.phase(), VerifyPhase::Table);
     assert_eq!(
-        rejection.detail(),
-        "durable site path does not resolve to a graph node",
+        rejection.kind(),
+        &RejectionKind::Site(SiteFault::Unresolved),
         "the inclusive maximum must pass the depth gate and fail only at node resolution",
     );
 }
@@ -2281,8 +2338,8 @@ fn a_forged_zero_step_site_path_is_refused_before_any_path_body() {
     let rejection = verify(&bytes).expect_err("a zero-step site path must reject");
     assert_eq!(rejection.phase(), VerifyPhase::Table);
     assert_eq!(
-        rejection.detail(),
-        "durable site path names no graph node",
+        rejection.kind(),
+        &RejectionKind::Site(SiteFault::Empty),
         "the minimum-length gate rejects before reading a step or target",
     );
 }
@@ -2291,7 +2348,7 @@ fn a_forged_zero_step_site_path_is_refused_before_any_path_body() {
 fn a_forged_over_deep_site_path_is_refused_by_the_verifier() {
     // The at-bound forgery with only its step-count byte bumped to one past the bound.
     // The verifier's own length check trips before it decodes any step — `image.table`
-    // "durable site path too deep" — so a forged image cannot smuggle an unbounded path
+    // RejectionKind::OverBound(Bound::SitePathSteps) — so a forged image cannot smuggle an unbounded path
     // past the container.
     let bytes = forged_deep_site_image(
         marrow_image::bounds::MAX_SITE_PATH_STEPS,
@@ -2300,8 +2357,8 @@ fn a_forged_over_deep_site_path_is_refused_by_the_verifier() {
     let rejection = verify(&bytes).expect_err("the forged over-deep path must reject");
     assert_eq!(rejection.phase(), VerifyPhase::Table);
     assert_eq!(
-        rejection.detail(),
-        "durable site path too deep",
+        rejection.kind(),
+        &RejectionKind::OverBound(Bound::SitePathSteps),
         "the length gate trips before any step is decoded",
     );
 }
@@ -3894,8 +3951,11 @@ fn enum_payload_with_a_collection_leaf_rejects_at_table() {
     assert_eq!(rejection.phase(), VerifyPhase::Table);
     assert_eq!(rejection.phase(), VerifyPhase::Table);
     assert_eq!(
-        rejection.detail(),
-        "enum payload leaf type tag is not admitted here"
+        rejection.kind(),
+        &RejectionKind::TypeRef {
+            position: TypePosition::EnumPayloadLeaf,
+            fault: TypeRefFault::TagNotAdmitted,
+        }
     );
 }
 
@@ -4450,7 +4510,7 @@ fn a_bounded_traversal_over_a_composite_keyed_root_layer_rejects() {
 // Every one of the three refusals fires **inside the decode**, from the bytes read so far
 // rather than from a reconstructed graph. The pair per bound is exact: at `N` the decode
 // passes the bound and a later, differently named invariant answers; at `N + 1` the
-// bound's own detail answers. Freezing both sides is what makes the pair a statement about
+// bound's own kind answers. Freezing both sides is what makes the pair a statement about
 // which bound answers, rather than only that something refused.
 
 /// A hand-built DURABLE section body over one root of one Product, closed by a
@@ -4562,40 +4622,43 @@ fn forged_durable_rejection(forged: Vec<u8>) -> marrow_verify::VerifyRejection {
 
 /// The member budget bounds the whole tree, and it answers at exactly one member past it.
 #[test]
-fn a_forged_durable_member_run_past_the_budget_rejects_with_the_budget_detail() {
+fn a_forged_durable_member_run_past_the_budget_rejects_with_the_budget_kind() {
     const N: usize = marrow_image::bounds::MAX_DURABLE_MEMBERS;
 
     let over = forged_durable_rejection(forged_durable_body(forged_field_run(N + 1), vec![0, 0]));
     assert_eq!(over.phase(), VerifyPhase::Table);
-    assert_eq!(over.detail(), "too many durable members");
+    assert_eq!(
+        over.kind(),
+        &RejectionKind::OverBound(Bound::DurableMembers)
+    );
 
     // At the budget the decode completes and a later invariant — the member tree against
     // the materialized record — is what answers instead.
     let at = forged_durable_rejection(forged_durable_body(forged_field_run(N), vec![0, 0]));
     assert_eq!(at.phase(), VerifyPhase::Table);
-    assert_ne!(at.detail(), "too many durable members");
-    assert_eq!(at.detail(), AT_BUDGET_DETAIL);
+    assert_ne!(at.kind(), &RejectionKind::OverBound(Bound::DurableMembers));
+    assert_eq!(at.kind(), &AT_BUDGET);
 }
 
 /// The depth bound answers at exactly one level past it, and the nesting one level
 /// shallower reaches the record invariant instead.
 #[test]
-fn a_forged_durable_member_tree_past_the_depth_bound_rejects_with_the_depth_detail() {
+fn a_forged_durable_member_tree_past_the_depth_bound_rejects_with_the_depth_kind() {
     const N: usize = marrow_image::bounds::MAX_DURABLE_DEPTH;
 
     let over = forged_durable_rejection(forged_durable_body(forged_group_nest(N), vec![0, 0]));
     assert_eq!(over.phase(), VerifyPhase::Table);
-    assert_eq!(over.detail(), "durable member tree too deep");
+    assert_eq!(over.kind(), &RejectionKind::OverBound(Bound::DurableDepth));
 
     let at = forged_durable_rejection(forged_durable_body(forged_group_nest(N - 1), vec![0, 0]));
     assert_eq!(at.phase(), VerifyPhase::Table);
-    assert_ne!(at.detail(), "durable member tree too deep");
-    assert_eq!(at.detail(), AT_DEPTH_DETAIL);
+    assert_ne!(at.kind(), &RejectionKind::OverBound(Bound::DurableDepth));
+    assert_eq!(at.kind(), &AT_DEPTH);
 }
 
 /// The index-component bound answers at exactly one component past it.
 #[test]
-fn a_forged_durable_index_past_the_component_bound_rejects_with_the_component_detail() {
+fn a_forged_durable_index_past_the_component_bound_rejects_with_the_component_kind() {
     const N: usize = marrow_image::bounds::MAX_INDEX_COMPONENTS;
 
     let over = forged_durable_rejection(forged_durable_body(
@@ -4603,19 +4666,28 @@ fn a_forged_durable_index_past_the_component_bound_rejects_with_the_component_de
         forged_index_run(N + 1),
     ));
     assert_eq!(over.phase(), VerifyPhase::Table);
-    assert_eq!(over.detail(), "too many durable index components");
+    assert_eq!(
+        over.kind(),
+        &RejectionKind::OverBound(Bound::IndexComponents)
+    );
 
     let at = forged_durable_rejection(forged_durable_body(
         matching_member_run(),
         forged_index_run(N),
     ));
     assert_eq!(at.phase(), VerifyPhase::Table);
-    assert_ne!(at.detail(), "too many durable index components");
-    assert_eq!(at.detail(), AT_COMPONENTS_DETAIL);
+    assert_ne!(at.kind(), &RejectionKind::OverBound(Bound::IndexComponents));
+    assert_eq!(at.kind(), &AT_COMPONENTS);
 }
 
-/// The exact detail each corpus draws at `N`, frozen so the pair states which bound
+/// The exact kind each corpus draws at `N`, frozen so the pair states which bound
 /// answers on each side rather than only that something refused.
-const AT_BUDGET_DETAIL: &str = "root member tree fields do not match the record fields";
-const AT_DEPTH_DETAIL: &str = "a root group slot is not a group record";
-const AT_COMPONENTS_DETAIL: &str = "durable index repeats a projection component";
+const AT_BUDGET: RejectionKind = RejectionKind::RecordTie {
+    node: TieNode::Root,
+    fault: TieFault::FieldMismatch,
+};
+const AT_DEPTH: RejectionKind = RejectionKind::RecordTie {
+    node: TieNode::Group,
+    fault: TieFault::SlotNotGroupRecord,
+};
+const AT_COMPONENTS: RejectionKind = RejectionKind::IndexProjection(Projection::RepeatedComponent);

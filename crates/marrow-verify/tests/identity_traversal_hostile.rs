@@ -16,7 +16,7 @@ use marrow_image::{
     RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry,
 };
 use marrow_test_support::{admitted, admitted_plan, site};
-use marrow_verify::{VerifyPhase, verify};
+use marrow_verify::{RejectionKind, VerifyPhase, verify};
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 // Root A ("books"): an int key, a text field, and a `notes(text)` branch.
@@ -325,10 +325,7 @@ fn a_cross_root_identity_traversal_ancestor_is_rejected() {
         VerifyPhase::Function,
         "the cross-root identity confusion is a per-function stack-effect rejection",
     );
-    assert_eq!(
-        rejection.detail(),
-        "an entry identity keys a durable operation on a different store root",
-    );
+    assert_eq!(rejection.kind(), &RejectionKind::ForeignIdentityKey,);
 }
 
 /// The family-probe sibling: `exists(^tallies-identity . notes)` — a `DurFamilyExists` whose
@@ -368,10 +365,7 @@ fn a_cross_root_identity_family_probe_ancestor_is_rejected() {
     draft.add_export(ExportId::of_local("", "f"), func);
     let rejection = verify(&draft.encode().expect("encode").bytes)
         .expect_err("a foreign-root identity family-probe ancestor must be rejected");
-    assert_eq!(
-        rejection.detail(),
-        "an entry identity keys a durable operation on a different store root",
-    );
+    assert_eq!(rejection.kind(), &RejectionKind::ForeignIdentityKey,);
 }
 
 /// The strict present-entry set sibling: `DurSetField` reads its key-path from local
@@ -425,8 +419,5 @@ fn a_cross_root_identity_key_slot_in_a_strict_set_is_rejected() {
         VerifyPhase::Function,
         "the slot-type re-proof is a per-function stack-effect rejection",
     );
-    assert_eq!(
-        rejection.detail(),
-        "present-entry key slot has the wrong type",
-    );
+    assert_eq!(rejection.kind(), &RejectionKind::KeySlotType,);
 }

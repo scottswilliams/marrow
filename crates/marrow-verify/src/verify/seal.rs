@@ -7,7 +7,7 @@ use super::durable::{
 use super::model::DecodedImage;
 use super::presence::{EntryFamilies, check_presence_flow, verify_function};
 use super::reject;
-use crate::reject::{VerifyPhase, VerifyRejection};
+use crate::reject::{Duplicate, RejectionKind as Kind, VerifyPhase, VerifyRejection};
 use crate::sealed::{
     SealedExport, SealedFunction, SealedIndex, SealedInstr, SealedRecordType, SealedRoot,
     SealedSite, SealedTestEntry, VerifiedImage,
@@ -167,7 +167,7 @@ fn check_test_entries(
         if is_test_entry[*func as usize] {
             return Err(reject(
                 VerifyPhase::TestEntry,
-                "duplicate test-entry function index",
+                Kind::Duplicate(Duplicate::TestEntryFunction),
             ));
         }
         is_test_entry[*func as usize] = true;
@@ -180,10 +180,7 @@ fn check_test_entries(
             .iter()
             .any(|instr| matches!(instr, SealedInstr::Assert));
         if has_assert && !is_test_entry[index] {
-            return Err(reject(
-                VerifyPhase::TestEntry,
-                "an assert instruction sits outside a test entry",
-            ));
+            return Err(reject(VerifyPhase::TestEntry, Kind::AssertOutsideTest));
         }
     }
 
@@ -191,22 +188,13 @@ fn check_test_entries(
     for (_, func) in &decoded.test_entries {
         let function = &functions[*func as usize];
         if export_entries[*func as usize] {
-            return Err(reject(
-                VerifyPhase::TestEntry,
-                "a test entry is also an export",
-            ));
+            return Err(reject(VerifyPhase::TestEntry, Kind::TestEntryExported));
         }
         if !function.params.is_empty() {
-            return Err(reject(
-                VerifyPhase::TestEntry,
-                "a test entry takes no parameters",
-            ));
+            return Err(reject(VerifyPhase::TestEntry, Kind::TestEntrySignature));
         }
         if function.ret != ImageType::Unit {
-            return Err(reject(
-                VerifyPhase::TestEntry,
-                "a test entry must return unit",
-            ));
+            return Err(reject(VerifyPhase::TestEntry, Kind::TestEntrySignature));
         }
         // A test entry may call durable functions; its demand contributes to
         // the test-image union. It is never an export and carries no wire identity.
@@ -216,10 +204,7 @@ fn check_test_entries(
     for index in 0..functions.len() {
         for &callee in calls.callees(index) {
             if is_test_entry[usize::from(callee)] {
-                return Err(reject(
-                    VerifyPhase::TestEntry,
-                    "a test entry may not be called",
-                ));
+                return Err(reject(VerifyPhase::TestEntry, Kind::TestEntryCalled));
             }
         }
     }
@@ -233,17 +218,14 @@ fn check_test_entries(
             .iter()
             .any(|instr| instr.operation_class().is_some());
         if has_direct_durable {
-            return Err(reject(
-                VerifyPhase::TestEntry,
-                "a test body performs a direct durable operation",
-            ));
+            return Err(reject(VerifyPhase::TestEntry, Kind::TestDirectDurable));
         }
         for &callee in calls.callees(usize::from(*func)) {
             let callee = usize::from(callee);
             if effects.mutates_closure[callee] && !effects.has_begin[callee] {
                 return Err(reject(
                     VerifyPhase::TestEntry,
-                    "a test calls a mutating function without its own transaction",
+                    Kind::TestCallsUnownedMutation,
                 ));
             }
         }

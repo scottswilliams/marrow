@@ -2,7 +2,7 @@
 
 use super::flow::is_mutation;
 use super::reject;
-use crate::reject::{VerifyPhase, VerifyRejection};
+use crate::reject::{RejectionKind as Kind, VerifyPhase, VerifyRejection};
 use crate::sealed::FunctionDemands;
 use crate::sealed::{
     SealedCollectionType, SealedEnumType, SealedFunction, SealedIndex, SealedInstr,
@@ -82,10 +82,7 @@ impl CallGraph {
                     let next = usize::from(callees[cursor]);
                     match colour[next] {
                         Colour::Gray => {
-                            return Err(reject(
-                                VerifyPhase::Closure,
-                                "the call graph contains a cycle",
-                            ));
+                            return Err(reject(VerifyPhase::Closure, Kind::CallCycle));
                         }
                         Colour::White => {
                             colour[next] = Colour::Gray;
@@ -243,10 +240,7 @@ impl Effects {
         if !is_test_entry {
             for &callee in calls.callees(index) {
                 if self.has_begin[usize::from(callee)] {
-                    return Err(reject(
-                        VerifyPhase::Flow,
-                        "a transaction owner may not be called",
-                    ));
+                    return Err(reject(VerifyPhase::Flow, Kind::OwnerCalled));
                 }
             }
         }
@@ -257,10 +251,7 @@ impl Effects {
         // no session to consume. Refuse it here rather than admit a region that cannot
         // run. A region that reads carries read demand and is admitted below.
         if is_export_entry && self.has_begin[index] && self.demands.get(index).is_empty() {
-            return Err(reject(
-                VerifyPhase::Flow,
-                "a transaction performs no durable operation",
-            ));
+            return Err(reject(VerifyPhase::Flow, Kind::EmptyTransaction));
         }
 
         // An export entry that owns a transaction runs the lattice: every mutation
@@ -275,10 +266,7 @@ impl Effects {
         // Every other function is a read-only function or a mutating helper (wholly
         // inside its caller's transaction). Neither may carry a transaction marker.
         if self.has_begin[index] || self.has_commit[index] {
-            return Err(reject(
-                VerifyPhase::Flow,
-                "a transaction marker sits outside its owning export",
-            ));
+            return Err(reject(VerifyPhase::Flow, Kind::MarkerOutsideOwner));
         }
         Ok(())
     }
@@ -301,28 +289,19 @@ impl Effects {
             let next_state = match instr {
                 SealedInstr::TxnBegin => {
                     if state != State::BeforeBegin {
-                        return Err(reject(
-                            VerifyPhase::Flow,
-                            "the transaction is begun more than once",
-                        ));
+                        return Err(reject(VerifyPhase::Flow, Kind::BeginTwice));
                     }
                     State::InTxn
                 }
                 SealedInstr::TxnCommit => {
                     if state != State::InTxn {
-                        return Err(reject(
-                            VerifyPhase::Flow,
-                            "a transaction is committed outside its region",
-                        ));
+                        return Err(reject(VerifyPhase::Flow, Kind::CommitOutsideRegion));
                     }
                     State::AfterCommit
                 }
                 SealedInstr::Return => {
                     if state == State::InTxn {
-                        return Err(reject(
-                            VerifyPhase::Flow,
-                            "a path returns without committing the transaction",
-                        ));
+                        return Err(reject(VerifyPhase::Flow, Kind::ReturnWithoutCommit));
                     }
                     continue; // no successors
                 }
@@ -330,10 +309,7 @@ impl Effects {
                     let mutating_here = is_mutation(instr)
                         || matches!(instr, SealedInstr::Call(target) if self.mutates_closure[*target as usize]);
                     if mutating_here && state != State::InTxn {
-                        return Err(reject(
-                            VerifyPhase::Flow,
-                            "a mutation sits outside the transaction region",
-                        ));
+                        return Err(reject(VerifyPhase::Flow, Kind::MutationOutsideRegion));
                     }
                     // The commit consumes the session's engine transaction, so no
                     // durable operation — read or write, direct or through a callee's
@@ -344,10 +320,7 @@ impl Effects {
                     let durable_here = instr.operation_class().is_some()
                         || matches!(instr, SealedInstr::Call(target) if !self.demands.get(usize::from(*target)).is_empty());
                     if durable_here && state == State::AfterCommit {
-                        return Err(reject(
-                            VerifyPhase::Flow,
-                            "a durable operation follows the transaction's commit",
-                        ));
+                        return Err(reject(VerifyPhase::Flow, Kind::OperationAfterCommit));
                     }
                     state
                 }
@@ -360,10 +333,7 @@ impl Effects {
                     }
                     Some(existing) if existing == next_state => {}
                     Some(_) => {
-                        return Err(reject(
-                            VerifyPhase::Flow,
-                            "transaction state disagrees at a merge",
-                        ));
+                        return Err(reject(VerifyPhase::Flow, Kind::TransactionMerge));
                     }
                 }
             }

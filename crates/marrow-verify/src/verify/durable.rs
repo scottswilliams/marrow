@@ -12,7 +12,10 @@ use super::model::DecodedRoot;
 use super::reject;
 use super::tables::decode_bare_scalar;
 use crate::reader::Reader;
-use crate::reject::{VerifyPhase, VerifyRejection};
+use crate::reject::{
+    Bound, Duplicate, Flag, Projection, Ref, Region, RejectionKind as Kind, SiteFault, Tag,
+    TieFault, TieNode, VerifyPhase, VerifyRejection,
+};
 use crate::sealed::{
     SealedBranch, SealedEnumType, SealedField, SealedGroup, SealedIndex, SealedIndexComponent,
     SealedRecordType, SealedSite, SealedSiteTarget,
@@ -76,33 +79,10 @@ fn structural_plan(root_count: usize) -> AdmittedGraphInputPlan {
     )
 }
 
-/// Project one refused flat durable-graph command into this verifier's own typed
-/// hostile-image detail. A hostile image states the graph; the refusal names what it
-/// stated wrongly, in the same `&'static str` form every other rejection in this decode
-/// carries.
+/// A refused durable-graph command is a hostile image, carried as the graph owner's own
+/// typed refusal.
 fn reject_graph_input(refusal: DurableGraphInputRefusal) -> VerifyRejection {
-    reject(
-        VerifyPhase::Table,
-        match refusal {
-            DurableGraphInputRefusal::DivergentGraph => {
-                "a repeated durable Product declares a different member graph"
-            }
-            DurableGraphInputRefusal::DivergentEntryRecord => {
-                "a repeated durable Product declares a different entry record"
-            }
-            DurableGraphInputRefusal::OverPlan
-            | DurableGraphInputRefusal::UnaddressableOccurrence => "too many durable roots",
-            DurableGraphInputRefusal::MalformedCommands
-            | DurableGraphInputRefusal::UndeclaredProduct => {
-                "durable member graph is not a well-formed declaration"
-            }
-            // The command reader refuses an over-deep run at the byte that opens it, so
-            // this arm restates that verdict rather than adding a second one. It stays
-            // reachable in principle: the depth bound belongs to the rows, and the graph
-            // owner enforces it whatever a caller assembled.
-            DurableGraphInputRefusal::OverDepth => "durable member tree too deep",
-        },
-    )
+    reject(VerifyPhase::Table, Kind::DurableGraph(refusal))
 }
 
 /// Decode the DURABLE table (section 0x03): up to `MAX_ROOTS` roots — preceded,
@@ -133,9 +113,10 @@ pub(super) fn decode_durable(
     let mut reader = Reader::new(body);
     let root_count = reader
         .u16()
-        .ok_or(reject(VerifyPhase::Table, "short root count"))? as usize;
+        .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?
+        as usize;
     if root_count > marrow_image::bounds::MAX_ROOTS {
-        return Err(reject(VerifyPhase::Table, "too many durable roots"));
+        return Err(reject(VerifyPhase::Table, Kind::OverBound(Bound::Roots)));
     }
     // The construction plan is minted before the graph exists, from the one structural
     // count just bounded: no plan, no graph.
@@ -177,7 +158,7 @@ fn decode_roots(
 ) -> Result<Vec<DecodedRoot>, VerifyRejection> {
     let mut scope = LedgerScope::default();
     if root_count > 0 {
-        let application = take_distinct_id(reader, &mut scope, "short application identity")?;
+        let application = take_distinct_id(reader, &mut scope)?;
         graph.set_application_identity(application);
     }
     let mut roots = Vec::with_capacity(root_count);
@@ -194,7 +175,10 @@ fn decode_roots(
     for (i, root) in roots.iter().enumerate() {
         for other in &roots[..i] {
             if tables.strings[root.name as usize] == tables.strings[other.name as usize] {
-                return Err(reject(VerifyPhase::Table, "two durable roots share a name"));
+                return Err(reject(
+                    VerifyPhase::Table,
+                    Kind::Duplicate(Duplicate::RootName),
+                ));
             }
         }
     }
@@ -213,9 +197,9 @@ fn decode_root(
 ) -> Result<DecodedRoot, VerifyRejection> {
     let name = reader
         .u16()
-        .ok_or(reject(VerifyPhase::Table, "short root name"))?;
+        .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?;
     if name as usize >= tables.strings.len() {
-        return Err(reject(VerifyPhase::Table, "root name index out of range"));
+        return Err(reject(VerifyPhase::Table, Kind::OutOfRange(Ref::String)));
     }
     // The key tuple: a count, then each column's scalar type and distinct
     // ledger id. Zero columns is a singleton root; the closed orderable
@@ -223,35 +207,39 @@ fn decode_root(
     // instant per column (`duration` is a span, not an identity).
     let key_count = reader
         .u16()
-        .ok_or(reject(VerifyPhase::Table, "short root key count"))? as usize;
+        .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?
+        as usize;
     if key_count > marrow_image::bounds::MAX_KEY_COLUMNS {
-        return Err(reject(VerifyPhase::Table, "too many root key columns"));
+        return Err(reject(
+            VerifyPhase::Table,
+            Kind::OverBound(Bound::KeyColumns),
+        ));
     }
     let keys = decode_key_tuple(reader, key_count, scope, MemberClaim::Declaration)?;
     let record = reader
         .u16()
-        .ok_or(reject(VerifyPhase::Table, "short root record"))?;
+        .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?;
     if record as usize >= tables.types.len() {
         return Err(reject(
             VerifyPhase::Table,
-            "root record type index out of range",
+            Kind::OutOfRange(Ref::RecordType),
         ));
     }
     // The root placement is an occurrence identity: every root occupies its own, so
     // a repeated placement is a duplicate root occurrence — two rows that would
     // address one durable node — rather than a generic identity collision.
-    let placement = read_id(reader, "short placement identity")?;
+    let placement = read_id(reader)?;
     if !scope.placements.insert(placement) {
         return Err(reject(
             VerifyPhase::Table,
-            "duplicate durable root occurrence",
+            Kind::Duplicate(Duplicate::RootPlacement),
         ));
     }
     claim_distinct(scope, placement)?;
     // The Product is a declaration identity. Its first occurrence claims it together
     // with its whole member/value graph; a later root carrying it is a reference that
     // claims nothing and must match the accepted declaration exactly.
-    let product = read_id(reader, "short product identity")?;
+    let product = read_id(reader)?;
     // A Product is a declaration and a root is an occurrence of it. The first
     // occurrence claims the declaration's ledger ids; a later one is a reference that
     // reclaims nothing and must state the identical graph and entry record, which the
@@ -348,9 +336,10 @@ fn decode_sites(
     let projection = project_graph(nodes, roots);
     let site_count = reader
         .u16()
-        .ok_or(reject(VerifyPhase::Table, "short site count"))? as usize;
+        .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?
+        as usize;
     if site_count > marrow_image::bounds::MAX_SITES {
-        return Err(reject(VerifyPhase::Table, "too many durable sites"));
+        return Err(reject(VerifyPhase::Table, Kind::OverBound(Bound::Sites)));
     }
     let mut sites: Vec<SealedSite> = Vec::with_capacity(site_count);
     // Each site's resolved graph-node path, parallel to `sites` by index. The demand
@@ -366,7 +355,7 @@ fn decode_sites(
     for _ in 0..site_count {
         let (site, path) = decode_site(reader, &projection)?;
         if !claimed.insert(site.clone()) {
-            return Err(reject(VerifyPhase::Table, "duplicate durable site"));
+            return Err(reject(VerifyPhase::Table, Kind::Duplicate(Duplicate::Site)));
         }
         sites.push(site);
         site_paths.push(path);
@@ -385,14 +374,11 @@ fn close_contract(
 ) -> Result<DurableContractId, VerifyRejection> {
     let carried: [u8; 32] = reader
         .take(32)
-        .ok_or(reject(VerifyPhase::Table, "short durable contract id"))?
+        .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?
         .try_into()
         .expect("take(32) yields 32 bytes");
     if !reader.is_empty() {
-        return Err(reject(
-            VerifyPhase::Table,
-            "trailing bytes in durable table",
-        ));
+        return Err(reject(VerifyPhase::Table, Kind::Trailing(Region::Durable)));
     }
     // A graph decoded from an image is inside the identity owner's payload ceiling by
     // construction — the payload is the same walk as the section, spelling a ledger
@@ -403,12 +389,9 @@ fn close_contract(
     let recomputed = graph
         .contract_view()
         .contract_id()
-        .map_err(|_| reject(VerifyPhase::Table, "durable graph is too large to identify"))?;
+        .map_err(|_| reject(VerifyPhase::Table, Kind::ContractUnidentifiable))?;
     if recomputed.bytes() != &carried {
-        return Err(reject(
-            VerifyPhase::Table,
-            "durable contract id does not match the durable graph",
-        ));
+        return Err(reject(VerifyPhase::Table, Kind::ContractMismatch));
     }
     Ok(recomputed)
 }
@@ -425,42 +408,43 @@ fn decode_site(
 ) -> Result<(SealedSite, SemanticPath), VerifyRejection> {
     let step_count = reader
         .u8()
-        .ok_or(reject(VerifyPhase::Table, "short site path length"))? as usize;
+        .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?
+        as usize;
     if step_count < marrow_image::bounds::MIN_SITE_PATH_STEPS {
-        return Err(reject(
-            VerifyPhase::Table,
-            "durable site path names no graph node",
-        ));
+        return Err(reject(VerifyPhase::Table, Kind::Site(SiteFault::Empty)));
     }
     if step_count > marrow_image::bounds::MAX_SITE_PATH_STEPS {
-        return Err(reject(VerifyPhase::Table, "durable site path too deep"));
+        return Err(reject(
+            VerifyPhase::Table,
+            Kind::OverBound(Bound::SitePathSteps),
+        ));
     }
     let mut steps = Vec::with_capacity(step_count);
     for _ in 0..step_count {
         let kind_byte = reader
             .u8()
-            .ok_or(reject(VerifyPhase::Table, "short site path step kind"))?;
+            .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?;
         let kind = SemanticStepKind::from_ledger_kind(kind_byte)
-            .ok_or(reject(VerifyPhase::Table, "unknown site path step kind"))?;
+            .ok_or(reject(VerifyPhase::Table, Kind::Unknown(Tag::SiteStep)))?;
         let id_bytes: [u8; 16] = reader
             .take(16)
-            .ok_or(reject(VerifyPhase::Table, "short site path step id"))?
+            .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?
             .try_into()
             .expect("take(16) yields 16 bytes");
         steps.push(SemanticStep::new(kind, LedgerIdBytes::from_bytes(id_bytes)));
     }
     let path = SemanticPath::try_from_steps(steps)
-        .map_err(|_| reject(VerifyPhase::Table, "durable site path names no graph node"))?;
+        .map_err(|_| reject(VerifyPhase::Table, Kind::Site(SiteFault::Empty)))?;
     let target = match reader
         .u8()
-        .ok_or(reject(VerifyPhase::Table, "short site target"))?
+        .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?
     {
         0x00 => SemanticTarget::WholePayload,
         0x01 => SemanticTarget::FieldLeaf,
         0x02 => SemanticTarget::IndexScan,
         0x03 => SemanticTarget::IndexLookup,
         0x04 => SemanticTarget::GroupEntry,
-        _ => return Err(reject(VerifyPhase::Table, "unknown site target tag")),
+        _ => return Err(reject(VerifyPhase::Table, Kind::Unknown(Tag::SiteTarget))),
     };
     let site = resolve_site(&path, target, graph)?;
     // The site's node path is the chain it resolved against — retained parallel to
@@ -486,7 +470,7 @@ fn resolve_site(
 ) -> Result<SealedSite, VerifyRejection> {
     let node = graph.nodes.get(path.steps()).ok_or(reject(
         VerifyPhase::Table,
-        "durable site path does not resolve to a graph node",
+        Kind::Site(SiteFault::Unresolved),
     ))?;
     // The target kind must agree with the resolved node's kind: a whole-payload
     // target names a keyed placement, a field-leaf target names a stored field, and an
@@ -499,7 +483,7 @@ fn resolve_site(
         _ => {
             return Err(reject(
                 VerifyPhase::Table,
-                "durable site target kind does not match its resolved graph node",
+                Kind::Site(SiteFault::TargetKind),
             ));
         }
     }
@@ -517,10 +501,7 @@ fn resolve_site(
             _ => unreachable!("only an index node admits an index read target"),
         };
         if !agrees {
-            return Err(reject(
-                VerifyPhase::Table,
-                "durable index site read kind disagrees with the index's unique flag",
-            ));
+            return Err(reject(VerifyPhase::Table, Kind::IndexReadKind));
         }
         let sealed_target = match target {
             SemanticTarget::IndexScan => SealedSiteTarget::IndexScan(global),
@@ -931,7 +912,7 @@ pub(super) fn seal_root_indexes(
                         .map(SealedIndexComponent::Field)
                         .ok_or(reject(
                             VerifyPhase::Table,
-                            "durable index field component resolves to no record position",
+                            Kind::IndexProjection(Projection::FieldUnknown),
                         )),
                     DurableIndexComponent::Key(id) => columns
                         .get(id)
@@ -939,7 +920,7 @@ pub(super) fn seal_root_indexes(
                         .map(SealedIndexComponent::Key)
                         .ok_or(reject(
                             VerifyPhase::Table,
-                            "durable index key component resolves to no key column",
+                            Kind::IndexProjection(Projection::KeyUnknown),
                         )),
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -994,20 +975,19 @@ impl MemberClaim {
         self,
         reader: &mut Reader<'_>,
         scope: &mut LedgerScope,
-        what: &'static str,
     ) -> Result<LedgerIdBytes, VerifyRejection> {
         match self {
-            Self::Declaration => take_distinct_id(reader, scope, what),
-            Self::Reference => read_id(reader, what),
+            Self::Declaration => take_distinct_id(reader, scope),
+            Self::Reference => read_id(reader),
         }
     }
 }
 
 /// Read one 16-byte ledger id from the reader without claiming it.
-fn read_id(reader: &mut Reader<'_>, what: &'static str) -> Result<LedgerIdBytes, VerifyRejection> {
+fn read_id(reader: &mut Reader<'_>) -> Result<LedgerIdBytes, VerifyRejection> {
     let bytes: [u8; 16] = reader
         .take(16)
-        .ok_or(reject(VerifyPhase::Table, what))?
+        .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?
         .try_into()
         .expect("take(16) yields 16 bytes");
     Ok(LedgerIdBytes::from_bytes(bytes))
@@ -1018,7 +998,10 @@ fn read_id(reader: &mut Reader<'_>, what: &'static str) -> Result<LedgerIdBytes,
 /// identity block.
 fn claim_distinct(scope: &mut LedgerScope, id: LedgerIdBytes) -> Result<(), VerifyRejection> {
     if !scope.seen.insert(id) {
-        return Err(reject(VerifyPhase::Table, "duplicate durable ledger id"));
+        return Err(reject(
+            VerifyPhase::Table,
+            Kind::Duplicate(Duplicate::LedgerId),
+        ));
     }
     Ok(())
 }
@@ -1027,9 +1010,8 @@ fn claim_distinct(scope: &mut LedgerScope, id: LedgerIdBytes) -> Result<(), Veri
 fn take_distinct_id(
     reader: &mut Reader<'_>,
     scope: &mut LedgerScope,
-    what: &'static str,
 ) -> Result<LedgerIdBytes, VerifyRejection> {
-    let id = read_id(reader, what)?;
+    let id = read_id(reader)?;
     claim_distinct(scope, id)?;
     Ok(id)
 }
@@ -1047,7 +1029,7 @@ fn decode_key_tuple(
     for _ in 0..count {
         let key_tag = reader
             .u8()
-            .ok_or(reject(VerifyPhase::Table, "short key type"))?;
+            .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?;
         let scalar = match decode_bare_scalar(key_tag) {
             Some(
                 scalar @ (Scalar::Int
@@ -1058,13 +1040,10 @@ fn decode_key_tuple(
                 | Scalar::Instant),
             ) => scalar,
             _ => {
-                return Err(reject(
-                    VerifyPhase::Table,
-                    "key type must be an orderable durable-key scalar",
-                ));
+                return Err(reject(VerifyPhase::Table, Kind::KeyNotOrderable));
             }
         };
-        let key_id = claim.read(reader, scope, "short key identity")?;
+        let key_id = claim.read(reader, scope)?;
         keys.push((scalar, key_id));
     }
     Ok(keys)
@@ -1099,13 +1078,19 @@ fn tie_root_record(
                 if seen_group {
                     return Err(reject(
                         VerifyPhase::Table,
-                        "root member tree places a field after a group",
+                        Kind::RecordTie {
+                            node: TieNode::Root,
+                            fault: TieFault::FieldAfterGroup,
+                        },
                     ));
                 }
                 let Some(slot) = slots.next() else {
                     return Err(reject(
                         VerifyPhase::Table,
-                        "root member tree has more top-level members than the record",
+                        Kind::RecordTie {
+                            node: TieNode::Root,
+                            fault: TieFault::MoreMembers,
+                        },
                     ));
                 };
                 if required != slot.required
@@ -1113,7 +1098,10 @@ fn tie_root_record(
                 {
                     return Err(reject(
                         VerifyPhase::Table,
-                        "root member tree fields do not match the record fields",
+                        Kind::RecordTie {
+                            node: TieNode::Root,
+                            fault: TieFault::FieldMismatch,
+                        },
                     ));
                 }
             }
@@ -1122,7 +1110,10 @@ fn tie_root_record(
                 let Some(slot) = slots.next() else {
                     return Err(reject(
                         VerifyPhase::Table,
-                        "root member tree has more top-level members than the record",
+                        Kind::RecordTie {
+                            node: TieNode::Root,
+                            fault: TieFault::MoreMembers,
+                        },
                     ));
                 };
                 tie_group_slot(slot, member.members(), types, enums, values)?;
@@ -1134,7 +1125,10 @@ fn tie_root_record(
     if slots.next().is_some() {
         return Err(reject(
             VerifyPhase::Table,
-            "root member tree has fewer top-level members than the record",
+            Kind::RecordTie {
+                node: TieNode::Root,
+                fault: TieFault::FewerMembers,
+            },
         ));
     }
     Ok(())
@@ -1156,19 +1150,25 @@ fn tie_group_slot(
     let ImageType::Record { idx, optional } = slot.ty else {
         return Err(reject(
             VerifyPhase::Table,
-            "a root group slot is not a group record",
+            Kind::RecordTie {
+                node: TieNode::Group,
+                fault: TieFault::SlotNotGroupRecord,
+            },
         ));
     };
     if optional {
         return Err(reject(
             VerifyPhase::Table,
-            "a root group slot must be a bare group record",
+            Kind::RecordTie {
+                node: TieNode::Group,
+                fault: TieFault::SlotNotGroupRecord,
+            },
         ));
     }
     if idx.index() as usize >= types.len() {
         return Err(reject(
             VerifyPhase::Table,
-            "root group slot record index out of range",
+            Kind::OutOfRange(Ref::RecordType),
         ));
     }
     let group_fields = &types[idx.index() as usize].fields;
@@ -1184,7 +1184,10 @@ fn tie_group_slot(
             _ => {
                 return Err(reject(
                     VerifyPhase::Table,
-                    "group member tree fields do not match its record fields",
+                    Kind::RecordTie {
+                        node: TieNode::Group,
+                        fault: TieFault::FieldMismatch,
+                    },
                 ));
             }
         }
@@ -1192,7 +1195,10 @@ fn tie_group_slot(
     if direct_fields.next().is_some() {
         return Err(reject(
             VerifyPhase::Table,
-            "group member tree has more direct fields than its record",
+            Kind::RecordTie {
+                node: TieNode::Group,
+                fault: TieFault::MoreMembers,
+            },
         ));
     }
     Ok(())
@@ -1226,12 +1232,12 @@ fn validate_branch_records(
             DurableMemberViewKind::Group(_) => stack.push(member.members()),
             DurableMemberViewKind::Branch(branch) => {
                 if branch.name().index() as usize >= string_count {
-                    return Err(reject(VerifyPhase::Table, "branch name index out of range"));
+                    return Err(reject(VerifyPhase::Table, Kind::OutOfRange(Ref::String)));
                 }
                 if branch.record().index() as usize >= types.len() {
                     return Err(reject(
                         VerifyPhase::Table,
-                        "branch record type index out of range",
+                        Kind::OutOfRange(Ref::RecordType),
                     ));
                 }
                 let record_fields = &types[branch.record().index() as usize].fields;
@@ -1247,7 +1253,10 @@ fn validate_branch_records(
                         _ => {
                             return Err(reject(
                                 VerifyPhase::Table,
-                                "branch member tree fields do not match its record fields",
+                                Kind::RecordTie {
+                                    node: TieNode::Branch,
+                                    fault: TieFault::FieldMismatch,
+                                },
                             ));
                         }
                     }
@@ -1255,7 +1264,10 @@ fn validate_branch_records(
                 if direct_fields.next().is_some() {
                     return Err(reject(
                         VerifyPhase::Table,
-                        "branch member tree has more direct fields than its record",
+                        Kind::RecordTie {
+                            node: TieNode::Branch,
+                            fault: TieFault::MoreMembers,
+                        },
                     ));
                 }
                 stack.push(member.members());
@@ -1281,7 +1293,8 @@ fn decode_members(
 ) -> Result<Vec<DeclarationMemberDef>, VerifyRejection> {
     let top = reader
         .u16()
-        .ok_or(reject(VerifyPhase::Table, "short durable member count"))? as usize;
+        .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?
+        as usize;
     let mut commands: Vec<DeclarationMemberDef> = Vec::with_capacity(top.min(budget.remaining()));
     // One explicit stack of the runs still being read. The wire order is unchanged — a
     // nested run is read where the tree wrote it — but nothing recurses and nothing owns a
@@ -1300,23 +1313,23 @@ fn decode_members(
         let parent = run.parent;
         budget.spend()?;
         let index = u32::try_from(commands.len())
-            .map_err(|_| reject(VerifyPhase::Table, "too many durable members"))?;
+            .map_err(|_| reject(VerifyPhase::Table, Kind::OverBound(Bound::DurableMembers)))?;
         let tag = reader
             .u8()
-            .ok_or(reject(VerifyPhase::Table, "short durable member tag"))?;
+            .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?;
         let shape = match tag {
             0x00 => {
-                let id = claim.read(reader, scope, "short durable field identity")?;
-                let required = match reader.u8().ok_or(reject(
-                    VerifyPhase::Table,
-                    "short durable field required flag",
-                ))? {
+                let id = claim.read(reader, scope)?;
+                let required = match reader
+                    .u8()
+                    .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?
+                {
                     0 => false,
                     1 => true,
                     _ => {
                         return Err(reject(
                             VerifyPhase::Table,
-                            "durable field required flag must be 0 or 1",
+                            Kind::Flag(Flag::DurableFieldRequired),
                         ));
                     }
                 };
@@ -1328,28 +1341,31 @@ fn decode_members(
                 }
             }
             0x01 => {
-                let id = claim.read(reader, scope, "short durable group identity")?;
+                let id = claim.read(reader, scope)?;
                 descend(&mut stack, reader, index)?;
                 DeclarationMemberShape::Group { id }
             }
             0x02 => {
-                let placement = claim.read(reader, scope, "short durable branch identity")?;
+                let placement = claim.read(reader, scope)?;
                 // The branch's surface name and materialized record type index follow
                 // the placement. Their ranges (against the string and type tables) and
                 // the record/member-field alignment are checked in
                 // `validate_branch_records`, where the type and enum tables are in scope.
                 let name = reader
                     .u16()
-                    .ok_or(reject(VerifyPhase::Table, "short durable branch name"))?;
+                    .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?;
                 let record = reader
                     .u16()
-                    .ok_or(reject(VerifyPhase::Table, "short durable branch record"))?;
+                    .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?;
                 let key_count = reader
                     .u16()
-                    .ok_or(reject(VerifyPhase::Table, "short branch key count"))?
+                    .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?
                     as usize;
                 if key_count > marrow_image::bounds::MAX_KEY_COLUMNS {
-                    return Err(reject(VerifyPhase::Table, "too many branch key columns"));
+                    return Err(reject(
+                        VerifyPhase::Table,
+                        Kind::OverBound(Bound::KeyColumns),
+                    ));
                 }
                 let keys = decode_key_tuple(reader, key_count, scope, claim)?;
                 descend(&mut stack, reader, index)?;
@@ -1363,7 +1379,12 @@ fn decode_members(
                         .collect(),
                 }
             }
-            _ => return Err(reject(VerifyPhase::Table, "unknown durable member tag")),
+            _ => {
+                return Err(reject(
+                    VerifyPhase::Table,
+                    Kind::Unknown(Tag::DurableMember),
+                ));
+            }
         };
         commands.push(DeclarationMemberDef { parent, shape });
     }
@@ -1394,10 +1415,10 @@ impl MemberBudget {
 
     /// Spend one member row, refusing the declaration that would overrun the allowance.
     fn spend(&mut self) -> Result<(), VerifyRejection> {
-        self.0 = self
-            .0
-            .checked_sub(1)
-            .ok_or(reject(VerifyPhase::Table, "too many durable members"))?;
+        self.0 = self.0.checked_sub(1).ok_or(reject(
+            VerifyPhase::Table,
+            Kind::OverBound(Bound::DurableMembers),
+        ))?;
         Ok(())
     }
 
@@ -1419,11 +1440,15 @@ fn descend(
     parent: u32,
 ) -> Result<(), VerifyRejection> {
     if stack.len() + 1 > marrow_image::bounds::MAX_DURABLE_DEPTH {
-        return Err(reject(VerifyPhase::Table, "durable member tree too deep"));
+        return Err(reject(
+            VerifyPhase::Table,
+            Kind::OverBound(Bound::DurableDepth),
+        ));
     }
     let count = reader
         .u16()
-        .ok_or(reject(VerifyPhase::Table, "short durable member count"))? as usize;
+        .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?
+        as usize;
     stack.push(PendingRun {
         parent: Some(parent),
         remaining: count,
@@ -1480,63 +1505,54 @@ fn decode_indexes(
         .collect();
     let count = reader
         .u16()
-        .ok_or(reject(VerifyPhase::Table, "short durable index count"))? as usize;
+        .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?
+        as usize;
     if count > marrow_image::bounds::MAX_INDEXES {
-        return Err(reject(VerifyPhase::Table, "too many durable indexes"));
+        return Err(reject(VerifyPhase::Table, Kind::OverBound(Bound::Indexes)));
     }
     let mut indexes = Vec::with_capacity(count);
     for _ in 0..count {
-        let id = take_distinct_id(reader, scope, "short durable index identity")?;
-        let unique = match reader.u8().ok_or(reject(
-            VerifyPhase::Table,
-            "short durable index unique flag",
-        ))? {
+        let id = take_distinct_id(reader, scope)?;
+        let unique = match reader
+            .u8()
+            .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?
+        {
             0 => false,
             1 => true,
             _ => {
-                return Err(reject(
-                    VerifyPhase::Table,
-                    "durable index unique flag must be 0 or 1",
-                ));
+                return Err(reject(VerifyPhase::Table, Kind::Flag(Flag::IndexUnique)));
             }
         };
-        let component_count = reader.u16().ok_or(reject(
-            VerifyPhase::Table,
-            "short durable index component count",
-        ))? as usize;
+        let component_count = reader
+            .u16()
+            .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?
+            as usize;
         if component_count > marrow_image::bounds::MAX_INDEX_COMPONENTS {
             return Err(reject(
                 VerifyPhase::Table,
-                "too many durable index components",
+                Kind::OverBound(Bound::IndexComponents),
             ));
         }
         let mut components = Vec::with_capacity(component_count);
         for _ in 0..component_count {
-            let kind = reader.u8().ok_or(reject(
-                VerifyPhase::Table,
-                "short durable index component kind",
-            ))?;
+            let kind = reader
+                .u8()
+                .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?;
             let leaf: [u8; 16] = reader
                 .take(16)
-                .ok_or(reject(
-                    VerifyPhase::Table,
-                    "short durable index component identity",
-                ))?
+                .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?
                 .try_into()
                 .expect("take(16) yields 16 bytes");
             let leaf = LedgerIdBytes::from_bytes(leaf);
             let component = match kind {
                 0x02 => {
                     if !index_eligible_field_ids.contains(&leaf) {
-                        return Err(reject(
-                            VerifyPhase::Table,
-                            if field_ids.contains(&leaf) {
-                                "durable index field component names a field that is not \
-                                 index-eligible"
-                            } else {
-                                "durable index field component names no top-level field of its root"
-                            },
-                        ));
+                        let fault = if field_ids.contains(&leaf) {
+                            Projection::FieldNotEligible
+                        } else {
+                            Projection::FieldUnknown
+                        };
+                        return Err(reject(VerifyPhase::Table, Kind::IndexProjection(fault)));
                     }
                     DurableIndexComponent::Field(leaf)
                 }
@@ -1544,7 +1560,7 @@ fn decode_indexes(
                     if !keys.iter().any(|(_, key_id)| *key_id == leaf) {
                         return Err(reject(
                             VerifyPhase::Table,
-                            "durable index key component names no identity key of its root",
+                            Kind::IndexProjection(Projection::KeyUnknown),
                         ));
                     }
                     DurableIndexComponent::Key(leaf)
@@ -1552,7 +1568,7 @@ fn decode_indexes(
                 _ => {
                     return Err(reject(
                         VerifyPhase::Table,
-                        "unknown durable index component kind",
+                        Kind::Unknown(Tag::IndexComponent),
                     ));
                 }
             };
@@ -1562,8 +1578,8 @@ fn decode_indexes(
         // malformed projection (an empty projection, a repeated component, or a
         // non-unique index whose identity suffix is missing, misordered, or preceded by a
         // key) must never reach the sealed index model the runtime trusts to order rows.
-        if let Err(detail) = validate_index_projection(unique, &components, keys) {
-            return Err(reject(VerifyPhase::Table, detail));
+        if let Err(fault) = validate_index_projection(unique, &components, keys) {
+            return Err(reject(VerifyPhase::Table, Kind::IndexProjection(fault)));
         }
         indexes.push(DurableIndexShape {
             id,
@@ -1580,8 +1596,7 @@ fn decode_indexes(
 /// key of the root (the orderable-key predicate); this owns the ordering and cardinality
 /// rules: the projection is non-empty, no component repeats, and a non-unique index ends
 /// with exactly the identity keys in declaration order — the row-distinguishing suffix. A
-/// unique index carries no suffix obligation. Returns a static detail describing the first
-/// violation.
+/// unique index carries no suffix obligation.
 ///
 /// The no-leading-key rule (a non-unique index carries no identity key before its suffix)
 /// needs no separate branch: distinctness forbids any component from repeating, and the
@@ -1591,33 +1606,30 @@ fn validate_index_projection(
     unique: bool,
     components: &[DurableIndexComponent],
     keys: &[(Scalar, LedgerIdBytes)],
-) -> Result<(), &'static str> {
+) -> Result<(), Projection> {
     if components.is_empty() {
-        return Err("durable index has an empty projection");
+        return Err(Projection::Empty);
     }
     for (position, component) in components.iter().enumerate() {
         if components[..position]
             .iter()
             .any(|earlier| earlier.id() == component.id())
         {
-            return Err("durable index repeats a projection component");
+            return Err(Projection::RepeatedComponent);
         }
     }
     if !unique {
         // The trailing `keys.len()` components must be exactly the identity keys in
         // declaration order.
         if components.len() < keys.len() {
-            return Err("non-unique durable index does not end with the identity suffix");
+            return Err(Projection::MissingIdentitySuffix);
         }
         let suffix_start = components.len() - keys.len();
         for (offset, (_, key_id)) in keys.iter().enumerate() {
             match components[suffix_start + offset] {
                 DurableIndexComponent::Key(id) if id == *key_id => {}
                 _ => {
-                    return Err(
-                        "non-unique durable index does not end with the identity keys in \
-                         declaration order",
-                    );
+                    return Err(Projection::MissingIdentitySuffix);
                 }
             }
         }
@@ -1632,12 +1644,7 @@ fn validate_index_projection(
 fn mint(
     minted: Result<ValueShapeNodeId, marrow_image::DraftStateError>,
 ) -> Result<ValueShapeNodeId, VerifyRejection> {
-    minted.map_err(|_| {
-        reject(
-            VerifyPhase::Table,
-            "durable field value shape exceeds the value arena's domain",
-        )
-    })
+    minted.map_err(|_| reject(VerifyPhase::Table, Kind::ValueArenaExhausted))
 }
 
 /// Decode a durable field's stored value shape into `values`, returning a reference to
@@ -1662,30 +1669,31 @@ fn decode_value_shape(
     if depth > marrow_image::bounds::MAX_DURABLE_VALUE_DEPTH {
         return Err(reject(
             VerifyPhase::Table,
-            "durable field value shape too deep",
+            Kind::OverBound(Bound::ValueDepth),
         ));
     }
     let tag = reader
         .u8()
-        .ok_or(reject(VerifyPhase::Table, "short durable value tag"))?;
+        .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?;
     match tag {
         0x00 => {
             let scalar_tag = reader
                 .u8()
-                .ok_or(reject(VerifyPhase::Table, "short durable value scalar"))?;
-            let scalar = decode_bare_scalar(scalar_tag).ok_or(reject(
-                VerifyPhase::Table,
-                "durable value scalar must be a bare scalar",
-            ))?;
+                .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?;
+            let scalar = decode_bare_scalar(scalar_tag)
+                .ok_or(reject(VerifyPhase::Table, Kind::Unknown(Tag::ValueScalar)))?;
             mint(values.scalar(scalar))
         }
         0x01 => {
-            let count = reader.u16().ok_or(reject(
-                VerifyPhase::Table,
-                "short durable struct leaf count",
-            ))? as usize;
+            let count = reader
+                .u16()
+                .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?
+                as usize;
             if count > marrow_image::bounds::MAX_STRUCT_LEAVES {
-                return Err(reject(VerifyPhase::Table, "too many durable struct leaves"));
+                return Err(reject(
+                    VerifyPhase::Table,
+                    Kind::OverBound(Bound::StructLeaves),
+                ));
             }
             let mut leaves = Vec::with_capacity(count);
             for _ in 0..count {
@@ -1694,13 +1702,13 @@ fn decode_value_shape(
             mint(values.struct_shape(leaves))
         }
         0x02 => {
-            let sum = read_id(reader, "short durable enum sum identity")?;
-            let member_count = reader.u16().ok_or(reject(
-                VerifyPhase::Table,
-                "short durable enum member count",
-            ))? as usize;
+            let sum = read_id(reader)?;
+            let member_count = reader
+                .u16()
+                .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?
+                as usize;
             if member_count > marrow_image::bounds::MAX_VARIANTS {
-                return Err(reject(VerifyPhase::Table, "too many durable enum members"));
+                return Err(reject(VerifyPhase::Table, Kind::OverBound(Bound::Variants)));
             }
             // An enum reached before (by its sum id) is a reference to that one
             // per-declaration identity: it reclaims neither the sum nor any member id,
@@ -1712,35 +1720,29 @@ fn decode_value_shape(
             let recorded = scope.enums.get(&sum).cloned();
             match &recorded {
                 Some(recorded_ids) if recorded_ids.len() != member_count => {
-                    return Err(reject(
-                        VerifyPhase::Table,
-                        "durable enum identity reused with a different member set",
-                    ));
+                    return Err(reject(VerifyPhase::Table, Kind::EnumIdentityReused));
                 }
                 Some(_) => {}
                 None => claim_distinct(scope, sum)?,
             }
             let mut members = Vec::with_capacity(member_count);
             for index in 0..member_count {
-                let id = read_id(reader, "short durable enum member identity")?;
+                let id = read_id(reader)?;
                 match &recorded {
                     Some(recorded_ids) if recorded_ids[index] != id => {
-                        return Err(reject(
-                            VerifyPhase::Table,
-                            "durable enum identity reused with a different member set",
-                        ));
+                        return Err(reject(VerifyPhase::Table, Kind::EnumIdentityReused));
                     }
                     Some(_) => {}
                     None => claim_distinct(scope, id)?,
                 }
-                let payload_count = reader.u16().ok_or(reject(
-                    VerifyPhase::Table,
-                    "short durable enum member payload count",
-                ))? as usize;
+                let payload_count = reader
+                    .u16()
+                    .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?
+                    as usize;
                 if payload_count > marrow_image::bounds::MAX_PAYLOAD_FIELDS {
                     return Err(reject(
                         VerifyPhase::Table,
-                        "too many durable enum member payload leaves",
+                        Kind::OverBound(Bound::PayloadFields),
                     ));
                 }
                 let mut payload = Vec::with_capacity(payload_count);
@@ -1756,7 +1758,7 @@ fn decode_value_shape(
             }
             mint(values.enum_shape(sum, members))
         }
-        _ => Err(reject(VerifyPhase::Table, "unknown durable value tag")),
+        _ => Err(reject(VerifyPhase::Table, Kind::Unknown(Tag::DurableValue))),
     }
 }
 

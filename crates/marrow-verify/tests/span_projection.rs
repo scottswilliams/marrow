@@ -2,7 +2,7 @@
 
 use marrow_image::{ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry};
 use marrow_test_support::rehash;
-use marrow_verify::{VerifyPhase, verify};
+use marrow_verify::{Region, RejectionKind, VerifyPhase, verify};
 
 const INSTRUCTION_COUNT: usize = 4_096;
 const FUNCTION_SECTION_ID: u8 = 0x05;
@@ -93,10 +93,10 @@ fn write_u32(bytes: &mut [u8], offset: usize, value: u32) {
     bytes[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
 }
 
-fn assert_rejection(bytes: &[u8], phase: VerifyPhase, detail: &'static str) {
+fn assert_rejection(bytes: &[u8], phase: VerifyPhase, kind: RejectionKind) {
     let rejection = verify(bytes).expect_err("hostile span image must reject");
     assert_eq!(rejection.phase(), phase);
-    assert_eq!(rejection.detail(), detail);
+    assert_eq!(rejection.kind(), &kind);
 }
 
 #[test]
@@ -115,7 +115,7 @@ fn full_span_projection_is_bounded_and_preserves_rejections() {
     assert_rejection(
         &linear_span_image(false),
         VerifyPhase::Function,
-        "code has no span mappings",
+        RejectionKind::SpanMissing,
     );
 
     let (span_body, span_length) = section(&bytes, SPAN_SECTION_ID);
@@ -135,7 +135,7 @@ fn full_span_projection_is_bounded_and_preserves_rejections() {
     assert_rejection(
         &first_offset,
         VerifyPhase::Function,
-        "first span must map instruction offset 0",
+        RejectionKind::SpanStart,
     );
 
     let mut interior_offset = bytes.clone();
@@ -147,7 +147,7 @@ fn full_span_projection_is_bounded_and_preserves_rejections() {
     assert_rejection(
         &interior_offset,
         VerifyPhase::Function,
-        "span offset is not an instruction boundary",
+        RejectionKind::SpanBoundary,
     );
 
     let mut past_end_offset = bytes.clone();
@@ -160,7 +160,7 @@ fn full_span_projection_is_bounded_and_preserves_rejections() {
     assert_rejection(
         &past_end_offset,
         VerifyPhase::Function,
-        "span offset is not an instruction boundary",
+        RejectionKind::SpanBoundary,
     );
 
     let mut nonascending_offsets = bytes;
@@ -174,6 +174,6 @@ fn full_span_projection_is_bounded_and_preserves_rejections() {
     assert_rejection(
         &nonascending_offsets,
         VerifyPhase::Table,
-        "span offsets must strictly ascend",
+        RejectionKind::Unsorted(Region::Spans),
     );
 }

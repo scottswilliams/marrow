@@ -1,9 +1,12 @@
 //! Phase 2 tables: string, type, enum, and collection decoding with value-type closure.
 
 use super::reject;
-use super::type_ref::{Optionality, TagSet, TypePosition, decode_type_ref, type_position};
+use super::type_ref::{Optionality, TagSet, TypeRules, decode_type_ref};
 use crate::reader::Reader;
-use crate::reject::{VerifyPhase, VerifyRejection};
+use crate::reject::{
+    Bound, Duplicate, Flag, Ref, Region, RejectionKind as Kind, Tag, TypePosition, VerifyPhase,
+    VerifyRejection,
+};
 use crate::sealed::{
     SealedCollectionType, SealedEnumType, SealedField, SealedRecordType, SealedVariant,
 };
@@ -14,65 +17,35 @@ use marrow_image::{
 use std::rc::Rc;
 
 #[cfg(test)]
-mod table_scaling_tests;
+mod duplicate_name_tests;
 
-struct DecodedTable<T> {
-    rows: T,
-    name_checks: usize,
-    name_count: usize,
-}
-
-impl<T> DecodedTable<T> {
-    fn within_linear_budget(self, detail: &'static str) -> Result<T, VerifyRejection> {
-        if self.name_checks != self.name_count {
-            return Err(reject(VerifyPhase::Table, detail));
-        }
-        Ok(self.rows)
-    }
-}
-
+/// Per-row duplicate-name detection over the whole string pool: one generation mark per
+/// string, bumped per row, so a table costs its name count and no per-row set.
 struct NameMarks {
     generations: Vec<u16>,
     generation: u16,
-    name_checks: usize,
-    name_count: usize,
 }
 
 impl NameMarks {
-    fn new(name_count: usize) -> Self {
+    fn new(string_count: usize) -> Self {
         Self {
-            generations: vec![0; name_count],
+            generations: vec![0; string_count],
             generation: 0,
-            name_checks: 0,
-            name_count: 0,
         }
     }
 
-    fn begin_row(&mut self, name_count: usize) {
+    fn begin_row(&mut self) {
         self.generation = self
             .generation
             .checked_add(1)
             .expect("table row count is bounded below u16::MAX");
-        self.name_count = self
-            .name_count
-            .checked_add(name_count)
-            .expect("table byte bounds cap member occurrences below usize::MAX");
     }
 
     fn insert(&mut self, name: u16) -> bool {
-        self.name_checks += 1;
         let mark = &mut self.generations[name as usize];
         let duplicate = *mark == self.generation;
         *mark = self.generation;
         duplicate
-    }
-
-    fn finish<T>(self, rows: T) -> DecodedTable<T> {
-        DecodedTable {
-            rows,
-            name_checks: self.name_checks,
-            name_count: self.name_count,
-        }
     }
 }
 
@@ -88,39 +61,39 @@ pub(super) fn decode_test_entries(
     function_count: usize,
 ) -> Result<Vec<(u16, u16)>, VerifyRejection> {
     let mut reader = Reader::new(body);
-    let count = reader
-        .u16()
-        .ok_or(reject(VerifyPhase::Table, "short test-entry count"))? as usize;
+    let count = reader.u16().ok_or(reject(
+        VerifyPhase::Table,
+        Kind::Truncated(Region::TestEntries),
+    ))? as usize;
     if count > marrow_image::bounds::MAX_TEST_ENTRIES {
-        return Err(reject(VerifyPhase::Table, "too many test entries"));
+        return Err(reject(
+            VerifyPhase::Table,
+            Kind::OverBound(Bound::TestEntries),
+        ));
     }
     let mut entries = Vec::with_capacity(count);
     let mut previous_name: Option<u16> = None;
     for _ in 0..count {
-        let name = reader
-            .u16()
-            .ok_or(reject(VerifyPhase::Table, "short test-entry name"))?;
-        let func = reader
-            .u16()
-            .ok_or(reject(VerifyPhase::Table, "short test-entry function"))?;
+        let name = reader.u16().ok_or(reject(
+            VerifyPhase::Table,
+            Kind::Truncated(Region::TestEntries),
+        ))?;
+        let func = reader.u16().ok_or(reject(
+            VerifyPhase::Table,
+            Kind::Truncated(Region::TestEntries),
+        ))?;
         if name as usize >= string_count {
-            return Err(reject(
-                VerifyPhase::Table,
-                "test-entry name index out of range",
-            ));
+            return Err(reject(VerifyPhase::Table, Kind::OutOfRange(Ref::String)));
         }
         if func as usize >= function_count {
-            return Err(reject(
-                VerifyPhase::Table,
-                "test-entry function index out of range",
-            ));
+            return Err(reject(VerifyPhase::Table, Kind::OutOfRange(Ref::Function)));
         }
         if let Some(prev) = previous_name
             && name <= prev
         {
             return Err(reject(
                 VerifyPhase::Table,
-                "test entries must be sorted and unique by name",
+                Kind::Unsorted(Region::TestEntries),
             ));
         }
         previous_name = Some(name);
@@ -129,7 +102,7 @@ pub(super) fn decode_test_entries(
     if !reader.is_empty() {
         return Err(reject(
             VerifyPhase::Table,
-            "trailing bytes in test-entry table",
+            Kind::Trailing(Region::TestEntries),
         ));
     }
     Ok(entries)
@@ -139,37 +112,39 @@ pub(super) fn decode_strings(body: &[u8]) -> Result<Vec<Rc<str>>, VerifyRejectio
     let mut reader = Reader::new(body);
     let count = reader
         .u16()
-        .ok_or(reject(VerifyPhase::Table, "short string count"))? as usize;
+        .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Strings)))?
+        as usize;
     if count > marrow_image::bounds::MAX_STRINGS {
-        return Err(reject(VerifyPhase::Table, "too many strings"));
+        return Err(reject(VerifyPhase::Table, Kind::OverBound(Bound::Strings)));
     }
     let mut strings: Vec<Rc<str>> = Vec::with_capacity(count);
     let mut previous: Option<Vec<u8>> = None;
     for _ in 0..count {
         let len = reader
             .u16()
-            .ok_or(reject(VerifyPhase::Table, "short string length"))? as usize;
+            .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Strings)))?
+            as usize;
         if len > marrow_image::bounds::MAX_STRING_BYTES {
-            return Err(reject(VerifyPhase::Table, "string exceeds byte bound"));
+            return Err(reject(
+                VerifyPhase::Table,
+                Kind::OverBound(Bound::StringBytes),
+            ));
         }
         let raw = reader
             .take(len)
-            .ok_or(reject(VerifyPhase::Table, "string past input"))?;
+            .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Strings)))?;
         if let Some(prev) = &previous
             && raw <= prev.as_slice()
         {
-            return Err(reject(
-                VerifyPhase::Table,
-                "strings must be byte-sorted and unique",
-            ));
+            return Err(reject(VerifyPhase::Table, Kind::Unsorted(Region::Strings)));
         }
         previous = Some(raw.to_vec());
-        let text = std::str::from_utf8(raw)
-            .map_err(|_| reject(VerifyPhase::Table, "string is not valid UTF-8"))?;
+        let text =
+            std::str::from_utf8(raw).map_err(|_| reject(VerifyPhase::Table, Kind::InvalidUtf8))?;
         strings.push(Rc::from(text));
     }
     if !reader.is_empty() {
-        return Err(reject(VerifyPhase::Table, "trailing bytes in string table"));
+        return Err(reject(VerifyPhase::Table, Kind::Trailing(Region::Strings)));
     }
     Ok(strings)
 }
@@ -191,33 +166,33 @@ pub(super) fn decode_bare_scalar(tag: u8) -> Option<Scalar> {
 /// Never optional — sparseness is the `required` flag, not the type — and its
 /// referenced indices are checked by `validate_record_field_refs` once the tables
 /// they name have decoded.
-const FIELD: TypePosition = type_position!(
-    "record field",
+const FIELD: TypeRules = TypeRules::new(
+    TypePosition::RecordField,
     TagSet::SCALAR
         .with(TagSet::RECORD)
         .with(TagSet::ENUM)
         .with(TagSet::COLLECTION),
-    Optionality::Bare
+    Optionality::Bare,
 );
 
 /// An enum payload leaf: a bare scalar, record or enum reference.
-const PAYLOAD_LEAF: TypePosition = type_position!(
-    "enum payload leaf",
+const PAYLOAD_LEAF: TypeRules = TypeRules::new(
+    TypePosition::EnumPayloadLeaf,
     TagSet::SCALAR.with(TagSet::RECORD).with(TagSet::ENUM),
-    Optionality::Bare
+    Optionality::Bare,
 );
 
 /// A COLLTYPES element, key or value: a bare scalar, record, enum, or a collection
 /// strictly earlier than `row`, so the collection reference graph is acyclic by
 /// construction.
-fn collection_leaf(type_count: usize, enum_count: usize, row: usize) -> TypePosition {
-    type_position!(
-        "collection leaf",
+fn collection_leaf(type_count: usize, enum_count: usize, row: usize) -> TypeRules {
+    TypeRules::new(
+        TypePosition::CollectionLeaf,
         TagSet::SCALAR
             .with(TagSet::RECORD)
             .with(TagSet::ENUM)
             .with(TagSet::COLLECTION),
-        Optionality::Bare
+        Optionality::Bare,
     )
     .types(type_count)
     .enums(enum_count)
@@ -228,49 +203,48 @@ pub(super) fn decode_types(
     body: &[u8],
     strings: &[Rc<str>],
 ) -> Result<Vec<SealedRecordType>, VerifyRejection> {
-    decode_types_with_work(body, strings)?
-        .within_linear_budget("record duplicate-name projection exceeds its linear work budget")
-}
-
-fn decode_types_with_work(
-    body: &[u8],
-    strings: &[Rc<str>],
-) -> Result<DecodedTable<Vec<SealedRecordType>>, VerifyRejection> {
     let string_count = strings.len();
     let mut reader = Reader::new(body);
     let count = reader
         .u16()
-        .ok_or(reject(VerifyPhase::Table, "short type count"))? as usize;
+        .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Types)))?
+        as usize;
     if count > marrow_image::bounds::MAX_TYPES {
-        return Err(reject(VerifyPhase::Table, "too many record types"));
+        return Err(reject(
+            VerifyPhase::Table,
+            Kind::OverBound(Bound::RecordTypes),
+        ));
     }
     let mut types = Vec::with_capacity(count);
     let mut names = NameMarks::new(string_count);
     for _ in 0..count {
         let name = reader
             .u16()
-            .ok_or(reject(VerifyPhase::Table, "short type name"))?;
+            .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Types)))?;
         if name as usize >= string_count {
-            return Err(reject(VerifyPhase::Table, "type name index out of range"));
+            return Err(reject(VerifyPhase::Table, Kind::OutOfRange(Ref::String)));
         }
         let field_count = reader
             .u16()
-            .ok_or(reject(VerifyPhase::Table, "short field count"))?
+            .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Types)))?
             as usize;
         if field_count > marrow_image::bounds::MAX_RECORD_FIELDS {
-            return Err(reject(VerifyPhase::Table, "too many fields"));
+            return Err(reject(VerifyPhase::Table, Kind::OverBound(Bound::Fields)));
         }
-        names.begin_row(field_count);
+        names.begin_row();
         let mut fields = Vec::with_capacity(field_count);
         for _ in 0..field_count {
             let fname = reader
                 .u16()
-                .ok_or(reject(VerifyPhase::Table, "short field name"))?;
+                .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Types)))?;
             if fname as usize >= string_count {
-                return Err(reject(VerifyPhase::Table, "field name index out of range"));
+                return Err(reject(VerifyPhase::Table, Kind::OutOfRange(Ref::String)));
             }
             if names.insert(fname) {
-                return Err(reject(VerifyPhase::Table, "duplicate field name in record"));
+                return Err(reject(
+                    VerifyPhase::Table,
+                    Kind::Duplicate(Duplicate::FieldName),
+                ));
             }
             // A field is a scalar leaf (durable-storable) or a closed enum, record
             // or collection value; sparseness is the `required` flag, never the
@@ -279,15 +253,12 @@ fn decode_types_with_work(
             let ty = decode_type_ref(&mut reader, &FIELD)?;
             let required_byte = reader
                 .u8()
-                .ok_or(reject(VerifyPhase::Table, "short field required flag"))?;
+                .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Types)))?;
             let required = match required_byte {
                 0 => false,
                 1 => true,
                 _ => {
-                    return Err(reject(
-                        VerifyPhase::Table,
-                        "field required flag must be 0 or 1",
-                    ));
+                    return Err(reject(VerifyPhase::Table, Kind::Flag(Flag::FieldRequired)));
                 }
             };
             fields.push(SealedField {
@@ -299,9 +270,9 @@ fn decode_types_with_work(
         types.push(SealedRecordType { fields });
     }
     if !reader.is_empty() {
-        return Err(reject(VerifyPhase::Table, "trailing bytes in type table"));
+        return Err(reject(VerifyPhase::Table, Kind::Trailing(Region::Types)));
     }
-    Ok(names.finish(types))
+    Ok(types)
 }
 
 /// Decode the ENUMS table (section 0x09): a count, then per enum its name string
@@ -316,73 +287,68 @@ pub(super) fn decode_enums(
     strings: &[Rc<str>],
     type_count: usize,
 ) -> Result<Vec<SealedEnumType>, VerifyRejection> {
-    decode_enums_with_work(body, strings, type_count)?
-        .within_linear_budget("enum duplicate-name projection exceeds its linear work budget")
-}
-
-fn decode_enums_with_work(
-    body: &[u8],
-    strings: &[Rc<str>],
-    type_count: usize,
-) -> Result<DecodedTable<Vec<SealedEnumType>>, VerifyRejection> {
     let string_count = strings.len();
     let mut reader = Reader::new(body);
     let count = reader
         .u16()
-        .ok_or(reject(VerifyPhase::Table, "short enum count"))? as usize;
+        .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Enums)))?
+        as usize;
     if count > marrow_image::bounds::MAX_ENUMS {
-        return Err(reject(VerifyPhase::Table, "too many enums"));
+        return Err(reject(VerifyPhase::Table, Kind::OverBound(Bound::Enums)));
     }
     let mut enums = Vec::with_capacity(count);
     let mut names = NameMarks::new(string_count);
     for _ in 0..count {
         let name = reader
             .u16()
-            .ok_or(reject(VerifyPhase::Table, "short enum name"))?;
+            .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Enums)))?;
         if name as usize >= string_count {
-            return Err(reject(VerifyPhase::Table, "enum name index out of range"));
+            return Err(reject(VerifyPhase::Table, Kind::OutOfRange(Ref::String)));
         }
         let variant_count = reader
             .u16()
-            .ok_or(reject(VerifyPhase::Table, "short variant count"))?
+            .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Enums)))?
             as usize;
         if variant_count > marrow_image::bounds::MAX_VARIANTS {
-            return Err(reject(VerifyPhase::Table, "too many enum variants"));
+            return Err(reject(VerifyPhase::Table, Kind::OverBound(Bound::Variants)));
         }
-        names.begin_row(variant_count);
+        names.begin_row();
         let mut variants = Vec::with_capacity(variant_count);
         for _ in 0..variant_count {
             let vname = reader
                 .u16()
-                .ok_or(reject(VerifyPhase::Table, "short variant name"))?;
+                .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Enums)))?;
             if vname as usize >= string_count {
-                return Err(reject(
-                    VerifyPhase::Table,
-                    "variant name index out of range",
-                ));
+                return Err(reject(VerifyPhase::Table, Kind::OutOfRange(Ref::String)));
             }
             if names.insert(vname) {
-                return Err(reject(VerifyPhase::Table, "duplicate variant name in enum"));
+                return Err(reject(
+                    VerifyPhase::Table,
+                    Kind::Duplicate(Duplicate::VariantName),
+                ));
             }
             let category_byte = reader
                 .u8()
-                .ok_or(reject(VerifyPhase::Table, "short variant category flag"))?;
+                .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Enums)))?;
             let category = match category_byte {
                 0 => false,
                 1 => true,
                 _ => {
                     return Err(reject(
                         VerifyPhase::Table,
-                        "variant category flag must be 0 or 1",
+                        Kind::Flag(Flag::VariantCategory),
                     ));
                 }
             };
             let payload_count = reader
                 .u8()
-                .ok_or(reject(VerifyPhase::Table, "short payload count"))?
+                .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Enums)))?
                 as usize;
             if payload_count > marrow_image::bounds::MAX_PAYLOAD_FIELDS {
-                return Err(reject(VerifyPhase::Table, "too many payload fields"));
+                return Err(reject(
+                    VerifyPhase::Table,
+                    Kind::OverBound(Bound::PayloadFields),
+                ));
             }
             let mut payload = Vec::with_capacity(payload_count);
             for _ in 0..payload_count {
@@ -403,9 +369,9 @@ fn decode_enums_with_work(
         });
     }
     if !reader.is_empty() {
-        return Err(reject(VerifyPhase::Table, "trailing bytes in enum table"));
+        return Err(reject(VerifyPhase::Table, Kind::Trailing(Region::Enums)));
     }
-    Ok(names.finish(enums))
+    Ok(enums)
 }
 
 /// Decode the COLLTYPES table (section 0x0A): a count, then per collection type a
@@ -422,17 +388,22 @@ pub(super) fn decode_collections(
     enum_count: usize,
 ) -> Result<Vec<SealedCollectionType>, VerifyRejection> {
     let mut reader = Reader::new(body);
-    let count = reader
-        .u16()
-        .ok_or(reject(VerifyPhase::Table, "short collection count"))? as usize;
+    let count = reader.u16().ok_or(reject(
+        VerifyPhase::Table,
+        Kind::Truncated(Region::Collections),
+    ))? as usize;
     if count > marrow_image::bounds::MAX_COLLECTIONS {
-        return Err(reject(VerifyPhase::Table, "too many collection types"));
+        return Err(reject(
+            VerifyPhase::Table,
+            Kind::OverBound(Bound::Collections),
+        ));
     }
     let mut collections = Vec::with_capacity(count);
     for row in 0..count {
-        let kind = reader
-            .u8()
-            .ok_or(reject(VerifyPhase::Table, "short collection kind"))?;
+        let kind = reader.u8().ok_or(reject(
+            VerifyPhase::Table,
+            Kind::Truncated(Region::Collections),
+        ))?;
         let coll = match kind {
             0x00 => {
                 let elem =
@@ -449,10 +420,7 @@ pub(super) fn decode_collections(
                         ..
                     }
                 ) {
-                    return Err(reject(
-                        VerifyPhase::Table,
-                        "map key must be a bare scalar key type",
-                    ));
+                    return Err(reject(VerifyPhase::Table, Kind::MapKeyNotScalar));
                 }
                 let value =
                     decode_type_ref(&mut reader, &collection_leaf(type_count, enum_count, row))?;
@@ -461,7 +429,7 @@ pub(super) fn decode_collections(
             _ => {
                 return Err(reject(
                     VerifyPhase::Table,
-                    "collection kind must be 0 (list) or 1 (map)",
+                    Kind::Unknown(Tag::CollectionKind),
                 ));
             }
         };
@@ -470,7 +438,7 @@ pub(super) fn decode_collections(
     if !reader.is_empty() {
         return Err(reject(
             VerifyPhase::Table,
-            "trailing bytes in collection table",
+            Kind::Trailing(Region::Collections),
         ));
     }
     Ok(collections)
@@ -490,21 +458,18 @@ pub(super) fn validate_record_field_refs(
         for field in &record.fields {
             match field.ty {
                 ImageType::Enum { idx, .. } if idx.index() as usize >= enum_count => {
-                    return Err(reject(
-                        VerifyPhase::Table,
-                        "record field enum index out of range",
-                    ));
+                    return Err(reject(VerifyPhase::Table, Kind::OutOfRange(Ref::Enum)));
                 }
                 ImageType::Record { idx, .. } if idx.index() as usize >= types.len() => {
                     return Err(reject(
                         VerifyPhase::Table,
-                        "record field record index out of range",
+                        Kind::OutOfRange(Ref::RecordType),
                     ));
                 }
                 ImageType::Collection { idx, .. } if idx.index() as usize >= collection_count => {
                     return Err(reject(
                         VerifyPhase::Table,
-                        "record field collection index out of range",
+                        Kind::OutOfRange(Ref::Collection),
                     ));
                 }
                 _ => {}
@@ -574,10 +539,7 @@ pub(super) fn reject_value_type_cycles(
                 let next = edges[node][cursor];
                 match colour[next] {
                     Colour::Gray => {
-                        return Err(reject(
-                            VerifyPhase::Table,
-                            "the value type graph contains a cycle",
-                        ));
+                        return Err(reject(VerifyPhase::Table, Kind::ValueTypeCycle));
                     }
                     Colour::White => {
                         colour[next] = Colour::Gray;

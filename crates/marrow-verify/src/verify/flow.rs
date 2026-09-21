@@ -4,7 +4,9 @@ use super::context::Ctx;
 use super::decode_code::Decoded;
 use super::model::DecodedFunction;
 use super::reject;
-use crate::reject::{VerifyPhase, VerifyRejection};
+use crate::reject::{
+    Bound, Operand, Projection, Ref, RejectionKind as Kind, SiteKind, VerifyPhase, VerifyRejection,
+};
 use crate::sealed::{
     SealedBranch, SealedCollectionType, SealedConst, SealedField, SealedIndexComponent,
     SealedInstr, SealedRoot, SealedSite, SealedSiteTarget,
@@ -66,7 +68,7 @@ pub(super) fn check_flow(
     non_fallthrough_entries: &[bool],
 ) -> Result<(Vec<SealedInstr>, usize), VerifyRejection> {
     if code.is_empty() {
-        return Err(reject(VerifyPhase::Function, "function has no code"));
+        return Err(reject(VerifyPhase::Function, Kind::EmptyCode));
     }
 
     // Params occupy locals `0..param_count`, pre-initialized to their param type;
@@ -141,7 +143,7 @@ pub(super) fn check_flow(
     }
 
     if entry.iter().any(|state| matches!(state, Entry::Unreached)) {
-        return Err(reject(VerifyPhase::Function, "unreachable instruction"));
+        return Err(reject(VerifyPhase::Function, Kind::UnreachableInstruction));
     }
 
     let instrs = code.iter().map(|decoded| decoded.instr.clone()).collect();
@@ -152,7 +154,7 @@ fn check_stack_depth(frame: &Frame, max_stack: &mut usize) -> Result<(), VerifyR
     if frame.stack.len() > marrow_image::bounds::MAX_STACK_DEPTH {
         return Err(reject(
             VerifyPhase::Function,
-            "operand stack exceeds depth bound",
+            Kind::OverBound(Bound::StackDepth),
         ));
     }
     *max_stack = (*max_stack).max(frame.stack.len());
@@ -169,10 +171,7 @@ fn propagate(
     frame: Frame,
 ) -> Result<(), VerifyRejection> {
     let Some(state) = entry.get_mut(successor) else {
-        return Err(reject(
-            VerifyPhase::Function,
-            "execution falls off the end without returning",
-        ));
+        return Err(reject(VerifyPhase::Function, Kind::FallsOffEnd));
     };
     match state {
         Entry::Unreached => {
@@ -183,10 +182,7 @@ fn propagate(
         Entry::Reached => unreachable!("linear interiors cannot receive a merge edge"),
         Entry::Retained(existing) => {
             if existing.stack != frame.stack {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "operand stack shapes disagree at a merge",
-                ));
+                return Err(reject(VerifyPhase::Function, Kind::StackMerge));
             }
             let mut changed = false;
             for (cell, incoming) in existing.locals.iter_mut().zip(frame.locals) {
@@ -344,7 +340,7 @@ fn const_load(
 ) -> Result<Control, VerifyRejection> {
     let value = consts
         .get(idx as usize)
-        .ok_or(reject(VerifyPhase::Function, "const index out of range"))?;
+        .ok_or(reject(VerifyPhase::Function, Kind::OutOfRange(Ref::Const)))?;
     frame.stack.push(VType::bare_scalar(const_scalar(value)));
     Ok(Control::Fallthrough)
 }
@@ -353,8 +349,8 @@ fn local_get(frame: &mut Frame, slot: u16) -> Result<Control, VerifyRejection> {
     let ty = frame
         .locals
         .get(slot as usize)
-        .ok_or(reject(VerifyPhase::Function, "local index out of range"))?
-        .ok_or(reject(VerifyPhase::Function, "local read before init"))?;
+        .ok_or(reject(VerifyPhase::Function, Kind::OutOfRange(Ref::Local)))?
+        .ok_or(reject(VerifyPhase::Function, Kind::LocalUninit))?;
     frame.stack.push(ty);
     Ok(Control::Fallthrough)
 }
@@ -364,13 +360,10 @@ fn local_set(frame: &mut Frame, slot: u16) -> Result<Control, VerifyRejection> {
     let cell = frame
         .locals
         .get_mut(slot as usize)
-        .ok_or(reject(VerifyPhase::Function, "local index out of range"))?;
+        .ok_or(reject(VerifyPhase::Function, Kind::OutOfRange(Ref::Local)))?;
     match cell {
         Some(existing) if *existing != value => {
-            return Err(reject(
-                VerifyPhase::Function,
-                "local slot reused at a different type",
-            ));
+            return Err(reject(VerifyPhase::Function, Kind::LocalRetyped));
         }
         _ => *cell = Some(value),
     }
@@ -387,17 +380,11 @@ fn check_return(function: &DecodedFunction, frame: &mut Frame) -> Result<Control
         (Some(top), Some(want)) if top == want => {}
         (None, None) => {}
         _ => {
-            return Err(reject(
-                VerifyPhase::Function,
-                "return stack shape does not match the return type",
-            ));
+            return Err(reject(VerifyPhase::Function, Kind::ReturnType));
         }
     }
     if !frame.stack.is_empty() {
-        return Err(reject(
-            VerifyPhase::Function,
-            "operand stack not empty at return",
-        ));
+        return Err(reject(VerifyPhase::Function, Kind::ReturnStack));
     }
     Ok(Control::Return)
 }
@@ -408,11 +395,8 @@ fn check_return(function: &DecodedFunction, frame: &mut Frame) -> Result<Control
 fn unreachable_op(consts: &[SealedConst], idx: u16) -> Result<Control, VerifyRejection> {
     match consts.get(idx as usize) {
         Some(SealedConst::Text(_)) => Ok(Control::Return),
-        Some(_) => Err(reject(
-            VerifyPhase::Function,
-            "unreachable operand must be a text const",
-        )),
-        None => Err(reject(VerifyPhase::Function, "const index out of range")),
+        Some(_) => Err(reject(VerifyPhase::Function, Kind::MarkerOperandNotText)),
+        None => Err(reject(VerifyPhase::Function, Kind::OutOfRange(Ref::Const))),
     }
 }
 
@@ -421,11 +405,8 @@ fn unreachable_op(consts: &[SealedConst], idx: u16) -> Result<Control, VerifyRej
 fn todo_op(consts: &[SealedConst], idx: u16) -> Result<Control, VerifyRejection> {
     match consts.get(idx as usize) {
         Some(SealedConst::Text(_)) => Ok(Control::Return),
-        Some(_) => Err(reject(
-            VerifyPhase::Function,
-            "todo operand must be a text const",
-        )),
-        None => Err(reject(VerifyPhase::Function, "const index out of range")),
+        Some(_) => Err(reject(VerifyPhase::Function, Kind::MarkerOperandNotText)),
+        None => Err(reject(VerifyPhase::Function, Kind::OutOfRange(Ref::Const))),
     }
 }
 
@@ -444,14 +425,17 @@ fn assert_op(frame: &mut Frame) -> Result<Control, VerifyRejection> {
 fn call(ctx: &Ctx, frame: &mut Frame, target: u16) -> Result<Control, VerifyRejection> {
     let sig = ctx.signatures.get(target as usize).ok_or(reject(
         VerifyPhase::Function,
-        "call target index out of range",
+        Kind::OutOfRange(Ref::Function),
     ))?;
     // a0 is pushed first, so pop arguments in reverse parameter order.
     for param in sig.params.iter().rev() {
         let got = pop(&mut frame.stack)?;
         let want = VType::from_image(*param).expect("a parameter type is never unit");
         if got != want {
-            return Err(reject(VerifyPhase::Function, "call argument type mismatch"));
+            return Err(reject(
+                VerifyPhase::Function,
+                Kind::OperandType(Operand::Argument),
+            ));
         }
     }
     if let Some(ret) = VType::from_image(sig.ret) {
@@ -486,10 +470,10 @@ fn int_neg_checked(frame: &mut Frame, target: usize) -> Result<Control, VerifyRe
 /// Peeks the guarded value: the top of the stack must be a bare int, which the guard
 /// leaves in place (fault or fall through).
 fn range_guard(frame: &mut Frame) -> Result<Control, VerifyRejection> {
-    let top = *frame.stack.last().ok_or(reject(
-        VerifyPhase::Function,
-        "range guard on an empty stack",
-    ))?;
+    let top = *frame
+        .stack
+        .last()
+        .ok_or(reject(VerifyPhase::Function, Kind::StackUnderflow))?;
     expect_scalar(top, Scalar::Int)?;
     Ok(Control::Fallthrough)
 }
@@ -536,7 +520,7 @@ fn conv_string(frame: &mut Frame) -> Result<Control, VerifyRejection> {
     if !renderable {
         return Err(reject(
             VerifyPhase::Function,
-            "conv-string operand must be a bare scalar, enum, or identity",
+            Kind::OperandType(Operand::Renderable),
         ));
     }
     frame.stack.push(VType::bare_scalar(Scalar::Text));
@@ -600,7 +584,7 @@ fn record_new(ctx: &Ctx, frame: &mut Frame, ty: u16) -> Result<Control, VerifyRe
     let ty = TypeId::from_index(ty);
     let record = ctx.types.get(ty.index() as usize).ok_or(reject(
         VerifyPhase::Function,
-        "record type index out of range",
+        Kind::OutOfRange(Ref::RecordType),
     ))?;
     // f0 is pushed first, so pop fields in reverse declaration order.
     for field in record.fields.iter().rev() {
@@ -614,7 +598,7 @@ fn record_new(ctx: &Ctx, frame: &mut Frame, ty: u16) -> Result<Control, VerifyRe
         if got != want {
             return Err(reject(
                 VerifyPhase::Function,
-                "record field operand type mismatch",
+                Kind::OperandType(Operand::RecordField),
             ));
         }
     }
@@ -631,17 +615,17 @@ fn field_get(ctx: &Ctx, frame: &mut Frame, field: u16) -> Result<Control, Verify
     else {
         return Err(reject(
             VerifyPhase::Function,
-            "field read requires a bare record",
+            Kind::OperandType(Operand::Record),
         ));
     };
     let record_type = ctx.types.get(idx.index() as usize).ok_or(reject(
         VerifyPhase::Function,
-        "record type index out of range",
+        Kind::OutOfRange(Ref::RecordType),
     ))?;
     let field_def = record_type
         .fields
         .get(field as usize)
-        .ok_or(reject(VerifyPhase::Function, "field index out of range"))?;
+        .ok_or(reject(VerifyPhase::Function, Kind::OutOfRange(Ref::Field)))?;
     let bare = VType::from_image(field_def.ty).expect("a record field type is never unit");
     let result = if field_def.required {
         bare
@@ -663,22 +647,22 @@ fn field_set(ctx: &Ctx, frame: &mut Frame, field: u16) -> Result<Control, Verify
     else {
         return Err(reject(
             VerifyPhase::Function,
-            "field set requires a bare record",
+            Kind::OperandType(Operand::Record),
         ));
     };
     let record_type = ctx.types.get(idx.index() as usize).ok_or(reject(
         VerifyPhase::Function,
-        "record type index out of range",
+        Kind::OutOfRange(Ref::RecordType),
     ))?;
     let field_def = record_type
         .fields
         .get(field as usize)
-        .ok_or(reject(VerifyPhase::Function, "field index out of range"))?;
+        .ok_or(reject(VerifyPhase::Function, Kind::OutOfRange(Ref::Field)))?;
     let want = VType::from_image(field_def.ty).expect("a record field type is never unit");
     if value != want {
         return Err(reject(
             VerifyPhase::Function,
-            "field set operand type mismatch",
+            Kind::OperandType(Operand::FieldValue),
         ));
     }
     frame.stack.push(VType::bare_record(idx));
@@ -695,22 +679,19 @@ fn field_unset(ctx: &Ctx, frame: &mut Frame, field: u16) -> Result<Control, Veri
     else {
         return Err(reject(
             VerifyPhase::Function,
-            "field unset requires a bare record",
+            Kind::OperandType(Operand::Record),
         ));
     };
     let record_type = ctx.types.get(idx.index() as usize).ok_or(reject(
         VerifyPhase::Function,
-        "record type index out of range",
+        Kind::OutOfRange(Ref::RecordType),
     ))?;
     let field_def = record_type
         .fields
         .get(field as usize)
-        .ok_or(reject(VerifyPhase::Function, "field index out of range"))?;
+        .ok_or(reject(VerifyPhase::Function, Kind::OutOfRange(Ref::Field)))?;
     if field_def.required {
-        return Err(reject(
-            VerifyPhase::Function,
-            "a required field cannot be unset",
-        ));
+        return Err(reject(VerifyPhase::Function, Kind::UnsetRequiredField));
     }
     frame.stack.push(VType::bare_record(idx));
     Ok(Control::Fallthrough)
@@ -721,7 +702,7 @@ fn some_wrap(frame: &mut Frame) -> Result<Control, VerifyRejection> {
     if value.is_optional() {
         return Err(reject(
             VerifyPhase::Function,
-            "some-wrap operand is already optional",
+            Kind::OperandType(Operand::Bare),
         ));
     }
     frame.stack.push(value.to_optional());
@@ -734,21 +715,18 @@ fn vacant_load(ctx: &Ctx, frame: &mut Frame, ty: &ImageType) -> Result<Control, 
         ImageType::Record { idx, .. } if ctx.types.get(idx.index() as usize).is_none() => {
             return Err(reject(
                 VerifyPhase::Function,
-                "vacant-load record index out of range",
+                Kind::OutOfRange(Ref::RecordType),
             ));
         }
         ImageType::Enum { idx, .. } if ctx.enums.get(idx.index() as usize).is_none() => {
-            return Err(reject(
-                VerifyPhase::Function,
-                "vacant-load enum index out of range",
-            ));
+            return Err(reject(VerifyPhase::Function, Kind::OutOfRange(Ref::Enum)));
         }
         ImageType::Collection { idx, .. }
             if ctx.collections.get(idx.index() as usize).is_none() =>
         {
             return Err(reject(
                 VerifyPhase::Function,
-                "vacant-load collection index out of range",
+                Kind::OutOfRange(Ref::Collection),
             ));
         }
         _ => {}
@@ -764,7 +742,7 @@ fn branch_present(frame: &mut Frame, target: usize) -> Result<Control, VerifyRej
     if !value.is_optional() {
         return Err(reject(
             VerifyPhase::Function,
-            "branch-present requires an optional",
+            Kind::OperandType(Operand::Optional),
         ));
     }
     Ok(Control::BranchPresent {
@@ -779,13 +757,13 @@ fn enum_construct(
     enum_idx: u16,
     variant: u16,
 ) -> Result<Control, VerifyRejection> {
-    let enum_def = ctx.enums.get(enum_idx as usize).ok_or(reject(
-        VerifyPhase::Function,
-        "enum type index out of range",
-    ))?;
+    let enum_def = ctx
+        .enums
+        .get(enum_idx as usize)
+        .ok_or(reject(VerifyPhase::Function, Kind::OutOfRange(Ref::Enum)))?;
     let variant_def = enum_def.variants().get(variant as usize).ok_or(reject(
         VerifyPhase::Function,
-        "enum variant index out of range",
+        Kind::OutOfRange(Ref::Variant),
     ))?;
     // p0 is pushed first, so pop the payload in reverse declaration order.
     for ty in variant_def.payload.iter().rev() {
@@ -794,7 +772,7 @@ fn enum_construct(
         if got != want {
             return Err(reject(
                 VerifyPhase::Function,
-                "enum payload operand type mismatch",
+                Kind::OperandType(Operand::Payload),
             ));
         }
     }
@@ -815,7 +793,7 @@ fn enum_tag(frame: &mut Frame) -> Result<Control, VerifyRejection> {
     ) {
         return Err(reject(
             VerifyPhase::Function,
-            "enum-tag requires a bare enum",
+            Kind::OperandType(Operand::Enum),
         ));
     }
     frame.stack.push(VType::bare_scalar(Scalar::Int));
@@ -836,22 +814,22 @@ fn enum_payload_get(
     else {
         return Err(reject(
             VerifyPhase::Function,
-            "enum-payload-get requires a bare enum",
+            Kind::OperandType(Operand::Enum),
         ));
     };
-    let enum_def = ctx.enums.get(idx.index() as usize).ok_or(reject(
-        VerifyPhase::Function,
-        "enum type index out of range",
-    ))?;
+    let enum_def = ctx
+        .enums
+        .get(idx.index() as usize)
+        .ok_or(reject(VerifyPhase::Function, Kind::OutOfRange(Ref::Enum)))?;
     let variant_def = enum_def.variants().get(variant as usize).ok_or(reject(
         VerifyPhase::Function,
-        "enum variant index out of range",
+        Kind::OutOfRange(Ref::Variant),
     ))?;
     // The variant operand types the payload leaf; the VM faults if the runtime value
     // carries a different variant, so the pushed type is never observed on a mismatch.
     let leaf = variant_def.payload.get(field as usize).ok_or(reject(
         VerifyPhase::Function,
-        "enum payload field index out of range",
+        Kind::OutOfRange(Ref::PayloadLeaf),
     ))?;
     frame
         .stack
@@ -875,14 +853,11 @@ fn eq_enum(frame: &mut Frame) -> Result<Control, VerifyRejection> {
     else {
         return Err(reject(
             VerifyPhase::Function,
-            "enum equality requires two bare enums",
+            Kind::OperandType(Operand::Enum),
         ));
     };
     if l != r {
-        return Err(reject(
-            VerifyPhase::Function,
-            "enum equality operands are different enums",
-        ));
+        return Err(reject(VerifyPhase::Function, Kind::EnumMismatch));
     }
     frame.stack.push(VType::bare_scalar(Scalar::Bool));
     Ok(Control::Fallthrough)
@@ -904,14 +879,11 @@ fn eq_id(frame: &mut Frame) -> Result<Control, VerifyRejection> {
     else {
         return Err(reject(
             VerifyPhase::Function,
-            "identity equality requires two bare entry identities",
+            Kind::OperandType(Operand::Identity),
         ));
     };
     if l != r {
-        return Err(reject(
-            VerifyPhase::Function,
-            "identity equality operands name different store roots",
-        ));
+        return Err(reject(VerifyPhase::Function, Kind::IdentityRootMismatch));
     }
     frame.stack.push(VType::bare_scalar(Scalar::Bool));
     Ok(Control::Fallthrough)
@@ -923,15 +895,12 @@ fn make_identity(
     root: u16,
     cols: u16,
 ) -> Result<Control, VerifyRejection> {
-    let sealed_root = ctx.roots.get(root as usize).ok_or(reject(
-        VerifyPhase::Function,
-        "make-identity root index out of range",
-    ))?;
+    let sealed_root = ctx
+        .roots
+        .get(root as usize)
+        .ok_or(reject(VerifyPhase::Function, Kind::OutOfRange(Ref::Root)))?;
     if sealed_root.keys.len() != cols as usize {
-        return Err(reject(
-            VerifyPhase::Function,
-            "make-identity column count does not match the root's key columns",
-        ));
+        return Err(reject(VerifyPhase::Function, Kind::IdentityArity));
     }
     // k0 is pushed first, so pop the key columns in reverse declaration order, each
     // matching the root's key-column scalar type.
@@ -940,7 +909,7 @@ fn make_identity(
         if got != VType::bare_scalar(*scalar) {
             return Err(reject(
                 VerifyPhase::Function,
-                "make-identity key operand type does not match the root's key column",
+                Kind::OperandType(Operand::KeyColumn),
             ));
         }
     }
@@ -959,18 +928,15 @@ fn identity_key_path(ctx: &Ctx, frame: &mut Frame, cols: u16) -> Result<Control,
     else {
         return Err(reject(
             VerifyPhase::Function,
-            "identity key-path requires a bare entry identity",
+            Kind::OperandType(Operand::Identity),
         ));
     };
-    let sealed_root = ctx.roots.get(root.index() as usize).ok_or(reject(
-        VerifyPhase::Function,
-        "identity key-path root index out of range",
-    ))?;
+    let sealed_root = ctx
+        .roots
+        .get(root.index() as usize)
+        .ok_or(reject(VerifyPhase::Function, Kind::OutOfRange(Ref::Root)))?;
     if sealed_root.keys.len() != cols as usize {
-        return Err(reject(
-            VerifyPhase::Function,
-            "identity key-path column count does not match the root's key columns",
-        ));
+        return Err(reject(VerifyPhase::Function, Kind::IdentityArity));
     }
     // Spread the key columns root-first (k0 pushed first) so the key-path sits exactly
     // as an inline `^root[k…]` access would leave it for the entry read. Each column is
@@ -991,10 +957,7 @@ fn list_new(ctx: &Ctx, frame: &mut Frame, idx: u16) -> Result<Control, VerifyRej
     match ctx.collections.get(idx.index() as usize) {
         Some(SealedCollectionType::List { .. }) => {}
         _ => {
-            return Err(reject(
-                VerifyPhase::Function,
-                "list-new operand does not name a list collection type",
-            ));
+            return Err(reject(VerifyPhase::Function, Kind::NotList));
         }
     }
     frame.stack.push(VType::bare_collection(idx));
@@ -1006,10 +969,7 @@ fn map_new(ctx: &Ctx, frame: &mut Frame, idx: u16) -> Result<Control, VerifyReje
     match ctx.collections.get(idx.index() as usize) {
         Some(SealedCollectionType::Map { .. }) => {}
         _ => {
-            return Err(reject(
-                VerifyPhase::Function,
-                "map-new operand does not name a map collection type",
-            ));
+            return Err(reject(VerifyPhase::Function, Kind::NotMap));
         }
     }
     frame.stack.push(VType::bare_collection(idx));
@@ -1022,7 +982,7 @@ fn list_append(ctx: &Ctx, frame: &mut Frame) -> Result<Control, VerifyRejection>
     if value != VType::from_image(elem).expect("a list element type is never unit") {
         return Err(reject(
             VerifyPhase::Function,
-            "list-append value type does not match the element type",
+            Kind::OperandType(Operand::ListElement),
         ));
     }
     frame.stack.push(VType::bare_collection(idx));
@@ -1062,13 +1022,13 @@ fn map_insert(ctx: &Ctx, frame: &mut Frame) -> Result<Control, VerifyRejection> 
     if key != VType::from_image(key_ty).expect("a map key type is never unit") {
         return Err(reject(
             VerifyPhase::Function,
-            "map-insert key type does not match the map key type",
+            Kind::OperandType(Operand::MapKey),
         ));
     }
     if value != VType::from_image(value_ty).expect("a map value type is never unit") {
         return Err(reject(
             VerifyPhase::Function,
-            "map-insert value type does not match the map value type",
+            Kind::OperandType(Operand::MapValue),
         ));
     }
     frame.stack.push(VType::bare_collection(idx));
@@ -1081,7 +1041,7 @@ fn map_remove(ctx: &Ctx, frame: &mut Frame) -> Result<Control, VerifyRejection> 
     if key != VType::from_image(key_ty).expect("a map key type is never unit") {
         return Err(reject(
             VerifyPhase::Function,
-            "map-remove key type does not match the map key type",
+            Kind::OperandType(Operand::MapKey),
         ));
     }
     frame.stack.push(VType::bare_collection(idx));
@@ -1094,7 +1054,7 @@ fn map_get(ctx: &Ctx, frame: &mut Frame) -> Result<Control, VerifyRejection> {
     if key != VType::from_image(key_ty).expect("a map key type is never unit") {
         return Err(reject(
             VerifyPhase::Function,
-            "map-get key type does not match the map key type",
+            Kind::OperandType(Operand::MapKey),
         ));
     }
     frame.stack.push(
@@ -1137,14 +1097,14 @@ fn list_elem(ctx: &Ctx, value: VType) -> Result<(CollTypeId, ImageType), VerifyR
         optional: false,
     } = value
     else {
-        return Err(reject(VerifyPhase::Function, "operand is not a bare list"));
+        return Err(reject(
+            VerifyPhase::Function,
+            Kind::OperandType(Operand::List),
+        ));
     };
     match ctx.collections.get(idx.index() as usize) {
         Some(SealedCollectionType::List { elem }) => Ok((idx, *elem)),
-        _ => Err(reject(
-            VerifyPhase::Function,
-            "collection index does not name a list type",
-        )),
+        _ => Err(reject(VerifyPhase::Function, Kind::NotList)),
     }
 }
 
@@ -1156,10 +1116,7 @@ fn list_of_string(ctx: &Ctx, idx: CollTypeId) -> Result<(), VerifyRejection> {
         Some(SealedCollectionType::List { elem }) if *elem == ImageType::scalar(Scalar::Text) => {
             Ok(())
         }
-        _ => Err(reject(
-            VerifyPhase::Function,
-            "text split/lines/join collection index does not name a list of string",
-        )),
+        _ => Err(reject(VerifyPhase::Function, Kind::NotListOfString)),
     }
 }
 
@@ -1171,14 +1128,14 @@ fn map_kv(ctx: &Ctx, value: VType) -> Result<(CollTypeId, ImageType, ImageType),
         optional: false,
     } = value
     else {
-        return Err(reject(VerifyPhase::Function, "operand is not a bare map"));
+        return Err(reject(
+            VerifyPhase::Function,
+            Kind::OperandType(Operand::Map),
+        ));
     };
     match ctx.collections.get(idx.index() as usize) {
         Some(SealedCollectionType::Map { key, value }) => Ok((idx, *key, *value)),
-        _ => Err(reject(
-            VerifyPhase::Function,
-            "collection index does not name a map type",
-        )),
+        _ => Err(reject(VerifyPhase::Function, Kind::NotMap)),
     }
 }
 
@@ -1211,10 +1168,10 @@ fn apply_durable(
         // TxnBegin / TxnCommit: no stack effect here.
         return Ok(Control::Fallthrough);
     };
-    let site = ctx.sites.get(site_index as usize).ok_or(reject(
-        VerifyPhase::Function,
-        "durable site index out of range",
-    ))?;
+    let site = ctx
+        .sites
+        .get(site_index as usize)
+        .ok_or(reject(VerifyPhase::Function, Kind::OutOfRange(Ref::Site)))?;
     // A durable opcode may reference only a kernel-executable flat site. A parked
     // site (a nested placement, a group-scoped field, or a site on a singleton or
     // group/branch-bearing root) carries a complete identity but no executable
@@ -1223,16 +1180,13 @@ fn apply_durable(
     let (site_root, site_target) = match site {
         SealedSite::Flat { root, target } => (*root, target),
         SealedSite::Parked { .. } => {
-            return Err(reject(
-                VerifyPhase::Function,
-                "a durable operation site is not yet executable",
-            ));
+            return Err(reject(VerifyPhase::Function, Kind::ParkedSite));
         }
     };
-    let root = ctx.roots.get(site_root as usize).ok_or(reject(
-        VerifyPhase::Function,
-        "durable site root out of range",
-    ))?;
+    let root = ctx
+        .roots
+        .get(site_root as usize)
+        .ok_or(reject(VerifyPhase::Function, Kind::OutOfRange(Ref::Root)))?;
     // A managed-index read touches only the index cell family, not the entry tree, so it
     // is handled before the whole-entry key-path logic (and is admitted over a root whose
     // entry tree is not flat). Its projection is read from the sealed index the site names.
@@ -1251,23 +1205,17 @@ fn apply_durable(
     ) {
         return Err(reject(
             VerifyPhase::Function,
-            "a managed-index opcode over a non-index site",
+            Kind::RequiresSite(SiteKind::Index),
         ));
     }
     // Defense in depth: a flat site's root is free of groups and composite/nested
     // branches by construction (field-only branches with composite keys are executable;
     // a widened field is inline-framed and executable), but recheck at the opcode.
     if root.has_extras {
-        return Err(reject(
-            VerifyPhase::Function,
-            "a durable operation site requires a flat-executable root",
-        ));
+        return Err(reject(VerifyPhase::Function, Kind::RootNotExecutable));
     }
     if root.keys.is_empty() {
-        return Err(reject(
-            VerifyPhase::Function,
-            "a durable operation site requires a keyed root",
-        ));
+        return Err(reject(VerifyPhase::Function, Kind::RootNotExecutable));
     }
     // A site addresses a key-path of one column per key column of every node from the root
     // down to the addressed node: the root's key columns, then each branch hop's key
@@ -1297,10 +1245,10 @@ fn apply_durable(
             // A group is addressed by the root's own key-path (it is a value unit of the
             // root entry, not a keyed child). Its whole-group op reads or writes the
             // group's own materialized record.
-            let group = root.groups.get(*group as usize).ok_or(reject(
-                VerifyPhase::Function,
-                "durable group index out of range",
-            ))?;
+            let group = root
+                .groups
+                .get(*group as usize)
+                .ok_or(reject(VerifyPhase::Function, Kind::OutOfRange(Ref::Group)))?;
             (TypeId::from_index(group.record), root.keys.len())
         }
         SealedSiteTarget::IndexScan(_) | SealedSiteTarget::IndexLookup(_) => {
@@ -1349,10 +1297,7 @@ fn durable_read(
             // composite-keyed family parks with a typed rejection.
             require_entry(place.target)?;
             if place.traversed_arity != 1 {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "family-populated probe over a composite-keyed family is not yet executable",
-                ));
+                return Err(reject(VerifyPhase::Function, Kind::CompositeKeyTraversal));
             }
             // The probe supplies no immediate child key: only the ancestor key-path
             // locating the family's parent entry sits on the stack (none for a root
@@ -1381,7 +1326,7 @@ fn durable_read(
             if !field.required {
                 return Err(reject(
                     VerifyPhase::Function,
-                    "a present field read requires a required field",
+                    Kind::PresentReadOfSparseField,
                 ));
             }
             require_key_slots(frame, key_slots, &place.key_path, place.root_index)?;
@@ -1439,10 +1384,7 @@ fn durable_mutation(
                 .get(place.entry_record.index() as usize)
                 .is_some_and(|record| record.fields.iter().any(|field| field.required));
             if holds_required {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "erase targets a group with a required leaf",
-                ));
+                return Err(reject(VerifyPhase::Function, Kind::EraseRequiredGroup));
             }
             pop_key_path(stack, &place.key_path, place.root_index)?;
         }
@@ -1458,7 +1400,7 @@ fn durable_mutation(
             ) {
                 return Err(reject(
                     VerifyPhase::Function,
-                    "set-field requires a field-leaf site",
+                    Kind::RequiresSite(SiteKind::Field),
                 ));
             }
             let field = field_of(ctx, place.target, place.root)?;
@@ -1473,10 +1415,7 @@ fn durable_mutation(
         SealedInstr::DurEraseField(_) => {
             let field = field_of(ctx, place.target, place.root)?;
             if field.required {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "erase targets a required field",
-                ));
+                return Err(reject(VerifyPhase::Function, Kind::EraseRequiredField));
             }
             pop_key_path(stack, &place.key_path, place.root_index)?;
         }
@@ -1508,20 +1447,14 @@ fn bounded_traversal(
     // The `at most N` bound is a positive compile-time constant no larger than
     // the frozen-list ceiling.
     if limit == 0 || limit > marrow_image::bounds::MAX_TRAVERSAL_BOUND {
-        return Err(reject(
-            VerifyPhase::Function,
-            "bounded traversal bound is out of range",
-        ));
+        return Err(reject(VerifyPhase::Function, Kind::TraversalBound));
     }
     // Bounded traversal iterates a single key column: the loop binds one immediate
     // key and takes one inclusive `from`. A composite-keyed traversed layer has no
     // spelled single-column iteration in the current language, so it parks with a
     // typed rejection rather than inventing a last-column-under-prefix semantics.
     if place.traversed_arity != 1 {
-        return Err(reject(
-            VerifyPhase::Function,
-            "bounded traversal over a composite-keyed layer is not yet executable",
-        ));
+        return Err(reject(VerifyPhase::Function, Kind::CompositeKeyTraversal));
     }
     // The traversed key is what iteration enumerates — the first element of the
     // site's whole-entry key-path (the single traversed column); the remainder is
@@ -1557,10 +1490,7 @@ fn bounded_traversal(
     match ctx.collections.get(list_ty as usize) {
         Some(SealedCollectionType::List { elem }) if *elem == ImageType::scalar(key_scalar) => {}
         _ => {
-            return Err(reject(
-                VerifyPhase::Function,
-                "bounded traversal list type does not name a list of the traversed key",
-            ));
+            return Err(reject(VerifyPhase::Function, Kind::FrozenListType));
         }
     }
     stack.push(VType::bare_collection(CollTypeId::from_index(list_ty)));
@@ -1578,17 +1508,17 @@ fn index_component_scalar(
 ) -> Result<Scalar, VerifyRejection> {
     match component {
         SealedIndexComponent::Key(position) => root.keys.get(*position as usize).copied().ok_or(
-            reject(VerifyPhase::Function, "index key component out of range"),
+            reject(VerifyPhase::Function, Kind::OutOfRange(Ref::KeyColumn)),
         ),
         SealedIndexComponent::Field(position) => {
             let record = ctx.types.get(root.record as usize).ok_or(reject(
                 VerifyPhase::Function,
-                "index root record out of range",
+                Kind::OutOfRange(Ref::RecordType),
             ))?;
-            let field = record.fields().get(*position as usize).ok_or(reject(
-                VerifyPhase::Function,
-                "index field component out of range",
-            ))?;
+            let field = record
+                .fields()
+                .get(*position as usize)
+                .ok_or(reject(VerifyPhase::Function, Kind::OutOfRange(Ref::Field)))?;
             match field.ty {
                 ImageType::Scalar {
                     scalar,
@@ -1596,7 +1526,7 @@ fn index_component_scalar(
                 } => Ok(scalar),
                 _ => Err(reject(
                     VerifyPhase::Function,
-                    "index field component is not a bare scalar",
+                    Kind::IndexProjection(Projection::FieldNotEligible),
                 )),
             }
         }
@@ -1621,15 +1551,12 @@ fn apply_index_read(
     root: &SealedRoot,
     index_position: u16,
 ) -> Result<Control, VerifyRejection> {
-    let index = ctx.indexes.get(index_position as usize).ok_or(reject(
-        VerifyPhase::Function,
-        "index read site names no sealed index",
-    ))?;
+    let index = ctx
+        .indexes
+        .get(index_position as usize)
+        .ok_or(reject(VerifyPhase::Function, Kind::OutOfRange(Ref::Index)))?;
     if index.root != site_root {
-        return Err(reject(
-            VerifyPhase::Function,
-            "index read site names an index of a different root",
-        ));
+        return Err(reject(VerifyPhase::Function, Kind::IndexRootMismatch));
     }
     let projection: Vec<Scalar> = index
         .projection
@@ -1645,36 +1572,27 @@ fn apply_index_read(
             ..
         } => {
             if index.unique {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "progressive scan of a unique index",
-                ));
+                return Err(reject(VerifyPhase::Function, Kind::IndexReadKind));
             }
             if *limit == 0 || *limit > marrow_image::bounds::MAX_TRAVERSAL_BOUND {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "index scan bound is out of range",
-                ));
+                return Err(reject(VerifyPhase::Function, Kind::TraversalBound));
             }
             // The scan yields the source identity, so the root's identity is a single key
             // column: the scanned (trailing) projection component is that one key. A
             // composite-identity root has no single-column identity to yield here.
             if root.keys.len() != 1 {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "index scan over a composite-identity root is not yet executable",
-                ));
+                return Err(reject(VerifyPhase::Function, Kind::CompositeKeyTraversal));
             }
             let (scanned, prefix) = projection.split_last().ok_or(reject(
                 VerifyPhase::Function,
-                "index scan projection is empty",
+                Kind::IndexProjection(Projection::Empty),
             ))?;
             // The nonunique projection ends with the identity suffix; with a single-column
             // identity the trailing component is exactly the root key.
             if *scanned != root.keys[0] {
                 return Err(reject(
                     VerifyPhase::Function,
-                    "index scan trailing component is not the source identity key",
+                    Kind::IndexProjection(Projection::MissingIdentitySuffix),
                 ));
             }
             // The held prefix (the leading field components) sits under the inclusive
@@ -1692,10 +1610,7 @@ fn apply_index_read(
                 Some(SealedCollectionType::List { elem })
                     if *elem == ImageType::scalar(*scanned) => {}
                 _ => {
-                    return Err(reject(
-                        VerifyPhase::Function,
-                        "index scan list type does not name a list of the identity key",
-                    ));
+                    return Err(reject(VerifyPhase::Function, Kind::FrozenListType));
                 }
             }
             stack.push(VType::bare_collection(CollTypeId::from_index(*list_ty)));
@@ -1703,10 +1618,7 @@ fn apply_index_read(
         }
         SealedInstr::DurIndexLookup(_) => {
             if !index.unique {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "exact lookup of a nonunique index",
-                ));
+                return Err(reject(VerifyPhase::Function, Kind::IndexReadKind));
             }
             // Pop the whole projection (one key per component, projection order reversed),
             // then push the optional source identity of the root the index belongs to.
@@ -1720,10 +1632,7 @@ fn apply_index_read(
         }
         SealedInstr::DurIndexExists(_) => {
             if !index.unique {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "presence probe of a nonunique index",
-                ));
+                return Err(reject(VerifyPhase::Function, Kind::IndexReadKind));
             }
             // Pop the whole projection (one key per component, projection order reversed),
             // then push the presence bool — the identity is never materialized.
@@ -1738,7 +1647,7 @@ fn apply_index_read(
         _ => {
             return Err(reject(
                 VerifyPhase::Function,
-                "a non-index opcode over a managed-index site",
+                Kind::RequiresSite(SiteKind::NotIndex),
             ));
         }
     }
@@ -1774,25 +1683,16 @@ fn require_key_slots(
 ) -> Result<(), VerifyRejection> {
     let columns_root_first = key_path.iter().rev();
     if key_slots.len() != key_path.len() {
-        return Err(reject(
-            VerifyPhase::Function,
-            "present-entry key-path arity does not match its site",
-        ));
+        return Err(reject(VerifyPhase::Function, Kind::KeySlotArity));
     }
     for (slot, column_ty) in key_slots.iter().zip(columns_root_first) {
         match frame.locals.get(*slot as usize) {
             Some(Some(slot_ty)) if slot_keys_column(*slot_ty, *column_ty, site_root) => {}
             Some(Some(_)) => {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "present-entry key slot has the wrong type",
-                ));
+                return Err(reject(VerifyPhase::Function, Kind::KeySlotType));
             }
             _ => {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "present-entry key slot is uninitialized or out of range",
-                ));
+                return Err(reject(VerifyPhase::Function, Kind::KeySlotUninit));
             }
         }
     }
@@ -1814,10 +1714,7 @@ fn pop_key_column(
     match pop(stack)? {
         VType::IdentityColumn { root, scalar } => {
             if root != RootId::from_index(site_root) {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "an entry identity keys a durable operation on a different store root",
-                ));
+                return Err(reject(VerifyPhase::Function, Kind::ForeignIdentityKey));
             }
             expect(VType::bare_scalar(scalar), want)
         }
@@ -1859,17 +1756,14 @@ fn field_of<'a>(
         | SealedSiteTarget::IndexLookup(_) => {
             return Err(reject(
                 VerifyPhase::Function,
-                "operation requires a field site",
+                Kind::RequiresSite(SiteKind::Field),
             ));
         }
     };
     ctx.types[record as usize]
         .fields()
         .get(field as usize)
-        .ok_or(reject(
-            VerifyPhase::Function,
-            "site field index out of range",
-        ))
+        .ok_or(reject(VerifyPhase::Function, Kind::OutOfRange(Ref::Field)))
 }
 
 /// The bare value type of a durable field: a scalar, a record (dense product), or an
@@ -1890,7 +1784,7 @@ fn require_entry(target: &SealedSiteTarget) -> Result<(), VerifyRejection> {
         | SealedSiteTarget::IndexScan(_)
         | SealedSiteTarget::IndexLookup(_) => Err(reject(
             VerifyPhase::Function,
-            "operation requires an entry site",
+            Kind::RequiresSite(SiteKind::Entry),
         )),
     }
 }
@@ -1908,7 +1802,7 @@ fn require_group(target: &SealedSiteTarget) -> Result<(), VerifyRejection> {
         | SealedSiteTarget::IndexScan(_)
         | SealedSiteTarget::IndexLookup(_) => Err(reject(
             VerifyPhase::Function,
-            "operation requires a group site",
+            Kind::RequiresSite(SiteKind::Group),
         )),
     }
 }
@@ -1924,16 +1818,15 @@ fn resolve_sealed_branch<'a>(
     let mut branches: &'a [SealedBranch] = &root.branches;
     let mut deepest: Option<&'a SealedBranch> = None;
     for &index in path {
-        let branch = branches.get(index as usize).ok_or(reject(
-            VerifyPhase::Function,
-            "durable branch index out of range",
-        ))?;
+        let branch = branches
+            .get(index as usize)
+            .ok_or(reject(VerifyPhase::Function, Kind::OutOfRange(Ref::Branch)))?;
         deepest = Some(branch);
         branches = &branch.branches;
     }
     deepest.ok_or(reject(
         VerifyPhase::Function,
-        "a branch site requires a non-empty branch path",
+        Kind::RequiresSite(SiteKind::Branch),
     ))
 }
 
@@ -1947,10 +1840,9 @@ pub(super) fn branch_key_columns(
     let mut branches = &root.branches;
     let mut columns = Vec::with_capacity(path.len());
     for &index in path {
-        let branch = branches.get(index as usize).ok_or(reject(
-            VerifyPhase::Function,
-            "durable branch index out of range",
-        ))?;
+        let branch = branches
+            .get(index as usize)
+            .ok_or(reject(VerifyPhase::Function, Kind::OutOfRange(Ref::Branch)))?;
         columns.extend_from_slice(&branch.keys);
         branches = &branch.branches;
     }
@@ -1964,7 +1856,7 @@ pub(super) fn expect(value: VType, want: VType) -> Result<(), VerifyRejection> {
     } else {
         Err(reject(
             VerifyPhase::Function,
-            "durable operand type mismatch",
+            Kind::OperandType(Operand::Durable),
         ))
     }
 }
@@ -1973,7 +1865,7 @@ pub(super) fn expect(value: VType, want: VType) -> Result<(), VerifyRejection> {
 pub(super) fn pop(stack: &mut Vec<VType>) -> Result<VType, VerifyRejection> {
     stack
         .pop()
-        .ok_or(reject(VerifyPhase::Function, "operand stack underflow"))
+        .ok_or(reject(VerifyPhase::Function, Kind::StackUnderflow))
 }
 
 /// Require `value` to be a bare scalar of `scalar`.
@@ -1983,7 +1875,7 @@ fn expect_scalar(value: VType, scalar: Scalar) -> Result<(), VerifyRejection> {
     } else {
         Err(reject(
             VerifyPhase::Function,
-            "operand type mismatch for opcode",
+            Kind::OperandType(Operand::Scalar(scalar)),
         ))
     }
 }

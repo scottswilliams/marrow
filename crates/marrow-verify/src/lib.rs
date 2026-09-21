@@ -18,11 +18,14 @@ mod vtype;
 pub use interface::interface_of;
 pub use marrow_image::{
     CeilingDescriptor, CeilingId, DemandAtom, DemandSetId, DemandView, DurableContractId,
-    DurableIndexComponent, ExportDemand, ExportId, ImageId, ImageType, LedgerIdBytes,
-    OperationClass, Scalar, SealedInstr, SemanticNode, SemanticNodeKind, SemanticPath,
-    SemanticStep, SemanticStepKind, SemanticTarget,
+    DurableGraphInputRefusal, DurableIndexComponent, ExportDemand, ExportId, ImageId, ImageType,
+    LedgerIdBytes, OperationClass, Scalar, SealedInstr, SemanticNode, SemanticNodeKind,
+    SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget,
 };
-pub use reject::{VerifyPhase, VerifyRejection};
+pub use reject::{
+    Bound, Duplicate, Flag, Operand, Projection, Ref, Region, RejectionKind, SiteFault, SiteKind,
+    Tag, TieFault, TieNode, TypePosition, TypeRefFault, VerifyPhase, VerifyRejection,
+};
 pub use sealed::{
     AtomIncidence, FunctionIndex, NodeIncidence, SealedBranch, SealedCollectionType, SealedConst,
     SealedEnumType, SealedExport, SealedField, SealedFunction, SealedGroup, SealedIndex,

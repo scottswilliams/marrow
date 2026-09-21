@@ -2,11 +2,14 @@
 
 use super::model::DecodedFunction;
 use super::reject;
-use super::type_ref::{Optionality, TagSet, TypePosition, decode_type_ref, type_position};
+use super::type_ref::{Optionality, TagSet, TypeRules, decode_type_ref};
 use crate::reader::Reader;
-use crate::reject::{VerifyPhase, VerifyRejection};
+use crate::reject::{
+    Bound, Duplicate, Flag, Ref, Region, RejectionKind as Kind, Tag, TypePosition, VerifyPhase,
+    VerifyRejection,
+};
 use crate::sealed::SealedConst;
-use marrow_image::ExportId;
+use marrow_image::{ExportId, Scalar};
 use std::rc::Rc;
 
 pub(super) fn decode_consts(
@@ -16,43 +19,41 @@ pub(super) fn decode_consts(
     let mut reader = Reader::new(body);
     let count = reader
         .u16()
-        .ok_or(reject(VerifyPhase::Table, "short const count"))? as usize;
+        .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Consts)))?
+        as usize;
     if count > marrow_image::bounds::MAX_CONSTS {
-        return Err(reject(VerifyPhase::Table, "too many constants"));
+        return Err(reject(VerifyPhase::Table, Kind::OverBound(Bound::Consts)));
     }
     let mut consts = Vec::with_capacity(count);
     let mut previous: Option<(u8, Vec<u8>)> = None;
     for _ in 0..count {
         let tag = reader
             .u8()
-            .ok_or(reject(VerifyPhase::Table, "short const tag"))?;
+            .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Consts)))?;
         let (value, key) = match tag {
             0x01 => {
                 let raw = reader
                     .i64()
-                    .ok_or(reject(VerifyPhase::Table, "short int const"))?;
+                    .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Consts)))?;
                 (SealedConst::Int(raw), raw.to_be_bytes().to_vec())
             }
             0x02 => {
                 let byte = reader
                     .u8()
-                    .ok_or(reject(VerifyPhase::Table, "short bool const"))?;
+                    .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Consts)))?;
                 let value = match byte {
                     0 => false,
                     1 => true,
-                    _ => return Err(reject(VerifyPhase::Table, "bool const must be 0 or 1")),
+                    _ => return Err(reject(VerifyPhase::Table, Kind::Flag(Flag::BoolConst))),
                 };
                 (SealedConst::Bool(value), vec![byte])
             }
             0x03 => {
                 let idx = reader
                     .u16()
-                    .ok_or(reject(VerifyPhase::Table, "short text const"))?;
+                    .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Consts)))?;
                 if idx as usize >= strings.len() {
-                    return Err(reject(
-                        VerifyPhase::Table,
-                        "text const string index out of range",
-                    ));
+                    return Err(reject(VerifyPhase::Table, Kind::OutOfRange(Ref::String)));
                 }
                 (
                     SealedConst::Text(strings[idx as usize].clone()),
@@ -62,23 +63,20 @@ pub(super) fn decode_consts(
             0x04 => {
                 let days = reader
                     .i32()
-                    .ok_or(reject(VerifyPhase::Table, "short date const"))?;
+                    .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Consts)))?;
                 if !marrow_temporal::supported_date_days(days) {
-                    return Err(reject(
-                        VerifyPhase::Table,
-                        "date const out of supported range",
-                    ));
+                    return Err(reject(VerifyPhase::Table, Kind::ConstDomain(Scalar::Date)));
                 }
                 (SealedConst::Date(days), days.to_be_bytes().to_vec())
             }
             0x05 => {
                 let nanos = reader
                     .i128()
-                    .ok_or(reject(VerifyPhase::Table, "short instant const"))?;
+                    .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Consts)))?;
                 if !marrow_temporal::supported_instant_nanos(nanos) {
                     return Err(reject(
                         VerifyPhase::Table,
-                        "instant const out of supported range",
+                        Kind::ConstDomain(Scalar::Instant),
                     ));
                 }
                 (SealedConst::Instant(nanos), nanos.to_be_bytes().to_vec())
@@ -86,24 +84,21 @@ pub(super) fn decode_consts(
             0x06 => {
                 let nanos = reader
                     .i128()
-                    .ok_or(reject(VerifyPhase::Table, "short duration const"))?;
+                    .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Consts)))?;
                 (SealedConst::Duration(nanos), nanos.to_be_bytes().to_vec())
             }
-            _ => return Err(reject(VerifyPhase::Table, "unknown const tag")),
+            _ => return Err(reject(VerifyPhase::Table, Kind::Unknown(Tag::Const))),
         };
         if let Some((ptag, pkey)) = &previous
             && (tag, &key) <= (*ptag, pkey)
         {
-            return Err(reject(
-                VerifyPhase::Table,
-                "constants must be sorted and unique by (tag, payload)",
-            ));
+            return Err(reject(VerifyPhase::Table, Kind::Unsorted(Region::Consts)));
         }
         previous = Some((tag, key));
         consts.push(value);
     }
     if !reader.is_empty() {
-        return Err(reject(VerifyPhase::Table, "trailing bytes in const table"));
+        return Err(reject(VerifyPhase::Table, Kind::Trailing(Region::Consts)));
     }
     Ok(consts)
 }
@@ -111,36 +106,36 @@ pub(super) fn decode_consts(
 /// A function parameter: a bare scalar, record, enum, collection or entry identity.
 /// An optional parameter and a unit parameter are outside the subset the compiler
 /// emits.
-const PARAM: TypePosition = type_position!(
-    "param",
+const PARAM: TypeRules = TypeRules::new(
+    TypePosition::Param,
     TagSet::SCALAR
         .with(TagSet::RECORD)
         .with(TagSet::ENUM)
         .with(TagSet::COLLECTION)
         .with(TagSet::IDENTITY),
-    Optionality::Bare
+    Optionality::Bare,
 );
 
 /// A function return: any value type, optional or bare, plus unit.
-const RETURN: TypePosition = type_position!(
-    "return",
+const RETURN: TypeRules = TypeRules::new(
+    TypePosition::Return,
     TagSet::UNIT
         .with(TagSet::SCALAR)
         .with(TagSet::RECORD)
         .with(TagSet::ENUM)
         .with(TagSet::COLLECTION)
         .with(TagSet::IDENTITY),
-    Optionality::Either
+    Optionality::Either,
 );
 
 /// Both signature positions, bound to this image's tables.
 fn signature_types(
-    rules: TypePosition,
+    rules: TypeRules,
     type_count: usize,
     enum_count: usize,
     collection_count: usize,
     root_count: usize,
-) -> TypePosition {
+) -> TypeRules {
     rules
         .types(type_count)
         .enums(enum_count)
@@ -157,32 +152,35 @@ pub(super) fn decode_functions(
     root_count: usize,
 ) -> Result<Vec<DecodedFunction>, VerifyRejection> {
     let mut reader = Reader::new(body);
-    let count = reader
-        .u16()
-        .ok_or(reject(VerifyPhase::Table, "short function count"))? as usize;
+    let count = reader.u16().ok_or(reject(
+        VerifyPhase::Table,
+        Kind::Truncated(Region::Functions),
+    ))? as usize;
     if count > marrow_image::bounds::MAX_FUNCTIONS {
-        return Err(reject(VerifyPhase::Table, "too many functions"));
+        return Err(reject(
+            VerifyPhase::Table,
+            Kind::OverBound(Bound::Functions),
+        ));
     }
     let mut functions = Vec::with_capacity(count);
     for _ in 0..count {
-        let name = reader
-            .u16()
-            .ok_or(reject(VerifyPhase::Table, "short function name"))?;
-        let source = reader
-            .u16()
-            .ok_or(reject(VerifyPhase::Table, "short function source"))?;
+        let name = reader.u16().ok_or(reject(
+            VerifyPhase::Table,
+            Kind::Truncated(Region::Functions),
+        ))?;
+        let source = reader.u16().ok_or(reject(
+            VerifyPhase::Table,
+            Kind::Truncated(Region::Functions),
+        ))?;
         if name as usize >= string_count || source as usize >= string_count {
-            return Err(reject(
-                VerifyPhase::Table,
-                "function name/source index out of range",
-            ));
+            return Err(reject(VerifyPhase::Table, Kind::OutOfRange(Ref::String)));
         }
-        let param_count = reader
-            .u8()
-            .ok_or(reject(VerifyPhase::Table, "short param count"))?
-            as usize;
+        let param_count = reader.u8().ok_or(reject(
+            VerifyPhase::Table,
+            Kind::Truncated(Region::Functions),
+        ))? as usize;
         if param_count > marrow_image::bounds::MAX_PARAMS {
-            return Err(reject(VerifyPhase::Table, "too many params"));
+            return Err(reject(VerifyPhase::Table, Kind::OverBound(Bound::Params)));
         }
         let mut params = Vec::with_capacity(param_count);
         let param_rules =
@@ -194,25 +192,32 @@ pub(super) fn decode_functions(
             &mut reader,
             &signature_types(RETURN, type_count, enum_count, collection_count, root_count),
         )?;
-        let local_count = reader
-            .u16()
-            .ok_or(reject(VerifyPhase::Table, "short local count"))?;
+        let local_count = reader.u16().ok_or(reject(
+            VerifyPhase::Table,
+            Kind::Truncated(Region::Functions),
+        ))?;
         if local_count as usize > marrow_image::bounds::MAX_LOCALS {
-            return Err(reject(VerifyPhase::Table, "too many locals"));
+            return Err(reject(VerifyPhase::Table, Kind::OverBound(Bound::Locals)));
         }
         if (local_count as usize) < param_count {
-            return Err(reject(VerifyPhase::Table, "local count below param count"));
+            return Err(reject(VerifyPhase::Table, Kind::LocalsBelowParams));
         }
-        let code_len = reader
-            .u32()
-            .ok_or(reject(VerifyPhase::Table, "short code length"))?
-            as usize;
+        let code_len = reader.u32().ok_or(reject(
+            VerifyPhase::Table,
+            Kind::Truncated(Region::Functions),
+        ))? as usize;
         if code_len > marrow_image::bounds::MAX_CODE_BYTES {
-            return Err(reject(VerifyPhase::Table, "code exceeds byte bound"));
+            return Err(reject(
+                VerifyPhase::Table,
+                Kind::OverBound(Bound::CodeBytes),
+            ));
         }
         let code = reader
             .take(code_len)
-            .ok_or(reject(VerifyPhase::Table, "code past input"))?
+            .ok_or(reject(
+                VerifyPhase::Table,
+                Kind::Truncated(Region::Functions),
+            ))?
             .to_vec();
         functions.push(DecodedFunction {
             name,
@@ -227,7 +232,7 @@ pub(super) fn decode_functions(
     if !reader.is_empty() {
         return Err(reject(
             VerifyPhase::Table,
-            "trailing bytes in function table",
+            Kind::Trailing(Region::Functions),
         ));
     }
     Ok(functions)
@@ -247,9 +252,10 @@ pub(super) fn decode_exports(
     let mut reader = Reader::new(body);
     let count = reader
         .u16()
-        .ok_or(reject(VerifyPhase::Table, "short export count"))? as usize;
+        .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Exports)))?
+        as usize;
     if count > marrow_image::bounds::MAX_EXPORTS {
-        return Err(reject(VerifyPhase::Table, "too many exports"));
+        return Err(reject(VerifyPhase::Table, Kind::OverBound(Bound::Exports)));
     }
     let mut exports = Vec::with_capacity(count);
     let mut seen_funcs: Vec<u16> = Vec::with_capacity(count);
@@ -257,38 +263,32 @@ pub(super) fn decode_exports(
     for _ in 0..count {
         let id_bytes: [u8; 32] = reader
             .take(32)
-            .ok_or(reject(VerifyPhase::Table, "short export id"))?
+            .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Exports)))?
             .try_into()
             .expect("take(32) yields 32 bytes");
         let func = reader
             .u16()
-            .ok_or(reject(VerifyPhase::Table, "short export function"))?;
+            .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Exports)))?;
         if func as usize >= function_count {
-            return Err(reject(
-                VerifyPhase::Table,
-                "export function index out of range",
-            ));
+            return Err(reject(VerifyPhase::Table, Kind::OutOfRange(Ref::Function)));
         }
         if let Some(prev) = previous_id
             && id_bytes <= prev
         {
-            return Err(reject(
-                VerifyPhase::Table,
-                "exports must be sorted and unique by id",
-            ));
+            return Err(reject(VerifyPhase::Table, Kind::Unsorted(Region::Exports)));
         }
         previous_id = Some(id_bytes);
         if seen_funcs.contains(&func) {
             return Err(reject(
                 VerifyPhase::Table,
-                "duplicate export function index",
+                Kind::Duplicate(Duplicate::ExportFunction),
             ));
         }
         seen_funcs.push(func);
         exports.push((ExportId::from_bytes(id_bytes), func));
     }
     if !reader.is_empty() {
-        return Err(reject(VerifyPhase::Table, "trailing bytes in export table"));
+        return Err(reject(VerifyPhase::Table, Kind::Trailing(Region::Exports)));
     }
     Ok(exports)
 }
@@ -301,32 +301,27 @@ pub(super) fn decode_spans(
     for function in functions.iter_mut() {
         let count = reader
             .u16()
-            .ok_or(reject(VerifyPhase::Table, "short span count"))? as usize;
+            .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Spans)))?
+            as usize;
         let mut spans = Vec::with_capacity(count);
         let mut previous_offset: Option<u32> = None;
         for _ in 0..count {
             let offset = reader
                 .u32()
-                .ok_or(reject(VerifyPhase::Table, "short span offset"))?;
+                .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Spans)))?;
             let line = reader
                 .u32()
-                .ok_or(reject(VerifyPhase::Table, "short span line"))?;
+                .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Spans)))?;
             let column = reader
                 .u32()
-                .ok_or(reject(VerifyPhase::Table, "short span column"))?;
+                .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Spans)))?;
             if line < 1 || column < 1 {
-                return Err(reject(
-                    VerifyPhase::Table,
-                    "span line/column must be 1-based",
-                ));
+                return Err(reject(VerifyPhase::Table, Kind::SpanNotOneBased));
             }
             if let Some(prev) = previous_offset
                 && offset <= prev
             {
-                return Err(reject(
-                    VerifyPhase::Table,
-                    "span offsets must strictly ascend",
-                ));
+                return Err(reject(VerifyPhase::Table, Kind::Unsorted(Region::Spans)));
             }
             previous_offset = Some(offset);
             spans.push((offset, line, column));
@@ -334,7 +329,7 @@ pub(super) fn decode_spans(
         function.spans = spans;
     }
     if !reader.is_empty() {
-        return Err(reject(VerifyPhase::Table, "trailing bytes in span table"));
+        return Err(reject(VerifyPhase::Table, Kind::Trailing(Region::Spans)));
     }
     Ok(())
 }

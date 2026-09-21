@@ -1,4 +1,4 @@
-use crate::VerifyPhase;
+use crate::{RejectionKind, VerifyPhase};
 use marrow_image::{
     ConstId, ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry,
 };
@@ -57,10 +57,7 @@ fn a_boolean_tape_that_falls_off_the_end_rejects() {
     let refusal = crate::verify(&bytes).expect_err("missing terminal return");
     assert_eq!(refusal.phase(), VerifyPhase::Function);
     assert_eq!(refusal.code(), marrow_codes::Code::ImageFunction);
-    assert_eq!(
-        refusal.detail(),
-        "execution falls off the end without returning"
-    );
+    assert_eq!(refusal.kind(), &RejectionKind::FallsOffEnd);
 }
 
 fn unit_image(local_count: u16, code: impl FnOnce(ConstId, ConstId) -> Vec<Instr>) -> Vec<u8> {
@@ -119,11 +116,11 @@ fn distinct_forks_seal_one_extra_stack_slot_and_three_instructions() {
     }
 }
 
-fn function_refusal(bytes: &[u8], detail: &'static str) {
+fn function_refusal(bytes: &[u8], kind: RejectionKind) {
     let refusal = crate::verify(bytes).expect_err("invalid flow");
     assert_eq!(refusal.phase(), VerifyPhase::Function);
     assert_eq!(refusal.code(), marrow_codes::Code::ImageFunction);
-    assert_eq!(refusal.detail(), detail);
+    assert_eq!(refusal.kind(), &kind);
 }
 
 #[test]
@@ -143,7 +140,7 @@ fn a_diamond_requires_identical_operand_stacks() {
         if compatible {
             crate::verify(&bytes).expect("equal-stack diamond");
         } else {
-            function_refusal(&bytes, "operand stack shapes disagree at a merge");
+            function_refusal(&bytes, RejectionKind::StackMerge);
         }
     }
 }
@@ -172,7 +169,7 @@ fn a_late_diamond_arm_rechecks_definite_initialization() {
         if initialized {
             crate::verify(&bytes).expect("both arms initialize the local");
         } else {
-            function_refusal(&bytes, "local read before init");
+            function_refusal(&bytes, RejectionKind::LocalUninit);
         }
     }
 }
@@ -206,7 +203,7 @@ fn a_late_backedge_rechecks_definite_initialization() {
         if initialized {
             crate::verify(&bytes).expect("backedge preserves initialization");
         } else {
-            function_refusal(&bytes, "local read before init");
+            function_refusal(&bytes, RejectionKind::LocalUninit);
         }
     }
 }
@@ -227,7 +224,7 @@ fn an_entry_zero_backedge_meets_the_initial_stack() {
         if compatible {
             crate::verify(&bytes).expect("empty-stack backedge to entry zero");
         } else {
-            function_refusal(&bytes, "operand stack shapes disagree at a merge");
+            function_refusal(&bytes, RejectionKind::StackMerge);
         }
     }
 }
@@ -251,7 +248,7 @@ fn coincident_optional_and_checked_edges_still_merge_both_stacks() {
                 code
             });
             if coincident {
-                function_refusal(&bytes, "operand stack shapes disagree at a merge");
+                function_refusal(&bytes, RejectionKind::StackMerge);
             } else {
                 assert_eq!(
                     crate::verify(&bytes).expect("distinct edges").functions()[0].max_stack(),

@@ -10,7 +10,7 @@
 //! current subset, and an opcode whose vertical has not landed is a phase-3
 //! rejection rather than a silent pass.
 
-use crate::reject::{VerifyPhase, VerifyRejection};
+use crate::reject::{RejectionKind, VerifyPhase, VerifyRejection};
 use crate::sealed::VerifiedImage;
 
 mod code_tables;
@@ -31,8 +31,8 @@ use seal::seal;
 
 type Reject = VerifyRejection;
 
-fn reject(phase: VerifyPhase, detail: &'static str) -> Reject {
-    VerifyRejection::new(phase, detail)
+fn reject(phase: VerifyPhase, kind: RejectionKind) -> Reject {
+    VerifyRejection::new(phase, kind)
 }
 
 /// Verify `bytes` into a sealed [`VerifiedImage`], or reject at the earliest phase

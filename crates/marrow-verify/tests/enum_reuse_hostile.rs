@@ -17,7 +17,7 @@ use marrow_image::{
     RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, ValueShapeNodeId, VariantDef,
 };
 use marrow_test_support::{admitted, admitted_plan, site};
-use marrow_verify::{VerifyPhase, verify};
+use marrow_verify::{Duplicate, RejectionKind, VerifyPhase, verify};
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 const PLACEMENT: [u8; 16] = [0x0b; 16];
@@ -221,8 +221,8 @@ fn a_repeated_field_id_still_rejects() {
         .expect_err("a repeated field id must reject");
     assert_eq!(rejection.phase(), VerifyPhase::Table);
     assert_eq!(
-        rejection.detail(),
-        "duplicate durable ledger id",
+        rejection.kind(),
+        &RejectionKind::Duplicate(Duplicate::LedgerId),
         "expected a duplicate-ledger-id rejection, got {rejection:?}"
     );
 }
@@ -236,8 +236,8 @@ fn a_field_id_colliding_with_the_enum_sum_still_rejects() {
         .expect_err("a field id colliding with an enum sum id must reject");
     assert_eq!(rejection.phase(), VerifyPhase::Table);
     assert_eq!(
-        rejection.detail(),
-        "duplicate durable ledger id",
+        rejection.kind(),
+        &RejectionKind::Duplicate(Duplicate::LedgerId),
         "expected a duplicate-ledger-id rejection, got {rejection:?}"
     );
 }
@@ -252,8 +252,8 @@ fn an_inconsistent_enum_reference_rejects() {
         .expect_err("an inconsistent enum reference must reject");
     assert_eq!(rejection.phase(), VerifyPhase::Table);
     assert_eq!(
-        rejection.detail(),
-        "durable enum identity reused with a different member set",
+        rejection.kind(),
+        &RejectionKind::EnumIdentityReused,
         "expected an inconsistent-enum-reuse rejection, got {rejection:?}"
     );
 }

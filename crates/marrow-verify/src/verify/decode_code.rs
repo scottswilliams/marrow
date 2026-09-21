@@ -1,9 +1,11 @@
 //! Instruction decoding: operand readers, jump resolution, and the decoded-op model.
 
 use super::reject;
-use super::type_ref::{Optionality, TagSet, TypePosition, decode_type_ref, type_position};
+use super::type_ref::{Optionality, TagSet, TypeRules, decode_type_ref};
 use crate::reader::Reader;
-use crate::reject::{VerifyPhase, VerifyRejection};
+use crate::reject::{
+    Flag, Region, RejectionKind as Kind, Tag, TypePosition, VerifyPhase, VerifyRejection,
+};
 use crate::sealed::SealedInstr;
 use marrow_image::{
     OP_ASSERT, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_BYTES_GE, OP_BYTES_GT, OP_BYTES_LE, OP_BYTES_LT,
@@ -60,7 +62,7 @@ pub(super) fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> 
         let offset = (code.len() - reader.remaining()) as u32;
         let opcode = reader
             .u8()
-            .ok_or(reject(VerifyPhase::Function, "short opcode"))?;
+            .ok_or(reject(VerifyPhase::Function, Kind::Truncated(Region::Code)))?;
         let mut decoded = None;
         for decode in DECODERS {
             if let Some(instr) = decode(opcode, &mut reader)? {
@@ -69,10 +71,7 @@ pub(super) fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> 
             }
         }
         let Some(instr) = decoded else {
-            return Err(reject(
-                VerifyPhase::Function,
-                "unknown or not-yet-supported opcode",
-            ));
+            return Err(reject(VerifyPhase::Function, Kind::Unknown(Tag::Opcode)));
         };
         out.push(Decoded { instr, offset });
     }
@@ -109,10 +108,7 @@ fn decode_operand_and_scalar(
             let lo = operand_i64(reader)?;
             let hi = operand_i64(reader)?;
             if lo > hi {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "range-guard interval is empty",
-                ));
+                return Err(reject(VerifyPhase::Function, Kind::RangeGuardEmpty));
             }
             SealedInstr::RangeGuard { lo, hi }
         }
@@ -284,7 +280,7 @@ fn decode_collection(
 fn operand_u16(reader: &mut Reader) -> Result<u16, VerifyRejection> {
     reader
         .u16()
-        .ok_or(reject(VerifyPhase::Function, "short u16 operand"))
+        .ok_or(reject(VerifyPhase::Function, Kind::Truncated(Region::Code)))
 }
 
 /// The `site ‖ len ‖ slot…` operand of a present-entry op that reads its containing
@@ -298,10 +294,7 @@ fn operand_site_key_slots(reader: &mut Reader) -> Result<(u16, Vec<u16>), Verify
     if len == 0
         || len > marrow_image::bounds::MAX_KEY_COLUMNS * marrow_image::bounds::MAX_SITE_PATH_STEPS
     {
-        return Err(reject(
-            VerifyPhase::Function,
-            "present-entry key-path length out of range",
-        ));
+        return Err(reject(VerifyPhase::Function, Kind::KeySlotArity));
     }
     let mut key_slots = Vec::with_capacity(len);
     for _ in 0..len {
@@ -313,13 +306,13 @@ fn operand_site_key_slots(reader: &mut Reader) -> Result<(u16, Vec<u16>), Verify
 fn operand_u32(reader: &mut Reader) -> Result<u32, VerifyRejection> {
     reader
         .u32()
-        .ok_or(reject(VerifyPhase::Function, "short u32 operand"))
+        .ok_or(reject(VerifyPhase::Function, Kind::Truncated(Region::Code)))
 }
 
 fn operand_i64(reader: &mut Reader) -> Result<i64, VerifyRejection> {
     reader
         .i64()
-        .ok_or(reject(VerifyPhase::Function, "short i64 operand"))
+        .ok_or(reject(VerifyPhase::Function, Kind::Truncated(Region::Code)))
 }
 
 /// A one-byte flag operand strictly `0x00` or `0x01`; any other byte is a malformed
@@ -328,19 +321,19 @@ fn operand_bool(reader: &mut Reader) -> Result<bool, VerifyRejection> {
     match reader.u8() {
         Some(0) => Ok(false),
         Some(1) => Ok(true),
-        _ => Err(reject(VerifyPhase::Function, "malformed bool operand")),
+        _ => Err(reject(VerifyPhase::Function, Kind::Flag(Flag::BoolOperand))),
     }
 }
 
 /// A `VacantLoad` operand: a full optional type reference. Its referenced indices
 /// are bounds-checked by the abstract interpreter against the sealed tables.
-const VACANT_LOAD: TypePosition = type_position!(
-    "vacant-load operand",
+const VACANT_LOAD: TypeRules = TypeRules::new(
+    TypePosition::VacantLoad,
     TagSet::SCALAR
         .with(TagSet::RECORD)
         .with(TagSet::ENUM)
         .with(TagSet::COLLECTION),
-    Optionality::Optional
+    Optionality::Optional,
 )
 .in_phase(VerifyPhase::Function);
 
@@ -352,7 +345,7 @@ pub(super) fn resolve_jumps(code: &mut [Decoded]) -> Result<Vec<bool>, VerifyRej
     let index_of = |byte_offset: usize| -> Result<usize, VerifyRejection> {
         offsets
             .binary_search(&(byte_offset as u32))
-            .map_err(|_| reject(VerifyPhase::Function, "jump target is not a boundary"))
+            .map_err(|_| reject(VerifyPhase::Function, Kind::JumpTarget))
     };
     let mut non_fallthrough_entries = vec![false; code.len()];
     for (index, decoded) in code.iter_mut().enumerate() {
@@ -377,6 +370,7 @@ mod opcode_bijection {
     //! cannot land without an entry in [`samples`].
     use std::collections::HashMap;
 
+    use crate::reject::{RejectionKind, Tag};
     use marrow_image::{ImageType, OPTIONAL_FLAG, Scalar, TAG_INT};
 
     use super::*;
@@ -638,7 +632,7 @@ mod opcode_bijection {
             // only an unrecognized byte fails on the opcode itself.
             let known = match decode_code(&[byte]) {
                 Ok(_) => true,
-                Err(rejection) => rejection.detail() != "unknown or not-yet-supported opcode",
+                Err(rejection) => rejection.kind() != &RejectionKind::Unknown(Tag::Opcode),
             };
             assert_eq!(
                 known,
@@ -768,7 +762,7 @@ mod index_site_partition {
     //! typed rejection rather than a fall-through to the whole-entry `unreachable!`. It
     //! cannot derive from `operation_class`: `DurIterateBounded` is IndexRead-class yet
     //! iterates an *entry* family, so the entry-site guard owns it with a different typed
-    //! detail, and an index-site opcode omitted from the guard would reach the
+    //! kind, and an index-site opcode omitted from the guard would reach the
     //! `unreachable!` on a forged image.
     //!
     //! This sweep enumerates every opcode from the decode-bijection [`samples()`] source
@@ -785,6 +779,7 @@ mod index_site_partition {
 
     use super::opcode_bijection::samples;
     use super::*;
+    use crate::reject::{RejectionKind, SiteKind};
 
     const APPLICATION_ID: [u8; 16] = [0x0a; 16];
     const PLACEMENT_ID: [u8; 16] = [0x0b; 16];
@@ -1088,11 +1083,13 @@ mod index_site_partition {
         for sample in samples() {
             let (mut draft_owner, value_site, list_ty) = field_leaf_schema();
             let mut draft = draft_owner.begin_transaction();
-            let (forged, expected_detail) = match role(&sample, &value_site, list_ty) {
+            let (forged, expected) = match role(&sample, &value_site, list_ty) {
                 Role::ManagedIndexRead(forged) => {
-                    (forged, "a managed-index opcode over a non-index site")
+                    (forged, RejectionKind::RequiresSite(SiteKind::Index))
                 }
-                Role::EntryFamilyTraversal(forged) => (forged, "operation requires an entry site"),
+                Role::EntryFamilyTraversal(forged) => {
+                    (forged, RejectionKind::RequiresSite(SiteKind::Entry))
+                }
                 Role::Unrelated => continue,
             };
             exercised += 1;
@@ -1117,9 +1114,9 @@ mod index_site_partition {
                         "opcode {sample:?} rejected under the wrong phase",
                     );
                     assert_eq!(
-                        rejection.detail(),
-                        expected_detail,
-                        "opcode {sample:?} rejected with the wrong typed detail",
+                        rejection.kind(),
+                        &expected,
+                        "opcode {sample:?} rejected with the wrong kind",
                     );
                 }
             }

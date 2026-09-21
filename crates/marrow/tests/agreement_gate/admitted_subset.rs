@@ -6,7 +6,7 @@
 //! lands without moving its row to [`Expect::RoundTrips`] fails on the changed verdict.
 
 use marrow_codes::Code;
-use marrow_verify::VerifiedImage;
+use marrow_verify::{RejectionKind, VerifiedImage};
 use marrow_vm::{DurableRun, Value, fresh_test, prepare, run_test};
 
 use crate::common::{CallOutcome, Project};
@@ -107,8 +107,8 @@ enum Stage {
     /// The checker rejected the source with this typed code.
     CheckerRejected(Code),
     /// The checker accepted, but the independent verifier rejected the image
-    /// (`image.*`) with this code and detail — a checker/verifier divergence.
-    VerifyRejected { code: Code, detail: &'static str },
+    /// (`image.*`) with this code and kind — a checker/verifier divergence.
+    VerifyRejected { code: Code, kind: RejectionKind },
     /// The checker accepted and the verifier sealed the image.
     Verified(Box<VerifiedImage>),
 }
@@ -150,7 +150,7 @@ fn pipeline(ops: &str) -> Stage {
         Ok(compiled) => match marrow_verify::verify(&compiled.image.bytes) {
             Err(rejection) => Stage::VerifyRejected {
                 code: rejection.code(),
-                detail: rejection.detail(),
+                kind: *rejection.kind(),
             },
             Ok(image) => Stage::Verified(Box::new(image)),
         },
@@ -165,12 +165,12 @@ enum Expect {
     /// or a runtime fault — the run-side half of "checker-accept ⇒ verify+run".
     RoundTrips { run: bool },
     /// A recorded checker/verifier divergence: the checker accepts but the verifier
-    /// rejects. The exact current code and detail are pinned so a fix that changes the
+    /// rejects. The exact current code and kind are pinned so a fix that changes the
     /// verdict forces this row to move to `RoundTrips`. The ledger is empty; the
     /// variant is the mechanism a divergence is recorded through, so a regression
     /// becomes a failing row.
     #[allow(dead_code)]
-    KnownDivergent { code: Code, detail: &'static str },
+    KnownDivergent { code: Code, kind: RejectionKind },
     /// The checker rejects the composition at check time, so it never reaches the
     /// verifier — checker-accept ⇒ verify holds vacuously and the two agree. The exact
     /// `check.*` code is pinned so a change to the verdict forces this row to move.
@@ -610,9 +610,9 @@ fn checker_acceptance_implies_verification_over_the_composition_matrix() {
                     run_all_tests(row.label, &image);
                 }
             }
-            (Expect::RoundTrips { .. }, Stage::VerifyRejected { code, detail }) => panic!(
+            (Expect::RoundTrips { .. }, Stage::VerifyRejected { code, kind }) => panic!(
                 "AGREEMENT BROKEN — `{}` is checker-accepted but the verifier rejected it \
-                 ({}: {detail}). A round trip regressed into a divergence.",
+                 ({}: {kind}). A round trip regressed into a divergence.",
                 row.label,
                 code.as_str()
             ),
@@ -622,22 +622,18 @@ fn checker_acceptance_implies_verification_over_the_composition_matrix() {
                 code.as_str()
             ),
             (
-                Expect::KnownDivergent { code, detail },
+                Expect::KnownDivergent { code, kind },
                 Stage::VerifyRejected {
                     code: got_code,
-                    detail: got_detail,
+                    kind: got_kind,
                 },
             ) => {
                 assert_eq!(*code, got_code, "{}: divergence code drifted", row.label);
-                assert_eq!(
-                    *detail, got_detail,
-                    "{}: divergence detail drifted",
-                    row.label
-                );
+                assert_eq!(*kind, got_kind, "{}: divergence kind drifted", row.label);
                 known_divergent += 1;
             }
-            (Expect::KnownDivergent { code, detail }, Stage::Verified(_)) => panic!(
-                "LEDGER STALE — `{}` now verifies; the {} divergence (\"{detail}\") is fixed. \
+            (Expect::KnownDivergent { code, kind }, Stage::Verified(_)) => panic!(
+                "LEDGER STALE — `{}` now verifies; the {} divergence ({kind}) is fixed. \
                  Move this row to Expect::RoundTrips so the gate enforces it.",
                 row.label,
                 code.as_str()
@@ -662,11 +658,11 @@ fn checker_acceptance_implies_verification_over_the_composition_matrix() {
                 Expect::CheckerRejects { code },
                 Stage::VerifyRejected {
                     code: got_code,
-                    detail,
+                    kind,
                 },
             ) => panic!(
                 "`{}` was expected to be refused at check time ({}) but the checker accepted it \
-                 and the verifier rejected it ({}: {detail}) — the check-time promotion \
+                 and the verifier rejected it ({}: {kind}) — the check-time promotion \
                  regressed into a divergence.",
                 row.label,
                 code.as_str(),

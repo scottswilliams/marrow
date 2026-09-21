@@ -3,7 +3,7 @@
 use super::decode_code::Decoded;
 use super::model::DecodedFunction;
 use super::reject;
-use crate::reject::{VerifyPhase, VerifyRejection};
+use crate::reject::{RejectionKind as Kind, VerifyPhase, VerifyRejection};
 use crate::sealed::SpanRow;
 
 struct SpanProjection {
@@ -17,20 +17,14 @@ pub(super) fn map_spans(
 ) -> Result<Vec<SpanRow>, VerifyRejection> {
     if !function.spans.is_empty() {
         if function.spans[0].0 != 0 {
-            return Err(reject(
-                VerifyPhase::Function,
-                "first span must map instruction offset 0",
-            ));
+            return Err(reject(VerifyPhase::Function, Kind::SpanStart));
         }
     } else if !code.is_empty() {
-        return Err(reject(VerifyPhase::Function, "code has no span mappings"));
+        return Err(reject(VerifyPhase::Function, Kind::SpanMissing));
     }
     let projection = project_spans(&function.spans, code)?;
     if projection.probes > code.len() {
-        return Err(reject(
-            VerifyPhase::Function,
-            "span offset is not an instruction boundary",
-        ));
+        return Err(reject(VerifyPhase::Function, Kind::SpanBoundary));
     }
     Ok(projection.rows)
 }
@@ -45,23 +39,18 @@ fn project_spans(
     let mut probes = 0;
     for (offset, line, column) in spans {
         let instr_index = loop {
-            let (instr_index, decoded) = cursor.next().ok_or(reject(
-                VerifyPhase::Function,
-                "span offset is not an instruction boundary",
-            ))?;
-            remaining_probe_budget = remaining_probe_budget.checked_sub(1).ok_or(reject(
-                VerifyPhase::Function,
-                "span offset is not an instruction boundary",
-            ))?;
+            let (instr_index, decoded) = cursor
+                .next()
+                .ok_or(reject(VerifyPhase::Function, Kind::SpanBoundary))?;
+            remaining_probe_budget = remaining_probe_budget
+                .checked_sub(1)
+                .ok_or(reject(VerifyPhase::Function, Kind::SpanBoundary))?;
             probes += 1;
             if decoded.offset == *offset {
                 break instr_index;
             }
             if decoded.offset > *offset {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "span offset is not an instruction boundary",
-                ));
+                return Err(reject(VerifyPhase::Function, Kind::SpanBoundary));
             }
         };
         rows.push(SpanRow {

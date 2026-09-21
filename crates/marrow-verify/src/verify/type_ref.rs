@@ -1,16 +1,14 @@
 //! The one type-reference decoder.
 //!
-//! Every type the container spells — a record field, an enum payload leaf, a
-//! collection leaf, a parameter, a return, a `VacantLoad` operand — is the same
-//! one-byte tag (optionally flagged) plus, for a table reference, a big-endian `u16`
-//! index. The positions differ only in which tags they admit, whether the optional
-//! flag is admitted, and which tables bound the index; [`TypePosition`] states those three
-//! things, and this module is the only thing that reads them.
+//! Every type the container spells is the same one-byte tag (optionally flagged) plus, for
+//! a table reference, a big-endian `u16` index. Positions differ only in which tags they
+//! admit, whether the optional flag is admitted, and which tables bound the index;
+//! [`TypeRules`] states those three things, and this module is the only reader of them.
 
 use super::reject;
 use super::tables::decode_bare_scalar;
 use crate::reader::Reader;
-use crate::reject::{VerifyPhase, VerifyRejection};
+use crate::reject::{RejectionKind, TypePosition, TypeRefFault, VerifyPhase, VerifyRejection};
 use marrow_image::{
     CollTypeId, EnumId, ImageType, OPTIONAL_FLAG, RootId, TAG_BOOL, TAG_BYTES, TAG_COLLECTION,
     TAG_DATE, TAG_DURATION, TAG_ENUM, TAG_IDENTITY, TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT,
@@ -49,21 +47,13 @@ pub(super) enum Optionality {
     Optional,
 }
 
-/// One type-reference position: the phase and prose a rejection from it carries, the
-/// tags it admits, its optionality, and the exclusive table bound each referenced
-/// index must fall inside. A `None` bound leaves that index for a later pass to
-/// range-check, which is what a forward reference into a table this one precedes
-/// needs.
-///
-/// The four rejection details are generated from the position's name by
-/// [`type_position!`], so every position speaks one vocabulary; a [`VerifyRejection`]
-/// carries a `&'static str`, so the concatenation happens at compile time.
-pub(super) struct TypePosition {
+/// One type-reference position: the phase and position a rejection from it carries, the
+/// tags it admits, its optionality, and the exclusive table bound each referenced index
+/// must fall inside. A `None` bound leaves that index for a later pass to range-check,
+/// which is what a forward reference into a table this one precedes needs.
+pub(super) struct TypeRules {
     phase: VerifyPhase,
-    short: &'static str,
-    optionality_detail: &'static str,
-    index_detail: &'static str,
-    tag_detail: &'static str,
+    position: TypePosition,
     allowed: TagSet,
     optionality: Optionality,
     types: Option<usize>,
@@ -72,38 +62,16 @@ pub(super) struct TypePosition {
     roots: Option<usize>,
 }
 
-/// Name one type-reference position and state what it admits.
-macro_rules! type_position {
-    ($name:literal, $allowed:expr, $optionality:expr) => {
-        crate::verify::type_ref::TypePosition::new(
-            concat!("short ", $name, " type"),
-            concat!($name, " type has an inadmissible optional flag"),
-            concat!($name, " type index out of range"),
-            concat!($name, " type tag is not admitted here"),
-            $allowed,
-            $optionality,
-        )
-    };
-}
-pub(super) use type_position;
-
-impl TypePosition {
+impl TypeRules {
     /// A table-phase position with every referenced index left unchecked.
-    #[allow(clippy::too_many_arguments)]
     pub(super) const fn new(
-        short: &'static str,
-        optionality_detail: &'static str,
-        index_detail: &'static str,
-        tag_detail: &'static str,
+        position: TypePosition,
         allowed: TagSet,
         optionality: Optionality,
     ) -> Self {
         Self {
             phase: VerifyPhase::Table,
-            short,
-            optionality_detail,
-            index_detail,
-            tag_detail,
+            position,
             allowed,
             optionality,
             types: None,
@@ -137,14 +105,26 @@ impl TypePosition {
         self.roots = Some(count);
         self
     }
+
+    fn reject(&self, fault: TypeRefFault) -> VerifyRejection {
+        reject(
+            self.phase,
+            RejectionKind::TypeRef {
+                position: self.position,
+                fault,
+            },
+        )
+    }
 }
 
 /// Decode one type reference under `rules`.
 pub(super) fn decode_type_ref(
     reader: &mut Reader,
-    rules: &TypePosition,
+    rules: &TypeRules,
 ) -> Result<ImageType, VerifyRejection> {
-    let tag = reader.u8().ok_or(reject(rules.phase, rules.short))?;
+    let tag = reader
+        .u8()
+        .ok_or_else(|| rules.reject(TypeRefFault::Truncated))?;
     let optional = tag & OPTIONAL_FLAG != 0;
     let spelling_admitted = match rules.optionality {
         Optionality::Bare => !optional,
@@ -154,7 +134,7 @@ pub(super) fn decode_type_ref(
     // The unit type has no vacant form, wherever the flag is otherwise admitted.
     let base = tag & !OPTIONAL_FLAG;
     if !spelling_admitted || (base == TAG_UNIT && optional) {
-        return Err(reject(rules.phase, rules.optionality_detail));
+        return Err(rules.reject(TypeRefFault::Optionality));
     }
     let kind = match base {
         TAG_UNIT => TagSet::UNIT,
@@ -165,10 +145,10 @@ pub(super) fn decode_type_ref(
         TAG_ENUM => TagSet::ENUM,
         TAG_COLLECTION => TagSet::COLLECTION,
         TAG_IDENTITY => TagSet::IDENTITY,
-        _ => return Err(reject(rules.phase, rules.tag_detail)),
+        _ => return Err(rules.reject(TypeRefFault::TagNotAdmitted)),
     };
     if !rules.allowed.admits(kind) {
-        return Err(reject(rules.phase, rules.tag_detail));
+        return Err(rules.reject(TypeRefFault::TagNotAdmitted));
     }
     Ok(match base {
         TAG_UNIT => ImageType::Unit,
@@ -199,12 +179,14 @@ pub(super) fn decode_type_ref(
 /// one.
 fn index(
     reader: &mut Reader,
-    rules: &TypePosition,
+    rules: &TypeRules,
     limit: Option<usize>,
 ) -> Result<u16, VerifyRejection> {
-    let idx = reader.u16().ok_or(reject(rules.phase, rules.short))?;
+    let idx = reader
+        .u16()
+        .ok_or_else(|| rules.reject(TypeRefFault::Truncated))?;
     match limit {
-        Some(limit) if idx as usize >= limit => Err(reject(rules.phase, rules.index_detail)),
+        Some(limit) if idx as usize >= limit => Err(rules.reject(TypeRefFault::IndexOutOfRange)),
         _ => Ok(idx),
     }
 }

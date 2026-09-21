@@ -9,7 +9,7 @@ use super::tables::{
     reject_value_type_cycles, validate_record_field_refs,
 };
 use crate::reader::Reader;
-use crate::reject::{VerifyPhase, VerifyRejection};
+use crate::reject::{Bound, Region, RejectionKind as Kind, Tag, VerifyPhase, VerifyRejection};
 use marrow_image::{IMAGE_FORMAT_VERSION, image_id};
 
 /// The container framing constants.
@@ -20,72 +20,72 @@ pub(super) fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejec
     if bytes.len() > marrow_image::bounds::MAX_IMAGE_BYTES {
         return Err(reject(
             VerifyPhase::Envelope,
-            "image exceeds the size bound",
+            Kind::OverBound(Bound::ImageBytes),
         ));
     }
     let mut reader = Reader::new(bytes);
-    let magic = reader
-        .take(4)
-        .ok_or(reject(VerifyPhase::Envelope, "short magic"))?;
+    let magic = reader.take(4).ok_or(reject(
+        VerifyPhase::Envelope,
+        Kind::Truncated(Region::Container),
+    ))?;
     if magic != MAGIC {
-        return Err(reject(VerifyPhase::Envelope, "bad magic"));
+        return Err(reject(VerifyPhase::Envelope, Kind::Unknown(Tag::Magic)));
     }
-    let version = reader
-        .u8()
-        .ok_or(reject(VerifyPhase::Envelope, "short version"))?;
+    let version = reader.u8().ok_or(reject(
+        VerifyPhase::Envelope,
+        Kind::Truncated(Region::Container),
+    ))?;
     if version != IMAGE_FORMAT_VERSION {
-        return Err(reject(VerifyPhase::Envelope, "unsupported version"));
+        return Err(reject(VerifyPhase::Envelope, Kind::Unknown(Tag::Version)));
     }
-    let stored_digest = reader
-        .take(32)
-        .ok_or(reject(VerifyPhase::Envelope, "short digest slot"))?;
+    let stored_digest = reader.take(32).ok_or(reject(
+        VerifyPhase::Envelope,
+        Kind::Truncated(Region::Container),
+    ))?;
     // Recompute the digest over the payload (every byte after the digest slot).
     let payload = &bytes[DIGEST_SLOT_END..];
     if image_id(payload).0.as_slice() != stored_digest {
-        return Err(reject(VerifyPhase::Envelope, "digest mismatch"));
+        return Err(reject(VerifyPhase::Envelope, Kind::DigestMismatch));
     }
 
-    let section_count = reader
-        .u8()
-        .ok_or(reject(VerifyPhase::Envelope, "short section count"))?;
+    let section_count = reader.u8().ok_or(reject(
+        VerifyPhase::Envelope,
+        Kind::Truncated(Region::Container),
+    ))?;
     if section_count != 10 {
-        return Err(reject(VerifyPhase::Envelope, "section count must be 10"));
+        return Err(reject(VerifyPhase::Envelope, Kind::SectionCount));
     }
     let mut sections: Vec<(u8, &[u8])> = Vec::with_capacity(10);
     let mut last_id = 0u8;
     for _ in 0..10 {
-        let id = reader
-            .u8()
-            .ok_or(reject(VerifyPhase::Envelope, "short section id"))?;
+        let id = reader.u8().ok_or(reject(
+            VerifyPhase::Envelope,
+            Kind::Truncated(Region::Container),
+        ))?;
         if id <= last_id {
-            return Err(reject(
-                VerifyPhase::Envelope,
-                "section ids must strictly ascend",
-            ));
+            return Err(reject(VerifyPhase::Envelope, Kind::SectionIds));
         }
         last_id = id;
-        let len = reader
-            .u32()
-            .ok_or(reject(VerifyPhase::Envelope, "short section length"))?
-            as usize;
-        let body = reader
-            .take(len)
-            .ok_or(reject(VerifyPhase::Envelope, "section length past input"))?;
+        let len = reader.u32().ok_or(reject(
+            VerifyPhase::Envelope,
+            Kind::Truncated(Region::Container),
+        ))? as usize;
+        let body = reader.take(len).ok_or(reject(
+            VerifyPhase::Envelope,
+            Kind::Truncated(Region::Container),
+        ))?;
         sections.push((id, body));
     }
     if !reader.is_empty() {
         return Err(reject(
             VerifyPhase::Envelope,
-            "trailing bytes after sections",
+            Kind::Trailing(Region::Container),
         ));
     }
     // Section ids strictly ascend and there are exactly 10, so they are exactly 1..10.
     for (index, (id, _)) in sections.iter().enumerate() {
         if *id != (index as u8 + 1) {
-            return Err(reject(
-                VerifyPhase::Envelope,
-                "section ids must be exactly 1..10",
-            ));
+            return Err(reject(VerifyPhase::Envelope, Kind::SectionIds));
         }
     }
 

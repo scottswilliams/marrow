@@ -7,7 +7,7 @@ use super::flow::{branch_key_columns, check_flow};
 use super::model::{DecodedFunction, DecodedImage};
 use super::reject;
 use super::spans::map_spans;
-use crate::reject::{VerifyPhase, VerifyRejection};
+use crate::reject::{RejectionKind as Kind, VerifyPhase, VerifyRejection};
 use crate::sealed::{SealedFunction, SealedInstr, SealedSite, SealedSiteTarget};
 use marrow_image::{OperationClass, SemanticPath};
 use std::collections::BTreeSet;
@@ -103,15 +103,9 @@ pub(super) fn check_presence_flow(
                 // The present form is proven only if a dominating fact names the exact
                 // containing entry — its family and its whole key-path — not merely a
                 // matching slot tuple (sibling branches of equal arity share slot tuples).
-                let fact = facts.at[index].ok_or(reject(
-                    VerifyPhase::Flow,
-                    "a present-entry operation does not resolve to a field or group site",
-                ))?;
+                let fact = facts.at[index].ok_or(reject(VerifyPhase::Flow, Kind::PresenceSite))?;
                 if !present.contains(&fact) {
-                    return Err(reject(
-                        VerifyPhase::Flow,
-                        "a present-entry operation is not dominated by a presence fact on its containing entry",
-                    ));
+                    return Err(reject(VerifyPhase::Flow, Kind::PresenceUnproven));
                 }
             }
             let edges = presence_edges(code, ctx, &facts, effects, entry_families, index, present);
@@ -131,7 +125,7 @@ pub(super) fn check_presence_flow(
                     continue 'linear;
                 }
                 if successor >= code.len() {
-                    return Err(reject(VerifyPhase::Flow, "presence edge out of range"));
+                    return Err(reject(VerifyPhase::Flow, Kind::FallsOffEnd));
                 }
                 match &mut entry[successor] {
                     None => {

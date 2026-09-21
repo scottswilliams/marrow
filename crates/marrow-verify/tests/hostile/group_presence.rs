@@ -11,7 +11,7 @@ use marrow_image::{
     ImageType, Instr, KeyColumn, LedgerIdBytes, PlannedSiteRef, RecordTypeDef, RootOccurrenceDef,
     Scalar, SemanticTarget, TypeId,
 };
-use marrow_verify::{VerifyPhase, verify};
+use marrow_verify::{RejectionKind, Tag, VerifyPhase, verify};
 
 struct GroupSites {
     entry: PlannedSiteRef,
@@ -530,6 +530,6 @@ fn retired_entry_mutation_bytes_are_unknown_opcodes() {
             verify(&bytes).expect_err("the retired byte is refused before operand decoding");
         assert_eq!(rejection.phase(), VerifyPhase::Function);
         assert_eq!(rejection.phase(), VerifyPhase::Function);
-        assert_eq!(rejection.detail(), "unknown or not-yet-supported opcode");
+        assert_eq!(rejection.kind(), &RejectionKind::Unknown(Tag::Opcode));
     }
 }
