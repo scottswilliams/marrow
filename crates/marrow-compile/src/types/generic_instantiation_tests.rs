@@ -7,7 +7,7 @@ use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
 use crate::compile::compile;
 
-fn project(source: String) -> ProjectInput {
+pub(super) fn project(source: String) -> ProjectInput {
     let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
     let files = vec![CapturedFile::new(
         "src/main.mw".to_string(),

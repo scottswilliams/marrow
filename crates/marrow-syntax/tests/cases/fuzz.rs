@@ -221,6 +221,22 @@ fn deterministic_corpus_holds_the_oracle_invariants() {
     on_worker_stack(deterministic_corpus_body);
 }
 
+/// Every layout the parser admits beside the one the formatter writes: a `{` on the line
+/// after its header, an `else` beginning its own line, and an inline `on more` arm. Each
+/// formats to the canonical layout and is a fixed point from there.
+fn accepted_layouts() -> Vec<String> {
+    [
+        "module app\nfn run(a: bool): int {\n    if a\n    {\n        return 1\n    }\n    return 0\n}\n",
+        "module app\nfn run(a: bool): int {\n    if a {\n        return 1\n    }\n    else {\n        return 0\n    }\n}\n",
+        "module app\nfn run(a: bool): int {\n    if a {\n        return 1\n    } else\n        return 0\n}\n",
+        "module app\nfn run(): int {\n    for a in b at most 8 {\n        return 1\n    } on more return 2\n    return 0\n}\n",
+        "module app\nfn run()\n{\n    return 0\n}\n",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
 fn deterministic_corpus_body() {
     let mut saw_error = false;
     let mut saw_over_deep = false;
@@ -229,6 +245,7 @@ fn deterministic_corpus_body() {
     for source in valid_programs()
         .into_iter()
         .chain(formatter_faithful_regressions())
+        .chain(accepted_layouts())
     {
         assert_total_invariants(&source);
         assert_formatter_faithful(&source);

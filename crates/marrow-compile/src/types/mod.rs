@@ -4252,6 +4252,8 @@ mod test_fixtures;
 
 #[cfg(test)]
 mod generic_instantiation_tests;
+#[cfg(test)]
+mod name_spelling_tests;
 
 #[cfg(test)]
 mod alias_cycle_tests;

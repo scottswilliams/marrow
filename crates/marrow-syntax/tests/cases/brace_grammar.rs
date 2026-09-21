@@ -472,6 +472,142 @@ fn an_if_const_chain_with_a_trailing_and_never_anchors_at_zero() {
     );
 }
 
+/// Every diagnostic of `source` as its typed reason and 1-based position, each checked
+/// to name the same point by byte and by line/column.
+fn located_reasons(source: &str) -> Vec<(DiagnosticReason, u32, u32)> {
+    parse_bounded(source)
+        .diagnostics
+        .complete()
+        .iter()
+        .map(|d| {
+            assert_eq!(
+                d.span.start_byte,
+                offset_of(source, d.span.line, d.span.column),
+                "{source:?}: {d:#?} names different points by byte and by line/column"
+            );
+            (d.reason.clone(), d.span.line, d.span.column)
+        })
+        .collect()
+}
+
+/// The exact parse of each block-grammar shape the reference names: the typed reasons
+/// and positions it reports, and the statements that stand as siblings afterwards.
+#[test]
+fn the_block_grammar_parse_matrix() {
+    let block = |line, column| {
+        (
+            DiagnosticReason::Parser(ParseDiagnosticReason::Expected(ExpectedSyntax::Block)),
+            line,
+            column,
+        )
+    };
+    let cases: [(
+        &str,
+        Vec<(DiagnosticReason, u32, u32)>,
+        fn(&[Statement]) -> bool,
+    ); 7] = [
+        (
+            "module app\nfn f() {\n    if a\n    return\n}\n",
+            vec![block(4, 5)],
+            |s| {
+                matches!(s, [Statement::If { then_block, else_ifs, else_block: None, .. }, Statement::Return { .. }]
+                    if then_block.statements.is_empty() && else_ifs.is_empty())
+            },
+        ),
+        (
+            "module app\nfn f() {\n    if a {\n    }\n}\n",
+            vec![],
+            |s| matches!(s, [Statement::If { then_block, .. }] if then_block.statements.is_empty()),
+        ),
+        (
+            "module app\nfn f() {\n    if a {\n    } else\n    return\n}\n",
+            vec![],
+            |s| {
+                matches!(s, [Statement::If { else_block: Some(block), .. }]
+                    if matches!(block.statements.as_slice(), [Statement::Return { .. }]))
+            },
+        ),
+        (
+            "module app\nfn f() {\n    while x\n    x = 1\n}\n",
+            vec![block(4, 5)],
+            |s| {
+                matches!(s, [Statement::While { body, .. }, Statement::Assign { .. }]
+                    if body.statements.is_empty())
+            },
+        ),
+        (
+            "module app\nfn f() {\n    for i in xs at most 3\n    n = n + 1\n}\n",
+            vec![block(4, 5)],
+            |s| {
+                matches!(s, [Statement::For { bound: Some(_), body, .. }, Statement::Assign { .. }]
+                    if body.statements.is_empty())
+            },
+        ),
+        (
+            "module app\nfn f() {\n    match v {\n        a => return\n    }\n}\n",
+            vec![],
+            |s| {
+                matches!(s, [Statement::Match { arms, .. }]
+                    if matches!(arms.as_slice(), [arm] if matches!(arm.block.statements.as_slice(), [Statement::Return { .. }])))
+            },
+        ),
+        (
+            "module app\nfn f() {\n    if a return\n}\n",
+            vec![
+                (
+                    DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
+                        ExpectedSyntax::Expression,
+                    )),
+                    3,
+                    10,
+                ),
+                block(3, 16),
+            ],
+            |s| matches!(s, [Statement::If { .. }]),
+        ),
+    ];
+    for (source, expected, siblings) in cases {
+        assert_eq!(located_reasons(source), expected, "{source:?}");
+        let parsed = parse_bounded(source);
+        let Some(Declaration::Function(function)) = parsed.file.declarations.first() else {
+            panic!("{source:?}: the function still parses");
+        };
+        assert!(
+            siblings(function.body.statements.as_slice()),
+            "{source:?}: {:#?}",
+            function.body.statements
+        );
+    }
+
+    // A bare `fn` or `test` header reports the missing body at the gap on the same
+    // terms, and the declaration stands with an empty body.
+    for (source, line, column) in [
+        ("module app\nfn f()\n", 3, 1),
+        ("module app\ntest \"t\"\n", 3, 1),
+        ("module app\nfn f()", 2, 7),
+    ] {
+        assert_eq!(
+            located_reasons(source),
+            vec![block(line, column)],
+            "{source:?}"
+        );
+        let parsed = parse_bounded(source);
+        assert!(
+            matches!(
+                parsed.file.declarations.as_slice(),
+                [Declaration::Function(_)] | [Declaration::Test(_)]
+            ),
+            "{source:?}: {:#?}",
+            parsed.file.declarations
+        );
+    }
+
+    // A header that ends its body's token slice on a token other than a line break: the
+    // gap sits just past the header, byte and line/column agreeing.
+    let source = "module app\nfn f() { if a }\n";
+    assert_eq!(located_reasons(source), vec![block(2, 14)], "{source:?}");
+}
+
 /// The byte offset of a 1-based `(line, column)` in `source`.
 fn offset_of(source: &str, line: u32, column: u32) -> usize {
     let line_start: usize = source

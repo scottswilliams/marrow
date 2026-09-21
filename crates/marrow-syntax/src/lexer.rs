@@ -782,23 +782,20 @@ impl<'a, 'c> Lexer<'a, 'c> {
         }
     }
 
+    /// The zero-width span at the end of the source: the first column of the line after
+    /// a trailing line break, or just past the last character of an unterminated last
+    /// line, so the byte and the line/column name the same point either way.
     fn eof_span(&self) -> SourceSpan {
-        let line = self
-            .lines
-            .last()
-            .map(|line| {
-                if self.source.ends_with('\n') {
-                    line.number + 1
-                } else {
-                    line.number
-                }
-            })
-            .unwrap_or(1);
+        let (line, column) = match self.lines.last() {
+            Some(last) if self.source.ends_with('\n') => (last.number + 1, 1),
+            Some(last) => (last.number, last.text.chars().count() as u32 + 1),
+            None => (1, 1),
+        };
         SourceSpan {
             start_byte: self.source.len(),
             end_byte: self.source.len(),
             line,
-            column: 1,
+            column,
         }
     }
 
