@@ -321,7 +321,8 @@ fn operand_bool(reader: &mut Reader) -> Result<bool, VerifyRejection> {
     match reader.u8() {
         Some(0) => Ok(false),
         Some(1) => Ok(true),
-        _ => Err(reject(VerifyPhase::Function, Kind::Flag(Flag::BoolOperand))),
+        Some(_) => Err(reject(VerifyPhase::Function, Kind::Flag(Flag::BoolOperand))),
+        None => Err(reject(VerifyPhase::Function, Kind::Truncated(Region::Code))),
     }
 }
 
@@ -367,7 +368,7 @@ mod opcode_bijection {
     //! cannot land without an entry in [`samples`].
     use std::collections::HashMap;
 
-    use crate::reject::{RejectionKind, Tag};
+    use crate::reject::{Flag, Region, RejectionKind, Tag};
     use marrow_image::{ImageType, OPTIONAL_FLAG, Scalar, TAG_INT};
 
     use super::*;
@@ -638,6 +639,18 @@ mod opcode_bijection {
                 sampled.contains(&byte),
             );
         }
+    }
+
+    /// `DurIterateBounded` reads its site and limit, then the `from` flag: code that ends
+    /// before the flag is truncated, and a byte other than 0 or 1 there is a bad flag.
+    #[test]
+    fn a_bool_operand_is_truncated_at_the_end_of_code_and_a_flag_otherwise() {
+        let mut bytes = vec![OP_DUR_ITERATE_BOUNDED, 0, 0, 0, 0, 0, 1];
+        let truncated = decode_code(&bytes).err().expect("the flag byte is missing");
+        assert_eq!(truncated.kind(), &RejectionKind::Truncated(Region::Code));
+        bytes.extend([2, 0, 0]);
+        let flag = decode_code(&bytes).err().expect("a third flag state");
+        assert_eq!(flag.kind(), &RejectionKind::Flag(Flag::BoolOperand));
     }
 
     #[test]

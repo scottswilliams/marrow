@@ -26,12 +26,25 @@ pub(super) struct Ctx<'a> {
     pub(super) signatures: &'a [FnSig],
 }
 
-/// A function's entry role, decided once from the export and test-entry tables.
+/// A function's entry role, decided once from the export and test-entry tables. The
+/// conflicting pair is its own role: the flow phase checks it as both, and the test-entry
+/// phase refuses it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum EntryKind {
     Internal,
     Export,
     Test,
+    ExportedTest,
+}
+
+impl EntryKind {
+    pub(super) fn is_test(self) -> bool {
+        matches!(self, Self::Test | Self::ExportedTest)
+    }
+
+    fn is_export(self) -> bool {
+        matches!(self, Self::Export | Self::ExportedTest)
+    }
 }
 
 /// A callee's signature, consulted by the per-function `Call` type check.
@@ -241,14 +254,14 @@ impl Effects {
         calls: &CallGraph,
         kind: EntryKind,
     ) -> Result<(), VerifyRejection> {
-        if kind != EntryKind::Test {
+        if !kind.is_test() {
             for &callee in calls.callees(index) {
                 if self.has_begin[usize::from(callee)] {
                     return Err(reject(VerifyPhase::Flow, Kind::OwnerCalled));
                 }
             }
         }
-        if kind == EntryKind::Export {
+        if kind.is_export() {
             // A region whose closure performs no durable operation opens no session, so
             // its commit would have nothing to consume; a read-only region is admitted.
             if self.has_begin[index] && self.demands.get(index).is_empty() {

@@ -3464,6 +3464,79 @@ fn two_test_image() -> Vec<u8> {
     draft.encode().expect("encode").bytes
 }
 
+/// Point the one TEST-ENTRY row at function `func` and revalidate the digest: the shape a
+/// forged test role takes, since the producer never names an export or a non-unit function.
+fn retarget_test_entry(bytes: &mut Vec<u8>, func: u16) {
+    let body = section_frame(bytes, 8).0;
+    bytes[body + 4..body + 6].copy_from_slice(&func.to_be_bytes());
+    rehash(bytes);
+}
+
+/// An exported test with an empty transaction violates a flow invariant and a test-entry
+/// invariant; the flow phase answers first.
+#[test]
+fn flow_rejects_an_exported_test_before_its_role_conflict() {
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
+    let code = vec![Instr::TxnBegin, Instr::TxnCommit, Instr::Return];
+    let entry = add_fn(&mut draft, "entry", Vec::new(), ImageType::Unit, 0, code);
+    draft.add_export(ExportId::of_local("", "entry"), entry);
+    let title = ok(draft.intern_string("holds"));
+    let test = add_fn(
+        &mut draft,
+        "holds",
+        Vec::new(),
+        ImageType::Unit,
+        0,
+        vec![Instr::Return],
+    );
+    draft.add_test_entry(title, test);
+    let mut bytes = draft.encode().expect("encode").bytes;
+    retarget_test_entry(&mut bytes, entry.index());
+    let rejection = verify(&bytes).expect_err("an exported test with an empty transaction");
+    assert_eq!(rejection.phase(), VerifyPhase::Flow);
+    assert_eq!(rejection.kind(), &RejectionKind::EmptyTransaction);
+}
+
+/// A test entry with a non-unit signature that another function calls: the signature
+/// pass runs over every entry before the call pass, so the signature answers.
+#[test]
+fn a_test_entry_signature_is_checked_before_calls_into_it() {
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
+    let seven = ok(draft.intern_int(7));
+    let helper = add_int_fn(
+        &mut draft,
+        "helper",
+        vec![Instr::ConstLoad(seven), Instr::Return],
+    );
+    let main_code = vec![Instr::Call(helper.index()), Instr::Pop, Instr::Return];
+    let main = add_fn(
+        &mut draft,
+        "main",
+        Vec::new(),
+        ImageType::Unit,
+        0,
+        main_code,
+    );
+    draft.add_export(ExportId::of_local("", "main"), main);
+    let title = ok(draft.intern_string("holds"));
+    let test = add_fn(
+        &mut draft,
+        "holds",
+        Vec::new(),
+        ImageType::Unit,
+        0,
+        vec![Instr::Return],
+    );
+    draft.add_test_entry(title, test);
+    let mut bytes = draft.encode().expect("encode").bytes;
+    retarget_test_entry(&mut bytes, helper.index());
+    let rejection = verify(&bytes).expect_err("a called, int-returning test entry");
+    assert_eq!(rejection.phase(), VerifyPhase::TestEntry);
+    assert_eq!(rejection.kind(), &RejectionKind::TestEntrySignature);
+}
+
 #[test]
 fn transaction_marker_in_a_test_entry_rejects_at_flow() {
     // A TxnBegin inside a test entry: a transaction marker may only sit in a
