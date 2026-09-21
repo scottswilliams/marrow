@@ -3,11 +3,12 @@
 //! own-line comments, and stray nested blocks, and reports a member header for the caller
 //! to parse.
 
+use super::cursor::PendingDocs;
 use super::tokens::{comment_from_token, is_line_comment};
 use super::{DeclParser, ParseError};
 use crate::ast::{Comment, CommentMarker, CommentPlacement};
 use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, SourceSpan, nesting_limit};
-use crate::token::{Token, TokenKind};
+use crate::token::TokenKind;
 
 /// The classification of the next line of a `{ … }` declaration body, after the shared
 /// trivia (closing brace, blank lines, comments, stray nested blocks) has been handled.
@@ -32,7 +33,7 @@ impl DeclParser<'_, '_> {
     pub(super) fn next_body_line(
         &mut self,
         open: SourceSpan,
-        docs: &mut Vec<Token>,
+        docs: &mut PendingDocs,
         comments: &mut Vec<Comment>,
         stray: &ParseError,
     ) -> BodyLine {
@@ -75,7 +76,7 @@ impl DeclParser<'_, '_> {
 
     /// Consume one own-line comment token and its trailing `NEWLINE`. A `///` accumulates
     /// into `docs` for the next member; a `//` is retained as own-line trivia.
-    fn take_body_comment(&mut self, docs: &mut Vec<Token>, comments: &mut Vec<Comment>) {
+    fn take_body_comment(&mut self, docs: &mut PendingDocs, comments: &mut Vec<Comment>) {
         if matches!(self.peek(), Some(TokenKind::DocComment)) {
             self.push_pending_doc(docs, comments);
         } else {
@@ -102,7 +103,7 @@ impl DeclParser<'_, '_> {
     /// resource group) opens it right after its header, so any block reaching here is
     /// stray.
     fn consume_stray_block(&mut self, error: &ParseError) {
-        self.advance(); // `{`
+        let opener = self.advance().span; // `{`
         self.skip_newlines();
         if self
             .peek()
@@ -111,7 +112,7 @@ impl DeclParser<'_, '_> {
             let span = self.content_span();
             self.error_span(span, error.reason.clone(), error.message.clone());
         }
-        if let Some(span) = self.skip_to_block_end() {
+        if let Some(span) = self.skip_to_block_end(opener) {
             self.sink.push(nesting_limit(span));
         }
     }

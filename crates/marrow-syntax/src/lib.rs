@@ -95,12 +95,14 @@ pub const NESTING_LIMIT: &str = Code::CheckNestingLimit.as_str();
 /// The token list is reserved once at its one-token-per-byte bound and never resized;
 /// the lexer's own phase, its line table beside that list, ends before any tree exists
 /// and is bounded below this rate by the assertion beside [`LIST_GROWTH`]. The rate
-/// carries three token-sized vectors per source byte: the lexed list, and the two
-/// parser-owned copies of a header's tokens (comment-stripped, and split at a `>=`
-/// that closes a type argument list) that can be live together while a binding header
-/// is parsed. Every boxed slice the tree retains (`NameSegment` paths, index arguments)
-/// is built at exact capacity, so boxing reallocates nothing.
-pub const MAX_PARSE_BYTES_PER_SOURCE_BYTE: usize = 672;
+/// carries two token-sized vectors per source byte: the lexed list, and the one copy of
+/// a header's tokens that can be live at a time — the comment-stripped copy of a
+/// delimited key or index list, or the copy that splits a binding line's `>=`; head
+/// parsing and statement parsing never nest, so at most one exists. Pending `///` lines
+/// are index ranges into the lexed list, not copies. Every boxed slice the tree retains
+/// (`NameSegment` paths, index arguments) is built at exact capacity, so boxing
+/// reallocates nothing.
+pub const MAX_PARSE_BYTES_PER_SOURCE_BYTE: usize = 640;
 
 /// The capacity a pushed list may hold beyond its length, as a factor of the length.
 const LIST_GROWTH: usize = 2;
@@ -820,24 +822,36 @@ mod nesting_limit {
                 .collect::<String>(),
             "}\n".repeat(deepest)
         );
-        for (label, source) in [
-            ("unclosed body", unclosed_body),
-            ("stray block in a body", stray_in_body),
-            ("stray block at the top level", stray_top_level),
+        // Every fixture's first over-deep `{` sits on the same line: the one after the
+        // `NESTING_DEPTH_LIMIT + 2` header, body, and admitted-nest lines before it.
+        let line = NESTING_DEPTH_LIMIT as u32 + 3;
+        for (label, source, column) in [
+            ("unclosed body", unclosed_body, 6),
+            ("stray block in a body", stray_in_body, 6),
+            ("stray block at the top level", stray_top_level, 6),
             (
                 "stray block in the deepest statement body",
                 stray_in_deepest_statement,
+                1,
             ),
             (
                 "stray block in the deepest resource group",
                 stray_in_deepest_group,
+                1,
             ),
             (
                 "stray block in the deepest enum member",
                 stray_in_deepest_member,
+                1,
             ),
         ] {
             assert_eq!(nesting_limit_count(&source), 1, "{label}");
+            let located = located_nesting_limit(source);
+            assert_eq!(
+                (located.span.line, located.span.column),
+                (line, column),
+                "{label}: the limit anchors at the first over-deep `{{`"
+            );
         }
     }
 

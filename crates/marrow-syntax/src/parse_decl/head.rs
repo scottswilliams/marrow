@@ -537,6 +537,7 @@ pub(super) fn parse_index_tokens(source: &str, tokens: &[Token]) -> ParseResult<
             ));
         }
     };
+    debug_assert_eq!(args.capacity(), args.len(), "index arguments box exactly");
     Ok(IndexDecl {
         docs: Vec::new(),
         name,

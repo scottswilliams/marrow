@@ -228,6 +228,11 @@ ledger, `io.read` elsewhere).
 | Manifest | 1 MiB | `io.read` |
 | Identity ledger | 8,192 lines, 1 MiB | `project.ids_corrupt` |
 
+Capture admission is not compiler admission: the compiler parses a captured
+file only up to 692,496 bytes, the length its parse heap ceiling admits, and
+refuses a longer one with `cli.compiler_resource_limit`
+([execution limits](../language/execution-limits.md#limits)).
+
 These limits are fixed, and a project and its dependencies are captured
 together against one set of them: the source-file, per-file, total-byte,
 visited-entry and depth counts span every tree the capture reads, and none of

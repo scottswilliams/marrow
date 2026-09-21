@@ -57,6 +57,7 @@ pub(super) fn alternate_segments(source: &str, tokens: &[Token]) -> Box<[NameSeg
             .step_by(2)
             .map(|token| NameSegment::new(token.text(source), token.span)),
     );
+    debug_assert_eq!(segments.capacity(), segments.len(), "a path boxes exactly");
     segments.into_boxed_slice()
 }
 /// Why a `use`/`module` path failed to parse: a reserved word stands where a path

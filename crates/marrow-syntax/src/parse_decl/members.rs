@@ -3,6 +3,7 @@
 //! members.
 
 use super::body::BodyLine;
+use super::cursor::PendingDocs;
 use super::head::{enum_member_name, parse_field_or_group_tokens, parse_index_tokens};
 use super::{DeclParser, MemberHead, ParseError};
 use crate::ast::{Comment, EnumMember, FieldDecl, GroupDecl, IndexDecl, ResourceMember};
@@ -31,7 +32,7 @@ impl DeclParser<'_, '_> {
         let mut members = Vec::new();
         let mut indexes = Vec::new();
         let mut comments = Vec::new();
-        let mut docs: Vec<Token> = Vec::new();
+        let mut docs = PendingDocs::default();
         if self.depth >= crate::NESTING_DEPTH_LIMIT {
             self.refuse_over_deep_block();
             return (members, indexes, comments);
@@ -171,7 +172,7 @@ impl DeclParser<'_, '_> {
     pub(super) fn parse_enum_members(&mut self) -> (Vec<EnumMember>, Vec<Comment>) {
         let mut members = Vec::new();
         let mut comments = Vec::new();
-        let mut docs: Vec<Token> = Vec::new();
+        let mut docs = PendingDocs::default();
         if self.depth >= crate::NESTING_DEPTH_LIMIT {
             self.refuse_over_deep_block();
             return (members, comments);

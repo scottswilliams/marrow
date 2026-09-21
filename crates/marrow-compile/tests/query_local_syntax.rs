@@ -542,13 +542,17 @@ fn declaration_level_charges() -> Vec<(&'static str, usize, usize)> {
 }
 
 /// How many token-sized vectors are live beside the tree at the peak: the lexed list,
-/// and the two parser-owned copies of a header's tokens that a binding header can hold
-/// at once — the comment-stripped copy `strip_comment_tokens` makes of a header holding
-/// a comment inside its delimiters, and the copy `split_type_and_value` makes to split
-/// a `>=` closing a type argument list. Each copy holds at most the header's own
-/// tokens, and a header can be the whole file. The expression parser borrows the
-/// caller's slice and skips trivia with its cursor rather than collecting a copy.
-const LIVE_TOKEN_VECTORS: usize = 3;
+/// and at most one parser-owned copy of a header's tokens. Two copies exist in the
+/// parser, each a local of a leaf function over one header and dropped when it
+/// returns: the comment-stripped copy `strip_comment_tokens` makes of a delimited key
+/// or index list (head parsing), and the copy `split_type_and_value` makes to split a
+/// `>=` closing a type argument list (statement-line parsing). Head parsing finishes
+/// before a body's statements are parsed and neither recurses into the other, so the
+/// two are never live together. Pending `///` lines are held as index ranges into the
+/// lexed list (`PendingDocs`), never copied, at every nesting level. The expression
+/// parser borrows the caller's slice and skips trivia with its cursor. A copy holds at
+/// most the header's own tokens, and a header can be the whole file.
+const LIVE_TOKEN_VECTORS: usize = 2;
 
 /// The capacity slack one live token allocation carries. The lexer reserves its list
 /// once at the one-token-per-byte bound (pinned below) and never grows or shrinks it,
@@ -1930,20 +1934,31 @@ const _: fn() = || {
 };
 
 /// The lexer emits at most one token per source byte — the half of [`TOKEN_CHARGE`] no
-/// type can carry: `Box<[Token]>` makes growth slack unrepresentable, but nothing stops
-/// the lexer from emitting two tokens for one byte. Every token but the zero-width `Eof`
-/// sentinel covers at least one source byte, so the count is the file's length plus one.
+/// type can carry: the pre-reserved `Vec<Token>` holds exactly the file's length plus
+/// one slots, but nothing stops the lexer from emitting two tokens for one byte. Every
+/// token but the zero-width `Eof` sentinel covers at least one source byte, so the count
+/// fits the reservation, and the reservation is never grown or shrunk.
 #[test]
 fn the_token_vector_holds_at_most_one_token_per_source_byte() {
     for (label, bytes) in maximum_admitted_shapes() {
         let text = std::str::from_utf8(bytes).expect("the fixture is UTF-8");
-        let tokens = marrow_syntax::lex_source(text).tokens.len();
-        eprintln!("{label}: {tokens} tokens over {} source bytes", text.len());
-        assert!(
-            tokens <= text.len() + 1,
-            "{label} lexed {tokens} tokens from {} source bytes, over the one-per-byte \
-             bound TOKEN_CHARGE rests on",
+        let tokens = marrow_syntax::lex_source(text).tokens;
+        eprintln!(
+            "{label}: {} tokens over {} source bytes",
+            tokens.len(),
             text.len()
+        );
+        assert!(
+            tokens.len() <= text.len() + 1,
+            "{label} lexed {} tokens from {} source bytes, over the one-per-byte bound \
+             TOKEN_CHARGE rests on",
+            tokens.len(),
+            text.len()
+        );
+        assert_eq!(
+            tokens.capacity(),
+            text.len() + 1,
+            "{label}: the token list is reserved once at the bound and never resized"
         );
     }
 }

@@ -3,6 +3,7 @@
 //! and function declarations and delegates statement and expression parsing.
 
 use super::FunctionHead;
+use super::cursor::PendingDocs;
 use super::head::{parse_enum_head, parse_resource_head, parse_store_head, parse_struct_head};
 use super::params::parse_function_head;
 use super::stmt::StmtParser;
@@ -65,7 +66,7 @@ impl<'a, 'c> DeclParser<'a, 'c> {
 
     pub(crate) fn parse(mut self) -> SourceFile {
         let mut file = SourceFile::default();
-        let mut docs: Vec<Token> = Vec::new();
+        let mut docs = PendingDocs::default();
         let mut saw_top_level_item = false;
 
         while let Some(kind) = self.peek() {
@@ -103,7 +104,7 @@ impl<'a, 'c> DeclParser<'a, 'c> {
     fn dispatch_top_level(
         &mut self,
         file: &mut SourceFile,
-        docs: &mut Vec<Token>,
+        docs: &mut PendingDocs,
         saw_top_level_item: bool,
     ) {
         match self.peek() {
@@ -261,29 +262,30 @@ impl<'a, 'c> DeclParser<'a, 'c> {
         }
     }
 
-    pub(super) fn push_pending_doc(&mut self, docs: &mut Vec<Token>, comments: &mut Vec<Comment>) {
+    pub(super) fn push_pending_doc(&mut self, docs: &mut PendingDocs, comments: &mut Vec<Comment>) {
+        let index = self.pos;
         let token = self.advance();
         if docs
-            .last()
-            .is_some_and(|last| token.span.line > last.span.line + 1)
+            .last_line(self.tokens)
+            .is_some_and(|last| token.span.line > last + 1)
         {
             self.flush_docs_as_comments(docs, comments);
         }
-        docs.push(token);
+        docs.push(index);
     }
 
     pub(super) fn take_docs_for_current_item(
         &mut self,
-        docs: &mut Vec<Token>,
+        docs: &mut PendingDocs,
         comments: &mut Vec<Comment>,
     ) -> Vec<String> {
         let item_line = self.tokens[self.pos].span.line;
         if docs
-            .last()
-            .is_some_and(|last| item_line == last.span.line + 1)
+            .last_line(self.tokens)
+            .is_some_and(|last| item_line == last + 1)
         {
             return docs
-                .drain(..)
+                .take(self.tokens)
                 .map(|token| doc_comment_text(token.text(self.source)))
                 .collect();
         }
@@ -297,10 +299,11 @@ impl<'a, 'c> DeclParser<'a, 'c> {
     /// check-run-format round trip.
     pub(super) fn flush_docs_as_comments(
         &mut self,
-        docs: &mut Vec<Token>,
+        docs: &mut PendingDocs,
         comments: &mut Vec<Comment>,
     ) {
-        for token in docs.drain(..) {
+        let tokens = self.tokens;
+        for token in docs.take(tokens) {
             self.error_span(
                 token.span,
                 ParseDiagnosticReason::DocCommentWithoutTarget,

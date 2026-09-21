@@ -1288,6 +1288,7 @@ impl<'a, 's> ExprParser<'a, 's> {
                     "expected a name segment after `::`".to_string(),
                     None,
                 );
+                debug_assert_eq!(segments.capacity(), segments.len(), "a path boxes exactly");
                 let base = Expression::Name {
                     segments: segments.into_boxed_slice(),
                     span: join_spans(first.span, end),
@@ -1313,6 +1314,7 @@ impl<'a, 's> ExprParser<'a, 's> {
             segments.push(NameSegment::new(segment.text(self.source), segment.span));
             end = segment.span;
         }
+        debug_assert_eq!(segments.capacity(), segments.len(), "a path boxes exactly");
         Expression::Name {
             segments: segments.into_boxed_slice(),
             span: join_spans(first.span, end),
@@ -1320,19 +1322,25 @@ impl<'a, 's> ExprParser<'a, 's> {
     }
 
     /// How many `:: segment` pairs follow the cursor, on the terms `name_expr` admits
-    /// them: an identifier or a reserved type word used as a name after each `::`.
+    /// them: an identifier or a reserved type word used as a name after each `::`,
+    /// read through the same trivia-skipping view the parser consumes so a comment
+    /// between `::` and its segment counts the pair like the parser will.
     fn path_segments_ahead(&self) -> usize {
-        self.tokens[self.pos..]
-            .chunks(2)
-            .take_while(|pair| {
-                pair[0].kind == TokenKind::DoubleColon
-                    && pair.get(1).is_some_and(|segment| match segment.kind {
-                        TokenKind::Identifier => true,
-                        TokenKind::Keyword(keyword) => is_expression_path_segment_keyword(keyword),
-                        _ => false,
-                    })
-            })
-            .count()
+        let mut upcoming = self.upcoming();
+        let mut pairs = 0;
+        while let (Some(separator), Some(segment)) = (upcoming.next(), upcoming.next()) {
+            let admitted = separator.kind == TokenKind::DoubleColon
+                && match segment.kind {
+                    TokenKind::Identifier => true,
+                    TokenKind::Keyword(keyword) => is_expression_path_segment_keyword(keyword),
+                    _ => false,
+                };
+            if !admitted {
+                break;
+            }
+            pairs += 1;
+        }
+        pairs
     }
 
     /// Report a missing call/group delimiter at the zero-width gap just past the last

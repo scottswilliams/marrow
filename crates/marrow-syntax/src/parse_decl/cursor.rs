@@ -11,6 +11,38 @@ use crate::diagnostic::{
 };
 use crate::token::{ContextualKeyword, Keyword, Token, TokenKind};
 
+/// The `///` lines accumulated for the next declaration or member: the range of token
+/// indices from the first of them to the last (their line breaks lie between), read
+/// through the one token list, so pending docs copy no tokens and hold no capacity.
+#[derive(Default)]
+pub(super) struct PendingDocs {
+    run: Option<std::ops::Range<usize>>,
+}
+
+impl PendingDocs {
+    /// The source line of the last pending doc line, if any.
+    pub(super) fn last_line(&self, tokens: &[Token]) -> Option<u32> {
+        self.run.as_ref().map(|run| tokens[run.end - 1].span.line)
+    }
+
+    /// Extend the run to the doc token at `index`.
+    pub(super) fn push(&mut self, index: usize) {
+        match &mut self.run {
+            Some(run) => run.end = index + 1,
+            None => self.run = Some(index..index + 1),
+        }
+    }
+
+    /// Take the pending doc tokens, leaving nothing pending.
+    pub(super) fn take<'t>(&mut self, tokens: &'t [Token]) -> impl Iterator<Item = Token> + 't {
+        let run = self.run.take().unwrap_or(0..0);
+        tokens[run]
+            .iter()
+            .copied()
+            .filter(|token| token.kind == TokenKind::DocComment)
+    }
+}
+
 /// Where a balanced-brace scan ended, and the first `{` inside it that would have
 /// nested past [`crate::NESTING_DEPTH_LIMIT`] had the region been parsed.
 pub(super) struct BalancedScan {
@@ -110,30 +142,29 @@ impl<'a> DeclParser<'a, '_> {
     /// Consume a balanced `{ … }` run starting at the current `{`, returning where it
     /// ended and whether it nested past the limit.
     pub(super) fn consume_block(&mut self) -> BalancedScan {
-        self.consume_balanced_block(0)
+        self.consume_balanced_block(None)
     }
 
-    /// Consume the rest of a `{ … }` block whose opening `{` was already advanced,
-    /// stopping after its matching `}`. Returns the first `{` inside it that nested
-    /// past [`crate::NESTING_DEPTH_LIMIT`], for the caller that owns that report.
-    pub(super) fn skip_to_block_end(&mut self) -> Option<SourceSpan> {
-        self.consume_balanced_block(1).over_deep
+    /// Consume the rest of a `{ … }` block whose opening `{`, at `opener`, was already
+    /// advanced, stopping after its matching `}`. Returns the first `{` of the region,
+    /// the opener included, that nested past [`crate::NESTING_DEPTH_LIMIT`], for the
+    /// caller that owns that report.
+    pub(super) fn skip_to_block_end(&mut self, opener: SourceSpan) -> Option<SourceSpan> {
+        self.consume_balanced_block(Some(opener)).over_deep
     }
 
-    /// Consume tokens until the `{`/`}` depth returns to zero, seeded at `open_depth`
-    /// (zero when the opening `{` is still ahead, one when it was already advanced),
+    /// Consume tokens until the `{`/`}` depth returns to zero — from the opening `{`
+    /// still ahead, or from inside the block whose `opener` was already advanced —
     /// tolerating end-of-file before the block closes. `}` is the hard recovery sync
     /// anchor. Depth is counted from the member level the parser is at, on the same
     /// terms a descent would count it, so a skipped region nesting past the limit is
     /// noticed where a parsed one would have been refused.
-    fn consume_balanced_block(&mut self, open_depth: usize) -> BalancedScan {
-        let mut depth = open_depth;
+    fn consume_balanced_block(&mut self, opener: Option<SourceSpan>) -> BalancedScan {
+        let mut depth = usize::from(opener.is_some());
         // An opener the caller already advanced sits one level below the member level,
         // like every opener the loop meets; at the deepest admitted body it is itself
         // the one past the limit.
-        let mut over_deep = (open_depth > 0
-            && self.depth + open_depth > crate::NESTING_DEPTH_LIMIT)
-            .then(|| self.tokens[self.pos - 1].span);
+        let mut over_deep = opener.filter(|_| self.depth + 1 > crate::NESTING_DEPTH_LIMIT);
         while let Some(kind) = self.peek() {
             match kind {
                 TokenKind::LeftBrace => {
@@ -214,7 +245,7 @@ impl<'a> DeclParser<'a, '_> {
         self.sink.push(nesting_limit(span));
         self.advance(); // `{`
         // The skipped region's first over-deep `{` is the one reported above.
-        self.skip_to_block_end();
+        self.skip_to_block_end(span);
     }
 
     /// Report a stray `{ … }` block at the top level, where a declaration was
@@ -226,8 +257,8 @@ impl<'a> DeclParser<'a, '_> {
             ParseDiagnosticReason::Expected(ExpectedSyntax::Declaration),
             "expected a top-level declaration",
         );
-        self.advance(); // `{`
-        if let Some(span) = self.skip_to_block_end() {
+        let opener = self.advance().span; // `{`
+        if let Some(span) = self.skip_to_block_end(opener) {
             self.sink.push(nesting_limit(span));
         }
     }

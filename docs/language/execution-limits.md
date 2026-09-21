@@ -44,6 +44,7 @@ a source position.
 
 | Group | Limit | Value | Failure |
 |---|---|---:|---|
+| Source | One source file the compiler parses | 692,496 bytes | `cli.compiler_resource_limit` |
 | Source | Nesting of expressions and blocks | 256 levels | `check.nesting_limit` |
 | Source | Diagnostics retained by one run | 4096, or 1 MiB of text | `cli.compiler_resource_limit` (`fmt.diagnostic_limit` under `marrow fmt`) |
 | Source | Traversal bound `at most N` | 65,536 | `check.type` |
@@ -71,6 +72,12 @@ The source limits apply while a file is parsed and checked. The declaration
 limits apply at a `resource`, `store`, `enum`, or `fn` header, or across the
 whole project for a count of roots, exports, or tests. The runtime limits
 apply to one invocation of one export.
+
+The compiler admits a source file only up to the length whose accounted parse
+fits its parse heap ceiling; the length is derived from that ceiling and the
+parser's per-byte charge, not chosen. Project capture admits a file up to 1 MiB
+([projects](../tools/projects.md#bounds)), so a file between the two lengths is
+captured and then refused by `marrow check`.
 
 Source nesting counts every brace and bracket that encloses a construct: a
 block inside a block, a parenthesis inside a parenthesis, an operand inside an

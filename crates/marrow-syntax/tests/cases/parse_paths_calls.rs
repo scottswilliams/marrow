@@ -781,3 +781,33 @@ fn keyword_head_and_keyword_path_segment_are_rejected() {
         parsed.diagnostics
     );
 }
+
+/// A path split by a comment between `::` and its segment, which the parser reads
+/// through its trivia-skipping view, parses to one two-segment name. The parser reserves
+/// a path at the segment count it will admit and asserts that count on boxing, so this
+/// shape would fail under-reserved rather than grow and reallocate.
+#[test]
+fn a_comment_split_path_parses_as_one_name() {
+    let source = "module app\n\nfn f() {\n    g(a:: // gap\n        b)\n}\n";
+    let parsed = parse_source(source);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
+    let Some(Declaration::Function(function)) = parsed.file.declarations.first() else {
+        panic!("the function parses");
+    };
+    let [marrow_syntax::Statement::Expr { value, .. }] = function.body.statements.as_slice() else {
+        panic!("one call statement: {:#?}", function.body.statements);
+    };
+    let Expression::Call { args, .. } = value else {
+        panic!("a call: {value:#?}");
+    };
+    assert!(
+        matches!(args.as_slice(), [argument]
+            if matches!(&argument.value, Expression::Name { segments, .. }
+                if common::segment_texts(segments) == ["a", "b"])),
+        "{args:#?}"
+    );
+}

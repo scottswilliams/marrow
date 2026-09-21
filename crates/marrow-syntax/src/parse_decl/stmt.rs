@@ -764,6 +764,11 @@ impl<'a, 'c> StmtParser<'a, 'c> {
             return None;
         };
         let block = self.parse_clause_body();
+        debug_assert_eq!(
+            pattern.path.capacity(),
+            pattern.path.len(),
+            "an arm path boxes exactly"
+        );
         Some(MatchArm {
             path: pattern.path.into_boxed_slice(),
             bindings: pattern
