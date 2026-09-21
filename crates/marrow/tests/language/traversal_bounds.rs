@@ -95,53 +95,70 @@ fn a_bound_that_is_not_a_positive_int_is_refused() {
 /// A named bound resolves as the reference states: a local resolves before a module
 /// declaration of the same name, a module `const` of type `int` is admitted only when
 /// positive and within the ceiling, and any other name is refused at the bound.
+/// One named-bound case: the module declaration, the local statement preceding the
+/// loop, the bound as written, and the `(code, line)` rows the compile reports.
+struct NamedBound {
+    label: &'static str,
+    declaration: &'static str,
+    local: &'static str,
+    bound: &'static str,
+    expected: Vec<(marrow_codes::Code, u32)>,
+}
+
 #[test]
 fn a_named_bound_resolves_as_the_reference_states() {
     use marrow_codes::Code;
-    let cases: [(&str, &str, &str, &str, Vec<(Code, u32)>); 7] = [
-        (
+    let case = |label, declaration, local, bound, expected| NamedBound {
+        label,
+        declaration,
+        local,
+        bound,
+        expected,
+    };
+    let cases = [
+        case(
             "a folded expression",
             "const limit = 1 + 1",
             "const other = 2",
             "limit",
             vec![(Code::CheckUnsupported, 7), (Code::CheckUnsupported, 11)],
         ),
-        (
+        case(
             "a named zero",
             "const zero = 0",
             "const other = 2",
             "zero",
             vec![(Code::CheckType, 11)],
         ),
-        (
+        case(
             "a named negative",
             "const neg = -1",
             "const other = 2",
             "neg",
             vec![(Code::CheckType, 11)],
         ),
-        (
+        case(
             "the exact ceiling",
             "const cap = 65536",
             "const other = 2",
             "cap",
             vec![],
         ),
-        (
+        case(
             "one over the ceiling",
             "const over = 65537",
             "const other = 2",
             "over",
             vec![(Code::CheckType, 11)],
         ),
-        (
+        case(
             "a const of another type",
             "const label = \"two\"",
             "const other = 2",
             "label",
             vec![(Code::CheckType, 11)],
         ),
-        (
+        case(
             "a local shadowing the module const",
             "const n = 3",
             "const n = 2",
@@ -149,7 +166,14 @@ fn a_named_bound_resolves_as_the_reference_states() {
             vec![(Code::CheckType, 11)],
         ),
     ];
-    for (label, declaration, local, bound, expected) in cases {
+    for NamedBound {
+        label,
+        declaration,
+        local,
+        bound,
+        expected,
+    } in cases
+    {
         let outcome = Project::single(&format!(
             "resource Book {{\n    required title: string\n}}\n\n\
              store ^books[id: int]: Book\n\n\
