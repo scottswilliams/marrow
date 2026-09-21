@@ -215,7 +215,10 @@ fn reporting_coalesces_only_the_exact_use_and_selects_its_earliest_call() {
     let functions = functions();
     let mut collector = DiagnosticCollector::new();
     report(&functions, &queries, failures, &mut collector);
-    let rows = collector.finish().expect_complete();
+    let rows = collector
+        .finish()
+        .into_complete()
+        .expect("a complete terminal");
     assert_eq!(rows.len(), 4);
     assert!(
         rows.iter()
@@ -288,7 +291,10 @@ fn sparse_presence_reports_only_callee_closed_available_functions() {
         vec![1]
     );
     reject_unproven_uses(&lowered, &acyclic, &mut diagnostics);
-    let rows = diagnostics.finish().expect_complete();
+    let rows = diagnostics
+        .finish()
+        .into_complete()
+        .expect("a complete terminal");
     assert_eq!(
         rows.len(),
         1,

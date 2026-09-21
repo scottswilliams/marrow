@@ -109,22 +109,6 @@ impl<C: Ceiling> Bounded<C> {
         matches!(self, Self::Limited { .. })
     }
 
-    /// Logical emptiness. A `Limited` owner retains nothing but is never empty: its
-    /// limit displaced at least one contribution. Production code reads emptiness from
-    /// a finished terminal, never from a live owner.
-    #[cfg(test)]
-    pub(crate) fn is_empty(&self) -> bool {
-        matches!(self, Self::Retaining { count: 0, .. })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn limit(&self) -> Option<C::Limit> {
-        match self {
-            Self::Retaining { .. } => None,
-            Self::Limited { limit, .. } => Some(*limit),
-        }
-    }
-
     /// Admit one contribution before `retain` may allocate for it, composing over
     /// `base` — a settled ledger's totals for a staging owner, and `(0, 0)` for a
     /// ledger charging itself.

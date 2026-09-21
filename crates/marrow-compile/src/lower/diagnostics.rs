@@ -333,6 +333,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
 pub(super) fn identity_admission_failed(
     file: &ProjectFile,
     span: SourceSpan,
+    namespace: DeclarationNamespace,
     refusal: &DeclarationRefusalSummary,
 ) -> SourceDiagnostic {
     let name = refusal.name();
@@ -345,7 +346,7 @@ pub(super) fn identity_admission_failed(
              `check.durable_identity` reports"
         ),
         RefusedDeclaration {
-            namespace: refusal.namespace(),
+            namespace,
             declaring_code: refusal.code(),
             report: refusal.report(),
         },

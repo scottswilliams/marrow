@@ -20,7 +20,7 @@
 use marrow_codes::Code;
 use marrow_compile::{
     CompileFailure, DeclarationNamespace, InputRevision, NameFamily, RefusalReport,
-    RefusedDeclaration, SourceDiagnostic, Steer, analyze, compile,
+    SourceDiagnostic, Steer, analyze, compile,
 };
 use marrow_compile::{ResourceLimitKind, SourceStage};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
@@ -128,8 +128,8 @@ fn assert_steers_to(
         )
     });
     assert_eq!(
-        (steer.namespace, steer.declaring_code, steer.report),
-        (Some(namespace), declaring_code, report),
+        (steer.namespace(), steer.declaring_code(), steer.report()),
+        (namespace, declaring_code, report),
         "the steer names the ledger holding the refusal, the code of the report the \
          reader must act on, and where that report sits: {:#?}",
         rows(diagnostics),
@@ -2165,7 +2165,7 @@ fn a_payload_construction_on_a_refused_enum_steers_to_its_cause() {
 /// The steer facts of the last row, with the row's own code beside them.
 fn steer_facts(
     diagnostics: &[SourceDiagnostic],
-) -> (Code, Option<DeclarationNamespace>, Code, RefusalReport) {
+) -> (Code, DeclarationNamespace, Code, RefusalReport) {
     let last = diagnostics
         .last()
         .expect("a steered use reports at least one row");
@@ -2177,10 +2177,16 @@ fn steer_facts(
     });
     (
         last.code(),
-        steer.namespace,
-        steer.declaring_code,
-        steer.report,
+        steer.namespace(),
+        steer.declaring_code(),
+        steer.report(),
     )
+}
+
+/// The typed facts of a row's steer to a refused declaration, when it carries one.
+fn cause_facts(row: &SourceDiagnostic) -> Option<(DeclarationNamespace, Code, RefusalReport)> {
+    row.refused_declaration()
+        .map(|steer| (steer.namespace(), steer.declaring_code(), steer.report()))
 }
 
 /// One refusal class a single module expresses, and the steer facts its use owes.
@@ -2294,7 +2300,7 @@ fn audit_steer(
     let (row_code, observed_namespace, observed_code, observed_report) = steer_facts(diagnostics);
     assert_eq!(
         (observed_namespace, observed_code, observed_report),
-        (Some(namespace), declaring_code, report),
+        (namespace, declaring_code, report),
         "{label}: the steer names the ledger holding the refusal, the code of the \
          report the reader must act on, and where that report sits: {:#?}",
         rows(diagnostics),
@@ -2332,7 +2338,7 @@ fn audit_family_and_covering_pass(audited: &mut Vec<AuditedSteer>) {
         steer_facts(&identity),
         (
             Code::CheckType,
-            Some(DeclarationNamespace::DurableRoot),
+            DeclarationNamespace::DurableRoot,
             Code::CheckDurableIdentity,
             RefusalReport::AtDeclaration,
         ),
@@ -2364,13 +2370,13 @@ fn audit_family_and_covering_pass(audited: &mut Vec<AuditedSteer>) {
     assert_eq!(
         (
             covered[0].code(),
-            covered_steer.namespace,
-            covered_steer.declaring_code,
-            covered_steer.report,
+            covered_steer.namespace(),
+            covered_steer.declaring_code(),
+            covered_steer.report(),
         ),
         (
             Code::CheckRecursion,
-            Some(DeclarationNamespace::DurableRoot),
+            DeclarationNamespace::DurableRoot,
             Code::CheckRecursion,
             RefusalReport::ByCoveringPass,
         ),
@@ -2620,16 +2626,16 @@ fn refused_aliases_keep_available_causes_in_scalar_and_concrete_siblings() {
                 );
                 continue;
             }
-            let expected_cause = RefusedDeclaration {
-                namespace: Some(DeclarationNamespace::NamedType),
-                declaring_code: code,
-                report: RefusalReport::AtDeclaration,
-            };
+            let expected_cause = (
+                DeclarationNamespace::NamedType,
+                code,
+                RefusalReport::AtDeclaration,
+            );
             let causal = diagnostics.iter().find(|row| {
                 row.file().as_str() == "src/main.mw"
                     && row.code() == code
                     && row.span() == annotation_span
-                    && row.refused_declaration() == Some(&expected_cause)
+                    && cause_facts(row) == Some(expected_cause)
             });
             assert!(causal.is_some(), "{target}, {consumer}: {diagnostics:#?}");
         }
@@ -2647,11 +2653,11 @@ fn a_refused_alias_in_a_group_field_keeps_its_declaring_file() {
     ]);
     let diagnostics = diagnostics_of(&project);
     let start = schema.rfind("Bad").expect("field annotation");
-    let expected = RefusedDeclaration {
-        namespace: Some(DeclarationNamespace::NamedType),
-        declaring_code: Code::CheckType,
-        report: RefusalReport::AtDeclaration,
-    };
+    let expected = (
+        DeclarationNamespace::NamedType,
+        Code::CheckType,
+        RefusalReport::AtDeclaration,
+    );
     assert!(
         diagnostics.iter().any(|row| {
             row.file().as_str() == "src/schema.mw"
@@ -2663,7 +2669,7 @@ fn a_refused_alias_in_a_group_field_keeps_its_declaring_file() {
                         line: 3,
                         column: 39,
                     }
-                && row.refused_declaration() == Some(&expected)
+                && cause_facts(row) == Some(expected)
         }),
         "{diagnostics:#?}"
     );
@@ -2715,11 +2721,11 @@ fn refused_alias_member_and_key_uses_keep_their_own_files() {
             } else {
                 (
                     code,
-                    Some(RefusedDeclaration {
-                        namespace: Some(DeclarationNamespace::NamedType),
-                        declaring_code: code,
-                        report: RefusalReport::AtDeclaration,
-                    }),
+                    Some((
+                        DeclarationNamespace::NamedType,
+                        code,
+                        RefusalReport::AtDeclaration,
+                    )),
                 )
             };
             let span = written_span(source, "Bad");
@@ -2730,7 +2736,7 @@ fn refused_alias_member_and_key_uses_keep_their_own_files() {
             assert!(!matching.is_empty(), "{target}, {member}: {diagnostics:#?}");
             for row in matching {
                 assert_eq!(row.file().as_str(), file, "{target}, {member}");
-                assert_eq!(row.refused_declaration(), cause.as_ref());
+                assert_eq!(cause_facts(row), cause);
             }
         }
     }

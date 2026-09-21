@@ -305,7 +305,7 @@ pub(super) fn annotation_refusal_row(
                 code: summary.code(),
                 row: summary
                     .steer_once()
-                    .then(|| declaration_refused(file, span, summary)),
+                    .then(|| declaration_refused(file, span, id.namespace(), summary)),
             }
         }
     })
@@ -441,7 +441,7 @@ pub(crate) use self::durable::{is_durable_place_op, is_mutation_instr};
 pub(crate) use self::presence::PresenceObligation;
 pub(crate) use self::registry::{
     DeclaredFn, FunctionRegistry, GenericRegistry, GenericTemplate, ModuleBinding, ModuleLedger,
-    ModuleScope, SignatureOutcome,
+    ModuleScope, SignatureOutcome, dotted_module_path,
 };
 pub(crate) use self::types::parse_int;
 
@@ -1104,8 +1104,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// A missing ledger identity is the one refusal class whose cause is a report
     /// *family* rather than one row, so its steer names that family. Every other cause
     /// reuses the row its declaration pushed.
-    fn steer_refusal(&mut self, summary: &DeclarationRefusalSummary, span: SourceSpan) {
-        let row = self.steer_row(summary, span);
+    fn steer_refusal(
+        &mut self,
+        namespace: DeclarationNamespace,
+        summary: &DeclarationRefusalSummary,
+        span: SourceSpan,
+    ) {
+        let row = self.steer_row(namespace, summary, span);
         self.settle_steer(row);
     }
 
@@ -1116,6 +1121,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// the reporting mutation follows it rather than overlapping it.
     fn steer_row(
         &self,
+        namespace: DeclarationNamespace,
         summary: &DeclarationRefusalSummary,
         span: SourceSpan,
     ) -> Option<SourceDiagnostic> {
@@ -1123,8 +1129,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             return None;
         }
         Some(match summary.gap() {
-            Some(_) => identity_admission_failed(self.file, span, summary),
-            None => declaration_refused(self.file, span, summary),
+            Some(_) => identity_admission_failed(self.file, span, namespace, summary),
+            None => declaration_refused(self.file, span, namespace, summary),
         })
     }
 
@@ -1157,7 +1163,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// paths from calling a refused type undeclared.
     fn steer_refused_type(&mut self, name: &ScopedName, span: SourceSpan) -> bool {
         let steer = match self.records.named_type(name) {
-            Ok(Binding::Refused(_, summary)) => Ok(Some(self.steer_row(summary, span))),
+            Ok(Binding::Refused(id, summary)) => {
+                Ok(Some(self.steer_row(id.namespace(), summary, span)))
+            }
             Ok(Binding::Accepted(_) | Binding::Absent) => Ok(None),
             Err(drift) => Err(LowerInvariant::from(drift)),
         };
@@ -1180,7 +1188,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// a "has no field" report may describe.
     fn steer_refused_member(&mut self, owner: &ScopedName, member: &str, span: SourceSpan) -> bool {
         let steer = match self.records.member(owner, member) {
-            Ok(Binding::Refused(_, summary)) => Ok(Some(self.steer_row(summary, span))),
+            Ok(Binding::Refused(id, summary)) => {
+                Ok(Some(self.steer_row(id.namespace(), summary, span)))
+            }
             Ok(Binding::Accepted(_) | Binding::Absent) => Ok(None),
             // The ledger cannot say whether the owner declared this member, so no
             // "has no field" report may be made from here either.
@@ -1343,10 +1353,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 self.fail(not_yet_executable(self.file, span, name));
                 None
             }
-            RootBinding::Refused(_, refusal) => {
+            RootBinding::Refused(id, refusal) => {
                 // One refused store does not echo at every use: the first reference is
                 // steered to the declaration's cause and the rest fail silently.
-                self.steer_refusal(refusal, span);
+                self.steer_refusal(id.namespace(), refusal, span);
                 None
             }
             RootBinding::Absent => {

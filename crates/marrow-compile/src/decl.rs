@@ -99,11 +99,6 @@ impl DeclarationBudget {
         self.0.set(charged);
         Ok(())
     }
-
-    #[cfg(test)]
-    fn spent(&self) -> usize {
-        self.0.get()
-    }
 }
 
 /// Which namespace's ledger minted a [`DeclarationRefusalId`].
@@ -189,12 +184,6 @@ impl DeclarationRefusalId {
 pub(crate) struct DeclarationRefusalSummary {
     name: String,
     code: Code,
-    /// The ledger that holds this refusal, stamped by [`Ledger::declare`].
-    ///
-    /// The namespace is not knowable at construction, since a summary is built by the
-    /// refusing pass and only then handed to a ledger. `None` means exactly "built,
-    /// not yet declared", a state no steer can observe.
-    namespace: Option<DeclarationNamespace>,
     further: u16,
     gap: Option<IdentityGap>,
     report: RefusalReport,
@@ -371,7 +360,6 @@ fn covered(
     DeclarationRefusalSummary {
         name: at.name.to_string(),
         code,
-        namespace: None,
         further: 0,
         gap: None,
         report,
@@ -380,13 +368,15 @@ fn covered(
 }
 
 /// The row that steers one use of a refused declaration to the cause its
-/// declaration reported.
+/// declaration reported. `namespace` names the ledger the use resolved the name in,
+/// which is where the refusal is held.
 ///
 /// The row carries the *declaring* code, so a use-site assertion names the
 /// declaration's typed identity and the reader follows one code to one fix.
 pub(crate) fn declaration_refused(
     file: &ProjectFile,
     span: SourceSpan,
+    namespace: DeclarationNamespace,
     refusal: &DeclarationRefusalSummary,
 ) -> SourceDiagnostic {
     let name = refusal.name();
@@ -401,7 +391,7 @@ pub(crate) fn declaration_refused(
             refusal.correction()
         ),
         RefusedDeclaration {
-            namespace: refusal.namespace(),
+            namespace,
             declaring_code: refusal.code(),
             report: refusal.report(),
         },
@@ -458,11 +448,6 @@ impl DeclarationRefusalSummary {
     pub(crate) fn with_gap(mut self, gap: IdentityGap) -> Self {
         self.gap = Some(gap);
         self
-    }
-
-    /// The ledger this refusal is held in, or `None` before it is declared into one.
-    pub(crate) fn namespace(&self) -> Option<DeclarationNamespace> {
-        self.namespace
     }
 
     /// Which occurrence or pass owns reporting this refusal's cause.
@@ -532,7 +517,6 @@ impl DeclarationRefusalSummary {
         let Self {
             name: _,
             code: _,
-            namespace: _,
             further,
             gap,
             report: _,
@@ -671,8 +655,6 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
                     Some(id) => return self.merge_refusal(id, summary),
                     None => {
                         self.budget.charge(summary.retained_owned_bytes())?;
-                        let mut summary = summary;
-                        summary.namespace = Some(self.namespace);
                         let id = DeclarationRefusalId {
                             namespace: self.namespace,
                             index: self.refusals.len() as u32,
@@ -968,8 +950,58 @@ mod tests {
         }
     }
 
+    /// A key of the given width, distinct per index.
+    fn wide_key(index: usize) -> String {
+        format!("{}{index}", "n".repeat(4096))
+    }
+
+    /// A ledger filled to its last admissible byte: wide refusals until the ceiling
+    /// binds, then one-byte-named refusals until even those are refused. Every key
+    /// declared is retained, so a later charge of any size crosses the ceiling.
+    fn full_ledger() -> DeclarationLedger<String, u32> {
+        let mut ledger = ledger();
+        let mut wide = 0usize;
+        while ledger
+            .declare(
+                wide_key(wide),
+                DeclarationOccurrence::Refused(refusal(&wide_key(wide))),
+            )
+            .is_ok()
+        {
+            wide += 1;
+            assert!(wide < 4096, "the ceiling must bind before this");
+        }
+        let mut narrow = 0usize;
+        while ledger
+            .declare(
+                narrow.to_string(),
+                DeclarationOccurrence::Refused(refusal(&narrow.to_string())),
+            )
+            .is_ok()
+        {
+            narrow += 1;
+            assert!(narrow < 8192, "the ceiling must bind before this");
+        }
+        ledger
+    }
+
+    /// A merge retains nothing new, so it charges nothing: it is admitted by a ledger
+    /// that has no room left for a single further byte.
     #[test]
     fn re_refusing_a_key_merges_and_charges_nothing() {
+        let mut full = full_ledger();
+        full.declare(
+            wide_key(0),
+            DeclarationOccurrence::Refused(refusal(&wide_key(0))),
+        )
+        .expect("a merge charges nothing");
+        match full.lookup(&wide_key(0)) {
+            // One retained summary and one reportable cause, with a bounded count
+            // of the occurrences behind it.
+            Ok(Binding::Refused(_, summary)) => assert_eq!(summary.further, 1),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+
         let mut ledger = ledger();
         ledger
             .declare(
@@ -977,14 +1009,12 @@ mod tests {
                 DeclarationOccurrence::Refused(refusal("a")),
             )
             .expect("within budget");
-        let after_first = ledger.budget.spent();
         ledger
             .declare(
                 "a".to_string(),
                 DeclarationOccurrence::Refused(refusal("a")),
             )
             .expect("within budget");
-        assert_eq!(ledger.budget.spent(), after_first);
         match ledger.lookup(&"a".to_string()) {
             // One retained summary and one reportable cause, with a bounded count
             // of the occurrences behind it.
@@ -1070,14 +1100,39 @@ mod tests {
             }
             assert!(declared < 4096, "the ceiling must bind before this");
         }
-        assert!(ledger.budget.spent() <= MAX_DECLARATION_LEDGER_BYTES);
+        // Every key admitted before the ceiling is still held: the limit refused the
+        // next declaration, not an earlier one.
+        for index in 0..declared {
+            assert!(matches!(
+                ledger.lookup(&format!("{wide}{index}")),
+                Ok(Binding::Refused(..))
+            ));
+        }
     }
 
     /// The ceiling bounds what the pass retains, not what it first charged, so a
     /// merge that adopted the path for free would let the ceiling be crossed by
-    /// exactly those bytes.
+    /// exactly those bytes: a full ledger refuses the merge that adopts a gap.
     #[test]
     fn adopting_a_gap_on_merge_charges_its_path() {
+        let gap = |path: String| IdentityGap {
+            kind: marrow_project::IdentityKind::Root,
+            path,
+            retired: false,
+            origin: marrow_project::SourceOrigin::Root,
+        };
+        // A full ledger has less than one summary's headroom left, so a path wider than
+        // a summary is refused exactly when it is charged.
+        let mut full = full_ledger();
+        let wide_path = "holders.id".repeat(64);
+        assert!(matches!(
+            full.declare(
+                wide_key(0),
+                DeclarationOccurrence::Refused(refusal(&wide_key(0)).with_gap(gap(wide_path))),
+            ),
+            Err(DeclareError::LedgerFull(DeclarationLedgerFull))
+        ));
+
         let mut ledger = ledger();
         ledger
             .declare(
@@ -1085,20 +1140,14 @@ mod tests {
                 DeclarationOccurrence::Refused(refusal("a")),
             )
             .expect("within budget");
-        let after_first = ledger.budget.spent();
-        let gap = IdentityGap {
-            kind: marrow_project::IdentityKind::Root,
-            path: "holders.id".to_string(),
-            retired: false,
-            origin: marrow_project::SourceOrigin::Root,
-        };
         ledger
             .declare(
                 "a".to_string(),
-                DeclarationOccurrence::Refused(refusal("a").with_gap(gap.clone())),
+                DeclarationOccurrence::Refused(
+                    refusal("a").with_gap(gap("holders.id".to_string())),
+                ),
             )
             .expect("within budget");
-        assert_eq!(ledger.budget.spent(), after_first + gap.path.len());
         match ledger.lookup(&"a".to_string()) {
             Ok(Binding::Refused(_, summary)) => {
                 assert_eq!(

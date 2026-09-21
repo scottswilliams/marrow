@@ -35,8 +35,8 @@ use crate::durable::{DurableRegistry, OriginLedgers};
 use crate::konst::ConstRegistry;
 use crate::lower::{
     BodyOutcome, BodyRole, DeclaredFn, FnLowerer, FunctionRegistry, GenericRegistry, LoweredFn,
-    ModuleBinding, ModuleLedger, ModuleScope, Resolution, SignatureOutcome, is_durable_place_op,
-    is_mutation_instr, is_reserved_builtin_name, reserved_builtin_name,
+    ModuleBinding, ModuleLedger, ModuleScope, Resolution, SignatureOutcome, dotted_module_path,
+    is_durable_place_op, is_mutation_instr, is_reserved_builtin_name, reserved_builtin_name,
 };
 use crate::types::BuildError;
 use crate::types::{
@@ -966,12 +966,8 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
         let name = module.module().as_str().to_string();
         match std::str::from_utf8(module.source()) {
             Ok(source) => decoded.push((file, at, name, source)),
-            Err(error) => {
-                parse.push(SourceDiagnostic::invalid_utf8(
-                    &file,
-                    error.valid_up_to(),
-                    error.error_len(),
-                ));
+            Err(_) => {
+                parse.push(SourceDiagnostic::invalid_utf8(&file));
                 facts.admit_broken(at);
                 unparsed.push(UnparsedModule {
                     name,
@@ -1068,18 +1064,6 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
         facts: facts.finish(),
         symbol_bounded_files,
     })
-}
-
-/// A path's segments in the dotted spelling this crate identifies modules by. The
-/// source spells the same path with `::`; the two are different representations of one
-/// path, so this builds the identity from the segments rather than rewriting the
-/// separators of a rendered spelling.
-fn dotted_module_path(segments: &[marrow_syntax::NameSegment]) -> String {
-    segments
-        .iter()
-        .map(marrow_syntax::NameSegment::text)
-        .collect::<Vec<_>>()
-        .join(".")
 }
 
 /// The dotted module path the tree that declares a module spells in its own source.
@@ -2250,11 +2234,9 @@ fn resolve_stages(
             union.finish()
         }
     };
-    let rows = match terminal {
-        BoundedDiagnostics::Complete { rows, .. } => rows,
-        BoundedDiagnostics::Limited { limit, .. } => {
-            return Analyzed::ResourceLimit(diagnostic_limit_failure(limit));
-        }
+    let rows = match terminal.into_complete() {
+        Ok(rows) => rows,
+        Err(limit) => return Analyzed::ResourceLimit(diagnostic_limit_failure(limit)),
     };
     match NonEmptySourceDiagnostics::new(rows) {
         Some(diagnostics) => Analyzed::Diagnostics(diagnostics),
@@ -2895,13 +2877,10 @@ mod driver_agreement {
         }
     }
 
-    /// The pinned invalid-UTF-8 facts flow through the production drive: the
-    /// typed row retains the exact `Utf8Error` numbers — a truncated multi-byte
-    /// sequence at end of input reports `error_len: None`, an invalid byte
-    /// reports its sequence length — while broken-file status is recorded
-    /// independently of the retained diagnostics.
+    /// An undecodable file is one typed row in the parse stage, and its broken-file
+    /// status is recorded independently of the retained diagnostics.
     #[test]
-    fn drive_retains_the_exact_invalid_utf8_facts() {
+    fn drive_records_each_invalid_utf8_file_once() {
         let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
         let captured = vec![
             CapturedFile::new("src/mid.mw".to_string(), b"ok\xFFrest".to_vec()),
@@ -2911,15 +2890,22 @@ mod driver_agreement {
             .expect("capture project");
         let driven = drive(&input, TestMode::Include).expect("test input is drive-admitted");
         let rows = stage_rows(&driven.parse).expect("both files fail to decode");
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].invalid_utf8_facts(), Some((2, Some(1))));
-        assert_eq!(rows[1].invalid_utf8_facts(), Some((3, None)));
-        let broken: Vec<String> = driven
-            .facts
-            .expect_complete()
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.code(), row.file().as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (Code::CheckUnsupported, "src/mid.mw"),
+                (Code::CheckUnsupported, "src/tail.mw"),
+            ]
+        );
+        let BoundedAnalysisFacts::Complete(facts) = &driven.facts else {
+            panic!("two rows are inside the fact ceiling");
+        };
+        let broken: Vec<String> = facts
             .broken_files
             .iter()
-            .map(|at| at.of(&input).spelling())
+            .map(|at| ProjectFile::from(&input.modules()[at.index()]).spelling())
             .collect();
         assert_eq!(broken, vec!["src/mid.mw", "src/tail.mw"]);
     }

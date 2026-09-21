@@ -283,8 +283,8 @@ fn mint_missing_identities(
     let mut anchors: Vec<IdentityAnchor> = Vec::new();
     for diagnostic in diagnostics {
         match diagnostic.identity_gap() {
-            Some(gap) if gap.origin != SourceOrigin::Root => {}
-            Some(gap) if gap.retired => return MintOutcome::NotApplicable,
+            Some(gap) if *gap.origin() != SourceOrigin::Root => {}
+            Some(gap) if gap.retired() => return MintOutcome::NotApplicable,
             Some(gap) => anchors.push(gap.anchor()),
             None => {}
         }

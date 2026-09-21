@@ -4,7 +4,9 @@
 //! and drives the production `check`, so what is asserted is what `marrow check`
 //! would report over the same two directories.
 
-use marrow_compile::{CompileFailure, NameFamily, SourceDiagnostic, Unresolved, check};
+use marrow_compile::{
+    CompileFailure, IdentityGap, NameFamily, SourceDiagnostic, Unresolved, check,
+};
 use marrow_project::ProjectInput;
 
 #[path = "common/project.rs"]
@@ -269,13 +271,13 @@ fn a_dependency_owns_the_identities_it_declares() {
                     row.code().as_str(),
                     format!(
                         "{} {} @{}",
-                        gap.kind.keyword(),
-                        gap.path,
-                        gap.origin
+                        gap.kind().keyword(),
+                        gap.path(),
+                        gap.origin()
                             .alias()
                             .map_or("<root>", marrow_project::DependencyAlias::as_str)
                     ),
-                    gap.retired,
+                    gap.retired(),
                 )
             })
         })
@@ -359,7 +361,7 @@ fn each_origin_resolves_against_its_own_ledger() {
         diagnostics(&all_in_root)
             .iter()
             .filter_map(|row| row.identity_gap())
-            .map(|gap| gap.path.as_str())
+            .map(IdentityGap::path)
             .collect::<Vec<_>>(),
         vec!["notes", "Note", "notes.id", "Note.body"],
     );

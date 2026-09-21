@@ -121,7 +121,10 @@ pub(super) fn draft_fingerprint(draft: &ImageDraft) -> (Vec<u8>, marrow_image::I
 pub(super) fn ordered(outcome: GenericDiagnostics) -> Vec<SourceDiagnostic> {
     let mut collector = DiagnosticCollector::new();
     outcome.merge_into(&mut collector);
-    collector.finish().expect_complete()
+    collector
+        .finish()
+        .into_complete()
+        .expect("a complete terminal")
 }
 
 #[derive(Debug, PartialEq, Eq)]

@@ -123,9 +123,12 @@ impl AliasTable {
                 None => Binding::Absent,
             };
             let refusal = match target_binding {
-                Binding::Refused(_, summary) => {
-                    Some(declaration_refused(input.file, input.decl.span, summary))
-                }
+                Binding::Refused(id, summary) => Some(declaration_refused(
+                    input.file,
+                    input.decl.span,
+                    id.namespace(),
+                    summary,
+                )),
                 _ if input.target.is_none()
                     || (inherited
                         .is_some_and(|target| target.presence == AliasPresence::Optional)

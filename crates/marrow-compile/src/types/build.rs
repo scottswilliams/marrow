@@ -650,10 +650,10 @@ pub(super) fn validate_alias_targets(
             && registry.enum_by_name(&terminal).is_none()
         {
             Some(match registry.named.lookup(&terminal)? {
-                Binding::Refused(_, summary) => refuse_row(
+                Binding::Refused(id, summary) => refuse_row(
                     diagnostics,
                     declared,
-                    declaration_refused(file, decl.span, summary),
+                    declaration_refused(file, decl.span, id.namespace(), summary),
                 ),
                 Binding::Accepted(_) | Binding::Absent => refuse(
                     diagnostics,

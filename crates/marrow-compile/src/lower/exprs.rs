@@ -172,8 +172,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 let value = value.clone();
                 return self.lower_const_value(&value, span);
             }
-            Binding::Refused(_, refusal) => {
-                self.steer_refusal(refusal, span);
+            Binding::Refused(id, refusal) => {
+                self.steer_refusal(id.namespace(), refusal, span);
                 return Err(LoweringFailure::Recoverable);
             }
             Binding::Absent => {}
@@ -1028,7 +1028,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 }
             };
             if let ProductBinding::Refused(summary) = backing {
-                self.steer_refusal(summary, span);
+                self.steer_refusal(DeclarationNamespace::DurableRoot, summary, span);
                 return Err(LoweringFailure::Recoverable);
             }
         }
@@ -1262,8 +1262,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             // A call to a function whose signature this project refused is not an
             // unknown callable and not an arity mismatch: no signature was built, so
             // the call reuses the declaration's own cause.
-            Binding::Refused(_, summary) => {
-                self.steer_refusal(summary, span);
+            Binding::Refused(id, summary) => {
+                self.steer_refusal(id.namespace(), summary, span);
                 return Err(LoweringFailure::Recoverable);
             }
             Binding::Absent => {}
@@ -1356,7 +1356,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 Err(LoweringFailure::Recoverable)
             }
             CallResolution::SignatureRefused(summary) => {
-                self.steer_refusal(summary, span);
+                self.steer_refusal(DeclarationNamespace::Function, summary, span);
                 Err(LoweringFailure::Recoverable)
             }
             CallResolution::ModuleRefused(summary) => {
@@ -1364,7 +1364,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 // name error: record the gap at the callee leaf for editor queries and
                 // steer to the module's own cause.
                 self.facts.gap(callee_span);
-                self.steer_refusal(summary, span);
+                self.steer_refusal(DeclarationNamespace::Module, summary, span);
                 Err(LoweringFailure::Recoverable)
             }
             CallResolution::NotFound => {
@@ -3208,7 +3208,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                                 // tree was never built and whether `name` is one of its
                                 // branches is not knowable here.
                                 ProductBinding::Refused(summary) => {
-                                    self.steer_refusal(summary, field_span);
+                                    self.steer_refusal(
+                                        DeclarationNamespace::DurableRoot,
+                                        summary,
+                                        field_span,
+                                    );
                                     return None;
                                 }
                                 ProductBinding::Declared | ProductBinding::Absent => {}

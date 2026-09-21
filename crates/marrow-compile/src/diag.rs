@@ -127,12 +127,8 @@ enum CompilerDiagnostic {
         steer: Option<Box<Steer>>,
     },
     /// A file the drive could not decode. The message is the central static and
-    /// the span the fixed file-start point, so this variant owns only the
-    /// typed `Utf8Error` numbers.
-    InvalidUtf8 {
-        valid_up_to: usize,
-        error_len: Option<usize>,
-    },
+    /// the span the fixed file-start point.
+    InvalidUtf8,
 }
 
 /// Why a durable declaration's identity is incomplete: its ledger anchor has no
@@ -143,16 +139,36 @@ enum CompilerDiagnostic {
 /// project's to mint: the library commits its own ledger in its own directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IdentityGap {
-    pub kind: IdentityKind,
-    pub path: String,
-    pub retired: bool,
-    pub origin: SourceOrigin,
+    pub(crate) kind: IdentityKind,
+    pub(crate) path: String,
+    pub(crate) retired: bool,
+    pub(crate) origin: SourceOrigin,
 }
 
 impl IdentityGap {
     /// The `(kind, path)` anchor this gap names.
     pub fn anchor(&self) -> IdentityAnchor {
         IdentityAnchor::new(self.kind, self.path.clone())
+    }
+
+    /// The kind of declaration whose anchor has no live row.
+    pub fn kind(&self) -> IdentityKind {
+        self.kind
+    }
+
+    /// The anchor's ledger path.
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// Whether the ledger retired the anchor, which is never reused.
+    pub fn retired(&self) -> bool {
+        self.retired
+    }
+
+    /// The tree whose ledger must gain the row.
+    pub fn origin(&self) -> &SourceOrigin {
+        &self.origin
     }
 }
 
@@ -165,15 +181,28 @@ impl IdentityGap {
 /// the report carrying the cause sits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RefusedDeclaration {
-    /// The ledger holding the refusal. `None` only for a summary that has not been
-    /// declared into one, a state no steer can reach.
-    pub namespace: Option<DeclarationNamespace>,
+    pub(crate) namespace: DeclarationNamespace,
+    pub(crate) declaring_code: Code,
+    pub(crate) report: RefusalReport,
+}
+
+impl RefusedDeclaration {
+    /// The ledger holding the refusal.
+    pub fn namespace(&self) -> DeclarationNamespace {
+        self.namespace
+    }
+
     /// The stable code of the row reported at the declaration, which this steer
     /// reuses so the reader follows one code to one fix.
-    pub declaring_code: Code,
+    pub fn declaring_code(&self) -> Code {
+        self.declaring_code
+    }
+
     /// Where that report was made: at the declaration, by a covering pass, or by an
     /// earlier stage that refused the whole source.
-    pub report: RefusalReport,
+    pub fn report(&self) -> RefusalReport {
+        self.report
+    }
 }
 
 /// The family a name was looked up in, so a did-you-mean spells its candidate the way
@@ -548,17 +577,10 @@ impl SourceDiagnostic {
         }
     }
 
-    pub(crate) fn invalid_utf8(
-        file: &ProjectFile,
-        valid_up_to: usize,
-        error_len: Option<usize>,
-    ) -> Self {
+    pub(crate) fn invalid_utf8(file: &ProjectFile) -> Self {
         Self {
             file: file.clone(),
-            payload: SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8 {
-                valid_up_to,
-                error_len,
-            }),
+            payload: SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8),
         }
     }
 
@@ -585,7 +607,7 @@ impl SourceDiagnostic {
             SourceDiagnosticPayload::Compiler(
                 CompilerDiagnostic::Unresolved { .. } | CompilerDiagnostic::Mismatch { .. },
             ) => Code::CheckType,
-            SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8 { .. }) => {
+            SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8) => {
                 Code::CheckUnsupported
             }
         }
@@ -603,7 +625,7 @@ impl SourceDiagnostic {
                 | CompilerDiagnostic::Unresolved { message, .. }
                 | CompilerDiagnostic::Mismatch { message, .. },
             ) => message,
-            SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8 { .. }) => {
+            SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8) => {
                 INVALID_UTF8_MESSAGE
             }
         }
@@ -739,9 +761,7 @@ impl SourceDiagnostic {
                 | CompilerDiagnostic::Unresolved { span, .. }
                 | CompilerDiagnostic::Mismatch { span, .. },
             ) => *span,
-            SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8 { .. }) => {
-                INVALID_UTF8_SPAN
-            }
+            SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8) => INVALID_UTF8_SPAN,
         }
     }
 
@@ -753,20 +773,6 @@ impl SourceDiagnostic {
     /// The 1-based start column of the diagnostic, read from its span.
     pub fn column(&self) -> u32 {
         self.span().column
-    }
-
-    /// The typed facts of an invalid-UTF-8 row: how many leading bytes decoded
-    /// and the invalid sequence length `std::str::from_utf8` reported. This probe
-    /// pins them in tests until a production reader exists.
-    #[cfg(test)]
-    pub(crate) fn invalid_utf8_facts(&self) -> Option<(usize, Option<usize>)> {
-        match &self.payload {
-            SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8 {
-                valid_up_to,
-                error_len,
-            }) => Some((*valid_up_to, *error_len)),
-            _ => None,
-        }
     }
 
     /// The retained variable payload bytes this row charges against
@@ -824,7 +830,7 @@ impl SourceDiagnostic {
                     + mismatch.retained_owned_bytes()
                     + steer.as_deref().map_or(0, Steer::retained_owned_bytes)
             }
-            SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8 { .. }) => file,
+            SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8) => file,
         }
     }
 }
@@ -847,6 +853,17 @@ pub(crate) fn unsupported(file: &ProjectFile, span: SourceSpan, subject: &str) -
 pub(crate) enum CompileDiagnosticLimit {
     Count { limit: usize },
     OwnedBytes { limit: usize },
+}
+
+/// A by-value view of one live collector's exact state, so a registry-state snapshot
+/// can compare owners without widening the production operation set.
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CollectorProbe {
+    count: usize,
+    owned_bytes: usize,
+    limit: Option<CompileDiagnosticLimit>,
+    rows: Vec<SourceDiagnostic>,
 }
 
 /// The one live compiler diagnostic owner. Private, concrete, non-`Clone`, and
@@ -906,28 +923,13 @@ impl BoundedDiagnostics {
         matches!(self, BoundedDiagnostics::Complete { rows, .. } if rows.is_empty())
     }
 
-    /// Test support: the complete rows, or a panic on a limited terminal.
-    #[cfg(test)]
-    #[track_caller]
-    pub(crate) fn expect_complete(self) -> Vec<SourceDiagnostic> {
+    /// The complete rows, or the limit that displaced them.
+    pub(crate) fn into_complete(self) -> Result<Vec<SourceDiagnostic>, CompileDiagnosticLimit> {
         match self {
-            BoundedDiagnostics::Complete { rows, .. } => rows,
-            BoundedDiagnostics::Limited { limit, .. } => {
-                panic!("expected a complete terminal, got {limit:?}")
-            }
+            BoundedDiagnostics::Complete { rows, .. } => Ok(rows),
+            BoundedDiagnostics::Limited { limit, .. } => Err(limit),
         }
     }
-}
-
-/// A test view of a collector's exact state, so lifecycle probes can compare
-/// owners without widening the production operation set.
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CollectorProbe {
-    pub(crate) count: usize,
-    pub(crate) owned_bytes: usize,
-    pub(crate) limit: Option<CompileDiagnosticLimit>,
-    pub(crate) rows: Vec<SourceDiagnostic>,
 }
 
 impl DiagnosticCollector {
@@ -935,14 +937,6 @@ impl DiagnosticCollector {
         Self {
             state: Bounded::new(),
         }
-    }
-
-    /// Logical emptiness: a Limited owner retains no rows but is never empty.
-    /// Test-only — production code reads emptiness from the finished
-    /// [`BoundedDiagnostics`] terminal, never from a live collector.
-    #[cfg(test)]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.state.is_empty()
     }
 
     /// Retain one finalized row, charging its exact retained owned bytes.
@@ -1019,6 +1013,22 @@ impl DiagnosticCollector {
         }
     }
 
+    /// The by-value view a registry-state snapshot compares.
+    #[cfg(test)]
+    pub(crate) fn probe(&self) -> CollectorProbe {
+        let (count, owned_bytes) = self.state.totals();
+        let (limit, rows) = match &self.state {
+            Bounded::Retaining { payload, .. } => (None, payload.clone()),
+            Bounded::Limited { limit, .. } => (Some(*limit), Vec::new()),
+        };
+        CollectorProbe {
+            count: count as usize,
+            owned_bytes: owned_bytes as usize,
+            limit,
+            rows,
+        }
+    }
+
     /// Seal this owner into its terminal. Total: every state has a terminal.
     pub(crate) fn finish(self) -> BoundedDiagnostics {
         match self.state {
@@ -1037,33 +1047,13 @@ impl DiagnosticCollector {
             },
         }
     }
-
-    /// Test view of the exact owner state.
-    #[cfg(test)]
-    pub(crate) fn probe(&self) -> CollectorProbe {
-        let (count, owned_bytes) = self.state.totals();
-        CollectorProbe {
-            count: count as usize,
-            owned_bytes: owned_bytes as usize,
-            limit: self.state.limit(),
-            rows: self.probe_rows().to_vec(),
-        }
-    }
-
-    /// Test view of the retained rows (empty once Limited).
-    #[cfg(test)]
-    pub(crate) fn probe_rows(&self) -> &[SourceDiagnostic] {
-        match &self.state {
-            Bounded::Retaining { payload, .. } => payload,
-            Bounded::Limited { .. } => &[],
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use marrow_syntax::{SYNTAX_DIAGNOSTIC_COUNT_LIMIT, SYNTAX_DIAGNOSTIC_OWNED_BYTES_LIMIT};
+    use std::iter::repeat_n;
 
     /// The syntax bridge's Limited composition depends on the two ceiling pairs
     /// being equal; a divergence is a contract change that must update both.
@@ -1086,6 +1076,57 @@ mod tests {
             SourceSpan::default(),
             "x".repeat(message_len),
         )
+    }
+
+    /// A collector that admitted one rendered row per message length, in order.
+    fn with_rows(lengths: impl IntoIterator<Item = usize>) -> DiagnosticCollector {
+        let mut collector = DiagnosticCollector::new();
+        for length in lengths {
+            collector.push(row_with_message_len(length));
+        }
+        collector
+    }
+
+    /// One owner's exact state, read from its sealed terminal: the totals, the limit,
+    /// and the retained rows (none once Limited).
+    struct Sealed {
+        count: usize,
+        owned_bytes: usize,
+        limit: Option<CompileDiagnosticLimit>,
+        rows: Vec<SourceDiagnostic>,
+    }
+
+    fn seal(collector: DiagnosticCollector) -> Sealed {
+        match collector.finish() {
+            BoundedDiagnostics::Complete { owned_bytes, rows } => Sealed {
+                count: rows.len(),
+                owned_bytes,
+                limit: None,
+                rows,
+            },
+            BoundedDiagnostics::Limited {
+                count,
+                owned_bytes,
+                limit,
+            } => Sealed {
+                count,
+                owned_bytes,
+                limit: Some(limit),
+                rows: Vec::new(),
+            },
+        }
+    }
+
+    fn count_limit() -> CompileDiagnosticLimit {
+        CompileDiagnosticLimit::Count {
+            limit: MAX_DIAGNOSTIC_COUNT,
+        }
+    }
+
+    fn bytes_limit() -> CompileDiagnosticLimit {
+        CompileDiagnosticLimit::OwnedBytes {
+            limit: MAX_DIAGNOSTIC_BYTES,
+        }
     }
 
     /// The byte-charge law, per payload variant: file spelling plus owned
@@ -1168,9 +1209,8 @@ mod tests {
             file_len + mismatch.message().len() + "string?".len() + "string".len()
         );
 
-        let utf8 = SourceDiagnostic::invalid_utf8(file(), 3, Some(1));
+        let utf8 = SourceDiagnostic::invalid_utf8(file());
         assert_eq!(utf8.retained_owned_bytes(), file_len);
-        assert_eq!(utf8.invalid_utf8_facts(), Some((3, Some(1))));
         assert_eq!(utf8.message(), "source file is not valid UTF-8");
         assert_eq!(utf8.code(), Code::CheckUnsupported);
         let span = utf8.span();
@@ -1199,35 +1239,27 @@ mod tests {
     /// whole payload, prefix included, and the owner stays non-empty after.
     #[test]
     fn count_edge_is_exact_and_discard_is_destructive() {
-        let mut collector = DiagnosticCollector::new();
-        for _ in 0..MAX_DIAGNOSTIC_COUNT {
-            collector.push(row_with_message_len(1));
-        }
-        let at_edge = collector.probe();
+        let at_edge = seal(with_rows(repeat_n(1, MAX_DIAGNOSTIC_COUNT)));
         assert_eq!(at_edge.count, MAX_DIAGNOSTIC_COUNT);
         assert_eq!(at_edge.limit, None);
         assert_eq!(at_edge.rows.len(), MAX_DIAGNOSTIC_COUNT);
 
-        collector.push(row_with_message_len(1));
-        let crossed = collector.probe();
+        let crossed = seal(with_rows(repeat_n(1, MAX_DIAGNOSTIC_COUNT + 1)));
         assert_eq!(crossed.count, MAX_DIAGNOSTIC_COUNT + 1);
-        assert_eq!(
-            crossed.limit,
-            Some(CompileDiagnosticLimit::Count {
-                limit: MAX_DIAGNOSTIC_COUNT
-            })
-        );
+        assert_eq!(crossed.limit, Some(count_limit()));
         assert!(crossed.rows.is_empty(), "the prefix drops with the payload");
-        assert!(!collector.is_empty(), "a limited owner is never empty");
+        assert!(
+            !with_rows(repeat_n(1, MAX_DIAGNOSTIC_COUNT + 1))
+                .finish()
+                .is_empty(),
+            "a limited terminal is never empty"
+        );
 
         // Totals keep saturating; the payload never re-materializes.
-        collector.push(row_with_message_len(1));
-        assert_eq!(collector.probe().count, MAX_DIAGNOSTIC_COUNT + 1);
-        assert!(collector.probe_rows().is_empty());
-        assert!(matches!(
-            collector.finish(),
-            BoundedDiagnostics::Limited { .. }
-        ));
+        let saturated = seal(with_rows(repeat_n(1, MAX_DIAGNOSTIC_COUNT + 2)));
+        assert_eq!(saturated.count, MAX_DIAGNOSTIC_COUNT + 1);
+        assert_eq!(saturated.limit, Some(count_limit()));
+        assert!(saturated.rows.is_empty());
     }
 
     /// Exact byte edges: a payload of exactly the ceiling retains; one more
@@ -1238,30 +1270,19 @@ mod tests {
         let first = MAX_DIAGNOSTIC_BYTES / 2;
         let second = MAX_DIAGNOSTIC_BYTES - first - 2 * file_len;
 
-        let mut collector = DiagnosticCollector::new();
-        collector.push(row_with_message_len(first));
-        collector.push(row_with_message_len(second));
-        let at_edge = collector.probe();
+        let at_edge = seal(with_rows([first, second]));
         assert_eq!(at_edge.owned_bytes, MAX_DIAGNOSTIC_BYTES);
         assert_eq!(at_edge.limit, None);
         assert_eq!(at_edge.rows.len(), 2);
 
-        let mut crossing = DiagnosticCollector::new();
-        crossing.push(row_with_message_len(first));
-        crossing.push(row_with_message_len(second + 1));
-        let crossed = crossing.probe();
+        let crossed = seal(with_rows([first, second + 1]));
         assert_eq!(crossed.owned_bytes, MAX_DIAGNOSTIC_BYTES + 1);
-        assert_eq!(
-            crossed.limit,
-            Some(CompileDiagnosticLimit::OwnedBytes {
-                limit: MAX_DIAGNOSTIC_BYTES
-            })
-        );
+        assert_eq!(crossed.limit, Some(bytes_limit()));
         assert!(crossed.rows.is_empty());
 
         // Later input saturates the byte total at ceiling plus one.
-        crossing.push(row_with_message_len(100));
-        assert_eq!(crossing.probe().owned_bytes, MAX_DIAGNOSTIC_BYTES + 1);
+        let saturated = seal(with_rows([first, second + 1, 100]));
+        assert_eq!(saturated.owned_bytes, MAX_DIAGNOSTIC_BYTES + 1);
     }
 
     /// Count wins a simultaneous crossing, and an OwnedBytes limit
@@ -1270,37 +1291,21 @@ mod tests {
     #[test]
     fn count_precedence_and_bytes_to_count_strengthening() {
         // One admission crossing both ceilings at once: Count is selected.
-        let mut both = DiagnosticCollector::new();
-        for _ in 0..MAX_DIAGNOSTIC_COUNT {
-            both.push(row_with_message_len(1));
-        }
-        both.push(row_with_message_len(MAX_DIAGNOSTIC_BYTES));
-        assert_eq!(
-            both.probe().limit,
-            Some(CompileDiagnosticLimit::Count {
-                limit: MAX_DIAGNOSTIC_COUNT
-            })
-        );
+        let both = with_rows(repeat_n(1, MAX_DIAGNOSTIC_COUNT).chain([MAX_DIAGNOSTIC_BYTES]));
+        assert_eq!(seal(both).limit, Some(count_limit()));
 
         // Bytes first, then the count total crosses: strengthened to Count.
-        let mut strengthened = DiagnosticCollector::new();
-        strengthened.push(row_with_message_len(MAX_DIAGNOSTIC_BYTES + 1));
         assert_eq!(
-            strengthened.probe().limit,
-            Some(CompileDiagnosticLimit::OwnedBytes {
-                limit: MAX_DIAGNOSTIC_BYTES
-            })
+            seal(with_rows([MAX_DIAGNOSTIC_BYTES + 1])).limit,
+            Some(bytes_limit())
         );
-        for _ in 0..MAX_DIAGNOSTIC_COUNT {
-            strengthened.push(row_with_message_len(0));
-        }
-        assert_eq!(
-            strengthened.probe().limit,
-            Some(CompileDiagnosticLimit::Count {
-                limit: MAX_DIAGNOSTIC_COUNT
-            })
-        );
-        assert!(strengthened.probe_rows().is_empty());
+        let strengthened = seal(with_rows(
+            [MAX_DIAGNOSTIC_BYTES + 1]
+                .into_iter()
+                .chain(repeat_n(0, MAX_DIAGNOSTIC_COUNT)),
+        ));
+        assert_eq!(strengthened.limit, Some(count_limit()));
+        assert!(strengthened.rows.is_empty());
     }
 
     /// `absorb` merges a Complete terminal in order with its exact totals; a
@@ -1308,15 +1313,9 @@ mod tests {
     /// Count when the composed count has crossed.
     #[test]
     fn absorb_merges_complete_terminals_and_forces_limited_ones() {
-        let mut source = DiagnosticCollector::new();
-        source.push(row_with_message_len(3));
-        source.push(row_with_message_len(5));
-        let terminal = source.finish();
-
-        let mut target = DiagnosticCollector::new();
-        target.push(row_with_message_len(1));
-        target.absorb(terminal);
-        let merged = target.probe();
+        let mut target = with_rows([1]);
+        target.absorb(with_rows([3, 5]).finish());
+        let merged = seal(target);
         assert_eq!(merged.count, 3);
         assert_eq!(
             merged.owned_bytes,
@@ -1328,24 +1327,15 @@ mod tests {
         );
 
         // With the composed count crossed, Count outranks the absorbed kind.
-        let mut nearly_full = DiagnosticCollector::new();
-        for _ in 0..MAX_DIAGNOSTIC_COUNT {
-            nearly_full.push(row_with_message_len(0));
-        }
+        let mut nearly_full = with_rows(repeat_n(0, MAX_DIAGNOSTIC_COUNT));
         nearly_full.absorb(BoundedDiagnostics::Limited {
             count: 2,
             owned_bytes: MAX_DIAGNOSTIC_BYTES + 1,
-            limit: CompileDiagnosticLimit::OwnedBytes {
-                limit: MAX_DIAGNOSTIC_BYTES,
-            },
+            limit: bytes_limit(),
         });
-        assert_eq!(
-            nearly_full.probe().limit,
-            Some(CompileDiagnosticLimit::Count {
-                limit: MAX_DIAGNOSTIC_COUNT
-            })
-        );
-        assert!(nearly_full.probe_rows().is_empty());
+        let forced = seal(nearly_full);
+        assert_eq!(forced.limit, Some(count_limit()));
+        assert!(forced.rows.is_empty());
     }
 
     /// Absorbing a Limited terminal whose composed totals sit under *both*
@@ -1354,54 +1344,38 @@ mod tests {
     /// totals must never reopen the owner and seal a silently short set.
     #[test]
     fn absorbing_an_under_ceiling_limited_terminal_forces_limited() {
-        for inherited in [
-            CompileDiagnosticLimit::Count {
-                limit: MAX_DIAGNOSTIC_COUNT,
-            },
-            CompileDiagnosticLimit::OwnedBytes {
-                limit: MAX_DIAGNOSTIC_BYTES,
-            },
-        ] {
-            let mut empty = DiagnosticCollector::new();
-            empty.absorb(BoundedDiagnostics::Limited {
+        for inherited in [count_limit(), bytes_limit()] {
+            let under_ceiling = || BoundedDiagnostics::Limited {
                 count: 1,
                 owned_bytes: 1,
                 limit: inherited,
-            });
-            let probe = empty.probe();
+            };
+            let mut empty = DiagnosticCollector::new();
+            empty.absorb(under_ceiling());
+            let forced = seal(empty);
             assert_eq!(
-                probe.limit,
+                forced.limit,
                 Some(inherited),
                 "an under-ceiling Limited terminal still forces Limited and keeps its kind"
             );
-            assert!(probe.rows.is_empty());
-            assert!(!empty.is_empty(), "a limited owner is never empty");
-            empty.push(row_with_message_len(1));
-            assert!(
-                empty.probe_rows().is_empty(),
-                "the destroyed payload never re-materializes"
-            );
-            assert!(
-                matches!(empty.finish(), BoundedDiagnostics::Limited { .. }),
-                "an absorbed Limited terminal is never sealed Complete"
-            );
+            assert!(forced.rows.is_empty());
+
+            // Later input never re-materializes the destroyed payload.
+            let mut reopened = DiagnosticCollector::new();
+            reopened.absorb(under_ceiling());
+            reopened.push(row_with_message_len(1));
+            let sealed = seal(reopened);
+            assert_eq!(sealed.limit, Some(inherited));
+            assert!(sealed.rows.is_empty());
 
             // The same absorption over a retaining prefix: the prefix drops too.
-            let mut retaining = DiagnosticCollector::new();
-            retaining.push(row_with_message_len(1));
-            retaining.absorb(BoundedDiagnostics::Limited {
-                count: 1,
-                owned_bytes: 1,
-                limit: inherited,
-            });
-            assert_eq!(retaining.probe().limit, Some(inherited));
+            let mut retaining = with_rows([1]);
+            retaining.absorb(under_ceiling());
+            let sealed = seal(retaining);
+            assert_eq!(sealed.limit, Some(inherited));
             assert!(
-                retaining.probe_rows().is_empty(),
+                sealed.rows.is_empty(),
                 "the retained prefix drops with the absorbed payload"
-            );
-            assert!(
-                matches!(retaining.finish(), BoundedDiagnostics::Limited { .. }),
-                "an absorbed Limited terminal is never sealed Complete"
             );
         }
     }
@@ -1413,21 +1387,19 @@ mod tests {
     /// premise; the unconditional guard above holds if it ever changes.
     #[test]
     fn a_sealed_limited_terminal_always_reports_a_crossed_total() {
-        let mut counted = DiagnosticCollector::new();
-        for _ in 0..=MAX_DIAGNOSTIC_COUNT {
-            counted.push(row_with_message_len(1));
-        }
-        let BoundedDiagnostics::Limited { count, .. } = counted.finish() else {
-            panic!("crossing the count ceiling seals Limited");
-        };
-        assert!(count > MAX_DIAGNOSTIC_COUNT);
+        let counted = seal(with_rows(repeat_n(1, MAX_DIAGNOSTIC_COUNT + 1)));
+        assert!(
+            counted.limit.is_some(),
+            "crossing the count ceiling seals Limited"
+        );
+        assert!(counted.count > MAX_DIAGNOSTIC_COUNT);
 
-        let mut sized = DiagnosticCollector::new();
-        sized.push(row_with_message_len(MAX_DIAGNOSTIC_BYTES + 1));
-        let BoundedDiagnostics::Limited { owned_bytes, .. } = sized.finish() else {
-            panic!("crossing the byte ceiling seals Limited");
-        };
-        assert!(owned_bytes > MAX_DIAGNOSTIC_BYTES);
+        let sized = seal(with_rows([MAX_DIAGNOSTIC_BYTES + 1]));
+        assert!(
+            sized.limit.is_some(),
+            "crossing the byte ceiling seals Limited"
+        );
+        assert!(sized.owned_bytes > MAX_DIAGNOSTIC_BYTES);
 
         let dense = "@\n".repeat(SYNTAX_DIAGNOSTIC_COUNT_LIMIT + 1);
         let summary = marrow_syntax::parse_source(&dense).diagnostics.summary();
@@ -1458,23 +1430,16 @@ mod tests {
         };
         let prefill = MAX_DIAGNOSTIC_BYTES - batch(short) - file().retained_owned_bytes();
 
-        let mut exact = DiagnosticCollector::new();
-        exact.push(row_with_message_len(prefill));
+        let mut exact = with_rows([prefill]);
         exact.absorb_syntax(short, marrow_syntax::parse_source(source).diagnostics);
-        let at_edge = exact.probe();
+        let at_edge = seal(exact);
         assert_eq!(at_edge.owned_bytes, MAX_DIAGNOSTIC_BYTES);
         assert_eq!(at_edge.limit, None);
         assert_eq!(at_edge.count, 1 + summary.count());
 
-        let mut crossing = DiagnosticCollector::new();
-        crossing.push(row_with_message_len(prefill));
+        let mut crossing = with_rows([prefill]);
         crossing.absorb_syntax(long, marrow_syntax::parse_source(source).diagnostics);
-        assert_eq!(
-            crossing.probe().limit,
-            Some(CompileDiagnosticLimit::OwnedBytes {
-                limit: MAX_DIAGNOSTIC_BYTES
-            })
-        );
+        assert_eq!(seal(crossing).limit, Some(bytes_limit()));
     }
 
     /// The bridge's batch charge equals the per-row retained-owned-bytes sum,
@@ -1485,29 +1450,34 @@ mod tests {
         let summary = parsed.diagnostics.summary();
         let mut collector = DiagnosticCollector::new();
         collector.absorb_syntax(file(), parsed.diagnostics);
-        let probe = collector.probe();
-        assert_eq!(probe.count, 2);
+        let sealed = seal(collector);
+        assert_eq!(sealed.count, 2);
         assert_eq!(
-            probe.owned_bytes,
+            sealed.owned_bytes,
             summary.owned_bytes() + 2 * file().retained_owned_bytes()
         );
         assert_eq!(
-            probe.owned_bytes,
-            probe
+            sealed.owned_bytes,
+            sealed
                 .rows
                 .iter()
                 .map(SourceDiagnostic::retained_owned_bytes)
                 .sum::<usize>()
         );
         assert_eq!(
-            probe
+            sealed
                 .rows
                 .iter()
                 .map(SourceDiagnostic::line)
                 .collect::<Vec<_>>(),
             vec![1, 2]
         );
-        assert!(probe.rows.iter().all(|row| row.file() == file().identity()));
+        assert!(
+            sealed
+                .rows
+                .iter()
+                .all(|row| row.file() == file().identity())
+        );
     }
 
     /// Absorbing a Limited syntax terminal leaves the collector Limited even
@@ -1521,41 +1491,29 @@ mod tests {
 
         let mut collector = DiagnosticCollector::new();
         collector.absorb_syntax(file(), parsed.diagnostics);
-        let probe = collector.probe();
-        assert_eq!(
-            probe.limit,
-            Some(CompileDiagnosticLimit::Count {
-                limit: MAX_DIAGNOSTIC_COUNT
-            })
-        );
-        assert!(probe.rows.is_empty());
-        assert!(!collector.is_empty());
+        let sealed = seal(collector);
+        assert_eq!(sealed.limit, Some(count_limit()));
+        assert!(sealed.rows.is_empty());
 
-        collector.push(row_with_message_len(1));
-        assert!(collector.probe_rows().is_empty());
-        assert!(matches!(
-            collector.finish(),
-            BoundedDiagnostics::Limited { .. }
-        ));
+        let mut reopened = DiagnosticCollector::new();
+        reopened.absorb_syntax(file(), marrow_syntax::parse_source(&dense).diagnostics);
+        reopened.push(row_with_message_len(1));
+        let sealed = seal(reopened);
+        assert_eq!(sealed.limit, Some(count_limit()));
+        assert!(sealed.rows.is_empty());
     }
 
-    /// Logical emptiness across states and terminals.
+    /// Logical emptiness across terminals: a Limited terminal retains no rows but
+    /// is never empty.
     #[test]
     fn is_empty_is_logical_not_representational() {
-        let mut collector = DiagnosticCollector::new();
-        assert!(collector.is_empty());
-        collector.push(row_with_message_len(1));
-        assert!(!collector.is_empty());
-
-        let empty_terminal = DiagnosticCollector::new().finish();
-        assert!(empty_terminal.is_empty());
+        assert!(DiagnosticCollector::new().finish().is_empty());
+        assert!(!with_rows([1]).finish().is_empty());
         assert!(
             !BoundedDiagnostics::Limited {
                 count: MAX_DIAGNOSTIC_COUNT + 1,
                 owned_bytes: 0,
-                limit: CompileDiagnosticLimit::Count {
-                    limit: MAX_DIAGNOSTIC_COUNT
-                },
+                limit: count_limit(),
             }
             .is_empty()
         );

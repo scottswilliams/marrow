@@ -39,11 +39,6 @@ impl CallGraphAnalysis {
             eligible: self.eligible,
         }
     }
-
-    #[cfg(test)]
-    fn has_cycle(&self) -> bool {
-        self.on_cycle.iter().any(|&on_cycle| on_cycle)
-    }
 }
 
 /// The callee-closed available subset, proven acyclic. Mask positions retain the
@@ -238,7 +233,6 @@ mod tests {
         let analysis = analyze(&edges);
         assert!(analysis.on_cycle(0));
         assert!(!analysis.on_cycle(1));
-        assert!(analysis.has_cycle());
     }
 
     #[test]
@@ -259,9 +253,9 @@ mod tests {
 
     #[test]
     fn empty_and_dangling_graphs_are_cycle_free() {
-        assert!(!analyze(&[]).has_cycle());
+        assert!(analyze(&[]).into_acyclic_order().is_complete());
         let edges: Vec<Option<&[u16]>> = vec![Some(&[9])];
-        assert!(!analyze(&edges).has_cycle());
+        assert!(!analyze(&edges).on_cycle(0));
     }
 
     #[test]

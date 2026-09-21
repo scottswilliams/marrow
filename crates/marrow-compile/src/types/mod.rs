@@ -3414,7 +3414,12 @@ impl TypeRegistry {
             ResolveRefusal::Unsupported => Ok(Some(unsupported(file, span, subject))),
             ResolveRefusal::RefusedDeclaration(id) => {
                 let summary = self.refusal(id)?;
-                Ok(Some(declaration_refused(file, span, summary)))
+                Ok(Some(declaration_refused(
+                    file,
+                    span,
+                    id.namespace(),
+                    summary,
+                )))
             }
         }
     }
@@ -3484,7 +3489,7 @@ impl TypeRegistry {
         let summary = self.members.refusal(id)?;
         Ok(summary
             .steer_once()
-            .then(|| declaration_refused(file, span, summary)))
+            .then(|| declaration_refused(file, span, id.namespace(), summary)))
     }
 
     /// The refusal a named-type or template handle addresses. Every other

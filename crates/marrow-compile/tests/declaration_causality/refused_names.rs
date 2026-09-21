@@ -1,5 +1,5 @@
-use super::{assert_steers_to, diagnostics, project, rows, written_span};
-use marrow_compile::{DeclarationNamespace, RefusalReport, RefusedDeclaration, compile};
+use super::{assert_steers_to, cause_facts, diagnostics, project, rows, written_span};
+use marrow_compile::{DeclarationNamespace, RefusalReport, compile};
 
 #[test]
 fn a_refused_generic_struct_occupies_its_name() {
@@ -145,11 +145,11 @@ fn an_over_wide_enum_occupies_its_name() {
 
     let conflict = marrow_codes::Code::CheckNameConflict;
     let limit = marrow_codes::Code::CheckResourceLimit;
-    let cause = RefusedDeclaration {
-        namespace: Some(DeclarationNamespace::NamedType),
-        declaring_code: limit,
-        report: RefusalReport::AtDeclaration,
-    };
+    let cause = (
+        DeclarationNamespace::NamedType,
+        limit,
+        RefusalReport::AtDeclaration,
+    );
     let accepted = VALID.replacen("enum E { one }", "enum E { zero }\nenum E { one }", 1);
     let accepted_duplicate = written_span("module main\n\nenum E { zero }\nenum E", "E");
     let variants: Vec<String> = (0..=marrow_image::bounds::MAX_VARIANTS)
@@ -176,7 +176,7 @@ fn an_over_wide_enum_occupies_its_name() {
             renamed,
             vec![
                 ("src/main.mw", limit, declaration, None),
-                ("src/main.mw", limit, renamed_use, Some(&cause)),
+                ("src/main.mw", limit, renamed_use, Some(cause)),
             ],
             "renaming only the second enum preserves the first refusal and its annotation steer",
         ),
@@ -185,7 +185,7 @@ fn an_over_wide_enum_occupies_its_name() {
             vec![
                 ("src/main.mw", limit, declaration, None),
                 ("src/main.mw", conflict, duplicate, None),
-                ("src/main.mw", limit, collision_use, Some(&cause)),
+                ("src/main.mw", limit, collision_use, Some(cause)),
             ],
             "an over-wide enum retains its name and refusal against a later declaration",
         ),
@@ -198,7 +198,7 @@ fn an_over_wide_enum_occupies_its_name() {
                     row.file().as_str(),
                     row.code(),
                     row.span(),
-                    row.refused_declaration(),
+                    cause_facts(row),
                 )
             })
             .collect();

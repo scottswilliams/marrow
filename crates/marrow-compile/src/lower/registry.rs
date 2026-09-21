@@ -422,10 +422,11 @@ fn refuse_annotation(
     }
 }
 
-/// The dotted module name a multi-segment `::` prefix spells. A module path joins on
-/// `.`, unlike a name path, so this is the registry's own spelling and not the syntax
-/// crate's `::` join.
-fn dotted_module_path(prefix: &[NameSegment]) -> String {
+/// A path's segments in the dotted spelling this crate identifies modules by. The
+/// source spells the same path with `::`; the two are representations of one path, so
+/// the identity is built from the segments rather than by rewriting a rendered
+/// spelling's separators.
+pub(crate) fn dotted_module_path(prefix: &[NameSegment]) -> String {
     prefix
         .iter()
         .map(NameSegment::text)
@@ -455,10 +456,14 @@ pub(crate) struct GenericTemplate<'p> {
 #[derive(Default)]
 pub(crate) struct GenericRegistry<'p> {
     pub(super) templates: Vec<GenericTemplate<'p>>,
-    /// `(module, name)` to template index, keyed exactly as the signature ledger keys
-    /// its own declarations, so a generic call and a monomorphic call resolve a name
-    /// the same way and at the same cost. A repeated declaration keeps the first.
-    by_name: BTreeMap<(String, String), usize>,
+    /// Template indexes ordered by `(module, name)`, so a lookup binary-searches with
+    /// borrowed keys and allocates nothing. A repeated declaration keeps the first.
+    by_name: Vec<usize>,
+}
+
+/// The `(module, name)` key a generic call resolves a template by.
+fn template_key<'t>(template: &'t GenericTemplate<'_>) -> (&'t str, &'t str) {
+    (template.module.as_str(), template.decl.name.as_str())
 }
 
 impl<'p> GenericRegistry<'p> {
@@ -487,12 +492,11 @@ impl<'p> GenericRegistry<'p> {
                     .collect(),
             })
             .collect::<Vec<GenericTemplate<'p>>>();
-        let mut by_name = BTreeMap::new();
-        for (index, template) in templates.iter().enumerate() {
-            by_name
-                .entry((template.module.clone(), template.decl.name.clone()))
-                .or_insert(index);
-        }
+        let mut by_name: Vec<usize> = (0..templates.len()).collect();
+        by_name.sort_by_key(|&index| (template_key(&templates[index]), index));
+        by_name.dedup_by(|later, earlier| {
+            template_key(&templates[*later]) == template_key(&templates[*earlier])
+        });
         Self { templates, by_name }
     }
 
@@ -504,8 +508,9 @@ impl<'p> GenericRegistry<'p> {
     /// The template index of a generic call to `name` in `module`, qualified or not.
     pub(super) fn same_module(&self, module: &str, name: &str) -> Option<usize> {
         self.by_name
-            .get(&(module.to_string(), name.to_string()))
-            .copied()
+            .binary_search_by(|&index| template_key(&self.templates[index]).cmp(&(module, name)))
+            .ok()
+            .map(|position| self.by_name[position])
     }
 
     /// The template named `item` in `module`, with its `pub` flag, for a qualified

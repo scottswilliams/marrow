@@ -696,7 +696,6 @@ fn a_store_refused_after_real_staging_rolls_back_to_the_unstaged_image() {
             budget.clone(),
         )
         .expect("the corpus registry stays within the ledger budget");
-        assert!(diagnostics.is_empty(), "the corpus types check clean");
         draft.commit();
         crate::durable::DurableRegistry::build(
             &mut draft_owner,
@@ -710,7 +709,8 @@ fn a_store_refused_after_real_staging_rolls_back_to_the_unstaged_image() {
         .expect("the durable build settles refusals as diagnostics, not errors");
         let rows: Vec<String> = diagnostics
             .finish()
-            .expect_complete()
+            .into_complete()
+            .expect("a complete terminal")
             .iter()
             .map(|row| row.message().to_string())
             .collect();
@@ -803,7 +803,11 @@ fn a_registry_slice_drift_is_a_typed_invariant_not_a_user_error() {
         "registry/slice drift must abort at the invariant boundary",
     );
     assert!(
-        diagnostics.finish().expect_complete().is_empty(),
+        diagnostics
+            .finish()
+            .into_complete()
+            .expect("a complete terminal")
+            .is_empty(),
         "the drift is a compiler fault; no user-facing row may be minted for it",
     );
 }

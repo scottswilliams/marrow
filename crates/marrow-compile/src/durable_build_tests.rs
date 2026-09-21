@@ -53,7 +53,7 @@ mod generic_enum_shape_tests {
             DeclarationBudget::default(),
         )
         .expect("the test registry stays within the ledger budget");
-        assert!(build_diagnostics.is_empty());
+        assert!(build_diagnostics.finish().is_empty());
         let option = records
             .instantiate_reserved_option(
                 &mut draft,
@@ -107,15 +107,13 @@ mod generic_enum_shape_tests {
             "the test intentionally supplies no ledger"
         );
         drop(resolver);
-        assert_eq!(
-            diagnostics.probe_rows().len(),
-            3,
-            "sum plus two member identity gaps"
-        );
+        let rows = diagnostics
+            .finish()
+            .into_complete()
+            .expect("a complete terminal");
+        assert_eq!(rows.len(), 3, "sum plus two member identity gaps");
         assert!(
-            diagnostics
-                .probe_rows()
-                .iter()
+            rows.iter()
                 .all(|diagnostic| diagnostic.code() == Code::CheckDurableIdentity)
         );
     }
@@ -138,7 +136,7 @@ mod generic_enum_shape_tests {
             DeclarationBudget::default(),
         )
         .expect("the test registry stays within the ledger budget");
-        assert!(build_diagnostics.is_empty());
+        assert!(build_diagnostics.finish().is_empty());
         let name = draft
             .intern_string("Unavailable")
             .expect("a within-domain mint");
@@ -178,9 +176,13 @@ mod generic_enum_shape_tests {
         );
         assert!(resolver.refusal.is_some());
         drop(resolver);
-        assert_eq!(diagnostics.probe_rows().len(), 1);
-        assert_eq!(diagnostics.probe_rows()[0].code(), Code::CheckUnsupported);
-        assert!(diagnostics.probe_rows()[0].identity_gap().is_none());
+        let rows = diagnostics
+            .finish()
+            .into_complete()
+            .expect("a complete terminal");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].code(), Code::CheckUnsupported);
+        assert!(rows[0].identity_gap().is_none());
     }
 
     #[test]
@@ -233,7 +235,7 @@ mod generic_enum_shape_tests {
         assert_eq!(resolver.invariant, Some(expected));
         assert!(resolver.value_memo.is_empty());
         drop(resolver);
-        assert!(diagnostics.is_empty());
+        assert!(diagnostics.finish().is_empty());
     }
 
     #[test]
@@ -275,7 +277,6 @@ store ^holders[id: int]: Holder
             DeclarationBudget::default(),
         )
         .expect("the test registry stays within the ledger budget");
-        assert!(diagnostics.is_empty());
         let option = match records
             .by_name(&crate::source::ScopedName::new(
                 &marrow_project::SourceOrigin::Root,
@@ -311,7 +312,7 @@ store ^holders[id: int]: Holder
         assert_eq!(resolver.invariant, Some(expected));
         assert!(resolver.value_memo.is_empty());
         drop(resolver);
-        assert!(diagnostics.is_empty());
+        assert!(diagnostics.finish().is_empty());
         let after = draft.encode().expect("rejected draft still encodes");
         assert_eq!(after.bytes, before.bytes);
         assert_eq!(after.image_id, before.image_id);
@@ -741,7 +742,6 @@ mod post_staging_custody_tests {
             DeclarationBudget::default(),
         )
         .expect("the corpus registry stays within the ledger budget");
-        assert!(diagnostics.is_empty(), "the corpus types check clean");
         draft.commit();
 
         let committed = corpus_project(roots);
@@ -758,7 +758,8 @@ mod post_staging_custody_tests {
             outcome: outcome.map(|_| ()),
             published: diagnostics
                 .finish()
-                .expect_complete()
+                .into_complete()
+                .expect("a complete terminal")
                 .iter()
                 .map(|row| row.message().to_string())
                 .collect(),

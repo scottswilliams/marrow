@@ -141,13 +141,6 @@ impl FileRef {
     pub(crate) fn index(self) -> usize {
         self.0 as usize
     }
-
-    /// Resolve this coordinate against the project whose module order minted it.
-    #[cfg(test)]
-    #[track_caller]
-    pub(crate) fn of(self, project: &ProjectInput) -> ProjectFile {
-        ProjectFile::from(&project.modules()[self.index()])
-    }
 }
 
 /// One retained span, in the coordinate domain the project owner already admits.
@@ -835,20 +828,6 @@ pub(crate) struct RetainedFacts {
 pub(crate) enum BoundedAnalysisFacts {
     Complete(RetainedFacts),
     Limited { limit: AnalysisFactLimit },
-}
-
-impl BoundedAnalysisFacts {
-    /// Test support: the complete retained set, or a panic on a limited terminal.
-    #[cfg(test)]
-    #[track_caller]
-    pub(crate) fn expect_complete(&self) -> &RetainedFacts {
-        match self {
-            BoundedAnalysisFacts::Complete(facts) => facts,
-            BoundedAnalysisFacts::Limited { limit } => {
-                panic!("expected a complete fact terminal, got {limit:?}")
-            }
-        }
-    }
 }
 
 /// A selectively-queried editor fact: `Present`, legitimately `Absent`, or `Unavailable`

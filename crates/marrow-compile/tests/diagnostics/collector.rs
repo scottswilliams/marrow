@@ -648,8 +648,6 @@ mod retention {
 /// No pre-collector amplification: an error-dense many-file project is bounded by the one
 /// compiler collector's ceiling, because the drive absorbs each file's syntax terminal
 /// immediately after parsing it and no un-absorbed per-file collection ever accumulates.
-/// The structural half — no collection of un-absorbed `ParsedSource` values can exist —
-/// is enforced by the absence gate in `absence_gates.rs`.
 mod amplification {
     use super::*;
     fn assert_limit(failure: CompileFailure, kind: ResourceLimitKind, limit: usize) {

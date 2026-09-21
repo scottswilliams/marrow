@@ -402,7 +402,7 @@ impl Diagnostics {
         self.diagnostics
             .iter()
             .filter_map(|d| d.identity_gap())
-            .any(|gap| gap.kind == kind && gap.path == path && gap.retired == retired)
+            .any(|gap| gap.kind() == kind && gap.path() == path && gap.retired() == retired)
     }
 }
 

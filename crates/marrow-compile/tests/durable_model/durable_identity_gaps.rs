@@ -37,7 +37,7 @@ pub fn readSecond(id: int): int? {
         .iter()
         .filter_map(|diagnostic| diagnostic.identity_gap())
         .map(|gap| {
-            assert!(!gap.retired, "the fixture has no retired anchors");
+            assert!(!gap.retired(), "the fixture has no retired anchors");
             gap.anchor()
         })
         .collect();
