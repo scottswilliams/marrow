@@ -85,6 +85,13 @@ impl<'a> LineMap<'a> {
     }
 }
 
+/// The byte offset immediately after `needle`'s first occurrence in `source`: how a test
+/// addresses a position without counting bytes by hand.
+#[cfg(test)]
+pub(crate) fn after(source: &str, needle: &str) -> usize {
+    source.find(needle).expect("needle present") + needle.len()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

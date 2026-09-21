@@ -121,8 +121,6 @@ pub(crate) enum ErrorCode {
     ContentModified,
     /// An open document's last edit was refused by overlay admission.
     CaptureUnavailable,
-    /// No analysis result exists yet for the current revision.
-    AnalysisNotReady,
     /// The analysis exhausted a resource bound; recoverable.
     AnalysisResourceLimit,
 }
@@ -145,9 +143,7 @@ impl ErrorCode {
             Self::InternalError => -32603,
             Self::ServerNotInitialized => -32002,
             Self::ContentModified => -32801,
-            Self::CaptureUnavailable | Self::AnalysisNotReady | Self::AnalysisResourceLimit => {
-                -32803
-            }
+            Self::CaptureUnavailable | Self::AnalysisResourceLimit => -32803,
         }
     }
 
@@ -168,7 +164,6 @@ impl ErrorCode {
             Self::ServerNotInitialized => "server not initialized",
             Self::ContentModified => "content modified",
             Self::CaptureUnavailable => "project capture unavailable",
-            Self::AnalysisNotReady => "analysis not ready",
             Self::AnalysisResourceLimit => "analysis resource limit",
         }
     }

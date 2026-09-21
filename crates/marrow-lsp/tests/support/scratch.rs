@@ -2,8 +2,6 @@
 //! integration alike. The in-crate suites reach this file through
 //! `#[path = "../tests/support/scratch.rs"]`, so no case mints its own.
 
-#![allow(dead_code)]
-
 use std::fs;
 use std::ops::Deref;
 use std::path::{Component, Path, PathBuf};
@@ -53,12 +51,6 @@ impl TempDir {
             fs::create_dir_all(parent).expect("create parent");
         }
         fs::write(path, contents).expect("write fixture");
-    }
-
-    /// The directory's `file://` URI, built from its normal components the way a
-    /// client would send one.
-    pub fn uri(&self) -> String {
-        uri_of(&self.root)
     }
 }
 

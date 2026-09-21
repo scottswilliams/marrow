@@ -349,6 +349,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::analysis::{AnalysisOutcome, OverlayInput, run_analysis};
+    use crate::position::after;
     use crate::scratch::{self, TempDir};
     use crate::uri::{DocumentKey, OriginRoots, SelectedRoot, document_uri};
     use marrow_compile::InputRevision;
@@ -471,11 +472,6 @@ mod tests {
     /// document symbols.
     const GRAPH_REPORT: &str =
         include_str!("../../../fixtures/v01/conformance/graph_report/src/graph_report.mw");
-
-    /// The byte offset immediately after `needle`'s first occurrence in `source`.
-    fn after(source: &str, needle: &str) -> usize {
-        source.find(needle).expect("needle present") + needle.len()
-    }
 
     #[test]
     fn completion_at_enum_path_offers_the_members() {

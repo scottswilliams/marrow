@@ -24,8 +24,9 @@ pub(crate) enum Phase {
     AwaitInitialized,
     /// Normal operation: documents and semantic requests are served.
     Running,
-    /// `shutdown` accepted; its response has not been delivered. Every later request is
-    /// `-32600`; only a valid `exit` advances.
+    /// `shutdown` accepted; its response has not been delivered. From here on a
+    /// semantic request is `-32002` and every other request `-32600`; only a valid
+    /// `exit` advances.
     ShutdownReplyPending,
     /// `shutdown` response delivered; awaiting `exit`.
     AwaitExit,

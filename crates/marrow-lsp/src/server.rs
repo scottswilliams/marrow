@@ -127,10 +127,10 @@ fn drive(
             coordinator.worker_busy = false;
             coordinator.pending_recompute = true;
         }
-        while let Some(bytes) = coordinator.outbox.front() {
+        while let Some(bytes) = coordinator.outbound.outbox.front() {
             match frame_tx.try_send(bytes.clone()) {
                 Ok(()) => {
-                    coordinator.outbox.pop_front();
+                    coordinator.outbound.outbox.pop_front();
                 }
                 Err(_) => break,
             }
@@ -340,6 +340,88 @@ impl RequestLedger {
     }
 }
 
+// ---- outbound queue ----
+
+/// The outbound path: encoded frames for the writer in order, the owners of frames
+/// awaiting a delivery receipt, and frames waiting for credit. Every handoff passes
+/// through this type under its capacity check, so `in_flight.len() <= OUTBOUND_CREDITS`
+/// holds by construction.
+struct OutboundQueue {
+    /// Encoded frames for the driver to write, in order.
+    outbox: VecDeque<Vec<u8>>,
+    /// The owners of handed-off frames awaiting a delivery receipt. FIFO: the front is
+    /// the oldest, matching the single writer. Its length is the spent credit.
+    in_flight: VecDeque<FrameOwner>,
+    /// Frames waiting for credit, in order.
+    pending: VecDeque<(Vec<u8>, FrameOwner)>,
+}
+
+impl OutboundQueue {
+    fn new() -> Self {
+        Self {
+            outbox: VecDeque::new(),
+            in_flight: VecDeque::new(),
+            pending: VecDeque::new(),
+        }
+    }
+
+    /// The credit not yet spent: frames may be handed off while fewer than
+    /// `OUTBOUND_CREDITS` await their delivery receipts.
+    fn capacity(&self) -> usize {
+        OUTBOUND_CREDITS - self.in_flight.len()
+    }
+
+    /// Hand a frame off if credit allows, else queue it behind the frames already
+    /// waiting. Either way the frame is retained until its delivery.
+    fn admit(&mut self, bytes: Vec<u8>, owner: FrameOwner) {
+        if self.capacity() == 0 {
+            self.pending.push_back((bytes, owner));
+        } else {
+            self.dispatch(bytes, owner);
+        }
+    }
+
+    /// Hand off frames from `source` while credit allows, returning how many moved. A
+    /// source frame never enters the waiting queue: it stays with its owner.
+    fn feed(&mut self, source: &mut VecDeque<Vec<u8>>, owner: &FrameOwner) -> usize {
+        let mut moved = 0;
+        while self.capacity() > 0 {
+            let Some(bytes) = source.pop_front() else {
+                break;
+            };
+            self.dispatch(bytes, owner.clone());
+            moved += 1;
+        }
+        moved
+    }
+
+    /// Hand off the oldest waiting frame if credit allows.
+    fn admit_waiting(&mut self) {
+        if self.capacity() > 0
+            && let Some((bytes, owner)) = self.pending.pop_front()
+        {
+            self.dispatch(bytes, owner);
+        }
+    }
+
+    /// Consume the oldest delivery receipt: the owner of the frame the writer completed.
+    fn receipt(&mut self) -> Option<FrameOwner> {
+        self.in_flight.pop_front()
+    }
+
+    /// The owners of every handed-off or waiting frame that has not delivered.
+    fn undelivered_owners(&self) -> impl Iterator<Item = &FrameOwner> {
+        self.in_flight
+            .iter()
+            .chain(self.pending.iter().map(|(_, owner)| owner))
+    }
+
+    fn dispatch(&mut self, bytes: Vec<u8>, owner: FrameOwner) {
+        self.outbox.push_back(bytes);
+        self.in_flight.push_back(owner);
+    }
+}
+
 // ---- held queries ----
 
 /// A semantic request held until current analysis completes and outbound credit is
@@ -409,14 +491,9 @@ struct Coordinator {
 
     requests: RequestLedger,
     anonymous_slots: usize,
-    anonymous_capacity: usize,
     held_queries: Vec<HeldQuery>,
 
-    /// The owners of handed-off frames awaiting a delivery receipt. FIFO: the front is
-    /// the oldest, matching the single writer. Its length is the spent outbound credit.
-    in_flight: VecDeque<FrameOwner>,
-    /// Frames waiting for outbound credit, in order.
-    pending_frames: VecDeque<(Vec<u8>, FrameOwner)>,
+    outbound: OutboundQueue,
 
     worker_busy: bool,
     pending_recompute: bool,
@@ -427,8 +504,6 @@ struct Coordinator {
     publication: Option<PublicationState>,
     pending_publication: Option<InputRevision>,
 
-    /// Outbound frame bytes for the driver to write, in order.
-    outbox: VecDeque<Vec<u8>>,
     /// At most one analysis job for the driver to dispatch.
     job_out: Option<WorkerJob>,
 
@@ -453,17 +528,14 @@ impl Coordinator {
             published: Vec::new(),
             requests: RequestLedger::new(MAX_LIVE_REQUEST_ENTRIES),
             anonymous_slots: 0,
-            anonymous_capacity: MAX_ANONYMOUS_ERROR_SLOTS,
             held_queries: Vec::new(),
-            in_flight: VecDeque::new(),
-            pending_frames: VecDeque::new(),
+            outbound: OutboundQueue::new(),
             worker_busy: false,
             pending_recompute: false,
             episode: CaptureEpisode::Eligible,
             next_episode: 0,
             publication: None,
             pending_publication: None,
-            outbox: VecDeque::new(),
             job_out: None,
             terminal_classes: Vec::new(),
             exit_code: 1,
@@ -528,12 +600,10 @@ impl Coordinator {
                 Some(parsed) => self.on_semantic_request(id, parsed),
                 None => match self.lifecycle.gate_request() {
                     RequestGate::NotInitialized => {
-                        self.answer_error(&id, ErrorCode::ServerNotInitialized)
+                        self.respond(id, Err(ErrorCode::ServerNotInitialized))
                     }
-                    RequestGate::InvalidInPhase => {
-                        self.answer_error(&id, ErrorCode::InvalidInPhase)
-                    }
-                    RequestGate::Route => self.answer_error(&id, ErrorCode::MethodNotFound),
+                    RequestGate::InvalidInPhase => self.respond(id, Err(ErrorCode::InvalidInPhase)),
+                    RequestGate::Route => self.respond(id, Err(ErrorCode::MethodNotFound)),
                 },
             },
         }
@@ -541,7 +611,7 @@ impl Coordinator {
 
     fn on_initialize(&mut self, id: RequestId, params: Option<Box<serde_json::value::RawValue>>) {
         if self.lifecycle.on_initialize() != RequestGate::Route {
-            self.answer_error(&id, ErrorCode::InitializeRepeated);
+            self.respond(id, Err(ErrorCode::InitializeRepeated));
             return;
         }
         let root = match decode_params::<InitializeParams>(params.as_deref()) {
@@ -549,13 +619,13 @@ impl Coordinator {
                 Ok(root) => root,
                 Err(_) => {
                     self.lifecycle = restore_after_rejected_initialize();
-                    self.answer_error(&id, ErrorCode::MalformedWorkspaceRoot);
+                    self.respond(id, Err(ErrorCode::MalformedWorkspaceRoot));
                     return;
                 }
             },
             None => {
                 self.lifecycle = restore_after_rejected_initialize();
-                self.answer_error(&id, ErrorCode::MalformedInitializeParams);
+                self.respond(id, Err(ErrorCode::MalformedInitializeParams));
                 return;
             }
         };
@@ -583,8 +653,8 @@ impl Coordinator {
                     self.terminate(1);
                 }
             }
-            RequestGate::NotInitialized => self.answer_error(&id, ErrorCode::ServerNotInitialized),
-            RequestGate::InvalidInPhase => self.answer_error(&id, ErrorCode::InvalidInPhase),
+            RequestGate::NotInitialized => self.respond(id, Err(ErrorCode::ServerNotInitialized)),
+            RequestGate::InvalidInPhase => self.respond(id, Err(ErrorCode::InvalidInPhase)),
         }
     }
 
@@ -594,16 +664,16 @@ impl Coordinator {
         parsed: Result<(SemanticQuery, lsp_types::Uri), MalformedParams>,
     ) {
         if self.lifecycle.gate_request() != RequestGate::Route {
-            self.answer_error(&id, ErrorCode::ServerNotInitialized);
+            self.respond(id, Err(ErrorCode::ServerNotInitialized));
             return;
         }
         // An unavailable project makes every semantic request the same fixed -32803.
         if !self.ledger.all_available() {
-            self.answer_error(&id, ErrorCode::CaptureUnavailable);
+            self.respond(id, Err(ErrorCode::CaptureUnavailable));
             return;
         }
         let Some(root) = self.root.clone() else {
-            self.answer_error(&id, ErrorCode::NoWorkspaceRoot);
+            self.respond(id, Err(ErrorCode::NoWorkspaceRoot));
             return;
         };
         // The query was decoded to fixed-size fields at admission; binding it to a
@@ -612,11 +682,11 @@ impl Coordinator {
             Some((query, DocumentKey::from_uri(uri.as_str(), &root).ok()?))
         });
         let Some((query, key)) = key else {
-            self.answer_error(&id, ErrorCode::MalformedParams);
+            self.respond(id, Err(ErrorCode::MalformedParams));
             return;
         };
         let Some(DocumentState::OpenText { version, .. }) = self.ledger.get(&key) else {
-            self.answer_error(&id, ErrorCode::ContentModified);
+            self.respond(id, Err(ErrorCode::ContentModified));
             return;
         };
         let held = HeldQuery {
@@ -643,27 +713,19 @@ impl Coordinator {
             Some(DocumentState::OpenText { version, .. }) if *version == held.version
         );
         if held.revision != self.current_revision || !doc_ok {
-            self.answer_error(&held.id, ErrorCode::ContentModified);
+            self.respond(held.id, Err(ErrorCode::ContentModified));
             return;
         }
         let answer = match &self.analysis {
             CurrentAnalysis::Ready(snapshot) => self.answer_ready(snapshot, &held),
             CurrentAnalysis::ResourceLimited(_) => Err(ErrorCode::AnalysisResourceLimit),
-            CurrentAnalysis::Pending => Err(ErrorCode::AnalysisNotReady),
-        };
-        match answer {
-            Ok(result) => {
-                let id = held.id.clone();
-                self.respond(
-                    id,
-                    Outbound::Result {
-                        id: held.id,
-                        result,
-                    },
-                );
+            CurrentAnalysis::Pending => {
+                // No result for this revision yet: the query stays held until one lands.
+                self.held_queries.push(held);
+                return;
             }
-            Err(code) => self.answer_error(&held.id, code),
-        }
+        };
+        self.respond(held.id, answer);
     }
 
     /// The reply for a held query against the ready snapshot. The document is resolved
@@ -921,7 +983,7 @@ impl Coordinator {
     /// against free credit, so replies never enter the pending-frame queue; the
     /// unanswered remainder stays held at fixed-size cost, bounded by the request ledger.
     fn serve_ready_queries(&mut self) {
-        while !matches!(self.analysis, CurrentAnalysis::Pending) && self.outbound_capacity() > 0 {
+        while !matches!(self.analysis, CurrentAnalysis::Pending) && self.outbound.capacity() > 0 {
             let Some(query) = self.held_queries.pop() else {
                 break;
             };
@@ -1092,20 +1154,14 @@ impl Coordinator {
         )))
     }
 
-    /// Move pre-encoded publication frames into the outbound path one per available credit,
+    /// Move pre-encoded publication frames into the outbound path while credit allows,
     /// so publication retention stays bounded by the plan buffer and never floods the
-    /// pending-frame queue past `W`.
+    /// waiting queue past `W`.
     fn feed_publication(&mut self) {
-        while self.outbound_capacity() > 0 {
-            let Some(state) = self.publication.as_mut() else {
-                break;
-            };
-            let Some(bytes) = state.pending.pop_front() else {
-                break;
-            };
-            state.in_flight_count += 1;
-            self.outbox.push_back(bytes);
-            self.in_flight.push_back(FrameOwner::Publication);
+        if let Some(state) = self.publication.as_mut() {
+            state.in_flight_count += self
+                .outbound
+                .feed(&mut state.pending, &FrameOwner::Publication);
         }
     }
 
@@ -1143,17 +1199,10 @@ impl Coordinator {
 
     // ---- outbound plumbing ----
 
-    /// The outbound credit not yet spent: a frame may be handed to the writer while fewer
-    /// than `OUTBOUND_CREDITS` frames await their delivery receipts.
-    fn outbound_capacity(&self) -> usize {
-        OUTBOUND_CREDITS - self.in_flight.len()
-    }
-
     /// Encode and hand off one frame against outbound credit. Returns whether the frame
     /// was handed off. A pre-handoff encode failure emits zero bytes and returns `false`,
-    /// so the caller reconciles its own bookkeeping rather than stranding it. The credit
-    /// stays spent until the delivery receipt, whether the frame is written immediately
-    /// or queued.
+    /// so the caller reconciles its own bookkeeping rather than stranding it. The frame is
+    /// retained until its delivery receipt, whether written immediately or queued.
     #[must_use]
     fn hand_off(&mut self, outbound: &Outbound, owner: FrameOwner) -> bool {
         let Ok(bytes) = encode(outbound) else {
@@ -1162,20 +1211,26 @@ impl Coordinator {
         if let Some(id) = owner.owned_id() {
             self.requests.set_awaiting(id);
         }
-        if self.outbound_capacity() > 0 {
-            self.outbox.push_back(bytes);
-            self.in_flight.push_back(owner);
-        } else {
-            self.pending_frames.push_back((bytes, owner));
-        }
+        self.outbound.admit(bytes, owner);
         true
     }
 
-    /// Hand off a known-id response. On a pre-handoff encode failure the entry gets exactly
-    /// one fixed same-id `-32603` fallback — already internal-error class, so it takes no
-    /// further fallback — and fail-stops if even that cannot encode. A dropped response is
-    /// therefore never a silent no-reply.
-    fn respond(&mut self, id: RequestId, outbound: Outbound) {
+    /// Hand off a known-id response: a result, or the error named by its code. On a
+    /// pre-handoff encode failure the entry gets exactly one fixed same-id `-32603`
+    /// fallback — already internal-error class, so it takes no further fallback — and
+    /// fail-stops if even that cannot encode. A dropped response is therefore never a
+    /// silent no-reply.
+    fn respond(&mut self, id: RequestId, body: Result<ResponseResult, ErrorCode>) {
+        let outbound = match body {
+            Ok(result) => Outbound::Result {
+                id: id.clone(),
+                result,
+            },
+            Err(code) => Outbound::Error {
+                id: Some(id.clone()),
+                code,
+            },
+        };
         if self.hand_off(&outbound, FrameOwner::Request(id.clone())) {
             return;
         }
@@ -1188,26 +1243,16 @@ impl Coordinator {
         }
     }
 
-    fn answer_error(&mut self, id: &RequestId, code: ErrorCode) {
-        self.respond(
-            id.clone(),
-            Outbound::Error {
-                id: Some(id.clone()),
-                code,
-            },
-        );
-    }
-
     fn reserve_and_error(&mut self, id: RequestId, code: ErrorCode) {
         if !self.requests.reserve(id.clone()) {
             self.terminate(1);
             return;
         }
-        self.answer_error(&id, code);
+        self.respond(id, Err(code));
     }
 
     fn send_null_error(&mut self, code: ErrorCode) {
-        if self.anonymous_slots >= self.anonymous_capacity {
+        if self.anonymous_slots >= MAX_ANONYMOUS_ERROR_SLOTS {
             // Anonymous-slot exhaustion is the same zero-response terminal outcome.
             self.terminate(1);
             return;
@@ -1230,7 +1275,7 @@ impl Coordinator {
     }
 
     fn on_receipt(&mut self) {
-        let Some(owner) = self.in_flight.pop_front() else {
+        let Some(owner) = self.outbound.receipt() else {
             return;
         };
         match owner {
@@ -1253,29 +1298,18 @@ impl Coordinator {
         // then a ready held query, then a queued small frame.
         self.feed_publication();
         self.serve_ready_queries();
-        if self.outbound_capacity() > 0
-            && let Some((bytes, owner)) = self.pending_frames.pop_front()
-        {
-            self.outbox.push_back(bytes);
-            self.in_flight.push_back(owner);
-        }
+        self.outbound.admit_waiting();
     }
 
     // ---- terminal ----
 
     fn on_terminal(&mut self) {
         // First-wins terminal: every unretired request is classified exactly once.
-        let mut awaiting: Vec<RequestId> = Vec::new();
-        for owner in &self.in_flight {
-            if let Some(id) = owner.owned_id() {
-                awaiting.push(id.clone());
-            }
-        }
-        for (_, owner) in &self.pending_frames {
-            if let Some(id) = owner.owned_id() {
-                awaiting.push(id.clone());
-            }
-        }
+        let awaiting: Vec<RequestId> = self
+            .outbound
+            .undelivered_owners()
+            .filter_map(|owner| owner.owned_id().cloned())
+            .collect();
         for id in &awaiting {
             self.terminal_classes
                 .push((id.clone(), TerminalClass::DeliveryUnknown));
@@ -1413,7 +1447,7 @@ fn initialize_result() -> InitializeResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::position::LineMap;
+    use crate::position::{LineMap, after};
     use crate::scratch::{self, TempDir};
     use std::fs;
     use std::path::Path;
@@ -1465,6 +1499,7 @@ mod tests {
     /// The outbox frames as UTF-8 strings, for wire-level assertions.
     fn frames(coordinator: &Coordinator) -> Vec<String> {
         coordinator
+            .outbound
             .outbox
             .iter()
             .map(|bytes| String::from_utf8(bytes.clone()).unwrap())
@@ -1551,16 +1586,11 @@ mod tests {
         dir
     }
 
-    /// The byte offset immediately after `needle`'s first occurrence in `source`.
-    fn after(source: &str, needle: &str) -> usize {
-        source.find(needle).expect("needle present") + needle.len()
-    }
-
     /// A running coordinator with its first analysis delivered and `main` open at version
     /// 1, whose analysis result has arrived but not yet been delivered.
     fn opened(dir: &Path, main: &str) -> Coordinator {
         let mut coordinator = running(dir);
-        coordinator.outbox.clear();
+        coordinator.outbound.outbox.clear();
         let initial = run_next_job(&mut coordinator);
         coordinator.on_worker_result(initial);
         deliver_frames(&mut coordinator);
@@ -1695,7 +1725,7 @@ mod tests {
         }
         assert_eq!(coordinator.requests.entries.len(), MAX_LIVE_REQUEST_ENTRIES);
         assert!(coordinator.running, "still viable at N");
-        let frames_before = coordinator.outbox.len();
+        let frames_before = coordinator.outbound.outbox.len();
 
         let over = MAX_LIVE_REQUEST_ENTRIES + 1;
         coordinator.on_frame(
@@ -1703,7 +1733,7 @@ mod tests {
         );
         assert!(!coordinator.running, "IngressOverload fail-stops at N+1");
         assert_eq!(
-            coordinator.outbox.len(),
+            coordinator.outbound.outbox.len(),
             frames_before,
             "the overloaded request emits no response"
         );
@@ -2009,7 +2039,7 @@ mod tests {
 
     fn deliver_frames(coordinator: &mut Coordinator) -> Vec<String> {
         let mut delivered = Vec::new();
-        while let Some(frame) = coordinator.outbox.pop_front() {
+        while let Some(frame) = coordinator.outbound.outbox.pop_front() {
             delivered.push(String::from_utf8(frame).expect("encoded UTF-8 frame"));
             coordinator.on_receipt();
         }
@@ -2038,7 +2068,7 @@ mod tests {
     fn diagnosed_coordinator(dir: &Path) -> Coordinator {
         let mut coordinator = running(dir);
         // `running` already delivered initialization; remove its retained test frame.
-        coordinator.outbox.clear();
+        coordinator.outbound.outbox.clear();
         let initial = run_next_job(&mut coordinator);
         coordinator.on_worker_result(initial);
         deliver_frames(&mut coordinator);
@@ -2398,13 +2428,13 @@ mod tests {
                 format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"noSuchMethod"}}"#).as_bytes(),
             );
         }
-        assert_eq!(coordinator.outbound_capacity(), 0);
+        assert_eq!(coordinator.outbound.capacity(), 0);
         coordinator.on_frame(hover_body(&dir, 20, 0, 0).as_bytes());
         coordinator.on_worker_result(stopped);
         coordinator.on_frame(hover_body(&dir, 21, 0, 0).as_bytes());
         assert_eq!(coordinator.held_queries.len(), 2);
         assert!(
-            coordinator.pending_frames.is_empty(),
+            coordinator.outbound.pending.is_empty(),
             "no eager error frames"
         );
         let plan = coordinator.publication.as_ref().expect("bounded stop plan");
@@ -2428,7 +2458,7 @@ mod tests {
             assert!(!coordinator.requests.is_live(&RequestId::Integer(id)));
         }
         assert!(coordinator.held_queries.is_empty());
-        assert!(coordinator.pending_frames.is_empty());
+        assert!(coordinator.outbound.pending.is_empty());
         assert!(coordinator.publication.is_none());
         assert_eq!(notifications(&delivered, "window/showMessage").len(), 1);
         cleanup(&dir);
@@ -2571,7 +2601,7 @@ mod tests {
         let dir = temp_project("query-local-limit", &main);
         fs::write(dir.join("src/other.mw"), other).expect("valid sibling module");
         let mut coordinator = running(&dir);
-        coordinator.outbox.clear();
+        coordinator.outbound.outbox.clear();
         let initial = run_next_job(&mut coordinator);
         coordinator.on_worker_result(initial);
         deliver_frames(&mut coordinator);
@@ -2765,10 +2795,10 @@ mod tests {
                 format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"noSuchMethod"}}"#).as_bytes(),
             );
         }
-        assert_eq!(coordinator.outbound_capacity(), 0);
+        assert_eq!(coordinator.outbound.capacity(), 0);
 
-        // A snapshot commits its publication plan but is credit-starved: the plan holds the
-        // exclusive credit with frames pending and nothing in flight.
+        // A snapshot commits its publication plan but is credit-starved: the plan is in
+        // flight with every frame still pending and none handed off.
         let snapshot = snapshot_at(&dir, main, coordinator.current_revision);
         coordinator.on_worker_result(AnalysisOutcome::Snapshot(snapshot));
         assert!(coordinator.publication.is_some(), "plan committed");
@@ -2783,7 +2813,7 @@ mod tests {
         assert_eq!(starved.in_flight_count, 0, "nothing fed yet");
 
         // Delivering a non-publication frame frees a credit; the receipt must feed the
-        // starved publication rather than leaving its credit held forever.
+        // starved publication rather than leaving the plan stalled forever.
         coordinator.on_receipt();
         assert!(
             coordinator
@@ -2793,7 +2823,7 @@ mod tests {
             "a freed credit feeds the starved publication"
         );
 
-        // Drain to completion: the exclusive credit is released.
+        // Drain to completion: the plan leaves flight.
         while coordinator.publication.is_some() {
             coordinator.on_receipt();
         }
@@ -2817,8 +2847,8 @@ mod tests {
                 format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"noSuchMethod"}}"#).as_bytes(),
             );
         }
-        assert_eq!(coordinator.outbound_capacity(), 0);
-        let pending_before = coordinator.pending_frames.len();
+        assert_eq!(coordinator.outbound.capacity(), 0);
+        let pending_before = coordinator.outbound.pending.len();
 
         // A burst of semantic requests with no free credit: they are held, not materialized.
         for id in 100..140 {
@@ -2834,7 +2864,7 @@ mod tests {
         let snapshot = snapshot_at(&dir, main, coordinator.current_revision);
         coordinator.on_worker_result(AnalysisOutcome::Snapshot(snapshot));
         assert_eq!(
-            coordinator.pending_frames.len(),
+            coordinator.outbound.pending.len(),
             pending_before,
             "replies never enter the pending-frame queue"
         );
@@ -2884,11 +2914,11 @@ mod tests {
         coordinator.job_out = None;
         let rev1 = coordinator.current_revision;
 
-        // First snapshot: publication A builds and holds the exclusive credit.
+        // First snapshot: publication A builds and is the one plan in flight.
         let snapshot_a = snapshot_at(&dir, main1, rev1);
         coordinator.on_worker_result(AnalysisOutcome::Snapshot(snapshot_a));
         assert!(coordinator.publication.is_some());
-        let frames_after_a = coordinator.outbox.len();
+        let frames_after_a = coordinator.outbound.outbox.len();
 
         // Advance the revision and deliver a newer snapshot while A is still in flight: it
         // must NOT build a second plan.
@@ -2899,12 +2929,12 @@ mod tests {
         coordinator.on_worker_result(AnalysisOutcome::Snapshot(snapshot_b));
         assert!(
             coordinator.pending_publication.is_some(),
-            "the newer set waits for the exclusive credit"
+            "the newer set waits for the in-flight plan"
         );
         assert_eq!(
-            coordinator.outbox.len(),
+            coordinator.outbound.outbox.len(),
             frames_after_a,
-            "no second plan frames while the first plan holds the credit"
+            "no second plan frames while the first plan is in flight"
         );
 
         // Deliver A's frames: on the final receipt, B builds from the final ledger.
@@ -2932,7 +2962,7 @@ mod tests {
         let snapshot1 = snapshot_at(&dir, main1, coordinator.current_revision);
         coordinator.on_worker_result(AnalysisOutcome::Snapshot(snapshot1));
         assert!(coordinator.publication.is_some());
-        let first_plan_frames = coordinator.outbox.len();
+        let first_plan_frames = coordinator.outbound.outbox.len();
 
         coordinator.on_frame(change_body(&dir, 2, main2).as_bytes());
         coordinator.job_out = None;
@@ -2953,7 +2983,7 @@ mod tests {
             "a pending snapshot from an older revision is not published"
         );
         assert_eq!(
-            coordinator.outbox.len(),
+            coordinator.outbound.outbox.len(),
             first_plan_frames,
             "no stale publication frame is encoded"
         );
