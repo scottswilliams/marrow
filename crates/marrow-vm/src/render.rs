@@ -1,7 +1,8 @@
-//! Canonical runtime value text. VM conversion and CLI output use this owner with
-//! their own byte limits. Every variable-size contribution is checked before it is
-//! appended. Nested aggregates share one destination; temporal scalars retain
-//! bounded scratch text from their canonical formatters.
+//! The one runtime value walker and its canonical text grammar. VM conversion renders
+//! through the text grammar with its own byte limit; the CLI's JSON output supplies its
+//! own [`ValueSink`] and shares the traversal. Every variable-size contribution is checked
+//! before it is appended, nested aggregates share one destination, and temporal scalars
+//! retain bounded scratch text from their canonical formatters.
 
 use std::fmt::{self, Write};
 
@@ -14,6 +15,144 @@ use crate::Value;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextLimit;
 
+/// One output grammar for a walked value. [`walk`] owns the traversal — nesting, record
+/// field order, and the type-metadata lookups — and reports every scalar and punctuation
+/// event to the sink, which owns its byte budget and spelling, so every contribution is
+/// checked before it lands and no rendering retains a separately rendered child.
+pub trait ValueSink {
+    /// Whether record fields are visited in ascending byte order of their names rather
+    /// than declaration order.
+    const SORTED_FIELDS: bool;
+
+    fn int(&mut self, value: i64) -> Result<(), TextLimit>;
+    fn bool(&mut self, value: bool) -> Result<(), TextLimit>;
+    fn text(&mut self, value: &str) -> Result<(), TextLimit>;
+    fn bytes(&mut self, value: &[u8]) -> Result<(), TextLimit>;
+    /// A date, instant, or duration in its canonical spelling.
+    fn temporal(&mut self, text: &str) -> Result<(), TextLimit>;
+    fn id(&mut self, keys: &[KeyScalar]) -> Result<(), TextLimit>;
+    fn absent(&mut self) -> Result<(), TextLimit>;
+    /// Between two payload items, fields, list items, or map entries.
+    fn separator(&mut self) -> Result<(), TextLimit>;
+    /// An enum's name and member, `None` where the image carries no metadata, before its
+    /// `payload` items.
+    fn enum_open(
+        &mut self,
+        name: Option<&str>,
+        member: Option<&str>,
+        payload: usize,
+    ) -> Result<(), TextLimit>;
+    fn enum_close(&mut self, payload: usize) -> Result<(), TextLimit>;
+    fn record_open(&mut self) -> Result<(), TextLimit>;
+    /// The label of the field whose value follows; `None` when the image names no field
+    /// at that slot.
+    fn field(&mut self, name: Option<&str>) -> Result<(), TextLimit>;
+    fn record_close(&mut self) -> Result<(), TextLimit>;
+    fn list_open(&mut self) -> Result<(), TextLimit>;
+    fn list_close(&mut self) -> Result<(), TextLimit>;
+    fn map_open(&mut self) -> Result<(), TextLimit>;
+    /// A map key, before its value.
+    fn map_key(&mut self, key: &KeyScalar) -> Result<(), TextLimit>;
+    fn map_close(&mut self, len: usize) -> Result<(), TextLimit>;
+}
+
+/// Walk `value` once, in its canonical order — records in declaration order (or name
+/// order, as the sink asks), lists in insertion order, maps in ascending key order — and
+/// report it to `sink`. An optional reports its inner value or `absent`.
+pub fn walk<S: ValueSink>(
+    value: &Value,
+    types: &[SealedRecordType],
+    enums: &[SealedEnumType],
+    sink: &mut S,
+) -> Result<(), TextLimit> {
+    match value {
+        Value::Int(v) => sink.int(*v),
+        Value::Bool(v) => sink.bool(*v),
+        Value::Text(v) => sink.text(v),
+        Value::Bytes(v) => sink.bytes(v),
+        Value::Date(v) => sink.temporal(&date_text(*v)),
+        Value::Instant(v) => sink.temporal(&instant_text(*v)),
+        Value::Duration(v) => sink.temporal(&marrow_temporal::format_duration(*v)),
+        Value::Id(_, keys) => sink.id(keys),
+        Value::Optional(None) => sink.absent(),
+        Value::Optional(Some(inner)) => walk(inner, types, enums, sink),
+        Value::Enum(idx, variant, payload) => {
+            let enum_def = enums.get(*idx as usize);
+            let variant_def = enum_def.and_then(|e| e.variants().get(*variant as usize));
+            sink.enum_open(
+                enum_def.map(SealedEnumType::name),
+                variant_def.map(|v| v.name().as_ref()),
+                payload.len(),
+            )?;
+            for (position, item) in payload.iter().enumerate() {
+                if position > 0 {
+                    sink.separator()?;
+                }
+                walk(item, types, enums, sink)?;
+            }
+            sink.enum_close(payload.len())
+        }
+        Value::Record(idx, slots) => {
+            let fields = types.get(*idx as usize).map(SealedRecordType::fields);
+            let name = |position: usize| -> Option<&str> {
+                fields
+                    .and_then(|fields| fields.get(position))
+                    .map(|field| &**field.name())
+            };
+            sink.record_open()?;
+            let emit = |sink: &mut S, count: usize, position: usize| {
+                if count > 0 {
+                    sink.separator()?;
+                }
+                sink.field(name(position))?;
+                match &slots[position] {
+                    Some(inner) => walk(inner, types, enums, sink),
+                    None => sink.absent(),
+                }
+            };
+            if S::SORTED_FIELDS {
+                let mut order: Vec<usize> = (0..slots.len()).collect();
+                order.sort_by(|a, b| {
+                    name(*a)
+                        .unwrap_or("")
+                        .as_bytes()
+                        .cmp(name(*b).unwrap_or("").as_bytes())
+                });
+                for (count, position) in order.into_iter().enumerate() {
+                    emit(sink, count, position)?;
+                }
+            } else {
+                for position in 0..slots.len() {
+                    emit(sink, position, position)?;
+                }
+            }
+            sink.record_close()
+        }
+        Value::List(_, _, items) => {
+            sink.list_open()?;
+            for (position, item) in items.iter().enumerate() {
+                if position > 0 {
+                    sink.separator()?;
+                }
+                walk(item, types, enums, sink)?;
+            }
+            sink.list_close()
+        }
+        Value::Map(_, _, entries) => {
+            sink.map_open()?;
+            for (position, (key, value)) in entries.iter().enumerate() {
+                if position > 0 {
+                    sink.separator()?;
+                }
+                sink.map_key(key)?;
+                walk(value, types, enums, sink)?;
+            }
+            sink.map_close(entries.len())
+        }
+    }
+}
+
+/// The canonical text grammar over one byte budget.
 struct Text {
     output: String,
     max_bytes: usize,
@@ -35,7 +174,7 @@ impl Text {
         Ok(())
     }
 
-    fn hex(&mut self, bytes: &[u8]) -> Result<(), TextLimit> {
+    fn write_hex(&mut self, bytes: &[u8]) -> Result<(), TextLimit> {
         let remaining = self.max_bytes - self.output.len();
         // Check the complete contribution without overflowing its doubled length.
         if remaining < 2 || bytes.len() > (remaining - 2) / 2 {
@@ -50,121 +189,108 @@ impl Text {
         Ok(())
     }
 
-    fn key(&mut self, key: &KeyScalar) -> Result<(), TextLimit> {
+    fn write_key(&mut self, key: &KeyScalar) -> Result<(), TextLimit> {
         match key {
             KeyScalar::Int(v) => write!(self, "{v}").map_err(|_| TextLimit),
             KeyScalar::Bool(v) => self.append(if *v { "true" } else { "false" }),
             KeyScalar::Str(v) => self.append(v),
-            KeyScalar::Bytes(v) => self.hex(v),
+            KeyScalar::Bytes(v) => self.write_hex(v),
             KeyScalar::Date(v) => self.append(&date_text(*v)),
             KeyScalar::Instant(v) => self.append(&instant_text(*v)),
             KeyScalar::Duration(v) => self.append(&marrow_temporal::format_duration(*v)),
         }
     }
 
-    fn id(&mut self, keys: &[KeyScalar]) -> Result<(), TextLimit> {
+    fn write_id(&mut self, keys: &[KeyScalar]) -> Result<(), TextLimit> {
         self.append("Id(")?;
         for (position, key) in keys.iter().enumerate() {
             if position > 0 {
                 self.append(", ")?;
             }
-            self.key(key)?;
+            self.write_key(key)?;
         }
         self.append(")")
     }
+}
 
-    fn enum_value(
+impl ValueSink for Text {
+    const SORTED_FIELDS: bool = false;
+
+    fn int(&mut self, value: i64) -> Result<(), TextLimit> {
+        write!(self, "{value}").map_err(|_| TextLimit)
+    }
+    fn bool(&mut self, value: bool) -> Result<(), TextLimit> {
+        self.append(if value { "true" } else { "false" })
+    }
+    fn text(&mut self, value: &str) -> Result<(), TextLimit> {
+        self.append(value)
+    }
+    fn bytes(&mut self, value: &[u8]) -> Result<(), TextLimit> {
+        self.write_hex(value)
+    }
+    fn temporal(&mut self, text: &str) -> Result<(), TextLimit> {
+        self.append(text)
+    }
+    fn id(&mut self, keys: &[KeyScalar]) -> Result<(), TextLimit> {
+        self.write_id(keys)
+    }
+    fn absent(&mut self) -> Result<(), TextLimit> {
+        self.append("absent")
+    }
+    fn separator(&mut self) -> Result<(), TextLimit> {
+        self.append(", ")
+    }
+    fn enum_open(
         &mut self,
-        types: &[SealedRecordType],
-        enums: &[SealedEnumType],
-        enum_idx: u16,
-        variant: u16,
-        payload: &[Value],
+        name: Option<&str>,
+        member: Option<&str>,
+        payload: usize,
     ) -> Result<(), TextLimit> {
-        let enum_def = enums.get(enum_idx as usize);
-        let variant_def = enum_def.and_then(|e| e.variants().get(variant as usize));
-        let enum_name = enum_def.map(SealedEnumType::name).unwrap_or("enum");
-        let member = variant_def.map(|v| v.name().as_ref()).unwrap_or("?");
-        self.append(enum_name)?;
+        self.append(name.unwrap_or("enum"))?;
         self.append("::")?;
-        self.append(member)?;
-        if !payload.is_empty() {
+        self.append(member.unwrap_or("?"))?;
+        if payload > 0 {
             self.append("(")?;
-            for (position, value) in payload.iter().enumerate() {
-                if position > 0 {
-                    self.append(", ")?;
-                }
-                self.value(value, types, enums)?;
-            }
+        }
+        Ok(())
+    }
+    fn enum_close(&mut self, payload: usize) -> Result<(), TextLimit> {
+        if payload > 0 {
             self.append(")")?;
         }
         Ok(())
     }
-
-    fn value(
-        &mut self,
-        value: &Value,
-        types: &[SealedRecordType],
-        enums: &[SealedEnumType],
-    ) -> Result<(), TextLimit> {
-        match value {
-            Value::Int(v) => write!(self, "{v}").map_err(|_| TextLimit),
-            Value::Bool(v) => self.append(if *v { "true" } else { "false" }),
-            Value::Text(v) => self.append(v),
-            Value::Bytes(v) => self.hex(v),
-            Value::Date(v) => self.append(&date_text(*v)),
-            Value::Instant(v) => self.append(&instant_text(*v)),
-            Value::Duration(v) => self.append(&marrow_temporal::format_duration(*v)),
-            Value::Enum(idx, variant, payload) => {
-                self.enum_value(types, enums, *idx, *variant, payload)
-            }
-            Value::Id(_, keys) => self.id(keys),
-            Value::Optional(None) => self.append("absent"),
-            Value::Optional(Some(inner)) => self.value(inner, types, enums),
-            Value::Record(idx, slots) => {
-                let fields = types.get(*idx as usize).map(SealedRecordType::fields);
-                self.append("{")?;
-                for (position, slot) in slots.iter().enumerate() {
-                    if position > 0 {
-                        self.append(", ")?;
-                    }
-                    if let Some(field) = fields.and_then(|fields| fields.get(position)) {
-                        self.append(field.name())?;
-                        self.append(": ")?;
-                    }
-                    match slot {
-                        Some(inner) => self.value(inner, types, enums)?,
-                        None => self.append("absent")?,
-                    }
-                }
-                self.append("}")
-            }
-            Value::List(_, _, items) => {
-                self.append("[")?;
-                for (position, item) in items.iter().enumerate() {
-                    if position > 0 {
-                        self.append(", ")?;
-                    }
-                    self.value(item, types, enums)?;
-                }
-                self.append("]")
-            }
-            Value::Map(_, _, entries) => {
-                self.append("[")?;
-                for (position, (key, value)) in entries.iter().enumerate() {
-                    if position > 0 {
-                        self.append(", ")?;
-                    }
-                    self.key(key)?;
-                    self.append(": ")?;
-                    self.value(value, types, enums)?;
-                }
-                if entries.is_empty() {
-                    self.append(":")?;
-                }
-                self.append("]")
-            }
+    fn record_open(&mut self) -> Result<(), TextLimit> {
+        self.append("{")
+    }
+    fn field(&mut self, name: Option<&str>) -> Result<(), TextLimit> {
+        if let Some(name) = name {
+            self.append(name)?;
+            self.append(": ")?;
         }
+        Ok(())
+    }
+    fn record_close(&mut self) -> Result<(), TextLimit> {
+        self.append("}")
+    }
+    fn list_open(&mut self) -> Result<(), TextLimit> {
+        self.append("[")
+    }
+    fn list_close(&mut self) -> Result<(), TextLimit> {
+        self.append("]")
+    }
+    fn map_open(&mut self) -> Result<(), TextLimit> {
+        self.append("[")
+    }
+    fn map_key(&mut self, key: &KeyScalar) -> Result<(), TextLimit> {
+        self.write_key(key)?;
+        self.append(": ")
+    }
+    fn map_close(&mut self, len: usize) -> Result<(), TextLimit> {
+        if len == 0 {
+            self.append(":")?;
+        }
+        self.append("]")
     }
 }
 
@@ -177,7 +303,7 @@ impl fmt::Write for Text {
 /// `0x`-prefixed lowercase hex, within `max_bytes` including the prefix.
 pub fn hex_bytes(bytes: &[u8], max_bytes: usize) -> Result<String, TextLimit> {
     let mut text = Text::new(max_bytes);
-    text.hex(bytes)?;
+    text.write_hex(bytes)?;
     Ok(text.output)
 }
 
@@ -214,14 +340,14 @@ pub fn instant_text(nanos: i128) -> String {
 /// The canonical scalar text of a key, within the caller's UTF-8 byte limit.
 pub fn key_text(key: &KeyScalar, max_bytes: usize) -> Result<String, TextLimit> {
     let mut text = Text::new(max_bytes);
-    text.key(key)?;
+    text.write_key(key)?;
     Ok(text.output)
 }
 
 /// `Id(k0, k1)`, within `max_bytes` including punctuation and every key.
 pub fn id_text(keys: &[KeyScalar], max_bytes: usize) -> Result<String, TextLimit> {
     let mut text = Text::new(max_bytes);
-    text.id(keys)?;
+    text.write_id(keys)?;
     Ok(text.output)
 }
 
@@ -236,7 +362,7 @@ pub fn value_text(
     max_bytes: usize,
 ) -> Result<String, TextLimit> {
     let mut text = Text::new(max_bytes);
-    text.value(value, types, enums)?;
+    walk(value, types, enums, &mut text)?;
     Ok(text.output)
 }
 

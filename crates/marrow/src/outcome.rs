@@ -11,6 +11,7 @@ use std::fmt::{self, Write};
 use marrow_codes::Code;
 use marrow_verify::{SealedEnumType, SealedRecordType};
 use marrow_vm::Value;
+use marrow_vm::render::{TextLimit, ValueSink};
 
 /// Raw UTF-8 bytes admitted for stdin and a returned bare string. JSON escaping
 /// can expand each byte sixfold; this is not an encoded-record bound.
@@ -462,8 +463,9 @@ fn render_data(
     Ok(data.output)
 }
 
-/// One JSON data destination. Every append checks the remaining encoded bytes;
-/// recursive values never retain separately rendered child strings.
+/// One JSON data destination: the JSON grammar over the shared value walker. Every
+/// append checks the remaining encoded bytes; recursive values never retain separately
+/// rendered child strings.
 struct JsonData {
     output: String,
     max_bytes: usize,
@@ -477,74 +479,19 @@ impl JsonData {
         }
     }
 
-    fn append(&mut self, text: &str) -> Result<(), ()> {
+    fn append(&mut self, text: &str) -> Result<(), TextLimit> {
         if text.len() > self.max_bytes - self.output.len() {
-            return Err(());
+            return Err(TextLimit);
         }
         self.output.push_str(text);
         Ok(())
     }
 
-    fn string(&mut self, text: &str) -> Result<(), ()> {
+    fn string(&mut self, text: &str) -> Result<(), TextLimit> {
         marrow_runner::write_json_string(text, |piece| self.append(piece))
     }
 
-    fn record(
-        &mut self,
-        idx: u16,
-        slots: &[Option<Value>],
-        types: &[SealedRecordType],
-        enums: &[SealedEnumType],
-    ) -> Result<(), ()> {
-        let fields = types.get(idx as usize).map(SealedRecordType::fields);
-        let mut entries: Vec<_> = slots
-            .iter()
-            .enumerate()
-            .map(|(position, slot)| {
-                let name = fields
-                    .and_then(|fields| fields.get(position))
-                    .map(|field| field.name().as_ref())
-                    .unwrap_or("");
-                (name, slot.as_ref())
-            })
-            .collect();
-        entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
-        self.append("{")?;
-        for (position, (name, value)) in entries.into_iter().enumerate() {
-            if position > 0 {
-                self.append(",")?;
-            }
-            self.string(name)?;
-            self.append(":")?;
-            self.value(value, types, enums)?;
-        }
-        self.append("}")
-    }
-
-    fn enum_value(
-        &mut self,
-        idx: u16,
-        variant: u16,
-        payload: &[Value],
-        types: &[SealedRecordType],
-        enums: &[SealedEnumType],
-    ) -> Result<(), ()> {
-        let enum_def = enums.get(idx as usize);
-        let variant_def = enum_def.and_then(|e| e.variants().get(variant as usize));
-        self.append(r#"{"enum":"#)?;
-        self.string(enum_def.map(SealedEnumType::name).unwrap_or(""))?;
-        self.append(r#","member":"#)?;
-        self.string(variant_def.map(|v| v.name().as_ref()).unwrap_or(""))?;
-        self.append(r#","payload":["#)?;
-        for (position, value) in payload.iter().enumerate() {
-            if position > 0 {
-                self.append(",")?;
-            }
-            self.value(Some(value), types, enums)?;
-        }
-        self.append("]}")
-    }
-
+    /// A unit return (`None`) is `null`; any value walks once through this grammar.
     fn value(
         &mut self,
         value: Option<&Value>,
@@ -552,55 +499,86 @@ impl JsonData {
         enums: &[SealedEnumType],
     ) -> Result<(), ()> {
         match value {
-            None | Some(Value::Optional(None)) => self.append("null"),
-            Some(Value::Int(v)) => write!(self, "{v}").map_err(|_| ()),
-            Some(Value::Bool(v)) => self.append(if *v { "true" } else { "false" }),
-            Some(Value::Text(v)) => {
-                if v.len() > MAX_TEXT_BYTES {
-                    return Err(());
-                }
-                self.string(v)
-            }
-            Some(Value::Bytes(v)) => {
-                let hex = marrow_vm::render::hex_bytes(v, MAX_DATA_BYTES).map_err(|_| ())?;
-                self.string(&hex)
-            }
-            Some(Value::Date(v)) => self.string(&marrow_vm::render::date_text(*v)),
-            Some(Value::Instant(v)) => self.string(&marrow_vm::render::instant_text(*v)),
-            Some(Value::Duration(v)) => self.string(&marrow_temporal::format_duration(*v)),
-            Some(Value::Optional(Some(inner))) => self.value(Some(inner), types, enums),
-            Some(Value::Record(idx, slots)) => self.record(*idx, slots, types, enums),
-            Some(Value::Enum(idx, variant, payload)) => {
-                self.enum_value(*idx, *variant, payload, types, enums)
-            }
-            Some(Value::List(_, _, items)) => {
-                self.append("[")?;
-                for (position, item) in items.iter().enumerate() {
-                    if position > 0 {
-                        self.append(",")?;
-                    }
-                    self.value(Some(item), types, enums)?;
-                }
-                self.append("]")
-            }
-            Some(Value::Map(_, _, entries)) => {
-                self.append("{")?;
-                for (position, (key, value)) in entries.iter().enumerate() {
-                    if position > 0 {
-                        self.append(",")?;
-                    }
-                    let key = marrow_vm::render::key_text(key, MAX_DATA_BYTES).map_err(|_| ())?;
-                    self.string(&key)?;
-                    self.append(":")?;
-                    self.value(Some(value), types, enums)?;
-                }
-                self.append("}")
-            }
-            Some(Value::Id(_, keys)) => {
-                let text = marrow_vm::render::id_text(keys, MAX_DATA_BYTES).map_err(|_| ())?;
-                self.string(&text)
-            }
+            None => self.absent(),
+            Some(value) => marrow_vm::render::walk(value, types, enums, self),
         }
+        .map_err(|_| ())
+    }
+}
+
+impl ValueSink for JsonData {
+    const SORTED_FIELDS: bool = true;
+
+    fn int(&mut self, value: i64) -> Result<(), TextLimit> {
+        write!(self, "{value}").map_err(|_| TextLimit)
+    }
+    fn bool(&mut self, value: bool) -> Result<(), TextLimit> {
+        self.append(if value { "true" } else { "false" })
+    }
+    fn text(&mut self, value: &str) -> Result<(), TextLimit> {
+        if value.len() > MAX_TEXT_BYTES {
+            return Err(TextLimit);
+        }
+        self.string(value)
+    }
+    fn bytes(&mut self, value: &[u8]) -> Result<(), TextLimit> {
+        let hex = marrow_vm::render::hex_bytes(value, MAX_DATA_BYTES)?;
+        self.string(&hex)
+    }
+    fn temporal(&mut self, text: &str) -> Result<(), TextLimit> {
+        self.string(text)
+    }
+    fn id(&mut self, keys: &[marrow_vm::KeyScalar]) -> Result<(), TextLimit> {
+        let text = marrow_vm::render::id_text(keys, MAX_DATA_BYTES)?;
+        self.string(&text)
+    }
+    fn absent(&mut self) -> Result<(), TextLimit> {
+        self.append("null")
+    }
+    fn separator(&mut self) -> Result<(), TextLimit> {
+        self.append(",")
+    }
+    fn enum_open(
+        &mut self,
+        name: Option<&str>,
+        member: Option<&str>,
+        _payload: usize,
+    ) -> Result<(), TextLimit> {
+        self.append(r#"{"enum":"#)?;
+        self.string(name.unwrap_or(""))?;
+        self.append(r#","member":"#)?;
+        self.string(member.unwrap_or(""))?;
+        self.append(r#","payload":["#)
+    }
+    fn enum_close(&mut self, _payload: usize) -> Result<(), TextLimit> {
+        self.append("]}")
+    }
+    fn record_open(&mut self) -> Result<(), TextLimit> {
+        self.append("{")
+    }
+    fn field(&mut self, name: Option<&str>) -> Result<(), TextLimit> {
+        self.string(name.unwrap_or(""))?;
+        self.append(":")
+    }
+    fn record_close(&mut self) -> Result<(), TextLimit> {
+        self.append("}")
+    }
+    fn list_open(&mut self) -> Result<(), TextLimit> {
+        self.append("[")
+    }
+    fn list_close(&mut self) -> Result<(), TextLimit> {
+        self.append("]")
+    }
+    fn map_open(&mut self) -> Result<(), TextLimit> {
+        self.append("{")
+    }
+    fn map_key(&mut self, key: &marrow_vm::KeyScalar) -> Result<(), TextLimit> {
+        let text = marrow_vm::render::key_text(key, MAX_DATA_BYTES)?;
+        self.string(&text)?;
+        self.append(":")
+    }
+    fn map_close(&mut self, _len: usize) -> Result<(), TextLimit> {
+        self.append("}")
     }
 }
 
@@ -622,7 +600,7 @@ fn json_string(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{JsonData, MAX_DATA_BYTES, Record, json_string, render_data};
+    use super::{JsonData, MAX_DATA_BYTES, Record, TextLimit, json_string, render_data};
     use marrow_codes::Code;
     use marrow_vm::Value;
 
@@ -871,7 +849,7 @@ mod tests {
         assert_eq!(data.append("é"), Ok(()));
         assert_eq!(data.append("a"), Ok(()));
         assert_eq!(data.output, "éa");
-        assert_eq!(data.append("b"), Err(()));
+        assert_eq!(data.append("b"), Err(TextLimit));
         assert_eq!(data.output, "éa");
         assert_eq!(data.append(""), Ok(()));
 
@@ -881,7 +859,7 @@ mod tests {
             assert_eq!(exact.string(text), Ok(()));
             assert_eq!(exact.output, expected);
             let mut short = JsonData::new(expected.len() - 1);
-            assert_eq!(short.string(text), Err(()));
+            assert_eq!(short.string(text), Err(TextLimit));
             assert!(!short.output.is_empty());
             assert!(expected.starts_with(&short.output));
             assert!(short.output.len() < expected.len());
