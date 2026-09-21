@@ -196,8 +196,8 @@ fn read_companion(path: &Path) -> Result<Vec<u8>, CompanionError> {
     std::fs::read(path).map_err(|_| CompanionError::CompanionMissing)
 }
 
-/// Render the manifest line for `runner_name` given the companion binary's `bytes`. The
-/// installer (and the test harness) writes this beside the terminal.
+/// The manifest `scripts/stage-release.sh` writes beside the terminal for `runner_name`,
+/// given the companion binary's `bytes`, in the form `parse_manifest` reads back.
 #[cfg(test)]
 pub(crate) fn manifest_text(release: &str, runner_name: &str, companion_bytes: &[u8]) -> String {
     let id = companion_release_id(companion_bytes).to_hex();

@@ -13,8 +13,22 @@ use std::process::ExitCode;
 
 use marrow_compile::compile;
 
+use crate::Command;
+use crate::command_output::{flag_value, once, unknown_option, usage};
 use crate::companion::{companion_command, run_companion, stage_image};
 use crate::project::compile_project;
+
+pub(crate) const HELP: &str = "\
+Usage:
+  marrow import --store <dir> --jsonl <path> --root <name> [--keys <col,...>]
+
+Compile and verify the project at the working directory, then fill the native store
+at <dir> from a file of JSON objects, one entry per line, through the companion
+runner. Every member is a scalar: a key component of the root, named in --keys, or a
+field of the stored resource. A fresh store is provisioned on first use; an existing
+store is filled only when the project is its active program. `import` mints no
+identity: a missing one is `check.durable_identity`.
+";
 
 struct Args {
     store: PathBuf,
@@ -65,6 +79,7 @@ pub(crate) fn import(rest: &[String]) -> ExitCode {
 }
 
 fn parse_args(rest: &[String]) -> Result<Args, ExitCode> {
+    const COMMAND: Command = Command::Import;
     let mut store: Option<PathBuf> = None;
     let mut jsonl: Option<PathBuf> = None;
     let mut root: Option<String> = None;
@@ -72,41 +87,38 @@ fn parse_args(rest: &[String]) -> Result<Args, ExitCode> {
     let mut iter = rest.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--store" => store = Some(PathBuf::from(next_value(&mut iter, "--store")?)),
-            "--jsonl" => jsonl = Some(PathBuf::from(next_value(&mut iter, "--jsonl")?)),
-            "--root" => root = Some(next_value(&mut iter, "--root")?),
-            "--keys" => keys = Some(next_value(&mut iter, "--keys")?),
-            other => return Err(usage(&format!("unexpected argument `{other}`"))),
+            "--store" => once(
+                &mut store,
+                PathBuf::from(flag_value(&mut iter, COMMAND, "--store")?),
+                COMMAND,
+                "`--store` directory",
+            )?,
+            "--jsonl" => once(
+                &mut jsonl,
+                PathBuf::from(flag_value(&mut iter, COMMAND, "--jsonl")?),
+                COMMAND,
+                "`--jsonl` file",
+            )?,
+            "--root" => once(
+                &mut root,
+                flag_value(&mut iter, COMMAND, "--root")?.to_string(),
+                COMMAND,
+                "`--root` name",
+            )?,
+            "--keys" => once(
+                &mut keys,
+                flag_value(&mut iter, COMMAND, "--keys")?.to_string(),
+                COMMAND,
+                "`--keys` list",
+            )?,
+            other => return Err(unknown_option(COMMAND, other)),
         }
     }
-    let Some(store) = store else {
-        return Err(usage("`--store` names the native store directory"));
-    };
-    let Some(jsonl) = jsonl else {
-        return Err(usage("`--jsonl` names the flat-scalar JSONL corpus file"));
-    };
-    let Some(root) = root else {
-        return Err(usage("`--root` names the store root to populate"));
-    };
     Ok(Args {
-        store,
-        jsonl,
-        root,
+        store: store.ok_or_else(|| usage(COMMAND, "`--store` must name the store directory"))?,
+        jsonl: jsonl.ok_or_else(|| usage(COMMAND, "`--jsonl` must name the JSONL file"))?,
+        root: root
+            .ok_or_else(|| usage(COMMAND, "`--root` must name the store root to populate"))?,
         keys,
     })
-}
-
-fn next_value(iter: &mut std::slice::Iter<'_, String>, flag: &str) -> Result<String, ExitCode> {
-    match iter.next() {
-        Some(value) => Ok(value.clone()),
-        None => Err(usage(&format!("`{flag}` needs a value"))),
-    }
-}
-
-fn usage(message: &str) -> ExitCode {
-    eprintln!(
-        "{message}\nusage: marrow import --store <dir> --jsonl <path> --root <name> \
-         [--keys <col,...>]"
-    );
-    ExitCode::from(2)
 }

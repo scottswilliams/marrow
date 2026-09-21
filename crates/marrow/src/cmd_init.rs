@@ -14,10 +14,12 @@ use std::process::ExitCode;
 use marrow_codes::Code;
 use marrow_project::Edition;
 
+use crate::Command;
+use crate::command_output::{once, unknown_option, usage};
 use crate::project::MANIFEST_FILE;
 use crate::report_simple_error;
 
-const HELP: &str = "\
+pub(crate) const HELP: &str = "\
 Usage:
   marrow init <projectdir>
 
@@ -30,15 +32,14 @@ pub(crate) fn init(args: &[String]) -> ExitCode {
     let mut target = None;
     for arg in args {
         match arg.as_str() {
-            "--help" | "-h" => {
-                print!("{HELP}");
-                return ExitCode::SUCCESS;
-            }
-            value if value.starts_with('-') => return crate::unknown_option("init", value),
+            value if value.starts_with('-') => return unknown_option(Command::Init, value),
             value => {
-                if let Err(code) =
-                    crate::take_single_target(&mut target, value, "init", "project directory")
-                {
+                if let Err(code) = once(
+                    &mut target,
+                    value.to_string(),
+                    Command::Init,
+                    "project directory",
+                ) {
                     return code;
                 }
             }
@@ -46,8 +47,7 @@ pub(crate) fn init(args: &[String]) -> ExitCode {
     }
 
     let Some(target) = target else {
-        eprintln!("missing project directory");
-        return ExitCode::from(2);
+        return usage(Command::Init, "marrow init takes a project directory");
     };
     let root = PathBuf::from(&target);
 
@@ -56,7 +56,8 @@ pub(crate) fn init(args: &[String]) -> ExitCode {
             println!("created {}", root.display());
             println!("next steps:");
             println!("  cd {}", root.display());
-            println!("  marrow fmt --check {}", root.display());
+            println!("  marrow check");
+            println!("  marrow test");
             ExitCode::SUCCESS
         }
         Err(ClaimError::AlreadyExists) => {
@@ -101,10 +102,6 @@ fn claim_and_scaffold(root: &Path) -> Result<(), ClaimError> {
 }
 
 fn scaffold(root: &Path) -> io::Result<()> {
-    #[cfg(debug_assertions)]
-    if std::env::var_os("MARROW_TEST_INIT_FAIL_SCAFFOLD").is_some() {
-        return Err(io::Error::other("injected init scaffold failure"));
-    }
     fs::create_dir(root.join("src"))?;
     write_new(root.join(MANIFEST_FILE), &manifest_source())?;
     write_new(root.join("src").join("main.mw"), STARTER_SCRIPT)?;

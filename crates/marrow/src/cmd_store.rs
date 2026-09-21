@@ -4,14 +4,65 @@
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::{Command as Process, ExitCode};
 
 use marrow_compile::compile;
 
+use crate::Command;
+use crate::command_output::{OutputFormat, flag_value, format_flag, once, unknown_option, usage};
 use crate::companion::{companion_command, run_companion, stage_image};
 use crate::project::compile_project;
 
-#[derive(Clone, Copy)]
+pub(crate) const DOCTOR_HELP: &str = "\
+Usage:
+  marrow doctor --store <dir> [--format text|jsonl]
+
+Compile and verify the project at the working directory, which must be the store's
+active program, then audit the store read-only through the companion runner: count
+logical findings, list at most 256 of them, and report an entry-content digest.
+Physical integrity is not checked. Exit 0 means the walk found no logical
+inconsistency; findings, engine errors, and refusals exit 1.
+";
+
+pub(crate) const APPLY_HELP: &str = "\
+Usage:
+  marrow apply --store <dir> --old-image <image> --new-image <image> [--accept-ceiling <id>] [--format text|jsonl]
+
+Verify the explicit old and new image artifacts without capturing a project, then
+move the store from the old image, which must be its exact active binding, to the
+new one. Every old durable representation is preserved; new sparse scalar fields
+start absent. An authority expansion requires --accept-ceiling to name the exact
+proposed ceiling, which the refusal prints.
+";
+
+pub(crate) const RECOVER_HELP: &str = "\
+Usage:
+  marrow recover --store <dir> [--image <path>] [--format text|jsonl]
+
+Validate and activate the store's actual stored head through the companion runner,
+using the selected image artifact, or the compiled project at the working directory
+when none is given. Recovery validates physical and logical integrity and runs no
+export.
+";
+
+pub(crate) const BACKUP_HELP: &str = "\
+Usage:
+  marrow backup --store <dir> --out <backup> [--format text|jsonl]
+
+Compile the project at the working directory, which must be the store's active
+program, and export the store's exact contents with that image into <backup>
+through the companion runner. The destination must not exist.
+";
+
+pub(crate) const RESTORE_HELP: &str = "\
+Usage:
+  marrow restore --from <backup> --store <dir> [--format text|jsonl]
+
+Construct a fresh store at <dir> from the backup's embedded verified image through
+the companion runner. No project is compiled. The destination must not exist.
+";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Operation {
     Doctor,
     Recover,
@@ -21,13 +72,13 @@ pub(crate) enum Operation {
 }
 
 impl Operation {
-    fn name(self) -> &'static str {
+    fn command(self) -> Command {
         match self {
-            Self::Doctor => "doctor",
-            Self::Recover => "recover",
-            Self::Backup => "backup",
-            Self::Restore => "restore",
-            Self::Apply => "apply",
+            Self::Doctor => Command::Doctor,
+            Self::Recover => Command::Recover,
+            Self::Backup => Command::Backup,
+            Self::Restore => Command::Restore,
+            Self::Apply => Command::Apply,
         }
     }
     fn runner_command(self) -> &'static str {
@@ -41,16 +92,9 @@ impl Operation {
     }
 }
 
-/// The output format requested from the companion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Format {
-    Text,
-    Jsonl,
-}
-
 struct Args {
     store: PathBuf,
-    format: Format,
+    format: OutputFormat,
     action: Action,
 }
 
@@ -132,120 +176,100 @@ pub(crate) fn run(operation: Operation, rest: &[String]) -> ExitCode {
     run_companion(command)
 }
 
-fn store_command(operation: Operation, args: &Args) -> Result<Command, ExitCode> {
+fn store_command(operation: Operation, args: &Args) -> Result<Process, ExitCode> {
     let mut command = companion_command(operation.runner_command())?;
     command
         .arg("--store")
         .arg(&args.store)
         .arg("--format")
-        .arg(match args.format {
-            Format::Text => "text",
-            Format::Jsonl => "jsonl",
-        });
+        .arg(args.format.as_str());
     Ok(command)
 }
 
 fn parse_args(operation: Operation, rest: &[String]) -> Result<Args, ExitCode> {
+    let command = operation.command();
     let mut store: Option<PathBuf> = None;
-    let mut format = Format::Text;
-    let mut transfer = None;
-    let mut seen_format = false;
-    let mut old = None;
-    let mut new = None;
-    let mut ceiling = None;
-    let mut selected_image = None;
+    let mut format: Option<OutputFormat> = None;
+    let mut transfer: Option<PathBuf> = None;
+    let mut old: Option<PathBuf> = None;
+    let mut new: Option<PathBuf> = None;
+    let mut ceiling: Option<String> = None;
+    let mut selected_image: Option<PathBuf> = None;
     let mut iter = rest.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--old-image" if matches!(operation, Operation::Apply) && old.is_none() => {
-                old = Some(PathBuf::from(next_value(
-                    operation,
-                    &mut iter,
-                    "--old-image",
-                )?));
-            }
-            "--new-image" if matches!(operation, Operation::Apply) && new.is_none() => {
-                new = Some(PathBuf::from(next_value(
-                    operation,
-                    &mut iter,
-                    "--new-image",
-                )?));
-            }
-            "--accept-ceiling" if matches!(operation, Operation::Apply) && ceiling.is_none() => {
-                ceiling = Some(next_value(operation, &mut iter, "--accept-ceiling")?);
-            }
-            "--image" if matches!(operation, Operation::Recover) && selected_image.is_none() => {
-                selected_image = Some(PathBuf::from(next_value(operation, &mut iter, "--image")?));
-            }
-            "--store" if store.is_none() => {
-                store = Some(PathBuf::from(next_value(operation, &mut iter, "--store")?))
-            }
-            "--out" if matches!(operation, Operation::Backup) && transfer.is_none() => {
-                transfer = Some(PathBuf::from(next_value(operation, &mut iter, "--out")?))
-            }
-            "--from" if matches!(operation, Operation::Restore) && transfer.is_none() => {
-                transfer = Some(PathBuf::from(next_value(operation, &mut iter, "--from")?))
-            }
-            "--format" if !seen_format => {
-                seen_format = true;
-                format = match next_value(operation, &mut iter, "--format")?.as_str() {
-                    "text" => Format::Text,
-                    "jsonl" => Format::Jsonl,
-                    other => return Err(usage(operation, &format!("unknown format `{other}`"))),
-                }
-            }
-            other => return Err(crate::unknown_option(operation.name(), other)),
+            "--old-image" if operation == Operation::Apply => once(
+                &mut old,
+                PathBuf::from(flag_value(&mut iter, command, "--old-image")?),
+                command,
+                "`--old-image` artifact",
+            )?,
+            "--new-image" if operation == Operation::Apply => once(
+                &mut new,
+                PathBuf::from(flag_value(&mut iter, command, "--new-image")?),
+                command,
+                "`--new-image` artifact",
+            )?,
+            "--accept-ceiling" if operation == Operation::Apply => once(
+                &mut ceiling,
+                flag_value(&mut iter, command, "--accept-ceiling")?.to_string(),
+                command,
+                "`--accept-ceiling` id",
+            )?,
+            "--image" if operation == Operation::Recover => once(
+                &mut selected_image,
+                PathBuf::from(flag_value(&mut iter, command, "--image")?),
+                command,
+                "`--image` artifact",
+            )?,
+            "--store" => once(
+                &mut store,
+                PathBuf::from(flag_value(&mut iter, command, "--store")?),
+                command,
+                "`--store` directory",
+            )?,
+            "--out" if operation == Operation::Backup => once(
+                &mut transfer,
+                PathBuf::from(flag_value(&mut iter, command, "--out")?),
+                command,
+                "`--out` file",
+            )?,
+            "--from" if operation == Operation::Restore => once(
+                &mut transfer,
+                PathBuf::from(flag_value(&mut iter, command, "--from")?),
+                command,
+                "`--from` file",
+            )?,
+            "--format" => once(
+                &mut format,
+                format_flag(&mut iter, command)?,
+                command,
+                "`--format` value",
+            )?,
+            other => return Err(unknown_option(command, other)),
         }
     }
-    let Some(store) = store else {
-        return Err(usage(operation, "`--store` must name the store directory"));
-    };
+    let store = store.ok_or_else(|| usage(command, "`--store` must name the store directory"))?;
     let action = match operation {
         Operation::Doctor => Action::Inspect,
         Operation::Recover => selected_image.map_or(Action::Inspect, Action::RecoverImage),
         Operation::Apply => Action::Apply {
             old: old
-                .ok_or_else(|| usage(operation, "`--old-image` must name the active artifact"))?,
+                .ok_or_else(|| usage(command, "`--old-image` must name the active artifact"))?,
             new: new
-                .ok_or_else(|| usage(operation, "`--new-image` must name the selected artifact"))?,
+                .ok_or_else(|| usage(command, "`--new-image` must name the selected artifact"))?,
             ceiling,
         },
         Operation::Backup => Action::Backup(
-            transfer.ok_or_else(|| usage(operation, "`--out` must name the backup file"))?,
+            transfer.ok_or_else(|| usage(command, "`--out` must name the backup file"))?,
         ),
         Operation::Restore => Action::Restore(
-            transfer.ok_or_else(|| usage(operation, "`--from` must name the backup file"))?,
+            transfer.ok_or_else(|| usage(command, "`--from` must name the backup file"))?,
         ),
     };
     Ok(Args {
         store,
-        format,
+        format: format.unwrap_or(OutputFormat::Text),
         action,
     })
-}
-
-fn next_value(
-    operation: Operation,
-    iter: &mut std::slice::Iter<'_, String>,
-    flag: &str,
-) -> Result<String, ExitCode> {
-    match iter.next() {
-        Some(value) => Ok(value.clone()),
-        None => Err(usage(operation, &format!("`{flag}` needs a value"))),
-    }
-}
-
-fn usage(operation: Operation, message: &str) -> ExitCode {
-    let transfer = match operation {
-        Operation::Backup => " --out <backup>",
-        Operation::Restore => " --from <backup>",
-        Operation::Apply => " --old-image <old.mwi> --new-image <new.mwi> [--accept-ceiling <id>]",
-        Operation::Recover => " [--image <image.mwi>]",
-        _ => "",
-    };
-    eprintln!(
-        "{message}\nusage: marrow {} --store <dir>{transfer} [--format text|jsonl]",
-        operation.name()
-    );
-    ExitCode::from(2)
 }

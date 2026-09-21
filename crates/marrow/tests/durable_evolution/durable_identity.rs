@@ -258,7 +258,7 @@ pub fn noop(): int {
     let workspace = Project::single(source).materialize("run-mints-shared-resource");
 
     let expected_stderr =
-        b"no exported function `missing` in this project; run marrow --help for usage\n";
+        b"no exported function `missing` in this project; run marrow run --help for usage\n";
     let first = workspace.marrow(&["run", "missing"]);
     assert_eq!(first.status.code(), Some(2), "{first:?}");
     assert_eq!(first.stdout, b"");

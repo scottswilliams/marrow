@@ -2,7 +2,7 @@ use marrow_codes::Code;
 use std::ffi::{OsStr, OsString};
 use std::process::ExitCode;
 
-use crate::term_style::{Stream, Style};
+use crate::term_style::{Palette, Stream, Style};
 
 mod cmd_check;
 mod cmd_client;
@@ -27,7 +27,7 @@ Marrow
 Usage:
   marrow init <projectdir>
   marrow fmt [--check | --write] <file.mw | projectdir>
-  marrow check [--demand] [projectdir]
+  marrow check [projectdir]
   marrow run <export> [--stdin] [--store <dir>] [--format text|jsonl] [-- <args>...]
   marrow import --store <dir> --jsonl <path> --root <name> [--keys <col,...>]
   marrow doctor --store <dir> [--format text|jsonl]
@@ -40,6 +40,7 @@ Usage:
   marrow image --out <dir> --accept-ceiling <id>
   marrow --version
   marrow --help
+  marrow <command> --help
 
 This is the beta line's thin CLI. `init` creates a new project (a manifest and a
 contained src tree). `fmt` formats every captured source file in a project
@@ -88,9 +89,10 @@ fn main() -> ExitCode {
 
 fn dispatch_os(command: &OsStr, rest: &[OsString]) -> ExitCode {
     let Some(command) = command.to_str() else {
-        eprintln!("unknown command: {}", command.to_string_lossy());
-        eprintln!("run `marrow --help` for available commands");
-        return ExitCode::from(2);
+        return command_output::top_level_usage(&format!(
+            "unknown command `{}`",
+            command.to_string_lossy()
+        ));
     };
     let Some(rest) = utf8_args(rest) else {
         report_simple_error(Code::ConfigInvalid, "command arguments must be valid UTF-8");
@@ -105,21 +107,106 @@ fn utf8_args(args: &[OsString]) -> Option<Vec<String>> {
         .collect()
 }
 
+/// The commands `marrow` dispatches, one per subcommand name. `--help`/`-h` is
+/// answered here for every command before its own options are read, so each command
+/// accepts it by construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Command {
+    Init,
+    Fmt,
+    Check,
+    Run,
+    Import,
+    Doctor,
+    Apply,
+    Recover,
+    Backup,
+    Restore,
+    Test,
+    Client,
+    Image,
+}
+
+impl Command {
+    const ALL: [Command; 13] = [
+        Command::Init,
+        Command::Fmt,
+        Command::Check,
+        Command::Run,
+        Command::Import,
+        Command::Doctor,
+        Command::Apply,
+        Command::Recover,
+        Command::Backup,
+        Command::Restore,
+        Command::Test,
+        Command::Client,
+        Command::Image,
+    ];
+
+    fn parse(name: &str) -> Option<Command> {
+        Command::ALL
+            .into_iter()
+            .find(|command| command.name() == name)
+    }
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Command::Init => "init",
+            Command::Fmt => "fmt",
+            Command::Check => "check",
+            Command::Run => "run",
+            Command::Import => "import",
+            Command::Doctor => "doctor",
+            Command::Apply => "apply",
+            Command::Recover => "recover",
+            Command::Backup => "backup",
+            Command::Restore => "restore",
+            Command::Test => "test",
+            Command::Client => "client",
+            Command::Image => "image",
+        }
+    }
+
+    fn help(self) -> &'static str {
+        match self {
+            Command::Init => cmd_init::HELP,
+            Command::Fmt => cmd_fmt::HELP,
+            Command::Check => cmd_check::HELP,
+            Command::Run => cmd_run::HELP,
+            Command::Import => cmd_import::HELP,
+            Command::Doctor => cmd_store::DOCTOR_HELP,
+            Command::Apply => cmd_store::APPLY_HELP,
+            Command::Recover => cmd_store::RECOVER_HELP,
+            Command::Backup => cmd_store::BACKUP_HELP,
+            Command::Restore => cmd_store::RESTORE_HELP,
+            Command::Test => cmd_test::HELP,
+            Command::Client => cmd_client::HELP,
+            Command::Image => cmd_image::HELP,
+        }
+    }
+
+    fn run(self, rest: &[String]) -> ExitCode {
+        match self {
+            Command::Init => cmd_init::init(rest),
+            Command::Fmt => cmd_fmt::fmt(rest),
+            Command::Check => cmd_check::check(rest),
+            Command::Run => cmd_run::run(rest),
+            Command::Import => cmd_import::import(rest),
+            Command::Doctor => cmd_store::run(cmd_store::Operation::Doctor, rest),
+            Command::Apply => cmd_store::run(cmd_store::Operation::Apply, rest),
+            Command::Recover => cmd_store::run(cmd_store::Operation::Recover, rest),
+            Command::Backup => cmd_store::run(cmd_store::Operation::Backup, rest),
+            Command::Restore => cmd_store::run(cmd_store::Operation::Restore, rest),
+            Command::Test => cmd_test::test(rest),
+            Command::Client => cmd_client::client(rest),
+            Command::Image => cmd_image::image(rest),
+        }
+    }
+}
+
 fn dispatch(command: &str, rest: &[String]) -> ExitCode {
     match command {
-        "check" => cmd_check::check(rest),
-        "fmt" => cmd_fmt::fmt(rest),
-        "init" => cmd_init::init(rest),
-        "run" => cmd_run::run(rest),
-        "import" => cmd_import::import(rest),
-        "doctor" => cmd_store::run(cmd_store::Operation::Doctor, rest),
-        "apply" => cmd_store::run(cmd_store::Operation::Apply, rest),
-        "recover" => cmd_store::run(cmd_store::Operation::Recover, rest),
-        "backup" => cmd_store::run(cmd_store::Operation::Backup, rest),
-        "restore" => cmd_store::run(cmd_store::Operation::Restore, rest),
-        "test" => cmd_test::test(rest),
-        "client" => cmd_client::client(rest),
-        "image" => cmd_image::image(rest),
         "--help" | "-h" | "help" => {
             print!("{}", term_style::render_help(Stream::Stdout, HELP));
             ExitCode::SUCCESS
@@ -132,12 +219,23 @@ fn dispatch(command: &str, rest: &[String]) -> ExitCode {
             );
             ExitCode::SUCCESS
         }
-        other => {
-            eprintln!("unknown command: {other}");
-            eprintln!("run `marrow --help` for available commands");
-            ExitCode::from(2)
-        }
+        name => match Command::parse(name) {
+            Some(command) if asks_for_help(rest) => {
+                print!("{}", command.help());
+                ExitCode::SUCCESS
+            }
+            Some(command) => command.run(rest),
+            None => command_output::top_level_usage(&format!("unknown command `{name}`")),
+        },
     }
+}
+
+/// Whether the arguments ask for the command's usage: `--help` or `-h` anywhere before
+/// a `--` separator. What follows the separator belongs to the export being run.
+fn asks_for_help(rest: &[String]) -> bool {
+    rest.iter()
+        .take_while(|arg| *arg != "--")
+        .any(|arg| arg == "--help" || arg == "-h")
 }
 
 /// The stack the parse/format pipeline runs on. 256 MiB comfortably holds the
@@ -193,61 +291,26 @@ pub(crate) fn report_io_error(file: &str, error: &std::io::Error) {
     report_simple_error(Code::IoRead, &format!("failed to read {file}: {error}"));
 }
 
-pub(crate) fn unknown_option(command: &str, value: &str) -> ExitCode {
-    eprintln!("unknown {command} option: {value}; run marrow {command} --help for usage");
-    ExitCode::from(2)
-}
-
-/// Record one positional `target` into `slot`, rejecting a second one.
-/// `target_label` names what the command takes so the error reads naturally.
-pub(crate) fn take_single_target(
-    slot: &mut Option<String>,
-    target: &str,
-    command: &str,
-    target_label: &str,
-) -> Result<(), ExitCode> {
-    if slot.replace(target.to_string()).is_some() {
-        eprintln!("marrow {command} accepts one {target_label}");
-        return Err(ExitCode::from(2));
-    }
-    Ok(())
-}
-
-/// Report a source file's parse diagnostics on standard error. The sole caller
-/// invokes this only for source with parse errors, so there is no success arm.
+/// Report a source file's parse diagnostics on standard error, each in the one
+/// diagnostic form, with its help line when it carries one. The sole caller invokes
+/// this only for source with parse errors, so there is no success arm.
 pub(crate) fn report_parse(file: &str, diagnostics: &[marrow_syntax::Diagnostic]) {
+    let palette = Palette::for_stream(Stream::Stderr);
     for diagnostic in diagnostics {
-        eprintln!("{}", syntax_diagnostic_line(file, diagnostic));
+        eprintln!(
+            "{}",
+            palette.diagnostic(
+                file,
+                diagnostic.span.line,
+                diagnostic.span.column,
+                diagnostic.code,
+                &diagnostic.message,
+            )
+        );
         if let Some(help) = &diagnostic.help {
-            eprintln!(
-                "{} {help}",
-                term_style::paint(Stream::Stderr, Style::Code, "help:")
-            );
+            eprintln!("{} {help}", palette.paint(Style::Code, "help:"));
         }
     }
-}
-
-fn severity_style(severity: &str) -> Style {
-    match severity {
-        "warning" => Style::Warning,
-        _ => Style::Error,
-    }
-}
-
-fn syntax_diagnostic_line(file: &str, diagnostic: &marrow_syntax::Diagnostic) -> String {
-    format!(
-        "{}:{}:{}: {}: {}: {}",
-        term_style::paint(Stream::Stderr, Style::Muted, file),
-        diagnostic.span.line,
-        diagnostic.span.column,
-        term_style::paint(
-            Stream::Stderr,
-            severity_style(diagnostic.severity.as_str()),
-            diagnostic.severity.as_str(),
-        ),
-        term_style::paint(Stream::Stderr, Style::Code, diagnostic.code),
-        diagnostic.message
-    )
 }
 
 #[cfg(test)]

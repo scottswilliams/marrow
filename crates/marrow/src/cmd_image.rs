@@ -26,6 +26,8 @@ use std::process::ExitCode;
 
 use marrow_verify::{CeilingDescriptor, VerifiedImage};
 
+use crate::Command;
+use crate::command_output::{flag_value, once, unknown_option, usage};
 use crate::demand::demand_lines;
 
 struct ImageArgs {
@@ -134,44 +136,34 @@ fn render_demand(compiled: &marrow_compile::Compiled, image: &VerifiedImage) {
 }
 
 fn parse_options(options: &[String]) -> Result<ImageArgs, ExitCode> {
+    const COMMAND: Command = Command::Image;
     let mut out: Option<PathBuf> = None;
     let mut accept_ceiling: Option<String> = None;
     let mut iter = options.iter();
     while let Some(option) = iter.next() {
         match option.as_str() {
-            "--help" | "-h" => {
-                print!("{HELP}");
-                return Err(ExitCode::SUCCESS);
-            }
-            "--out" => match iter.next() {
-                Some(dir) => {
-                    if out.replace(PathBuf::from(dir)).is_some() {
-                        return Err(usage("marrow image takes one --out directory"));
-                    }
-                }
-                None => return Err(usage("`--out` needs a directory")),
-            },
-            "--accept-ceiling" => match iter.next() {
-                Some(id) => {
-                    if accept_ceiling.replace(id.clone()).is_some() {
-                        return Err(usage("marrow image takes one --accept-ceiling id"));
-                    }
-                }
-                None => return Err(usage("`--accept-ceiling` needs a ceiling id")),
-            },
-            other => return Err(crate::unknown_option("image", other)),
+            "--out" => once(
+                &mut out,
+                PathBuf::from(flag_value(&mut iter, COMMAND, "--out")?),
+                COMMAND,
+                "`--out` directory",
+            )?,
+            "--accept-ceiling" => once(
+                &mut accept_ceiling,
+                flag_value(&mut iter, COMMAND, "--accept-ceiling")?.to_string(),
+                COMMAND,
+                "`--accept-ceiling` id",
+            )?,
+            other => return Err(unknown_option(COMMAND, other)),
         }
     }
-    let Some(out) = out else {
-        return Err(usage("marrow image needs an --out directory"));
-    };
     Ok(ImageArgs {
-        out,
+        out: out.ok_or_else(|| usage(COMMAND, "`--out` must name the output directory"))?,
         accept_ceiling,
     })
 }
 
-const HELP: &str = "\
+pub(crate) const HELP: &str = "\
 Usage:
   marrow image --out <dir> --accept-ceiling <id>
 
@@ -183,8 +175,3 @@ id before writing, and prints the id to accept when it is absent or wrong, so a
 deployment's durable authority is named, never widened by accident. On success it
 prints the image id, the accepted ceiling id, and the written path.
 ";
-
-fn usage(message: &str) -> ExitCode {
-    eprintln!("{message}; run marrow image --help for usage");
-    ExitCode::from(2)
-}

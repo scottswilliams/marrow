@@ -252,6 +252,11 @@ fn init_creates_a_manifest_and_src_tree() {
 
     let output = run(&["init", project.to_str().unwrap()]);
     assert!(output.status.success(), "{output:?}");
+    let dir = project.display();
+    assert_eq!(
+        output.stdout_text(),
+        format!("created {dir}\nnext steps:\n  cd {dir}\n  marrow check\n  marrow test\n")
+    );
 
     let manifest = fs::read_to_string(project.join("marrow.toml")).expect("manifest written");
     assert_eq!(manifest, "edition = \"2026\"\n");
@@ -318,17 +323,25 @@ fn init_refuses_an_existing_directory() {
 #[test]
 fn a_failed_init_leaves_no_debris_and_a_retry_succeeds() {
     // A failure after the exclusive claim must unwind it: otherwise the partial
-    // directory blocks every retry with AlreadyExists. The debug build injects a
-    // post-claim scaffold failure through MARROW_TEST_INIT_FAIL_SCAFFOLD.
+    // directory blocks every retry with AlreadyExists. A umask that strips the owner's
+    // write bit lets the claim succeed and makes the first write into the claimed
+    // directory fail, the shape a restrictive shell profile produces.
     let temp = TempDir::new("init-unwind");
     let project = temp.join("app");
 
-    let failed = Command::new(MARROW_BIN)
-        .args(["init", project.to_str().unwrap()])
-        .env("MARROW_TEST_INIT_FAIL_SCAFFOLD", "1")
+    let failed = Command::new("/bin/sh")
+        .arg("-c")
+        .arg("umask 0222 && exec \"$0\" init \"$1\"")
+        .arg(MARROW_BIN)
+        .arg(&project)
         .output()
-        .expect("run marrow binary");
-    assert!(!failed.status.success(), "injected failure must fail init");
+        .expect("run marrow binary under a restrictive umask");
+    assert_eq!(failed.status.code(), Some(1), "{failed:?}");
+    let stderr = String::from_utf8_lossy(&failed.stderr);
+    assert!(
+        stderr.starts_with("io.write: failed to create "),
+        "{stderr}"
+    );
     assert!(
         !project.exists(),
         "a failed init must remove its claimed directory"

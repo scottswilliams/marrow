@@ -8,31 +8,11 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use crate::Command;
+use crate::command_output::{once, unknown_option, usage};
 use crate::{report_io_error, report_parse, report_simple_error};
 
-const FMT_SYMLINK_HOP_LIMIT: usize = 40;
-
-pub(crate) fn fmt(args: &[String]) -> ExitCode {
-    let mut mode = None;
-    let mut target = None;
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--check" => {
-                if mode.replace(FmtMode::Check).is_some() {
-                    eprintln!("marrow fmt accepts only one of --check or --write");
-                    return ExitCode::from(2);
-                }
-            }
-            "--write" => {
-                if mode.replace(FmtMode::Write).is_some() {
-                    eprintln!("marrow fmt accepts only one of --check or --write");
-                    return ExitCode::from(2);
-                }
-            }
-            "--help" | "-h" => {
-                print!(
-                    "\
+pub(crate) const HELP: &str = "\
 Usage:
   marrow fmt [--check | --write] <file.mw | projectdir>
 
@@ -40,32 +20,52 @@ Format a Marrow source file or every captured source file of a project directory
 For a single file with no flag, print the formatted source to stdout. --check exits non-zero
 if a file is not already formatted; --write rewrites it in place. For a project
 directory, no flag checks without writing. `marrow fmt` does not read from stdin.
-"
-                );
-                return ExitCode::SUCCESS;
-            }
+";
+
+const FMT_SYMLINK_HOP_LIMIT: usize = 40;
+
+pub(crate) fn fmt(args: &[String]) -> ExitCode {
+    let mut mode = None;
+    let mut target = None;
+    for arg in args {
+        let result = match arg.as_str() {
+            "--check" => once(
+                &mut mode,
+                FmtMode::Check,
+                Command::Fmt,
+                "of `--check` or `--write`",
+            ),
+            "--write" => once(
+                &mut mode,
+                FmtMode::Write,
+                Command::Fmt,
+                "of `--check` or `--write`",
+            ),
             // A stdin pipe has no path to --write and no project to discover, so
             // reject it explicitly rather than mislabel `-` as an unknown option.
-            "-" => {
-                eprintln!("marrow fmt does not read from stdin; pass a single .mw file");
-                return ExitCode::from(2);
-            }
-            value if value.starts_with('-') => return crate::unknown_option("fmt", value),
-            value => {
-                if let Err(code) =
-                    crate::take_single_target(&mut target, value, "fmt", "source file")
-                {
-                    return code;
-                }
-            }
+            "-" => Err(usage(
+                Command::Fmt,
+                "marrow fmt does not read from stdin; pass a single .mw file",
+            )),
+            value if value.starts_with('-') => Err(unknown_option(Command::Fmt, value)),
+            value => once(
+                &mut target,
+                value.to_string(),
+                Command::Fmt,
+                "source file or project directory",
+            ),
+        };
+        if let Err(code) = result {
+            return code;
         }
-        index += 1;
     }
 
     let mode = mode.unwrap_or(FmtMode::Print);
     let Some(target) = target else {
-        eprintln!("missing source file");
-        return ExitCode::from(2);
+        return usage(
+            Command::Fmt,
+            "marrow fmt takes a source file or project directory",
+        );
     };
     let target_path = Path::new(&target);
     // A directory target formats every captured source file through the
@@ -359,25 +359,19 @@ fn write_formatted_source(file: &str, formatted: &str) -> io::Result<()> {
     ensure_target_writable(&target)?;
     let permissions = fs::metadata(&target)?.permissions();
     let (temp_path, temp_file) = create_temp_source_file(&target)?;
-    let mut writer = FmtWriter::new(temp_file);
-    if let Err(error) = writer
+    let mut writer = BufWriter::new(temp_file);
+    let written = writer
         .write_all(formatted.as_bytes())
-        .and_then(|()| writer.finish())
-    {
-        drop(writer);
-        cleanup_temp_source(&temp_path);
-        return Err(error);
-    }
+        .and_then(|()| writer.flush())
+        .and_then(|()| writer.get_ref().sync_all());
     drop(writer);
-    if let Err(error) = fs::set_permissions(&temp_path, permissions) {
+    let staged = written
+        .and_then(|()| fs::set_permissions(&temp_path, permissions))
+        .and_then(|()| fs::rename(&temp_path, &target));
+    if staged.is_err() {
         cleanup_temp_source(&temp_path);
-        return Err(error);
     }
-    if let Err(error) = fs::rename(&temp_path, &target) {
-        cleanup_temp_source(&temp_path);
-        return Err(error);
-    }
-    Ok(())
+    staged
 }
 
 fn ensure_target_writable(target: &Path) -> io::Result<()> {
@@ -462,74 +456,4 @@ fn create_owner_only_new_file(path: &Path) -> io::Result<File> {
 
 fn cleanup_temp_source(path: &Path) {
     let _ = fs::remove_file(path);
-}
-
-struct FmtWriter {
-    inner: BufWriter<File>,
-    #[cfg(debug_assertions)]
-    fail_after: Option<FailAfter>,
-}
-
-impl FmtWriter {
-    fn new(file: File) -> Self {
-        Self {
-            inner: BufWriter::new(file),
-            #[cfg(debug_assertions)]
-            fail_after: injected_write_limit("MARROW_TEST_FMT_FAIL_AFTER_BYTES"),
-        }
-    }
-
-    fn finish(&mut self) -> io::Result<()> {
-        self.inner.flush()?;
-        self.inner.get_ref().sync_all()
-    }
-}
-
-impl Write for FmtWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        #[cfg(debug_assertions)]
-        if let Some(fail_after) = &mut self.fail_after {
-            return fail_after.write(&mut self.inner, buf, "injected fmt write failure");
-        }
-        self.inner.write(buf)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.inner.flush()
-    }
-}
-
-#[cfg(debug_assertions)]
-fn injected_write_limit(name: &str) -> Option<FailAfter> {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .map(FailAfter::new)
-}
-
-#[cfg(debug_assertions)]
-struct FailAfter {
-    remaining: usize,
-}
-
-#[cfg(debug_assertions)]
-impl FailAfter {
-    fn new(remaining: usize) -> Self {
-        Self { remaining }
-    }
-
-    fn write<W: Write>(
-        &mut self,
-        inner: &mut W,
-        buf: &[u8],
-        message: &'static str,
-    ) -> io::Result<usize> {
-        if self.remaining == 0 {
-            return Err(io::Error::other(message));
-        }
-        let allowed = self.remaining.min(buf.len());
-        let written = inner.write(&buf[..allowed])?;
-        self.remaining = self.remaining.saturating_sub(written);
-        Ok(written)
-    }
 }

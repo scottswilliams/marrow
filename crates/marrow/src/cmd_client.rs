@@ -13,8 +13,20 @@ use std::process::ExitCode;
 use marrow_image::InterfaceError;
 use marrow_verify::interface_of;
 
+use crate::Command;
+use crate::command_output::{flag_value, once, unknown_option, usage};
 use crate::project::compile_project;
 use crate::tsgen::{self, ExportName};
+
+pub(crate) const HELP: &str = "\
+Usage:
+  marrow client typescript [--out <dir>]
+
+Compile and verify the project at the working directory, then write a strict
+TypeScript client for its exports into <dir> (default `client`): one `async` method
+per export with exact types, beside the pinned Node module that starts and
+supervises the runner. Stable inputs yield byte-identical output.
+";
 
 struct ClientArgs {
     out: PathBuf,
@@ -22,12 +34,13 @@ struct ClientArgs {
 
 pub(crate) fn client(rest: &[String]) -> ExitCode {
     let Some((target, options)) = rest.split_first() else {
-        return crate::command_output::usage("marrow client takes a target: typescript");
+        return usage(Command::Client, "marrow client takes a target: typescript");
     };
     if target != "typescript" {
-        return crate::command_output::usage(&format!(
-            "unknown client target `{target}`; the supported target is typescript"
-        ));
+        return usage(
+            Command::Client,
+            &format!("unknown client target `{target}`; the supported target is typescript"),
+        );
     }
     let args = match parse_options(options) {
         Ok(args) => args,
@@ -65,12 +78,12 @@ pub(crate) fn client(rest: &[String]) -> ExitCode {
         .exports
         .iter()
         .map(|entry| ExportName {
-            id: *entry.id.bytes(),
+            id: entry.id,
             module: entry.module.clone(),
             item: entry.item.clone(),
         })
         .collect();
-    let client_source = tsgen::generate_client(&interface, &names, image.image_id().0);
+    let client_source = tsgen::generate_client(&interface, &names, image.image_id());
 
     if let Err(error) = std::fs::create_dir_all(&args.out) {
         crate::report_simple_error(
@@ -120,17 +133,13 @@ fn parse_options(options: &[String]) -> Result<ClientArgs, ExitCode> {
     let mut iter = options.iter();
     while let Some(option) = iter.next() {
         match option.as_str() {
-            "--out" => match iter.next() {
-                Some(dir) => {
-                    if out.replace(PathBuf::from(dir)).is_some() {
-                        return Err(crate::command_output::usage(
-                            "marrow client typescript takes one --out directory",
-                        ));
-                    }
-                }
-                None => return Err(crate::command_output::usage("`--out` needs a directory")),
-            },
-            other => return Err(crate::unknown_option("client", other)),
+            "--out" => once(
+                &mut out,
+                PathBuf::from(flag_value(&mut iter, Command::Client, "--out")?),
+                Command::Client,
+                "`--out` directory",
+            )?,
+            other => return Err(unknown_option(Command::Client, other)),
         }
     }
     Ok(ClientArgs {
