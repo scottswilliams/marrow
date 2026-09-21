@@ -34,8 +34,6 @@ pub enum StoreOp {
     Commit,
     /// `fsync` of the store directory.
     SyncParentDir,
-    /// The cross-engine conformance suite.
-    Conformance,
 }
 
 impl std::fmt::Display for StoreOp {
@@ -55,7 +53,6 @@ impl std::fmt::Display for StoreOp {
             Self::Remove => "remove",
             Self::Commit => "commit",
             Self::SyncParentDir => "directory sync",
-            Self::Conformance => "conformance",
         };
         f.write_str(name)
     }

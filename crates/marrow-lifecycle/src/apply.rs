@@ -18,6 +18,7 @@ use crate::codec::FormatError;
 use crate::envelope::{EnvelopeRecord, EnvelopeState};
 use crate::head::{ActiveBinding, MAX_ACCEPTED_CEILING_BYTES};
 use crate::provision::{AdmitError, open_admitted};
+use crate::seam::Seam;
 use crate::{AuditError, LifecycleError, LogicalHead, PreparedImage, StoreInstanceId, audit};
 
 /// A completed sparse apply. This record grants no store access.
@@ -109,6 +110,18 @@ pub fn apply(
     new: PreparedImage,
     accepted: Option<CeilingId>,
 ) -> Result<ApplyReceipt, ApplyError> {
+    apply_observed(dir, old, new, accepted, Seam::NONE)
+}
+
+/// [`apply`] over `seam`: the production seam observes nothing; a test's cuts or mutates
+/// the sequence at a named step.
+pub(crate) fn apply_observed(
+    dir: &Path,
+    old: PreparedImage,
+    new: PreparedImage,
+    accepted: Option<CeilingId>,
+    seam: Seam,
+) -> Result<ApplyReceipt, ApplyError> {
     let (old, old_projection) = old.into_parts();
     let (new, new_projection) = new.into_parts();
     let (Some(old_projection), Some(new_projection)) = (old_projection, new_projection) else {
@@ -121,7 +134,7 @@ pub fn apply(
     }
     let admission = ImageAdmission::derive(&old, old_projection);
     let names = admission.audit_names();
-    let opened = open_admitted(dir, NativeOpenAccess::ReadOnly, |head| {
+    let opened = open_admitted(dir, NativeOpenAccess::ReadOnly, seam, |head| {
         admission.admit(head, BindingStrictness::Exact)
     })
     .map_err(|error| audit_failure(audit::open_error(error)))?;

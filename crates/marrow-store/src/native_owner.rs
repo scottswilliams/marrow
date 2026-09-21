@@ -26,6 +26,7 @@
 use std::fs::{File, Metadata, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use marrow_codes::Code;
 
@@ -233,6 +234,36 @@ pub enum NativePromotionRefusal {
     Quarantined,
 }
 
+/// A point of the owner's open sequence an observer is shown. Production arms no observer;
+/// a test arms one that asserts or mutates there, so the sequence it drives is the one the
+/// product runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OwnerStep {
+    /// Service preparation released the marker descriptor; the directory lock alone excludes.
+    MarkerHandoff,
+    /// The engine opened; the physical audit it may owe has not run.
+    EngineOpened,
+}
+
+/// The one seam the open sequence exposes.
+#[derive(Clone, Default)]
+pub(crate) struct OwnerSeam(Option<Rc<dyn Fn(&Path, OwnerStep)>>);
+
+impl OwnerSeam {
+    const NONE: Self = Self(None);
+
+    #[cfg(test)]
+    pub(crate) fn armed(observer: impl Fn(&Path, OwnerStep) + 'static) -> Self {
+        Self(Some(Rc::new(observer)))
+    }
+
+    fn at(&self, dir: &Path, step: OwnerStep) {
+        if let Some(observer) = &self.0 {
+            observer(dir, step);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DropDisposition {
     PreserveUnclean,
@@ -356,6 +387,7 @@ impl OwnerLock {
         &mut self,
         dir: &Path,
         instance: [u8; 16],
+        seam: &OwnerSeam,
     ) -> Result<AuditObligation, NativeLockError> {
         let previous = self
             .file
@@ -373,8 +405,7 @@ impl OwnerLock {
             },
         }
         drop(self.file.take());
-        #[cfg(test)]
-        tests::assert_handoff_excludes_contenders(dir);
+        seam.at(dir, OwnerStep::MarkerHandoff);
         let prior_unclean = self.inspect_marker(dir, NativeOpenAccess::ReadWrite)?;
         if let Some(previous) = previous {
             let held = self
@@ -444,6 +475,7 @@ pub struct NativeEngineOwner {
     directory: PathBuf,
     /// The file admitted by read-only opening, retained across service preparation.
     read_only_snapshot: Option<ReadOnlySnapshot>,
+    seam: OwnerSeam,
 }
 
 struct ReadOnlySnapshot {
@@ -499,6 +531,7 @@ impl AuditObligation {
 pub struct PendingNativeEngineOwner {
     lock: OwnerLock,
     directory: PathBuf,
+    seam: OwnerSeam,
 }
 
 /// The engine capability requested under an existing store's owner lock.
@@ -572,8 +605,7 @@ impl PendingNativeEngineOwner {
                 })
             })?;
         }
-        #[cfg(all(test, unix))]
-        tests::mutate_after_open_if_armed(&self.directory);
+        self.seam.at(&self.directory, OwnerStep::EngineOpened);
         if access == NativeOpenAccess::Recovery
             || (obligation.is_inherited() && access == NativeOpenAccess::ReadWrite)
         {
@@ -584,6 +616,7 @@ impl PendingNativeEngineOwner {
         let Self {
             mut lock,
             directory,
+            seam,
         } = self;
         if access != NativeOpenAccess::ReadOnly {
             lock.mark_clean();
@@ -596,6 +629,7 @@ impl PendingNativeEngineOwner {
                 engine_node,
                 obligation,
             }),
+            seam,
         })
     }
 }
@@ -634,14 +668,13 @@ impl NativeEngineOwner {
         drop(self.engine.take());
         let obligation = self
             .lock
-            .prepare_service(&self.directory, instance)
+            .prepare_service(&self.directory, instance, &self.seam)
             .map_err(NativeOwnerOpenError::Lock)?;
         check_node()?;
         let mut engine =
             NativeEngine::open_for_service(&path).map_err(NativeOwnerOpenError::Store)?;
         check_node()?;
-        #[cfg(all(test, unix))]
-        tests::mutate_after_open_if_armed(&self.directory);
+        self.seam.at(&self.directory, OwnerStep::EngineOpened);
         if obligation.or(snapshot.obligation).is_inherited() {
             engine
                 .audit_integrity()
@@ -672,7 +705,11 @@ impl NativeEngineOwner {
     ) -> Result<PendingNativeEngineOwner, NativeOwnerAcquireError> {
         let directory = std::fs::canonicalize(store_dir).map_err(NativeOwnerAcquireError::Io)?;
         let lock = OwnerLock::acquire(&directory).map_err(NativeOwnerAcquireError::Lock)?;
-        Ok(PendingNativeEngineOwner { lock, directory })
+        Ok(PendingNativeEngineOwner {
+            lock,
+            directory,
+            seam: OwnerSeam::NONE,
+        })
     }
 
     /// Irreversibly quarantine this owner's lock, close the old engine, reopen

@@ -32,9 +32,9 @@ pub(crate) fn run_all<E: ByteEngine>(
 /// `begin` then does: a suite that only ever wrote would never observe the
 /// read-only gate at all.
 fn a_writable_handle_admits_writes<E: ByteEngine>(engine: &mut E) -> Result<(), StoreError> {
-    engine.require_write_access(StoreOp::Conformance)?;
+    engine.require_write_access(StoreOp::BeginWrite)?;
     seed(engine, &[(b"\x70", b"v")])?;
-    engine.require_write_access(StoreOp::Conformance)?;
+    engine.require_write_access(StoreOp::BeginWrite)?;
     Ok(())
 }
 

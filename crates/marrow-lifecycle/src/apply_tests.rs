@@ -3,12 +3,13 @@
 
 use std::path::Path;
 
-use super::{ApplyError, apply};
+use super::{ApplyError, apply, apply_observed};
 use crate::envelope::{EnvelopeRecord, EnvelopeState};
 use crate::recovery::{RecoveryFault, recover};
-use crate::store_dir::Artifact;
+use crate::seam::Step;
+use crate::store_dir::{Artifact, Body};
 use crate::test_support::{
-    IDS, SOURCE, Scratch, compile, compile_bytes, populate_counter, request,
+    IDS, SOURCE, Scratch, compile, compile_bytes, cut, mutate_at, populate_counter, request,
 };
 use crate::{
     AdmissionRefusal, AuditError, LifecycleError, LogicalHead, StoreInstanceId, accepted_ceiling, active_binding,
@@ -338,7 +339,6 @@ fn sparse_apply_preserves_populated_irregular_addresses_and_refuses_exhaustion()
 
 #[test]
 fn interrupted_sparse_apply_recovers_only_the_actual_head() {
-    use crate::store_dir::barrier_fault::Point;
     let (old, new) = sparse_images();
     let old = marrow_verify::verify(&old).expect("old image");
     let new = marrow_verify::verify(&new).expect("new image");
@@ -351,10 +351,10 @@ fn interrupted_sparse_apply_recovers_only_the_actual_head() {
         .expect("bounded union")
         .ceiling_id();
     for point in [
-        Point::RebindPending,
-        Point::ReplacementBody(Artifact::Head),
-        Point::RebindHead,
-        Point::RebindActive,
+        Step::RebindPending,
+        Step::FileSync(Body::Replacement(Artifact::Head)),
+        Step::RebindHead,
+        Step::RebindActive,
     ] {
         an_interrupted_sparse_apply_recovers_its_actual_head(point, &old, &new, ceiling);
     }
@@ -364,13 +364,12 @@ fn interrupted_sparse_apply_recovers_only_the_actual_head() {
 /// barrier cut it: past the active write the envelope is already active and the failure
 /// is an uncertain activation; before it the envelope is still rebinding.
 fn the_barrier_point_names_its_state(
-    point: crate::store_dir::barrier_fault::Point,
+    point: Step,
     record: &EnvelopeRecord,
     error: &ApplyError,
     instance: StoreInstanceId,
 ) {
-    use crate::store_dir::barrier_fault::Point;
-    if point == Point::RebindActive {
+    if point == Step::RebindActive {
         assert_eq!(record.state, EnvelopeState::Active);
         assert!(
             matches!(error, ApplyError::Lifecycle(LifecycleError::ActivationUncertain { instance: found, .. }) if *found == instance)
@@ -388,26 +387,24 @@ fn the_barrier_point_names_its_state(
 /// refuses the image the head does not name, and the head that actually reached the disk
 /// recovers with its sparse data intact.
 fn an_interrupted_sparse_apply_recovers_its_actual_head(
-    point: crate::store_dir::barrier_fault::Point,
+    point: Step,
     old: &marrow_verify::VerifiedImage,
     new: &marrow_verify::VerifiedImage,
     ceiling: marrow_image::CeilingId,
 ) {
-    use crate::store_dir::barrier_fault::{self, Point};
     let scratch = Scratch::new("apply");
     let instance = StoreInstanceId::draw().expect("instance");
     provision(&scratch.store(), request(old, instance)).expect("provision");
     populate_counter(&scratch.store(), old);
     let before =
         crate::audit(&scratch.store(), prepare(old.clone())).expect("old logical contents");
-    let error = barrier_fault::with_failure(&scratch.store(), point, || {
-        apply(
-            &scratch.store(),
-            prepare(old.clone()),
-            prepare(new.clone()),
-            Some(ceiling),
-        )
-    })
+    let error = apply_observed(
+        &scratch.store(),
+        prepare(old.clone()),
+        prepare(new.clone()),
+        Some(ceiling),
+        cut(point),
+    )
     .expect_err("publication barrier fails");
     let record = EnvelopeRecord::decode(
         &std::fs::read(scratch.store().join(crate::ENVELOPE_FILE)).expect("actual envelope"),
@@ -416,14 +413,14 @@ fn an_interrupted_sparse_apply_recovers_its_actual_head(
     the_barrier_point_names_its_state(point, &record, &error, instance);
     let (selected, other) = if matches!(
         point,
-        Point::RebindPending | Point::ReplacementBody(Artifact::Head)
+        Step::RebindPending | Step::FileSync(Body::Replacement(Artifact::Head))
     ) {
         (old, new)
     } else {
         (new, old)
     };
     let head = std::fs::read(scratch.store().join(crate::HEAD_FILE)).expect("actual Head");
-    let replacement = if point == Point::ReplacementBody(Artifact::Head) {
+    let replacement = if point == Step::FileSync(Body::Replacement(Artifact::Head)) {
         let bytes =
             std::fs::read(scratch.store().join("head.replacing")).expect("retained replacement");
         assert_eq!(
@@ -481,7 +478,6 @@ fn an_interrupted_sparse_apply_recovers_its_actual_head(
 
 #[test]
 fn sparse_apply_final_verification_preserves_uncertainty_and_instance() {
-    use crate::actor::binding_fault::{self, Mutation, Point};
     let (old, new) = sparse_images();
     let old = marrow_verify::verify(&old).expect("old image");
     let new = marrow_verify::verify(&new).expect("new image");
@@ -512,20 +508,21 @@ fn sparse_apply_final_verification_preserves_uncertainty_and_instance() {
         };
         provision(&scratch.store(), req).expect("provision");
         populate_counter(&scratch.store(), &old);
-        let error = binding_fault::with_mutation(
+        let store = scratch.store();
+        let bytes = replacement.clone();
+        let (seam, reached) = mutate_at(Step::Activated, move |dir| {
+            dir.replace(artifact, &bytes).expect("replace artifact");
+            crate::durable_fs::sync_dir(&store).expect("sync directory");
+        });
+        let error = apply_observed(
             &scratch.store(),
-            Point::Activated,
-            Mutation::Metadata(artifact, replacement.clone()),
-            || {
-                apply(
-                    &scratch.store(),
-                    prepare(old.clone()),
-                    prepare(new.clone()),
-                    Some(ceiling),
-                )
-            },
+            prepare(old.clone()),
+            prepare(new.clone()),
+            Some(ceiling),
+            seam,
         )
         .expect_err("changed final metadata cannot yield a receipt");
+        reached.assert();
         assert!(
             matches!(error, ApplyError::Lifecycle(LifecycleError::ActivationUncertain { instance: found, .. }) if found == instance)
         );
@@ -594,7 +591,6 @@ fn sparse_apply_refuses_logical_corruption_before_publication() {
 /// the engine, so an unfinished transition is never overlaid with a second one.
 #[test]
 fn sparse_apply_refuses_a_store_awaiting_activation() {
-    use crate::store_dir::barrier_fault::{self, Point};
     let (old, new) = sparse_images();
     let old = marrow_verify::verify(&old).expect("old image");
     let new = marrow_verify::verify(&new).expect("new image");
@@ -610,14 +606,13 @@ fn sparse_apply_refuses_a_store_awaiting_activation() {
     let instance = StoreInstanceId::draw().expect("instance");
     provision(&scratch.store(), request(&old, instance)).expect("provision");
     populate_counter(&scratch.store(), &old);
-    barrier_fault::with_failure(&scratch.store(), Point::RebindPending, || {
-        apply(
-            &scratch.store(),
-            prepare(old.clone()),
-            prepare(new.clone()),
-            Some(ceiling),
-        )
-    })
+    apply_observed(
+        &scratch.store(),
+        prepare(old.clone()),
+        prepare(new.clone()),
+        Some(ceiling),
+        cut(Step::RebindPending),
+    )
     .expect_err("publication barrier fails");
     let record = EnvelopeRecord::decode(
         &std::fs::read(scratch.store().join(crate::ENVELOPE_FILE)).expect("actual envelope"),

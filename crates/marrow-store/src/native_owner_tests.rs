@@ -52,13 +52,41 @@ fn inspect_existing(dir: &Path) -> NativeEngineOwner {
         .expect("inspect")
 }
 
-pub(super) fn assert_handoff_excludes_contenders(dir: &Path) {
+fn assert_handoff_excludes_contenders(dir: &Path) {
     assert!(matches!(
         NativeEngineOwner::acquire_existing(dir),
         Err(NativeOwnerAcquireError::Lock(
             NativeLockError::StoreInUse { .. }
         ))
     ));
+}
+
+/// Promote `owner` to service, asserting while its marker descriptor is handed off that a
+/// contender is still refused by the directory lock alone.
+fn promote(
+    mut owner: NativeEngineOwner,
+    instance: [u8; 16],
+) -> Result<NativeEngineOwner, NativeOwnerOpenError<NativePromotionRefusal>> {
+    owner.seam = OwnerSeam::armed(|dir, step| {
+        if step == OwnerStep::MarkerHandoff {
+            assert_handoff_excludes_contenders(dir);
+        }
+    });
+    owner.into_service(instance)
+}
+
+/// A seam that corrupts the live engine once, right after it opens, and reports whether
+/// that point was reached.
+#[cfg(unix)]
+fn corrupt_after_open() -> (OwnerSeam, Rc<std::cell::Cell<bool>>) {
+    let fired = Rc::new(std::cell::Cell::new(false));
+    let armed = Rc::clone(&fired);
+    let seam = OwnerSeam::armed(move |dir, step| {
+        if step == OwnerStep::EngineOpened && !armed.replace(true) {
+            corrupt_live_engine_for_audit(dir);
+        }
+    });
+    (seam, fired)
 }
 
 #[test]
@@ -68,15 +96,13 @@ fn service_promotion_preserves_the_inherited_physical_audit_obligation() {
     NativeEngineOwner::provision(scratch.path()).expect("provision");
     seed_audit_body(scratch.path());
     std::fs::write(scratch.path().join(NATIVE_LOCK_FILE), b"unclean").expect("prior obligation");
-    let owner = inspect_existing(scratch.path());
+    let mut owner = inspect_existing(scratch.path());
     // Clearing the still-held marker cannot erase the obligation read at admission.
     std::fs::write(scratch.path().join(NATIVE_LOCK_FILE), b"").expect("clear marker bytes");
-    MUTATE_AFTER_OPEN.with(|slot| {
-        assert!(slot.borrow().is_none());
-        *slot.borrow_mut() = Some(owner.directory.clone());
-    });
+    let (seam, corrupted) = corrupt_after_open();
+    owner.seam = seam;
     let result = owner.into_service([0x71; 16]);
-    assert!(MUTATE_AFTER_OPEN.with(|slot| slot.borrow().is_none()));
+    assert!(corrupted.get(), "mutation followed the service engine open");
     match result {
         Err(NativeOwnerOpenError::Store(StoreError::Corruption { .. })) => {}
         Err(error) => panic!("expected the physical audit refusal: {error:?}"),
@@ -104,7 +130,7 @@ fn service_promotion_refuses_marker_appearance_and_removal() {
             std::fs::write(&marker, b"changed").expect("new marker");
         }
         assert!(matches!(
-            owner.into_service([0x71; 16]),
+            promote(owner, [0x71; 16]),
             Err(NativeOwnerOpenError::Lock(_))
         ));
         if initially_present {
@@ -173,7 +199,7 @@ fn service_promotion_refuses_replaced_engine_and_marker() {
         std::fs::rename(&path, &displaced).expect("displace");
         std::fs::copy(&displaced, &path).expect("replace with exact bytes");
         let before = std::fs::read(&path).expect("replacement bytes");
-        assert!(owner.into_service([0x71; 16]).is_err());
+        assert!(promote(owner, [0x71; 16]).is_err());
         assert_eq!(std::fs::read(&path).expect("retained replacement"), before);
         assert_eq!(marker_bytes(scratch.path()), b"unclean");
     }
@@ -185,7 +211,7 @@ fn service_promotion_refuses_writable_and_quarantined_owners() {
     NativeEngineOwner::provision(scratch.path()).expect("provision");
     let owner = open_existing(scratch.path(), [0x71; 16]).expect("service");
     assert!(matches!(
-        owner.into_service([0x71; 16]),
+        promote(owner, [0x71; 16]),
         Err(NativeOwnerOpenError::Refused(
             NativePromotionRefusal::NotReadOnly
         ))
@@ -193,7 +219,7 @@ fn service_promotion_refuses_writable_and_quarantined_owners() {
     let mut owner = inspect_existing(scratch.path());
     owner.lock.quarantine();
     assert!(matches!(
-        owner.into_service([0x71; 16]),
+        promote(owner, [0x71; 16]),
         Err(NativeOwnerOpenError::Refused(
             NativePromotionRefusal::Quarantined
         ))
@@ -284,6 +310,7 @@ fn releasing_an_owner_does_not_wait_for_duplicate_handles_to_close() {
                 let PendingNativeEngineOwner {
                     mut lock,
                     directory,
+                    ..
                 } = pending;
                 lock.prepare_existing(&directory, NativeOpenAccess::ReadWrite, [0x51; 16])
                     .expect("prepare marker before admission");
@@ -1242,27 +1269,6 @@ fn corrupt_live_engine_for_audit(directory: &Path) {
 }
 
 #[cfg(unix)]
-thread_local! {
-    static MUTATE_AFTER_OPEN: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
-}
-
-#[cfg(unix)]
-pub(super) fn mutate_after_open_if_armed(directory: &Path) {
-    let mutate = MUTATE_AFTER_OPEN.with(|slot| {
-        let mut armed = slot.borrow_mut();
-        if armed.as_deref() == Some(directory) {
-            armed.take();
-            true
-        } else {
-            false
-        }
-    });
-    if mutate {
-        corrupt_live_engine_for_audit(directory);
-    }
-}
-
-#[cfg(unix)]
 #[test]
 fn explicit_recovery_audits_even_after_a_clean_shutdown() {
     let scratch = Scratch::new("native-owner-clean-recovery-audit");
@@ -1272,21 +1278,16 @@ fn explicit_recovery_audits_even_after_a_clean_shutdown() {
         marker_bytes(scratch.path()).is_empty(),
         "seed closes cleanly"
     );
-    let pending = NativeEngineOwner::acquire_existing(scratch.path()).expect("acquire");
+    let mut pending = NativeEngineOwner::acquire_existing(scratch.path()).expect("acquire");
     assert!(
         marker_bytes(scratch.path()).is_empty(),
         "no inherited audit obligation"
     );
-    MUTATE_AFTER_OPEN.with(|slot| {
-        assert!(slot.borrow().is_none());
-        *slot.borrow_mut() = Some(pending.directory().to_path_buf());
-    });
+    let (seam, corrupted) = corrupt_after_open();
+    pending.seam = seam;
     let result =
         pending.bind_and_open_existing(NativeOpenAccess::Recovery, [0x70; 16], || Ok::<(), ()>(()));
-    assert!(
-        MUTATE_AFTER_OPEN.with(|slot| slot.borrow().is_none()),
-        "mutation followed successful engine open"
-    );
+    assert!(corrupted.get(), "mutation followed successful engine open");
     if let Ok(owner) = result {
         let path = scratch.path().to_path_buf();
         std::mem::forget(owner);

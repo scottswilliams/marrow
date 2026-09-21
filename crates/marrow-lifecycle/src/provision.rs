@@ -30,11 +30,12 @@ use marrow_kernel::durable::{
     StoreError, TxnSession,
 };
 
-use crate::durable_fs::Publication;
+use crate::durable_fs::{Publication, custody_io};
 use crate::envelope::StoreEnvelope;
 use crate::envelope::{EnvelopeRecord, EnvelopeState};
 use crate::head::LogicalHead;
 use crate::instance::StoreInstanceId;
+use crate::seam::{Event, Seam, StagePoint, Step};
 use crate::store_dir::{
     self, AdmissionError, AdmittedStoreDir, Artifact, StoreAccessError, StoreEntry,
 };
@@ -219,31 +220,35 @@ impl std::error::Error for ProvisionFault {}
 /// A parent-directory sync failure after rename retains `dest` and returns its instance
 /// identity in `PublicationUncertain`; it does not confirm publication durability.
 pub fn provision(dest: &Path, request: ProvisionRequest) -> Result<Provisioned, ProvisionError> {
+    provision_observed(dest, request, Seam::NONE)
+}
+
+/// [`provision`] over `seam`: the production seam observes nothing; a test's cuts the
+/// sequence at a named step.
+pub(crate) fn provision_observed(
+    dest: &Path,
+    request: ProvisionRequest,
+    seam: Seam,
+) -> Result<Provisioned, ProvisionError> {
     check_engine_stamp(&request.envelope).map_err(ProvisionFault::Store)?;
     let instance = request.envelope.instance;
     let temp = temp_sibling(dest);
-    let publication = Publication::admit(&temp, dest).map_err(ProvisionFault::Io)?;
+    let publication = Publication::admit(&temp, dest, seam.clone()).map_err(ProvisionFault::Io)?;
     create_private_dir(&temp).map_err(ProvisionFault::Io)?;
     // Build the store before publication; cleanup after a failed build is best-effort.
-    #[cfg(test)]
-    let built = tests::construct(dest, &temp, || build_in_temp(&temp, &request));
-    #[cfg(not(test))]
-    let built = build_in_temp(&temp, &request);
-    let (owner, admitted) = match built {
-        Ok(owner) => owner,
+    let (owner, admitted) = match build_in_temp(&temp, &request, seam.clone()) {
+        Ok(built) => built,
         Err(error) => {
-            return Err(cleanup_after_failure(&temp, error));
+            return Err(cleanup_after_failure(&temp, error, &seam));
         }
     };
-
-    #[cfg(all(test, unix))]
-    tests::observe_publication(
-        tests::PublicationPoint::Staged,
-        dest,
-        &temp,
-        &owner,
-        &admitted,
-    );
+    seam.at(Event::Stage {
+        at: StagePoint::Built,
+        location: &temp,
+        owner: &owner,
+        admitted: &admitted,
+    })
+    .map_err(|error| ProvisionFault::Io(custody_io(error)))?;
 
     // The retained parent performs the no-replace claim. Any occupied destination
     // refuses; a loser cleans only its unpublished stage.
@@ -254,7 +259,7 @@ pub fn provision(dest: &Path, request: ProvisionRequest) -> Result<Provisioned, 
                 marrow_fs_journal::CustodyError::AlreadyExists { .. } => {
                     ProvisionFault::AlreadyProvisioned
                 }
-                error => ProvisionFault::Io(crate::durable_fs::custody_io(error)),
+                error => ProvisionFault::Io(custody_io(error)),
             };
             if let Err(error) = admitted.verify_location(&temp) {
                 return Err(ProvisionError {
@@ -267,17 +272,16 @@ pub fn provision(dest: &Path, request: ProvisionRequest) -> Result<Provisioned, 
             }
             drop(admitted);
             drop(owner);
-            return Err(cleanup_after_failure(&temp, fault));
+            return Err(cleanup_after_failure(&temp, fault, &seam));
         }
     }
-    #[cfg(all(test, unix))]
-    tests::observe_publication(
-        tests::PublicationPoint::Renamed,
-        dest,
-        dest,
-        &owner,
-        &admitted,
-    );
+    seam.at(Event::Stage {
+        at: StagePoint::Published,
+        location: dest,
+        owner: &owner,
+        admitted: &admitted,
+    })
+    .map_err(|error| ProvisionFault::Io(custody_io(error)))?;
     complete_publication(dest, &publication, &admitted, request.envelope)?;
     drop(owner);
     Ok(Provisioned { instance })
@@ -299,9 +303,6 @@ pub(crate) fn complete_publication(
             source: std::io::Error::other(source),
         })?;
     // Make the new directory entry durable in the parent.
-    #[cfg(test)]
-    publication_sync_fault::check(dest, publication_sync_fault::Point::Publication)
-        .map_err(|source| ProvisionFault::PublicationUncertain { instance, source })?;
     publication
         .sync()
         .map_err(|source| ProvisionFault::PublicationUncertain { instance, source })?;
@@ -316,79 +317,14 @@ pub(crate) fn complete_publication(
     admitted
         .replace(Artifact::Envelope, &active)
         .map_err(|source| ProvisionFault::ActivationUncertain { instance, source })?;
-    #[cfg(test)]
-    publication_sync_fault::check(dest, publication_sync_fault::Point::Activation).map_err(
-        |source| ProvisionFault::ActivationUncertain {
-            instance,
-            source: AdmissionError {
-                entry: StoreEntry::Directory,
-                fault: store_dir::AdmissionFault::Custody(marrow_fs_journal::CustodyError::Io {
-                    op: marrow_fs_journal::CustodyOp::Sync,
-                    source,
-                }),
-            },
-        },
-    )?;
     admitted
-        .sync()
+        .sync(Step::Activation)
         .map_err(|source| ProvisionFault::ActivationUncertain { instance, source })?;
     Ok(())
 }
 
-#[cfg(test)]
-pub(crate) mod publication_sync_fault {
-    use std::cell::RefCell;
-    use std::path::{Path, PathBuf};
-
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    pub(crate) enum Point {
-        Publication,
-        Activation,
-    }
-
-    thread_local! {
-        static DESTINATION: RefCell<Option<(PathBuf, Point)>> = const { RefCell::new(None) };
-    }
-
-    pub(crate) fn with_failure<T>(
-        destination: &Path,
-        point: Point,
-        action: impl FnOnce() -> T,
-    ) -> T {
-        struct Restore(Option<(PathBuf, Point)>);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                DESTINATION.with(|slot| *slot.borrow_mut() = self.0.take());
-            }
-        }
-        let previous = DESTINATION.with(|slot| slot.replace(Some((destination.to_owned(), point))));
-        let _restore = Restore(previous);
-        action()
-    }
-
-    pub(super) fn check(destination: &Path, point: Point) -> std::io::Result<()> {
-        let fail = DESTINATION.with(|slot| {
-            let mut armed = slot.borrow_mut();
-            if armed
-                .as_ref()
-                .is_some_and(|(path, at)| path == destination && *at == point)
-            {
-                armed.take();
-                true
-            } else {
-                false
-            }
-        });
-        if fail {
-            Err(std::io::Error::from(std::io::ErrorKind::Other))
-        } else {
-            Ok(())
-        }
-    }
-}
-
-fn cleanup_after_failure(stage: &Path, fault: ProvisionFault) -> ProvisionError {
-    let cleanup = remove_unpublished_stage(stage)
+fn cleanup_after_failure(stage: &Path, fault: ProvisionFault, seam: &Seam) -> ProvisionError {
+    let cleanup = remove_unpublished_stage(stage, seam)
         .err()
         .map(|source| ProvisionCleanupFailure {
             stage: stage.to_path_buf(),
@@ -397,9 +333,8 @@ fn cleanup_after_failure(stage: &Path, fault: ProvisionFault) -> ProvisionError 
     ProvisionError { fault, cleanup }
 }
 
-fn remove_unpublished_stage(stage: &Path) -> std::io::Result<()> {
-    #[cfg(test)]
-    tests::removal_fault(stage)?;
+fn remove_unpublished_stage(stage: &Path, seam: &Seam) -> std::io::Result<()> {
+    seam.at(Event::Removal { stage }).map_err(custody_io)?;
     std::fs::remove_dir_all(stage)
 }
 
@@ -407,6 +342,7 @@ fn remove_unpublished_stage(stage: &Path) -> std::io::Result<()> {
 fn build_in_temp(
     temp: &Path,
     request: &ProvisionRequest,
+    seam: Seam,
 ) -> Result<
     (
         marrow_kernel::durable::PendingNativeStoreOwner,
@@ -416,8 +352,8 @@ fn build_in_temp(
 > {
     let owner = NativeStore::acquire_existing(temp)
         .map_err(|error| ProvisionFault::Io(std::io::Error::other(error)))?;
-    let admitted =
-        AdmittedStoreDir::admit_under_owner(&owner).map_err(ProvisionFault::Admission)?;
+    let admitted = AdmittedStoreDir::admit_under_owner(&owner, seam)
+        .map_err(ProvisionFault::Admission)?;
     let (head_bytes, head) = request.head.encode_with_digest();
     let pending = EnvelopeRecord {
         metadata: request.envelope.clone(),
@@ -436,14 +372,9 @@ fn build_in_temp(
     // Provisioning is the sole create/stamp path. It returns no engine or store
     // capability, so the newly created body cannot escape without an owner lock.
     NativeStore::provision(temp).map_err(ProvisionFault::Store)?;
-
-    #[cfg(test)]
-    crate::store_dir::barrier_fault::check(
-        &admitted,
-        crate::store_dir::barrier_fault::Point::ConstructionStage,
-    )
-    .map_err(ProvisionFault::Admission)?;
-    admitted.sync().map_err(ProvisionFault::Admission)?;
+    admitted
+        .sync(Step::ConstructionStage)
+        .map_err(ProvisionFault::Admission)?;
     Ok((owner, admitted))
 }
 
@@ -453,22 +384,6 @@ fn build_in_temp(
 /// the metadata is read only through the [`crate::NativeAttachment`] that pairs the store
 /// with the image lifecycle admitted it for; this crate's admitted open is the sole
 /// constructor.
-///
-/// ```compile_fail
-/// use marrow_kernel::durable::NativeStore;
-/// use marrow_lifecycle::OpenStore;
-/// fn detach_engine(mut opened: OpenStore) {
-///     let _: &mut NativeStore = &mut opened.store;
-///     let _lock = opened.lock;
-/// }
-/// ```
-///
-/// ```compile_fail
-/// use marrow_lifecycle::OpenStore;
-/// fn rewrite_head(opened: &mut OpenStore, head: marrow_lifecycle::LogicalHead) {
-///     opened.head = head;
-/// }
-/// ```
 pub struct OpenStore {
     owner: NativeStore,
     pub(crate) directory: AdmittedStoreDir,
@@ -672,9 +587,10 @@ pub(crate) enum AdmitError<R> {
 pub(crate) fn open_admitted<R>(
     dir: &Path,
     access: NativeOpenAccess,
+    seam: Seam,
     admit: impl FnOnce(&LogicalHead) -> Result<NumberedProjection, R>,
 ) -> Result<OpenStore, AdmitError<R>> {
-    let locked = LockedStore::acquire(dir).map_err(AdmitError::Open)?;
+    let locked = LockedStore::acquire(dir, seam).map_err(AdmitError::Open)?;
     if locked.envelope.state != EnvelopeState::Active {
         return Err(AdmitError::Open(OpenError::ActivationRequired {
             instance: locked.envelope.metadata.instance,
@@ -701,16 +617,18 @@ pub(crate) enum OpenBinding {
 }
 
 impl LockedStore {
-    pub(crate) fn acquire(dir: &Path) -> Result<Self, OpenError> {
+    pub(crate) fn acquire(dir: &Path, seam: Seam) -> Result<Self, OpenError> {
         decide_before_locking(dir)?;
         let pending = NativeStore::acquire_existing(dir).map_err(|error| match error {
             NativeOwnerAcquireError::Io(error) => OpenError::Io(error),
             NativeOwnerAcquireError::Lock(error) => OpenError::Lock(error),
         })?;
-        #[cfg(test)]
-        admission_substitution::apply(pending.directory());
+        seam.at(Event::Locked {
+            path: pending.directory(),
+        })
+        .map_err(|error| OpenError::Io(custody_io(error)))?;
         let directory =
-            AdmittedStoreDir::admit_under_owner(&pending).map_err(OpenError::Admission)?;
+            AdmittedStoreDir::admit_under_owner(&pending, seam).map_err(OpenError::Admission)?;
         if !directory.is_complete().map_err(OpenError::Admission)? {
             return Err(OpenError::Incomplete);
         }
@@ -805,61 +723,6 @@ impl LockedStore {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod admission_substitution {
-    use std::cell::RefCell;
-    use std::path::{Path, PathBuf};
-
-    struct Swap {
-        original: PathBuf,
-        displaced: PathBuf,
-        replacement: PathBuf,
-    }
-
-    thread_local! {
-        static SWAP: RefCell<Option<Swap>> = const { RefCell::new(None) };
-    }
-
-    pub(crate) fn with_swap<T>(
-        original: &Path,
-        displaced: &Path,
-        replacement: &Path,
-        action: impl FnOnce() -> T,
-    ) -> T {
-        struct Restore(Option<Swap>);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                SWAP.with(|slot| *slot.borrow_mut() = self.0.take());
-            }
-        }
-        let swap = Swap {
-            original: std::fs::canonicalize(original).expect("existing original"),
-            displaced: displaced.to_owned(),
-            replacement: replacement.to_owned(),
-        };
-        let _restore = Restore(SWAP.with(|slot| slot.replace(Some(swap))));
-        action()
-    }
-
-    pub(super) fn apply(directory: &Path) {
-        let swap = SWAP.with(|slot| {
-            let mut armed = slot.borrow_mut();
-            if armed
-                .as_ref()
-                .is_some_and(|swap| swap.original == directory)
-            {
-                armed.take()
-            } else {
-                None
-            }
-        });
-        if let Some(swap) = swap {
-            std::fs::rename(&swap.original, &swap.displaced).expect("move held directory");
-            std::fs::rename(&swap.replacement, &swap.original).expect("substitute directory");
-        }
-    }
-}
-
 /// Everything an open settles before it takes the owner lock, and nothing else.
 ///
 /// Acquiring the lock creates the `lock` entry and writes a marker into it, so the two
@@ -946,708 +809,5 @@ pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::head::ActiveBinding;
-    use crate::headmap::HeadMap;
-    use crate::test_support::Scratch;
-    use marrow_image::LedgerIdBytes;
-    use marrow_kernel::durable::StoreProjection;
-
-    #[test]
-    fn provision_never_replaces_an_existing_empty_directory() {
-        let scratch = Scratch::new("occupied-empty");
-        let destination = scratch.base().join("destination");
-        std::fs::create_dir(&destination).unwrap();
-        let (_, request) = compiled_request();
-        let result = provision(&destination, request);
-        assert!(matches!(
-            result,
-            Err(ProvisionError {
-                fault: ProvisionFault::AlreadyProvisioned,
-                ..
-            })
-        ));
-        assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 0);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn occupied_files_and_dangling_links_refuse_without_replacement() {
-        let scratch = Scratch::new("occupied-entries");
-        for dangling in [false, true] {
-            let destination = scratch.base().join(if dangling { "link" } else { "file" });
-            if dangling {
-                std::os::unix::fs::symlink("missing-target", &destination).unwrap();
-            } else {
-                std::fs::write(&destination, b"existing bytes").unwrap();
-            }
-            let (_, request) = compiled_request();
-            assert!(matches!(
-                provision(&destination, request),
-                Err(ProvisionError {
-                    fault: ProvisionFault::AlreadyProvisioned,
-                    ..
-                })
-            ));
-            if dangling {
-                assert_eq!(
-                    std::fs::read_link(&destination).unwrap(),
-                    Path::new("missing-target")
-                );
-            } else {
-                assert_eq!(std::fs::read(&destination).unwrap(), b"existing bytes");
-            }
-        }
-    }
-
-    struct ConstructionFault {
-        destination: PathBuf,
-        point: Option<crate::store_dir::barrier_fault::Point>,
-        removal: Option<std::io::ErrorKind>,
-        observed: Option<(PathBuf, Vec<std::ffi::OsString>)>,
-    }
-
-    thread_local! {
-        static CONSTRUCTION: std::cell::RefCell<Option<ConstructionFault>> = const { std::cell::RefCell::new(None) };
-    }
-
-    pub(super) fn construct<T>(destination: &Path, stage: &Path, action: impl FnOnce() -> T) -> T {
-        let point = CONSTRUCTION.with(|slot| {
-            slot.borrow()
-                .as_ref()
-                .filter(|fault| fault.destination == destination)
-                .map(|fault| fault.point)
-        });
-        let Some(point) = point else { return action() };
-        let result = match point {
-            Some(point) => crate::store_dir::barrier_fault::with_failure(stage, point, action),
-            None => action(),
-        };
-        let mut names: Vec<_> = std::fs::read_dir(stage)
-            .expect("owned stage before cleanup")
-            .map(|entry| entry.expect("stage entry").file_name())
-            .collect();
-        names.sort();
-        CONSTRUCTION.with(|slot| {
-            slot.borrow_mut()
-                .as_mut()
-                .expect("armed construction")
-                .observed = Some((stage.to_path_buf(), names))
-        });
-        result
-    }
-
-    pub(super) fn removal_fault(stage: &Path) -> std::io::Result<()> {
-        let failure = CONSTRUCTION.with(|slot| {
-            let mut slot = slot.borrow_mut();
-            let fault = slot.as_mut()?;
-            if fault.observed.as_ref()?.0 == stage {
-                fault.removal.take()
-            } else {
-                None
-            }
-        });
-        match failure {
-            Some(kind) => Err(kind.into()),
-            None => Ok(()),
-        }
-    }
-
-    #[test]
-    fn provision_retains_the_original_failure_and_failed_cleanup_location() {
-        use crate::store_dir::barrier_fault::Point;
-        struct Restore(Option<ConstructionFault>);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                CONSTRUCTION.with(|slot| *slot.borrow_mut() = self.0.take());
-            }
-        }
-        for point in [Some(Point::NewBody(Artifact::Envelope)), None] {
-            let scratch = std::mem::ManuallyDrop::new(Scratch::new("cleanup-failure"));
-            eprintln!("cleanup-failure fixture: {}", scratch.base().display());
-            let destination = scratch.base().join("destination");
-            if point.is_none() {
-                std::fs::create_dir(&destination).expect("occupied destination");
-                std::fs::write(destination.join("sentinel"), b"existing destination")
-                    .expect("sentinel");
-            }
-            let (_, request) = compiled_request();
-            let _restore = Restore(CONSTRUCTION.with(|slot| {
-                slot.replace(Some(ConstructionFault {
-                    destination: destination.clone(),
-                    point,
-                    removal: Some(std::io::ErrorKind::PermissionDenied),
-                    observed: None,
-                }))
-            }));
-            let error = provision(&destination, request).expect_err("provision failed");
-            let stage = CONSTRUCTION.with(|slot| {
-                slot.borrow()
-                    .as_ref()
-                    .expect("armed")
-                    .observed
-                    .as_ref()
-                    .expect("observed stage")
-                    .0
-                    .clone()
-            });
-            assert!(stage.exists(), "forced cleanup failure retains owned stage");
-            let cleanup = error.cleanup.as_ref().expect("typed cleanup evidence");
-            assert_eq!(cleanup.stage, stage);
-            assert_eq!(cleanup.source.kind(), std::io::ErrorKind::PermissionDenied);
-            assert!(matches!(
-                (&point, &error.fault),
-                (Some(_), ProvisionFault::Admission(_))
-                    | (None, ProvisionFault::AlreadyProvisioned)
-            ));
-            assert_eq!(
-                error.code(),
-                if point.is_some() {
-                    Code::StoreIo
-                } else {
-                    Code::StoreLocked
-                }
-            );
-            if point.is_none() {
-                assert_eq!(
-                    std::fs::read(destination.join("sentinel")).expect("destination untouched"),
-                    b"existing destination"
-                );
-            } else {
-                assert!(!destination.exists());
-            }
-            // The user-facing failure must identify the actual directory whose cleanup failed.
-            assert!(
-                error
-                    .to_string()
-                    .contains(stage.to_str().expect("fixture path")),
-                "failure lost the owned stage location: {error}"
-            );
-            drop(std::mem::ManuallyDrop::into_inner(scratch));
-        }
-    }
-
-    #[test]
-    fn construction_failures_remove_only_the_stage_this_invocation_created() {
-        use crate::store_dir::barrier_fault::Point;
-        struct Restore(Option<ConstructionFault>);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                CONSTRUCTION.with(|slot| *slot.borrow_mut() = self.0.take());
-            }
-        }
-        for point in [
-            Point::NewBody(Artifact::Envelope),
-            Point::NewBody(Artifact::Head),
-            Point::ConstructionStage,
-        ] {
-            let scratch = std::mem::ManuallyDrop::new(Scratch::new("construction-prefix"));
-            eprintln!("construction-prefix fixture: {}", scratch.base().display());
-            let destination = scratch.base().join("destination");
-            let unrelated = scratch.base().join("unrelated.provisioning");
-            std::fs::create_dir(&unrelated).expect("unrelated sibling");
-            std::fs::write(unrelated.join("sentinel"), b"keep me").expect("sentinel");
-            let (_, request) = compiled_request();
-            let _restore = Restore(CONSTRUCTION.with(|slot| {
-                slot.replace(Some(ConstructionFault {
-                    destination: destination.clone(),
-                    point: Some(point),
-                    removal: None,
-                    observed: None,
-                }))
-            }));
-            let error =
-                provision(&destination, request).expect_err("failed construction cannot publish");
-            assert_eq!(error.code(), Code::StoreIo);
-            assert!(
-                error.cleanup.is_none(),
-                "successful cleanup has no failure evidence"
-            );
-            assert!(matches!(
-                error.fault,
-                ProvisionFault::Admission(AdmissionError {
-                    fault: store_dir::AdmissionFault::Custody(
-                        marrow_fs_journal::CustodyError::Io { .. }
-                    ),
-                    ..
-                })
-            ));
-            let (stage, names) = CONSTRUCTION.with(|slot| {
-                slot.borrow_mut()
-                    .as_mut()
-                    .expect("armed")
-                    .observed
-                    .take()
-                    .expect("actual stage observed")
-            });
-            let mut expected: Vec<std::ffi::OsString> = vec![store_dir::ENVELOPE_FILE.into()];
-            if point != Point::NewBody(Artifact::Envelope) {
-                expected.push(store_dir::HEAD_FILE.into());
-            }
-            if point == Point::ConstructionStage {
-                expected.push(store_dir::ENGINE_FILE.into());
-            }
-            expected.sort();
-            assert_eq!(names, expected);
-            assert!(!destination.exists());
-            assert!(!stage.exists(), "only the owned stage is removed");
-            assert_eq!(
-                std::fs::read(unrelated.join("sentinel")).expect("unrelated retained"),
-                b"keep me"
-            );
-            assert_eq!(
-                std::fs::read_dir(scratch.base()).expect("parent").count(),
-                1
-            );
-            drop(std::mem::ManuallyDrop::into_inner(scratch));
-        }
-    }
-
-    fn compiled_request() -> (marrow_verify::VerifiedImage, ProvisionRequest) {
-        let source = "resource Item { required value: int }\nstore ^items[key: int]: Item\npub fn read(key: int): int { return ^items[key].value ?? 0 }\n";
-        let ids = "marrow ids v0\nmachine-written by marrow; do not edit\nid application . 01010101010101010101010101010101\nid product Item 02020202020202020202020202020202\nid field Item.value 03030303030303030303030303030303\nid root items 04040404040404040404040404040404\nid key items.key 05050505050505050505050505050505\nhigh-water 0\nend\n";
-        let image = crate::test_support::compile::compile(source, ids);
-        let request = ProvisionRequest {
-            envelope: StoreEnvelope {
-                instance: StoreInstanceId::draw().expect("instance"),
-                writer_toolchain: env!("CARGO_PKG_VERSION").into(),
-                engine_kind: crate::EngineKind::Redb,
-                engine_format_version: marrow_kernel::durable::NATIVE_ENGINE_FORMAT_VERSION,
-            },
-            head: LogicalHead::provision(
-                crate::active_binding(&image),
-                crate::accepted_ceiling(&image),
-                crate::head_map(&image).expect("head map"),
-            ),
-        };
-        (image, request)
-    }
-
-    #[test]
-    fn a_complete_unpublished_stage_is_adopted_at_its_current_location() {
-        let scratch = Scratch::new("complete-stage");
-        let destination = scratch.base().join("destination");
-        let stage = temp_sibling(&destination);
-        create_private_dir(&stage).expect("private stage");
-        let (image, request) = compiled_request();
-        let instance = request.envelope.instance;
-        let (owner, admitted) = build_in_temp(&stage, &request).expect("complete production stage");
-        let (head, digest) = decode_head(&admitted).expect("head");
-        let head = head.encode();
-        assert_eq!(
-            decode_record(&admitted).expect("record").state,
-            EnvelopeState::Provision { head: digest }
-        );
-        assert!(!destination.exists());
-        let held = crate::recover(&stage, crate::prepare(image.clone()))
-            .expect_err("construction owner held");
-        assert!(matches!(
-            held.fault,
-            crate::RecoveryFault::Validation(crate::AuditError::Open(OpenError::Lock(
-                NativeLockError::StoreInUse { .. }
-            )))
-        ));
-        drop(admitted);
-        drop(owner);
-        assert!(matches!(
-            crate::attach(&stage, crate::prepare(image.clone())),
-            Err(crate::LifecycleError::Open(
-                OpenError::ActivationRequired { .. }
-            ))
-        ));
-        let recovered =
-            crate::recover(&stage, crate::prepare(image.clone())).expect("adopt current stage");
-        assert_eq!(recovered.instance, instance);
-        assert_eq!(recovered.image_id, image.image_id());
-        assert_eq!(
-            std::fs::read(stage.join(crate::HEAD_FILE)).expect("head unchanged"),
-            head
-        );
-        assert!(matches!(
-            crate::attach(&stage, crate::prepare(image)).expect("active at stage"),
-            crate::AttachOutcome::AlreadyActive(_)
-        ));
-        assert!(
-            !destination.exists(),
-            "recovery must not reconstruct a former destination"
-        );
-    }
-
-    #[cfg(unix)]
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub(super) enum PublicationPoint {
-        Staged,
-        Renamed,
-    }
-
-    #[cfg(unix)]
-    struct PublicationObservation {
-        destination: PathBuf,
-        seen: Vec<(PublicationPoint, u64, u64)>,
-        mutation: Option<(PublicationPoint, PublicationMutation)>,
-    }
-
-    #[cfg(unix)]
-    enum PublicationMutation {
-        Occupy,
-        Substitute(PathBuf),
-    }
-
-    #[cfg(unix)]
-    thread_local! {
-        static PUBLICATION_OBSERVATION: std::cell::RefCell<Option<PublicationObservation>> = const { std::cell::RefCell::new(None) };
-    }
-
-    #[cfg(unix)]
-    pub(super) fn observe_publication(
-        point: PublicationPoint,
-        destination: &Path,
-        location: &Path,
-        owner: &marrow_kernel::durable::PendingNativeStoreOwner,
-        admitted: &AdmittedStoreDir,
-    ) {
-        use std::os::unix::fs::MetadataExt;
-        PUBLICATION_OBSERVATION.with(|slot| {
-            let mut slot = slot.borrow_mut();
-            let Some(observation) = slot
-                .as_mut()
-                .filter(|observation| observation.destination == destination)
-            else {
-                return;
-            };
-            let held = owner
-                .directory_metadata()
-                .expect("retained owner directory");
-            let actual = std::fs::metadata(location).expect("current location");
-            assert_eq!((held.dev(), held.ino()), (actual.dev(), actual.ino()));
-            admitted
-                .verify_location(location)
-                .expect("same admitted descriptor");
-            assert!(matches!(
-                NativeStore::acquire_existing(location),
-                Err(NativeOwnerAcquireError::Lock(
-                    marrow_kernel::durable::NativeLockError::StoreInUse { .. }
-                ))
-            ));
-            observation.seen.push((point, actual.dev(), actual.ino()));
-            if observation
-                .mutation
-                .as_ref()
-                .is_some_and(|(at, _)| *at == point)
-            {
-                match observation.mutation.take().unwrap().1 {
-                    PublicationMutation::Occupy => std::fs::create_dir(destination).unwrap(),
-                    PublicationMutation::Substitute(saved) => {
-                        std::fs::rename(location, saved).unwrap();
-                        std::fs::create_dir(location).unwrap();
-                        std::fs::write(location.join("replacement"), b"do not delete").unwrap();
-                    }
-                }
-            }
-        });
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn public_provision_holds_the_same_directory_owner_across_rename() {
-        struct Clear;
-        impl Drop for Clear {
-            fn drop(&mut self) {
-                PUBLICATION_OBSERVATION.with(|slot| {
-                    slot.borrow_mut().take();
-                });
-            }
-        }
-        let scratch = Scratch::new("rename-owner");
-        let destination = scratch.base().join("store");
-        let (image, request) = compiled_request();
-        let _clear = Clear;
-        PUBLICATION_OBSERVATION.with(|slot| {
-            *slot.borrow_mut() = Some(PublicationObservation {
-                destination: destination.clone(),
-                seen: Vec::new(),
-                mutation: None,
-            })
-        });
-        provision(&destination, request).expect("public provision");
-        PUBLICATION_OBSERVATION.with(|slot| {
-            let observation = slot.borrow_mut().take().expect("observations");
-            assert_eq!(observation.seen.len(), 2);
-            let (point, device, inode) = observation.seen[0];
-            assert_eq!(point, PublicationPoint::Staged);
-            assert_eq!(
-                observation.seen[1],
-                (PublicationPoint::Renamed, device, inode)
-            );
-        });
-        assert!(matches!(
-            crate::attach(&destination, crate::prepare(image))
-                .expect("released completed provision"),
-            crate::AttachOutcome::AlreadyActive(_)
-        ));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn late_collision_and_identity_changes_preserve_actual_custody() {
-        struct Clear;
-        impl Drop for Clear {
-            fn drop(&mut self) {
-                PUBLICATION_OBSERVATION.with(|slot| *slot.borrow_mut() = None);
-            }
-        }
-        for case in 0..3 {
-            let scratch = std::mem::ManuallyDrop::new(Scratch::new("publication-custody"));
-            eprintln!(
-                "preserved publication custody fixture {case}: {}",
-                scratch.base().display()
-            );
-            let destination = scratch.base().join("store");
-            let saved = scratch.base().join("retained-original");
-            let (at, action) = match case {
-                0 => (PublicationPoint::Staged, PublicationMutation::Occupy),
-                1 => (
-                    PublicationPoint::Staged,
-                    PublicationMutation::Substitute(saved.clone()),
-                ),
-                _ => (
-                    PublicationPoint::Renamed,
-                    PublicationMutation::Substitute(saved.clone()),
-                ),
-            };
-            let (_, request) = compiled_request();
-            let instance = request.envelope.instance;
-            let _clear = Clear;
-            PUBLICATION_OBSERVATION.with(|slot| {
-                *slot.borrow_mut() = Some(PublicationObservation {
-                    destination: destination.clone(),
-                    seen: Vec::new(),
-                    mutation: Some((at, action)),
-                })
-            });
-            let error = provision(&destination, request).unwrap_err();
-            match case {
-                0 => {
-                    assert!(matches!(error.fault, ProvisionFault::AlreadyProvisioned));
-                    assert!(error.cleanup.is_none());
-                    assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 0);
-                }
-                1 => {
-                    assert!(matches!(error.fault, ProvisionFault::Io(_)));
-                    let cleanup = error.cleanup.expect("replacement must not be removed");
-                    assert_eq!(
-                        std::fs::read(cleanup.stage.join("replacement")).unwrap(),
-                        b"do not delete"
-                    );
-                    assert!(saved.join(crate::HEAD_FILE).is_file());
-                    assert!(!destination.exists());
-                }
-                _ => {
-                    assert!(
-                        matches!(error.fault, ProvisionFault::PublicationUncertain { instance: found, .. } if found == instance)
-                    );
-                    assert!(error.cleanup.is_none());
-                    assert_eq!(
-                        std::fs::read(destination.join("replacement")).unwrap(),
-                        b"do not delete"
-                    );
-                    assert!(saved.join(crate::HEAD_FILE).is_file());
-                }
-            }
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn inadmissible_destination_names_refuse_before_stage_creation() {
-        use std::os::unix::ffi::OsStringExt;
-        let scratch = Scratch::new("publication-name-admission");
-        for name in [
-            std::ffi::OsString::from("a\\b"),
-            std::ffi::OsString::from("a:store"),
-            std::ffi::OsString::from("control\u{1}"),
-            std::ffi::OsString::from_vec(vec![0xff]),
-        ] {
-            let (_, request) = compiled_request();
-            let error = provision(&scratch.base().join(name), request).unwrap_err();
-            assert!(
-                matches!(error.fault, ProvisionFault::Io(source) if source.kind() == std::io::ErrorKind::InvalidInput)
-            );
-            assert!(error.cleanup.is_none());
-            assert_eq!(std::fs::read_dir(scratch.base()).unwrap().count(), 0);
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn symlink_parent_and_missing_owner_permissions_refuse_before_staging() {
-        use std::os::unix::fs::PermissionsExt;
-        let scratch = Scratch::new("publication-parent-admission");
-        let parent = scratch.base().join("parent");
-        std::fs::create_dir(&parent).unwrap();
-        let link = scratch.base().join("link");
-        std::os::unix::fs::symlink(&parent, &link).unwrap();
-        let (_, request) = compiled_request();
-        assert!(provision(&link.join("store"), request).is_err());
-        assert_eq!(std::fs::read_dir(&parent).unwrap().count(), 0);
-        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o500)).unwrap();
-        let (_, request) = compiled_request();
-        let result = provision(&parent.join("store"), request);
-        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(result.is_err());
-        assert_eq!(std::fs::read_dir(&parent).unwrap().count(), 0);
-    }
-
-    /// The empty store shape: no roots, so no site to resolve. These cases exercise the
-    /// directory lifecycle, not the store's own shape.
-    fn rootless_layout() -> NumberedProjection {
-        let projection = StoreProjection::builder()
-            .finish()
-            .expect("a rootless projection has no site to resolve");
-        NumberedProjection::accepted(projection, &[], 0).expect("empty address mapping")
-    }
-
-    /// The smallest complete provision request: one durable node, a two-byte accepted
-    /// ceiling payload, and no store shape.
-    fn test_request(instance: StoreInstanceId) -> ProvisionRequest {
-        let head_map = HeadMap::assign(&[LedgerIdBytes::from_bytes([0x01; 16])]).expect("head map");
-        ProvisionRequest {
-            envelope: StoreEnvelope {
-                instance,
-                writer_toolchain: "0.1.0".into(),
-                engine_kind: crate::envelope::EngineKind::Redb,
-                engine_format_version: 1,
-            },
-            head: LogicalHead::provision(
-                ActiveBinding {
-                    image_format_version: marrow_image::IMAGE_FORMAT_VERSION,
-                    image_id: [0x11; 32],
-                    durable_contract: [0x22; 32],
-                    interface: [0x33; 32],
-                },
-                vec![0x44, 0x45],
-                head_map,
-            ),
-        }
-    }
-
-    /// The classification of a directory this test can examine. A preflight that cannot look
-    /// is a distinct outcome with its own coverage; nothing here should reach it.
-    fn classify(dir: &Path) -> Preflight {
-        preflight(dir).expect("this test's directories are examinable")
-    }
-
-    #[test]
-    fn preflight_classifies_absent_incomplete_complete_without_creating() {
-        let scratch = Scratch::new("preflight");
-        // A path under the scratch base that does not itself exist: preflight must leave
-        // both it and the store directory under it alone.
-        let base = scratch.named_store("base");
-        let dir = base.join("store");
-
-        // Absent: no directory. Preflight creates nothing.
-        assert_eq!(classify(&dir), Preflight::Absent);
-        assert!(
-            !base.exists(),
-            "preflight must not create the base directory"
-        );
-        assert!(
-            !dir.exists(),
-            "preflight must not create the store directory"
-        );
-
-        // Incomplete: the directory exists but lacks artifacts.
-        std::fs::create_dir_all(&dir).expect("create dir");
-        assert_eq!(classify(&dir), Preflight::Incomplete);
-        let before: Vec<_> = read_dir_names(&dir);
-        assert_eq!(classify(&dir), Preflight::Incomplete);
-        assert_eq!(
-            read_dir_names(&dir),
-            before,
-            "preflight must not add a file"
-        );
-    }
-
-    fn open_owner(dir: &Path, instance: [u8; 16]) -> NativeStore {
-        NativeStore::acquire_existing(dir)
-            .expect("acquire the owner")
-            .bind_and_open_existing(NativeOpenAccess::ReadWrite, instance, || {
-                Ok::<_, std::convert::Infallible>(rootless_layout())
-            })
-            .expect("bind and open")
-    }
-
-    #[test]
-    fn opaque_native_owner_holds_exclusion_and_clean_drop_releases_it() {
-        let scratch = Scratch::new("opaque-owner");
-        NativeStore::provision(scratch.base()).expect("provision native engine");
-        let owner = open_owner(scratch.base(), [0x51; 16]);
-        assert!(matches!(
-            NativeStore::acquire_existing(scratch.base()),
-            Err(NativeOwnerAcquireError::Lock(_)),
-        ));
-        drop(owner);
-        drop(open_owner(scratch.base(), [0x52; 16]));
-    }
-
-    /// Every admission read and callback happens under one owner, and the pair of artifacts
-    /// the open reports is the snapshot taken under it. A competing open attempted from
-    /// inside the admission callback — the innermost point of the sequence — is refused as
-    /// contention, and an envelope rewritten at that same point does not reach the caller,
-    /// because the envelope is read once under this owner and never re-read behind the head.
-    #[test]
-    fn admission_reads_are_one_snapshot_under_one_owner() {
-        let scratch = Scratch::new("one-snapshot");
-        let store = scratch.base().join("store");
-        let original = StoreInstanceId::draw().expect("entropy");
-        provision(&store, test_request(original)).expect("provision");
-
-        let mut contended = None;
-        let opened = open_admitted(&store, NativeOpenAccess::ReadWrite, |head| {
-            contended = Some(match LockedStore::acquire(&store) {
-                Err(OpenError::Lock(error)) => error.code(),
-                Ok(_) => panic!("a competing open ran inside the admission callback"),
-                Err(other) => panic!("admission ran outside its owner: {other}"),
-            });
-            // Rewrite the envelope at the innermost point of the sequence. A second read
-            // behind the head would pick this up; one snapshot cannot.
-            let replacement = StoreEnvelope {
-                instance: StoreInstanceId::draw().expect("entropy"),
-                writer_toolchain: "9.9.9".into(),
-                engine_kind: crate::envelope::EngineKind::Redb,
-                engine_format_version: 1,
-            };
-            let replacement = EnvelopeRecord {
-                metadata: replacement,
-                state: EnvelopeState::Active,
-            }
-            .encode()
-            .expect("encode replacement record");
-            std::fs::write(store.join(store_dir::ENVELOPE_FILE), replacement)
-                .expect("rewrite the envelope mid-admission");
-            assert_eq!(head.binding.image_id, [0x11; 32]);
-            Ok::<_, std::convert::Infallible>(rootless_layout())
-        })
-        .unwrap_or_else(|_| panic!("the open completes under its own owner"));
-
-        assert_eq!(contended, Some(Code::StoreLocked));
-        assert_eq!(
-            opened.envelope.instance, original,
-            "the open reports the envelope its owner admitted, not one rewritten behind it",
-        );
-    }
-
-    fn read_dir_names(dir: &Path) -> Vec<String> {
-        let mut names: Vec<String> = std::fs::read_dir(dir)
-            .map(|entries| {
-                entries
-                    .flatten()
-                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                    .collect()
-            })
-            .unwrap_or_default();
-        names.sort();
-        names
-    }
-}
+#[path = "provision_tests.rs"]
+mod tests;

@@ -13,6 +13,7 @@ use crate::audit::{self, ChainDigest, Names};
 use crate::backup_stream::{Encoder, StreamError};
 use crate::durable_fs::{Publication, custody_io};
 use crate::provision::{open_admitted, temp_sibling};
+use crate::seam::{Event, Seam};
 use crate::{AuditError, FormatError, StoreAudit, prepare};
 use marrow_codes::Code;
 
@@ -136,17 +137,29 @@ pub fn backup(
     image_bytes: &[u8],
     destination: &Path,
 ) -> Result<StoreBackup, BackupError> {
+    backup_observed(source, image_bytes, destination, Seam::NONE)
+}
+
+/// [`backup`] over `seam`: the production seam observes nothing; a test's cuts or mutates
+/// the sequence at a named point.
+pub(crate) fn backup_observed(
+    source: &Path,
+    image_bytes: &[u8],
+    destination: &Path,
+    seam: Seam,
+) -> Result<StoreBackup, BackupError> {
     let image = marrow_verify::verify(image_bytes).map_err(BackupFault::Image)?;
     let (image, projection) = prepare(image).into_parts();
     let projection = projection.ok_or(BackupFault::Audit(AuditError::NotExecutable))?;
     let names = Names::new(&projection);
     let admission = ImageAdmission::derive(&image, projection);
-    let opened = open_admitted(source, NativeOpenAccess::ReadOnly, |head| {
+    let opened = open_admitted(source, NativeOpenAccess::ReadOnly, seam.clone(), |head| {
         admission.admit(head, BindingStrictness::Exact)
     })
     .map_err(|error| BackupFault::Audit(audit::open_error(error)))?;
     let stage = temp_sibling(destination);
-    let publication = Publication::admit(&stage, destination).map_err(BackupFault::Io)?;
+    let publication =
+        Publication::admit(&stage, destination, seam.clone()).map_err(BackupFault::Io)?;
     let file = publication.create_file().map_err(|error| BackupError {
         fault: BackupFault::Io(custody_io(error)),
         unpublished: Some(stage.clone()),
@@ -156,11 +169,8 @@ pub fn backup(
     let mut output = Output(file);
     let result = write_backup(&opened, &names, image.image_id(), image_bytes, &mut output);
     let result = result.and_then(|backup| {
-        #[cfg(test)]
-        tests::before_file_sync(&stage).map_err(BackupFault::Io)?;
-        output
-            .0
-            .sync()
+        seam.at(Event::OutputSync { stage: &stage })
+            .and_then(|()| output.0.sync())
             .map_err(|error| BackupFault::Io(custody_io(error)))?;
         Ok(backup)
     });
@@ -189,11 +199,6 @@ pub fn backup(
             destination: destination.to_path_buf(),
             source: custody_io(error),
         }
-    })?;
-    #[cfg(test)]
-    tests::before_parent_sync().map_err(|source| BackupFault::PublicationUncertain {
-        destination: destination.to_path_buf(),
-        source,
     })?;
     publication
         .sync()
@@ -235,200 +240,5 @@ fn write_backup(
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
-    use crate::{EngineKind, LogicalHead, ProvisionRequest, StoreEnvelope, StoreInstanceId};
-
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    enum Failure {
-        FileSync,
-        ReplacedStage,
-        ParentSync,
-    }
-    thread_local! {
-        static FAILURE: std::cell::Cell<Option<Failure>> = const { std::cell::Cell::new(None) };
-    }
-
-    pub(super) fn before_file_sync(stage: &Path) -> io::Result<()> {
-        match FAILURE.get() {
-            Some(Failure::FileSync) => Err(io::ErrorKind::StorageFull.into()),
-            Some(Failure::ReplacedStage) => {
-                std::fs::rename(stage, stage.with_extension("preserved")).unwrap();
-                std::fs::write(stage, b"replacement must survive").unwrap();
-                Err(io::ErrorKind::StorageFull.into())
-            }
-            _ => Ok(()),
-        }
-    }
-
-    pub(super) fn before_parent_sync() -> io::Result<()> {
-        if FAILURE.get() == Some(Failure::ParentSync) {
-            Err(io::ErrorKind::StorageFull.into())
-        } else {
-            Ok(())
-        }
-    }
-
-    pub(crate) const SOURCE: &str = "resource Item { required value: int }\nstore ^items[key: int]: Item { index byValue[value] unique }\npub fn read(key: int): int { return ^items[key].value ?? 0 }\npub fn seed() { transaction { ^items[7] = Item(value: 42) } }\n";
-
-    pub(crate) fn image_bytes() -> &'static [u8] {
-        static BYTES: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
-        BYTES.get_or_init(|| compile_image(SOURCE))
-    }
-
-    /// The ledger for [`SOURCE`]: the application, the `Item` product and its field, the
-    /// `items` root with its key, and the `byValue` index.
-    const IDS: &str = "marrow ids v0\nmachine-written by marrow; do not edit\nid application . 01010101010101010101010101010101\nid product Item 02020202020202020202020202020202\nid field Item.value 03030303030303030303030303030303\nid root items 04040404040404040404040404040404\nid key items.key 05050505050505050505050505050505\nid index items.byValue 06060606060606060606060606060606\nhigh-water 0\nend\n";
-
-    pub(crate) fn compile_image(source: &str) -> Vec<u8> {
-        crate::test_support::compile::compile_bytes(source, IDS)
-    }
-
-    pub(crate) use crate::test_support::Scratch;
-
-    /// Provision a store at `scratch.store()` under the [`SOURCE`] corpus, so the backup and
-    /// restore cases start from a real published store rather than a hand-built directory.
-    pub(crate) fn provision_fixture(scratch: &Scratch) {
-        let image = marrow_verify::verify(image_bytes()).unwrap();
-        crate::provision(
-            &scratch.store(),
-            ProvisionRequest {
-                envelope: StoreEnvelope {
-                    instance: StoreInstanceId::draw().unwrap(),
-                    writer_toolchain: env!("CARGO_PKG_VERSION").into(),
-                    engine_kind: EngineKind::Redb,
-                    engine_format_version: marrow_kernel::durable::NATIVE_ENGINE_FORMAT_VERSION,
-                },
-                head: LogicalHead::provision(
-                    crate::active_binding(&image),
-                    crate::accepted_ceiling(&image),
-                    crate::head_map(&image).unwrap(),
-                ),
-            },
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn published_empty_backup_contains_exact_image_and_accepted_head() {
-        let scratch = Scratch::new("backup");
-        provision_fixture(&scratch);
-        let before_head = std::fs::read(scratch.store().join(crate::HEAD_FILE)).unwrap();
-        let before_envelope = std::fs::read(scratch.store().join(crate::ENVELOPE_FILE)).unwrap();
-        let destination = scratch.base().join("backup");
-        let result = backup(&scratch.store(), image_bytes(), &destination).unwrap();
-        assert!(result.audit.is_clean());
-        assert_eq!(result.audit.summary.cells, 0);
-        let bytes = std::fs::read(&destination).unwrap();
-        let mut cursor = io::Cursor::new(&bytes);
-        let (mut decoder, header) = crate::backup_stream::Decoder::new(&mut cursor).unwrap();
-        assert_eq!(header.image, image_bytes());
-        assert_eq!(header.head, before_head);
-        assert!(decoder.next_cell().unwrap().is_none());
-        assert_eq!(&bytes[bytes.len() - 32..], result.digest.bytes());
-        assert_eq!(
-            std::fs::read(scratch.store().join(crate::HEAD_FILE)).unwrap(),
-            before_head
-        );
-        assert_eq!(
-            std::fs::read(scratch.store().join(crate::ENVELOPE_FILE)).unwrap(),
-            before_envelope
-        );
-        assert_eq!(std::fs::read_dir(scratch.base()).unwrap().count(), 2);
-    }
-
-    #[test]
-    fn occupied_output_is_unchanged_and_its_private_candidate_is_removed() {
-        let scratch = Scratch::new("backup");
-        provision_fixture(&scratch);
-        let destination = scratch.base().join("backup");
-        std::fs::write(&destination, b"existing backup").unwrap();
-        let error = backup(&scratch.store(), image_bytes(), &destination).unwrap_err();
-        assert!(
-            matches!(error.fault, BackupFault::Io(source) if source.kind() == io::ErrorKind::AlreadyExists)
-        );
-        assert!(error.unpublished.is_none());
-        assert!(error.cleanup.is_none());
-        assert_eq!(std::fs::read(&destination).unwrap(), b"existing backup");
-        assert_eq!(std::fs::read_dir(scratch.base()).unwrap().count(), 2);
-    }
-
-    #[test]
-    fn held_source_and_invalid_image_refuse_before_output_creation() {
-        let scratch = Scratch::new("backup");
-        provision_fixture(&scratch);
-        let destination = scratch.base().join("backup");
-        let image = marrow_verify::verify(image_bytes()).unwrap();
-        let held = crate::attach(&scratch.store(), prepare(image)).unwrap();
-        let error = backup(&scratch.store(), image_bytes(), &destination).unwrap_err();
-        assert!(matches!(error.fault, BackupFault::Audit(_)));
-        assert!(error.unpublished.is_none());
-        drop(held);
-        assert!(matches!(
-            backup(&scratch.store(), b"invalid", &destination)
-                .unwrap_err()
-                .fault,
-            BackupFault::Image(_)
-        ));
-        assert_eq!(std::fs::read_dir(scratch.base()).unwrap().count(), 1);
-    }
-
-    #[test]
-    fn failed_barriers_and_cleanup_identity_preserve_the_actual_outcome() {
-        struct Clear;
-        impl Drop for Clear {
-            fn drop(&mut self) {
-                FAILURE.set(None);
-            }
-        }
-        for failure in [
-            Failure::FileSync,
-            Failure::ReplacedStage,
-            Failure::ParentSync,
-        ] {
-            let scratch = std::mem::ManuallyDrop::new(Scratch::new("backup"));
-            eprintln!(
-                "preserved backup failure fixture: {}",
-                scratch.base().display()
-            );
-            provision_fixture(&scratch);
-            let destination = scratch.base().join("backup");
-            let _clear = Clear;
-            FAILURE.set(Some(failure));
-            let error = backup(&scratch.store(), image_bytes(), &destination).unwrap_err();
-            match failure {
-                Failure::FileSync => {
-                    assert!(
-                        matches!(error.fault, BackupFault::Io(source) if source.kind() == io::ErrorKind::StorageFull)
-                    );
-                    assert!(error.unpublished.is_none());
-                    assert!(error.cleanup.is_none());
-                    assert!(!destination.exists());
-                    assert_eq!(std::fs::read_dir(scratch.base()).unwrap().count(), 1);
-                }
-                Failure::ReplacedStage => {
-                    assert!(
-                        matches!(error.fault, BackupFault::Io(source) if source.kind() == io::ErrorKind::StorageFull)
-                    );
-                    assert!(error.cleanup.is_some());
-                    let stage = error.unpublished.unwrap();
-                    assert_eq!(std::fs::read(&stage).unwrap(), b"replacement must survive");
-                    assert!(stage.with_extension("preserved").is_file());
-                    assert!(!destination.exists());
-                }
-                Failure::ParentSync => {
-                    assert!(
-                        matches!(error.fault, BackupFault::PublicationUncertain { destination: ref found, ref source } if found == &destination && source.kind() == io::ErrorKind::StorageFull)
-                    );
-                    assert!(error.unpublished.is_none());
-                    assert!(error.cleanup.is_none());
-                    let bytes = std::fs::read(&destination).unwrap();
-                    let mut input = io::Cursor::new(bytes);
-                    let (mut decoder, _) = crate::backup_stream::Decoder::new(&mut input).unwrap();
-                    assert!(decoder.next_cell().unwrap().is_none());
-                    assert_eq!(std::fs::read_dir(scratch.base()).unwrap().count(), 2);
-                }
-            }
-        }
-    }
-}
+#[path = "backup_tests.rs"]
+pub(crate) mod tests;

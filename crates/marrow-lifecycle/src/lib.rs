@@ -43,6 +43,7 @@ mod provision;
 mod recovery;
 mod report;
 mod restore;
+mod seam;
 mod store_dir;
 
 #[cfg(test)]

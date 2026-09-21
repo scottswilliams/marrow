@@ -58,12 +58,11 @@ refuse before operation reads or writes, after the session's separate setup.
 | Native engine owner: store directory, advisory lock, two-phase open, quarantine | `native_owner.rs` |
 | Bounded scan accumulation (`SCAN_MAX_RECORDS` cells per page) | `traversal.rs` |
 | Shared engine conformance laws | `conformance.rs` (test-only) |
-| Public surface and its compile-time audit | `lib.rs` |
+| Public surface | `lib.rs` |
 
 `lib.rs` exports the engine contract, `StoreError` with its `StoreOp` and
 `StoreLimit` vocabularies, `MemoryEngine`, and the native owner's types; the
-redb adapter itself is private. A compile-time audit in `lib.rs` fails if an
-exported name is removed or renamed. The conformance suite runs the same
+redb adapter itself is private. The conformance suite runs the same
 byte-level traces over both engines: point reads, writes and exact removal, the
 bounded forward scan at its boundary, consuming transactions, batch limits, and
 the integrity audit. The filesystem durability envelope is redb's own and is

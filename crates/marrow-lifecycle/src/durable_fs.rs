@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 
 use marrow_fs_journal::{AdmittedDir, CustodyError, CustodyOp, EntryName, FsIdentity, OpenedFile};
 
+use crate::seam::{Event, Seam};
+
 pub(crate) fn custody_io(error: CustodyError) -> std::io::Error {
     let kind = match &error {
         CustodyError::Io { source, .. } => source.kind(),
@@ -25,10 +27,11 @@ pub(crate) struct Publication {
     parent_path: PathBuf,
     stage: EntryName,
     destination: EntryName,
+    seam: Seam,
 }
 
 impl Publication {
-    pub(crate) fn admit(stage: &Path, destination: &Path) -> std::io::Result<Self> {
+    pub(crate) fn admit(stage: &Path, destination: &Path, seam: Seam) -> std::io::Result<Self> {
         fn parent(path: &Path) -> &Path {
             path.parent()
                 .filter(|path| !path.as_os_str().is_empty())
@@ -68,23 +71,19 @@ impl Publication {
             parent_path,
             stage,
             destination: destination_name,
+            seam,
         })
     }
 
     pub(crate) fn publish(&self, identity: FsIdentity) -> Result<(), CustodyError> {
-        if self
-            .parent
-            .stat_entry(&self.stage)?
-            .is_none_or(|entry| entry.identity() != identity)
-        {
-            return Err(CustodyError::IdentityDrift {
-                op: CustodyOp::RenameNoreplace,
-            });
-        }
+        self.parent
+            .reassert(&self.stage, identity, CustodyOp::RenameNoreplace)?;
         self.parent.rename_noreplace(&self.stage, &self.destination)
     }
 
+    /// `fsync` the parent: the barrier that makes the published entry durable.
     pub(crate) fn sync(&self) -> std::io::Result<()> {
+        self.seam.at(Event::ParentSync).map_err(custody_io)?;
         self.parent.sync().map_err(custody_io)
     }
 
@@ -93,28 +92,23 @@ impl Publication {
     }
 
     pub(crate) fn remove_file(&self, identity: FsIdentity) -> Result<(), CustodyError> {
-        match self.parent.stat_entry(&self.stage)? {
-            None => Ok(()),
-            Some(entry) if entry.identity() == identity => self.parent.unlink(&self.stage),
-            Some(_) => Err(CustodyError::IdentityDrift {
-                op: CustodyOp::Unlink,
-            }),
+        if self.parent.stat_entry(&self.stage)?.is_none() {
+            return Ok(());
         }
+        self.parent
+            .reassert(&self.stage, identity, CustodyOp::Unlink)?;
+        self.parent.unlink(&self.stage)
     }
 
     pub(crate) fn verify_destination(&self, identity: FsIdentity) -> Result<(), CustodyError> {
         let mapped = AdmittedDir::admit_trusted_root(&self.parent_path)?;
-        if mapped.identity() != self.parent.identity()
-            || self
-                .parent
-                .stat_entry(&self.destination)?
-                .is_none_or(|entry| entry.identity() != identity)
-        {
+        if mapped.identity() != self.parent.identity() {
             return Err(CustodyError::IdentityDrift {
                 op: CustodyOp::Stat,
             });
         }
-        Ok(())
+        self.parent
+            .reassert(&self.destination, identity, CustodyOp::Stat)
     }
 }
 

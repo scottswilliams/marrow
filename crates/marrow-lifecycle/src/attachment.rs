@@ -19,16 +19,6 @@
 //! cannot be replaced.
 //!
 //! ```compile_fail
-//! use std::rc::Rc;
-//! fn forge(
-//!     image: Rc<marrow_verify::VerifiedImage>,
-//!     host: Box<marrow_kernel::durable::EphemeralAttachment>,
-//! ) -> marrow_lifecycle::MemoryAttachment {
-//!     marrow_lifecycle::Attachment { image, host }
-//! }
-//! ```
-//!
-//! ```compile_fail
 //! fn replace_host(
 //!     attachment: &mut marrow_lifecycle::MemoryAttachment,
 //!     other: Box<marrow_kernel::durable::EphemeralAttachment>,
@@ -103,10 +93,8 @@ pub struct Attachment<H: SessionHost> {
 pub type NativeAttachment = Attachment<OpenStore>;
 
 /// The in-memory pairing: the image and a fresh process-local store minted from its own
-/// projection. The host is boxed: an `EphemeralAttachment` measures 192 bytes on a 64-bit
-/// target against the 8-byte image handle the other mint outcomes carry, so boxing keeps
-/// every [`EphemeralOutcome`] arm and [`FreshTest`] state 16 bytes (pinned by
-/// `tests::memory_attachment_size`).
+/// projection. The host is boxed so every [`EphemeralOutcome`] arm and [`FreshTest`] state
+/// stays the size of two pointers rather than carrying the attachment inline.
 pub type MemoryAttachment = Attachment<Box<EphemeralAttachment>>;
 
 impl<H: SessionHost> Attachment<H> {

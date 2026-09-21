@@ -34,6 +34,7 @@ use crate::actor::{AdmissionRefusal, BindingStrictness, ImageAdmission};
 use crate::attachment::PreparedImage;
 use crate::instance::StoreInstanceId;
 use crate::provision::{AdmitError, OpenError, open_admitted};
+use crate::seam::Seam;
 
 /// One finding: its stable code and the kernel's typed position, so a caller can name the
 /// exact node, field, index cell, or raw cell the walk faulted on. [`StoreAudit::place`]
@@ -153,7 +154,7 @@ pub fn audit(dir: &Path, prepared: PreparedImage) -> Result<StoreAudit, AuditErr
     };
     let names = Names::new(&projection);
     let admission = ImageAdmission::derive(&image, projection);
-    let opened = open_admitted(dir, NativeOpenAccess::ReadOnly, |head| {
+    let opened = open_admitted(dir, NativeOpenAccess::ReadOnly, Seam::NONE, |head| {
         admission.admit(head, BindingStrictness::Exact)
     })
     .map_err(open_error)?;

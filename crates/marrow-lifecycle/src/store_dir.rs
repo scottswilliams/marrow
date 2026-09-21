@@ -39,6 +39,7 @@ use marrow_fs_journal::{
 };
 
 use crate::codec::{ARTIFACT_PREFIX_BYTES, FormatError};
+use crate::seam::{Event, Seam, Step};
 
 /// The engine database file name within a store directory.
 pub const ENGINE_FILE: &str = marrow_kernel::durable::NATIVE_ENGINE_FILE;
@@ -136,6 +137,23 @@ pub(crate) enum Artifact {
     Head,
 }
 
+/// A file a store-directory write creates: an artifact under its own name, or the
+/// replacement it is staged in before the rename that installs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Body {
+    Artifact(Artifact),
+    Replacement(Artifact),
+}
+
+impl Body {
+    fn name(self) -> EntryName {
+        match self {
+            Body::Artifact(artifact) => artifact.name(),
+            Body::Replacement(artifact) => artifact.replacement_name(),
+        }
+    }
+}
+
 impl Artifact {
     fn replacement_name(self) -> EntryName {
         entry_name(match self {
@@ -230,6 +248,18 @@ impl AdmissionError {
         }
     }
 
+    /// A custody refusal of the store directory itself.
+    pub(crate) fn directory(error: CustodyError) -> Self {
+        Self::directory_fault(AdmissionFault::Custody(error))
+    }
+
+    fn directory_fault(fault: AdmissionFault) -> Self {
+        Self {
+            entry: StoreEntry::Directory,
+            fault,
+        }
+    }
+
     /// The stable dotted code a tool reports.
     pub fn code(&self) -> Code {
         match &self.fault {
@@ -282,10 +312,7 @@ fn custody_code(error: &CustodyError) -> Code {
 /// after the owner lock and the marker it writes, so refusing only there leaves an inherited
 /// unclean obligation behind in a store this build could never have opened on this platform.
 pub(crate) fn qualified_platform() -> Result<(), AdmissionError> {
-    marrow_fs_journal::qualified_platform().map_err(|error| AdmissionError {
-        entry: StoreEntry::Directory,
-        fault: AdmissionFault::Custody(error),
-    })
+    marrow_fs_journal::qualified_platform().map_err(AdmissionError::directory)
 }
 
 impl std::fmt::Display for AdmissionError {
@@ -329,8 +356,10 @@ impl std::error::Error for AdmissionError {}
 /// A retained store directory. Artifact reads use this descriptor rather than resolving
 /// the path again. Existing-store admission compares its identity with the physical owner's
 /// retained directory before reading artifacts; private construction admits only a directory.
+/// Every write through it passes the [`Seam`] the sequence was opened with.
 pub(crate) struct AdmittedStoreDir {
     dir: AdmittedDir,
+    seam: Seam,
 }
 
 impl AdmittedStoreDir {
@@ -338,10 +367,28 @@ impl AdmittedStoreDir {
         self.dir.identity()
     }
 
+    fn reach(&self, step: Step) -> Result<(), AdmissionFault> {
+        self.seam
+            .at(Event::Step { dir: self, step })
+            .map_err(AdmissionFault::Custody)
+    }
+
+    /// Expose `step` of the sequence running over this directory to the seam.
+    pub(crate) fn at(&self, step: Step) -> Result<(), AdmissionError> {
+        self.reach(step).map_err(AdmissionError::directory_fault)
+    }
+
+    /// `fsync` this directory: the barrier `step` names.
+    pub(crate) fn sync(&self, step: Step) -> Result<(), AdmissionError> {
+        self.reach(step)
+            .and_then(|()| self.dir.sync().map_err(AdmissionFault::Custody))
+            .map_err(AdmissionError::directory_fault)
+    }
+
     /// Create and sync a fresh metadata file without replacing an existing entry.
     /// The caller syncs the directory after constructing the complete stage.
     pub(crate) fn write_new(&self, artifact: Artifact, bytes: &[u8]) -> Result<(), AdmissionError> {
-        self.create_synced(&artifact.name(), bytes)
+        self.create_synced(Body::Artifact(artifact), bytes)
             .map(|_| ())
             .map_err(|fault| AdmissionError {
                 entry: artifact.entry(),
@@ -349,18 +396,17 @@ impl AdmittedStoreDir {
             })
     }
 
-    fn create_synced(&self, name: &EntryName, bytes: &[u8]) -> Result<OpenedFile, AdmissionFault> {
+    fn create_synced(&self, body: Body, bytes: &[u8]) -> Result<OpenedFile, AdmissionFault> {
+        let name = body.name();
         let mut file = self
             .dir
-            .create_file_excl(name)
+            .create_file_excl(&name)
             .map_err(AdmissionFault::Custody)?;
-        #[cfg(test)]
-        barrier_fault::partial_append(self, name, &mut file, bytes)?;
+        self.reach(Step::Append(body))?;
         file.append(bytes).map_err(AdmissionFault::Custody)?;
-        #[cfg(test)]
-        barrier_fault::check_replacement_body(self, name)?;
+        self.reach(Step::FileSync(body))?;
         file.sync().map_err(AdmissionFault::Custody)?;
-        self.check_file_mapping(name, &file)?;
+        self.check_file_mapping(&name, &file)?;
         Ok(file)
     }
 
@@ -395,22 +441,12 @@ impl AdmittedStoreDir {
             .open_file_readonly(&name)
             .map_err(AdmissionFault::Custody)?;
         self.check_file_mapping(&name, &original)?;
-        let replacement = artifact.replacement_name();
-        let _replacement_file = self.create_synced(&replacement, bytes)?;
+        let _replacement_file = self.create_synced(Body::Replacement(artifact), bytes)?;
         self.check_file_mapping(&name, &original)?;
-        #[cfg(test)]
-        barrier_fault::check(self, barrier_fault::Point::ReplacementRename(artifact))
-            .map_err(|error| error.fault)?;
+        self.reach(Step::Install(artifact))?;
         self.dir
-            .rename_replace(&replacement, &name)
+            .rename_replace(&artifact.replacement_name(), &name)
             .map_err(AdmissionFault::Custody)
-    }
-
-    pub(crate) fn sync(&self) -> Result<(), AdmissionError> {
-        self.dir.sync().map_err(|source| AdmissionError {
-            entry: StoreEntry::Directory,
-            fault: AdmissionFault::Custody(source),
-        })
     }
 
     /// Preserve one reserved regular file without reading or interpreting its
@@ -455,9 +491,7 @@ impl AdmittedStoreDir {
                 .rename_noreplace(&source, &destination)
                 .map_err(AdmissionFault::Custody)?;
             preserved.push(name);
-            #[cfg(test)]
-            barrier_fault::check(self, barrier_fault::Point::Preservation)
-                .map_err(|error| error.fault)?;
+            self.reach(Step::Preservation)?;
             self.dir.sync().map_err(AdmissionFault::Custody)
         };
         preserve().map_err(|fault| AdmissionError {
@@ -486,20 +520,16 @@ impl AdmittedStoreDir {
             };
             sync().map_err(|fault| AdmissionError { entry, fault })?;
         }
-        #[cfg(test)]
-        barrier_fault::check(self, barrier_fault::Point::RecoveryArtifacts)?;
-        self.sync()
+        self.sync(Step::RecoveryArtifacts)
     }
 
+    /// Whether the directory at `path` is still the retained node.
     pub(crate) fn verify_location(&self, path: &Path) -> Result<(), AdmissionError> {
-        let current = Self::admit(path)?;
-        if current.dir.identity() != self.dir.identity() {
-            return Err(AdmissionError {
-                entry: StoreEntry::Directory,
-                fault: AdmissionFault::Custody(CustodyError::IdentityDrift {
-                    op: CustodyOp::Stat,
-                }),
-            });
+        let current = AdmittedDir::admit_trusted_root(path).map_err(AdmissionError::directory)?;
+        if current.identity() != self.dir.identity() {
+            return Err(AdmissionError::directory(CustodyError::IdentityDrift {
+                op: CustodyOp::Stat,
+            }));
         }
         Ok(())
     }
@@ -509,51 +539,40 @@ impl AdmittedStoreDir {
     /// require the cooperating namespace to preserve the directory's name.
     pub(crate) fn admit_under_owner(
         owner: &marrow_kernel::durable::PendingNativeStoreOwner,
+        seam: Seam,
     ) -> Result<Self, AdmissionError> {
-        let admitted = Self::admit(owner.directory())?;
-        let metadata = owner
-            .directory_metadata()
-            .map_err(|source| AdmissionError {
-                entry: StoreEntry::Directory,
-                fault: AdmissionFault::Custody(CustodyError::Io {
-                    op: CustodyOp::Stat,
-                    source,
-                }),
-            })?;
+        let admitted = Self::admit(owner.directory(), seam)?;
+        let metadata = owner.directory_metadata().map_err(|source| {
+            AdmissionError::directory(CustodyError::Io {
+                op: CustodyOp::Stat,
+                source,
+            })
+        })?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
             let held = marrow_fs_journal::FsIdentity::new(metadata.dev(), metadata.ino());
             if admitted.dir.identity() != held {
-                return Err(AdmissionError {
-                    entry: StoreEntry::Directory,
-                    fault: AdmissionFault::Custody(CustodyError::IdentityDrift {
-                        op: CustodyOp::AdmitDirectory,
-                    }),
-                });
+                return Err(AdmissionError::directory(CustodyError::IdentityDrift {
+                    op: CustodyOp::AdmitDirectory,
+                }));
             }
             Ok(admitted)
         }
         #[cfg(not(unix))]
         {
             let _ = (admitted, metadata);
-            Err(AdmissionError {
-                entry: StoreEntry::Directory,
-                fault: AdmissionFault::Custody(CustodyError::Unsupported {
-                    op: CustodyOp::Stat,
-                }),
-            })
+            Err(AdmissionError::directory(CustodyError::Unsupported {
+                op: CustodyOp::Stat,
+            }))
         }
     }
 
     /// Retain the canonical store directory the physical owner already holds.
-    pub(crate) fn admit(canonical_dir: &Path) -> Result<Self, AdmissionError> {
+    fn admit(canonical_dir: &Path, seam: Seam) -> Result<Self, AdmissionError> {
         AdmittedDir::admit_trusted_root(canonical_dir)
-            .map(|dir| Self { dir })
-            .map_err(|error| AdmissionError {
-                entry: StoreEntry::Directory,
-                fault: AdmissionFault::Custody(error),
-            })
+            .map(|dir| Self { dir, seam })
+            .map_err(AdmissionError::directory)
     }
 
     /// Whether the retained directory holds all three durable artifacts. The completeness
@@ -574,13 +593,10 @@ impl AdmittedStoreDir {
             (StoreEntry::Envelope, ENVELOPE_FILE),
             (StoreEntry::Head, HEAD_FILE),
         ] {
-            let mapped =
-                self.dir
-                    .stat_entry(&entry_name(name))
-                    .map_err(|error| AdmissionError {
-                        entry: StoreEntry::Directory,
-                        fault: AdmissionFault::Custody(error),
-                    })?;
+            let mapped = self
+                .dir
+                .stat_entry(&entry_name(name))
+                .map_err(AdmissionError::directory)?;
             let Some(mapped) = mapped else {
                 return Ok(false);
             };
@@ -659,111 +675,6 @@ impl AdmittedStoreDir {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod barrier_fault {
-    use super::*;
-    use marrow_fs_journal::FsIdentity;
-    use std::cell::RefCell;
-
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    pub(crate) enum Point {
-        ReplacementPartial(Artifact),
-        ReplacementRename(Artifact),
-        NewBody(Artifact),
-        ConstructionStage,
-        ReplacementBody(Artifact),
-        Preservation,
-        RebindPending,
-        RebindHead,
-        RebindActive,
-        RecoveryArtifacts,
-        RecoveryParent,
-        RecoveryActive,
-    }
-
-    pub(super) fn partial_append(
-        dir: &AdmittedStoreDir,
-        name: &EntryName,
-        file: &mut OpenedFile,
-        bytes: &[u8],
-    ) -> Result<(), AdmissionFault> {
-        for artifact in [Artifact::Envelope, Artifact::Head] {
-            if *name == artifact.replacement_name()
-                && let Err(error) = check(dir, Point::ReplacementPartial(artifact))
-            {
-                file.append(&bytes[..bytes.len() / 2])
-                    .map_err(AdmissionFault::Custody)?;
-                return Err(error.fault);
-            }
-        }
-        Ok(())
-    }
-
-    pub(super) fn check_replacement_body(
-        dir: &AdmittedStoreDir,
-        name: &EntryName,
-    ) -> Result<(), AdmissionFault> {
-        for artifact in [Artifact::Envelope, Artifact::Head] {
-            if *name == artifact.replacement_name() {
-                check(dir, Point::ReplacementBody(artifact)).map_err(|error| error.fault)?;
-            } else if *name == artifact.name() {
-                check(dir, Point::NewBody(artifact)).map_err(|error| error.fault)?;
-            }
-        }
-        Ok(())
-    }
-
-    thread_local! {
-        static DIRECTORY: RefCell<Option<(FsIdentity, Point)>> = const { RefCell::new(None) };
-    }
-
-    pub(crate) fn with_failure<T>(path: &Path, point: Point, action: impl FnOnce() -> T) -> T {
-        struct Restore(Option<(FsIdentity, Point)>);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                DIRECTORY.with(|slot| *slot.borrow_mut() = self.0.take());
-            }
-        }
-        let identity = AdmittedDir::admit_trusted_root(path)
-            .expect("test directory")
-            .identity();
-        let _restore = Restore(DIRECTORY.with(|slot| slot.replace(Some((identity, point)))));
-        action()
-    }
-
-    pub(crate) fn check(dir: &AdmittedStoreDir, point: Point) -> Result<(), AdmissionError> {
-        let fail = DIRECTORY.with(|slot| {
-            let mut armed = slot.borrow_mut();
-            if *armed == Some((dir.dir.identity(), point)) {
-                armed.take();
-                true
-            } else {
-                false
-            }
-        });
-        if fail {
-            Err(AdmissionError {
-                entry: match point {
-                    Point::ReplacementBody(artifact)
-                    | Point::ReplacementPartial(artifact)
-                    | Point::ReplacementRename(artifact)
-                    | Point::NewBody(artifact) => artifact.entry(),
-                    _ => StoreEntry::Directory,
-                },
-                fault: AdmissionFault::Custody(CustodyError::Io {
-                    op: match point {
-                        Point::ReplacementPartial(_) => CustodyOp::Append,
-                        _ => CustodyOp::Sync,
-                    },
-                    source: std::io::Error::from(std::io::ErrorKind::Other),
-                }),
-            })
-        } else {
-            Ok(())
-        }
-    }
-}
-
 fn read_prefix(file: &OpenedFile) -> Result<[u8; ARTIFACT_PREFIX_BYTES], AdmissionFault> {
     let prefix = file
         .read_prefix(ARTIFACT_PREFIX_BYTES)
@@ -821,136 +732,5 @@ pub(crate) fn artifacts_present(dir: &Path) -> Result<bool, StoreAccessError> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::test_support::Scratch;
-
-    #[test]
-    fn preservation_refuses_collision_and_entropy_failure_without_changing_files() {
-        let scratch = Scratch::new("preservation-refusals");
-        let root = scratch.base();
-        let directory = AdmittedStoreDir::admit(root).expect("admit");
-        let source = root.join("envelope.replacing");
-        let destination =
-            root.join("envelope.replacing.preserved.00000000000000000000000000000000");
-        std::fs::write(&source, b"partial").expect("source");
-        std::fs::write(&destination, b"previous preserved bytes").expect("collision");
-        let mut preserved = Vec::new();
-        let collision = directory
-            .preserve_replacement(Artifact::Envelope, || Ok([0; 16]), &mut preserved)
-            .expect_err("no replacement at collision");
-        assert!(matches!(
-            collision.fault,
-            AdmissionFault::Custody(CustodyError::AlreadyExists { .. })
-        ));
-        let entropy = directory
-            .preserve_replacement(
-                Artifact::Envelope,
-                || Err(std::io::Error::from(std::io::ErrorKind::Other)),
-                &mut preserved,
-            )
-            .expect_err("entropy unavailable");
-        assert!(matches!(
-            entropy.fault,
-            AdmissionFault::Custody(CustodyError::Io {
-                op: CustodyOp::Read,
-                ..
-            })
-        ));
-        assert!(preserved.is_empty());
-        assert_eq!(
-            std::fs::read(&source).expect("source unchanged"),
-            b"partial"
-        );
-        assert_eq!(
-            std::fs::read(&destination).expect("collision unchanged"),
-            b"previous preserved bytes"
-        );
-        drop(directory);
-    }
-
-    #[test]
-    fn store_directory_file_names_are_frozen() {
-        // The store-directory layout is a durability contract; these names are frozen.
-        assert_eq!(ENGINE_FILE, "store.redb");
-        assert_eq!(ENVELOPE_FILE, "envelope");
-        assert_eq!(HEAD_FILE, "head");
-        assert_eq!(LOCK_FILE, "lock");
-    }
-
-    /// Each custody refusal is reported as itself. Two ways of substituting the same
-    /// artifact reach the same verdict, owner bits that deny the open are a permission
-    /// refusal rather than either, and a platform this build cannot admit a store directory
-    /// on names the operating system and architecture it refused on — the build is not
-    /// narrowed, so the refusal is the only place a user meets the narrowing.
-    #[test]
-    fn each_custody_refusal_is_reported_as_itself() {
-        let refusal = |fault| AdmissionError {
-            entry: StoreEntry::Envelope,
-            fault,
-        };
-        for (fault, code) in [
-            (
-                CustodyError::SymlinkRefused {
-                    op: CustodyOp::OpenFile,
-                },
-                Code::StoreCorruption,
-            ),
-            (
-                CustodyError::WrongNodeKind {
-                    op: CustodyOp::OpenFile,
-                    found: marrow_fs_journal::NodeKind::Directory,
-                },
-                Code::StoreCorruption,
-            ),
-            (
-                CustodyError::NotFound {
-                    op: CustodyOp::OpenFile,
-                },
-                Code::StoreCorruption,
-            ),
-            (
-                CustodyError::ModeDenied {
-                    op: CustodyOp::OpenFile,
-                    found: 0o400,
-                    required: 0o600,
-                },
-                Code::StorePermissionDenied,
-            ),
-        ] {
-            assert_eq!(refusal(AdmissionFault::Custody(fault)).code(), code);
-        }
-
-        // The sibling that reaches the same verdict without going through custody: a second
-        // link to the artifact is the same "the directory does not hold this artifact"
-        // observation a substituted node makes.
-        assert_eq!(
-            refusal(AdmissionFault::MultiplyLinked { links: 2 }).code(),
-            Code::StoreCorruption,
-        );
-
-        let unqualified = refusal(AdmissionFault::Custody(CustodyError::UnqualifiedPlatform {
-            os: "freebsd",
-            arch: "riscv64",
-        }));
-        assert_eq!(unqualified.code(), Code::StoreIo);
-        let rendered = unqualified.to_string();
-        assert!(
-            rendered.contains("freebsd/riscv64"),
-            "a platform refusal must name the platform it refused on: {rendered}",
-        );
-    }
-
-    /// Each artifact an admission read names resolves to exactly the frozen entry name, is
-    /// admissible as one normal relative component, and reports itself under that name.
-    #[test]
-    fn every_admitted_artifact_name_is_the_frozen_entry_name() {
-        for (artifact, expected) in [
-            (Artifact::Envelope, ENVELOPE_FILE),
-            (Artifact::Head, HEAD_FILE),
-        ] {
-            assert_eq!(artifact.name().as_str(), expected);
-            assert_eq!(artifact.entry().label(), expected);
-        }
-    }
-}
+#[path = "store_dir_tests.rs"]
+mod tests;

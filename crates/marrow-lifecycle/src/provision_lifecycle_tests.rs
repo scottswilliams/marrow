@@ -7,7 +7,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::test_support::Scratch;
+use crate::provision::provision_observed;
+use crate::test_support::{Scratch, cut, cut_parent_sync};
 use crate::{
     ActiveBinding, EngineKind, HeadMap, LogicalHead, OpenError, Preflight, ProvisionError,
     ProvisionRequest, StoreEnvelope, StoreInstanceId, preflight, provision,
@@ -20,9 +21,18 @@ use marrow_kernel::durable::{SiteTarget, StoreProjection, StoreSchemaBuilder};
 /// Open the two-node directory fixture without image admission. These tests exercise
 /// filesystem publication and custody; their synthetic Head carries no executable image.
 pub(crate) fn open(dir: &Path, projection: StoreProjection) -> Result<crate::OpenStore, OpenError> {
+    open_observed(dir, projection, crate::seam::Seam::NONE)
+}
+
+/// [`open`] over an armed seam.
+pub(crate) fn open_observed(
+    dir: &Path,
+    projection: StoreProjection,
+    seam: crate::seam::Seam,
+) -> Result<crate::OpenStore, OpenError> {
     use crate::provision::{AdmitError, open_admitted};
     use marrow_kernel::durable::{NativeOpenAccess, NumberedProjection};
-    open_admitted(dir, NativeOpenAccess::ReadWrite, |_| {
+    open_admitted(dir, NativeOpenAccess::ReadWrite, seam, |_| {
         Ok::<_, std::convert::Infallible>(
             NumberedProjection::accepted(projection, &[0, 1], 2).expect("two-node fixture"),
         )
@@ -160,12 +170,8 @@ fn uncertain_publication_refuses_ordinary_reopen() {
     let dir = Scratch::new("publication-reopen");
     let store = dir.store();
     let id = instance();
-    let error = crate::provision::publication_sync_fault::with_failure(
-        &store,
-        crate::provision::publication_sync_fault::Point::Publication,
-        || provision(&store, request(id)),
-    )
-    .expect_err("the publication parent sync failed");
+    let error = provision_observed(&store, request(id), cut_parent_sync())
+        .expect_err("the publication parent sync failed");
     assert!(
         matches!(error.fault, crate::ProvisionFault::PublicationUncertain { instance, .. } if instance == id)
     );
@@ -190,12 +196,8 @@ fn failed_publication_sync_reports_uncertainty_and_retains_destination() {
     let dir = Scratch::new("publication-sync");
     let store = dir.store();
     let id = instance();
-    let error = crate::provision::publication_sync_fault::with_failure(
-        &store,
-        crate::provision::publication_sync_fault::Point::Publication,
-        || provision(&store, request(id)),
-    )
-    .expect_err("the final parent sync failed");
+    let error = provision_observed(&store, request(id), cut_parent_sync())
+        .expect_err("the final parent sync failed");
 
     assert_eq!(classify(&store), Preflight::Complete);
     let children = std::fs::read_dir(dir.base())
@@ -235,12 +237,8 @@ fn failed_active_sync_reports_distinct_uncertainty_after_publication_barrier() {
     let dir = Scratch::new("active-sync");
     let store = dir.store();
     let id = instance();
-    let error = crate::provision::publication_sync_fault::with_failure(
-        &store,
-        crate::provision::publication_sync_fault::Point::Activation,
-        || provision(&store, request(id)),
-    )
-    .expect_err("final Active directory sync failed");
+    let error = provision_observed(&store, request(id), cut(crate::seam::Step::Activation))
+        .expect_err("final Active directory sync failed");
     assert!(
         matches!(error.fault, crate::ProvisionFault::ActivationUncertain { instance, .. } if instance == id)
     );

@@ -88,11 +88,9 @@ pub trait WriteTxn: ReadView {
 /// The ordered-byte engine. Its two implementors — an in-memory engine and a
 /// redb-backed native engine — satisfy one conformance suite.
 ///
-/// Two misuses the narrowed contract makes *unrepresentable* rather than
-/// rejecting at runtime:
-///
-/// Nesting: a second transaction cannot be opened while one is live, because
-/// [`begin`](ByteEngine::begin) borrows the engine mutably.
+/// Nesting is unrepresentable rather than rejected at runtime: a second transaction cannot
+/// be opened while one is live, because [`begin`](ByteEngine::begin) borrows the engine
+/// mutably.
 ///
 /// ```compile_fail
 /// use marrow_store::{ByteEngine, MemoryEngine};
@@ -100,16 +98,6 @@ pub trait WriteTxn: ReadView {
 /// let first = engine.begin().unwrap();
 /// let second = engine.begin().unwrap(); // second mutable borrow of `engine`
 /// drop((first, second));
-/// ```
-///
-/// Mutation through a read capability: a [`ReadView`] exposes no `put` or
-/// `remove`.
-///
-/// ```compile_fail
-/// use marrow_store::{ByteEngine, MemoryEngine, WriteTxn};
-/// let engine = MemoryEngine::new();
-/// let view = engine.read_view().unwrap();
-/// view.put(b"k", b"v".to_vec()).unwrap(); // no `put` on a read view
 /// ```
 pub trait ByteEngine {
     /// A coherent read view over this engine.

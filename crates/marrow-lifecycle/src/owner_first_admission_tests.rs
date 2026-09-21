@@ -109,12 +109,22 @@ fn admission_refuses_a_directory_other_than_the_locked_node() {
         };
         let original_bytes = artifacts(&store);
         let replacement_bytes = artifacts(&replacement);
-        let opened = crate::provision::admission_substitution::with_swap(
-            &store,
-            &displaced,
-            &replacement,
-            || open(&store, projection()),
+        // Swap the held directory for the replacement while the lock is held and nothing
+        // has been read, so the admitted descriptor and the locked node disagree.
+        let (swap_displaced, swap_replacement) = (displaced.clone(), replacement.clone());
+        let (seam, reached) = crate::test_support::once(
+            |event| matches!(event, crate::seam::Event::Locked { .. }),
+            move |event| {
+                let crate::seam::Event::Locked { path } = event else {
+                    unreachable!("selected the lock event");
+                };
+                std::fs::rename(path, &swap_displaced).expect("move held directory");
+                std::fs::rename(&swap_replacement, path).expect("substitute directory");
+                Ok(())
+            },
         );
+        let opened = crate::provision_lifecycle_tests::open_observed(&store, projection(), seam);
+        reached.assert();
         let identity_refusal = matches!(
             &opened,
             Err(OpenError::Admission(crate::AdmissionError {

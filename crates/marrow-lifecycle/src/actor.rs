@@ -23,6 +23,7 @@ use crate::image::{
     HeadMapPinMismatch, PinDisagreement, ProjectedNodes, active_binding, derive_projection_nodes,
 };
 use crate::provision::{LockedStore, OpenBinding, OpenError};
+use crate::seam::{Seam, Step};
 use crate::store_dir;
 
 /// Why the admission gate declined the presented image before any engine call. One value
@@ -377,6 +378,16 @@ impl std::error::Error for LifecycleError {}
 /// metadata, then publishes Pending, Head and Active before final verification and
 /// a receipt.
 pub fn attach(dir: &Path, prepared: PreparedImage) -> Result<AttachOutcome, LifecycleError> {
+    attach_observed(dir, prepared, Seam::NONE)
+}
+
+/// [`attach`] over `seam`: the production seam observes nothing; a test's cuts or mutates
+/// the sequence at a named step.
+pub(crate) fn attach_observed(
+    dir: &Path,
+    prepared: PreparedImage,
+    seam: Seam,
+) -> Result<AttachOutcome, LifecycleError> {
     let (image, projection) = prepared.into_parts();
     let Some(projection) = projection else {
         return Err(LifecycleError::NotExecutable);
@@ -388,7 +399,7 @@ pub fn attach(dir: &Path, prepared: PreparedImage) -> Result<AttachOutcome, Life
     // zero engine calls.
     let admission = ImageAdmission::derive(&image, projection);
     let incoming = *admission.incoming();
-    let binding = LockedStore::acquire(dir)
+    let binding = LockedStore::acquire(dir, seam)
         .map_err(LifecycleError::Open)?
         .open_compatible(admission)?;
     let (opened, names) = match binding {
@@ -403,13 +414,10 @@ pub fn attach(dir: &Path, prepared: PreparedImage) -> Result<AttachOutcome, Life
     if !report.is_clean() {
         return Err(LifecycleError::Invalid(Box::new(report)));
     }
-    #[cfg(test)]
-    binding_fault::check(&opened.directory, dir, binding_fault::Point::Admitted)
-        .map_err(LifecycleError::Open)?;
+    let checkpoint = |error| LifecycleError::Open(OpenError::Admission(error));
+    opened.directory.at(Step::Admitted).map_err(checkpoint)?;
     let mut opened = opened.into_service().map_err(LifecycleError::Open)?;
-    #[cfg(test)]
-    binding_fault::check(&opened.directory, dir, binding_fault::Point::Prepared)
-        .map_err(LifecycleError::Open)?;
+    opened.directory.at(Step::Prepared).map_err(checkpoint)?;
     let old_record = crate::envelope::EnvelopeRecord {
         metadata: opened.envelope.clone(),
         state: crate::envelope::EnvelopeState::Active,
@@ -489,13 +497,9 @@ pub(crate) fn rewrite_atomically(
                 .encode()
                 .map_err(|error| AdmissionError::format(StoreEntry::Envelope, error))?,
         )?;
-        #[cfg(test)]
-        store_dir::barrier_fault::check(dir, store_dir::barrier_fault::Point::RebindPending)?;
-        dir.sync()?;
+        dir.sync(Step::RebindPending)?;
         dir.replace(Artifact::Head, &head_bytes)?;
-        #[cfg(test)]
-        store_dir::barrier_fault::check(dir, store_dir::barrier_fault::Point::RebindHead)?;
-        dir.sync()
+        dir.sync(Step::RebindHead)
     };
     persist_pending_head().map_err(LifecycleError::Metadata)?;
     record.state = EnvelopeState::Active;
@@ -508,13 +512,8 @@ pub(crate) fn rewrite_atomically(
             })?,
         )
         .map_err(metadata_error)?;
-        #[cfg(test)]
-        store_dir::barrier_fault::check(dir, store_dir::barrier_fault::Point::RebindActive)
-            .map_err(metadata_error)?;
-        dir.sync().map_err(metadata_error)?;
-        #[cfg(test)]
-        binding_fault::check(dir, location, binding_fault::Point::Activated)
-            .map_err(AuditError::Open)?;
+        dir.sync(Step::RebindActive).map_err(metadata_error)?;
+        dir.at(Step::Activated).map_err(metadata_error)?;
         audit::verify_published(dir, location, &record, new)
     };
     activate().map_err(|source| LifecycleError::ActivationUncertain {
@@ -522,99 +521,4 @@ pub(crate) fn rewrite_atomically(
         source,
     })?;
     Ok(new)
-}
-
-#[cfg(test)]
-pub(crate) mod binding_fault {
-    use super::*;
-    use std::path::PathBuf;
-    use store_dir::{AdmittedStoreDir, Artifact};
-
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    pub(crate) enum Point {
-        Admitted,
-        Prepared,
-        Activated,
-    }
-
-    pub(crate) enum Mutation {
-        Engine(PathBuf),
-        Metadata(Artifact, Vec<u8>),
-        Directory(PathBuf),
-    }
-
-    struct Armed {
-        identity: marrow_fs_journal::FsIdentity,
-        point: Point,
-        mutation: Mutation,
-    }
-    thread_local! {
-        static ARMED: std::cell::RefCell<Option<Armed>> = const { std::cell::RefCell::new(None) };
-    }
-
-    pub(crate) fn with_mutation<T>(
-        location: &Path,
-        point: Point,
-        mutation: Mutation,
-        action: impl FnOnce() -> T,
-    ) -> T {
-        struct Restore(Option<Armed>);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                ARMED.with(|slot| *slot.borrow_mut() = self.0.take());
-            }
-        }
-        let location = std::fs::canonicalize(location).expect("test store");
-        let identity = AdmittedStoreDir::admit(&location)
-            .expect("test directory identity")
-            .identity();
-        let _restore = Restore(ARMED.with(|slot| {
-            slot.replace(Some(Armed {
-                identity,
-                point,
-                mutation,
-            }))
-        }));
-        let result = action();
-        assert!(
-            ARMED.with(|slot| slot.borrow().is_none()),
-            "binding checkpoint was not reached"
-        );
-        result
-    }
-
-    pub(super) fn check(
-        dir: &AdmittedStoreDir,
-        location: &Path,
-        point: Point,
-    ) -> Result<(), OpenError> {
-        let mutation = ARMED.with(|slot| {
-            let mut armed = slot.borrow_mut();
-            if armed
-                .as_ref()
-                .is_some_and(|armed| armed.identity == dir.identity() && armed.point == point)
-            {
-                armed.take().map(|armed| armed.mutation)
-            } else {
-                None
-            }
-        });
-        match mutation {
-            Some(Mutation::Engine(displaced)) => {
-                let engine = location.join(store_dir::ENGINE_FILE);
-                std::fs::rename(&engine, &displaced).map_err(OpenError::Io)?;
-                std::fs::copy(&displaced, &engine).map_err(OpenError::Io)?;
-            }
-            Some(Mutation::Metadata(artifact, bytes)) => {
-                dir.replace(artifact, &bytes)
-                    .map_err(OpenError::Admission)?;
-                dir.sync().map_err(OpenError::Admission)?;
-            }
-            Some(Mutation::Directory(displaced)) => {
-                std::fs::rename(location, displaced).map_err(OpenError::Io)?;
-            }
-            None => {}
-        }
-        Ok(())
-    }
 }

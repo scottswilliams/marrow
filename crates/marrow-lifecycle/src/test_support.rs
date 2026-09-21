@@ -7,10 +7,15 @@
 //! with another about what a populated store contains. The scratch directory and the
 //! compile helpers are the same files the integration suites use.
 
+use std::cell::{Cell, RefCell};
 use std::path::Path;
+use std::rc::Rc;
 
+use marrow_fs_journal::{CustodyError, CustodyOp};
 use marrow_verify::VerifiedImage;
 
+use crate::seam::{Event, Observer, Seam, Step};
+use crate::store_dir::AdmittedStoreDir;
 use crate::{
     EngineKind, LogicalHead, ProvisionRequest, StoreEnvelope, StoreInstanceId, accepted_ceiling,
     active_binding, head_map, prepare,
@@ -94,4 +99,98 @@ pub(crate) fn populate_counter(dir: &Path, image: &VerifiedImage) {
         txn.commit(),
         marrow_kernel::durable::CommitResult::Committed
     ));
+}
+
+/// An observer that acts on the first event `select` accepts and passes every other one.
+struct Once<S, H> {
+    select: S,
+    hit: RefCell<Option<H>>,
+    fired: Rc<Cell<bool>>,
+}
+
+impl<S, H> Observer for Once<S, H>
+where
+    S: Fn(&Event<'_>) -> bool,
+    H: FnOnce(Event<'_>) -> Result<(), CustodyError>,
+{
+    fn at(&self, event: Event<'_>) -> Result<(), CustodyError> {
+        if !(self.select)(&event) {
+            return Ok(());
+        }
+        let Some(hit) = self.hit.borrow_mut().take() else {
+            return Ok(());
+        };
+        self.fired.set(true);
+        hit(event)
+    }
+}
+
+/// Whether an armed seam reached its event.
+pub(crate) struct Reached(Rc<Cell<bool>>);
+
+impl Reached {
+    pub(crate) fn assert(&self) {
+        assert!(self.0.get(), "the armed checkpoint was not reached");
+    }
+}
+
+/// A seam that runs `hit` at the first event `select` accepts; later events pass.
+pub(crate) fn once(
+    select: impl Fn(&Event<'_>) -> bool + 'static,
+    hit: impl FnOnce(Event<'_>) -> Result<(), CustodyError> + 'static,
+) -> (Seam, Reached) {
+    let fired = Rc::new(Cell::new(false));
+    let observer = Once {
+        select,
+        hit: RefCell::new(Some(hit)),
+        fired: Rc::clone(&fired),
+    };
+    (Seam::armed(Rc::new(observer)), Reached(fired))
+}
+
+/// The I/O refusal a cut step's operation reports.
+pub(crate) fn io_fault(op: CustodyOp) -> CustodyError {
+    CustodyError::Io {
+        op,
+        source: std::io::Error::from(std::io::ErrorKind::Other),
+    }
+}
+
+fn is_step(event: &Event<'_>, step: Step) -> bool {
+    matches!(event, Event::Step { step: at, .. } if *at == step)
+}
+
+/// A seam that fails the first `step` with the refusal its operation reports.
+pub(crate) fn cut(step: Step) -> Seam {
+    let op = match step {
+        Step::Append(_) => CustodyOp::Append,
+        _ => CustodyOp::Sync,
+    };
+    once(move |event| is_step(event, step), move |_| Err(io_fault(op))).0
+}
+
+/// A seam that fails the publication's parent sync.
+pub(crate) fn cut_parent_sync() -> Seam {
+    once(
+        |event| matches!(event, Event::ParentSync),
+        |_| Err(io_fault(CustodyOp::Sync)),
+    )
+    .0
+}
+
+/// A seam that runs `mutation` over the directory when the sequence first reaches `step`.
+pub(crate) fn mutate_at(
+    step: Step,
+    mutation: impl FnOnce(&AdmittedStoreDir) + 'static,
+) -> (Seam, Reached) {
+    once(
+        move |event| is_step(event, step),
+        move |event| {
+            let Event::Step { dir, .. } = event else {
+                unreachable!("selected a step event");
+            };
+            mutation(dir);
+            Ok(())
+        },
+    )
 }

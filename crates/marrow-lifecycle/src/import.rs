@@ -35,6 +35,7 @@ use marrow_kernel::equality::ValueDomain;
 use crate::actor::{AdmissionRefusal, BindingStrictness, ImageAdmission};
 use crate::attachment::PreparedImage;
 use crate::provision::{AdmitError, OpenError, open_admitted};
+use crate::seam::Seam;
 use marrow_codes::Code;
 
 /// The bounds every import obeys before it allocates. The defaults suit a
@@ -427,6 +428,7 @@ pub fn import_jsonl(
     let mut opened = open_admitted(
         dir,
         marrow_kernel::durable::NativeOpenAccess::ReadWrite,
+        Seam::NONE,
         |head| admission.admit(head, BindingStrictness::Exact),
     )
     .map_err(|error| match error {
