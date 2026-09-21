@@ -2030,7 +2030,7 @@ fn the_statement_list_sample_counts_the_lists_inside_nested_blocks() {
     };
     let counted = block_statements(&function.body);
     assert!(
-        counted >= statements + 1,
+        counted > statements,
         "the sample counted {counted} statement slots where the file holds the `if` and \
          the {statements} statements of its nested block, so it does not descend"
     );
