@@ -628,6 +628,25 @@ pub enum IdentityMintFailure<E> {
 /// it was admitted against. Only project admission constructs it; the
 /// publication owner installs `next` over a filesystem that still holds
 /// `expected`.
+///
+/// Raw halves cannot construct a plan because its fields are private:
+///
+/// ```compile_fail
+/// use marrow_project::LedgerPublicationPlan;
+///
+/// let _ = LedgerPublicationPlan {
+///     expected: todo!(),
+///     next: Vec::new(),
+/// };
+/// ```
+///
+/// A plan is not cloneable:
+///
+/// ```compile_fail
+/// fn duplicate(plan: marrow_project::LedgerPublicationPlan) {
+///     let _ = plan.clone();
+/// }
+/// ```
 #[must_use = "a ledger publication plan must be consumed by the publication owner"]
 pub struct LedgerPublicationPlan {
     expected: Option<Arc<[u8]>>,
@@ -1160,6 +1179,44 @@ mod tests {
              id root counters 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
              id key counters.name 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
              high-water 0\n\
+             end\n",
+        );
+    }
+
+    /// One literal row per remaining kind, over a base whose tombstone is carried
+    /// forward: with the counter rows above, every row kind the serializer emits
+    /// is pinned as exact bytes.
+    #[test]
+    fn every_row_kind_serializes_to_its_literal_bytes() {
+        let base = retired_counter_bytes();
+        let captured = CapturedLedger::capture(Some(&base)).expect("capture retired counter");
+        let bytes = next_bytes(
+            plan_mints(
+                &captured,
+                vec![
+                    (anchor(IdentityKind::Sum, "Mood"), id(0x15)),
+                    (anchor(IdentityKind::Member, "Mood.calm"), id(0x16)),
+                    (anchor(IdentityKind::Group, "Counter.details"), id(0x17)),
+                    (anchor(IdentityKind::Index, "counters.byLabel"), id(0x18)),
+                ],
+            )
+            .expect("mint one row of each remaining kind"),
+        );
+        assert_eq!(
+            String::from_utf8(bytes).expect("canonical UTF-8"),
+            "marrow ids v0\n\
+             machine-written by marrow; do not edit\n\
+             id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+             id product Counter 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+             id field Counter.value 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+             id root counters 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+             id key counters.name 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+             id sum Mood 15151515151515151515151515151515\n\
+             id member Mood.calm 16161616161616161616161616161616\n\
+             id group Counter.details 17171717171717171717171717171717\n\
+             id index counters.byLabel 18181818181818181818181818181818\n\
+             retired field Counter.label 0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f 1\n\
+             high-water 1\n\
              end\n",
         );
     }
