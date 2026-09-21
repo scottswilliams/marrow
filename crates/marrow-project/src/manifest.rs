@@ -330,6 +330,9 @@ impl ManifestError {
             DependencyAliasReason::TooLong { limit, actual } => {
                 format!("is {actual} bytes, over the {limit}-byte dependency-alias limit")
             }
+            DependencyAliasReason::Placeholder => {
+                "is the placeholder `_`, which names nothing".to_string()
+            }
             _ => "must be an identifier: a letter or `_` followed by letters, digits, or `_`"
                 .to_string(),
         };

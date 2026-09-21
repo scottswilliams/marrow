@@ -209,119 +209,151 @@ fn an_over_wide_enum_occupies_its_name() {
     }
 }
 
-/// `_` declares nothing: every declaration kind — value, type, member and durable —
-/// refuses it with one `check.type` on the placeholder's line, never a name conflict,
-/// and only a `match` arm's payload position admits it.
+/// `_` declares nothing. Every position that takes a name — value, type, member,
+/// durable, module and `use` — refuses it with exactly one `check.type` whose span is
+/// the placeholder token, never a name conflict; the same source with `_x` in that
+/// position is admitted. Only a `match` arm's payload position admits `_`.
 #[test]
 fn the_placeholder_declares_nothing_in_any_declaration_kind() {
-    const DURABLE: &str = "resource Book {\n    required title: string\n}\n\n";
-    let cases = [
-        ("a module constant", "const _ = 1\n".to_string()),
-        ("a function", "fn _(): int {\n    return 1\n}\n".to_string()),
-        (
-            "a parameter",
-            "fn f(_: int): int {\n    return 1\n}\n".to_string(),
-        ),
-        (
-            "a type parameter",
-            "fn f<_>(x: int): int {\n    return x\n}\n".to_string(),
-        ),
-        (
-            "a local constant",
-            "fn f(): int {\n    const _ = 1\n    return 1\n}\n".to_string(),
-        ),
-        (
-            "a local variable",
-            "fn f(): int {\n    var _ = 1\n    return 1\n}\n".to_string(),
-        ),
-        (
-            "a loop variable",
-            "fn f(): int {\n    for _ in 0..3 {\n    }\n    return 1\n}\n".to_string(),
-        ),
-        ("an alias", "alias _ = int\n".to_string()),
-        ("a nominal type", "type _: int in 0..1\n".to_string()),
-        ("a struct", "struct _ {\n    x: int\n}\n".to_string()),
-        ("a struct field", "struct S {\n    _: int\n}\n".to_string()),
-        ("an enum", "enum _ {\n    a\n}\n".to_string()),
-        ("an enum member", "enum E {\n    _\n}\n".to_string()),
-        (
-            "an enum payload field",
-            "enum E {\n    a(_: int)\n}\n".to_string(),
-        ),
-        (
-            "a resource",
-            "resource _ {\n    required id: int\n}\n".to_string(),
-        ),
-        (
-            "a resource field",
-            "resource R {\n    _: int\n}\n".to_string(),
-        ),
-        (
-            "a group",
-            "resource R {\n    _ {\n        x: int\n    }\n}\n".to_string(),
-        ),
-        (
-            "a branch",
-            "resource R {\n    _[k: int] {\n        x: int\n    }\n}\n".to_string(),
-        ),
-        (
-            "a branch key",
-            "resource R {\n    notes[_: int] {\n        x: int\n    }\n}\n".to_string(),
-        ),
-        (
-            "a store root",
-            format!("{DURABLE}store ^_[id: int]: Book\n"),
-        ),
-        (
-            "a store key",
-            format!("{DURABLE}store ^books[_: int]: Book\n"),
-        ),
-        (
-            "an index",
-            format!("{DURABLE}store ^books[id: int]: Book {{\n    index _[id]\n}}\n"),
-        ),
+    const BOOK: &str = "resource Book {\n    required title: string\n}\n\n";
+    // An index name shares the root's namespace with its stored fields, so only the
+    // component row's resource carries the `_x` field its sibling projects.
+    const BOOK_X: &str = "resource Book {\n    required title: string\n    _x: int\n}\n\n";
+    const MAYBE: &str = "fn maybe(): int? {\n    return 1\n}\n\n";
+    let durable = |body: &str| format!("{BOOK}store ^books[id: int]: Book\n\n{body}");
+    // Each case writes the placeholder once, as `@`, in the file path or the source.
+    let cases: Vec<(&str, &str, String)> = vec![
+        ("a module header segment", "src/a/@.mw", "module a::@\n\npub fn f(): int {\n    return 1\n}\n".into()),
+        ("a use segment", "src/main.mw", "use a::@\n\npub fn f(): int {\n    return 1\n}\n".into()),
+        ("a module constant", "src/main.mw", "const @ = 1\n".into()),
+        ("a function", "src/main.mw", "fn @(): int {\n    return 1\n}\n".into()),
+        ("a parameter", "src/main.mw", "fn f(@: int): int {\n    return 1\n}\n".into()),
+        ("a function type parameter", "src/main.mw", "fn f<@>(x: int): int {\n    return x\n}\n".into()),
+        ("a struct type parameter", "src/main.mw", "struct S<@> {\n    x: int\n}\n".into()),
+        ("an enum type parameter", "src/main.mw", "enum E<@> {\n    a\n}\n".into()),
+        ("a local constant", "src/main.mw", "fn f(): int {\n    const @ = 1\n    return 1\n}\n".into()),
+        ("a local variable", "src/main.mw", "fn f(): int {\n    var @ = 1\n    return 1\n}\n".into()),
+        ("a loop variable", "src/main.mw", "fn f(): int {\n    for @ in 0..3 {\n    }\n    return 1\n}\n".into()),
+        ("an if const binding", "src/main.mw", format!("{MAYBE}fn f(): int {{\n    if const @ = maybe() {{\n        return 1\n    }}\n    return 0\n}}\n")),
+        ("a chained if const binding", "src/main.mw", format!("{MAYBE}fn f(): int {{\n    if const a = maybe() and const @ = maybe() {{\n        return a\n    }}\n    return 0\n}}\n")),
+        ("a let-else binding", "src/main.mw", format!("{MAYBE}fn f(): int {{\n    const @ = maybe() else {{\n        return 0\n    }}\n    return 1\n}}\n")),
+        ("a checked var binding", "src/main.mw", "fn f(a: int, b: int): int {\n    var @ = checked a + b\n        on out_of_range {\n            return 0\n        }\n    return 1\n}\n".into()),
+        ("an alias", "src/main.mw", "alias @ = int\n".into()),
+        ("a nominal type", "src/main.mw", "type @: int in 0..1\n".into()),
+        ("a struct", "src/main.mw", "struct @ {\n    x: int\n}\n".into()),
+        ("a struct field", "src/main.mw", "struct S {\n    @: int\n}\n".into()),
+        ("an enum", "src/main.mw", "enum @ {\n    a\n}\n".into()),
+        ("an enum member", "src/main.mw", "enum E {\n    @\n}\n".into()),
+        ("an enum payload field", "src/main.mw", "enum E {\n    a(@: int)\n}\n".into()),
+        ("a resource", "src/main.mw", "resource @ {\n    required id: int\n}\n".into()),
+        ("a resource field", "src/main.mw", "resource R {\n    @: int\n}\n".into()),
+        ("a group", "src/main.mw", "resource R {\n    @ {\n        x: int\n    }\n}\n".into()),
+        ("a branch", "src/main.mw", "resource R {\n    @[k: int] {\n        x: int\n    }\n}\n".into()),
+        ("a branch key", "src/main.mw", "resource R {\n    notes[@: int] {\n        x: int\n    }\n}\n".into()),
+        ("a nested field", "src/main.mw", "resource R {\n    notes[k: int] {\n        @: int\n    }\n}\n".into()),
+        ("a nested group", "src/main.mw", "resource R {\n    notes[k: int] {\n        @ {\n            x: int\n        }\n    }\n}\n".into()),
+        ("a nested branch", "src/main.mw", "resource R {\n    notes[k: int] {\n        @[j: int] {\n            x: int\n        }\n    }\n}\n".into()),
+        ("a nested branch key", "src/main.mw", "resource R {\n    notes[k: int] {\n        sub[@: int] {\n            x: int\n        }\n    }\n}\n".into()),
+        ("a store root", "src/main.mw", format!("{BOOK}store ^@[id: int]: Book\n")),
+        ("a store key", "src/main.mw", format!("{BOOK}store ^books[@: int]: Book\n")),
+        ("an index", "src/main.mw", format!("{BOOK}store ^books[id: int]: Book {{\n    index @[id]\n}}\n")),
+        ("an index component", "src/main.mw", format!("{BOOK_X}store ^books[id: int]: Book {{\n    index byX[@, id]\n}}\n")),
+        ("a place", "src/main.mw", durable("pub fn f(): int {\n    place @ = ^books[1]\n    return 0\n}\n")),
+        ("a traversal pin", "src/main.mw", durable("pub fn f(): int {\n    for id, @ in ^books at most 1 {\n    } on more {\n    }\n    return 0\n}\n")),
     ];
-    for (label, source) in cases {
-        let at = source.rfind('_').expect("the placeholder is written once");
-        let line = source[..at].bytes().filter(|byte| *byte == b'\n').count() as u32 + 1;
-        let project = with_minted_ids(&[("src/main.mw", source.clone())]);
+    for (label, path, template) in cases {
+        let at = template.find('@').expect("the placeholder is written once");
+        let line = template[..at].bytes().filter(|byte| *byte == b'\n').count() as u32 + 1;
+        let column = (at - template[..at].rfind('\n').map_or(0, |nl| nl + 1)) as u32 + 1;
+        let expected = marrow_syntax::SourceSpan {
+            start_byte: at,
+            end_byte: at + 1,
+            line,
+            column,
+        };
+
+        let project = with_minted_ids(&[(&path.replace('@', "_"), template.replace('@', "_"))]);
         let diagnostics = diagnostics_of(&project);
-        let rows = rows(&diagnostics);
-        let placeholder: Vec<_> = rows
+        let refusals: Vec<_> = diagnostics
             .iter()
-            .filter(|(_, code, _, _)| *code == marrow_codes::Code::CheckType)
+            .filter(|row| row.code() == marrow_codes::Code::CheckType)
             .collect();
         assert_eq!(
-            placeholder.len(),
+            refusals.len(),
             1,
-            "{label}: one `check.type` row refuses the placeholder: {rows:#?}"
+            "{label}: one `check.type` row refuses the placeholder: {:#?}",
+            rows(&diagnostics)
         );
         assert_eq!(
-            placeholder[0].2, line,
-            "{label}: reported on the placeholder's line: {rows:#?}"
+            refusals[0].span(),
+            expected,
+            "{label}: reported at the placeholder token: {:#?}",
+            rows(&diagnostics)
         );
         assert!(
-            rows.iter()
-                .all(|(_, code, _, _)| *code != marrow_codes::Code::CheckNameConflict),
-            "{label}: the placeholder is never a name conflict: {rows:#?}"
+            diagnostics
+                .iter()
+                .all(|row| row.code() != marrow_codes::Code::CheckNameConflict),
+            "{label}: the placeholder is never a name conflict: {:#?}",
+            rows(&diagnostics)
+        );
+
+        let sibling = with_minted_ids(&[(&path.replace('@', "_x"), template.replace('@', "_x"))]);
+        let admitted = super::diagnostics_or_empty(&sibling);
+        assert!(
+            admitted.iter().all(|row| {
+                row.code() != marrow_codes::Code::CheckType
+                    && row.code() != marrow_codes::Code::CheckNameConflict
+            }),
+            "{label}: `_x` is admitted in the same position: {:#?}",
+            rows(&admitted)
         );
     }
 }
 
-/// A checked form's binding name is validated before its operands are lowered: the
-/// placeholder and a reserved built-in each report once, at the name, and nothing is
-/// reported for the operands.
+/// A manifest refuses `_` as a dependency alias with the alias's own reason.
+#[test]
+fn the_placeholder_is_not_a_dependency_alias() {
+    let error = marrow_project::Manifest::parse(
+        "edition = \"2026\"\n\n[dependencies]\n_ = { path = \"../lib\" }\n",
+    )
+    .expect_err("the placeholder alias is refused");
+    assert_eq!(error.code(), marrow_codes::Code::ProjectDependencyAlias);
+    assert_eq!(
+        error.kind(),
+        &marrow_project::ManifestErrorKind::DependencyAlias {
+            alias: "_".to_string(),
+            reason: marrow_project::DependencyAliasReason::Placeholder,
+        }
+    );
+}
+
+/// A checked form's binding name is validated before its operands are lowered: with
+/// an operand that would report on its own, the placeholder and a reserved built-in
+/// each report once, at the name, and the operand row never appears; the same operand
+/// under an admitted name reports as usual.
 #[test]
 fn a_checked_binding_name_is_validated_before_its_operands() {
+    let source = |name: &str| {
+        format!(
+            "pub fn f(a: int): int {{\n    const {name} = checked a + nope\n        on out_of_range {{\n            return 0\n        }}\n    return 1\n}}\n"
+        )
+    };
+    let operand_column = "    const good = checked a + ".len() as u32 + 1;
+    let control_rows = diagnostics(&source("good"));
+    let control = rows(&control_rows);
+    assert_eq!(control.len(), 1, "{control:#?}");
+    assert_eq!(
+        (control[0].2, control[0].3),
+        (2, operand_column),
+        "the unknown operand reports on its own: {control:#?}"
+    );
     for (name, code) in [
         ("_", marrow_codes::Code::CheckType),
         ("ok", marrow_codes::Code::CheckNameConflict),
     ] {
-        let source = format!(
-            "pub fn f(a: int, b: int): int {{\n    const {name} = checked a + b\n        on out_of_range {{\n            return 0\n        }}\n    return 1\n}}\n"
-        );
         assert_eq!(
-            rows(&diagnostics(&source)),
+            rows(&diagnostics(&source(name))),
             vec![("src/main.mw", code, 2, 11)],
             "{name}"
         );

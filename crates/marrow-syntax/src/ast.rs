@@ -698,6 +698,8 @@ pub struct StoreDecl {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SavedRoot {
     pub root: String,
+    /// The root name token, without the `^` sigil.
+    pub name_span: SourceSpan,
     pub keys: Vec<KeyParam>,
     pub span: SourceSpan,
 }

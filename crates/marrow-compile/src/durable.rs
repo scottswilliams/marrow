@@ -749,7 +749,9 @@ impl DurableRegistry {
                 // refused declaration still occupies its name, so the repeat conflicts
                 // whichever of the two the compiler could admit.
                 let placement = ScopedName::new(file.origin(), &store.root.root);
-                if let Some(row) = placeholder_declared(file, store.root.span, &store.root.root) {
+                if let Some(row) =
+                    placeholder_declared(file, store.root.name_span, &store.root.root)
+                {
                     let refusal = refuse_row(&mut settled, declared, row);
                     registry
                         .declared
@@ -2311,7 +2313,7 @@ impl<'a> IdentityResolver<'a> {
                 continue;
             }
             if is_placeholder(index.name) {
-                self.reject_index(index.span, PLACEHOLDER_DECLARED.to_string());
+                self.reject_index(index.name_span, PLACEHOLDER_DECLARED.to_string());
                 continue;
             }
             // The index name shares the root's source namespace with the identity keys,

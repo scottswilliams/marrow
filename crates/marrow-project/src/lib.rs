@@ -29,6 +29,7 @@ pub use dependency::{
     Dependency, DependencyAlias, DependencyAliasReason, DependencyPath, DependencyPathReason,
     MAX_DEPENDENCY_ALIAS_BYTES, MAX_DEPENDENCY_PATH_BYTES,
 };
+pub use identity::is_placeholder;
 pub use identity::{
     FileIdentity, MAX_FILE_IDENTITY_BYTES, ModuleName, SOURCE_EXTENSION, SOURCE_ROOT, SourceOrigin,
     SourcePathReason,

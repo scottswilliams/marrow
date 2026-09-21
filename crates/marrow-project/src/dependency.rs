@@ -9,7 +9,7 @@
 //! relative spelling; whether that spelling names a real project on disk is the
 //! physical adapter's question, not this owner's.
 
-use crate::identity::ModuleName;
+use crate::identity::{ModuleName, is_placeholder};
 
 /// The inclusive maximum UTF-8 byte length of a [`DependencyAlias`]. The alias
 /// becomes the first segment of every module the dependency contributes, so it is
@@ -28,7 +28,8 @@ pub struct DependencyAlias(String);
 
 impl DependencyAlias {
     /// Validate a manifest alias spelling: a letter or `_` followed by letters,
-    /// digits, or `_`, within [`MAX_DEPENDENCY_ALIAS_BYTES`].
+    /// digits, or `_`, within [`MAX_DEPENDENCY_ALIAS_BYTES`], and never the placeholder
+    /// `_` alone.
     pub fn parse(spelling: &str) -> Result<DependencyAlias, DependencyAliasReason> {
         let mut characters = spelling.chars();
         let start_is_legal = characters
@@ -36,6 +37,9 @@ impl DependencyAlias {
             .is_some_and(|first| first.is_ascii_alphabetic() || first == '_');
         if !start_is_legal || !characters.all(|c| c.is_ascii_alphanumeric() || c == '_') {
             return Err(DependencyAliasReason::NotIdentifier);
+        }
+        if is_placeholder(spelling) {
+            return Err(DependencyAliasReason::Placeholder);
         }
         if spelling.len() > MAX_DEPENDENCY_ALIAS_BYTES {
             return Err(DependencyAliasReason::TooLong {
@@ -57,6 +61,8 @@ impl DependencyAlias {
 pub enum DependencyAliasReason {
     /// The spelling is not an identifier.
     NotIdentifier,
+    /// The spelling is the placeholder `_`, which names nothing.
+    Placeholder,
     /// The spelling is an identifier but longer than
     /// [`MAX_DEPENDENCY_ALIAS_BYTES`] UTF-8 bytes.
     TooLong {

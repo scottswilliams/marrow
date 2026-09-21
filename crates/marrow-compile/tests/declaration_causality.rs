@@ -65,6 +65,15 @@ fn diagnostics(source: &str) -> Vec<SourceDiagnostic> {
     diagnostics_of(&project(source))
 }
 
+/// The diagnostics a project reports, or none when it compiles.
+fn diagnostics_or_empty(project: &ProjectInput) -> Vec<SourceDiagnostic> {
+    match compile(project) {
+        Ok(_) => Vec::new(),
+        Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
+        Err(other) => panic!("expected source diagnostics, got {other:#?}"),
+    }
+}
+
 fn diagnostics_of(project: &ProjectInput) -> Vec<SourceDiagnostic> {
     match compile(project) {
         Ok(compiled) => panic!("expected a refused declaration, compiled: {compiled:?}"),

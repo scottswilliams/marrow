@@ -293,12 +293,9 @@ pub(crate) fn refuse_first(
 
 /// One layer of declared members, refusing a repeated name at the repeat.
 ///
-/// `_` is the placeholder: it stands only for an unused payload field in a `match` arm,
-/// names nothing anywhere a name is declared, and is not a value. The one classifier
-/// every declaration gate and every binding gate consults.
-pub(crate) fn is_placeholder(name: &str) -> bool {
-    name == "_"
-}
+/// The placeholder classifier, owned by the project layer beside module-segment and
+/// dependency-alias legality; every declaration and binding gate here consults it.
+pub(crate) use marrow_project::is_placeholder;
 
 /// The message refusing `_` where a declaration would take it as a name.
 pub(crate) const PLACEHOLDER_DECLARED: &str = "`_` is the placeholder and binds no name; it \

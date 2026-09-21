@@ -1840,8 +1840,13 @@ const _: fn() = || {
         let _ = (docs, root, resource, resource_span, indexes, comments, span);
     };
     let _ = |value: &SavedRoot| {
-        let SavedRoot { root, keys, span } = value;
-        let _ = (root, keys, span);
+        let SavedRoot {
+            root,
+            name_span,
+            keys,
+            span,
+        } = value;
+        let _ = (root, name_span, keys, span);
     };
     let _ = |value: &FunctionDecl| {
         let FunctionDecl {

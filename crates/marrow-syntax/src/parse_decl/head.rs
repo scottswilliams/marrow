@@ -354,9 +354,10 @@ pub(super) fn parse_store_head(
         ));
     }
     let caret_span = tokens[0].span;
-    let (root, root_span) = match tokens.get(1) {
+    let (root, name_span, root_span) = match tokens.get(1) {
         Some(token) if token.kind == TokenKind::Identifier => (
             token.text(source).to_string(),
+            token.span,
             join_spans(caret_span, token.span),
         ),
         _ => {
@@ -403,6 +404,7 @@ pub(super) fn parse_store_head(
     Ok((
         SavedRoot {
             root,
+            name_span,
             keys,
             span: root_span,
         },

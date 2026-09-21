@@ -13,6 +13,14 @@ use crate::dependency::DependencyAlias;
 
 /// The fixed directory every project's source lives under. A captured identity
 /// that does not begin here is outside the source root and cannot name a module.
+/// `_` is the placeholder: lexically an identifier, it names nothing. No module
+/// segment, dependency alias, or declaration takes it, and a compiler admits it only
+/// where its reference says a placeholder stands. The one classifier every gate
+/// consults.
+pub fn is_placeholder(name: &str) -> bool {
+    name == "_"
+}
+
 pub const SOURCE_ROOT: &str = "src";
 
 /// The extension every Marrow source file carries.

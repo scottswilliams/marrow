@@ -119,6 +119,7 @@ fn an_alias_that_is_not_an_identifier_is_refused() {
         ("my-lib", DependencyAliasReason::NotIdentifier),
         ("my.lib", DependencyAliasReason::NotIdentifier),
         ("", DependencyAliasReason::NotIdentifier),
+        ("_", DependencyAliasReason::Placeholder),
         (
             long.as_str(),
             DependencyAliasReason::TooLong {

@@ -29,6 +29,10 @@ enum Mutability {
     Var,
 }
 
+/// One presence binding of an `if const` head or a let-else: the name, its span, its
+/// annotation, and the optional value it proves present.
+type PresenceBinding<'a> = (&'a str, SourceSpan, Option<&'a TypeExpr>, &'a Expression);
+
 /// The operation a `checked` form wraps: a single int `+`/`-`/`*`/`/`/`%` or negation.
 enum Wrapped<'e> {
     Binary(BinaryOp, &'e Expression, &'e Expression),
@@ -108,7 +112,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
             Statement::IfConst {
                 name,
-                name_span: _,
+                name_span,
                 ty,
                 value,
                 then_block,
@@ -116,9 +120,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 else_block,
                 span: _,
             } => self.lower_if_const(
-                name,
-                ty.as_deref(),
-                value,
+                (name, *name_span, ty.as_deref(), value),
                 then_block,
                 else_ifs,
                 else_block.as_ref(),
@@ -131,9 +133,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 else_block,
                 span: _,
             } => {
-                let bindings: Vec<(&str, Option<&TypeExpr>, &Expression)> = bindings
+                let bindings: Vec<PresenceBinding<'_>> = bindings
                     .iter()
-                    .map(|b| (b.name.as_str(), b.ty.as_ref(), &b.value))
+                    .map(|b| (b.name.as_str(), b.name_span, b.ty.as_ref(), &b.value))
                     .collect();
                 self.lower_if_const_bindings(
                     &bindings,
@@ -146,7 +148,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             Statement::LetElse {
                 is_var,
                 name,
-                name_span: _,
+                name_span,
                 ty,
                 value,
                 else_block,
@@ -157,7 +159,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 } else {
                     Mutability::Const
                 };
-                self.lower_let_else(mutability, name, ty.as_deref(), value, else_block)
+                self.lower_let_else(
+                    mutability,
+                    (name, *name_span, ty.as_deref(), value),
+                    else_block,
+                )
             }
             Statement::Require {
                 condition,
@@ -970,22 +976,14 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     fn lower_if_const(
         &mut self,
-        name: &str,
-        annotation: Option<&TypeExpr>,
-        value: &Expression,
+        binding: PresenceBinding<'_>,
         then_block: &Block,
         else_ifs: &[ElseIf],
         else_block: Option<&Block>,
     ) -> ConstructResult<Flow> {
         // The single `if const a = e` is the one-binding, no-condition case of the
         // general chained form.
-        self.lower_if_const_bindings(
-            &[(name, annotation, value)],
-            None,
-            then_block,
-            else_ifs,
-            else_block,
-        )
+        self.lower_if_const_bindings(&[binding], None, then_block, else_ifs, else_block)
     }
 
     /// Lower the general `if const` form: a left-to-right chain of existence bindings
@@ -996,7 +994,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// the else tail. The single form is one binding with no condition.
     pub(super) fn lower_if_const_bindings(
         &mut self,
-        bindings: &[(&str, Option<&TypeExpr>, &Expression)],
+        bindings: &[PresenceBinding<'_>],
         condition: Option<&Expression>,
         then_block: &Block,
         else_ifs: &[ElseIf],
@@ -1065,12 +1063,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// leaving the bindings' locals in scope for the then block.
     fn lower_if_const_head(
         &mut self,
-        bindings: &[(&str, Option<&TypeExpr>, &Expression)],
+        bindings: &[PresenceBinding<'_>],
         condition: Option<&Expression>,
     ) -> ConstructResult<Vec<usize>> {
         let mut fail_jumps: Vec<usize> = Vec::new();
-        for (name, annotation, value) in bindings.iter().copied() {
-            if let Some(row) = refused_binding_name(self.file, value.span(), name) {
+        for (name, name_span, annotation, value) in bindings.iter().copied() {
+            if let Some(row) = refused_binding_name(self.file, name_span, name) {
                 self.fail(row);
                 return Err(LoweringFailure::Recoverable);
             }
@@ -1173,11 +1171,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     fn lower_let_else(
         &mut self,
         mutability: Mutability,
-        name: &str,
-        annotation: Option<&TypeExpr>,
-        value: &Expression,
+        binding: PresenceBinding<'_>,
         else_block: &Block,
     ) -> ConstructResult<Flow> {
+        let (name, _, _, value) = binding;
         if self.code_limit_reached {
             return Err(LoweringFailure::CodeLimitReached);
         }
@@ -1186,7 +1183,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
         let mark = self.locals.len();
         let present_mark = self.present_places.len();
-        let fail_jumps = match self.lower_if_const_head(&[(name, annotation, value)], None) {
+        let fail_jumps = match self.lower_if_const_head(&[binding], None) {
             Ok(jumps) => jumps,
             Err(LoweringFailure::Recoverable) => {
                 self.locals.truncate(mark);

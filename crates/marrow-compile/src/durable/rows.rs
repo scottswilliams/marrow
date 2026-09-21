@@ -193,6 +193,7 @@ pub(super) enum ProductKey<'stores> {
 /// this index projects.
 pub(super) struct IndexRow<'a> {
     pub(super) name: &'a str,
+    pub(super) name_span: SourceSpan,
     pub(super) unique: bool,
     pub(super) span: SourceSpan,
     args: Range<usize>,
@@ -254,6 +255,7 @@ impl<'a> IndexTable<'a> {
             }
             rows.push(IndexRow {
                 name: &index.name,
+                name_span: index.name_span,
                 unique: index.unique,
                 span: index.span,
                 args: start..args.len(),

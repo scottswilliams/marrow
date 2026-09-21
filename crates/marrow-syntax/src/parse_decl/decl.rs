@@ -810,6 +810,7 @@ impl<'a, 'c> DeclParser<'a, 'c> {
                 (
                     SavedRoot {
                         root: String::new(),
+                        name_span: SourceSpan::default(),
                         keys: Vec::new(),
                         span: SourceSpan::default(),
                     },

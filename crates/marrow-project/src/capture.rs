@@ -650,6 +650,9 @@ impl CaptureError {
             DependencyAliasReason::Uncaptured => {
                 "is declared but no tree was captured for it".to_string()
             }
+            DependencyAliasReason::Placeholder => {
+                "is the placeholder `_`, which names nothing".to_string()
+            }
             DependencyAliasReason::NotIdentifier | DependencyAliasReason::TooLong { .. } => {
                 "is not a usable identifier".to_string()
             }

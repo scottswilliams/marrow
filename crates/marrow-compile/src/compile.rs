@@ -24,8 +24,8 @@ use crate::analysis::{
 use crate::call_graph::AcyclicCallOrder;
 use crate::decl::{
     Binding, DeclarationBudget, DeclarationLedgerFull, DeclarationNamespace, DeclarationOccurrence,
-    DeclarationSite, DeclareError, MAX_DECLARATION_LEDGER_BYTES, SourceStage, refuse,
-    refuse_at_earlier_stage,
+    DeclarationSite, DeclareError, MAX_DECLARATION_LEDGER_BYTES, PLACEHOLDER_DECLARED, SourceStage,
+    is_placeholder, refuse, refuse_at_earlier_stage,
 };
 use crate::demand::DurableNaming;
 use crate::diag::{
@@ -1091,6 +1091,31 @@ fn declare_modules(
         let Some(header) = &module.ast.module else {
             continue;
         };
+        // A placeholder segment names no module, so the header refuses before the path
+        // comparison could admit it.
+        if let Some(segment) = header
+            .segments
+            .iter()
+            .find(|segment| is_placeholder(segment.text()))
+        {
+            let refusal = refuse(
+                diagnostics,
+                DeclarationSite {
+                    name: &module.name,
+                    file: &module.file,
+                    at: module.at,
+                    span: segment.span(),
+                },
+                Code::CheckType,
+                PLACEHOLDER_DECLARED.to_string(),
+            );
+            if let Err(error) =
+                modules.declare(module.name.clone(), DeclarationOccurrence::Refused(refusal))
+            {
+                return Err(error.into());
+            }
+            continue;
+        }
         let declared = dotted_module_path(&header.segments);
         let expected = declaring_module_path(module);
         let occurrence = if declared == expected {
@@ -1132,6 +1157,20 @@ fn bind_imports(
     for module in parsed {
         let bindings = imports.entry(module.name.clone()).or_default();
         for use_decl in &module.ast.uses {
+            // A placeholder segment names no module and binds no alias.
+            if let Some(segment) = use_decl
+                .segments
+                .iter()
+                .find(|segment| is_placeholder(segment.text()))
+            {
+                diagnostics.push(SourceDiagnostic::at(
+                    Code::CheckType,
+                    &module.file,
+                    segment.span(),
+                    PLACEHOLDER_DECLARED.to_string(),
+                ));
+                continue;
+            }
             let target = dotted_module_path(&use_decl.segments);
             let segment = target
                 .rsplit('.')
@@ -2248,7 +2287,9 @@ fn reject_duplicate_functions(parsed: &[Module], diagnostics: &mut DiagnosticCol
             let Declaration::Function(function) = declaration else {
                 continue;
             };
-            if let Some(row) = refused_binding_name(&module.file, function.span, &function.name) {
+            if let Some(row) =
+                refused_binding_name(&module.file, function.name_span, &function.name)
+            {
                 diagnostics.push(row);
                 continue;
             }
