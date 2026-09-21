@@ -614,7 +614,7 @@ fn walkthrough_excerpts_are_verbatim_fixture_source() {
         }
     }
     assert!(
-        excerpts >= 8,
-        "the walkthrough quotes at least eight fixture excerpts, found {excerpts}"
+        excerpts >= 6,
+        "the walkthrough quotes at least six fixture excerpts, found {excerpts}"
     );
 }

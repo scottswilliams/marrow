@@ -78,36 +78,8 @@ follow span two roots and commit as one. `Asset.log(...)` constructs a value of
 the branch the way `Asset(...)` constructs the entry
 ([errors and transactions](language/errors-and-transactions.md)).
 
-## A proof covers a block
-
-```text
-pub fn recordMove(id: int, location: string) {
-    transaction {
-        place slot = ^assets[id]
-        if exists(slot) {
-            slot.location = location
-            place moves = ^tallies["moves"]
-            moves = Tally(count: (moves.count ?? 0) + 1)
-        }
-    }
-}
-```
-
-A field write updates an entry the compiler has proved present and never creates
-one. `place slot = ^assets[id]` names the address and evaluates the key once;
-the `place` itself proves nothing, and `exists(slot)` is what covers the rest of
-the block. Without that guard the write is `check.requires_presence` at check
-time. For an absent asset the block writes nothing
-([named places](language/durable-places.md#named-places)).
-
-Reading through a key yields `T?`, because the entry, or the sparse field alone,
-may be absent:
-
-```text
-pub fn location(id: int): string? {
-    return ^assets[id].location
-}
-```
+Presence proofs, optional reads, and field-write rules are specified under
+[named places](language/durable-places.md#named-places).
 
 ## Reworking a whole entry
 
@@ -133,45 +105,14 @@ pub fn relocate(id: int, location: string): bool {
 }
 ```
 
-The copy is by value, so nothing inside `withLocation` reaches the store. The
-read carried every field, so writing the reworked copy back preserves the fields
-the change did not touch, and leaves the `log` branch in place.
+The copy is by value, so nothing inside `withLocation` reaches the store. Because
+the helper starts from the whole value, its result retains fields it does not
+change. `relocate` writes that result back; [writing](language/durable-places.md#writing)
+owns whole-entry replacement semantics.
 
-## Replacing and erasing
-
-```text
-pub fn replace(id: int, tag: string, name: string, category: string): bool {
-    transaction {
-        if not exists(^assets[id]) {
-            return false
-        }
-        ^assets[id] = Asset(tag: tag, name: name, category: category)
-    }
-    return true
-}
-
-pub fn erase(id: int): bool {
-    transaction {
-        if not exists(^assets[id]) {
-            return false
-        }
-        delete ^assets[id]
-    }
-    return true
-}
-```
-
-Both act on the entry's own fields and leave the `log` branch where it is: after
-`erase(3)`, `present(3)` is false and `noteText(3, 1)` still reads
-`"catalogued"`. Removing an asset together with its log is a bounded walk over
-the branch and a `delete` per entry
-([deleting](language/durable-places.md#deleting)).
-
-`replace` writes an `Asset` carrying only the three required fields, so an
-omitted sparse field is dropped: after `setLocation(4, "Bay 3")` and
-`replace(4, "T-400", "Table Saw", "cutting")`, `location(4)` is absent. To
-change one field and keep the rest, write through a `place` or copy the entry as
-`relocate` does.
+Whole-entry replacement and deletion, including their effect on branches, are
+specified under [writing](language/durable-places.md#writing) and
+[deleting](language/durable-places.md#deleting).
 
 ## Identity from an index
 
