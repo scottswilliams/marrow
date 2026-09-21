@@ -6,10 +6,10 @@
 //! nonunique index ending with the complete identity suffix, or a `unique` index
 //! that may omit it. Each projects only the root's identity keys and top-level
 //! orderable-key fields. Each index carries its own `Index` ledger identity, and the
-//! verifier independently reconstructs the index set and derives the field/root
-//! incidence — the maintenance consequence an exact write keeps coherent. Index reads
-//! execute (a bounded nonunique scan and a unique lookup); their runtime behavior is
-//! exercised in the VM `index_read` fixtures.
+//! verifier independently reconstructs the index set, its root, and its projection; the
+//! kernel maintains it from those facts at the write path. Index reads execute (a
+//! bounded nonunique scan and a unique lookup); their runtime behavior is exercised in
+//! the VM `index_read` fixtures.
 
 use marrow_verify::{
     DurableIndexComponent, LedgerIdBytes, SealedIndexComponent, SealedSite, SealedSiteTarget,
@@ -180,34 +180,6 @@ fn a_nominal_field_binding_refusal_preserves_the_root_operation_diagnostic() {
     );
 }
 
-/// Index maintenance is a consequence of writing through one root **occurrence**, and
-/// the verifier answers it only for an occurrence. A Product field declaration names no
-/// root — several roots may project one Product — so the question is posed through the
-/// typed occurrence handle, never through a bare field id.
-#[test]
-fn the_verifier_derives_index_maintenance_per_root_occurrence() {
-    let image = verified(INDEXED_SOURCE, INDEXED_IDS);
-    let books = image
-        .root_occurrence(0)
-        .expect("the image declares one root");
-
-    // Field declaration -> [IndexId] within this occurrence: mutating `shelf` maintains
-    // byShelf; `isbn` maintains byIsbn; `title` (unindexed) maintains nothing.
-    assert_eq!(books.field_maintenance(rep(0x10)), vec![rep(0x70)]);
-    assert_eq!(books.field_maintenance(rep(0x11)), vec![rep(0x71)]);
-    assert!(books.field_maintenance(rep(0x0e)).is_empty());
-
-    // An identity-key projection component is not a field-maintenance trigger: the
-    // key `id` (0x0c) appears in byShelf's projection but keys are immutable.
-    assert!(books.field_maintenance(rep(0x0c)).is_empty());
-
-    // A whole-entry write on this occurrence maintains both of its indexes.
-    assert_eq!(books.entry_maintenance(), vec![rep(0x70), rep(0x71)]);
-
-    // The image declares one root, so there is no second occurrence to ask about.
-    assert!(image.root_occurrence(1).is_none());
-}
-
 #[test]
 fn each_managed_index_is_a_graph_node_with_a_three_step_semantic_path() {
     let image = verified(INDEXED_SOURCE, INDEXED_IDS);
@@ -255,18 +227,6 @@ fn index_read_sites_seal_flat_executable_reads() {
         })
         .collect();
     assert_eq!(index_sites, vec!["scan", "lookup"]);
-}
-
-#[test]
-fn a_create_or_replace_collides_only_on_the_roots_unique_indexes() {
-    let image = verified(INDEXED_SOURCE, INDEXED_IDS);
-    // The closed unique_index_collision outcome layout for a create/replace on root 0
-    // is exactly its unique index (byIsbn, 0x71); the nonunique byShelf never
-    // collides.
-    let books = image
-        .root_occurrence(0)
-        .expect("the image declares one root");
-    assert_eq!(books.unique_collision_outcomes(), vec![rep(0x71)]);
 }
 
 #[test]

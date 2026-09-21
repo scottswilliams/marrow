@@ -390,41 +390,36 @@ fn rep(byte: u8) -> marrow_image::LedgerIdBytes {
 
 /// A managed index belongs to a root **occurrence**, but a Product field declaration
 /// belongs to the Product: `Item.sku` is one declaration that both `^a` and `^b` project.
-/// Asking what a write to that field maintains therefore has no answer until an
-/// occurrence is named, and the answer must be that occurrence's indexes alone. Unioning
-/// them would tell the maintenance path that a write through `^b` must keep `^a`'s index
-/// coherent.
+/// The sealed image binds each index to the one root that declared it, so the kernel's
+/// maintenance of a write through `^b` never reaches `^a`'s index over the same field.
 #[test]
-fn index_maintenance_is_scoped_to_the_occurrence_that_was_written() {
+fn each_managed_index_is_bound_to_the_occurrence_that_declared_it() {
     let image = Project::single(SHARED_INDEX_SOURCE)
         .ids(SHARED_INDEX_IDS)
         .image();
-    let a = image.root_occurrence(0).expect("^a");
-    let b = image.root_occurrence(1).expect("^b");
-    assert_eq!(a.root().name(), "a");
-    assert_eq!(b.root().name(), "b");
+    assert_eq!(image.roots()[0].name(), "a");
+    assert_eq!(image.roots()[1].name(), "b");
+    let ids_of = |root: u16| -> Vec<_> {
+        image
+            .indexes()
+            .iter()
+            .filter(|index| index.root() == root)
+            .map(|index| index.id())
+            .collect()
+    };
+    assert_eq!(ids_of(0), vec![rep(0x3b)]);
+    assert_eq!(ids_of(1), vec![rep(0x5b), rep(0x6b)]);
 
-    // `Item.sku` (0x0f) is one Product field declaration indexed by both occurrences.
-    assert_eq!(
-        a.field_maintenance(rep(0x0f)),
-        vec![rep(0x3b)],
-        "a write through ^a maintains ^a's index and no other"
-    );
-    assert_eq!(
-        b.field_maintenance(rep(0x0f)),
-        vec![rep(0x5b)],
-        "a write through ^b maintains ^b's index and no other"
-    );
-
-    // `Item.shelf` (0x2e) is indexed only by ^b, so a write through ^a maintains nothing.
-    assert!(a.field_maintenance(rep(0x2e)).is_empty());
-    assert_eq!(b.field_maintenance(rep(0x2e)), vec![rep(0x6b)]);
-
-    // The whole-entry and collision layouts are occurrence-scoped for the same reason.
-    assert_eq!(a.entry_maintenance(), vec![rep(0x3b)]);
-    assert_eq!(b.entry_maintenance(), vec![rep(0x5b), rep(0x6b)]);
-    assert_eq!(a.unique_collision_outcomes(), vec![rep(0x3b)]);
-    assert_eq!(b.unique_collision_outcomes(), vec![rep(0x5b)]);
+    // `Item.sku` (0x0f) is one Product field declaration projected by an index of each
+    // occurrence; the two indexes are distinct rows bound to distinct roots.
+    let sku = marrow_verify::DurableIndexComponent::Field(rep(0x0f));
+    let over_sku: Vec<_> = image
+        .indexes()
+        .iter()
+        .filter(|index| index.components().contains(&sku))
+        .map(|index| (index.root(), index.id(), index.unique()))
+        .collect();
+    assert_eq!(over_sku, vec![(0, rep(0x3b), true), (1, rep(0x5b), true)]);
 }
 
 /// The runtime consequence of the same law: the two occurrences' unique `sku` indexes do

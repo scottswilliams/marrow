@@ -389,10 +389,10 @@ impl SealedEnumType {
 
 /// A source-position row: the instruction it maps and its 1-based line/column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SpanRow {
-    pub instr_index: usize,
-    pub line: u32,
-    pub column: u32,
+pub(crate) struct SpanRow {
+    pub(crate) instr_index: usize,
+    pub(crate) line: u32,
+    pub(crate) column: u32,
 }
 
 /// A sealed function body.
@@ -611,17 +611,6 @@ impl VerifiedImage {
         &self.indexes
     }
 
-    /// The verified root occurrence at DURABLE-table index `root`, or `None` when the
-    /// image declares no such row. This is the capability every index-maintenance
-    /// question is asked through: a managed index belongs to one root occurrence, so the
-    /// consequence of a durable write is only ever a fact about the occurrence the write
-    /// addressed. A durable Product declaration may be projected by several roots, so a
-    /// bare field declaration identity names no occurrence and cannot answer one.
-    pub fn root_occurrence(&self, root: u16) -> Option<VerifiedRootOccurrence<'_>> {
-        (usize::from(root) < self.roots.len())
-            .then_some(VerifiedRootOccurrence { image: self, root })
-    }
-
     pub fn consts(&self) -> &[SealedConst] {
         &self.consts
     }
@@ -740,77 +729,5 @@ impl<'image> VerifiedFunction<'image> {
     /// A test-body driver uses it to open the session required by one invocation.
     pub fn demand(self) -> DemandView<'image> {
         self.image.function_demands.get(self.index.index())
-    }
-}
-
-/// One verified durable root occurrence: the row at a DURABLE-table index, paired with
-/// the image that verified it.
-///
-/// Every managed index is declared by a store root, so index maintenance is a
-/// per-occurrence consequence. Obtaining this handle from
-/// [`VerifiedImage::root_occurrence`] is the only way to ask for it, so no caller can
-/// pose a maintenance question that a root does not qualify.
-#[derive(Debug, Clone, Copy)]
-pub struct VerifiedRootOccurrence<'a> {
-    image: &'a VerifiedImage,
-    root: u16,
-}
-
-impl<'a> VerifiedRootOccurrence<'a> {
-    /// This occurrence's DURABLE-table index.
-    pub fn index(&self) -> u16 {
-        self.root
-    }
-
-    /// The sealed root row this occurrence names.
-    pub fn root(&self) -> &'a SealedRoot {
-        &self.image.roots[usize::from(self.root)]
-    }
-
-    /// This occurrence's managed indexes, in image declaration order.
-    fn indexes(&self) -> impl Iterator<Item = &'a SealedIndex> {
-        let root = self.root;
-        self.image
-            .indexes
-            .iter()
-            .filter(move |index| index.root == root)
-    }
-
-    /// The stable ids of every managed index of this occurrence — the maintenance
-    /// consequence of a whole-entry create, replace, or erase on it. Derived from the
-    /// sealed indexes, never trusted from the image.
-    pub fn entry_maintenance(&self) -> Vec<LedgerIdBytes> {
-        self.indexes().map(|index| index.id).collect()
-    }
-
-    /// The stable ids of this occurrence's managed indexes whose projection includes the
-    /// Product field declaration `field` — the maintenance consequence of an exact-field
-    /// write through this occurrence, and only through it. Identity-key projection
-    /// components are excluded: a key is immutable, so it triggers no field maintenance.
-    ///
-    /// The field is a *declaration* identity, shared by every root that projects its
-    /// Product; the answer is scoped to this one occurrence, so a write through one root
-    /// never reports another root's index as needing maintenance.
-    pub fn field_maintenance(&self, field: LedgerIdBytes) -> Vec<LedgerIdBytes> {
-        self.indexes()
-            .filter(|index| {
-                index
-                    .components
-                    .contains(&DurableIndexComponent::Field(field))
-            })
-            .map(|index| index.id)
-            .collect()
-    }
-
-    /// The legal `unique_index_collision` outcome layout for a create or replace on this
-    /// occurrence: the stable ids of its unique managed indexes. A durable operation
-    /// algebra collision reveals exactly one of these `IndexId`s and nothing else — no
-    /// colliding key, entry, or sibling. An occurrence with no unique index admits no
-    /// collision outcome.
-    pub fn unique_collision_outcomes(&self) -> Vec<LedgerIdBytes> {
-        self.indexes()
-            .filter(|index| index.unique)
-            .map(|index| index.id)
-            .collect()
     }
 }
