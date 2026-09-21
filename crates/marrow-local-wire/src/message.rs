@@ -669,18 +669,33 @@ mod tests {
             ),
             r#"{"code":"run.overflow","kind":"fault","span":{"column":2,"line":7},"turn":0}"#
         );
-        assert_eq!(
-            json_of(
-                &ServerMessage::Incomplete {
-                    code: Code::RunCommit,
-                    durable: DurableCommitState::KnownNew,
-                    span: Span { line: 9, column: 4 },
-                }
-                .encode()
-                .unwrap()
+        for (durable, frozen) in [
+            (
+                DurableCommitState::KnownOld,
+                r#"{"code":"run.commit","durable":"known_old","kind":"incomplete","span":{"column":4,"line":9},"turn":0}"#,
             ),
-            r#"{"code":"run.commit","durable":"known_new","kind":"incomplete","span":{"column":4,"line":9},"turn":0}"#
-        );
+            (
+                DurableCommitState::KnownNew,
+                r#"{"code":"run.commit","durable":"known_new","kind":"incomplete","span":{"column":4,"line":9},"turn":0}"#,
+            ),
+            (
+                DurableCommitState::Unknown,
+                r#"{"code":"run.commit","durable":"unknown","kind":"incomplete","span":{"column":4,"line":9},"turn":0}"#,
+            ),
+        ] {
+            assert_eq!(
+                json_of(
+                    &ServerMessage::Incomplete {
+                        code: Code::RunCommit,
+                        durable,
+                        span: Span { line: 9, column: 4 },
+                    }
+                    .encode()
+                    .unwrap()
+                ),
+                frozen
+            );
+        }
         assert_eq!(
             json_of(
                 &ServerMessage::Reject {

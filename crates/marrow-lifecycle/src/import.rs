@@ -267,12 +267,11 @@ impl std::fmt::Display for CommitFault {
             }
             CommitFault::Aborted => write!(f, "the batch commit aborted"),
             CommitFault::Incomplete { durable } => {
-                let state = match durable {
-                    DurableCommitState::KnownOld => "known_old",
-                    DurableCommitState::KnownNew => "known_new",
-                    DurableCommitState::Unknown => "unknown",
-                };
-                write!(f, "the batch invocation was incomplete ({state})")
+                write!(
+                    f,
+                    "the batch invocation was incomplete ({})",
+                    durable.as_str()
+                )
             }
         }
     }

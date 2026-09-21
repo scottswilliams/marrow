@@ -468,9 +468,8 @@ fn read_only_region_followed_by_pure_fault_is_an_ordinary_runtime_fault() {
     assert_eq!(fault.code(), Code::RunDivideByZero);
 }
 
-/// A host that refuses every session: the authority resolved against ceiling ∩ grant denied
-/// the demand.
-struct RefusingHost;
+/// A host that refuses every session open with the error it was built with.
+struct RefusingHost(fn() -> marrow_kernel::durable::SessionError);
 
 impl marrow_kernel::durable::SessionHost for RefusingHost {
     type Engine = <marrow_kernel::durable::EphemeralAttachment as marrow_kernel::durable::SessionHost>::Engine;
@@ -483,7 +482,7 @@ impl marrow_kernel::durable::SessionHost for RefusingHost {
         marrow_kernel::durable::ReadSession<'_, Self::Engine>,
         marrow_kernel::durable::SessionError,
     > {
-        Err(marrow_kernel::durable::SessionError::Denied)
+        Err((self.0)())
     }
 
     fn txn_session(
@@ -494,27 +493,56 @@ impl marrow_kernel::durable::SessionHost for RefusingHost {
         marrow_kernel::durable::TxnSession<'_, Self::Engine>,
         marrow_kernel::durable::SessionError,
     > {
-        Err(marrow_kernel::durable::SessionError::Denied)
+        Err((self.0)())
     }
 }
 
-/// A refused session open on the export path is the same source-positioned `run.authority`
-/// fault the test-driver path reports: an invocation that ran nothing, never a reject that
-/// names the CLI.
+/// What each route reports when the host refuses to open the session. A denied open is the
+/// same source-positioned `run.authority` fault on both routes; a poisoned handle or an
+/// engine failure is the export route's typed reject and the driver's authority fault.
 #[test]
-fn a_refused_session_open_on_an_export_is_a_run_authority_fault() {
+fn a_refused_session_open_projects_per_variant_and_route() {
+    use marrow_kernel::durable::SessionError;
+
     let bytes = commit_image(PostCommitFault::None, true);
     let image = verify(&bytes).expect("verify");
     let export = image.exports().first().expect("one mutating export");
     let function = image.function(export.function()).expect("export function");
-    let DurableRun::Ran(Err(DurableExecutionFault::Runtime(fault))) =
-        run_on_host(function, Vec::new(), &mut RefusingHost)
-    else {
-        panic!("a refused session open must surface as a runtime fault");
-    };
-    assert_eq!(fault.code(), Code::RunAuthority);
-    assert_eq!(
-        (fault.line(), fault.column()),
-        function.body().span_at(0).unwrap_or((1, 1))
-    );
+    let span = function.body().span_at(0).unwrap_or((1, 1));
+    let cases: [(fn() -> SessionError, bool); 3] = [
+        (|| SessionError::Denied, false),
+        (|| SessionError::Poisoned, true),
+        (
+            || {
+                SessionError::Engine(marrow_kernel::durable::StoreError::Corruption {
+                    message: "torn page".into(),
+                })
+            },
+            true,
+        ),
+    ];
+    for (error, export_rejects) in cases {
+        match run_on_host(function, Vec::new(), &mut RefusingHost(error)) {
+            DurableRun::Failed(code) => {
+                assert!(export_rejects, "a denied open is a fault, not a reject");
+                assert_eq!(code, Code::CliDurableUnsupported);
+            }
+            DurableRun::Ran(Err(DurableExecutionFault::Runtime(fault))) => {
+                assert!(!export_rejects, "only a denied open is an authority fault");
+                assert_eq!(fault.code(), Code::RunAuthority);
+                assert_eq!((fault.line(), fault.column()), span);
+            }
+            _ => panic!("a refused open is a reject or a runtime fault, never a value or parked"),
+        }
+        let mut host = RefusingHost(error);
+        let mut driver = crate::attach::TestDriver { host: &mut host };
+        let mut budget = 1 << 20;
+        let Err(DurableExecutionFault::Runtime(fault)) =
+            crate::run::DriverDispatch::invoke(&mut driver, function, Vec::new(), 0, &mut budget)
+        else {
+            panic!("the driver reports every refused open as a fault");
+        };
+        assert_eq!(fault.code(), Code::RunAuthority);
+        assert_eq!((fault.line(), fault.column()), span);
+    }
 }

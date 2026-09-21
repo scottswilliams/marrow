@@ -58,17 +58,18 @@ impl Service {
         turn: u32,
     ) -> Result<EncodedFrame, WireError> {
         let image = self.image.image();
-        let decoded = match dispatch::decode_request(image, export, args) {
-            Ok(decoded) => decoded,
+        let resolved = match dispatch::resolve_export(image, export) {
+            Ok(resolved) => resolved,
             Err(reject) => return reject.encode_frame(turn),
         };
-        match decoded.route {
-            dispatch::Route::Storeless => {
-                dispatch::run_storeless(image, decoded.export, decoded.values, turn)
-            }
-            dispatch::Route::Durable => {
-                dispatch::reject(Code::RunnerDurableUnsupported).encode_frame(turn)
-            }
+        // The route is refused before the arguments are examined, so a durable export is
+        // unsupported here whatever its arguments look like.
+        if let dispatch::Route::Durable = resolved.route {
+            return dispatch::reject(Code::RunnerDurableUnsupported).encode_frame(turn);
+        }
+        match dispatch::decode_args(image, resolved.function, args) {
+            Ok(values) => dispatch::run_storeless(image, resolved.export, values, turn),
+            Err(reject) => reject.encode_frame(turn),
         }
     }
 }

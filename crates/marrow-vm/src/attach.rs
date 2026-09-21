@@ -28,7 +28,7 @@
 //! ```
 
 use marrow_codes::Code;
-use marrow_kernel::durable::{DemandCoverage, Durable, InvocationGrant, SessionHost};
+use marrow_kernel::durable::{DemandCoverage, Durable, InvocationGrant, SessionError, SessionHost};
 use marrow_lifecycle::{Attachment, FreshTest, TestHost};
 use marrow_verify::{ExportId, VerifiedFunction};
 
@@ -98,30 +98,38 @@ pub(crate) fn run_on_host<H: SessionHost + ?Sized>(
     args: Vec<Value>,
     host: &mut H,
 ) -> DurableRun {
-    DurableRun::Ran(with_session(host, func, |session| match session {
+    let outcome = with_session(host, func, |session| match session {
         None => run(func, args).map_err(DurableExecutionFault::from),
         Some(session) => run_durable(func, args, session),
-    }))
+    });
+    match outcome {
+        Ok(result) => DurableRun::Ran(result),
+        // An attachment serves only an image the lifecycle admitted within the store's
+        // ceiling, so a denied open is unreachable here; it keeps the authority fault the
+        // test driver reports for the same refusal.
+        Err(SessionError::Denied) => DurableRun::Ran(Err(session_open_fault(func))),
+        // A poisoned handle or an engine failure while opening: the export ran nothing,
+        // and the caller reports the durable route as unavailable.
+        Err(SessionError::Poisoned | SessionError::Engine(_)) => {
+            DurableRun::Failed(Code::CliDurableUnsupported)
+        }
+    }
 }
 
 /// Open the session `func`'s verified demand requires on `host` and run `body` in it: a
 /// transaction session for a mutating demand (which also reads), a read session for a
 /// read-only one, so a read-only invocation never opens a writer, and no session for an
 /// empty demand. The session closes when `body` returns — a committed writer persists, a
-/// dropped one rolls back — before the next invocation opens its own.
-///
-/// A session the host refuses to open resolved the invocation's authority against the
-/// store's ceiling and the full grant and was refused. The demand is a subset of the
-/// image union the ceiling is minted from, so a well-formed image never reaches this; it
-/// is a source-positioned `run.authority` fault rather than a panic.
+/// dropped one rolls back — before the next invocation opens its own. A session the host
+/// refuses to open is returned to the caller, which projects the refusal for its route.
 fn with_session<H: SessionHost + ?Sized>(
     host: &mut H,
     func: VerifiedFunction<'_>,
     body: impl FnOnce(Option<&mut dyn Durable>) -> Result<Option<Value>, DurableExecutionFault>,
-) -> Result<Option<Value>, DurableExecutionFault> {
+) -> Result<Result<Option<Value>, DurableExecutionFault>, SessionError> {
     let demand = func.demand();
     if demand.is_empty() {
-        return body(None);
+        return Ok(body(None));
     }
     let grant = InvocationGrant::full_store();
     let coverage = DemandCoverage {
@@ -129,22 +137,18 @@ fn with_session<H: SessionHost + ?Sized>(
         write: demand.writes(),
     };
     if coverage.write {
-        match host.txn_session(grant, coverage) {
-            Ok(mut session) => body(Some(&mut session)),
-            Err(_) => Err(session_open_fault(func)),
-        }
+        host.txn_session(grant, coverage)
+            .map(|mut session| body(Some(&mut session)))
     } else {
-        match host.read_session(grant, coverage) {
-            Ok(mut session) => body(Some(&mut session)),
-            Err(_) => Err(session_open_fault(func)),
-        }
+        host.read_session(grant, coverage)
+            .map(|mut session| body(Some(&mut session)))
     }
 }
 
 /// The invocation dispatcher for a driver test body: it owns the test's one store and turns
 /// each call the driver frame makes into its own session.
-struct TestDriver<'a, H: SessionHost + ?Sized> {
-    host: &'a mut H,
+pub(crate) struct TestDriver<'a, H: SessionHost + ?Sized> {
+    pub(crate) host: &'a mut H,
 }
 
 impl<H: SessionHost + ?Sized> DriverDispatch for TestDriver<'_, H> {
@@ -158,9 +162,13 @@ impl<H: SessionHost + ?Sized> DriverDispatch for TestDriver<'_, H> {
         with_session(self.host, func, |session| {
             run_in_session(func, args, depth, budget, session)
         })
+        .unwrap_or_else(|_| Err(session_open_fault(func)))
     }
 }
 
+/// A refused session open as the driver reports it: the callee's demand is a subset of the
+/// test-image union the ceiling is minted from, so a well-formed image never reaches this;
+/// every refusal is a source-positioned `run.authority` fault rather than a panic.
 fn session_open_fault(func: VerifiedFunction<'_>) -> DurableExecutionFault {
     let (line, column) = func.body().span_at(0).unwrap_or((1, 1));
     RuntimeFault::new(Code::RunAuthority, line, column).into()

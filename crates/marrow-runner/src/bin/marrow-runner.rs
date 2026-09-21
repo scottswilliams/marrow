@@ -189,8 +189,15 @@ impl Receipt {
         self.field(key, Json::Str(value.into()))
     }
 
-    fn count(self, key: &str, value: u64) -> Self {
-        self.field(key, Json::Int(i64::try_from(value).unwrap_or(i64::MAX)))
+    /// A counter, refused rather than clamped when it lies outside the JSON integer range.
+    fn count(self, key: &str, value: u64) -> std::io::Result<Self> {
+        let value = i64::try_from(value).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{key} exceeds the receipt's integer range"),
+            )
+        })?;
+        Ok(self.field(key, Json::Int(value)))
     }
 
     fn field(mut self, key: &str, value: Json) -> Self {
@@ -810,8 +817,8 @@ fn import_output(
     ) {
         Ok(report) => {
             let receipt = Receipt::default()
-                .count("rows_imported", report.rows_imported)
-                .count("batches_committed", report.batches_committed);
+                .count("rows_imported", report.rows_imported)?
+                .count("batches_committed", report.batches_committed)?;
             deliver(
                 &mut std::io::stdout().lock(),
                 &mut std::io::stderr().lock(),
@@ -838,21 +845,30 @@ fn recovery_output(
         Err(code) => return Ok(code),
     };
     let result = marrow_lifecycle::recover(store, marrow_lifecycle::prepare(image));
-    let mut stdout = std::io::stdout().lock();
-    match format {
-        ReportFormat::Jsonl => deliver(
-            &mut stdout,
-            &mut std::io::stderr().lock(),
-            &recovery_receipt(store_text, &result).into_json(),
-            format,
-        )?,
-        ReportFormat::Text => write_recovery_text(&mut stdout, store_text, &result)?,
-    }
+    write_recovery_result(&mut std::io::stdout().lock(), store_text, &result, format)?;
     Ok(if result.is_ok() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
     })
+}
+
+/// The recovery report in either format, through one fallible writer. A delivery failure is
+/// reported as `io.write` and nothing is echoed elsewhere: the report cannot be reconstructed
+/// after the fact, and the store's state is what `marrow doctor` shows.
+fn write_recovery_result(
+    output: &mut dyn Write,
+    store: &str,
+    result: &Result<marrow_lifecycle::RecoveredStore, marrow_lifecycle::RecoveryError>,
+    format: ReportFormat,
+) -> std::io::Result<()> {
+    match format {
+        ReportFormat::Jsonl => write_receipt(
+            output,
+            &encode(&recovery_receipt(store, result).into_json()),
+        ),
+        ReportFormat::Text => write_recovery_text(output, store, result),
+    }
 }
 
 /// The recovery report as an operator reads it: the activated store or the typed failure
@@ -964,7 +980,7 @@ fn audit_output(
             stdout.flush()?;
         }
         ReportFormat::Jsonl => {
-            for record in audit_records(&audit, store_text) {
+            for record in audit_records(&audit, store_text)? {
                 write_receipt(&mut stdout, &encode(&record.into_json()))?;
             }
         }
@@ -1019,7 +1035,10 @@ fn render_audit(audit: &marrow_lifecycle::StoreAudit, store: &Path) -> String {
 /// The JSONL projection of an audit: one `doctor` record, then one `finding` record per
 /// retained finding. `findings` counts every finding; `listed` counts the records that
 /// follow, so a capped report is explicit.
-fn audit_records(audit: &marrow_lifecycle::StoreAudit, store: String) -> Vec<Receipt> {
+fn audit_records(
+    audit: &marrow_lifecycle::StoreAudit,
+    store: String,
+) -> std::io::Result<Vec<Receipt>> {
     let marrow_lifecycle::StoreAudit {
         summary,
         findings,
@@ -1041,18 +1060,18 @@ fn audit_records(audit: &marrow_lifecycle::StoreAudit, store: String) -> Vec<Rec
             },
         )
         .text("digest", digest.to_hex())
-        .count("entries", summary.entries)
-        .count("index_cells", summary.index_cells)
-        .count("cells", summary.cells)
-        .count("findings", summary.findings)
-        .count("listed", findings.len() as u64);
-    std::iter::once(head)
+        .count("entries", summary.entries)?
+        .count("index_cells", summary.index_cells)?
+        .count("cells", summary.cells)?
+        .count("findings", summary.findings)?
+        .count("listed", findings.len() as u64)?;
+    Ok(std::iter::once(head)
         .chain(findings.iter().map(|finding| {
             Receipt::kind("finding")
                 .text("code", finding.code.as_str())
                 .text("place", audit.place(&finding.site))
         }))
-        .collect()
+        .collect())
 }
 
 fn nonce_from_env() -> Result<Option<Id32>, ()> {
@@ -1301,7 +1320,6 @@ mod output_tests {
             }),
         ];
         for (index, result) in results.iter().enumerate() {
-            let receipt = recovery_receipt("store", result).into_json();
             let mut fields = vec![
                 ("kind".into(), Json::Str("recovery".into())),
                 ("store".into(), Json::Str("store".into())),
@@ -1332,17 +1350,15 @@ mod output_tests {
                 ]),
                 _ => fields.push(("code".into(), Json::Str("store.corruption".into()))),
             }
-            assert_eq!(receipt, Json::Object(fields));
+            let expected = Json::Object(fields);
+            assert_eq!(recovery_receipt("store", result).into_json(), expected);
+
             let mut jsonl = Vec::new();
-            deliver(&mut jsonl, &mut Vec::new(), &receipt, ReportFormat::Jsonl).expect("jsonl");
-            assert!(
-                marrow_local_wire::parse_strict(
-                    jsonl.strip_suffix(b"\n").expect("one record newline")
-                )
-                .is_ok()
-            );
+            write_recovery_result(&mut jsonl, "store", result, ReportFormat::Jsonl).expect("jsonl");
+            assert_eq!(jsonl, format!("{}\n", encode(&expected)).as_bytes());
+
             let mut text = Vec::new();
-            write_recovery_text(&mut text, "store", result).expect("text");
+            write_recovery_result(&mut text, "store", result, ReportFormat::Text).expect("text");
             let text = String::from_utf8(text).expect("UTF-8");
             if index < 2 {
                 assert!(text.contains(&instance.to_hex()));
@@ -1353,14 +1369,38 @@ mod output_tests {
             if let Err(error) = result {
                 assert!(text.starts_with(error.code().as_str()));
             }
-            for failure in [Failure::WriteAt(0), Failure::WriteAt(5), Failure::Flush] {
-                assert_eq!(
-                    write_recovery_text(&mut Sink::new(failure), "store", result)
-                        .unwrap_err()
-                        .kind(),
-                    std::io::ErrorKind::BrokenPipe
-                );
+
+            // A broken pipe in either format is the writer's error; nothing is repeated
+            // elsewhere and the bytes already accepted are the whole of what left.
+            for format in [ReportFormat::Jsonl, ReportFormat::Text] {
+                for failure in [Failure::WriteAt(0), Failure::WriteAt(5), Failure::Flush] {
+                    let mut sink = Sink::new(failure);
+                    assert_eq!(
+                        write_recovery_result(&mut sink, "store", result, format)
+                            .unwrap_err()
+                            .kind(),
+                        std::io::ErrorKind::BrokenPipe
+                    );
+                    if let Failure::WriteAt(limit) = failure {
+                        assert_eq!(sink.bytes.len(), limit);
+                    }
+                }
             }
         }
+    }
+
+    #[test]
+    fn receipt_counters_refuse_values_past_the_integer_range() {
+        let receipt = Receipt::default()
+            .count("n", i64::MAX as u64)
+            .expect("the largest representable counter");
+        assert_eq!(
+            receipt.into_json(),
+            Json::Object(vec![("n".into(), Json::Int(i64::MAX))])
+        );
+        let error = Receipt::default()
+            .count("n", i64::MAX as u64 + 1)
+            .expect_err("one past the range is refused");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     }
 }

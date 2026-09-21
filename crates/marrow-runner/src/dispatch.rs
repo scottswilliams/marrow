@@ -12,7 +12,7 @@
 use marrow_codes::{Code, DurableCommitState};
 use marrow_image::ExportId;
 use marrow_local_wire::{EncodedFrame, Json, ServerMessage, Span, WireError};
-use marrow_verify::VerifiedImage;
+use marrow_verify::{VerifiedFunction, VerifiedImage};
 use marrow_vm::Value;
 
 use crate::transfer;
@@ -33,16 +33,20 @@ pub(crate) struct DecodedRequest {
     pub(crate) values: Vec<Value>,
 }
 
-/// Resolve a `Request`'s export id and decode its args against the export's verified signature.
-///
-/// On success the decoded request is returned for the caller to run against its attachment;
-/// on failure a typed reject is returned ready to send — an unknown export or an argument
-/// count/shape mismatch, never a partial reply.
-pub(crate) fn decode_request(
-    image: &VerifiedImage,
+/// A `Request`'s export resolved in the image: its identity, its verified function, and the
+/// route its demand decides — known before any argument is looked at, so a handler that
+/// serves only one route refuses the other regardless of the arguments' shape.
+pub(crate) struct ResolvedExport<'i> {
+    pub(crate) export: ExportId,
+    pub(crate) function: VerifiedFunction<'i>,
+    pub(crate) route: Route,
+}
+
+/// Resolve a `Request`'s export id; an unknown export is a typed reject ready to send.
+pub(crate) fn resolve_export<'i>(
+    image: &'i VerifiedImage,
     export_id: &[u8; 32],
-    args: &[Json],
-) -> Result<DecodedRequest, ServerMessage> {
+) -> Result<ResolvedExport<'i>, ServerMessage> {
     let export_id = ExportId::from_bytes(*export_id);
     let Some(export) = image.export_by_id(export_id) else {
         return Err(reject(Code::RunnerUnknownExport));
@@ -50,6 +54,25 @@ pub(crate) fn decode_request(
     let function = image
         .function(export.function())
         .expect("verified export function");
+    let route = if function.demand().is_empty() {
+        Route::Storeless
+    } else {
+        Route::Durable
+    };
+    Ok(ResolvedExport {
+        export: export_id,
+        function,
+        route,
+    })
+}
+
+/// Decode `args` against the export's verified signature into owned runtime values; an
+/// argument count or shape mismatch is a typed reject, never a partial reply.
+pub(crate) fn decode_args(
+    image: &VerifiedImage,
+    function: VerifiedFunction<'_>,
+    args: &[Json],
+) -> Result<Vec<Value>, ServerMessage> {
     if function.body().params().len() != args.len() {
         return Err(reject(Code::RunnerArgMismatch));
     }
@@ -60,14 +83,20 @@ pub(crate) fn decode_request(
             None => return Err(reject(Code::RunnerArgMismatch)),
         }
     }
-    let route = if function.demand().is_empty() {
-        Route::Storeless
-    } else {
-        Route::Durable
-    };
+    Ok(values)
+}
+
+/// Resolve a `Request`'s export and decode its args, for a handler that serves both routes.
+pub(crate) fn decode_request(
+    image: &VerifiedImage,
+    export_id: &[u8; 32],
+    args: &[Json],
+) -> Result<DecodedRequest, ServerMessage> {
+    let resolved = resolve_export(image, export_id)?;
+    let values = decode_args(image, resolved.function, args)?;
     Ok(DecodedRequest {
-        export: export_id,
-        route,
+        export: resolved.export,
+        route: resolved.route,
         values,
     })
 }

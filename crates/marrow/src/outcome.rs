@@ -754,6 +754,17 @@ mod tests {
             .expect("record renders"),
             r#"{"code":"run.commit","durable":"known_old","kind":"run","outcome":"incomplete","span":{"column":9,"line":7}}"#,
         );
+        assert_eq!(
+            Record::Incomplete {
+                code: Code::RunCommit,
+                durable: marrow_vm::DurableCommitState::Unknown,
+                line: 7,
+                column: 9,
+            }
+            .to_jsonl(&[], &[])
+            .expect("record renders"),
+            r#"{"code":"run.commit","durable":"unknown","kind":"run","outcome":"incomplete","span":{"column":9,"line":7}}"#,
+        );
         assert!(
             Record::OperationalError {
                 code: Code::StoreIo,

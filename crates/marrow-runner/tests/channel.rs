@@ -682,3 +682,68 @@ fn a_runner_that_dies_after_dispatch_sends_no_reply() {
     client.join().unwrap();
     channel.teardown();
 }
+
+/// A `Request` sent as the first frame — before any `Hello` — fails the handshake: the
+/// runner never proves `Ready`, so the two handshakes cannot be confused into a served call.
+#[test]
+#[ignore = "binds a Unix socket; run with the sandbox disabled"]
+fn a_request_before_hello_fails_the_handshake() {
+    let (service, export) = service_for(ADD);
+    let channel = Channel::bind().expect("bind");
+    let path = channel.socket_path().to_path_buf();
+    let nonce = mint_id().unwrap();
+    let session = mint_id().unwrap();
+    let interface = service.interface_id();
+
+    let client = thread::spawn(move || {
+        let mut stream = connect(&path);
+        let _ = send(
+            &mut stream,
+            &ClientMessage::Request {
+                export,
+                args: vec![Json::Int(1), Json::Int(2)],
+            },
+        );
+        recv(&mut stream)
+    });
+
+    let outcome = channel.accept_authenticated(&secrets(nonce, session), interface, &quick(), 4);
+    let reply = client.join().unwrap();
+    channel.teardown();
+    assert!(outcome.is_err(), "a request-first client is not admitted");
+    assert!(
+        reply.is_none(),
+        "no Ready and no value for a request-first client"
+    );
+}
+
+/// A `Provision` sent as the first frame likewise fails the handshake: provisioning is a
+/// separate one-shot command, never a mid-handshake operation.
+#[test]
+#[ignore = "binds a Unix socket; run with the sandbox disabled"]
+fn a_provision_before_hello_fails_the_handshake() {
+    let (service, _export) = service_for(ADD);
+    let channel = Channel::bind().expect("bind");
+    let path = channel.socket_path().to_path_buf();
+    let nonce = mint_id().unwrap();
+    let session = mint_id().unwrap();
+    let interface = service.interface_id();
+
+    let client = thread::spawn(move || {
+        let mut stream = connect(&path);
+        let _ = send(
+            &mut stream,
+            &ClientMessage::Provision {
+                store: "/tmp/whatever".into(),
+                approval: "deadbeef".into(),
+            },
+        );
+        recv(&mut stream)
+    });
+
+    let outcome = channel.accept_authenticated(&secrets(nonce, session), interface, &quick(), 4);
+    let reply = client.join().unwrap();
+    channel.teardown();
+    assert!(outcome.is_err());
+    assert!(reply.is_none());
+}

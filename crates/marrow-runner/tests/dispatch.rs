@@ -390,9 +390,7 @@ fn an_argument_type_mismatch_is_rejected() {
     );
 }
 
-#[test]
-fn a_durable_export_is_rejected_in_the_trough() {
-    let source = r#"resource Counter {
+const DURABLE: &str = r#"resource Counter {
     required value: int
     label: string
 }
@@ -403,7 +401,10 @@ pub fn readValue(n: int): int {
     return ^counters[n].value ?? 0
 }
 "#;
-    let (mut service, ids) = build(source, Some(IDS.as_bytes()));
+
+#[test]
+fn a_durable_export_is_rejected_in_the_trough() {
+    let (mut service, ids) = build(DURABLE, Some(IDS.as_bytes()));
     let response = call(&mut service, id_of(&ids, "readValue"), vec![Json::Int(1)]);
     assert_eq!(
         response,
@@ -411,6 +412,22 @@ pub fn readValue(n: int): int {
             code: Code::RunnerDurableUnsupported
         }
     );
+}
+
+/// The route is decided before the arguments are decoded: a durable export with the wrong
+/// arity or a wrongly typed argument is still the durability reject, never an argument
+/// mismatch that would suggest the export could be served here.
+#[test]
+fn a_durable_export_is_rejected_before_its_arguments_are_decoded() {
+    let (mut service, ids) = build(DURABLE, Some(IDS.as_bytes()));
+    for args in [Vec::new(), vec![Json::Str("one".into())]] {
+        assert_eq!(
+            call(&mut service, id_of(&ids, "readValue"), args),
+            ServerMessage::Reject {
+                code: Code::RunnerDurableUnsupported
+            }
+        );
+    }
 }
 
 #[test]
