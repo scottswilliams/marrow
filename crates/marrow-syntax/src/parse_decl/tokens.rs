@@ -44,13 +44,20 @@ fn qualified_name(source: &str, tokens: &[Token]) -> Option<Box<[NameSegment]>> 
     let first = tokens.first()?;
     let last = tokens.last()?;
     let text = &source[first.span.start_byte..last.span.end_byte];
-    is_qualified_name(text).then(|| {
+    is_qualified_name(text).then(|| alternate_segments(source, tokens))
+}
+
+/// The segments at the even positions of a validated `segment (SEP segment)*` token
+/// run, built at exact capacity so boxing the path reallocates nothing.
+pub(super) fn alternate_segments(source: &str, tokens: &[Token]) -> Box<[NameSegment]> {
+    let mut segments = Vec::with_capacity(tokens.len().div_ceil(2));
+    segments.extend(
         tokens
             .iter()
             .step_by(2)
-            .map(|token| NameSegment::new(token.text(source), token.span))
-            .collect()
-    })
+            .map(|token| NameSegment::new(token.text(source), token.span)),
+    );
+    segments.into_boxed_slice()
 }
 /// Why a `use`/`module` path failed to parse: a reserved word stands where a path
 /// segment must be, or the tokens do not spell a `::`-qualified name at all.

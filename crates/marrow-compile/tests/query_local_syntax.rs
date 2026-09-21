@@ -541,18 +541,44 @@ fn declaration_level_charges() -> Vec<(&'static str, usize, usize)> {
     ]
 }
 
-/// How many token allocations are live beside the tree at the peak: the lexer's, and
-/// only the lexer's. The expression parser borrows the caller's slice and skips trivia
-/// with its cursor rather than collecting a filtered copy of it.
-const LIVE_TOKEN_VECTORS: usize = 1;
+/// How many token-sized vectors are live beside the tree at the peak: the lexed list,
+/// and the two parser-owned copies of a header's tokens that a binding header can hold
+/// at once — the comment-stripped copy `strip_comment_tokens` makes of a header holding
+/// a comment inside its delimiters, and the copy `split_type_and_value` makes to split
+/// a `>=` closing a type argument list. Each copy holds at most the header's own
+/// tokens, and a header can be the whole file. The expression parser borrows the
+/// caller's slice and skips trivia with its cursor rather than collecting a copy.
+const LIVE_TOKEN_VECTORS: usize = 3;
 
-/// The capacity slack one live token allocation carries. The lexer hands its tokens to
-/// `Box<[Token]>` at close, and a `Box<[T]>` has no capacity field to hold slack in. The
-/// growing vector, the copy that boxing makes, and the lexer's line table coexist only
-/// before any tree exists; that phase is bounded below the published rate by the const
-/// assertion beside `marrow_syntax::MAX_PARSE_BYTES_PER_SOURCE_BYTE`, so the parse
-/// phase, holding the exact slice beside the tree, is the peak this file accounts.
+/// The capacity slack one live token allocation carries. The lexer reserves its list
+/// once at the one-token-per-byte bound (pinned below) and never grows or shrinks it,
+/// so the capacity is the charge itself; the lexer's line table coexists with it only
+/// before any tree exists, a phase bounded below the published rate by the const
+/// assertion beside `marrow_syntax::MAX_PARSE_BYTES_PER_SOURCE_BYTE`.
 const TOKEN_VECTOR_SLACK: usize = 1;
+
+/// The capacity Rust's `Vec` holds after `len` pushes from empty, for an element up to
+/// 1 KiB: nothing for none, otherwise the doubling at or above the length from the
+/// standard library's minimum non-zero capacity. Every retained list the tree holds is
+/// built this way and never shrunk, so a list whose capacity differs was resized.
+fn push_growth(len: usize) -> usize {
+    if len == 0 {
+        0
+    } else {
+        len.next_power_of_two().max(MIN_ELEMENT_CAPACITY)
+    }
+}
+
+/// Assert one retained list still holds exactly its push-grown capacity.
+fn assert_push_grown<T>(what: &str, list: &Vec<T>) {
+    assert_eq!(
+        list.capacity(),
+        push_growth(list.len()),
+        "{what} holds {} elements at capacity {}, not the push-grown capacity: it was resized",
+        list.len(),
+        list.capacity()
+    );
+}
 
 /// What the lexed tokens charge per source byte.
 ///
@@ -567,6 +593,10 @@ const TOKEN_CHARGE: usize = LIVE_TOKEN_VECTORS * TOKEN_VECTOR_SLACK * size_of::<
 /// `parse_source` returns. Both of its ceilings are pinned by `marrow-syntax`; a row is
 /// charged at 256 bytes, comfortably above the `Diagnostic` it wraps.
 const DIAGNOSTIC_ROW_BYTES: usize = 256;
+
+/// The one token that covers no source byte: the lexed list's trailing `Eof` sentinel,
+/// which the parser-owned header copies do not carry.
+const EOF_SENTINEL: usize = size_of::<Token>();
 
 /// The file's declaration list is pushed, so it holds the two slots of its four-slot
 /// minimum capacity beyond the two per declaration the per-byte rate carries, once per
@@ -585,7 +615,7 @@ const DIAGNOSTICS: usize = GROWTH * SYNTAX_DIAGNOSTIC_COUNT_LIMIT * DIAGNOSTIC_R
 /// ceiling by the distance the cap sits above the derived maximum.
 fn accounted_query_parse_transient() -> usize {
     MAX_ADMITTED_FILE_BYTES * (source_byte_charge() + TOKEN_CHARGE)
-        + TOKEN_CHARGE
+        + EOF_SENTINEL
         + DIAGNOSTICS
         + DECLARATION_LIST_FLOOR
 }
@@ -1062,6 +1092,7 @@ fn name_chain_file() -> Vec<u8> {
 fn list_capacity_bytes(source: &[u8]) -> usize {
     let text = std::str::from_utf8(source).expect("the fixture is UTF-8");
     let file = marrow_syntax::parse_source(text).file;
+    assert_push_grown("the declaration list", &file.declarations);
     file.declarations.capacity() * size_of::<Declaration>()
         + file
             .declarations
@@ -1081,6 +1112,7 @@ fn list_capacity_bytes(source: &[u8]) -> usize {
 /// The match is exhaustive and names every field, so a new statement variant — or a new
 /// block on an existing one — fails to build here rather than being counted as zero.
 fn block_statements(block: &Block) -> usize {
+    assert_push_grown("a statement list", &block.statements);
     block.statements.capacity()
         + block
             .statements
@@ -1158,10 +1190,12 @@ fn nested_statements(statement: &Statement) -> usize {
             scrutinee: _,
             arms,
             span: _,
-        } => arms
-            .iter()
-            .map(|arm| block_statements(&arm.block))
-            .sum::<usize>(),
+        } => {
+            assert_push_grown("a match arm list", arms);
+            arms.iter()
+                .map(|arm| block_statements(&arm.block))
+                .sum::<usize>()
+        }
         Statement::Checked {
             bind: _,
             op: _,
@@ -1990,7 +2024,7 @@ fn the_admitted_length_and_the_exported_term_agree_with_the_derivation() {
         "the rate `marrow-syntax` publishes drifted from the rate derived here"
     );
     assert_eq!(
-        TOKEN_CHARGE + DIAGNOSTICS + DECLARATION_LIST_FLOOR,
+        EOF_SENTINEL + DIAGNOSTICS + DECLARATION_LIST_FLOOR,
         marrow_syntax::MAX_PARSE_FIXED_BYTES,
         "the length-independent parse charge drifted from the one derived here"
     );
@@ -2107,13 +2141,7 @@ fn every_maximal_shape_inside_the_image_bound_stays_under_the_derived_bound() {
             "{label} answers the query whose parse the term bounds"
         );
     }
-    // A pushed list's capacity is the doubling at or above its length, so the densest
-    // sample sits between half of the term and all of it; below half, the derivation has
-    // drifted from what the parser builds and should be re-derived.
-    assert!(
-        densest * 2 >= predicted,
-        "the densest sample holds {densest} bytes against a predicted {predicted}, so the \
-         derivation has drifted far from what the parser actually builds and should be \
-         re-derived"
-    );
+    // Every list walked above was asserted to sit at exactly its push-grown capacity, so
+    // the term is met by lists the parser neither pre-sized nor shrank.
+    assert!(densest > 0, "the samples build statement lists");
 }

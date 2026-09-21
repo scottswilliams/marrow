@@ -606,9 +606,31 @@ fn the_block_grammar_parse_matrix() {
     }
 
     // A header that ends its body's token slice on a token other than a line break: the
-    // gap sits just past the header, byte and line/column agreeing.
-    let source = "module app\nfn f() { if a }\n";
-    assert_eq!(located_reasons(source), vec![block(2, 14)], "{source:?}");
+    // gap sits just past the header, byte and line/column agreeing, with columns counted
+    // in bytes past a multi-byte character like every other span.
+    for (source, column) in [
+        ("module app\nfn f() { if a }\n", 14),
+        ("module app\nfn f() { if \"é\" }\n", 17),
+        ("module app\nfn f() { if \"日本\" }\n", 21),
+    ] {
+        assert_eq!(
+            located_reasons(source),
+            vec![block(2, column)],
+            "{source:?}"
+        );
+    }
+    // A bare header ending the file without a line break: the gap is the end of input,
+    // past the last byte of an unterminated line.
+    for (source, column) in [
+        ("module app\ntest \"t\"", 9),
+        ("module app\ntest \"é\"", 10),
+    ] {
+        assert_eq!(
+            located_reasons(source),
+            vec![block(2, column)],
+            "{source:?}"
+        );
+    }
 }
 
 /// The byte offset of a 1-based `(line, column)` in `source`.

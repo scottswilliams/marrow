@@ -3,7 +3,9 @@
 //! resource field-or-group member head.
 
 use super::params::{match_angle, match_bracket, match_paren, parse_type_params_tokens};
-use super::tokens::{line_span_or, parse_type, split_top_level_commas, strip_comment_tokens};
+use super::tokens::{
+    alternate_segments, line_span_or, parse_type, split_top_level_commas, strip_comment_tokens,
+};
 use super::{MemberHead, ParseError, ParseResult};
 use crate::ast::{
     EnumPayloadField, IndexArg, IndexDecl, KeyParam, NameSegment, SavedRoot, TypeParamDecl,
@@ -242,7 +244,8 @@ pub(super) fn arm_member_path(source: &str, tokens: &[Token]) -> Option<Vec<Name
     if tokens.is_empty() {
         return None;
     }
-    let mut segments = Vec::new();
+    // Exact for a validated path, so boxing it reallocates nothing.
+    let mut segments = Vec::with_capacity(tokens.len().div_ceil(2));
     for (index, token) in tokens.iter().enumerate() {
         // Even positions are identifiers, odd positions the `::` separators.
         if index.is_multiple_of(2) {
@@ -511,8 +514,9 @@ pub(super) fn parse_index_tokens(source: &str, tokens: &[Token]) -> ParseResult<
             "expected at least one index argument",
         ));
     }
-    let mut args = Vec::new();
-    for part in split_top_level_commas(&inner) {
+    let parts = split_top_level_commas(&inner);
+    let mut args = Vec::with_capacity(parts.len());
+    for part in parts {
         let segments = field_path(source, part).ok_or(ParseError::new(
             ParseDiagnosticReason::Expected(ExpectedSyntax::IndexFieldPath),
             "expected index field path",
@@ -562,13 +566,7 @@ fn field_path(source: &str, tokens: &[Token]) -> Option<Box<[NameSegment]>> {
     if expect_segment {
         return None;
     }
-    Some(
-        tokens
-            .iter()
-            .step_by(2)
-            .map(|token| NameSegment::new(token.text(source), token.span))
-            .collect(),
-    )
+    Some(alternate_segments(source, tokens))
 }
 
 /// Parse a `required? name [keys]? (: type)?` resource member head into a field

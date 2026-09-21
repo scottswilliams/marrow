@@ -92,10 +92,15 @@ pub const NESTING_LIMIT: &str = Code::CheckNestingLimit.as_str();
 /// kept as built: a list of `n` elements peaks at `max(4, 2n)` slots, the standard
 /// library's minimum non-zero capacity or its doubling, so a slot is charged with that
 /// growth, and nothing is shrunk at close, so no reallocation lets two buffers coexist.
-/// The lexer's own phase — its line table and token list, both pushed, and the exact
-/// token slice the tokens are copied into — ends before any tree exists and is bounded
-/// below this rate by the assertion beside [`LIST_GROWTH`].
-pub const MAX_PARSE_BYTES_PER_SOURCE_BYTE: usize = 608;
+/// The token list is reserved once at its one-token-per-byte bound and never resized;
+/// the lexer's own phase, its line table beside that list, ends before any tree exists
+/// and is bounded below this rate by the assertion beside [`LIST_GROWTH`]. The rate
+/// carries three token-sized vectors per source byte: the lexed list, and the two
+/// parser-owned copies of a header's tokens (comment-stripped, and split at a `>=`
+/// that closes a type argument list) that can be live together while a binding header
+/// is parsed. Every boxed slice the tree retains (`NameSegment` paths, index arguments)
+/// is built at exact capacity, so boxing reallocates nothing.
+pub const MAX_PARSE_BYTES_PER_SOURCE_BYTE: usize = 672;
 
 /// The capacity a pushed list may hold beyond its length, as a factor of the length.
 const LIST_GROWTH: usize = 2;
@@ -105,12 +110,11 @@ const LIST_GROWTH: usize = 2;
 /// list holds its two once, in [`MAX_PARSE_FIXED_BYTES`].
 const LIST_FLOOR_SLOTS: usize = 2;
 
-/// The lexer phase peaks with its line table (at most one line per source byte), its
-/// token list (at most one token per source byte, pinned in `marrow-compile`), and
-/// the exact slice the tokens are copied into, all live at once; the parse phase then
-/// holds only the slice beside the tree, so the parse rate covers both phases.
+/// The lexer phase peaks with its line table (at most one line per source byte, pushed)
+/// beside the token list reserved at its one-token-per-byte bound; the parse phase then
+/// holds that list beside the tree, so the parse rate covers both phases.
 const _: () = assert!(
-    LIST_GROWTH * (size_of::<lexer::Line<'static>>() + size_of::<Token>()) + size_of::<Token>()
+    LIST_GROWTH * size_of::<lexer::Line<'static>>() + size_of::<Token>()
         <= MAX_PARSE_BYTES_PER_SOURCE_BYTE
 );
 
@@ -783,8 +787,10 @@ mod nesting_limit {
 
     /// The limit is reported on the paths that skip a region iteratively rather than
     /// descending into it, counted from the enclosing body on the same terms: an
-    /// unclosed function body, a stray block where a statement was expected, and a
-    /// stray block where a declaration was expected.
+    /// unclosed function body, a stray block where a statement or a declaration was
+    /// expected, and a stray block opening directly inside the deepest admitted
+    /// statement, resource, or enum body, where the opener itself is the level past
+    /// the limit.
     #[test]
     fn skipped_regions_report_the_limit_once_on_the_descents_terms() {
         let opens = "if a {\n".repeat(NESTING_DEPTH_LIMIT);
@@ -792,10 +798,44 @@ mod nesting_limit {
         let unclosed_body = format!("module app\n\nfn main() {{\n{opens}");
         let stray_in_body = format!("module app\n\nfn main() {{\n{{\n{opens}{closes}}}\n}}\n");
         let stray_top_level = format!("module app\n\n{{\n{opens}{closes}}}\n");
+        // The body is level one, so `NESTING_DEPTH_LIMIT - 1` nested bodies reach the
+        // deepest admitted level; a stray block there opens one level further.
+        let deepest = NESTING_DEPTH_LIMIT - 1;
+        let stray_in_deepest_statement = format!(
+            "module app\n\nfn main() {{\n{}{{\n}}\n{}}}\n",
+            "if a {\n".repeat(deepest),
+            "}\n".repeat(deepest)
+        );
+        let stray_in_deepest_group = format!(
+            "module app\n\nresource R {{\n{}{{\nleaf: int\n}}\n{}}}\n",
+            (0..deepest)
+                .map(|level| format!("g{level}[k: int] {{\n"))
+                .collect::<String>(),
+            "}\n".repeat(deepest)
+        );
+        let stray_in_deepest_member = format!(
+            "module app\n\nenum E {{\n{}{{\nx\n}}\n{}}}\n",
+            (0..deepest)
+                .map(|level| format!("m{level} {{\n"))
+                .collect::<String>(),
+            "}\n".repeat(deepest)
+        );
         for (label, source) in [
             ("unclosed body", unclosed_body),
             ("stray block in a body", stray_in_body),
             ("stray block at the top level", stray_top_level),
+            (
+                "stray block in the deepest statement body",
+                stray_in_deepest_statement,
+            ),
+            (
+                "stray block in the deepest resource group",
+                stray_in_deepest_group,
+            ),
+            (
+                "stray block in the deepest enum member",
+                stray_in_deepest_member,
+            ),
         ] {
             assert_eq!(nesting_limit_count(&source), 1, "{label}");
         }

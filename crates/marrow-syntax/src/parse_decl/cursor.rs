@@ -128,7 +128,12 @@ impl<'a> DeclParser<'a, '_> {
     /// noticed where a parsed one would have been refused.
     fn consume_balanced_block(&mut self, open_depth: usize) -> BalancedScan {
         let mut depth = open_depth;
-        let mut over_deep = None;
+        // An opener the caller already advanced sits one level below the member level,
+        // like every opener the loop meets; at the deepest admitted body it is itself
+        // the one past the limit.
+        let mut over_deep = (open_depth > 0
+            && self.depth + open_depth > crate::NESTING_DEPTH_LIMIT)
+            .then(|| self.tokens[self.pos - 1].span);
         while let Some(kind) = self.peek() {
             match kind {
                 TokenKind::LeftBrace => {
@@ -172,12 +177,12 @@ impl<'a> DeclParser<'a, '_> {
                     ..token.span
                 },
                 Some(token) => {
-                    let width = token.text(self.source).chars().count();
+                    let width = (token.span.end_byte - token.span.start_byte) as u32;
                     SourceSpan {
                         start_byte: token.span.end_byte,
                         end_byte: token.span.end_byte,
                         line: token.span.line,
-                        column: token.span.column + width as u32,
+                        column: token.span.column + width,
                     }
                 }
                 None => SourceSpan::default(),

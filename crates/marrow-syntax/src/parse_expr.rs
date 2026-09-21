@@ -1270,7 +1270,10 @@ impl<'a, 's> ExprParser<'a, 's> {
 
     fn name_expr(&mut self) -> Expression {
         let first = self.advance();
-        let mut segments = vec![NameSegment::new(first.text(self.source), first.span)];
+        // Reserved at the exact segment count the loop below admits, so boxing the
+        // finished path reallocates nothing.
+        let mut segments = Vec::with_capacity(1 + self.path_segments_ahead());
+        segments.push(NameSegment::new(first.text(self.source), first.span));
         let mut end = first.span;
         while matches!(self.peek(), Some(TokenKind::DoubleColon)) {
             self.advance();
@@ -1314,6 +1317,22 @@ impl<'a, 's> ExprParser<'a, 's> {
             segments: segments.into_boxed_slice(),
             span: join_spans(first.span, end),
         }
+    }
+
+    /// How many `:: segment` pairs follow the cursor, on the terms `name_expr` admits
+    /// them: an identifier or a reserved type word used as a name after each `::`.
+    fn path_segments_ahead(&self) -> usize {
+        self.tokens[self.pos..]
+            .chunks(2)
+            .take_while(|pair| {
+                pair[0].kind == TokenKind::DoubleColon
+                    && pair.get(1).is_some_and(|segment| match segment.kind {
+                        TokenKind::Identifier => true,
+                        TokenKind::Keyword(keyword) => is_expression_path_segment_keyword(keyword),
+                        _ => false,
+                    })
+            })
+            .count()
     }
 
     /// Report a missing call/group delimiter at the zero-width gap just past the last

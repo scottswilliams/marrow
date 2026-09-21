@@ -24,7 +24,7 @@ pub fn lex_source(source: &str) -> LexedSource {
 
 /// Lex through a caller-scoped sink, for the entry points that share one
 /// collector between the lexer and a parser.
-pub(crate) fn lex_tokens(source: &str, sink: SyntaxSink<'_>) -> Box<[Token]> {
+pub(crate) fn lex_tokens(source: &str, sink: SyntaxSink<'_>) -> Vec<Token> {
     Lexer::new(source, sink).lex()
 }
 
@@ -63,13 +63,15 @@ impl<'a, 'c> Lexer<'a, 'c> {
         Self {
             source,
             lines: split_lines(source),
-            tokens: Vec::new(),
+            // At most one token per source byte plus the `Eof` sentinel, so the list
+            // never grows or shrinks and its capacity is the published token charge.
+            tokens: Vec::with_capacity(source.len() + 1),
             sink,
             open_delimiters: 0,
         }
     }
 
-    fn lex(mut self) -> Box<[Token]> {
+    fn lex(mut self) -> Vec<Token> {
         // `Line` is `Copy`, so index the line stack rather than holding a borrow across
         // the mutating body; `self.lines` stays intact for `eof_span`.
         for index in 0..self.lines.len() {
@@ -97,7 +99,8 @@ impl<'a, 'c> Lexer<'a, 'c> {
         }
 
         self.push(TokenKind::Eof, self.eof_span());
-        self.tokens.into_boxed_slice()
+        debug_assert!(self.tokens.len() <= self.tokens.capacity());
+        self.tokens
     }
 
     /// Emit the `NEWLINE` that ends a physical line, unless the line is continued: inside
@@ -788,7 +791,7 @@ impl<'a, 'c> Lexer<'a, 'c> {
     fn eof_span(&self) -> SourceSpan {
         let (line, column) = match self.lines.last() {
             Some(last) if self.source.ends_with('\n') => (last.number + 1, 1),
-            Some(last) => (last.number, last.text.chars().count() as u32 + 1),
+            Some(last) => (last.number, last.text.len() as u32 + 1),
             None => (1, 1),
         };
         SourceSpan {

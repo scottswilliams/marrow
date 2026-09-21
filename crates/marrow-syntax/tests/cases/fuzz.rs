@@ -221,20 +221,59 @@ fn deterministic_corpus_holds_the_oracle_invariants() {
     on_worker_stack(deterministic_corpus_body);
 }
 
-/// Every layout the parser admits beside the one the formatter writes: a `{` on the line
-/// after its header, an `else` beginning its own line, and an inline `on more` arm. Each
-/// formats to the canonical layout and is a fixed point from there.
-fn accepted_layouts() -> Vec<String> {
-    [
+/// Every layout the parser admits beside the one the formatter writes, paired with the
+/// canonical text the formatter produces for it: a `{` on the line after its header, an
+/// `else`, `else if`, or `on more` beginning its own line, and an inline clause
+/// statement. Each is a fixed point from its canonical text on.
+const ACCEPTED_LAYOUTS: [(&str, &str); 7] = [
+    (
         "module app\nfn run(a: bool): int {\n    if a\n    {\n        return 1\n    }\n    return 0\n}\n",
+        "module app\n\nfn run(a: bool): int {\n    if a {\n        return 1\n    }\n    return 0\n}\n",
+    ),
+    (
         "module app\nfn run(a: bool): int {\n    if a {\n        return 1\n    }\n    else {\n        return 0\n    }\n}\n",
+        "module app\n\nfn run(a: bool): int {\n    if a {\n        return 1\n    } else {\n        return 0\n    }\n}\n",
+    ),
+    (
+        "module app\nfn run(a: bool, b: bool): int {\n    if a {\n        return 1\n    }\n    else if b {\n        return 2\n    }\n    return 0\n}\n",
+        "module app\n\nfn run(a: bool, b: bool): int {\n    if a {\n        return 1\n    } else if b {\n        return 2\n    }\n    return 0\n}\n",
+    ),
+    (
         "module app\nfn run(a: bool): int {\n    if a {\n        return 1\n    } else\n        return 0\n}\n",
+        "module app\n\nfn run(a: bool): int {\n    if a {\n        return 1\n    } else {\n        return 0\n    }\n}\n",
+    ),
+    (
         "module app\nfn run(): int {\n    for a in b at most 8 {\n        return 1\n    } on more return 2\n    return 0\n}\n",
+        "module app\n\nfn run(): int {\n    for a in b at most 8 {\n        return 1\n    } on more {\n        return 2\n    }\n    return 0\n}\n",
+    ),
+    (
+        "module app\nfn run(): int {\n    for a in b at most 8 {\n        return 1\n    }\n    on more {\n        return 2\n    }\n    return 0\n}\n",
+        "module app\n\nfn run(): int {\n    for a in b at most 8 {\n        return 1\n    } on more {\n        return 2\n    }\n    return 0\n}\n",
+    ),
+    (
         "module app\nfn run()\n{\n    return 0\n}\n",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect()
+        "module app\n\nfn run() {\n    return 0\n}\n",
+    ),
+];
+
+fn accepted_layouts() -> Vec<String> {
+    ACCEPTED_LAYOUTS
+        .iter()
+        .map(|(layout, _)| layout.to_string())
+        .collect()
+}
+
+/// Each accepted layout formats to exactly its canonical text: the header line ending
+/// in `{`, the clause cuddled to the closing brace, the inline statement as a block.
+#[test]
+fn every_accepted_layout_formats_to_its_cuddled_form() {
+    for (layout, canonical) in ACCEPTED_LAYOUTS {
+        assert_eq!(
+            marrow_syntax::format_source(layout).expect("an accepted layout formats"),
+            canonical,
+            "{layout:?}"
+        );
+    }
 }
 
 fn deterministic_corpus_body() {

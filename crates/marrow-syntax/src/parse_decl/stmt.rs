@@ -1184,12 +1184,12 @@ impl<'a, 'c> StmtParser<'a, 'c> {
                     ..token.span
                 },
                 Some(token) => {
-                    let width = token.text(self.source).chars().count();
+                    let width = (token.span.end_byte - token.span.start_byte) as u32;
                     SourceSpan {
                         start_byte: token.span.end_byte,
                         end_byte: token.span.end_byte,
                         line: token.span.line,
-                        column: token.span.column + width as u32,
+                        column: token.span.column + width,
                     }
                 }
                 None => SourceSpan::default(),
@@ -1281,8 +1281,11 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         };
         let comments = std::mem::replace(&mut self.comments, outer);
         let span = statement.as_ref().map_or(anchor, Statement::span);
+        // Pushed like every other statement list, so one growth rule describes them all.
+        let mut statements = Vec::new();
+        statements.extend(statement);
         Block {
-            statements: statement.into_iter().collect(),
+            statements,
             comments,
             span,
         }

@@ -46,13 +46,17 @@ caller with a heap bound of its own refuses a file before parsing it.
 `marrow-compile` re-derives the rate from the representation and fails if the
 published constant drifts from it.
 
-The AST keeps its final lists in boxed slices. A block's statement list, a
-`match` body's arm list, and a file's declaration list are grown by pushing and
-boxed at close; the growth slack is part of the published per-source-byte
-charge. Every path is one `Box<[NameSegment]>` carrying spelling and span
-together. A binary expression holds its ordered left and right children in one
-`Box<BinaryOperands>`. Each child's expression slot remains part of the parse
-charge; sharing their allocation does not reduce the published heap term.
+A block's statement list, a `match` body's arm list, and a file's declaration
+list are grown by pushing and kept at the capacity they were built to; nothing
+is shrunk at close, so no reallocation lets two buffers coexist, and the growth
+slack is part of the published per-source-byte charge. The token list is
+reserved once at its one-token-per-byte bound. The boxed slices the tree does
+retain — every path is one `Box<[NameSegment]>` carrying spelling and span
+together, and an index declaration's arguments — are built at exact capacity
+before boxing, so boxing reallocates nothing. A binary expression holds its
+ordered left and right children in one `Box<BinaryOperands>`. Each child's
+expression slot remains part of the parse charge; sharing their allocation does
+not reduce the published heap term.
 
 ## Nesting depth
 
