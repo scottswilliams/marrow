@@ -180,7 +180,7 @@ pub enum IdsPublication {
 #[must_use = "a durably claimed publication advances only by consuming `recover`"]
 pub struct IdsPublicationPending<'a> {
     work: PendingWork<'a>,
-    cause: IdsPublicationError,
+    pub(crate) cause: IdsPublicationError,
     armed: bool,
 }
 

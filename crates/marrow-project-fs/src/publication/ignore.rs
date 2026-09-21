@@ -50,9 +50,8 @@ const IGNORE_READ_CEILING: usize = 4096;
 ///
 /// Four states refuse the acquisition with [`IdsRefusal::UntrackedContract`]:
 /// an entry that cannot be read, one past the read bound, one missing names
-/// that cannot be written, and one carrying a `!` line that names one of them
-/// exactly. An entry that already names every
-/// transient is left exactly as found, whatever its mode.
+/// that cannot be written, and one carrying a negation line. An entry that
+/// already names every transient is left exactly as found, whatever its mode.
 pub(super) fn install_untracked_ignore(meta: &AdmittedDir) -> Result<(), IdsPublicationError> {
     let name = admitted_name(IGNORE_NAME);
     let (created, found) = match meta.create_file_excl(&name) {
@@ -83,17 +82,14 @@ pub(super) fn install_untracked_ignore(meta: &AdmittedDir) -> Result<(), IdsPubl
     if found.len() > IGNORE_READ_CEILING {
         return Err(IdsPublicationError::bare(IdsRefusal::UntrackedContract));
     }
-    // A negation re-including one of these names leaves it tracked whatever else
-    // the entry says, and appending the name again would not change that: Git
-    // takes the last match. This owner will not rewrite a line a developer
+    // This owner writes no negation, so a `!` line is a hand edit. Whatever it
+    // names, appending a name again would not change what Git re-includes — it
+    // takes the last match — and this owner will not rewrite a line a developer
     // wrote, so the contract stays unestablished.
-    let untracked = untracked_entry_names();
-    if untracked
-        .iter()
-        .any(|entry| ignore_negates_entry(&found, entry))
-    {
+    if ignore_carries_negation(&found) {
         return Err(IdsPublicationError::bare(IdsRefusal::UntrackedContract));
     }
+    let untracked = untracked_entry_names();
     let missing: Vec<String> = untracked
         .into_iter()
         .filter(|entry| !ignore_names_entry(&found, entry))
@@ -188,20 +184,11 @@ fn ignore_names_entry(found: &[u8], entry: &str) -> bool {
     ignore_lines(found).any(|line| line.strip_prefix(b"/").unwrap_or(line) == entry.as_bytes())
 }
 
-/// Whether the ignore entry re-includes `entry` with a negation line naming it
-/// exactly: `!name` or `!/name`.
-///
-/// A positive line naming a transient does not settle the question on its own:
-/// a later `!` line naming it puts it back, and Git takes the last match, so
-/// such an entry does not establish the contract. The names are fixed and the
-/// file is this owner's, so the negation it can meet is one typed against a name
-/// in it; gitignore pattern syntax is not modelled here.
-fn ignore_negates_entry(found: &[u8], entry: &str) -> bool {
-    ignore_lines(found).any(|line| {
-        line.strip_prefix(b"!")
-            .map(|name| name.strip_prefix(b"/").unwrap_or(name))
-            .is_some_and(|name| name == entry.as_bytes())
-    })
+/// Whether the ignore entry carries any negation line. This owner writes none,
+/// so one is a developer's edit that may re-include a transient by name or by
+/// pattern; gitignore pattern syntax is not modelled to tell which.
+fn ignore_carries_negation(found: &[u8]) -> bool {
+    ignore_lines(found).any(|line| line.starts_with(b"!"))
 }
 
 /// Whether the bytes read from the ignore entry already carry this owner's

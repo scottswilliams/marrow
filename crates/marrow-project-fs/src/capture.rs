@@ -20,9 +20,6 @@ use crate::failure::CaptureFailure;
 use crate::limits::AdapterLimits;
 use crate::overlay::OverlaySnapshot;
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-compile_error!("marrow-project-fs admits physical capture on Linux and macOS only");
-
 pub(crate) mod unix;
 
 /// Read and capture the project rooted at `root` into an immutable [`ProjectInput`],

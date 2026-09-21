@@ -72,8 +72,8 @@ fn dropping_a_durable_claim_quarantines_publication_in_this_process() {
         .expect_err("a quarantined process acquires no write owner");
     assert_eq!(refusal.code(), Code::ProjectIdsPublicationPending);
     assert!(
-        refusal.to_string().contains("publishes no more"),
-        "the refusal names the dropped capability: {refusal}"
+        format!("{refusal:?}").contains("Quarantined"),
+        "the refusal classifies as the dropped capability: {refusal:?}"
     );
 
     // Every byte is retained: the ledger is the generation that was committed,

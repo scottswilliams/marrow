@@ -1,9 +1,8 @@
-//! The temporary project fixture the publication integration binaries share.
+//! The temporary project fixture the publication quarantine binary uses.
 //!
-//! Each binary here exists because the publication capability it drives is
-//! process-wide: a durable claim reached in one test is observable by every
-//! later test in the same process. The fixture is the same in both, so it lives
-//! once.
+//! That binary exists because the publication capability it drives is
+//! process-wide: a durable claim dropped in one test is observable by every
+//! later test in the same process, so it runs alone.
 
 use std::path::{Path, PathBuf};
 

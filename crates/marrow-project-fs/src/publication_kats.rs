@@ -968,6 +968,7 @@ fn a_retried_pending_publication_reconciles_the_quarantine_before_it_classifies(
             panic!("an off-map reading after the claim must be reported as pending: {settled:?}")
         }
     };
+    assert_eq!(pending.cause.refusal, IdsRefusal::Corrupt);
 
     // The off-map second link goes, and the state an interrupted removal
     // leaves is planted in its place.
@@ -1873,20 +1874,25 @@ fn an_oversized_ignore_entry_refuses_the_acquisition() {
     );
 }
 
-/// An ignore entry that negates one of this owner's names exactly refuses the
-/// acquisition, however complete the rest of it is.
+/// An ignore entry carrying any negation line refuses the acquisition, however
+/// complete the rest of it is.
 ///
 /// Git takes the last matching line, so a `!` line re-including a transient
-/// leaves it tracked no matter how many positive lines precede it. The name is
-/// read bare, anchored to this directory, and as a CRLF checkout leaves it.
-/// Appending the name again would change nothing, and this owner does not
-/// rewrite a line a developer wrote.
+/// leaves it tracked no matter how many positive lines precede it, and a
+/// pattern can re-include one without spelling it. This owner writes no
+/// negation, so every one is a hand edit: it is refused whatever it names —
+/// bare, anchored, as a pattern, or as a CRLF checkout leaves it. Appending
+/// the name again would change nothing, and this owner does not rewrite a line
+/// a developer wrote.
 #[test]
 fn an_ignore_entry_negating_a_transient_refuses_the_acquisition() {
     let _serial = serialized();
     for (tag, spelling) in [
         ("exact", "!ids.publish.stage\n"),
         ("anchored", "!/ids.publish.quarantine\n"),
+        ("suffix-glob", "!*.stage\n"),
+        ("subdirectory-glob", "!docs/*\n"),
+        ("other-name", "!notes.txt\n"),
         ("carriage-return", "!ids.pending\r\n"),
     ] {
         let project = Project::new(&format!("ignore-negated-{tag}"));
@@ -1912,30 +1918,28 @@ fn an_ignore_entry_negating_a_transient_refuses_the_acquisition() {
     }
 }
 
-/// A negation line that does not name one of this owner's names exactly does
-/// not refuse.
+/// A developer's own comment or positive pattern leaves the owner working.
 ///
-/// The check exists to catch a transient a developer re-included by name in
-/// the file this owner writes, not to make any ignore file unusable. Another
-/// name, a path elsewhere, and gitignore pattern syntax are that developer's
-/// own policy; none is read here.
+/// The check exists to catch a negation, not to make an ignore file unusable:
+/// a line that ignores more is that developer's policy and re-includes nothing.
 #[test]
-fn an_ignore_entry_negating_something_else_leaves_the_owner_working() {
+fn a_developer_line_that_negates_nothing_leaves_the_owner_working() {
     let _serial = serialized();
     for (tag, spelling) in [
-        ("other-name", "!notes.txt\n"),
-        ("anchored-elsewhere", "!/build\n"),
-        ("below-this-directory", "!ids.publish.stage/inner\n"),
-        ("pattern", "!*.stage\n"),
+        ("comment", "# a developer's note\n"),
+        ("positive-name", "notes.txt\n"),
+        ("positive-pattern", "*.log\n"),
+        ("positive-anchored", "/build\n"),
+        ("positive-subdirectory", "docs/*.md\n"),
     ] {
-        let project = Project::new(&format!("ignore-negation-elsewhere-{tag}"));
+        let project = Project::new(&format!("ignore-positive-{tag}"));
         let mut planted = WRITTEN_IGNORE.to_vec();
         planted.extend_from_slice(spelling.as_bytes());
         project.write_meta(".gitignore", &planted);
 
         let mut guard =
             ProjectMetadataWriteGuard::acquire(project.path()).unwrap_or_else(|error| {
-                panic!("the {tag} negation reaches no transient and must not refuse: {error:?}")
+                panic!("the {tag} line negates nothing and must not refuse: {error:?}")
             });
         guard
             .recover_ids()

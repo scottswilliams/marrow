@@ -30,6 +30,9 @@
 
 #![warn(missing_docs)]
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!("marrow-project-fs builds on Linux and macOS only");
+
 mod capture;
 mod failure;
 mod limits;

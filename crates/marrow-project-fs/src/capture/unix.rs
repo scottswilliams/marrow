@@ -233,14 +233,7 @@ impl<'a, 'o> Walk<'a, 'o> {
             .charge_work(native_units(root), self.limits.max_path_work_units)
             .map_err(|error| pathless(PhysicalRole::Root, reserve_refusal(error)))?;
         let canonical = fs::canonicalize(root).map_err(root_io)?;
-        let lease = self
-            .budget
-            .reserve(
-                native_units(&canonical),
-                self.limits.max_retained_path_units,
-                self.limits.max_path_work_units,
-            )
-            .map_err(|error| pathless(PhysicalRole::Root, reserve_refusal(error)))?;
+        let lease = self.lease(PhysicalRole::Root, &canonical)?;
         let (handle, identity) = open_terminal(&canonical, PhysicalKind::Directory)
             .map_err(|refusal| pathless(PhysicalRole::Root, refusal))?;
         Ok(TreeAdmission {

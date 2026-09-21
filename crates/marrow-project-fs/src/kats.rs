@@ -555,7 +555,6 @@ fn a_file_root_is_an_unexpected_kind_failure() {
 
 // --- Row: physical role/read seams --------------------------------------------
 
-#[cfg(unix)]
 #[test]
 fn a_symlinked_manifest_is_refused_as_a_link() {
     let temp = TempDir::new("symlink-manifest");
@@ -574,7 +573,6 @@ fn a_symlinked_manifest_is_refused_as_a_link() {
     ));
 }
 
-#[cfg(unix)]
 #[test]
 fn a_hardlinked_manifest_is_refused_as_a_hardlink() {
     let temp = TempDir::new("hardlink-manifest");
@@ -595,7 +593,6 @@ fn a_hardlinked_manifest_is_refused_as_a_hardlink() {
     ));
 }
 
-#[cfg(unix)]
 #[test]
 fn a_hardlinked_source_file_is_refused_as_a_hardlink() {
     let temp = TempDir::new("hardlink-source");
@@ -620,7 +617,6 @@ fn a_hardlinked_source_file_is_refused_as_a_hardlink() {
 /// Create a special file — a FIFO — at a project-relative path. Nothing in the
 /// crate opens it: capture classifies a terminal object's kind before it opens
 /// one, so a FIFO fixture cannot block a test on a missing writer.
-#[cfg(unix)]
 fn write_special_file(temp: &TempDir, relative: &str) {
     let path = temp.path().join(relative);
     if let Some(parent) = path.parent() {
@@ -636,7 +632,6 @@ fn write_special_file(temp: &TempDir, relative: &str) {
 /// Capture the project and require the exact typed terminal-link refusal naming
 /// `spelling`. A link below `src` must refuse with a cause; it is never skipped,
 /// which would leave the module silently absent from the capture.
-#[cfg(unix)]
 fn expect_link_below_src(temp: &TempDir, spelling: &str) -> CaptureFailure {
     let failure =
         match capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &base_limits()) {
@@ -675,7 +670,6 @@ fn expect_link_below_src(temp: &TempDir, spelling: &str) -> CaptureFailure {
 /// The reproduction: a module reachable only through a symlinked directory. The
 /// skipping walk captured a project that silently lacked it, which surfaces
 /// downstream as an unexplained missing module; the link now carries the cause.
-#[cfg(unix)]
 #[test]
 fn a_module_behind_a_symlinked_directory_refuses_instead_of_vanishing() {
     let temp = TempDir::new("symlink-module");
@@ -691,7 +685,6 @@ fn a_module_behind_a_symlinked_directory_refuses_instead_of_vanishing() {
 
 /// A symlink to a regular `.mw` file: the alias would admit bytes capture never
 /// opened at that name, so it refuses like every other aliased role.
-#[cfg(unix)]
 #[test]
 fn a_symlinked_source_file_below_src_is_refused_as_a_link() {
     let temp = TempDir::new("symlink-source");
@@ -708,7 +701,6 @@ fn a_symlinked_source_file_below_src_is_refused_as_a_link() {
 /// A broken link resolves to nothing, so following it is impossible and skipping
 /// it is the same causeless absence. It refuses on the link itself, never on its
 /// missing target.
-#[cfg(unix)]
 #[test]
 fn a_broken_symlink_below_src_is_refused_as_a_link() {
     let temp = TempDir::new("symlink-broken");
@@ -724,7 +716,6 @@ fn a_broken_symlink_below_src_is_refused_as_a_link() {
 
 /// A link escaping the project root: refusing makes the escape unrepresentable
 /// rather than merely unreached.
-#[cfg(unix)]
 #[test]
 fn a_symlink_escaping_the_project_root_is_refused_as_a_link() {
     let temp = TempDir::new("symlink-escape");
@@ -748,7 +739,6 @@ fn a_symlink_escaping_the_project_root_is_refused_as_a_link() {
 
 /// A link cycle: refusing makes an unbounded walk unrepresentable by construction,
 /// with no depth bound or visited set standing in for the policy.
-#[cfg(unix)]
 #[test]
 fn a_symlink_cycle_below_src_is_refused_as_a_link() {
     let temp = TempDir::new("symlink-cycle");
@@ -762,7 +752,6 @@ fn a_symlink_cycle_below_src_is_refused_as_a_link() {
 /// A special file occupying a module identity is the same causeless absence one
 /// node kind over: it is admitted through the one source owner, which refuses the
 /// kind before opening it, rather than being ignored like a non-source entry.
-#[cfg(unix)]
 #[test]
 fn a_special_file_named_mw_below_src_is_refused_as_a_wrong_kind() {
     let temp = TempDir::new("special-source");
@@ -796,7 +785,6 @@ fn a_special_file_named_mw_below_src_is_refused_as_a_wrong_kind() {
 
 /// The boundary of that widening: a special file that names no module is still an
 /// ignored entry, exactly like a non-`.mw` regular file.
-#[cfg(unix)]
 #[test]
 fn a_special_file_below_src_naming_no_module_is_still_ignored() {
     let temp = TempDir::new("special-ignored");
@@ -1033,6 +1021,15 @@ fn lexically_invalid_keys_are_rejected() {
     }
 }
 
+/// A drive-prefixed key is a canonical relative spelling to the one identity
+/// owner — a directory named `C:` — so construction admits it and capture
+/// settles it as a nonmember.
+#[test]
+fn control_a_drive_prefixed_key_constructs() {
+    let entries = [OverlayEntry::new("C:/drive.mw", b"x")];
+    assert!(OverlaySnapshot::try_new(&entries).is_ok());
+}
+
 #[test]
 fn control_case_distinct_overlay_keys_are_accepted() {
     let entries = [
@@ -1191,7 +1188,6 @@ fn control_empty_overlay_capture_is_byte_stable() {
 
 // ===== Target-owner KATs: directory admission and path budget =================
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod directory_admission {
     use std::io;
     use std::path::{Path, PathBuf};
@@ -1527,7 +1523,6 @@ mod directory_admission {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod path_budget {
     use crate::path::{PathBudget, ReserveError};
 

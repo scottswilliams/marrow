@@ -1,9 +1,6 @@
 //! The one temporary-directory fixture this crate's tests share, in-crate and
 //! integration alike. The in-crate suites reach this file through
 //! `#[path = "../tests/common/scratch.rs"]`, so no case mints its own.
-//!
-//! Nothing here names a Marrow type: `tests/consumer.rs` is the external-consumer
-//! test and imports only `marrow_project_fs` and the standard library.
 
 #![allow(dead_code)]
 
