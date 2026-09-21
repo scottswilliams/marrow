@@ -428,7 +428,7 @@ impl AdmittedDir {
     /// different inode, and acting on the retained handle afterwards would act
     /// on an object no name holds. `op` names the operation the assertion
     /// guards, so a drift refusal says what it refused.
-    pub(crate) fn reassert(
+    pub fn reassert(
         &self,
         name: &EntryName,
         identity: FsIdentity,
