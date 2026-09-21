@@ -275,11 +275,9 @@ The digest is computed from declared entry-family keys and values, including
 malformed cells in those families and data under absent parents. Index,
 metadata, and undeclared-family cells are excluded; undeclared cells are still
 findings. Runs over unchanged entry content produce the same digest, and a
-same-value commit need not change it. The digest is reported, not stored; a recorded digest can be compared with
-a later inspection under the same program. It does not authenticate the engine
-file or establish its origin. Substitution and rollback remain unqualified;
-an index under an identity absent from the active program is a logical finding,
-but a file from another store need not contain such a mismatch.
+same-value commit need not change it. [Project
+status](../status.md#trust-boundaries) records the digest's persistence and
+authentication limits.
 
 Physical integrity is not checked: a changed scalar can remain valid under its
 declared type and pass, including when the stored checksum no longer matches.
@@ -332,9 +330,8 @@ Final activation uncertainty is `store.activation_uncertain`. The Active record
 may already be visible when its final barrier or reread fails; not every uncertain
 result leaves a pending admission veto. Missing result delivery does not prove
 that no work occurred. A later recovery performs fresh
-validation and cannot reconstruct a previous attempt's lost receipt. Recovery
-does not authenticate copied store files, detect rollback to a structurally valid
-snapshot, or establish application intent.
+validation and cannot reconstruct a previous attempt's lost receipt. [Project
+status](../status.md#trust-boundaries) records the remaining trust boundaries.
 
 ## Durability
 
@@ -350,6 +347,4 @@ attaches and releases it when it exits. An audit holds it through admission and
 inspection and releases it before printing. A second process opening a held
 store is `store.locked`. Inspection does not publish an owner identity; a
 contention diagnostic's marker record may belong to an earlier mutable holder.
-The lock excludes other Marrow processes; it does not
-detect a store file replaced or rolled back underneath it by another program.
-[Status](../status.md#trust-boundaries) lists the trust boundaries.
+[Status](../status.md#trust-boundaries) lists the lock's trust boundaries.

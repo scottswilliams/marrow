@@ -77,60 +77,23 @@ therefore hold no raw key, engine handle, or transaction object.
 
 ## Native owner
 
-`native_owner.rs` derives `lock` and `store.redb` from one canonical store
-directory and keeps the advisory lock inseparable from the engine. Opening an
-existing store has two phases: acquire directory exclusion without marker writes
-or engine calls, then open the engine under that same lock. `NativeOpenAccess`
-selects service read/write, explicit recovery, or read-only inspection through
-the one opening path, so inspection cannot write or invoke the repairing
-integrity operation and cannot discharge an inherited unclean-shutdown
-obligation.
+| Step | Owner |
+|---|---|
+| Acquire directory exclusion and open the selected access mode | `marrow-store/src/native_owner.rs`: `NativeEngineOwner::acquire_existing`, `PendingNativeEngineOwner::bind_and_open_existing`, `NativeOpenAccess` |
+| Promote read-only ownership for a code-only rebind | `marrow-store/src/native_owner.rs`: `NativeEngineOwner::into_service` |
+| Latch an indeterminate commit and reopen for classification | `marrow-store/src/native_owner.rs`: `NativeOwnerTxn::commit`, `NativeEngineOwner::reopen_existing_and_audit`; `marrow-kernel/src/durable/native_owner.rs`: `NativeStoreOwner::resolve_recovery` |
+| Admit and publish a code-only rebind | `marrow-lifecycle/src/actor.rs`: `attach`, `rewrite_atomically` |
+| Admit and publish sparse-field apply | `marrow-lifecycle/src/apply.rs`: `apply`, `extend_head` |
+| Publish a new store and complete activation | `marrow-lifecycle/src/durable_fs.rs`: `Publication`; `marrow-lifecycle/src/provision.rs`: `provision`, `complete_publication` |
+| Admit the logical-head generation before engine open | `marrow-lifecycle/src/head.rs`: `file_ceiling`, `LogicalHead::decode_with_digest`; `marrow-lifecycle/src/provision.rs`: `LockedStore::open` |
 
-A code-only rebind is read-only first: the logical audit completes before the
-owner is consumed into writable service, and directory exclusion is retained
-across the engine's close and reopen. Engine identity checks detect replacement
-during that preparation, but not external writes to the same inode — the
-cooperating-access assumption [status](../status.md#trust-boundaries) records.
-A preparation failure can leave engine bookkeeping and the marker changed
-without publishing a binding transition; [operations](../operations/README.md#changing-the-program)
-states what each outcome means for the store.
-
-Explicit sparse-field apply audits the store through the old image's read-only
-owner, compares the old and new verified graphs, keeps every accepted physical
-number, allocates added fields from the next unused number, and publishes the
-new binding through the same Pending/Head/Active publisher. It writes no data
-cells and never converts the read-only owner into writable service; ordinary
-attachment admits the new image afterwards.
-
-An indeterminate commit quarantines the lock until process exit; the
-kernel classifies the outcome as known old, known new, or unknown
-([interrupted commits](../operations/README.md#interrupted-commits)). The lock
-excludes cooperating Marrow processes and does not authenticate the engine
-file; recovery cannot detect an out-of-band substitution of `store.redb`. That
-gap is recorded in [project status](../status.md#trust-boundaries); the
-[audit](#auditing-a-store) reports what a substituted file's contents disagree
-with, not where the file came from.
-
-Lifecycle publication retains one admitted parent descriptor for no-replace
-rename and the following parent sync. It checks the stage's identity through that
-parent before rename and the store's destination mapping after rename. An
-occupied destination is refused by the rename operation; there is no preliminary
-existence check that authorizes replacement. After successful construction, a
-changed stage mapping prevents path-based cleanup on publication failure.
-Construction-failure cleanup retains its cooperating-path assumption.
-A changed destination mapping after rename reports
-publication uncertainty and does not delete the published store. Path-based
-engine creation still assumes cooperating earlier path components; these checks
-do not establish protection against arbitrary concurrent namespace substitution.
-The admitted name and parent constraints are described in
-[operations](../operations/README.md#a-store-on-disk).
-
-The logical-head generation recorded by the lifecycle selects the entry layout,
-and admission reads that fence before the engine opens: attach, code-only
-rebind, logical audit and import all refuse an unsupported generation without
-touching the engine file, Head, envelope or marker. There is no migration
-reader. [Compatibility](../compatibility.md#versioning) owns which generations
-current tools admit and what a version refusal leaves behind.
+[Changing the program](../operations/README.md#changing-the-program) owns
+observable rebind and apply outcomes, [interrupted
+commits](../operations/README.md#interrupted-commits) owns recovery outcomes,
+[a store on disk](../operations/README.md#a-store-on-disk) owns publication
+constraints, and [compatibility](../compatibility.md#versioning) owns admitted
+generations. [Trust boundaries](../status.md#trust-boundaries) records the
+same-inode and store-file-substitution limits.
 
 ## Reading a field
 
@@ -266,9 +229,9 @@ hashes the previous state followed by the cell's key length, key, and value. Mal
 cells in a declared family and children beneath absent parents are included.
 Index, metadata, and undeclared-family cells are excluded; undeclared cells
 still produce findings. Identical entry-family content has the same digest, and
-a same-value commit need not change it. The head's data-digest slot remains
-reserved: this digest is reported, not persisted, and grants no admission or
-recovery permit.
+a same-value commit need not change it. [Project
+status](../status.md#trust-boundaries) records the digest's persistence and
+authentication limits.
 
 Physical checksum verification is not part of logical inspection. A scalar
 change that remains valid under its declared type can pass even when its
@@ -317,8 +280,7 @@ deriving another layout. It preserves the instance, selected head and logical da
 the recovery toolchain as envelope writer. No application attachment escapes
 this operation.
 
-These checks establish a fresh result at the current location. They reconstruct
-no lost acknowledgment and do not authenticate the engine file, detect arbitrary
-rollback, or qualify sudden power loss. Directory custody does not remove the
-cooperative filesystem assumptions
-([recovery](../operations/README.md#recovering-a-store)).
+These checks establish a fresh result at the current location. [Project
+status](../status.md#trust-boundaries) records the remaining trust limits, and
+[recovery](../operations/README.md#recovering-a-store) owns the operator-visible
+outcome.
