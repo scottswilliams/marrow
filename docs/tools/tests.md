@@ -48,10 +48,10 @@ $ marrow test --format jsonl
 
 A passed test's `span` is its declaration; a failed, errored, or incomplete test's `span` and `code` are the fault's. An incomplete test also carries a `durable` field. Dotted codes are defined in the [error code reference](../error-codes.md).
 
-A project that does not compile runs no test. The command prints each diagnostic as a `kind: "run"` record and exits `1`. In text that is the line `check` prints, `src/docs/tests/report.mw:4:12: check.type: found int where string is required`. In JSONL it is:
+A project that does not compile runs no test. The command prints each diagnostic as a `kind: "run"` record and exits `1`. In text that is the line `check` prints, on standard output: `src/docs/tests/report.mw:4:12: check.type: found int where string is required`. In JSONL it is:
 
 ```text
 {"code":"check.type","kind":"run","outcome":"diagnostic","span":{"column":12,"line":4}}
 ```
 
-`marrow check .` prints the same line.
+`marrow check .` prints the same line on standard error.

@@ -27,7 +27,7 @@ use std::process::ExitCode;
 use marrow_verify::{CeilingDescriptor, VerifiedImage};
 
 use crate::Command;
-use crate::command_output::{flag_value, once, unknown_option, usage};
+use crate::command_output::{Flags, unknown_option, usage};
 use crate::demand::demand_lines;
 
 struct ImageArgs {
@@ -139,21 +139,13 @@ fn parse_options(options: &[String]) -> Result<ImageArgs, ExitCode> {
     const COMMAND: Command = Command::Image;
     let mut out: Option<PathBuf> = None;
     let mut accept_ceiling: Option<String> = None;
-    let mut iter = options.iter();
-    while let Some(option) = iter.next() {
+    let mut flags = Flags::new(options, COMMAND);
+    while let Some(option) = flags.next() {
         match option.as_str() {
-            "--out" => once(
-                &mut out,
-                PathBuf::from(flag_value(&mut iter, COMMAND, "--out")?),
-                COMMAND,
-                "`--out` directory",
-            )?,
-            "--accept-ceiling" => once(
-                &mut accept_ceiling,
-                flag_value(&mut iter, COMMAND, "--accept-ceiling")?.to_string(),
-                COMMAND,
-                "`--accept-ceiling` id",
-            )?,
+            "--out" => flags.read(&mut out, "--out", PathBuf::from)?,
+            "--accept-ceiling" => {
+                flags.read(&mut accept_ceiling, "--accept-ceiling", str::to_string)?
+            }
             other => return Err(unknown_option(COMMAND, other)),
         }
     }

@@ -13,7 +13,7 @@ use marrow_verify::{SealedEnumType, SealedRecordType};
 use marrow_vm::Value;
 use marrow_vm::render::{TextLimit, ValueSink};
 
-use crate::term_style::Palette;
+use crate::term_style::{Palette, Style};
 
 /// Raw UTF-8 bytes admitted for stdin and a returned bare string. JSON escaping
 /// can expand each byte sixfold; this is not an encoded-record bound.
@@ -179,9 +179,9 @@ impl Record {
             ),
             Record::Value(Some(value)) => {
                 let (prefix, value) = match top_level_result(value, enums) {
-                    Some(TopLevel::Ok(inner)) => ("", inner),
-                    Some(TopLevel::Err(inner)) => ("error: ", inner),
-                    None => ("", value),
+                    Some(TopLevel::Ok(inner)) => (String::new(), inner),
+                    Some(TopLevel::Err(inner)) => (palette.paint(Style::Error, "error: "), inner),
+                    None => (String::new(), value),
                 };
                 if let Value::Text(text) = value
                     && text.len() > MAX_TEXT_BYTES
@@ -487,6 +487,11 @@ fn span_object(line: u32, column: u32) -> String {
 /// A returned value's outermost `Result` constructor, split from its payload. The
 /// terminal renders a top-level `ok(v)` as `v` and a top-level `err(e)` as the program's
 /// failure report; a `Result` nested anywhere below keeps its constructor spelling.
+///
+/// The enum is recognized by its sealed name: `Result` is a reserved generic type name
+/// (`marrow_compile::RESERVED_GENERIC_TYPE_NAMES`), so no program declares an enum of
+/// that name and the sealed table's `Result` is the language's own, with `ok` and `err`
+/// its only members.
 enum TopLevel<'a> {
     Ok(&'a Value),
     Err(&'a Value),

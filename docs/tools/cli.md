@@ -33,8 +33,13 @@ A flag takes its value as the next argument, as in `--store ./store`;
 `--store=./store` is a usage error. `marrow --version` prints `marrow 0.1.0`;
 `-V` and `version` are the same command, as `-h` and `help` are for `--help`.
 Every subcommand prints its own usage on `--help` or `-h`. A usage error names
-the problem and the command's help, as in `unknown option `--bogus`; run marrow
-run --help for usage`, and exits `2`.
+the problem and the command's help, and exits `2`:
+
+```text
+$ marrow run --bogus
+unknown option `--bogus`; run marrow run --help for usage
+```
+
 The transcripts below come from one project holding this file at
 `src/docs/cli/shelf.mw`:
 
@@ -67,13 +72,20 @@ pub fn greet(name: string): string {
     return $"Hello, {name}!"
 }
 
+pub fn half(n: int): Result<int, string> {
+    if n % 2 == 1 {
+        return err("odd")
+    }
+    return ok(n / 2)
+}
+
 test "put then lookup" {
     put(1, "Small Gods", "978-0552152976")
     assert lookup("978-0552152976") ?? "" == "Small Gods"
 }
 ```
 
-`greet` touches no durable place. `put` and `lookup` are durable exports.
+`greet` and `half` touch no durable place. `put` and `lookup` are durable exports.
 
 ## marrow init
 
@@ -143,15 +155,15 @@ demand](../language/durable-places.md#access-demand)), grouped by module:
 
 ```text
 $ marrow check .
-3 exports across 1 module
+4 exports across 1 module
 
-docs.cli.shelf: 3 exports
+docs.cli.shelf: 4 exports
   lookup
     reads ^books.byIsbn, ^books.title
   put
     reads ^books
     writes ^books
-  storeless: greet
+  storeless: greet, half
 ```
 
 Each export names every place it reads and every place it writes, in source
@@ -215,7 +227,8 @@ returned `Result` is split at the top level: `ok(v)` prints `v` alone, and
 `err(e)` prints `error: ` followed by `e` on standard error and exits `1`. A
 `Result` nested inside another value keeps its constructor spelling, as in
 `Option::some(Result::err(odd))`. A source diagnostic prints as
-`file:line:column: code: message`, the same line `check` prints. JSONL
+`file:line:column: code: message`, the same line `check` prints, on standard
+output; `check` prints its diagnostics on standard error. JSONL
 output is one object whose `outcome` is `value`, `diagnostic`,
 `artifact_rejected`, `fault`, `incomplete`, `outcome_unknown`, or `error`; a
 diagnostic or fault carries its code and span
@@ -457,6 +470,7 @@ right id, the command prints the id and the demand and writes nothing:
 $ marrow image --out img
 cli.ceiling_unaccepted: this image's deployment ceiling id is b618d4d44afcb0eb4045c437267eba85c8b41ffd946fd1dc1b67a62ee54ba691; re-run with --accept-ceiling b618d4d44afcb0eb4045c437267eba85c8b41ffd946fd1dc1b67a62ee54ba691 to compose the deployment image after reviewing the demand printed below
 docs.cli.shelf.greet reads or writes no durable data
+docs.cli.shelf.half reads or writes no durable data
 docs.cli.shelf.lookup reads ^books.byIsbn and ^books.title
 docs.cli.shelf.put reads ^books; writes ^books
 $ marrow image --out img --accept-ceiling b618d4d44afcb0eb4045c437267eba85c8b41ffd946fd1dc1b67a62ee54ba691

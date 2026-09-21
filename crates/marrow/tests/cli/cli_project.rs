@@ -270,14 +270,24 @@ fn init_creates_a_manifest_and_src_tree() {
     );
 }
 
+/// The top-level help is the usage list and one pointer at `marrow <command> --help`;
+/// each command's own help is the sole owner of the prose describing it.
 #[test]
 fn project_help_describes_captured_source_files_and_the_headerless_script() {
     let root_help = run(&["--help"]);
     assert!(root_help.status.success(), "{root_help:?}");
     let root_stdout = root_help.stdout_text();
     assert!(
-        root_stdout.contains("every captured source file"),
+        root_stdout.contains("  marrow fmt [--check | --write] <file.mw | projectdir>\n"),
         "{root_stdout}"
+    );
+    assert!(
+        root_stdout.contains("marrow <command> --help"),
+        "{root_stdout}"
+    );
+    assert!(
+        !root_stdout.contains("every captured source file"),
+        "the top-level help repeats a command's own prose: {root_stdout}"
     );
 
     let init_help = run(&["init", "--help"]);
@@ -326,6 +336,14 @@ fn a_failed_init_leaves_no_debris_and_a_retry_succeeds() {
     // directory blocks every retry with AlreadyExists. A umask that strips the owner's
     // write bit lets the claim succeed and makes the first write into the claimed
     // directory fail, the shape a restrictive shell profile produces.
+    let root = Command::new("id")
+        .arg("-u")
+        .output()
+        .expect("query the effective user");
+    if root.stdout.trim_ascii() == b"0" {
+        eprintln!("skipped: root ignores directory permissions, so the scaffold cannot fail");
+        return;
+    }
     let temp = TempDir::new("init-unwind");
     let project = temp.join("app");
 

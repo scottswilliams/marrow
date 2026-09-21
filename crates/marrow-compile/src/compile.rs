@@ -84,6 +84,9 @@ pub struct TestEntry {
     pub name: String,
     pub module: String,
     pub file: String,
+    /// The test's module as a position in the captured project's module order, the
+    /// order [`ProjectInput::modules`] iterates, so a report can read its source.
+    pub module_index: usize,
     pub line: u32,
     pub column: u32,
 }
@@ -2282,6 +2285,7 @@ fn lower_declared_tests(
             name: test.name.clone(),
             module: module.name.clone(),
             file: module.file.spelling(),
+            module_index: module.at.index(),
             line: test.name_span.line,
             column: test.name_span.column,
         });

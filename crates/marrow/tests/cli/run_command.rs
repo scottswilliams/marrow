@@ -54,9 +54,10 @@ fn a_nested_result_keeps_its_constructor_spelling() {
 }
 
 /// A source diagnostic prints as `file:line:column: code: message`, the form `check`
-/// prints, whichever command reports it.
+/// prints, whichever command reports it: `run` and `test` on standard output, `fmt`
+/// on standard error, byte for byte the line `check` prints for the same source.
 #[test]
-fn run_and_test_print_a_diagnostic_in_the_one_form() {
+fn run_test_and_fmt_print_a_diagnostic_in_the_one_form() {
     let workspace = Project::single("pub fn oops(): int {\n    return \"nope\"\n}\n")
         .materialize("diagnostic-form");
     for args in [["run", "oops"].as_slice(), ["test"].as_slice()] {
@@ -69,6 +70,24 @@ fn run_and_test_print_a_diagnostic_in_the_one_form() {
         );
         assert_eq!(stdout.lines().count(), 1, "{args:?}: {stdout}");
     }
+
+    let unparsable = Project::single("pub fn oops(): int {\n    return @@@\n}\n")
+        .materialize("parse-diagnostic-form");
+    let checked = unparsable.marrow(&["check"]);
+    let formatted = unparsable.marrow(&["fmt", "--check", "."]);
+    assert_eq!(formatted.code(), Some(1), "{formatted:?}");
+    let first = formatted.stderr_text().lines().next().map(str::to_string);
+    assert!(
+        first.as_deref().is_some_and(
+            |line| line.starts_with("src/main.mw:2:") && line.contains(": parse.syntax: ")
+        ),
+        "{formatted:?}"
+    );
+    assert_eq!(
+        first.as_deref(),
+        checked.stderr_text().lines().next(),
+        "fmt and check print the same line for the same parse error"
+    );
 }
 
 const COMMANDS: [&str; 13] = [
@@ -123,7 +142,7 @@ fn usage_errors_name_the_problem_and_the_commands_help() {
         ),
         (
             &["doctor", "--store", "a", "--store", "b"],
-            "marrow doctor takes one `--store` directory; run marrow doctor --help for usage\n",
+            "marrow doctor takes one `--store`; run marrow doctor --help for usage\n",
         ),
         (
             &["test", "--format", "yaml"],

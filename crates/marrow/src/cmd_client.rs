@@ -14,7 +14,7 @@ use marrow_image::InterfaceError;
 use marrow_verify::interface_of;
 
 use crate::Command;
-use crate::command_output::{flag_value, once, unknown_option, usage};
+use crate::command_output::{Flags, unknown_option, usage};
 use crate::project::compile_project;
 use crate::tsgen::{self, ExportName};
 
@@ -130,15 +130,10 @@ fn render_interface_error(
 
 fn parse_options(options: &[String]) -> Result<ClientArgs, ExitCode> {
     let mut out: Option<PathBuf> = None;
-    let mut iter = options.iter();
-    while let Some(option) = iter.next() {
+    let mut flags = Flags::new(options, Command::Client);
+    while let Some(option) = flags.next() {
         match option.as_str() {
-            "--out" => once(
-                &mut out,
-                PathBuf::from(flag_value(&mut iter, Command::Client, "--out")?),
-                Command::Client,
-                "`--out` directory",
-            )?,
+            "--out" => flags.read(&mut out, "--out", PathBuf::from)?,
             other => return Err(unknown_option(Command::Client, other)),
         }
     }

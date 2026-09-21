@@ -14,7 +14,7 @@ use std::process::ExitCode;
 use marrow_compile::compile;
 
 use crate::Command;
-use crate::command_output::{flag_value, once, unknown_option, usage};
+use crate::command_output::{Flags, unknown_option, usage};
 use crate::companion::{companion_command, run_companion, stage_image};
 use crate::project::compile_project;
 
@@ -84,33 +84,13 @@ fn parse_args(rest: &[String]) -> Result<Args, ExitCode> {
     let mut jsonl: Option<PathBuf> = None;
     let mut root: Option<String> = None;
     let mut keys: Option<String> = None;
-    let mut iter = rest.iter();
-    while let Some(arg) = iter.next() {
+    let mut flags = Flags::new(rest, COMMAND);
+    while let Some(arg) = flags.next() {
         match arg.as_str() {
-            "--store" => once(
-                &mut store,
-                PathBuf::from(flag_value(&mut iter, COMMAND, "--store")?),
-                COMMAND,
-                "`--store` directory",
-            )?,
-            "--jsonl" => once(
-                &mut jsonl,
-                PathBuf::from(flag_value(&mut iter, COMMAND, "--jsonl")?),
-                COMMAND,
-                "`--jsonl` file",
-            )?,
-            "--root" => once(
-                &mut root,
-                flag_value(&mut iter, COMMAND, "--root")?.to_string(),
-                COMMAND,
-                "`--root` name",
-            )?,
-            "--keys" => once(
-                &mut keys,
-                flag_value(&mut iter, COMMAND, "--keys")?.to_string(),
-                COMMAND,
-                "`--keys` list",
-            )?,
+            "--store" => flags.read(&mut store, "--store", PathBuf::from)?,
+            "--jsonl" => flags.read(&mut jsonl, "--jsonl", PathBuf::from)?,
+            "--root" => flags.read(&mut root, "--root", str::to_string)?,
+            "--keys" => flags.read(&mut keys, "--keys", str::to_string)?,
             other => return Err(unknown_option(COMMAND, other)),
         }
     }

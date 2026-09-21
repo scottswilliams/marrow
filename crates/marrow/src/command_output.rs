@@ -1,5 +1,5 @@
 //! The command-line surface every command shares: the `--format` value, the one
-//! usage-refusal form, the flag-value cursor, and delivery-failure reporting.
+//! usage-refusal form, the argument cursor, and delivery-failure reporting.
 
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -47,26 +47,57 @@ pub(crate) fn unknown_option(command: Command, option: &str) -> ExitCode {
     usage(command, &format!("unknown option `{option}`"))
 }
 
-/// The value a flag takes as its next argument, as in `--store ./store`.
-pub(crate) fn flag_value<'a>(
-    args: &mut impl Iterator<Item = &'a String>,
+/// The cursor a command reads its arguments through: the remaining arguments and the
+/// command whose usage a refusal names.
+pub(crate) struct Flags<'a> {
+    args: std::slice::Iter<'a, String>,
     command: Command,
-    flag: &str,
-) -> Result<&'a str, ExitCode> {
-    args.next()
-        .map(String::as_str)
-        .ok_or_else(|| usage(command, &format!("`{flag}` needs a value")))
 }
 
-/// The `--format` flag's value.
-pub(crate) fn format_flag<'a>(
-    args: &mut impl Iterator<Item = &'a String>,
-    command: Command,
-) -> Result<OutputFormat, ExitCode> {
-    match flag_value(args, command, "--format")? {
-        "text" => Ok(OutputFormat::Text),
-        "jsonl" => Ok(OutputFormat::Jsonl),
-        _ => Err(usage(command, "`--format` must be `text` or `jsonl`")),
+impl<'a> Iterator for Flags<'a> {
+    type Item = &'a String;
+
+    fn next(&mut self) -> Option<&'a String> {
+        self.args.next()
+    }
+}
+
+impl<'a> Flags<'a> {
+    pub(crate) fn new(rest: &'a [String], command: Command) -> Self {
+        Self {
+            args: rest.iter(),
+            command,
+        }
+    }
+
+    /// The value `flag` takes as its next argument, as in `--store ./store`.
+    fn value(&mut self, flag: &str) -> Result<&'a str, ExitCode> {
+        self.args
+            .next()
+            .map(String::as_str)
+            .ok_or_else(|| usage(self.command, &format!("`{flag}` needs a value")))
+    }
+
+    /// Read `flag`'s value through `parse` into `slot`, refusing a missing value and a
+    /// repeated flag.
+    pub(crate) fn read<T>(
+        &mut self,
+        slot: &mut Option<T>,
+        flag: &str,
+        parse: impl FnOnce(&'a str) -> T,
+    ) -> Result<(), ExitCode> {
+        let value = parse(self.value(flag)?);
+        once(slot, value, self.command, &format!("`{flag}`"))
+    }
+
+    /// Read the `--format` value into `slot`.
+    pub(crate) fn read_format(&mut self, slot: &mut Option<OutputFormat>) -> Result<(), ExitCode> {
+        let format = match self.value("--format")? {
+            "text" => OutputFormat::Text,
+            "jsonl" => OutputFormat::Jsonl,
+            _ => return Err(usage(self.command, "`--format` must be `text` or `jsonl`")),
+        };
+        once(slot, format, self.command, "`--format`")
     }
 }
 

@@ -42,32 +42,7 @@ Usage:
   marrow --help
   marrow <command> --help
 
-This is the beta line's thin CLI. `init` creates a new project (a manifest and a
-contained src tree). `fmt` formats every captured source file in a project
-directory, or one Marrow source file, through the retained formatter. `check`
-captures and checks a project, reporting each diagnostic with its span and, when
-clean, each exported function's durable access demand in source spelling. `run`
-compiles the project at the working directory, verifies the program image, and
-runs an exported function. `run --stdin` accepts one UTF-8 string of at most
-65536 bytes for an export taking exactly one string parameter. `test` discovers
-`test \"name\"` declarations, runs
-each storeless through the verified image, and reports pass/fail/error. `import`
-compiles and verifies the project, then populates a native store from a
-flat-scalar JSONL corpus through the release-verified companion runner's trusted
-importer, provisioning the store on first use. `doctor` compiles and verifies
-the project, then audits a store bound to it read-only through the companion
-runner, counting logical findings, listing at most 256, and reporting an
-entry-content digest. Physical integrity is not checked. `client typescript`
-compiles and verifies the project, then emits the generated strict TypeScript client and the pinned Node supervision
-module. `image` compiles and verifies the project and writes the verified
-program.image a deployment ships, requiring the owner to accept the image's
-deployment ceiling id. `backup` compiles the active project and exports its store
-with that exact image. `restore` constructs a fresh store from the backup's
-embedded image without compiling a project. `apply` accepts explicit old and new
-images, preserving old representations while adding absent sparse scalar fields.
-An authority expansion requires acceptance of the exact proposed ceiling.
-`recover` validates and activates the actual stored head using the selected image,
-or the compiled project when no image is supplied.
+Run `marrow <command> --help` for what a command does and how it exits.
 ";
 
 fn main() -> ExitCode {
@@ -128,6 +103,8 @@ pub(crate) enum Command {
 }
 
 impl Command {
+    /// Every command, in usage order. Membership here is what makes a command
+    /// reachable: `parse` finds names only in this table.
     const ALL: [Command; 13] = [
         Command::Init,
         Command::Fmt,
@@ -317,7 +294,15 @@ pub(crate) fn report_parse(file: &str, diagnostics: &[marrow_syntax::Diagnostic]
 mod tests {
     use std::process::ExitCode;
 
-    use super::run_worker_thread;
+    use super::{Command, run_worker_thread};
+
+    #[test]
+    fn every_command_parses_from_its_own_name() {
+        for command in Command::ALL {
+            assert_eq!(Command::parse(command.name()), Some(command));
+        }
+        assert_eq!(Command::parse("lsp"), None);
+    }
 
     #[test]
     fn worker_thread_spawn_error_returns_failure() {

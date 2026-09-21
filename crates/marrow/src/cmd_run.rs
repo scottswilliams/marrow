@@ -27,10 +27,10 @@ use marrow_verify::{
 use marrow_vm::Value;
 
 use crate::Command;
-use crate::command_output::{OutputFormat, flag_value, format_flag, once, unknown_option, usage};
+use crate::command_output::{Flags, OutputFormat, once, unknown_option, usage};
 use crate::outcome::{MAX_TEXT_BYTES, Record};
 use crate::project::capture_project;
-use crate::term_style::{Palette, Stream, Style};
+use crate::term_style::{Palette, Stream};
 
 pub(crate) const HELP: &str = "\
 Usage:
@@ -415,6 +415,9 @@ fn run_persistent(
     )))
 }
 
+/// The records a companion call produced: the call's own outcome, then a cleanup
+/// failure when the companion was not reaped. The exit is [`Outcome::settled`]'s to
+/// decide from those records.
 fn attached_records(completion: marrow_runner::AttachCompletion) -> Outcome {
     let record = match completion.outcome {
         Ok(outcome) => call_outcome_to_record(outcome),
@@ -431,16 +434,14 @@ fn attached_records(completion: marrow_runner::AttachCompletion) -> Outcome {
             detail: None,
         },
     };
-    let exit = if completion.cleanup.is_ok() {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
-    };
     let mut records = vec![record];
     if let Err(error) = completion.cleanup {
         records.push(cleanup_record(error));
     }
-    Outcome { records, exit }
+    Outcome {
+        records,
+        exit: ExitCode::SUCCESS,
+    }
 }
 
 fn cleanup_record(error: marrow_runner::CompanionCleanupError) -> Record {
@@ -647,13 +648,13 @@ fn parse_args(rest: &[String]) -> Result<RunArgs, ExitCode> {
     let mut format: Option<OutputFormat> = None;
     let mut call_args = CallArgs::Positional(Vec::new());
     let mut store: Option<PathBuf> = None;
-    let mut iter = rest.iter();
-    while let Some(arg) = iter.next() {
+    let mut flags = Flags::new(rest, COMMAND);
+    while let Some(arg) = flags.next() {
         match arg.as_str() {
             "--" => {
                 match &mut call_args {
-                    CallArgs::Positional(args) => args.extend(iter.by_ref().cloned()),
-                    CallArgs::Stdin if iter.next().is_some() => {
+                    CallArgs::Positional(args) => args.extend(flags.by_ref().cloned()),
+                    CallArgs::Stdin if flags.next().is_some() => {
                         return Err(usage(
                             COMMAND,
                             "`--stdin` cannot be combined with positional arguments",
@@ -664,18 +665,8 @@ fn parse_args(rest: &[String]) -> Result<RunArgs, ExitCode> {
                 break;
             }
             "--stdin" => call_args = CallArgs::Stdin,
-            "--store" => once(
-                &mut store,
-                PathBuf::from(flag_value(&mut iter, COMMAND, "--store")?),
-                COMMAND,
-                "`--store` directory",
-            )?,
-            "--format" => once(
-                &mut format,
-                format_flag(&mut iter, COMMAND)?,
-                COMMAND,
-                "`--format` value",
-            )?,
+            "--store" => flags.read(&mut store, "--store", PathBuf::from)?,
+            "--format" => flags.read_format(&mut format)?,
             other if other.starts_with('-') => return Err(unknown_option(COMMAND, other)),
             other => once(&mut export, other.to_string(), COMMAND, "export name")?,
         }
@@ -717,61 +708,34 @@ fn emit_to(
     mut exit: ExitCode,
 ) -> io::Result<ExitCode> {
     for record in records {
-        match format {
-            OutputFormat::Jsonl => {
-                let text = record.to_jsonl(types, enums).unwrap_or_else(|()| {
-                    exit = ExitCode::FAILURE;
-                    render_refusal().to_jsonl(types, enums).expect(PAYLOAD_FREE)
-                });
-                sinks.out.write_all(text.as_bytes())?;
-                sinks.out.write_all(b"\n")?;
-            }
+        let (writer, palette): (&mut dyn Write, Palette) = match format {
             OutputFormat::Text if record.is_program_error(enums) => {
-                let text = record
-                    .to_text(sinks.err_palette, types, enums)
-                    .unwrap_or_else(|()| {
-                        exit = ExitCode::FAILURE;
-                        render_refusal()
-                            .to_text(sinks.err_palette, types, enums)
-                            .expect(PAYLOAD_FREE)
-                    });
-                let text = text.replacen(
-                    "error: ",
-                    &sinks.err_palette.paint(Style::Error, "error: "),
-                    1,
-                );
-                sinks.err.write_all(text.as_bytes())?;
-                sinks.err.write_all(b"\n")?;
+                (&mut *sinks.err, sinks.err_palette)
             }
-            OutputFormat::Text => {
-                let text = record
-                    .to_text(sinks.out_palette, types, enums)
-                    .unwrap_or_else(|()| {
-                        exit = ExitCode::FAILURE;
-                        render_refusal()
-                            .to_text(sinks.out_palette, types, enums)
-                            .expect(PAYLOAD_FREE)
-                    });
-                if !text.is_empty() {
-                    sinks.out.write_all(text.as_bytes())?;
-                    sinks.out.write_all(b"\n")?;
-                }
-            }
+            OutputFormat::Text | OutputFormat::Jsonl => (&mut *sinks.out, sinks.out_palette),
+        };
+        let render = |record: &Record| match format {
+            OutputFormat::Jsonl => record.to_jsonl(types, enums),
+            OutputFormat::Text => record.to_text(palette, types, enums),
+        };
+        // A value the output bound refuses is replaced by the typed refusal record,
+        // which is payload-free and always renders, and the command fails.
+        let text = render(record).unwrap_or_else(|()| {
+            exit = ExitCode::FAILURE;
+            let refusal = Record::OperationalError {
+                code: marrow_codes::Code::IoWrite,
+                detail: None,
+            };
+            render(&refusal).expect("a payload-free operational error always renders")
+        });
+        if format == OutputFormat::Jsonl || !text.is_empty() {
+            writer.write_all(text.as_bytes())?;
+            writer.write_all(b"\n")?;
         }
     }
     sinks.out.flush()?;
     sinks.err.flush()?;
     Ok(exit)
-}
-
-const PAYLOAD_FREE: &str = "a payload-free operational error always renders";
-
-/// The record that stands in for a value whose rendering the output bound refused.
-fn render_refusal() -> Record {
-    Record::OperationalError {
-        code: marrow_codes::Code::IoWrite,
-        detail: None,
-    }
 }
 
 #[cfg(test)]
@@ -831,7 +795,8 @@ mod terminal_tests {
                     path: PathBuf::from("/tmp/retained"),
                     cause: io::ErrorKind::PermissionDenied.into(),
                 }),
-            });
+            })
+            .settled(&[]);
             assert_eq!(exit, ExitCode::FAILURE);
             assert_eq!(records.len(), 2);
             assert_eq!(records[0], first);

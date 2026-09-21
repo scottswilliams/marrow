@@ -137,7 +137,8 @@ impl FileRef {
         u16::try_from(index).ok().map(Self)
     }
 
-    fn index(self) -> usize {
+    /// The position this coordinate names in the module order that minted it.
+    pub(crate) fn index(self) -> usize {
         self.0 as usize
     }
 

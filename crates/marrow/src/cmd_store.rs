@@ -9,7 +9,7 @@ use std::process::{Command as Process, ExitCode};
 use marrow_compile::compile;
 
 use crate::Command;
-use crate::command_output::{OutputFormat, flag_value, format_flag, once, unknown_option, usage};
+use crate::command_output::{Flags, OutputFormat, unknown_option, usage};
 use crate::companion::{companion_command, run_companion, stage_image};
 use crate::project::compile_project;
 
@@ -195,57 +195,29 @@ fn parse_args(operation: Operation, rest: &[String]) -> Result<Args, ExitCode> {
     let mut new: Option<PathBuf> = None;
     let mut ceiling: Option<String> = None;
     let mut selected_image: Option<PathBuf> = None;
-    let mut iter = rest.iter();
-    while let Some(arg) = iter.next() {
+    let mut flags = Flags::new(rest, command);
+    while let Some(arg) = flags.next() {
         match arg.as_str() {
-            "--old-image" if operation == Operation::Apply => once(
-                &mut old,
-                PathBuf::from(flag_value(&mut iter, command, "--old-image")?),
-                command,
-                "`--old-image` artifact",
-            )?,
-            "--new-image" if operation == Operation::Apply => once(
-                &mut new,
-                PathBuf::from(flag_value(&mut iter, command, "--new-image")?),
-                command,
-                "`--new-image` artifact",
-            )?,
-            "--accept-ceiling" if operation == Operation::Apply => once(
-                &mut ceiling,
-                flag_value(&mut iter, command, "--accept-ceiling")?.to_string(),
-                command,
-                "`--accept-ceiling` id",
-            )?,
-            "--image" if operation == Operation::Recover => once(
-                &mut selected_image,
-                PathBuf::from(flag_value(&mut iter, command, "--image")?),
-                command,
-                "`--image` artifact",
-            )?,
-            "--store" => once(
-                &mut store,
-                PathBuf::from(flag_value(&mut iter, command, "--store")?),
-                command,
-                "`--store` directory",
-            )?,
-            "--out" if operation == Operation::Backup => once(
-                &mut transfer,
-                PathBuf::from(flag_value(&mut iter, command, "--out")?),
-                command,
-                "`--out` file",
-            )?,
-            "--from" if operation == Operation::Restore => once(
-                &mut transfer,
-                PathBuf::from(flag_value(&mut iter, command, "--from")?),
-                command,
-                "`--from` file",
-            )?,
-            "--format" => once(
-                &mut format,
-                format_flag(&mut iter, command)?,
-                command,
-                "`--format` value",
-            )?,
+            "--old-image" if operation == Operation::Apply => {
+                flags.read(&mut old, "--old-image", PathBuf::from)?
+            }
+            "--new-image" if operation == Operation::Apply => {
+                flags.read(&mut new, "--new-image", PathBuf::from)?
+            }
+            "--accept-ceiling" if operation == Operation::Apply => {
+                flags.read(&mut ceiling, "--accept-ceiling", str::to_string)?
+            }
+            "--image" if operation == Operation::Recover => {
+                flags.read(&mut selected_image, "--image", PathBuf::from)?
+            }
+            "--store" => flags.read(&mut store, "--store", PathBuf::from)?,
+            "--out" if operation == Operation::Backup => {
+                flags.read(&mut transfer, "--out", PathBuf::from)?
+            }
+            "--from" if operation == Operation::Restore => {
+                flags.read(&mut transfer, "--from", PathBuf::from)?
+            }
+            "--format" => flags.read_format(&mut format)?,
             other => return Err(unknown_option(command, other)),
         }
     }

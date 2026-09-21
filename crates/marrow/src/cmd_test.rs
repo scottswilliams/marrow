@@ -16,11 +16,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use marrow_codes::Code;
-use marrow_compile::{ProjectFile, compile_with_tests};
+use marrow_compile::compile_with_tests;
 use marrow_project::ProjectInput;
 
 use crate::Command;
-use crate::command_output::{OutputFormat, flag_value, format_flag, once, unknown_option, usage};
+use crate::command_output::{Flags, OutputFormat, unknown_option, usage};
 use crate::outcome::{Record, TestOutcome, TestRecord, TestSummary};
 use crate::project::capture_project;
 use crate::term_style::{Palette, Stream};
@@ -184,7 +184,7 @@ fn classify(
                 code: fault.code(),
                 line: fault.line(),
                 column: fault.column(),
-                source_line: source_line(project, &meta.file, fault.line()),
+                source_line: source_line(project, meta, fault.line()),
             }
         }
         Err(marrow_vm::DurableExecutionFault::Runtime(fault)) => TestOutcome::Errored {
@@ -213,20 +213,17 @@ fn classify(
     }
 }
 
-/// The trimmed source line a failed assertion sits on. The test's file is one of the
-/// captured modules and the fault's line is inside it, because the image the VM ran was
-/// compiled from this capture.
-fn source_line(project: &ProjectInput, file: &str, line: u32) -> String {
-    let module = project
-        .modules()
-        .iter()
-        .find(|module| ProjectFile::from(*module).spelling() == file)
-        .expect("a test's file is a captured module");
+/// The trimmed source line a failed assertion sits on: the test's module, at the
+/// position the compiler recorded for it in the captured project's module order, read
+/// at the fault's line. The image the VM ran was compiled from this capture, so the
+/// line is inside the source; the rendering is total either way.
+fn source_line(project: &ProjectInput, meta: &marrow_compile::TestEntry, line: u32) -> String {
+    let module = &project.modules()[meta.module_index];
     std::str::from_utf8(module.source())
-        .expect("a compiled module is UTF-8")
-        .lines()
-        .nth(line as usize - 1)
-        .expect("a fault's line is inside its source")
+        .ok()
+        .zip((line as usize).checked_sub(1))
+        .and_then(|(source, index)| source.lines().nth(index))
+        .unwrap_or_default()
         .trim()
         .to_string()
 }
@@ -235,21 +232,11 @@ fn parse_args(rest: &[String]) -> Result<TestArgs, ExitCode> {
     const COMMAND: Command = Command::Test;
     let mut format: Option<OutputFormat> = None;
     let mut filter: Option<String> = None;
-    let mut iter = rest.iter();
-    while let Some(arg) = iter.next() {
+    let mut flags = Flags::new(rest, COMMAND);
+    while let Some(arg) = flags.next() {
         match arg.as_str() {
-            "--format" => once(
-                &mut format,
-                format_flag(&mut iter, COMMAND)?,
-                COMMAND,
-                "`--format` value",
-            )?,
-            "--filter" => once(
-                &mut filter,
-                flag_value(&mut iter, COMMAND, "--filter")?.to_string(),
-                COMMAND,
-                "`--filter` substring",
-            )?,
+            "--format" => flags.read_format(&mut format)?,
+            "--filter" => flags.read(&mut filter, "--filter", str::to_string)?,
             other => return Err(unknown_option(COMMAND, other)),
         }
     }

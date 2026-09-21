@@ -290,4 +290,33 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn a_demand_over_an_unknown_node_is_unspellable() {
+        // The whole result is `None` rather than a partial or invented spelling, for
+        // the place lists and the sentence alike.
+        let unknown = SemanticPath::root(id(APP), id(0x77));
+        let demand = ExportDemand::from_atoms([DemandAtom::new(unknown, OperationClass::Read)]);
+        assert!(naming().demand_places(demand.as_view()).is_none());
+        assert!(naming().demand_sentence(demand.as_view()).is_none());
+    }
+
+    #[test]
+    fn naming_visits_only_selected_atoms() {
+        let known = DemandAtom::new(root_path(), OperationClass::Read);
+        let unknown = DemandAtom::new(SemanticPath::root(id(APP), id(0x77)), OperationClass::Read);
+        let owner = ExportDemand::from_atoms([unknown, known.clone()]);
+        let known_row = marrow_image::DemandSelection::from_ordinals(vec![0]);
+        let unknown_row = marrow_image::DemandSelection::from_ordinals(vec![1]);
+        let selected = owner.selected(&known_row).expect("known selection");
+        let expected = ExportDemand::from_atoms([known]);
+        assert_eq!(
+            naming().demand_places(selected),
+            naming().demand_places(expected.as_view())
+        );
+        let selected = owner
+            .selected(&unknown_row)
+            .expect("unknown selection is canonical");
+        assert!(naming().demand_places(selected).is_none());
+    }
 }

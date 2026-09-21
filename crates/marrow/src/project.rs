@@ -174,7 +174,7 @@ fn report_compile_failure(failure: &marrow_compile::CompileFailure, hint: Option
 /// One compile diagnostic through the one renderer, under the compiler's own file
 /// spelling: a file a dependency declares carries that dependency's alias, as in
 /// `graphtext:src/text.mw`.
-pub(crate) fn diagnostic_line(palette: Palette, diagnostic: &SourceDiagnostic) -> String {
+fn diagnostic_line(palette: Palette, diagnostic: &SourceDiagnostic) -> String {
     palette.diagnostic(
         &diagnostic_file(diagnostic),
         diagnostic.line(),
