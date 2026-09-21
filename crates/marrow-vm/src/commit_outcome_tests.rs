@@ -47,10 +47,7 @@ enum PostCommitFault {
 /// The encoded fixture image; every consumer seals it through the verifier.
 fn commit_image(post_commit_fault: PostCommitFault, mutating: bool) -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
-    let savepoint = draft_owner.savepoint();
-    let mut draft = draft_owner
-        .begin_transaction(savepoint)
-        .expect("a fresh savepoint admits");
+    let mut draft = draft_owner.begin_transaction();
     let record_name = draft
         .intern_string("Counter")
         .expect("a within-domain mint");

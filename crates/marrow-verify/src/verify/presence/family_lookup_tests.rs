@@ -210,8 +210,7 @@ fn declare_counter_with_children(draft: &mut marrow_image::DraftTxn<'_>) -> marr
 fn repeated_call_image(entries: usize) -> Vec<u8> {
     assert!(entries >= 2);
     let mut owner = ImageDraft::new();
-    let savepoint = owner.savepoint();
-    let mut draft = owner.begin_transaction(savepoint).expect("fresh savepoint");
+    let mut draft = owner.begin_transaction();
     draft.set_application_identity(id(1, 0));
     let record = declare_counter_with_children(&mut draft);
     let members = draft.product_members(id(2, 0)).expect("declared members");

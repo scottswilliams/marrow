@@ -115,10 +115,7 @@ fn holder(draft: &mut DraftTxn<'_>, name: &str, ty: ImageType) -> TypeId {
 /// descend; both are at their bound, in one image, on one path.
 fn deepest_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
-    let savepoint = draft_owner.savepoint();
-    let mut draft = draft_owner
-        .begin_transaction(savepoint)
-        .expect("a fresh savepoint admits");
+    let mut draft = draft_owner.begin_transaction();
 
     let deep = deepest_value(&mut draft);
     let entry = holder(&mut draft, "R", deep.ty);

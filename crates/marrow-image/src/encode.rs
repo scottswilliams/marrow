@@ -1,44 +1,18 @@
 //! The canonical container encoder.
 //!
-//! Turns a validated [`ImageDraft`] into the sectioned, length-prefixed,
-//! big-endian image bytes with a computed digest. The encoder sorts the string and
-//! constant pools into canonical order, rewrites every reference through the sort
-//! maps, and lays out each function's bytecode so jump targets — held as
-//! instruction indices while drafting — become container byte offsets.
+//! Turns a validated [`ImageDraft`] into the sectioned, length-prefixed, big-endian image
+//! bytes with a computed digest: the string and constant pools are sorted into canonical
+//! order, every reference is rewritten through the sort maps, and each function's
+//! bytecode is laid out so drafted instruction indices become container byte offsets.
 //!
-//! # Row law and token law
-//!
-//! Each canonicalized pool — strings, constants, exports, test entries — is its one
-//! retained base row set plus one permutation computed by the pool's one comparator;
-//! emission iterates the permutation-mapped base rows, so no second sorted copy of a
-//! pool exists to disagree with the rows it came from. The nine non-DURABLE section
-//! writers receive the sealed [`crate::remap::SectionSink`] their driver hands them
-//! (the DURABLE writer keeps its pinned [`ImageByteSink`] bound), and a writer
-//! resolves a string or constant reference only as an opaque [`crate::remap`] token
-//! whose sole operation appends two bytes — so a section's byte length cannot depend
-//! on which permutation or sink drives the writer, which is what lets one writer
-//! serve counting and building alike.
-//!
-//! # Why the row-count conversions cannot truncate
-//!
-//! Each table is length-prefixed, so the encoder narrows a `usize` row count (and each
-//! owned wide logical ordinal) to the `u16` or `u8` the wire spells it in. Every owned
-//! narrowing below goes through the measure core's checked policy-clean path
-//! ([`crate::measure::wire_ordinal`]/[`crate::measure::wire_len`]), which rests on the
-//! same two-part derivation, stated once here rather than at each site:
-//!
-//! 1. The measure core's coherence and policy walks (`crate::measure`) run before any
-//!    section is built and refuse a draft whose row count exceeds the
-//!    bound for that table, so the value converted is at most that bound.
-//! 2. The `const _` encoded-width block in [`bounds`] asserts at compile time that
-//!    every one of those bounds fits the width its count is spelled in, so widening a
-//!    bound past its encoded width breaks the build rather than truncating a count in
-//!    an emitted image.
-//!
-//! The counts that are *not* covered by a `bounds` maximum — a function's span table, a
-//! sparse-write key path, and a section body's own byte length — carry their own
-//! derivation at their site.
-
+//! Each canonicalized pool is its one retained base row set plus one permutation from the
+//! pool's one comparator, so no second sorted copy exists to disagree with its rows. A
+//! section writer resolves a string or constant reference only as an opaque
+//! [`crate::remap`] token whose sole operation appends two bytes, so a section's length
+//! cannot depend on the permutation or the sink, and one writer serves counting and
+//! building alike. Every row count narrowed to its wire width goes through the measure
+//! core's checked path after the policy walk has refused any draft past that table's
+//! bound, and [`bounds`] asserts at compile time that each bound fits its encoded width.
 use crate::bounds;
 use crate::digest::ImageId;
 use crate::draft::{
@@ -62,7 +36,7 @@ pub(crate) const SECTION_COUNT: u8 = 10;
 /// One SPANS row: `u32(offset) ‖ u32(line) ‖ u32(column)` — the row width
 /// `encode_spans` spells in three `u32` pushes and the measure core's span counting
 /// consumes arithmetically; the counted==emitted KATs pin the two against each other.
-pub const SPAN_ROW_BYTES: usize = 12;
+pub(crate) const SPAN_ROW_BYTES: usize = 12;
 
 /// The encoded image plus its digest.
 #[derive(Debug, Clone)]
@@ -721,15 +695,9 @@ fn push_u32(out: &mut impl ImageByteSink, value: u32) {
 #[cfg(test)]
 mod encoder_fixtures {
     use super::checked_code_offset;
-    use crate::draft::{
-        AdmittedGraphInputPlan, CollectionTypeDef, FieldDef, FunctionDef, ImageDraft,
-        RecordTypeDef, RootOccurrenceDef, SpanEntry, VariantDef,
-    };
-    use crate::durable_id::{DurableIndexComponent, DurableIndexShape, LedgerIdBytes};
+    use crate::draft::{FunctionDef, ImageDraft};
     use crate::instr::Instr;
-    use crate::product::{DeclarationMemberDef, DeclarationMemberShape};
-    use crate::semantic::SemanticTarget;
-    use crate::ty::{ImageType, Scalar};
+    use crate::ty::ImageType;
 
     #[test]
     fn code_offset_overflow_is_the_typed_code_length_refusal() {
@@ -748,168 +716,11 @@ mod encoder_fixtures {
         );
     }
 
-    fn id(byte: u8) -> LedgerIdBytes {
-        LedgerIdBytes::from_bytes([byte; 16])
-    }
-
-    /// A storeless draft whose insertion orders disagree with every canonical order.
-    fn storeless() -> ImageDraft {
-        let mut draft = ImageDraft::new();
-        let source = draft
-            .intern_string("src/main.mw")
-            .expect("a within-domain mint");
-        let zeta = draft.intern_string("zeta").expect("a within-domain mint");
-        let alpha = draft.intern_string("alpha").expect("a within-domain mint");
-        let record_name = draft.intern_string("record").expect("a within-domain mint");
-        let field_name = draft.intern_string("field").expect("a within-domain mint");
-        let enum_name = draft.intern_string("choice").expect("a within-domain mint");
-        let variant_one = draft.intern_string("one").expect("a within-domain mint");
-        let variant_two = draft.intern_string("two").expect("a within-domain mint");
-
-        let text = draft.intern_text("zeta").expect("a within-domain mint");
-        draft.intern_int(-1).expect("a within-domain mint");
-        draft.intern_int(0).expect("a within-domain mint");
-        draft.intern_bool(true).expect("a within-domain mint");
-        draft.intern_date(20_000).expect("a within-domain mint");
-        draft.intern_instant(7).expect("a within-domain mint");
-        draft.intern_duration(-7).expect("a within-domain mint");
-
-        let record = draft
-            .reserve_record_type(record_name)
-            .expect("a within-domain mint");
-        let savepoint = draft.savepoint();
-        let mut fills = draft
-            .begin_transaction(savepoint)
-            .expect("a fresh savepoint admits");
-        fills
-            .set_record_fields(
-                record,
-                vec![
-                    FieldDef {
-                        name: field_name,
-                        ty: ImageType::scalar(Scalar::Int),
-                        required: true,
-                    },
-                    FieldDef {
-                        name: alpha,
-                        ty: ImageType::scalar(Scalar::Text),
-                        required: false,
-                    },
-                ],
-            )
-            .expect("the reserved row fills once");
-        fills.commit();
-        let choice = draft
-            .reserve_enum_type(enum_name)
-            .expect("a within-domain mint");
-        let savepoint = draft.savepoint();
-        let mut fills = draft
-            .begin_transaction(savepoint)
-            .expect("a fresh savepoint admits");
-        fills
-            .set_enum_variants(
-                choice,
-                vec![
-                    VariantDef {
-                        name: variant_one,
-                        category: false,
-                        payload: vec![ImageType::scalar(Scalar::Int)],
-                    },
-                    VariantDef {
-                        name: variant_two,
-                        category: false,
-                        payload: Vec::new(),
-                    },
-                ],
-            )
-            .expect("the reserved row fills once");
-        fills.commit();
-        let list = draft
-            .add_collection_type(CollectionTypeDef::List {
-                elem: ImageType::scalar(Scalar::Int),
-            })
-            .expect("a within-domain mint");
-        draft
-            .add_collection_type(CollectionTypeDef::Map {
-                key: ImageType::scalar(Scalar::Text),
-                value: ImageType::scalar(Scalar::Bool),
-            })
-            .expect("a within-domain mint");
-
-        let mut funcs = Vec::new();
-        for name in [zeta, alpha] {
-            let func = draft
-                .add_function(FunctionDef {
-                    name,
-                    source,
-                    params: vec![ImageType::scalar(Scalar::Int)],
-                    ret: ImageType::Unit,
-                    local_count: 2,
-                    code: vec![
-                        Instr::ConstLoad(text),
-                        Instr::LocalSet(1),
-                        Instr::LocalGet(0),
-                        Instr::JumpIfFalse(6),
-                        Instr::RecordNew(record),
-                        Instr::EnumConstruct {
-                            enum_idx: choice,
-                            variant: 0,
-                        },
-                        Instr::ListNew(list),
-                        Instr::VacantLoad(ImageType::scalar(Scalar::Text)),
-                        Instr::Jump(9),
-                        Instr::Return,
-                    ],
-                    spans: vec![
-                        SpanEntry {
-                            instr_index: 0,
-                            line: 1,
-                            column: 1,
-                        },
-                        SpanEntry {
-                            instr_index: 9,
-                            line: 2,
-                            column: 5,
-                        },
-                    ],
-                })
-                .expect("no site operand needs validating");
-            funcs.push(func);
-        }
-        // Exports inserted in descending id order; test entries in descending name
-        // order — the canonical permutations must reorder both.
-        let mut exports: Vec<crate::export_id::ExportId> = ["a", "b"]
-            .into_iter()
-            .map(|item| crate::export_id::ExportId::of_local("m", item))
-            .collect();
-        exports.sort_by(|left, right| left.bytes().cmp(right.bytes()));
-        for (export, func) in exports.into_iter().rev().zip(funcs.iter()) {
-            draft.add_export(export, *func);
-        }
-        // Test entries name their own unexported zero-parameter unit functions — the
-        // test relations the coherence walk enforces — under names whose remapped
-        // order disagrees with insertion order.
-        for name in [zeta, alpha] {
-            let test_fn = draft
-                .add_function(FunctionDef {
-                    name,
-                    source,
-                    params: Vec::new(),
-                    ret: ImageType::Unit,
-                    local_count: 0,
-                    code: vec![Instr::Return],
-                    spans: Vec::new(),
-                })
-                .expect("no site operand needs validating");
-            draft.add_test_entry(name, test_fn);
-        }
-        draft
-    }
-
     /// A relation-heavy but coherent draft. Each relation has `rows` distinct input
     /// rows, and each exported body contributes one call-membership question.
     fn algorithmic_work_draft(rows: usize) -> ImageDraft {
-        let mut draft = ImageDraft::new();
+        let mut owner = ImageDraft::new();
+        let mut draft = owner.begin_transaction();
         let source = draft
             .intern_string("src/algorithmic.mw")
             .expect("a within-domain mint");
@@ -975,7 +786,8 @@ mod encoder_fixtures {
                 .expect("the test function has no site operand");
             draft.add_test_entry(name, function);
         }
-        draft
+        draft.commit();
+        owner
     }
 
     /// A relation-heavy draft encodes to the same bytes every time: the coherence
@@ -990,156 +802,5 @@ mod encoder_fixtures {
             assert_eq!(first.bytes, second.bytes, "{rows} rows encode identically");
             assert_eq!(first.image_id, second.image_id);
         }
-    }
-
-    /// A durable draft: a keyed root and an indexed root over one Product whose members
-    /// nest a struct-shaped field, a group, and a keyed branch, plus one operation site.
-    fn durable() -> ImageDraft {
-        let mut draft = ImageDraft::new();
-        draft.set_application_identity(id(0x01));
-        let record_name = draft.intern_string("entry").expect("a within-domain mint");
-        let keyed = draft.intern_string("keyed").expect("a within-domain mint");
-        let indexed = draft
-            .intern_string("indexed")
-            .expect("a within-domain mint");
-        let branch_name = draft.intern_string("branch").expect("a within-domain mint");
-
-        let entry = draft
-            .add_record_type(RecordTypeDef {
-                name: record_name,
-                fields: Vec::new(),
-            })
-            .expect("a within-domain mint");
-        let leaf = draft
-            .value_shapes_mut()
-            .scalar(Scalar::Int)
-            .expect("the test arena mints");
-        let pair = draft
-            .value_shapes_mut()
-            .struct_shape(vec![leaf, leaf])
-            .expect("the test arena mints");
-        let sum = draft
-            .value_shapes_mut()
-            .enum_shape(
-                id(0x60),
-                vec![(id(0x61), vec![leaf]), (id(0x62), Vec::new())],
-            )
-            .expect("the test arena mints");
-
-        let plan = AdmittedGraphInputPlan::admit(1, 2, 8);
-        let product = id(0x10);
-        draft
-            .declare_product(
-                &plan,
-                product,
-                entry,
-                vec![
-                    DeclarationMemberDef {
-                        parent: None,
-                        shape: DeclarationMemberShape::Field {
-                            id: id(0x20),
-                            required: true,
-                            value: pair,
-                        },
-                    },
-                    DeclarationMemberDef {
-                        parent: None,
-                        shape: DeclarationMemberShape::Group { id: id(0x21) },
-                    },
-                    DeclarationMemberDef {
-                        parent: Some(1),
-                        shape: DeclarationMemberShape::Field {
-                            id: id(0x22),
-                            required: false,
-                            value: sum,
-                        },
-                    },
-                    DeclarationMemberDef {
-                        parent: None,
-                        shape: DeclarationMemberShape::Branch {
-                            placement: id(0x30),
-                            name: branch_name,
-                            record: entry,
-                            keys: vec![crate::draft::KeyColumn {
-                                scalar: Scalar::Int,
-                                id: id(0x31),
-                            }],
-                        },
-                    },
-                    DeclarationMemberDef {
-                        parent: Some(3),
-                        shape: DeclarationMemberShape::Field {
-                            id: id(0x32),
-                            required: true,
-                            value: leaf,
-                        },
-                    },
-                ],
-            )
-            .expect("a well-formed declaration");
-        let admitted = draft
-            .add_root_occurrence(
-                &plan,
-                product,
-                RootOccurrenceDef {
-                    name: keyed,
-                    keys: vec![crate::draft::KeyColumn {
-                        scalar: Scalar::Int,
-                        id: id(0x40),
-                    }],
-                    placement: id(0x41),
-                    indexes: Vec::new().into(),
-                },
-            )
-            .expect("the Product is declared");
-        draft
-            .add_root_occurrence(
-                &plan,
-                product,
-                RootOccurrenceDef {
-                    name: indexed,
-                    keys: Vec::new(),
-                    placement: id(0x51),
-                    indexes: vec![DurableIndexShape {
-                        id: id(0x52),
-                        unique: true,
-                        components: vec![DurableIndexComponent::Field(id(0x20))],
-                    }]
-                    .into(),
-                },
-            )
-            .expect("the Product is declared");
-        let handle = draft
-            .bind_occurrence_site(
-                admitted.occurrence(),
-                admitted.placement_path(),
-                SemanticTarget::WholePayload,
-            )
-            .expect("a root admits a whole-payload site");
-        draft
-            .request_site(&handle)
-            .expect("the plan has capacity for one site");
-        draft
-    }
-
-    /// Both fixtures must be populated, so the encoder is exercised over every
-    /// section rather than over empty row sets.
-    #[test]
-    fn the_fixtures_are_populated_and_encode() {
-        let storeless = storeless();
-        storeless.encode().expect("the storeless fixture encodes");
-        assert!(!storeless.strings().is_empty());
-        assert!(!storeless.consts().is_empty());
-        assert!(!storeless.types().is_empty());
-        assert!(!storeless.enums().is_empty());
-        assert!(!storeless.collections().is_empty());
-        assert!(!storeless.functions().is_empty());
-        assert!(storeless.export_count() > 0);
-        assert!(storeless.test_entry_count() > 0);
-
-        let durable = durable();
-        durable.encode().expect("the durable fixture encodes");
-        assert_eq!(durable.root_occurrences().len(), 2);
-        assert!(durable.site_row_count() > 0);
     }
 }

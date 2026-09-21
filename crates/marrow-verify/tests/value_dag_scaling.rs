@@ -120,10 +120,7 @@ fn record_type(record: TypeId) -> ImageType {
 /// to. The value graph is exactly `levels`; the declared edges are `fields`.
 fn encode_corpus(fields: usize, levels: &dyn Fn(&mut DraftTxn<'_>) -> Vec<Level>) -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
-    let savepoint = draft_owner.savepoint();
-    let mut draft = draft_owner
-        .begin_transaction(savepoint)
-        .expect("a fresh savepoint admits");
+    let mut draft = draft_owner.begin_transaction();
     let levels = levels(&mut draft);
     let entry_name = draft.intern_string("R").expect("a within-domain mint");
     let entry_fields: Vec<FieldDef> = (0..fields)

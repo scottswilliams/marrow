@@ -46,18 +46,10 @@ use crate::types::{
 mod presence_calls;
 use presence_calls::reject_unproven_uses;
 
-/// The armed transaction a fresh savepoint admits over `owner` — the one admission
-/// spelling for this crate's production batches and test fixtures alike.
+/// The armed transaction over `owner` — the one admission spelling for this crate's
+/// production batches and test fixtures alike.
 pub(crate) fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
-    let savepoint = owner.savepoint();
-    #[expect(
-        clippy::expect_used,
-        reason = "admission law: the savepoint was just minted from this unarmed owner"
-    )]
-    let txn = owner
-        .begin_transaction(savepoint)
-        .expect("a fresh savepoint admits");
-    txn
+    owner.begin_transaction()
 }
 
 /// One resolved public export: its dotted module, its item name, and the stable

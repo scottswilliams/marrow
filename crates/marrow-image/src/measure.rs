@@ -1,41 +1,19 @@
-//! Coherence, policy, and the one capped emission pass.
+//! Coherence, policy, and the one capped emission pass behind [`ImageDraft::encode`].
 //!
-//! [`ImageDraft::encode`] runs three steps:
+//! 1. Coherence ([`CoherentDraft::of`]): every invariant-classified decision — the fixed
+//!    per-construct widths, the durable graph walks, the application anchor, the site
+//!    projection, and every structural reference the sections resolve — in emission
+//!    order, before any policy candidate. Each hoisted check is a range check over a
+//!    local ordinal or a locally decidable relation; the verifier stays the only decoder.
+//! 2. Policy ([`CoherentDraft::check_policy`]): the aggregate caps, then per-function
+//!    CodeBytes, returning without hashing or allocating.
+//! 3. Emission ([`CoherentDraft::emit_image`]): the image is written once into a sink that
+//!    stops one byte past [`bounds::MAX_IMAGE_BYTES`]; a saturated sink is
+//!    [`ImageBuildError::ImageTooLarge`], and the durable contract identity is minted
+//!    exactly once, closing the DURABLE body.
 //!
-//! 1. **Coherence** ([`CoherentDraft::of`]): every invariant-classified decision —
-//!    the fixed per-construct widths, the durable graph walks, the application
-//!    anchor, the site projection, and every structural reference the emitted
-//!    sections resolve. A coherence failure returns before any policy candidate.
-//! 2. **Policy** ([`CoherentDraft::check_policy`]): the eleven aggregate caps, then
-//!    per-function CodeBytes. A policy failure returns without hashing or allocating.
-//! 3. **Emission** ([`CoherentDraft::emit_image`]): the whole image is written once,
-//!    in assembly order, into a sink that stops one byte past
-//!    [`bounds::MAX_IMAGE_BYTES`]. Each section reserves its frame, writes its body
-//!    through the section writer, and patches the body length back into the frame;
-//!    a saturated sink is [`ImageBuildError::ImageTooLarge`]. The durable contract
-//!    identity is minted exactly once, closing the DURABLE body.
-//!
-//! Step 1 walks the invariant bounds, the application anchor, the streamed site
-//! projection, and operand provenance, then the emission-order reference checks hoisted
-//! out of the section writers, in emission order. Every hoisted check is a range check
-//! over a local ordinal or a locally decidable relation: an in-range id keeps its local
-//! meaning, and the independent verifier remains the only decoder.
-//!
-//! # Allocation posture
-//!
-//! Pre-verdict heap scratch is limited to two non-overlapping families. The
-//! site-projection validation streams and materializes no path.
-//!
-//! - The EXPORTS/TEST-ENTRY relation scratch: one byte per retained function carries
-//!   its export/test flags. During EXPORTS it overlaps a `HashSet` of borrowed export
-//!   identities, pre-sized to the export population; during TEST-ENTRY it instead
-//!   overlaps one bit per retained string for name uniqueness. Coherence precedes
-//!   policy, so these are population-bounded terms and may include provisional
-//!   over-policy rows. The scratch is dropped when TEST-ENTRY coherence ends.
-//!
-//! - The DURABLE traversal's `Vec<ExpandTask>` worklist in `value_dag.rs`. Its `Node`
-//!   arm carries a stamped `ValueShapeNodeId`; `EnumMember` borrows a member.
-
+//! Pre-verdict heap scratch is population-bounded: one byte per retained function for the
+//! export/test relations, and the DURABLE traversal's worklist.
 use std::collections::HashSet;
 
 use crate::bounds;
@@ -963,7 +941,8 @@ mod decisive_saturation {
 
     #[test]
     fn an_over_ceiling_span_table_is_the_ceiling_refusal() {
-        let mut draft = ImageDraft::new();
+        let mut owner = ImageDraft::new();
+        let mut draft = owner.begin_transaction();
         let src = draft.intern_string("s").expect("a within-domain mint");
         let name = draft.intern_string("f").expect("a within-domain mint");
         draft
@@ -989,7 +968,8 @@ mod decisive_saturation {
 
     #[test]
     fn an_over_ceiling_function_table_is_the_ceiling_refusal() {
-        let mut draft = ImageDraft::new();
+        let mut owner = ImageDraft::new();
+        let mut draft = owner.begin_transaction();
         let src = draft.intern_string("s").expect("a within-domain mint");
         let name = draft.intern_string("f").expect("a within-domain mint");
         let zero = draft.intern_int(0).expect("a within-domain mint");
@@ -1014,7 +994,8 @@ mod decisive_saturation {
 
     #[test]
     fn an_over_ceiling_string_pool_saturates_at_the_decisive_byte() {
-        let mut draft = ImageDraft::new();
+        let mut owner = ImageDraft::new();
+        let mut draft = owner.begin_transaction();
         for index in 0..200 {
             draft
                 .intern_string(&format!("{index:04}{}", "x".repeat(3_996)))
@@ -1030,7 +1011,8 @@ mod decisive_saturation {
 
     #[test]
     fn an_over_ceiling_durable_expansion_saturates_at_the_decisive_byte() {
-        let mut draft = ImageDraft::new();
+        let mut owner = ImageDraft::new();
+        let mut draft = owner.begin_transaction();
         draft.set_application_identity(crate::durable_id::LedgerIdBytes::from_bytes([0x01; 16]));
         let value = {
             let values = draft.value_shapes_mut();

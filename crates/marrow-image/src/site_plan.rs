@@ -1,23 +1,16 @@
 //! The bounded operation-site demand plan: the one owner of the site table's rows, its
 //! deduplicating demand map, and its capacity policy.
 //!
-//! Every operation site an image carries is requested here, and the plan checks vacant
-//! capacity *before* it mints a numeric id. A fitting [`SiteId`] is therefore always
-//! inside `0..MAX_SITES`, and no arithmetic on the table's length ever produces one.
+//! Every operation site is requested here, and the plan checks vacant capacity before it
+//! mints a numeric id, so a fitting [`SiteId`] is always inside `0..MAX_SITES`. A row
+//! retains only its [`OccurrenceSiteDemandKey`] — three owned typed ordinals — and the
+//! path it encodes to is projected from the key at encode time by the one path owner, so
+//! the plan cannot hold a path that drifted from the graph it addresses.
 //!
-//! A row retains only its [`OccurrenceSiteDemandKey`] — three owned typed ordinals into
-//! the draft's own canonical tables. It retains no semantic path: the path a site encodes
-//! to is *projected* from the key at encode time by the one path owner, so the plan
-//! cannot hold a path that has drifted from the graph it claims to address, and a row
-//! costs a fixed width rather than a per-row heap allocation.
-//!
-//! Crossing the cap is **nonblocking**: the plan saturates its logical demand count at
-//! `MAX_SITES + 1`, records the earliest crossing once, and keeps answering. A demand it
-//! already retains still resolves to the id it was given, so a repeated reference never
-//! begins to fail; every other post-cap demand is refused an id rather than aliasing a
-//! fitting one. The encoder projects the saturated logical count through the Sites bound,
-//! so an image whose demand crossed the cap is refused there as it always was.
-
+//! Crossing the cap is nonblocking: the plan saturates its logical demand count at
+//! `MAX_SITES + 1`, records the earliest crossing once, and keeps answering — a retained
+//! demand still resolves to its id, every other post-cap demand is refused an id rather
+//! than aliasing a fitting one, and the encoder refuses the image through the Sites bound.
 use std::collections::HashMap;
 
 use crate::bounds::MAX_SITES;
@@ -140,10 +133,9 @@ impl std::error::Error for SitePlanStateError {}
 ///
 /// Its stable provenance — the minting draft/plan identity, the complete demand key, the
 /// exact root/path row identities, and the site-row or receipt identity — survives
-/// `DraftTxn::commit` and every later transaction-epoch rotation; it never borrows or
-/// carries the transaction epoch, so a ref for a preexisting unchanged occurrence and
-/// receipt remains valid across a function-only rollback, while a ref whose rows a
-/// rollback invalidated cannot authenticate after deterministic ordinal reuse.
+/// `DraftTxn::commit`, so a ref for a preexisting unchanged occurrence and receipt
+/// remains valid across a function-only rollback, while a ref whose rows a rollback
+/// invalidated cannot authenticate after deterministic ordinal reuse.
 #[doc(hidden)]
 #[derive(Clone)]
 pub struct PlannedSiteRef {

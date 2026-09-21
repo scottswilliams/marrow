@@ -1,7 +1,7 @@
-//! The transaction surface's state battery: savepoint identity and epoch laws; the armed
-//! rollback's byte-exact total inverse; and the per-kind nonblocking N+1 ledger deltas
-//! observed through the public fence — commit retains the crossing, while rollback restores
-//! the exact pre-transaction verdict and bytes.
+//! The transaction surface's state battery: the armed rollback's byte-exact total
+//! inverse, and the per-kind nonblocking N+1 ledger deltas observed through the public
+//! fence — commit retains the crossing, while rollback restores the exact
+//! pre-transaction verdict and bytes.
 
 use marrow_image::bounds::{
     MAX_COLLECTIONS, MAX_CONSTS, MAX_ENUMS, MAX_ROOTS, MAX_STRING_BYTES, MAX_STRINGS, MAX_TYPES,
@@ -36,81 +36,6 @@ fn exporting_owner() -> ImageDraft {
     draft.add_export(ExportId::of_local("m", "main"), main);
     draft.commit();
     owner
-}
-
-// ---- The savepoint battery.
-
-/// A savepoint minted by one draft is a foreign token to another — even when the two
-/// drafts are byte-identical, their allocation identities differ.
-#[test]
-fn a_foreign_savepoint_is_refused_before_any_mutation() {
-    let mut first = ImageDraft::new();
-    let mut second = ImageDraft::new();
-    let foreign = first.savepoint();
-    assert_eq!(
-        second.begin_transaction(foreign).err(),
-        Some(DraftStateError::ForeignDraft),
-    );
-    // The refusal rotated nothing: the second draft's own savepoint still admits.
-    admitted(&mut second).commit();
-}
-
-/// Admitting one of two sibling savepoints rotates the one-shot epoch and stales the
-/// other, and the staled sibling stays stale after the admitted transaction commits.
-#[test]
-fn admitting_one_sibling_savepoint_stales_the_other() {
-    let mut owner = ImageDraft::new();
-    let first = owner.savepoint();
-    let second = owner.savepoint();
-    let txn = owner
-        .begin_transaction(first)
-        .expect("the first sibling admits");
-    txn.commit();
-    assert_eq!(
-        owner.begin_transaction(second).err(),
-        Some(DraftStateError::StaleEpoch),
-    );
-}
-
-/// A savepoint from before a rolled-back transaction is stale even though every
-/// logical draft byte again equals the state it observed: the consumed epoch is
-/// monotone authentication state outside the logical inverse.
-#[test]
-fn a_savepoint_stays_stale_after_a_rollback_restores_its_bytes() {
-    let mut owner = exporting_owner();
-    let before = owner.savepoint();
-    {
-        let mut txn = admitted(&mut owner);
-        txn.intern_string("discarded")
-            .expect("a within-domain mint");
-        // The armed guard drops here: the logical state is restored byte for byte.
-    }
-    assert_eq!(
-        owner.begin_transaction(before).err(),
-        Some(DraftStateError::StaleEpoch),
-    );
-}
-
-/// A savepoint outliving its dropped draft keeps its token allocations alive and
-/// still fails allocation-identity validation against a fresh draft, so ordinary
-/// allocator reuse cannot forge an admission (the ABA case).
-#[test]
-fn a_savepoint_outliving_its_draft_cannot_admit_a_successor() {
-    let orphan = {
-        let mut doomed = ImageDraft::new();
-        doomed.savepoint()
-    };
-    // Forced allocator-reuse pressure: many byte-identical drafts are allocated and
-    // dropped, inviting the freed draft's addresses back into circulation. The orphan
-    // strongly retains its own token allocations, so no successor can be handed them.
-    for _ in 0..1024 {
-        drop(ImageDraft::new());
-    }
-    let mut successor = ImageDraft::new();
-    assert_eq!(
-        successor.begin_transaction(orphan).err(),
-        Some(DraftStateError::ForeignDraft),
-    );
 }
 
 // ---- The armed inverse is byte-exact across every owner.
@@ -823,57 +748,6 @@ fn a_duplicate_constant_hit_returns_the_same_id_and_mutates_nothing() {
         owner.encode().expect("the draft still encodes").bytes,
         minted,
         "three duplicate constant hits mutated nothing",
-    );
-}
-
-/// The post-unwind savepoint law's runtime clauses, holding together and not merely one
-/// at a time: an admitted transaction unwinds, every owner is restored exactly, the
-/// *sibling* savepoint is still stale because the epoch stays rotated, and a freshly
-/// minted savepoint captures that rotated epoch and admits normally.
-///
-/// Re-presenting a consumed admitted savepoint is deliberately not covered here:
-/// `begin_transaction` takes the token by value and `DraftSavepoint` is neither `Clone`
-/// nor `Copy`, so that clause is a move error rather than a staleness refusal, pinned by
-/// the `compile_fail,E0382` block on [`marrow_image::DraftSavepoint`].
-#[test]
-fn after_an_unwind_the_owners_restore_while_the_sibling_savepoint_stays_stale() {
-    let mut owner = exporting_owner();
-    let clean = owner.encode().expect("the base draft encodes").bytes;
-
-    let sibling = owner.savepoint();
-    let admitted_token = owner.savepoint();
-
-    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut txn = owner
-            .begin_transaction(admitted_token)
-            .expect("a fresh savepoint admits");
-        txn.intern_string("during-the-unwind")
-            .expect("a within-domain mint");
-        txn.intern_int(777).expect("a within-domain mint");
-        panic!("the body raises after mutating its owners");
-    }));
-    assert!(unwound.is_err(), "the panic reached the catch");
-
-    assert_eq!(
-        owner.encode().expect("the restored draft encodes").bytes,
-        clean,
-        "the armed guard restored every owner during the unwind",
-    );
-
-    assert_eq!(
-        owner.begin_transaction(sibling).map(|_| ()),
-        Err(DraftStateError::StaleEpoch),
-        "the sibling savepoint stays stale: admission consumed the epoch it captured",
-    );
-    let fresh = owner.savepoint();
-    assert!(
-        owner.begin_transaction(fresh).is_ok(),
-        "a savepoint minted after the unwind captures the rotated epoch and admits",
-    );
-    assert_eq!(
-        owner.encode().expect("the draft still encodes").bytes,
-        clean,
-        "neither the refusal nor the fresh admission changed an owner",
     );
 }
 

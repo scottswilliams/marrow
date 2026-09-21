@@ -16,10 +16,7 @@ use marrow_vm::{Value, run};
 /// Encode a one-function image `f(): ret` built by `build`, returning its bytes.
 fn encode(build: impl FnOnce(&mut DraftTxn<'_>) -> (ImageType, Vec<Instr>)) -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
-    let savepoint = draft_owner.savepoint();
-    let mut draft = draft_owner
-        .begin_transaction(savepoint)
-        .expect("a fresh savepoint admits");
+    let mut draft = draft_owner.begin_transaction();
     let name = draft.intern_string("f").expect("a within-domain mint");
     let source = draft
         .intern_string("src/main.mw")

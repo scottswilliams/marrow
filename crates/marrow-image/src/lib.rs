@@ -35,10 +35,10 @@ pub use demand::{
 };
 pub use digest::{CompanionReleaseId, ImageId, companion_release_id, image_id};
 pub use draft::{
-    AdmittedGraphInputPlan, AdmittedRoot, CollTypeId, CollectionTypeDef, ConstId, DraftSavepoint,
-    DraftStateError, DraftTxn, EnumId, EnumTypeDef, FieldDef, FuncId, FunctionDef, ImageBuildError,
-    ImageDraft, KeyColumn, RecordTypeDef, ReferenceKind, RootId, RootOccurrenceDef, SpanEntry,
-    StrId, TypeId, VariantDef,
+    AdmittedGraphInputPlan, AdmittedRoot, CollTypeId, CollectionTypeDef, ConstId, DraftStateError,
+    DraftTxn, EnumId, EnumTypeDef, FieldDef, FuncId, FunctionDef, ImageBuildError, ImageDraft,
+    KeyColumn, RecordTypeDef, ReferenceKind, RootId, RootOccurrenceDef, SpanEntry, StrId, TypeId,
+    VariantDef,
 };
 pub use durable_id::{
     DurableBranchView, DurableContractId, DurableContractView, DurableFieldView,

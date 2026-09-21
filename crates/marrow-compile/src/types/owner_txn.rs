@@ -96,14 +96,7 @@ impl<'r, 'd> GenericOwnerTxn<'r, 'd> {
         draft: &'d mut ImageDraft,
         inverse: RegistryInverse,
     ) -> Self {
-        let savepoint = draft.savepoint();
-        #[expect(
-            clippy::expect_used,
-            reason = "admission law: the savepoint was just minted from this unarmed owner"
-        )]
-        let txn = draft
-            .begin_transaction(savepoint)
-            .expect("a fresh savepoint admits the batch");
+        let txn = draft.begin_transaction();
         Self {
             registry,
             inverse: Some(inverse),

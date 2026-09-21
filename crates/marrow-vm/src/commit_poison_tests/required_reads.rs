@@ -153,8 +153,7 @@ fn declare_counters(
 
 fn fixture(target: Target) -> Fixture {
     let mut owner = ImageDraft::new();
-    let savepoint = owner.savepoint();
-    let mut draft = owner.begin_transaction(savepoint).expect("fresh draft");
+    let mut draft = owner.begin_transaction();
     let (record, sites) = declare_counters(&mut draft, target);
     let earlier_key = draft.intern_text("earlier").expect("earlier key");
     let target_key = draft.intern_text("target").expect("target key");

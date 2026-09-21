@@ -5,8 +5,7 @@ use marrow_image::{
 
 fn boolean_tape(width: u16, padding: usize, terminal: Instr) -> Vec<u8> {
     let mut owner = ImageDraft::new();
-    let savepoint = owner.savepoint();
-    let mut draft = owner.begin_transaction(savepoint).expect("fresh savepoint");
+    let mut draft = owner.begin_transaction();
     let name = draft.intern_string("inspect").expect("function name");
     let source = draft.intern_string("flow.mw").expect("source name");
     let value = draft.intern_bool(true).expect("boolean constant");
@@ -66,8 +65,7 @@ fn a_boolean_tape_that_falls_off_the_end_rejects() {
 
 fn unit_image(local_count: u16, code: impl FnOnce(ConstId, ConstId) -> Vec<Instr>) -> Vec<u8> {
     let mut owner = ImageDraft::new();
-    let savepoint = owner.savepoint();
-    let mut draft = owner.begin_transaction(savepoint).expect("fresh savepoint");
+    let mut draft = owner.begin_transaction();
     let name = draft.intern_string("inspect").expect("function name");
     let source = draft.intern_string("flow.mw").expect("source name");
     let int = draft.intern_int(1).expect("integer constant");

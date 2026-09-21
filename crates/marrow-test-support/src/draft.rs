@@ -21,15 +21,9 @@ pub fn admitted_plan() -> AdmittedGraphInputPlan {
     )
 }
 
-/// The armed transaction a fresh savepoint admits over `owner`.
-///
-/// Every test that opens a transaction admits it the same way, so admission-law drift in
-/// fixtures is impossible.
+/// The armed transaction over `owner`: the one admission every fixture opens.
 pub fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
-    let savepoint = owner.savepoint();
-    owner
-        .begin_transaction(savepoint)
-        .expect("a fresh savepoint admits")
+    owner.begin_transaction()
 }
 
 /// Bind one canonical declaration path of `root` to the target that node admits and mint

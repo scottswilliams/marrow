@@ -23,8 +23,7 @@ use crate::value::Value;
 
 fn integer_traversal() -> PreparedImage {
     let mut owner = ImageDraft::new();
-    let savepoint = owner.savepoint();
-    let mut draft = owner.begin_transaction(savepoint).expect("fresh draft");
+    let mut draft = owner.begin_transaction();
     let record_name = draft.intern_string("Item").expect("record name");
     let record = draft
         .add_record_type(RecordTypeDef {

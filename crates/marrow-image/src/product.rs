@@ -1,34 +1,19 @@
 //! The durable Product declaration table and the flat root-occurrence table.
 //!
-//! A durable **Product** is a declaration: the resource type a `store` root projects.
-//! One Product declaration has one canonical member/value graph — its top-level fields,
-//! static `group` namespaces, and nested keyed `branch` placements, each with its ledger
-//! identity and value shape — and one runtime surface, however many roots occur over it.
-//! A **root** is an occurrence: its own placement identity, spelling, key tuple, and
-//! managed indexes, referencing the one declaration.
+//! A durable Product is a declaration — one canonical member/value graph and one entry
+//! record, however many roots occur over it — and a root is an occurrence: its own
+//! placement identity, spelling, key tuple, and managed indexes, referencing the one
+//! declaration. The draft holds a [`ProductDeclarationTable`] keyed by
+//! [`DurableProductIdentity`] and one flat [`RootOccurrence`] row per root; the encoder
+//! projects each occurrence from its retained declaration, so nothing is retained per
+//! (root x member).
 //!
-//! The draft therefore holds two flat tables rather than one graph per root: a
-//! [`ProductDeclarationTable`] keyed by [`DurableProductIdentity`], and a flat
-//! [`RootOccurrence`] row per root that references its declaration. v0 wire bytes still
-//! carry the full member graph per root, so the encoder projects each occurrence from its
-//! one retained declaration; nothing is retained per (root x member).
-//!
-//! A declaration's member graph is itself flat: [`ProductDeclarationGraph`] is a table of
-//! [`DeclarationNode`] rows, each carrying its parent's ordinal and the contiguous run of
-//! rows holding its own direct members. Rows are appended level by level, so a node's
-//! members are always one run and a walk follows spans rather than owned child vectors.
-//! The wire bytes and the durable contract id are both projected from these rows, so the
-//! two cannot drift apart.
-//!
-//! Both tables publish **selectors**: [`RootOccurrenceSelector`] for a completed
-//! occurrence row, [`CanonicalDeclarationPathSelector`] for every canonical path. A
-//! selector is opaque and carries the exact live row it was published by, so it names a
-//! place without exposing an ordinal a caller could write by hand, and the pair is the
-//! only input to [`crate::ImageDraft::bind_occurrence_site`]. The occurrence ordinal
-//! itself is published beside them by [`crate::AdmittedRoot::root_id`], because it is the
-//! wire RootId an entry identity `Id(^root)` carries: a number is a wire value here and
-//! never an address.
-
+//! A declaration's graph is itself flat: [`ProductDeclarationGraph`] is a table of
+//! [`DeclarationNode`] rows, each naming its parent's ordinal and the contiguous run of its
+//! direct members, so a walk follows spans and the wire bytes and the contract id project
+//! from the same rows. Both tables publish opaque selectors — [`RootOccurrenceSelector`],
+//! [`CanonicalDeclarationPathSelector`] — carrying the exact live row that published them;
+//! the pair is the only input to [`crate::ImageDraft::bind_occurrence_site`].
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
@@ -1533,7 +1518,7 @@ mod tests {
         DeclarationCommandError, DeclarationMemberDef, DeclarationMemberShape, KeyColumn,
         LedgerIdBytes, MAX_DURABLE_MEMBERS, ProductDeclarationGraph,
     };
-    use crate::draft::{ImageDraft, TypeId};
+    use crate::draft::{StrId, TypeId};
     use crate::ty::Scalar;
     use crate::value_dag::CanonicalValueShapeDag;
 
@@ -1642,9 +1627,7 @@ mod tests {
                 parent: None,
                 shape: DeclarationMemberShape::Branch {
                     placement: id(0x30),
-                    name: ImageDraft::new()
-                        .intern_string("notes")
-                        .expect("a within-domain mint"),
+                    name: StrId::from_index(0),
                     record: TypeId(7),
                     keys: vec![KeyColumn {
                         scalar: Scalar::Int,

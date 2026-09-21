@@ -966,12 +966,9 @@ mod index_site_partition {
     /// the integration hostile suite uses so a forged managed-index or bounded-traversal
     /// opcode over the field-leaf site reaches the same `apply_durable` guards. Returns
     /// the draft, the field-leaf (non-index) site operand, and the list-type index.
-    /// The armed transaction a fresh savepoint admits over `owner`.
+    /// The armed transaction over `owner`.
     fn admitted(owner: &mut marrow_image::ImageDraft) -> DraftTxn<'_> {
-        let savepoint = owner.savepoint();
-        owner
-            .begin_transaction(savepoint)
-            .expect("a fresh savepoint admits")
+        owner.begin_transaction()
     }
 
     fn field_leaf_schema() -> (ImageDraft, PlannedSiteRef, CollTypeId) {

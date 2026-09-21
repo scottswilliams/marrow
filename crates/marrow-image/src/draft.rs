@@ -1,22 +1,19 @@
 //! The typed validating `ImageDraft`.
 //!
-//! The compiler builds an image through this owner and calls [`ImageDraft::encode`] to
-//! produce canonical container bytes with a computed digest. Building works in logical
-//! intern ids; the encoder sorts the string and constant pools into canonical order and
-//! rewrites every reference, so the compiler never reasons about final pool positions.
+//! The compiler mutates a draft only through the journaled [`DraftTxn`] that
+//! [`ImageDraft::begin_transaction`] arms, and calls [`ImageDraft::encode`] for canonical
+//! container bytes with a computed digest. Building works in logical intern ids; the
+//! encoder sorts the string and constant pools into canonical order and rewrites every
+//! reference, so the compiler never reasons about final pool positions.
 //!
 //! Sites are minted only through the bounded [`SiteDemandPlan`], by binding a live root
 //! occurrence to a live canonical declaration path, so a producer cannot address a node
-//! the graph does not contain. The remaining `add_*` owners append unconditionally,
-//! bounded only by the encoder's recheck. The independent verifier rechecks every bound
-//! against received bytes; the draft's checks are a producer-side guard, not the trust
-//! boundary.
+//! the graph does not contain. The draft's checks are a producer-side guard, not the
+//! trust boundary: the independent verifier rechecks every bound against received bytes.
 //!
-//! Every owned pre-seal id newtype carries a wide `u32` ordinal, so no mint is a narrowed
-//! table length and an over-policy table still mints the N+1 id, refused later at the
-//! encode fence. The only narrowing to the wire's `u16` spelling is the measure core's
-//! policy-clean checked path (`crate::measure`), which runs strictly after the policy
-//! walk has refused any draft past its bound.
+//! Every owned pre-seal id carries a wide `u32` ordinal, so an over-policy table still
+//! mints the N+1 id and is refused at the encode fence, whose measure core performs the
+//! only narrowing to the wire's `u16` spelling.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -585,59 +582,10 @@ impl std::error::Error for ImageBuildError {}
 
 /// The mutable image builder.
 ///
-/// Every owned mutation flows through the one admitted, journaled, failure-atomic
-/// transaction surface: [`Self::savepoint`] mints a pre-admission token and
-/// [`Self::begin_transaction`] consumes it into the armed [`DraftTxn`].
-///
-/// A draft is deliberately not `Clone`: every selector, handle, and site operand it mints
-/// carries its identity, so a copy would authenticate capabilities against both drafts and
-/// the row-stamp check that detects a discarded row's reused ordinal would answer for a row
-/// a different draft appended.
-///
-/// ```compile_fail,E0599
-/// let mut draft = marrow_image::ImageDraft::new();
-/// let _copy = draft.clone();
-/// ```
-///
-/// A site is named by binding a live root occurrence to a live declaration path, never by
-/// a raw ordinal or key.
-///
-/// ```compile_fail,E0308
-/// let mut draft = marrow_image::ImageDraft::new();
-/// let _ = draft.bind_occurrence_site(&0usize, &0usize, marrow_image::SemanticTarget::WholePayload);
-/// ```
-///
-/// A handle already carries the one target it was bound for, so requesting a site takes no
-/// second target input that could disagree with it.
-///
-/// ```compile_fail,E0061
-/// let mut draft = marrow_image::ImageDraft::new();
-/// let handle: marrow_image::OccurrenceSiteHandle = unimplemented!();
-/// let _ = draft.request_site(&handle, marrow_image::SemanticTarget::WholePayload);
-/// ```
-///
-/// Entering the durable graph requires an [`AdmittedGraphInputPlan`], and a plan has no
-/// literal form: its counts are private, so [`AdmittedGraphInputPlan::admit`] is the only
-/// way one comes into being.
-///
-/// ```compile_fail,E0061
-/// let mut draft = marrow_image::ImageDraft::new();
-/// let _ = draft.declare_product(unimplemented!(), unimplemented!(), Vec::new());
-/// ```
-/// ```compile_fail,E0451
-/// let _ = marrow_image::AdmittedGraphInputPlan { products: 4096, roots: 4096, commands: 1 << 20 };
-/// ```
-///
-/// A transaction is a guard over one draft, not a mark a caller holds: the armed guard
-/// borrows its draft exclusively for its whole lifetime.
-///
-/// ```compile_fail,E0505
-/// let mut first = marrow_image::ImageDraft::new();
-/// let sp = first.savepoint();
-/// let txn = first.begin_transaction(sp);
-/// let moved = first;
-/// drop(txn);
-/// ```
+/// Every mutation flows through the journaled [`DraftTxn`] that
+/// [`Self::begin_transaction`] arms over an exclusive borrow. A draft is deliberately not
+/// `Clone`: every selector, handle, and site operand it mints carries its identity, so a
+/// copy would authenticate capabilities against both drafts.
 #[derive(Debug)]
 pub struct ImageDraft {
     /// The one durable-graph owner: this draft's strong identity and stamp source, its
@@ -674,9 +622,6 @@ pub struct ImageDraft {
     function_payload_charge: usize,
     exports: Vec<ExportDef>,
     test_entries: Vec<TestEntryDef>,
-    /// The current one-shot transaction epoch (see [`TransactionEpoch`]). Its nested
-    /// draft anchor distinguishes foreign savepoints without a second brand per token.
-    epoch: Rc<TransactionEpoch>,
 }
 
 /// The charge at which the function payload alone proves the image cannot fit.
@@ -709,39 +654,17 @@ pub(crate) struct ApplicationIdentityConflict {
     divergent: LedgerIdBytes,
 }
 
-/// The allocation-identity anchor of one draft: savepoint validation compares this
-/// allocation by `Rc::ptr_eq`, and a savepoint's strong retention is what makes the
-/// pointer comparison sound — the compared allocation cannot have been freed and
-/// reused, so there is no ABA. The numeric [`DraftIdentity`] is provenance embedded in
-/// selectors and operands, never a savepoint-comparison key.
-#[derive(Debug)]
-struct DraftIdentityCell;
-
-/// The one-shot transaction epoch. Its nested allocation is the draft identity, so one
-/// strong token carries both classifications: a different nested anchor is foreign, and a
-/// different epoch allocation over the same anchor is stale. Admission installs a fresh
-/// allocation before any table mutation, staling every sibling savepoint of the consumed
-/// epoch. It is monotone authentication state outside the logical inverse: commit and
-/// armed rollback both retain the rotated epoch, so a sibling stays stale even when every
-/// logical draft byte again equals the pre-transaction state.
-#[derive(Debug)]
-struct TransactionEpoch {
-    draft: Rc<DraftIdentityCell>,
-}
-
 /// A hostile-state refusal of the transaction surface: the closed set the mutation entry
 /// points return before any owner changes. Never a policy maximum — crossing a public
 /// image policy is not a returned error anywhere on this surface.
-#[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DraftStateError {
-    /// The token (savepoint, id, or reference) was minted by another draft.
+    /// The id or reference was minted by another draft, or names a row this draft does
+    /// not hold.
     ForeignDraft,
-    /// The transaction token's one-shot epoch belongs to another admission.
-    StaleEpoch,
-    /// The token is internally incoherent: its snapshot or authenticated fill state
-    /// disagrees with the state it claims to describe, or the id it names no longer
-    /// admits the operation.
+    /// The id names a row that no longer admits the operation: a second fill of a
+    /// reserved row, a fill of a row never reserved, or a site the plan did not answer
+    /// for.
     IncoherentToken,
     /// The argument exceeds the proved carrier/layout domain of the builder surface. The
     /// production compiler maps this to a compiler invariant — never a policy or source
@@ -752,9 +675,8 @@ pub enum DraftStateError {
 impl std::fmt::Display for DraftStateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            DraftStateError::ForeignDraft => "the token was minted by another draft",
-            DraftStateError::StaleEpoch => "the transaction token belongs to another epoch",
-            DraftStateError::IncoherentToken => "the token is internally incoherent",
+            DraftStateError::ForeignDraft => "the id was minted by another draft",
+            DraftStateError::IncoherentToken => "the id no longer admits the operation",
             DraftStateError::CarrierDomain => {
                 "the argument exceeds the proved carrier domain of the builder surface"
             }
@@ -764,7 +686,7 @@ impl std::fmt::Display for DraftStateError {
 
 impl std::error::Error for DraftStateError {}
 
-/// A site operation the draft did not answer for is an incoherent token at the builder
+/// A site operation the draft did not answer for is an incoherent id at the builder
 /// surface. The site error's own private cases stay private: this crossing carries the
 /// classification, not the cause.
 impl From<crate::site_plan::SitePlanStateError> for DraftStateError {
@@ -794,11 +716,9 @@ struct FreshConst {
     value: ConstValue,
 }
 
-/// The private structural image a savepoint carries and a transaction's journal
-/// restores to: every owner's append-only length, the durable graph's checkpoint,
-/// and the conflict/receipt slots. Deliberately **not** a fill-state scan: only an
-/// unarmed draft can mint a savepoint, and admission immediately rotates the one-shot
-/// epoch before a transaction can fill anything.
+/// The structural image a transaction's journal restores to: every owner's append-only
+/// length, the durable graph's checkpoint, and the conflict/receipt slots. Fill state is
+/// not scanned: a fill of a pre-transaction row is journaled individually.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DraftSnapshot {
     strings: usize,
@@ -815,54 +735,6 @@ struct DraftSnapshot {
     product_conflict: Option<ProductClaimConflict>,
     application_conflict: Option<ApplicationIdentityConflict>,
     receipt: Option<SitePolicyReceipt>,
-}
-
-/// A pre-admission, affine draft savepoint: it strongly retains the draft's current
-/// one-shot epoch (which owns the draft's allocation-identity anchor) and carries the
-/// exact private restore snapshot. Sibling-mintable; consumed whole by
-/// [`ImageDraft::begin_transaction`], which validates it by allocation identity before
-/// any mutation. Deliberately neither `Clone` nor `Copy`, so re-presenting a consumed
-/// savepoint is unrepresentable rather than refused at run time.
-///
-/// ```compile_fail,E0599
-/// let mut draft = marrow_image::ImageDraft::new();
-/// let sp = draft.savepoint();
-/// let _copy = sp.clone();
-/// ```
-/// ```compile_fail,E0382
-/// let mut draft = marrow_image::ImageDraft::new();
-/// let sp = draft.savepoint();
-/// drop(draft.begin_transaction(sp));
-/// drop(draft.begin_transaction(sp));
-/// ```
-///
-/// Savepoints and element references occupy separate domains, and the boundary is a type
-/// fact. A savepoint authorizes mutation over a whole draft for one epoch and names no
-/// element; an element reference authenticates against the draft and plan identity it was
-/// minted under and carries no epoch. Neither can be spelled as the other.
-///
-/// ```compile_fail,E0599
-/// let mut draft = marrow_image::ImageDraft::new();
-/// let sp = draft.savepoint();
-/// let handle: marrow_image::OccurrenceSiteHandle = unimplemented!();
-/// let _ = sp.request_site(&handle);
-/// ```
-/// ```compile_fail,E0599
-/// let mut draft = marrow_image::ImageDraft::new();
-/// let element: marrow_image::PlannedSiteRef = unimplemented!();
-/// let _ = draft.begin_transaction(element.savepoint());
-/// ```
-#[doc(hidden)]
-pub struct DraftSavepoint {
-    epoch: Rc<TransactionEpoch>,
-    snapshot: DraftSnapshot,
-}
-
-impl std::fmt::Debug for DraftSavepoint {
-    /// One fixed marker: the snapshot and tokens are the authority the value carries.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("draft savepoint")
-    }
 }
 
 /// One journaled fill of a pre-transaction row. Functions restore `None` by index;
@@ -883,8 +755,8 @@ enum FillInverse {
     },
 }
 
-/// The pre-reserved inverse journal the armed guard holds from admission: the
-/// admission-time structural image and the one-time-fill inverses. Every element's
+/// The pre-reserved inverse journal the armed guard holds: the structural image at
+/// admission and the one-time-fill inverses. Every element's
 /// storage is reserved in the preflight of the mutation that needs it, so the armed
 /// `Drop` inverse is allocation-free, assertion-free, indexing-free, and non-panicking.
 #[derive(Debug)]
@@ -893,26 +765,15 @@ struct DraftJournal {
     fills: Vec<FillInverse>,
 }
 
-/// The sole cross-crate mutation surface over one [`ImageDraft`]: an armed guard
-/// admitted by [`ImageDraft::begin_transaction`] that mutates the borrowed draft
-/// immediately and in place — never batching, deferring, or reordering a call, which is
-/// what keeps mint order equal to wire order — while journaling the inverses an armed
-/// rollback needs. [`DraftTxn::commit`] disarms and retains every accepted observation;
-/// the armed `Drop` performs the total admitted inverse.
+/// The sole mutation surface over one [`ImageDraft`]: an armed guard
+/// [`ImageDraft::begin_transaction`] hands out over an exclusive borrow. It mutates the
+/// draft immediately and in place — never batching, deferring, or reordering a call,
+/// which is what keeps mint order equal to wire order — while journaling the inverses an
+/// armed rollback needs. [`DraftTxn::commit`] disarms and retains every mutation; the
+/// armed `Drop` performs the total inverse.
 ///
 /// Reads pass through [`std::ops::Deref`] to the draft's read surface; the guard
 /// exposes no `&mut ImageDraft`, so no mutation can bypass the journal.
-///
-/// Only the unarmed draft can mint an admission token, so a mid-transaction savepoint
-/// whose meaning would depend on a later rollback cannot be spelled.
-///
-/// ```compile_fail,E0599
-/// let mut draft = marrow_image::ImageDraft::new();
-/// let savepoint = draft.savepoint();
-/// let mut txn = draft.begin_transaction(savepoint).unwrap();
-/// let _ = txn.savepoint();
-/// ```
-#[doc(hidden)]
 #[derive(Debug)]
 pub struct DraftTxn<'d> {
     draft: &'d mut ImageDraft,
@@ -934,65 +795,105 @@ impl<'d> DraftTxn<'d> {
         self.armed = false;
     }
 
-    /// Run the total admitted inverse now. Dropping the guard restores exactly the same
-    /// owners; this is the explicit spelling of the same path.
+    /// Run the total inverse now: the explicit spelling of what dropping the armed guard
+    /// does.
     pub fn rollback(mut self) {
         self.rollback_armed();
         self.armed = false;
     }
 
+    /// Intern a string, returning its logical id. Repeated interning of the same text
+    /// returns the same id and mutates nothing, even at a full table, so dedup runs
+    /// before any policy observation.
     pub fn intern_string(&mut self, text: &str) -> Result<StrId, DraftStateError> {
-        self.draft.intern_string(text)
+        let prepared = self.draft.prepare_string(text)?;
+        Ok(self.draft.commit_string(prepared))
     }
 
     pub fn intern_int(&mut self, value: i64) -> Result<ConstId, DraftStateError> {
-        self.draft.intern_int(value)
+        self.draft.intern_const(ConstValue::Int(value))
     }
 
     pub fn intern_bool(&mut self, value: bool) -> Result<ConstId, DraftStateError> {
-        self.draft.intern_bool(value)
+        self.draft.intern_const(ConstValue::Bool(value))
     }
 
+    /// Intern a text constant, interning its backing string as needed. The string row,
+    /// the constant row, and both index entries land as one unit: a refusal can never
+    /// leave half the compound behind.
     pub fn intern_text(&mut self, text: &str) -> Result<ConstId, DraftStateError> {
-        self.draft.intern_text(text)
+        // Both halves derive from the same preimage, so both are prepared before either
+        // lands: a fresh string implies a fresh `Text` constant (its `StrId` does not
+        // exist yet), and the constant's ordinal does not depend on the string commit.
+        let string = self.draft.prepare_string(text)?;
+        let konst = self.draft.prepare_const(ConstValue::Text(string.id))?;
+        self.draft.commit_string(string);
+        Ok(self.draft.commit_const(konst))
     }
 
+    /// Intern a `date` constant (days since the Unix epoch).
     pub fn intern_date(&mut self, days: i32) -> Result<ConstId, DraftStateError> {
-        self.draft.intern_date(days)
+        self.draft.intern_const(ConstValue::Date(days))
     }
 
+    /// Intern an `instant` constant (signed nanoseconds since the epoch).
     pub fn intern_instant(&mut self, nanos: i128) -> Result<ConstId, DraftStateError> {
-        self.draft.intern_instant(nanos)
+        self.draft.intern_const(ConstValue::Instant(nanos))
     }
 
+    /// Intern a `duration` constant (signed nanoseconds).
     pub fn intern_duration(&mut self, nanos: i128) -> Result<ConstId, DraftStateError> {
-        self.draft.intern_duration(nanos)
+        self.draft.intern_const(ConstValue::Duration(nanos))
     }
 
+    /// Add a record type with its complete definition: the row never spends a fill, so
+    /// a later fill is the double-fill refusal, never a replacement. A two-pass forward
+    /// reference reserves with [`Self::reserve_record_type`] instead.
     pub fn add_record_type(&mut self, def: RecordTypeDef) -> Result<TypeId, DraftStateError> {
-        self.draft.add_record_type(def)
+        self.draft.append_record_type(def, FillState::Filled)
     }
 
+    /// Add an enum type with its complete definition (see [`Self::add_record_type`]).
     pub fn add_enum_type(&mut self, def: EnumTypeDef) -> Result<EnumId, DraftStateError> {
-        self.draft.add_enum_type(def)
+        self.draft.append_enum_type(def, FillState::Filled)
     }
 
-    /// Reserve a `Vacant` record row for a two-pass forward reference; it admits
-    /// exactly one later fill and is the fence's coherence invariant if never filled.
+    /// Reserve a `Vacant` record row for a two-pass forward reference: distinct from a
+    /// filled-empty definition, it admits exactly one later fill and is the fence's
+    /// coherence invariant if never filled.
     pub fn reserve_record_type(&mut self, name: StrId) -> Result<TypeId, DraftStateError> {
-        self.draft.reserve_record_type(name)
+        self.draft.append_record_type(
+            RecordTypeDef {
+                name,
+                fields: Vec::new(),
+            },
+            FillState::Unfilled,
+        )
     }
 
     /// Reserve a `Vacant` enum row (see [`Self::reserve_record_type`]).
     pub fn reserve_enum_type(&mut self, name: StrId) -> Result<EnumId, DraftStateError> {
-        self.draft.reserve_enum_type(name)
+        self.draft.append_enum_type(
+            EnumTypeDef {
+                name,
+                variants: Vec::new(),
+            },
+            FillState::Unfilled,
+        )
     }
 
+    /// Add a collection type (a concrete `List`/`Map` instantiation) whose inner types
+    /// are already resolved. Appends unconditionally: the compiler's type registry owns
+    /// instantiation identity and dedups by the *source* types, so `List[Age]` and
+    /// `List[int]` stay distinct although a nominal element erases to the same image
+    /// `int`.
     pub fn add_collection_type(
         &mut self,
         def: CollectionTypeDef,
     ) -> Result<CollTypeId, DraftStateError> {
-        self.draft.add_collection_type(def)
+        let id = CollTypeId(wide_ordinal(self.draft.colls.len())?);
+        self.draft.colls.push(def);
+        Ok(id)
     }
 
     /// Fill a live record reservation from this draft, exactly once. The caller owns the
@@ -1068,6 +969,18 @@ impl<'d> DraftTxn<'d> {
         Ok(())
     }
 
+    /// Admit one durable Product declaration: its canonical member/value graph and the
+    /// entry record its roots read and write, returning the declaration's direct members
+    /// exactly as [`ImageDraft::product_members`] publishes them.
+    ///
+    /// The one construction path for the durable graph, and it is flat: members arrive as
+    /// a command vector whose rows name their parent by an earlier command, so a caller
+    /// cannot hand the draft a recursive tree. A Product is held once however many roots
+    /// occur over it; a later declaration of the same identity claiming a different graph
+    /// or entry record is recorded, not refused here, so [`ImageDraft::encode`] reports it
+    /// once in wire order. A malformed vector, or one past what `plan` admits, is one
+    /// opaque [`SitePlanStateError`] with no row appended; the encoder remains the owner
+    /// of the member bound.
     pub fn declare_product(
         &mut self,
         plan: &AdmittedGraphInputPlan,
@@ -1075,32 +988,107 @@ impl<'d> DraftTxn<'d> {
         entry_record: TypeId,
         members: Vec<DeclarationMemberDef>,
     ) -> Result<Vec<DeclarationMember>, SitePlanStateError> {
-        self.draft
-            .declare_product(plan, product, entry_record, members)
+        let (row, conflict) = self
+            .draft
+            .durable
+            .admit_product(plan, product, entry_record, members)
+            .map_err(|_| SitePlanStateError::new(SitePlanState::InvalidDemand))?;
+        if let Some(conflict) = conflict {
+            self.draft.product_conflict.get_or_insert(conflict);
+        }
+        Ok(self.draft.graph().members_of_row(row))
     }
 
+    /// Append one root occurrence over the Product declaration `product` names, returning
+    /// what the completed row publishes.
+    ///
+    /// The row retains only the root's own placement, spelling, key tuple, and managed
+    /// indexes plus a reference to the one declaration, so nothing is retained per
+    /// (root x member). An undeclared Product, selectors past what a canonical path can
+    /// address, or an occurrence past the plan's admitted root count are one opaque
+    /// [`SitePlanStateError`], each refused before the row is pushed. Crossing the public
+    /// Roots policy is not refused here: the N+1 occurrence commits and the fence reports
+    /// [`ImageBuildError::TooManyRoots`].
     pub fn add_root_occurrence(
         &mut self,
         plan: &AdmittedGraphInputPlan,
         product: LedgerIdBytes,
         def: RootOccurrenceDef,
     ) -> Result<AdmittedRoot, SitePlanStateError> {
-        self.draft.add_root_occurrence(plan, product, def)
+        if def.indexes.len() > usize::from(u16::MAX) + 1 {
+            return Err(SitePlanStateError::new(SitePlanState::InvalidDemand));
+        }
+        let occurrence = self
+            .draft
+            .durable
+            .admit_root_occurrence(plan, product, def)
+            .map_err(|_| SitePlanStateError::new(SitePlanState::InvalidDemand))?;
+        let root_id = occurrence.wire_root_id();
+        // Preflighted above, so the just-pushed row always publishes; the refusal arm is
+        // defense in depth, never a panic and never an orphan row.
+        let (placement, indexes) = self
+            .draft
+            .graph()
+            .publish(&occurrence)
+            .ok_or_else(|| SitePlanStateError::new(SitePlanState::StaleBinding))?;
+        Ok(AdmittedRoot {
+            occurrence,
+            root_id,
+            placement,
+            indexes,
+        })
     }
 
+    /// Record the application's ledger id, set-once-or-same: an equal reset is a no-op
+    /// and a divergent replacement latches the sticky conflict the fence reports,
+    /// retaining the first identity. Required exactly when the draft has a durable root.
     pub fn set_application_identity(&mut self, id: LedgerIdBytes) {
-        self.draft.set_application_identity(id);
+        match self.draft.durable.application() {
+            None => self.draft.durable.set_application_identity(id),
+            Some(first) if first == id => {}
+            Some(first) => {
+                self.draft
+                    .application_conflict
+                    .get_or_insert(ApplicationIdentityConflict {
+                        first,
+                        divergent: id,
+                    });
+            }
+        }
     }
 
+    /// Mint-or-return the operation site answering the bound demand `handle` names,
+    /// through the draft's one bounded [`SiteDemandPlan`].
+    ///
+    /// The first request for a demand appends a row; a later request for the same one
+    /// returns the id already minted, so the site table carries a site per *demanded*
+    /// place. The plan retains only the demand key — three owned typed ordinals — and the
+    /// path a site encodes to is projected from it at encode. The returned
+    /// [`PlannedSiteRef`] is the only way an instruction can name a site: opaque, minted
+    /// here alone, carrying either the id or the plan's refusal, which the encoder later
+    /// refuses through the Sites bound. A request takes no construction budget.
     pub fn request_site(
         &mut self,
         handle: &OccurrenceSiteHandle,
     ) -> Result<PlannedSiteRef, SitePlanStateError> {
-        self.draft.request_site(handle)
+        let draft = &mut *self.draft;
+        if handle.draft() != draft.durable.identity() {
+            return Err(SitePlanStateError::new(SitePlanState::WrongPlan));
+        }
+        // The rows the handle was bound against may have been discarded since; rebinding
+        // the same triple against the live tables is what proves they were not.
+        let demand = handle.demand();
+        let stamp = draft.durable.next_stamp();
+        let live = draft.graph().revalidate(&demand)?;
+        Ok(draft.sites.request(draft.durable.identity(), live, stamp))
     }
 
+    /// Append a function body, validating every operation site its code names first: an
+    /// operand minted by another draft, or one whose site row or policy receipt was
+    /// discarded, is refused and no row is appended.
     pub fn add_function(&mut self, def: FunctionDef) -> Result<FuncId, DraftStateError> {
-        self.draft.add_function(def)
+        self.draft.validate_function(&def)?;
+        self.draft.allocate_function(Some(def))
     }
 
     /// Reserve the next function identity without a body. Empty slots cannot encode.
@@ -1125,17 +1113,30 @@ impl<'d> DraftTxn<'d> {
         Ok(())
     }
 
+    /// Bind the export identity `id` to function `func`. The compiler mints `id` with
+    /// [`ExportId::of_local`] from the export's declaration path; each public function is
+    /// one export, so `func` is unique across the table.
     pub fn add_export(&mut self, id: ExportId, func: FuncId) {
-        self.draft.add_export(id, func);
+        self.draft.exports.push(ExportDef { id, func });
     }
 
+    /// Bind the report name `name` to the storeless test function `func`. Test names are
+    /// unique across the project (the compiler rejects a duplicate), so the encoder sorts
+    /// entries by their final name-string index.
     pub fn add_test_entry(&mut self, name: StrId, func: FuncId) {
-        self.draft.add_test_entry(name, func);
+        self.draft.test_entries.push(TestEntryDef { name, func });
+    }
+
+    /// The draft's arena, for a test to state a value shape past the checked surface's
+    /// arity bound and exercise the identity owner's own ceiling.
+    #[cfg(test)]
+    pub(crate) fn value_shapes_mut(&mut self) -> &mut CanonicalValueShapeDag {
+        self.draft.durable.value_shapes_mut()
     }
 
     /// Mint one scalar durable value shape into the draft's one arena.
     pub fn value_scalar(&mut self, scalar: Scalar) -> Result<ValueShapeNodeId, DraftStateError> {
-        self.draft.value_shapes_mut().scalar(scalar)
+        self.draft.durable.value_shapes_mut().scalar(scalar)
     }
 
     /// Mint one dense composite durable value shape into the draft's one arena.
@@ -1150,7 +1151,7 @@ impl<'d> DraftTxn<'d> {
         if leaves.len() > bounds::MAX_STRUCT_LEAVES {
             return Err(DraftStateError::CarrierDomain);
         }
-        self.draft.value_shapes_mut().struct_shape(leaves)
+        self.draft.durable.value_shapes_mut().struct_shape(leaves)
     }
 
     /// Mint one enum durable value shape into the draft's one arena (checked at the
@@ -1169,7 +1170,10 @@ impl<'d> DraftTxn<'d> {
                 return Err(DraftStateError::CarrierDomain);
             }
         }
-        self.draft.value_shapes_mut().enum_shape(identity, members)
+        self.draft
+            .durable
+            .value_shapes_mut()
+            .enum_shape(identity, members)
     }
 
     /// The total admitted inverse, in reverse dependency order: dependents before the
@@ -1230,8 +1234,6 @@ impl<'d> DraftTxn<'d> {
             }
             draft.strings.pop();
         }
-        // The consumed epoch is deliberately not restored: monotone authentication
-        // state outside the logical inverse.
     }
 }
 
@@ -1254,7 +1256,6 @@ impl Default for ImageDraft {
 
 impl ImageDraft {
     pub fn new() -> Self {
-        let draft = Rc::new(DraftIdentityCell);
         Self {
             durable: DurableContractGraph::new(),
             strings: Vec::new(),
@@ -1273,21 +1274,12 @@ impl ImageDraft {
             function_payload_charge: 0,
             exports: Vec::new(),
             test_entries: Vec::new(),
-            epoch: Rc::new(TransactionEpoch { draft }),
         }
     }
 
     /// The live tables a site binding is validated and projected against.
     fn graph(&self) -> OccurrenceGraph<'_> {
         self.durable.occurrence_graph()
-    }
-
-    /// Intern a string, returning its logical id. Repeated interning of the same text
-    /// returns the same id and mutates nothing, even at a full table, so dedup runs
-    /// before any policy observation.
-    pub(crate) fn intern_string(&mut self, text: &str) -> Result<StrId, DraftStateError> {
-        let prepared = self.prepare_string(text)?;
-        Ok(self.commit_string(prepared))
     }
 
     /// Derive what interning `text` would append, without touching an owner.
@@ -1319,43 +1311,6 @@ impl ImageDraft {
         id
     }
 
-    pub(crate) fn intern_int(&mut self, value: i64) -> Result<ConstId, DraftStateError> {
-        self.intern_const(ConstValue::Int(value))
-    }
-
-    pub(crate) fn intern_bool(&mut self, value: bool) -> Result<ConstId, DraftStateError> {
-        self.intern_const(ConstValue::Bool(value))
-    }
-
-    /// Intern a text constant, interning its backing string as needed. The string row,
-    /// the constant row, and both index entries land as one unit: a refusal can never
-    /// leave half the compound behind.
-    pub(crate) fn intern_text(&mut self, text: &str) -> Result<ConstId, DraftStateError> {
-        // Both halves derive from the same preimage, so both can be prepared before
-        // either lands: a fresh string implies a fresh `Text` constant (its `StrId` does
-        // not exist yet), and the constant's ordinal does not depend on the string commit.
-        let string = self.prepare_string(text)?;
-        let konst = self.prepare_const(ConstValue::Text(string.id))?;
-        // Nothing above mutated an owner, and nothing below can fail.
-        self.commit_string(string);
-        Ok(self.commit_const(konst))
-    }
-
-    /// Intern a `date` constant (days since the Unix epoch).
-    pub(crate) fn intern_date(&mut self, days: i32) -> Result<ConstId, DraftStateError> {
-        self.intern_const(ConstValue::Date(days))
-    }
-
-    /// Intern an `instant` constant (signed nanoseconds since the epoch).
-    pub(crate) fn intern_instant(&mut self, nanos: i128) -> Result<ConstId, DraftStateError> {
-        self.intern_const(ConstValue::Instant(nanos))
-    }
-
-    /// Intern a `duration` constant (signed nanoseconds).
-    pub(crate) fn intern_duration(&mut self, nanos: i128) -> Result<ConstId, DraftStateError> {
-        self.intern_const(ConstValue::Duration(nanos))
-    }
-
     fn intern_const(&mut self, value: ConstValue) -> Result<ConstId, DraftStateError> {
         let prepared = self.prepare_const(value)?;
         Ok(self.commit_const(prepared))
@@ -1384,30 +1339,6 @@ impl ImageDraft {
         id
     }
 
-    /// Add a record type with its **complete** definition: the row never spends a
-    /// fill, so a later "fill" is the typed double-fill refusal, never a
-    /// replacement. A two-pass forward reference reserves with
-    /// [`Self::reserve_record_type`] instead.
-    pub(crate) fn add_record_type(
-        &mut self,
-        def: RecordTypeDef,
-    ) -> Result<TypeId, DraftStateError> {
-        self.append_record_type(def, FillState::Filled)
-    }
-
-    /// Reserve a record row for a two-pass forward reference: the row is `Vacant` —
-    /// distinct from a valid filled-empty definition — admits exactly one later
-    /// fill, and is the fence's coherence invariant if it is never filled.
-    pub(crate) fn reserve_record_type(&mut self, name: StrId) -> Result<TypeId, DraftStateError> {
-        self.append_record_type(
-            RecordTypeDef {
-                name,
-                fields: Vec::new(),
-            },
-            FillState::Unfilled,
-        )
-    }
-
     fn append_record_type(
         &mut self,
         def: RecordTypeDef,
@@ -1417,24 +1348,6 @@ impl ImageDraft {
         self.types.push(def);
         self.types_fill.push(fill);
         Ok(id)
-    }
-
-    /// Add an enum type with its **complete** definition (see
-    /// [`Self::add_record_type`]).
-    pub(crate) fn add_enum_type(&mut self, def: EnumTypeDef) -> Result<EnumId, DraftStateError> {
-        self.append_enum_type(def, FillState::Filled)
-    }
-
-    /// Reserve an enum row for a two-pass forward reference (see
-    /// [`Self::reserve_record_type`]).
-    pub(crate) fn reserve_enum_type(&mut self, name: StrId) -> Result<EnumId, DraftStateError> {
-        self.append_enum_type(
-            EnumTypeDef {
-                name,
-                variants: Vec::new(),
-            },
-            FillState::Unfilled,
-        )
     }
 
     fn append_enum_type(
@@ -1451,107 +1364,6 @@ impl ImageDraft {
     /// The number of collection types already appended to this draft.
     pub fn collection_type_count(&self) -> usize {
         self.colls.len()
-    }
-
-    /// Add a collection type (a concrete `List`/`Map` instantiation), returning its index.
-    /// Its element/key/value types are already-resolved [`ImageType`]s, so there is no
-    /// two-pass reserve/fill: the caller interns the inner types first.
-    ///
-    /// This appends unconditionally rather than deduplicating by image content. The
-    /// compiler's type registry owns collection instantiation identity and dedups by the
-    /// *source* types, so `List[Age]` and `List[int]` stay distinct even though a nominal
-    /// element erases to the same image `int`.
-    pub(crate) fn add_collection_type(
-        &mut self,
-        def: CollectionTypeDef,
-    ) -> Result<CollTypeId, DraftStateError> {
-        let id = CollTypeId(wide_ordinal(self.colls.len())?);
-        self.colls.push(def);
-        Ok(id)
-    }
-
-    /// Admit one durable **Product declaration**: its canonical member/value graph and
-    /// the entry record its roots read and write, returning the declaration's direct
-    /// members exactly as [`Self::product_members`] publishes them.
-    ///
-    /// This is the one construction path for the durable graph, and it is **flat**: a
-    /// Product's members arrive as a command vector whose rows name their parent by an
-    /// earlier command, so a caller cannot hand the draft a recursive tree.
-    ///
-    /// A Product is a declaration and a root is an occurrence of it, so the graph is held
-    /// once however many roots project it. The first declaration of a Product identity
-    /// binds the row; a later one is a reference that must match it exactly. A later one
-    /// claiming a different graph or entry record is recorded rather than refused here, so
-    /// [`Self::encode`] reports the failure once, in wire order.
-    ///
-    /// A command vector that is not a well-formed flat declaration is refused as one
-    /// opaque [`SitePlanStateError`] with no row appended. The cause is not projected: it
-    /// is a producer-side fault about a vector the caller built.
-    ///
-    /// `plan` bounds the intake — a vector wider than its admitted command count, or a
-    /// declaration past its admitted Product count, is refused before any row is appended
-    /// — while the encoder remains the one owner of the member bound, so a vector the plan
-    /// admits one command past that bound still reaches
-    /// [`ImageBuildError::TooManyDurableMembers`].
-    pub(crate) fn declare_product(
-        &mut self,
-        plan: &AdmittedGraphInputPlan,
-        product: LedgerIdBytes,
-        entry_record: TypeId,
-        members: Vec<DeclarationMemberDef>,
-    ) -> Result<Vec<DeclarationMember>, SitePlanStateError> {
-        let (row, conflict) = self
-            .durable
-            .admit_product(plan, product, entry_record, members)
-            .map_err(|_| SitePlanStateError::new(SitePlanState::InvalidDemand))?;
-        if let Some(conflict) = conflict {
-            self.product_conflict.get_or_insert(conflict);
-        }
-        Ok(self.graph().members_of_row(row))
-    }
-
-    /// Append one root occurrence over the Product declaration `product` names, returning
-    /// what the completed row publishes.
-    ///
-    /// The occurrence row retains only the root's own placement, spelling, key tuple, and
-    /// managed indexes plus a reference to the one declaration, so nothing is retained per
-    /// (root x member). A root over a Product this draft does not hold is refused: an
-    /// occurrence with no declaration is not a root.
-    ///
-    /// The coherence causes — undeclared Product, published selectors past what a
-    /// canonical path can address, or an occurrence past the plan's admitted root count —
-    /// are one opaque [`SitePlanStateError`], each refused before the row is pushed.
-    /// Crossing the public Roots policy is not refused here: the N+1 occurrence commits
-    /// and the fence reports [`ImageBuildError::TooManyRoots`].
-    pub(crate) fn add_root_occurrence(
-        &mut self,
-        plan: &AdmittedGraphInputPlan,
-        product: LedgerIdBytes,
-        def: RootOccurrenceDef,
-    ) -> Result<AdmittedRoot, SitePlanStateError> {
-        // An occurrence whose managed-index ordinals cannot all be spelled in the
-        // canonical addressable path domain is refused before any row is pushed and any
-        // budget is spent: no refusal path leaves a live row.
-        if def.indexes.len() > usize::from(u16::MAX) + 1 {
-            return Err(SitePlanStateError::new(SitePlanState::InvalidDemand));
-        }
-        let occurrence = self
-            .durable
-            .admit_root_occurrence(plan, product, def)
-            .map_err(|_| SitePlanStateError::new(SitePlanState::InvalidDemand))?;
-        let root_id = occurrence.wire_root_id();
-        // Preflighted above, so the just-pushed row always publishes; the refusal arm is
-        // defense in depth, never a panic and never an orphan row.
-        let (placement, indexes) = self
-            .graph()
-            .publish(&occurrence)
-            .ok_or_else(|| SitePlanStateError::new(SitePlanState::StaleBinding))?;
-        Ok(AdmittedRoot {
-            occurrence,
-            root_id,
-            placement,
-            indexes,
-        })
     }
 
     /// The direct members of the Product declaration `product` names, in declaration
@@ -1604,75 +1416,6 @@ impl ImageDraft {
         Ok(OccurrenceSiteHandle::new(self.durable.identity(), demand))
     }
 
-    /// Record the application's ledger id, set-once-or-same: the first set stores it, an
-    /// equal reset is a no-op, and a divergent replacement latches the sticky
-    /// [`ApplicationIdentityConflict`] the fence reports, retaining the first identity.
-    /// Required exactly when the draft has a durable root.
-    pub(crate) fn set_application_identity(&mut self, id: LedgerIdBytes) {
-        match self.durable.application() {
-            None => self.durable.set_application_identity(id),
-            Some(first) if first == id => {}
-            Some(first) => {
-                self.application_conflict
-                    .get_or_insert(ApplicationIdentityConflict {
-                        first,
-                        divergent: id,
-                    });
-            }
-        }
-    }
-
-    /// Mint-or-return the operation site answering the bound demand `handle` names,
-    /// through the draft's one bounded [`SiteDemandPlan`].
-    ///
-    /// The first request for a demand appends a row; a later request for the same one
-    /// returns the id already minted, so the site table carries a site per *demanded*
-    /// place rather than one per declared graph node. Preseeded bounded sites
-    /// (whole-payload, group-entry, index) and lazily demanded field leaves share this one
-    /// mint path and are disjoint by construction — a preseeded demand's target is never
-    /// `FieldLeaf` — so there is no second path that can append a row the demand map
-    /// cannot see.
-    ///
-    /// The plan retains **only** the demand key: three owned typed ordinals. The path the
-    /// site encodes to is projected from that key at encode.
-    ///
-    /// The returned [`PlannedSiteRef`] is the only way an instruction can name a site: it
-    /// is opaque, has no constructor of its own, and carries either the id the plan minted
-    /// or the plan's refusal. A refusal carries no id, because none would fail to alias a
-    /// fitting site; the crossing is nonblocking and the encoder refuses the image through
-    /// the Sites bound.
-    ///
-    /// A request takes no construction budget: the site table is its own bounded owner.
-    pub(crate) fn request_site(
-        &mut self,
-        handle: &OccurrenceSiteHandle,
-    ) -> Result<PlannedSiteRef, SitePlanStateError> {
-        if handle.draft() != self.durable.identity() {
-            return Err(SitePlanStateError::new(SitePlanState::WrongPlan));
-        }
-        // The rows the handle was bound against may have been discarded since; rebinding
-        // the same triple against the live tables is what proves they were not.
-        let demand = handle.demand();
-        let stamp = self.durable.next_stamp();
-        let live = self.graph().revalidate(&demand)?;
-        let site = self.sites.request(self.durable.identity(), live, stamp);
-        // This one mint path is the one Sites observation point: a crossing is present
-        // exactly when the plan holds its earliest receipt, recorded at the virtual
-        // zero-based N+1 ordinal `MAX_SITES` — never a physical row index or wire id.
-        Ok(site)
-    }
-
-    /// Append a function body, validating every operation site its code names first.
-    ///
-    /// A site operand is evidence that *this* draft answered for a place, and appending
-    /// code is where that evidence is spent: an operand minted by another draft, or one
-    /// whose site row or policy receipt was discarded, is refused and **no** row is
-    /// appended.
-    pub(crate) fn add_function(&mut self, def: FunctionDef) -> Result<FuncId, DraftStateError> {
-        self.validate_function(&def)?;
-        self.allocate_function(Some(def))
-    }
-
     fn validate_function(&self, def: &FunctionDef) -> Result<(), DraftStateError> {
         for instr in &def.code {
             if let Some(site) = instr.site_operand() {
@@ -1708,20 +1451,6 @@ impl ImageDraft {
         self.function_payload_charge > bounds::MAX_IMAGE_BYTES
     }
 
-    /// Bind the export identity `id` to function `func`. The compiler mints `id`
-    /// with [`ExportId::of_local`] from the export's declaration path; at v0 each
-    /// public function is one export, so `func` is unique across the table.
-    pub(crate) fn add_export(&mut self, id: ExportId, func: FuncId) {
-        self.exports.push(ExportDef { id, func });
-    }
-
-    /// Bind the report name `name` to the storeless test function `func`. Test names
-    /// are unique across the project (the compiler rejects a duplicate), so the
-    /// encoder sorts entries by their final name-string index.
-    pub(crate) fn add_test_entry(&mut self, name: StrId, func: FuncId) {
-        self.test_entries.push(TestEntryDef { name, func });
-    }
-
     /// The number of record types (image `TypeId` ceiling) currently reserved.
     pub fn record_type_count(&self) -> usize {
         self.types.len()
@@ -1730,13 +1459,6 @@ impl ImageDraft {
     /// The number of enum types (image `EnumId` ceiling) currently reserved.
     pub fn enum_type_count(&self) -> usize {
         self.enums.len()
-    }
-
-    /// The draft's one durable value-shape arena, for the compiler to mint a field's
-    /// value shape into. A declaration row can only carry a reference minted here, so
-    /// there is no second place a value shape can come from.
-    pub(crate) fn value_shapes_mut(&mut self) -> &mut CanonicalValueShapeDag {
-        self.durable.value_shapes_mut()
     }
 
     /// The draft's one durable value-shape arena, for reading a minted shape's depth,
@@ -1755,53 +1477,23 @@ impl ImageDraft {
         self.durable.contract_view()
     }
 
-    /// Mint one pre-admission savepoint of this draft's current state. Savepoints are
-    /// sibling-mintable; each is an affine admission token
-    /// [`Self::begin_transaction`] consumes.
-    #[doc(hidden)]
-    pub fn savepoint(&mut self) -> DraftSavepoint {
-        DraftSavepoint {
-            epoch: Rc::clone(&self.epoch),
-            snapshot: self.snapshot(),
-        }
-    }
-
-    /// Consume and validate `savepoint`, rotate the one-shot epoch, and return the armed
-    /// [`DraftTxn`] — the sole cross-crate mutation surface.
-    ///
-    /// A foreign, stale, or incoherent token refuses before any mutation, without rotating
-    /// the epoch. On success the fresh epoch is installed before any table mutation,
-    /// staling every sibling savepoint of the consumed epoch.
-    #[doc(hidden)]
-    pub fn begin_transaction(
-        &mut self,
-        savepoint: DraftSavepoint,
-    ) -> Result<DraftTxn<'_>, DraftStateError> {
-        if !Rc::ptr_eq(&self.epoch.draft, &savepoint.epoch.draft) {
-            return Err(DraftStateError::ForeignDraft);
-        }
-        if !Rc::ptr_eq(&self.epoch, &savepoint.epoch) {
-            return Err(DraftStateError::StaleEpoch);
-        }
-        if self.snapshot() != savepoint.snapshot {
-            return Err(DraftStateError::IncoherentToken);
-        }
-        self.epoch = Rc::new(TransactionEpoch {
-            draft: Rc::clone(&self.epoch.draft),
-        });
-        Ok(DraftTxn {
+    /// Arm the one mutation surface over this draft. The guard's journal restores the
+    /// draft to exactly this state on rollback or unwind; [`DraftTxn::commit`] retains
+    /// everything.
+    pub fn begin_transaction(&mut self) -> DraftTxn<'_> {
+        DraftTxn {
             journal: DraftJournal {
-                at: savepoint.snapshot,
+                at: self.snapshot(),
                 fills: Vec::new(),
             },
             draft: self,
             armed: true,
-        })
+        }
     }
 
-    /// The private structural image the savepoint carries and the journal restores to.
-    /// The draft is destructured exhaustively, so a new owner stops this compiling until
-    /// it is recorded here or deliberately excluded.
+    /// The structural image the journal restores to. The draft is destructured
+    /// exhaustively, so a new owner stops this compiling until it is recorded here or
+    /// deliberately excluded.
     fn snapshot(&self) -> DraftSnapshot {
         let Self {
             durable,
@@ -1821,7 +1513,6 @@ impl ImageDraft {
             function_payload_charge,
             exports,
             test_entries,
-            epoch: _,
         } = self;
         DraftSnapshot {
             strings: strings.len(),
@@ -2131,32 +1822,35 @@ mod collection_count_tests {
     fn collection_type_count_tracks_the_next_published_id() {
         let mut draft = ImageDraft::new();
         assert_eq!(draft.collection_type_count(), 0);
+        let mut txn = draft.begin_transaction();
 
-        let list = draft
+        let list = txn
             .add_collection_type(CollectionTypeDef::List {
                 elem: ImageType::scalar(Scalar::Int),
             })
             .expect("a within-domain mint");
         assert_eq!(list.index(), 0);
-        assert_eq!(draft.collection_type_count(), 1);
+        assert_eq!(txn.collection_type_count(), 1);
 
-        let map = draft
+        let map = txn
             .add_collection_type(CollectionTypeDef::Map {
                 key: ImageType::scalar(Scalar::Text),
                 value: ImageType::scalar(Scalar::Bool),
             })
             .expect("a within-domain mint");
         assert_eq!(map.index(), 1);
-        assert_eq!(draft.collection_type_count(), 2);
+        assert_eq!(txn.collection_type_count(), 2);
     }
 }
 
 #[cfg(test)]
 mod site_binding_tests {
-    use super::{AdmittedGraphInputPlan, ImageDraft, RootOccurrenceDef, TypeId};
-    use crate::durable_id::LedgerIdBytes;
+    use super::{
+        AdmittedGraphInputPlan, AdmittedRoot, DraftTxn, ImageDraft, RootOccurrenceDef, TypeId,
+    };
+    use crate::durable_id::{DurableIndexComponent, DurableIndexShape, LedgerIdBytes};
     use crate::product::{DeclarationMemberDef, DeclarationMemberShape};
-    use crate::semantic::SemanticTarget;
+    use crate::semantic::{SemanticStepKind, SemanticTarget};
     use crate::site_plan::{SitePlanState, SitePlanStateError};
     use crate::ty::Scalar;
 
@@ -2178,42 +1872,49 @@ mod site_binding_tests {
         LedgerIdBytes::from_bytes([0x33; 16])
     }
 
-    /// A draft holding one Product of one required int field and one keyless root over it.
-    fn one_root() -> (ImageDraft, super::AdmittedRoot) {
-        let mut draft = ImageDraft::new();
-        draft.set_application_identity(LedgerIdBytes::from_bytes([0x01; 16]));
-        let name = draft.intern_string("r").expect("a within-domain mint");
-        let value = draft
-            .value_shapes_mut()
-            .scalar(Scalar::Int)
-            .expect("the test arena mints");
-        draft
-            .declare_product(
-                &plan(),
-                product(),
-                TypeId(0),
-                vec![DeclarationMemberDef {
-                    parent: None,
-                    shape: DeclarationMemberShape::Field {
-                        id: field(),
-                        required: true,
-                        value,
-                    },
-                }],
-            )
-            .expect("a well-formed declaration");
-        let admitted = draft
-            .add_root_occurrence(
-                &plan(),
-                product(),
-                RootOccurrenceDef {
-                    name,
-                    keys: Vec::new(),
-                    placement: placement(),
-                    indexes: Vec::new().into(),
+    /// Declare one Product of one required int field and admit one keyless root over it,
+    /// carrying `indexes`.
+    fn declare_one_root(
+        txn: &mut DraftTxn<'_>,
+        indexes: Vec<DurableIndexShape>,
+    ) -> AdmittedRoot {
+        txn.set_application_identity(LedgerIdBytes::from_bytes([0x01; 16]));
+        let name = txn.intern_string("r").expect("a within-domain mint");
+        let value = txn.value_scalar(Scalar::Int).expect("the test arena mints");
+        txn.declare_product(
+            &plan(),
+            product(),
+            TypeId(0),
+            vec![DeclarationMemberDef {
+                parent: None,
+                shape: DeclarationMemberShape::Field {
+                    id: field(),
+                    required: true,
+                    value,
                 },
-            )
-            .expect("the Product is declared");
+            }],
+        )
+        .expect("a well-formed declaration");
+        txn.add_root_occurrence(
+            &plan(),
+            product(),
+            RootOccurrenceDef {
+                name,
+                keys: Vec::new(),
+                placement: placement(),
+                indexes: indexes.into(),
+            },
+        )
+        .expect("the Product is declared")
+    }
+
+    /// A committed draft holding one Product of one required int field and one keyless
+    /// root over it.
+    fn one_root() -> (ImageDraft, AdmittedRoot) {
+        let mut draft = ImageDraft::new();
+        let mut txn = draft.begin_transaction();
+        let admitted = declare_one_root(&mut txn, Vec::new());
+        txn.commit();
         (draft, admitted)
     }
 
@@ -2281,44 +1982,10 @@ mod site_binding_tests {
     #[test]
     fn a_handle_over_a_discarded_row_is_stale_even_when_its_ordinal_is_reused() {
         let mut draft = ImageDraft::new();
-        draft.set_application_identity(LedgerIdBytes::from_bytes([0x01; 16]));
         // Build the rows inside an armed transaction, so dropping it discards them.
         let handle = {
-            let savepoint = draft.savepoint();
-            let mut proof = draft
-                .begin_transaction(savepoint)
-                .expect("a fresh savepoint admits");
-            let name = proof.intern_string("r").expect("a within-domain mint");
-            let value = proof
-                .value_scalar(Scalar::Int)
-                .expect("the test arena mints");
-            proof
-                .declare_product(
-                    &plan(),
-                    product(),
-                    TypeId(0),
-                    vec![DeclarationMemberDef {
-                        parent: None,
-                        shape: DeclarationMemberShape::Field {
-                            id: field(),
-                            required: true,
-                            value,
-                        },
-                    }],
-                )
-                .expect("a well-formed declaration");
-            let admitted = proof
-                .add_root_occurrence(
-                    &plan(),
-                    product(),
-                    RootOccurrenceDef {
-                        name,
-                        keys: Vec::new(),
-                        placement: placement(),
-                        indexes: Vec::new().into(),
-                    },
-                )
-                .expect("the Product is declared");
+            let mut proof = draft.begin_transaction();
+            let admitted = declare_one_root(&mut proof, Vec::new());
             proof
                 .bind_occurrence_site(
                     admitted.occurrence(),
@@ -2328,8 +1995,9 @@ mod site_binding_tests {
                 .expect("the root admits a whole-payload site")
         };
 
+        let mut retry = draft.begin_transaction();
         assert_eq!(
-            draft
+            retry
                 .request_site(&handle)
                 .expect_err("the occurrence row was discarded"),
             SitePlanStateError::new(SitePlanState::StaleBinding),
@@ -2337,41 +2005,9 @@ mod site_binding_tests {
 
         // The same ordinals are re-minted deterministically; the handle must still not
         // authenticate the replacement.
-        let name = draft.intern_string("r").expect("a within-domain mint");
-        let value = draft
-            .value_shapes_mut()
-            .scalar(Scalar::Int)
-            .expect("the test arena mints");
-        draft
-            .declare_product(
-                &plan(),
-                product(),
-                TypeId(0),
-                vec![DeclarationMemberDef {
-                    parent: None,
-                    shape: DeclarationMemberShape::Field {
-                        id: field(),
-                        required: true,
-                        value,
-                    },
-                }],
-            )
-            .expect("a well-formed declaration");
-        draft
-            .add_root_occurrence(
-                &plan(),
-                product(),
-                RootOccurrenceDef {
-                    name,
-                    keys: Vec::new(),
-                    placement: placement(),
-                    indexes: Vec::new().into(),
-                },
-            )
-            .expect("the Product is declared");
-
+        declare_one_root(&mut retry, Vec::new());
         assert_eq!(
-            draft
+            retry
                 .request_site(&handle)
                 .expect_err("a re-minted row is not the row the handle was bound against"),
             SitePlanStateError::new(SitePlanState::StaleBinding),
@@ -2383,50 +2019,19 @@ mod site_binding_tests {
     /// the root placement, a managed index, and a declaration member alike.
     #[test]
     fn the_streamed_projection_spells_every_demand_kind() {
-        use crate::durable_id::{DurableIndexComponent, DurableIndexShape};
-
         let mut draft = ImageDraft::new();
-        draft.set_application_identity(LedgerIdBytes::from_bytes([0x01; 16]));
-        let name = draft.intern_string("r").expect("a within-domain mint");
-        let value = draft
-            .value_shapes_mut()
-            .scalar(Scalar::Int)
-            .expect("the test arena mints");
-        draft
-            .declare_product(
-                &plan(),
-                product(),
-                TypeId(0),
-                vec![DeclarationMemberDef {
-                    parent: None,
-                    shape: DeclarationMemberShape::Field {
-                        id: field(),
-                        required: true,
-                        value,
-                    },
-                }],
-            )
-            .expect("a well-formed declaration");
-        let admitted = draft
-            .add_root_occurrence(
-                &plan(),
-                product(),
-                RootOccurrenceDef {
-                    name,
-                    keys: Vec::new(),
-                    placement: placement(),
-                    indexes: vec![DurableIndexShape {
-                        id: LedgerIdBytes::from_bytes([0x44; 16]),
-                        unique: false,
-                        components: vec![DurableIndexComponent::Field(field())],
-                    }]
-                    .into(),
-                },
-            )
-            .expect("the Product is declared");
+        let mut txn = draft.begin_transaction();
+        let admitted = declare_one_root(
+            &mut txn,
+            vec![DurableIndexShape {
+                id: LedgerIdBytes::from_bytes([0x44; 16]),
+                unique: false,
+                components: vec![DurableIndexComponent::Field(field())],
+            }],
+        );
+        txn.commit();
         let members = draft.product_members(product()).expect("declared");
 
-        use crate::semantic::SemanticStepKind;
         let cases = [
             (
                 admitted.placement_path(),
@@ -2472,8 +2077,9 @@ mod site_binding_tests {
     #[test]
     fn a_malformed_command_vector_appends_no_row() {
         let mut draft = ImageDraft::new();
+        let mut txn = draft.begin_transaction();
 
-        let refusal = draft
+        let refusal = txn
             .declare_product(
                 &plan(),
                 product(),
@@ -2489,38 +2095,39 @@ mod site_binding_tests {
             refusal,
             SitePlanStateError::new(SitePlanState::InvalidDemand)
         );
-        assert!(draft.product_members(product()).is_none());
-        assert!(draft.root_occurrences().is_empty());
+        assert!(txn.product_members(product()).is_none());
+        assert!(txn.root_occurrences().is_empty());
     }
 }
 
 #[cfg(test)]
 mod row_access_tests {
-    use super::{FunctionDef, ImageDraft};
+    use super::{FunctionDef, ImageDraft, StrId};
     use crate::export_id::ExportId;
     use crate::instr::Instr;
     use crate::ty::ImageType;
 
+    fn unit_function(name: StrId, source: StrId) -> FunctionDef {
+        FunctionDef {
+            name,
+            source,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            code: vec![Instr::Return],
+            spans: Vec::new(),
+        }
+    }
+
     #[test]
     fn function_code_borrows_the_appended_allocation_and_tracks_rollback() {
         let mut draft = ImageDraft::new();
-        let name = draft.intern_string("body").expect("name fits");
-        let source = draft.intern_string("source").expect("source fits");
-        let code = vec![Instr::Return];
-        let allocation = code.as_ptr();
-        let savepoint = draft.savepoint();
-        let mut txn = draft.begin_transaction(savepoint).expect("fresh savepoint");
-        let func = txn
-            .add_function(FunctionDef {
-                name,
-                source,
-                params: Vec::new(),
-                ret: ImageType::Unit,
-                local_count: 0,
-                code,
-                spans: Vec::new(),
-            })
-            .expect("no operation sites");
+        let mut txn = draft.begin_transaction();
+        let name = txn.intern_string("body").expect("name fits");
+        let source = txn.intern_string("source").expect("source fits");
+        let def = unit_function(name, source);
+        let allocation = def.code.as_ptr();
+        let func = txn.add_function(def).expect("no operation sites");
         let borrowed = txn.function_code(func).expect("append is visible");
         assert_eq!(borrowed.as_ptr(), allocation);
         assert!(matches!(borrowed, [Instr::Return]));
@@ -2533,30 +2140,23 @@ mod row_access_tests {
     #[test]
     fn the_borrowed_export_and_test_rows_mirror_what_was_added() {
         let mut draft = ImageDraft::new();
-        let source = draft.intern_string("s").expect("a within-domain mint");
-        let alpha = draft.intern_string("alpha").expect("a within-domain mint");
-        let zeta = draft.intern_string("zeta").expect("a within-domain mint");
+        let mut txn = draft.begin_transaction();
+        let source = txn.intern_string("s").expect("a within-domain mint");
+        let alpha = txn.intern_string("alpha").expect("a within-domain mint");
+        let zeta = txn.intern_string("zeta").expect("a within-domain mint");
         let mut funcs = Vec::new();
         for name in [zeta, alpha] {
             funcs.push(
-                draft
-                    .add_function(FunctionDef {
-                        name,
-                        source,
-                        params: Vec::new(),
-                        ret: ImageType::Unit,
-                        local_count: 0,
-                        code: vec![Instr::Return],
-                        spans: Vec::new(),
-                    })
+                txn.add_function(unit_function(name, source))
                     .expect("no site operand needs validating"),
             );
         }
         let first = ExportId::of_local("m", "zeta");
         let second = ExportId::of_local("m", "alpha");
-        draft.add_export(first, funcs[0]);
-        draft.add_export(second, funcs[1]);
-        draft.add_test_entry(zeta, funcs[0]);
+        txn.add_export(first, funcs[0]);
+        txn.add_export(second, funcs[1]);
+        txn.add_test_entry(zeta, funcs[0]);
+        txn.commit();
 
         assert_eq!(draft.export_count(), 2);
         assert_eq!(draft.test_entry_count(), 1);
@@ -2579,23 +2179,17 @@ mod row_access_tests {
     #[test]
     fn the_test_entry_permutation_orders_rows_by_remapped_name() {
         let mut draft = ImageDraft::new();
-        let source = draft.intern_string("s").expect("a within-domain mint");
-        let zeta = draft.intern_string("zeta").expect("a within-domain mint");
-        let alpha = draft.intern_string("alpha").expect("a within-domain mint");
+        let mut txn = draft.begin_transaction();
+        let source = txn.intern_string("s").expect("a within-domain mint");
+        let zeta = txn.intern_string("zeta").expect("a within-domain mint");
+        let alpha = txn.intern_string("alpha").expect("a within-domain mint");
         for name in [zeta, alpha] {
-            let func = draft
-                .add_function(FunctionDef {
-                    name,
-                    source,
-                    params: Vec::new(),
-                    ret: ImageType::Unit,
-                    local_count: 0,
-                    code: vec![Instr::Return],
-                    spans: Vec::new(),
-                })
+            let func = txn
+                .add_function(unit_function(name, source))
                 .expect("no site operand needs validating");
-            draft.add_test_entry(name, func);
+            txn.add_test_entry(name, func);
         }
+        txn.commit();
         // The pool interned [s, zeta, alpha]; byte-sorted it is [alpha, s, zeta], so
         // the remap is s→1, zeta→2, alpha→0 and the entries [zeta, alpha] come back
         // as [alpha, zeta].

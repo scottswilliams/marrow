@@ -93,10 +93,7 @@ fn required_int_record(draft: &mut DraftTxn<'_>, name: &str) -> TypeId {
 /// The encoded fixture image; every consumer seals it through the verifier.
 fn vm_commit_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
-    let savepoint = draft_owner.savepoint();
-    let mut draft = draft_owner
-        .begin_transaction(savepoint)
-        .expect("a fresh savepoint admits");
+    let mut draft = draft_owner.begin_transaction();
     let record = required_int_record(&mut draft, "Counter");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let root_name = draft

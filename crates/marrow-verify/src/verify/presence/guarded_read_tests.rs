@@ -101,8 +101,7 @@ fn accumulator_code(
 
 fn image(keys: u16, padding: usize, interleaved_read: Option<[u16; 2]>) -> Vec<u8> {
     let mut owner = ImageDraft::new();
-    let savepoint = owner.savepoint();
-    let mut draft = owner.begin_transaction(savepoint).expect("fresh savepoint");
+    let mut draft = owner.begin_transaction();
     draft.set_application_identity(LedgerIdBytes::from_bytes([1; 16]));
     let product = LedgerIdBytes::from_bytes([2; 16]);
     let name = draft.intern_string("Counter").expect("record name");

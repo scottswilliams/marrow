@@ -32,10 +32,7 @@ const TEXT: ImageType = ImageType::Scalar {
 /// rejection code on failure).
 fn verify_conv(setup: impl FnOnce(&mut DraftTxn<'_>) -> Vec<Instr>) -> Result<(), Code> {
     let mut draft_owner = ImageDraft::new();
-    let savepoint = draft_owner.savepoint();
-    let mut draft = draft_owner
-        .begin_transaction(savepoint)
-        .expect("a fresh savepoint admits");
+    let mut draft = draft_owner.begin_transaction();
     let src = draft
         .intern_string("src/main.mw")
         .expect("a within-domain mint");

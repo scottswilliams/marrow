@@ -1,18 +1,13 @@
 //! The `DurableContractId` durable-graph identity.
 //!
 //! A [`DurableContractId`] is the stable 32-byte identity of a program's whole durable
-//! graph — the application, the roots, their key columns, and each root record's stored
-//! field profile — computed over the graph's **ledger ids**, the entropy-minted
-//! identities the committed `.marrow/ids` artifact binds to each durable declaration.
-//! Because the payload carries ids rather than names, a rename preserves the contract
-//! identity while every semantic graph change — a retyped key, a field made required,
-//! added, removed, or re-minted — changes it.
-//!
-//! It crosses the compiler → image → verifier boundary, so it is a distinct typed
-//! 32-byte domain-separated SHA-256 over a length-delimited canonical payload. Anyone can
-//! mint a valid id: the verifier rebuilds the graph from the decoded tables, recomputes
-//! the id over its own view, and rejects a mismatch, so trust comes only from that
-//! recomputation.
+//! graph — the application, the roots, their key columns, and each root's member tree and
+//! managed indexes — computed over the graph's entropy-minted **ledger ids**, never its
+//! names: a rename preserves it and every semantic graph change moves it. It crosses the
+//! compiler → image → verifier boundary as a domain-separated SHA-256 over a
+//! length-delimited canonical payload, and trust comes only from the verifier recomputing
+//! it over its own decoded view. Operation sites are excluded: they are derivable access
+//! points over the graph, not part of its identity.
 //!
 //! ```text
 //! DurableContractId = SHA-256( KIND ‖ u64_be(len(payload)) ‖ payload )
@@ -49,40 +44,10 @@
 //!   IDREF(k, id) = u8(k) ‖ u64_be(16) ‖ id                     (kind-tagged, LP 16 bytes)
 //! ```
 //!
-//! A durable field's stored `value` is drawn from the closed acyclic durable value set: a
-//! nominal scalar (erased to its base scalar), a dense `struct` (leaves recorded
-//! positionally — a nested product leaf mints no ledger id, because the containing field
-//! is the renamable declaration), or a closed `enum` carrying a sum identity (kind 5) and
-//! one member identity (kind 6) per variant, so append-only member evolution has stable
-//! per-member codes. Collections and nested sparse/place/function/handle leaves are not
-//! durable value leaves, and only a durable-reachable enum contributes sum and member ids.
-//!
-//! A key tuple is length-prefixed, so a singleton root (`key_count = 0`) and a composite
-//! root are the same shape as the ordinary single-column root; key-column order is part
-//! of the identity.
-//!
-//! A resource's durable shape is a **member tree**: top-level fields plus static `group`
-//! field-path namespaces and keyed `branch` placements, each recursively holding its own
-//! members. A branch carries its own `Root`-kind placement identity and key tuple, so a
-//! nested keyed subtree is a distinct graph node with a complete identity, just like a
-//! root. Member order is source declaration order and is part of the identity. Only the
-//! flat single-column-keyed root with no groups or branches is executable in this
-//! preview; the wider shapes complete their identity and verify but do not run.
-//!
-//! A root's **managed indexes** follow its member tree: each contributes its `Index`
-//! identity (kind 8), its `unique` flag, and its ordered projection of leaf references —
-//! a top-level stored `field` (kind 2) or an identity `key` (kind 4) of the same root. An
-//! index stores no data of its own, so its identity payload carries only leaf references,
-//! never a value shape. Index order is source declaration order and is part of the
-//! identity.
-//!
 //! The `IDREF` kind tags mirror the ledger's frozen kind space (application 0, product 1,
 //! field 2, root/branch placement 3, key 4, group 7, index 8; 5-6 durable enum
-//! sum/member). An empty graph has no application component: a storeless project needs no
-//! ledger, so its contract commits to nothing. Scalar tags are the frozen [`Scalar::tag`]
-//! bytes; the `member_tag` bytes are internal to this payload. Operation *sites* are
-//! excluded: they are derivable access points over the graph, not part of its identity.
-
+//! sum/member); scalar tags are the frozen [`Scalar::tag`] bytes; the `member_tag` bytes
+//! are internal to this payload. An empty graph has no application component.
 use sha2::{Digest, Sha256};
 
 use crate::bounds;
@@ -403,18 +368,6 @@ pub struct DurableMemberView<'a> {
 /// Together those keep an external caller from building a deeply nested member tree from
 /// struct literals and aborting the process in its recursive `Drop`. No entry function can
 /// bound an argument its caller already built; only unconstructibility can.
-///
-/// ```compile_fail,E0451
-/// let forged = marrow_image::DurableGroupView { id: unimplemented!() };
-/// ```
-///
-/// ```compile_fail,E0609
-/// fn nest(kind: marrow_image::DurableMemberViewKind<'_>) {
-///     if let marrow_image::DurableMemberViewKind::Group(group) = kind {
-///         let _members = group.members;
-///     }
-/// }
-/// ```
 #[derive(Debug, Clone, Copy)]
 pub enum DurableMemberViewKind<'a> {
     Field(DurableFieldView),
@@ -942,7 +895,8 @@ mod tests {
     };
     use crate::bounds;
     use crate::draft::{
-        AdmittedGraphInputPlan, ImageDraft, KeyColumn, RecordTypeDef, RootOccurrenceDef, TypeId,
+        AdmittedGraphInputPlan, DraftTxn, ImageDraft, KeyColumn, RecordTypeDef,
+        RootOccurrenceDef, TypeId,
     };
     use crate::product::{DeclarationMemberDef, DeclarationMemberShape, DeclarationNode};
     use crate::ty::Scalar;
@@ -996,7 +950,7 @@ mod tests {
     }
 
     fn branch_cmd(
-        draft: &mut ImageDraft,
+        draft: &mut DraftTxn<'_>,
         parent: Option<u32>,
         byte: u8,
         keys: Vec<KeyColumn>,
@@ -1023,7 +977,7 @@ mod tests {
     /// A materialized entry record for a stated graph. The record is surface, not identity
     /// — excluded from the contract preimage — so every graph below binds the same empty
     /// one and no hex moves with it.
-    fn entry_record(draft: &mut ImageDraft) -> TypeId {
+    fn entry_record(draft: &mut DraftTxn<'_>) -> TypeId {
         let name = draft.intern_string("Entry").expect("a within-domain mint");
         draft
             .add_record_type(RecordTypeDef {
@@ -1035,7 +989,7 @@ mod tests {
 
     /// State one Product and one root occurrence over it in a fresh draft.
     fn one_root(
-        members: impl FnOnce(&mut ImageDraft) -> Vec<DeclarationMemberDef>,
+        members: impl FnOnce(&mut DraftTxn<'_>) -> Vec<DeclarationMemberDef>,
         keys: Vec<KeyColumn>,
         indexes: Vec<DurableIndexShape>,
     ) -> ImageDraft {
@@ -1044,11 +998,12 @@ mod tests {
 
     fn one_root_of_application(
         application: LedgerIdBytes,
-        members: impl FnOnce(&mut ImageDraft) -> Vec<DeclarationMemberDef>,
+        members: impl FnOnce(&mut DraftTxn<'_>) -> Vec<DeclarationMemberDef>,
         keys: Vec<KeyColumn>,
         indexes: Vec<DurableIndexShape>,
     ) -> ImageDraft {
-        let mut draft = ImageDraft::new();
+        let mut owner = ImageDraft::new();
+        let mut draft = owner.begin_transaction();
         draft.set_application_identity(application);
         let record = entry_record(&mut draft);
         let commands = members(&mut draft);
@@ -1068,7 +1023,8 @@ mod tests {
                 },
             )
             .expect("the Product is declared");
-        draft
+        draft.commit();
+        owner
     }
 
     /// The tracer's `counters` graph with fixed test ids: application `0x0a`,
@@ -1310,7 +1266,7 @@ mod tests {
         assert_eq!(base, cid(counters_graph().contract_view()));
 
         let two_fields = |first_id: u8, first_required: bool, second: bool| {
-            move |draft: &mut ImageDraft| {
+            move |draft: &mut DraftTxn<'_>| {
                 let int = draft
                     .value_shapes_mut()
                     .scalar(Scalar::Int)
@@ -1527,7 +1483,7 @@ mod tests {
         user_enum_retyped: ValueShapeNodeId,
     }
 
-    fn mint_shapes(draft: &mut ImageDraft) -> Shapes {
+    fn mint_shapes(draft: &mut DraftTxn<'_>) -> Shapes {
         let values = draft.value_shapes_mut();
         let int = values.scalar(Scalar::Int).expect("the test arena mints");
         let text = values.scalar(Scalar::Text).expect("the test arena mints");
@@ -2044,7 +2000,8 @@ mod tests {
         // The admitted maximum: exactly one occurrence past `MAX_ROOTS`, which is the
         // count the nonblocking `Roots` aggregate must still publish a complete graph for.
         const ROOTS: usize = bounds::MAX_ADMITTED_ROOT_OCCURRENCES;
-        let mut draft = ImageDraft::new();
+        let mut owner = ImageDraft::new();
+        let mut draft = owner.begin_transaction();
         draft.set_application_identity(id(0x0a));
         let record = entry_record(&mut draft);
         let int = draft
