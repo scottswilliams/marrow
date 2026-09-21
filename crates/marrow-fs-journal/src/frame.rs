@@ -54,7 +54,7 @@ pub enum JournalKind {
 
 impl JournalKind {
     /// The frame `kind` byte.
-    pub const fn code(self) -> u8 {
+    const fn code(self) -> u8 {
         match self {
             Self::Ids => 1,
         }
@@ -63,7 +63,7 @@ impl JournalKind {
     /// The kind's total frame ceiling in bytes. The decoder reads at most
     /// `ceiling + 1` bytes and refuses the surplus byte before any
     /// length-derived allocation.
-    pub const fn ceiling(self) -> usize {
+    pub(crate) const fn ceiling(self) -> usize {
         match self {
             Self::Ids => 2_101_248,
         }
@@ -71,7 +71,7 @@ impl JournalKind {
 
     /// The number of phases in the kind's registry. Phase tags run `1..=n`;
     /// tag 1 is `Prepared` and tag `n` is the terminal phase.
-    pub(crate) const fn phase_count(self) -> u8 {
+    const fn phase_count(self) -> u8 {
         match self {
             Self::Ids => 3,
         }
@@ -140,11 +140,6 @@ pub struct PhaseRecord {
 }
 
 impl PhaseRecord {
-    /// The record's dense monotone sequence, starting at zero.
-    pub fn sequence(&self) -> u32 {
-        self.sequence
-    }
-
     /// The record's phase tag within the kind's registry.
     pub fn phase_tag(&self) -> u8 {
         self.phase_tag
@@ -182,7 +177,7 @@ pub struct DecodedFrame {
 
 impl DecodedFrame {
     /// The frame's kind.
-    pub fn kind(&self) -> JournalKind {
+    pub(crate) fn kind(&self) -> JournalKind {
         self.kind
     }
 
@@ -199,16 +194,6 @@ impl DecodedFrame {
     /// The bytes after the last complete record.
     pub fn tail(&self) -> &TailState {
         &self.tail
-    }
-
-    /// The last recorded phase tag; zero before the first record.
-    pub fn last_tag(&self) -> u8 {
-        self.records.last().map_or(0, |record| record.phase_tag)
-    }
-
-    /// Whether the final registry phase has been recorded.
-    pub fn is_complete(&self) -> bool {
-        self.kind.is_terminal(self.last_tag())
     }
 }
 

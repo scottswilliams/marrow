@@ -37,7 +37,6 @@ const JOURNAL_MODE: u32 = 0o600;
 /// The two fixed names of one pending journal, derived from a base name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingName {
-    base: EntryName,
     claim: EntryName,
     pending: EntryName,
 }
@@ -48,16 +47,7 @@ impl PendingName {
     pub fn derive(base: &EntryName) -> Result<Self, EntryNameError> {
         let claim = EntryName::admit(&format!("{base}{CLAIM_SUFFIX}"))?;
         let pending = EntryName::admit(&format!("{base}{PENDING_SUFFIX}"))?;
-        Ok(Self {
-            base: base.clone(),
-            claim,
-            pending,
-        })
-    }
-
-    /// The base name.
-    pub fn base(&self) -> &EntryName {
-        &self.base
+        Ok(Self { claim, pending })
     }
 
     /// The claim entry name (`<base>.pending.create`).
@@ -259,11 +249,6 @@ pub struct PreclaimDebris<'d> {
 }
 
 impl PreclaimDebris<'_> {
-    /// The debris file's witnessed identity.
-    pub fn identity(&self) -> FsIdentity {
-        self.file.identity()
-    }
-
     /// Discard the debris under witness: the name must still map to the
     /// witnessed inode immediately before the unlink, and the parent is
     /// synced afterward.
@@ -450,21 +435,11 @@ pub struct LiveJournal<'d> {
 }
 
 impl LiveJournal<'_> {
-    /// The journal's kind.
-    pub fn kind(&self) -> JournalKind {
-        self.kind
-    }
-
     /// The identities this claim witnessed: the directory it was claimed under
     /// and the inode it was written into. A caller that built the row header as
     /// a value reads them back here rather than from inside the claim.
     pub fn witness(&self) -> JournalWitness {
         self.witness
-    }
-
-    /// The next record's sequence.
-    pub fn next_sequence(&self) -> u32 {
-        self.next_sequence
     }
 
     /// The last recorded phase tag.
@@ -473,7 +448,7 @@ impl LiveJournal<'_> {
     }
 
     /// Whether the terminal registry phase is recorded.
-    pub fn is_complete(&self) -> bool {
+    pub(crate) fn is_complete(&self) -> bool {
         self.kind.is_terminal(self.last_tag)
     }
 

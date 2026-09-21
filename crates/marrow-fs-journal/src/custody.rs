@@ -49,16 +49,6 @@ impl FsIdentity {
         Self { dev, ino }
     }
 
-    /// The projected `st_dev`.
-    pub const fn dev(self) -> u64 {
-        self.dev
-    }
-
-    /// The projected `st_ino`.
-    pub const fn ino(self) -> u64 {
-        self.ino
-    }
-
     /// The frozen 16-byte layout: `u64_be(st_dev) || u64_be(st_ino)`.
     pub fn to_bytes(self) -> [u8; 16] {
         let mut bytes = [0u8; 16];
@@ -138,7 +128,7 @@ impl EntryStat {
     }
 
     /// The node's permission bits.
-    pub fn mode(&self) -> u32 {
+    pub(crate) fn mode(&self) -> u32 {
         self.mode
     }
 }

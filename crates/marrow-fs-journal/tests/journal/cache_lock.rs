@@ -27,7 +27,7 @@ fn acquisition_creates_the_entry_and_witnesses_its_identity() {
         .expect("the lock entry exists");
     assert_eq!(entry.identity(), lock.identity());
     assert_eq!(entry.kind(), NodeKind::Regular);
-    assert_eq!(entry.mode(), 0o600);
+    assert_eq!(mode_of(&scratch.path().join("lock")), 0o600);
 }
 
 #[test]

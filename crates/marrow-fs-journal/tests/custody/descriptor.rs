@@ -6,8 +6,8 @@
 
 use std::os::unix::fs::MetadataExt;
 
-use crate::common::Scratch;
-use marrow_fs_journal::{AdmittedDir, CustodyError, EntryName, NodeKind};
+use crate::common::{Scratch, mode_of};
+use marrow_fs_journal::{AdmittedDir, CustodyError, EntryName, FsIdentity, NodeKind};
 
 fn name(spelling: &str) -> EntryName {
     EntryName::admit(spelling).expect("test names are admissible")
@@ -85,8 +85,10 @@ fn a_directory_root_is_admitted_with_its_identity() {
     let scratch = Scratch::new("root");
     let dir = root(&scratch);
     let metadata = std::fs::metadata(scratch.path()).expect("stat the scratch root");
-    assert_eq!(dir.identity().dev(), metadata.dev());
-    assert_eq!(dir.identity().ino(), metadata.ino());
+    assert_eq!(
+        dir.identity(),
+        FsIdentity::new(metadata.dev(), metadata.ino())
+    );
 }
 
 #[test]
@@ -130,7 +132,10 @@ fn child_admission_is_descriptor_relative_and_nofollow() {
 
     let child = dir.create_child_dir(&name("inner")).expect("create child");
     let metadata = std::fs::metadata(scratch.path().join("inner")).expect("stat child");
-    assert_eq!(child.identity().ino(), metadata.ino());
+    assert_eq!(
+        child.identity(),
+        FsIdentity::new(metadata.dev(), metadata.ino())
+    );
 
     let again = dir.admit_child(&name("inner")).expect("admit child");
     assert_eq!(again.identity(), child.identity());
@@ -163,7 +168,11 @@ fn exclusive_creation_witnesses_mode_and_refuses_a_second_creation() {
     assert_eq!(stat.kind(), NodeKind::Regular);
     assert_eq!(stat.nlink(), 1);
     assert_eq!(stat.size(), 0);
-    assert_eq!(stat.mode(), 0o600, "creation is mode 0600 exactly");
+    assert_eq!(
+        mode_of(&scratch.path().join("fresh")),
+        0o600,
+        "creation is mode 0600 exactly"
+    );
     assert_eq!(stat.identity(), file.identity());
 
     let entry = dir

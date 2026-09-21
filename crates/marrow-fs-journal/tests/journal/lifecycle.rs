@@ -5,7 +5,7 @@
 
 use std::os::unix::fs::MetadataExt;
 
-use crate::common::{Scratch, require_mode_bits_bind, set_mode};
+use crate::common::{Scratch, mode_of, require_mode_bits_bind, set_mode};
 use marrow_fs_journal::{
     AdmittedDir, BuiltHeader, CacheLock, ClaimRefusal, CorruptionReason, CustodyError, CustodyOp,
     EntryName, EntryNameError, FrameCorruption, FsIdentity, JournalCommon, JournalError,
@@ -27,6 +27,8 @@ fn pending_name(base: &str) -> PendingName {
 
 const GENERATION: [u8; 16] = [0x51; 16];
 const HEADER_TAIL: [u8; 8] = [0x77; 8];
+/// The kind-1 frame ceiling, as the frame known-answer tests freeze it.
+const CEILING: usize = 2_101_248;
 
 /// The row header as a caller builds it: the claim composes the leading
 /// common from its own witness.
@@ -96,7 +98,6 @@ fn admit<'d>(dir: &'d AdmittedDir, names: &PendingName) -> Result<PendingState<'
 #[test]
 fn pending_names_are_derived_and_readmitted() {
     let names = pending_name("store");
-    assert_eq!(names.base().as_str(), "store");
     assert_eq!(names.claim().as_str(), "store.pending.create");
     assert_eq!(names.pending().as_str(), "store.pending");
 
@@ -114,10 +115,7 @@ fn a_claim_publishes_exactly_the_header_and_prepared_record() {
     let names = pending_name("store");
 
     let live = claim_ids(&dir, &names);
-    assert_eq!(live.kind(), JournalKind::Ids);
-    assert_eq!(live.next_sequence(), 1);
     assert_eq!(live.last_tag(), 1);
-    assert!(!live.is_complete());
 
     // On disk: the pending name alone, one link, mode 0600, exact bytes.
     assert!(
@@ -179,7 +177,7 @@ fn a_frame_law_violation_in_the_header_is_refused_before_any_link() {
         &names,
         BuiltHeader::Witnessed {
             generation: GENERATION,
-            tail: vec![0xEE; JournalKind::Ids.ceiling()],
+            tail: vec![0xEE; CEILING],
         },
         b"P",
     );
@@ -244,11 +242,9 @@ fn appends_grow_the_journal_by_exact_records_and_enforce_the_registry() {
         std::fs::metadata(&path).expect("stat").len(),
         base_len + record.len() as u64
     );
-    assert_eq!(live.next_sequence(), 2);
     assert_eq!(live.last_tag(), 2);
 
     live.append(3, b"cleaned").expect("append Cleaned");
-    assert!(live.is_complete());
     assert!(matches!(
         live.append(3, b"more"),
         Err(JournalError::AppendAfterComplete)
@@ -408,9 +404,9 @@ fn hostile_umask_helper() {
 
     let dir = root(&scratch);
 
-    let file = dir.create_file_excl(&name("probe")).expect("create probe");
+    dir.create_file_excl(&name("probe")).expect("create probe");
     assert_eq!(
-        file.stat().expect("stat probe").mode(),
+        mode_of(&scratch.path().join("probe")),
         0o600,
         "file creation is umask-independent"
     );
@@ -644,7 +640,6 @@ fn a_pending_journal_replays_its_records_and_resumes() {
     assert_eq!(pending.frame().tail(), &TailState::Clean);
 
     let mut live = pending.resume().expect("resume");
-    assert_eq!(live.next_sequence(), 2);
     assert_eq!(live.last_tag(), 2);
     live.append(3, b"cleaned").expect("append terminal");
     live.finish().expect("finish");
@@ -773,12 +768,11 @@ fn hostile_pending_states_are_retained_corruption() {
     );
 
     // Oversize: the ceiling plus one byte refuses before allocation.
-    let limit = JournalKind::Ids.ceiling();
-    std::fs::write(&pending_path, vec![0xAA; limit + 1]).expect("write");
+    std::fs::write(&pending_path, vec![0xAA; CEILING + 1]).expect("write");
     assert_corrupt(
         &dir,
         &names,
-        &CorruptionReason::Frame(FrameCorruption::Oversized { limit }),
+        &CorruptionReason::Frame(FrameCorruption::Oversized { limit: CEILING }),
     );
 
     // The wrong mode is retained corruption.

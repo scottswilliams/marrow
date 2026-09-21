@@ -75,6 +75,12 @@ fn decode_ok(bytes: &[u8]) -> DecodedFrame {
     decode(bytes).expect("a well-formed frame decodes")
 }
 
+/// Whether the frame's last record is the terminal registry phase.
+fn complete(frame: &DecodedFrame) -> bool {
+    let last_tag = frame.records().last().map_or(0, PhaseRecord::phase_tag);
+    JournalKind::Ids.is_terminal(last_tag)
+}
+
 #[test]
 fn identity_projection_is_the_frozen_sixteen_byte_layout() {
     let bytes = PARENT.to_bytes();
@@ -131,12 +137,11 @@ fn the_golden_frame_is_byte_exact() {
     assert_eq!(decoded.kind(), JournalKind::Ids);
     assert_eq!(decoded.row_header(), &header()[..]);
     assert_eq!(decoded.records().len(), 3);
-    assert_eq!(decoded.records()[0].sequence(), 0);
     assert_eq!(decoded.records()[0].phase_tag(), 1);
     assert_eq!(decoded.records()[0].payload(), &[0x01]);
     assert_eq!(decoded.records()[2].payload(), &[0xB2; 33]);
     assert_eq!(decoded.tail(), &TailState::Clean);
-    assert!(decoded.is_complete());
+    assert!(complete(&decoded));
     let leading: &[u8; JOURNAL_COMMON_LEN] = decoded.row_header()[..JOURNAL_COMMON_LEN]
         .try_into()
         .expect("the header begins with the 48-byte common");
@@ -159,7 +164,7 @@ fn a_frame_at_its_exact_ceiling_decodes_and_one_more_byte_refuses() {
     frame.extend_from_slice(&record(1, 2, &[]));
     frame.extend_from_slice(&record(2, 3, &vec![0x42; payload_len]));
     assert_eq!(frame.len(), CEILING);
-    assert!(decode_ok(&frame).is_complete());
+    assert!(complete(&decode_ok(&frame)));
 
     frame.push(0);
     assert_eq!(
@@ -184,7 +189,7 @@ fn registry_phases_may_be_skipped() {
     frame.extend_from_slice(&record(1, 3, b"q"));
     let decoded = decode_ok(&frame);
     assert_eq!(decoded.records().len(), 2);
-    assert!(decoded.is_complete(), "tag 3 is the terminal phase");
+    assert!(complete(&decoded), "tag 3 is the terminal phase");
 }
 
 #[test]
@@ -398,7 +403,7 @@ fn an_incomplete_final_record_is_a_validated_tail_candidate() {
     let cut = &full[..202 - 20];
     let decoded = decode_ok(cut);
     assert_eq!(decoded.records().len(), 2);
-    assert!(!decoded.is_complete());
+    assert!(!complete(&decoded));
     match decoded.tail() {
         TailState::IncompletePrefix { bytes } => {
             assert_eq!(bytes.as_slice(), &full[202 - 46..202 - 20]);
@@ -453,7 +458,7 @@ fn a_header_only_frame_decodes_with_no_records() {
     let decoded = decode_ok(&frame);
     assert!(decoded.records().is_empty());
     assert_eq!(decoded.tail(), &TailState::Clean);
-    assert!(!decoded.is_complete());
+    assert!(!complete(&decoded));
 }
 
 #[test]
