@@ -922,27 +922,26 @@ fn binding_rechecks_old_metadata_and_location_after_service_preparation() {
             std::fs::read(scratch.store().join(crate::ENVELOPE_FILE)).expect("envelope");
         let changed_head = request(&edited, instance).head.encode();
         let store = scratch.store();
-        let (mutation, retained, expected_head): (Mutation, _, _) =
-            if move_directory {
-                let moved = scratch.base().join("moved");
-                let target = moved.clone();
-                (
-                    Box::new(move |_: &AdmittedStoreDir| {
-                        std::fs::rename(&store, &target).expect("move store");
-                    }),
-                    moved,
-                    old_head,
-                )
-            } else {
-                let bytes = changed_head.clone();
-                (
-                    Box::new(move |dir: &AdmittedStoreDir| {
-                        replace_synced(&store, dir, Artifact::Head, &bytes)
-                    }),
-                    scratch.store(),
-                    changed_head,
-                )
-            };
+        let (mutation, retained, expected_head): (Mutation, _, _) = if move_directory {
+            let moved = scratch.base().join("moved");
+            let target = moved.clone();
+            (
+                Box::new(move |_: &AdmittedStoreDir| {
+                    std::fs::rename(&store, &target).expect("move store");
+                }),
+                moved,
+                old_head,
+            )
+        } else {
+            let bytes = changed_head.clone();
+            (
+                Box::new(move |dir: &AdmittedStoreDir| {
+                    replace_synced(&store, dir, Artifact::Head, &bytes)
+                }),
+                scratch.store(),
+                changed_head,
+            )
+        };
         let (seam, reached) = mutate_at(Step::Prepared, mutation);
         let result = attach_observed(&scratch.store(), prepare(edited.clone()), seam);
         reached.assert();
