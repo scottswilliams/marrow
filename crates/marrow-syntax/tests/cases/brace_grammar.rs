@@ -496,11 +496,27 @@ fn a_header_without_a_block_reports_the_gap_and_stands_an_empty_block() {
     for (source, line, column) in [
         ("module app\nfn f() {\n    if a\n    return\n}\n", 4, 5),
         ("module app\nfn f() {\n    while a\n    return\n}\n", 4, 5),
-        ("module app\nfn f() {\n    for i in xs\n    return\n}\n", 4, 5),
-        ("module app\nfn f() {\n    transaction\n    return\n}\n", 4, 5),
-        ("module app\nfn f() {\n    if a {\n    } else if b\n    return\n}\n", 5, 5),
+        (
+            "module app\nfn f() {\n    for i in xs\n    return\n}\n",
+            4,
+            5,
+        ),
+        (
+            "module app\nfn f() {\n    transaction\n    return\n}\n",
+            4,
+            5,
+        ),
+        (
+            "module app\nfn f() {\n    if a {\n    } else if b\n    return\n}\n",
+            5,
+            5,
+        ),
         ("module app\nfn f() {\n    if a {\n    } else\n}\n", 4, 11),
-        ("module app\nfn f() {\n    match s {\n        dot =>\n    }\n}\n", 5, 5),
+        (
+            "module app\nfn f() {\n    match s {\n        dot =>\n    }\n}\n",
+            5,
+            5,
+        ),
         ("module app\nfn f() {\n    const x = y else\n}\n", 3, 21),
         (
             "module app\nfn f() {\n    for a in b at most 8 {\n    } on more\n}\n",
@@ -522,8 +538,15 @@ fn a_header_without_a_block_reports_the_gap_and_stands_an_empty_block() {
             DiagnosticReason::Parser(ParseDiagnosticReason::Expected(ExpectedSyntax::Block)),
             "{source:?}"
         );
-        assert_eq!(gap.span.start_byte, gap.span.end_byte, "{source:?}: {gap:#?}");
-        assert_eq!((gap.span.line, gap.span.column), (line, column), "{source:?}");
+        assert_eq!(
+            gap.span.start_byte, gap.span.end_byte,
+            "{source:?}: {gap:#?}"
+        );
+        assert_eq!(
+            (gap.span.line, gap.span.column),
+            (line, column),
+            "{source:?}"
+        );
     }
 
     let parsed = parse_bounded("module app\nfn f() {\n    if a\n    return\n}\n");

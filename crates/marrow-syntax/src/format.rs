@@ -1745,10 +1745,9 @@ fn format_expression_layout(expression: &Expression, level: usize, layout: Layou
                 .collect();
             format!("{base}[{}]", rendered.join(", "))
         }
-        Expression::Field { base, name, .. } => format!(
-            "{}.{name}",
-            format_child_at(base, PREC_ATOM, level, layout)
-        ),
+        Expression::Field { base, name, .. } => {
+            format!("{}.{name}", format_child_at(base, PREC_ATOM, level, layout))
+        }
         Expression::OptionalField { base, name, .. } => format!(
             "{}?.{name}",
             format_child_at(base, PREC_ATOM, level, layout)

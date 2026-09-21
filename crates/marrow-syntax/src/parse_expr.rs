@@ -36,10 +36,7 @@ pub(crate) enum ParseComplete {
 /// The outcome of parsing the field name after `.`/`?.`.
 enum FieldSegment {
     /// A well-formed field name.
-    Named {
-        name: String,
-        name_span: SourceSpan,
-    },
+    Named { name: String, name_span: SourceSpan },
     /// `.`/`?.` reached with no following token: the incomplete member-access form.
     /// The missing-name diagnostic is already emitted; `gap` anchors the recovery.
     Missing { gap: SourceSpan },
@@ -773,10 +770,7 @@ impl<'a, 's> ExprParser<'a, 's> {
                     };
                 }
                 Some(TokenKind::Dot) => match self.field_segment() {
-                    FieldSegment::Named {
-                        name,
-                        name_span,
-                    } => {
+                    FieldSegment::Named { name, name_span } => {
                         let span = join_spans(expr.span(), name_span);
                         expr = Expression::Field {
                             base: Box::new(expr),
@@ -797,10 +791,7 @@ impl<'a, 's> ExprParser<'a, 's> {
                 // `base?.name`: the same field segment as `.`, but the read
                 // short-circuits to absent rather than failing on a missing base.
                 Some(TokenKind::QuestionDot) => match self.field_segment() {
-                    FieldSegment::Named {
-                        name,
-                        name_span,
-                    } => {
+                    FieldSegment::Named { name, name_span } => {
                         let span = join_spans(expr.span(), name_span);
                         expr = Expression::OptionalField {
                             base: Box::new(expr),

@@ -52,8 +52,7 @@ mod render;
 
 use build::{
     build_alias_table, build_nominals, declare_enums, declare_records, declare_structs,
-    fill_records, fill_rows, register_type_templates, reserved_templates,
-    validate_alias_targets,
+    fill_records, fill_rows, register_type_templates, reserved_templates, validate_alias_targets,
 };
 use decl_coords::{AdmittedRecords, DeclarationCoordinates};
 use metadata::{DeclaredCounts, RowDirectory, RowDirectoryGuard};
@@ -3049,7 +3048,15 @@ impl TypeRegistry {
         let view = self.metadata_view();
         let metadata = self.row_directory(&view).ok()?;
         let mut display = DisplayScratch::for_view(&view);
-        render_validated_arg(self, &view, &metadata, GArg::from(id), &mut display, DISPLAY).ok()
+        render_validated_arg(
+            self,
+            &view,
+            &metadata,
+            GArg::from(id),
+            &mut display,
+            DISPLAY,
+        )
+        .ok()
     }
 
     fn inst_spelling_validated(

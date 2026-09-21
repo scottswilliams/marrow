@@ -386,7 +386,9 @@ fn statement_line_charge() -> usize {
     // is largest at `L = 2`; once a content byte is the wider of the two the rate rises
     // with `L` instead, approaching the content rate from below without reaching it, so
     // the content rate bounds it. Both are taken with `div_ceil`, like every other row.
-    (GROWTH * size_of::<Statement>() + content).div_ceil(2).max(content)
+    (GROWTH * size_of::<Statement>() + content)
+        .div_ceil(2)
+        .max(content)
 }
 
 /// The heap one source byte of a file can buy: a statement line, or anything the parser

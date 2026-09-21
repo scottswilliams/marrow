@@ -389,7 +389,6 @@ impl MetadataScratch {
         }
     }
 
-
     pub(super) fn declared_struct(&self, id: TypeId) -> Option<usize> {
         self.records
             .get(id.index() as usize)
