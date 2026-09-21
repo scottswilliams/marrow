@@ -31,12 +31,12 @@ use crate::demand::DurableNaming;
 use crate::diag::{
     BoundedDiagnostics, CompileDiagnosticLimit, DiagnosticCollector, SourceDiagnostic,
 };
-use crate::durable::{DurableRegistry, Family, OriginLedgers};
+use crate::durable::{DurableRegistry, OriginLedgers};
 use crate::konst::ConstRegistry;
 use crate::lower::{
-    BodyOutcome, DeclaredFn, FnLowerer, FunctionRegistry, GenericRegistry, ModuleBinding,
-    ModuleLedger, ModuleScope, PresenceObligation, Resolution, SignatureOutcome,
-    is_durable_place_op, is_mutation_instr, is_reserved_builtin_name, reserved_builtin_name,
+    BodyOutcome, BodyRole, DeclaredFn, FnLowerer, FunctionRegistry, GenericRegistry, LoweredFn,
+    ModuleBinding, ModuleLedger, ModuleScope, Resolution, SignatureOutcome, is_durable_place_op,
+    is_mutation_instr, is_reserved_builtin_name, reserved_builtin_name,
 };
 use crate::types::BuildError;
 use crate::types::{
@@ -437,22 +437,6 @@ enum InvariantCause {
     ImageBuild(ImageBuildError),
 }
 
-/// Project one stage's finished diagnostic terminal to the failure it forces,
-/// or `None` for a logically empty stage the projection passes over. The
-/// public precedence `Invariant > Diagnostics > ResourceLimit` is structural:
-/// an invariant returns before any terminal is consulted, and a stage's own
-/// Limited terminal is the only resource candidate that can displace its rows.
-fn stage_failure(diagnostics: BoundedDiagnostics) -> Option<CompileFailure> {
-    match diagnostics {
-        BoundedDiagnostics::Complete { rows, .. } => {
-            NonEmptySourceDiagnostics::new(rows).map(CompileFailure::Diagnostics)
-        }
-        BoundedDiagnostics::Limited { limit, .. } => Some(CompileFailure::ResourceLimit(
-            diagnostic_limit_failure(limit),
-        )),
-    }
-}
-
 /// Classify a producer-side [`ImageBuildError`] from `ImageDraft::encode` into the
 /// compile-failure arm it belongs to. Encode runs only on the clean-diagnostics path,
 /// so there is no coexisting diagnostic and the classification is total on its own.
@@ -570,12 +554,6 @@ enum TestMode {
     Include,
 }
 
-/// A parsed module: its file identity (for spans and diagnostics), its dotted
-/// module name (for export identity), the parse tree, and the logical broken
-/// status of its parse. Only the AST and that one bit survive parsing — the
-/// module's syntax diagnostics are absorbed into the drive's parse collector the
-/// moment the file is parsed, so no per-module diagnostic state ever accumulates with
-/// the file count.
 /// A project module that never reached the semantic pass, with the stage that
 /// refused it. It is still a module of the project: the module ledger declares it
 /// refused so a `use` or a qualified call into it names that stage's report.
@@ -586,6 +564,11 @@ struct UnparsedModule {
     stage: SourceStage,
 }
 
+/// A parsed module: its file identity, its dotted module name, the parse tree, and
+/// whether its parse was broken. Only the tree and that status survive parsing: the
+/// module's syntax diagnostics are absorbed into the drive's parse collector the moment
+/// the file is parsed, so no per-module diagnostic state accumulates with the file
+/// count.
 struct Module {
     file: ProjectFile,
     /// This module's position in the project's own module order — the coordinate every
@@ -593,36 +576,15 @@ struct Module {
     at: FileRef,
     name: String,
     ast: SourceFile,
-    broken: bool,
+    parse: ParseStatus,
 }
 
-/// A lowered function's identity for recursion detection and the
-/// requires-ambient-transaction check: its image index, the functions it calls
-/// directly, where to report a cycle, and the durable-mutation and call sites it
-/// performs outside any `transaction` block.
-struct LoweredFn {
-    func: FuncId,
-    file: ProjectFile,
-    name: String,
-    span: SourceSpan,
-    callees: Vec<u16>,
-    /// Whether this function is a public export entry, responsible for owning its
-    /// transaction when it mutates durable state.
-    is_export: bool,
-    /// Whether this is a `test` body, whose calls are invocation boundaries.
-    is_test: bool,
-    /// Spans of durable mutations this body performs outside any `transaction` block.
-    unwrapped_mutations: Vec<SourceSpan>,
-    /// Calls this body performs outside any `transaction` block, with their spans.
-    unwrapped_calls: Vec<(u16, SourceSpan)>,
-    /// The entry families this body erases directly.
-    erased_families: Vec<Family>,
-    /// Protected uses whose proofs a call may have ended.
-    presence_obligations: Vec<PresenceObligation>,
-    /// Whether this body performs a durable-place operation directly.
-    has_direct_durable_op: bool,
-    /// Full source spans parallel to the draft-owned instructions at `func`.
-    code_spans: Vec<SourceSpan>,
+/// Whether a module's parse reported a syntax error. A broken module is still a module
+/// of the project, so the ledger declares it refused; only a clean one is analyzed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ParseStatus {
+    Clean,
+    Broken,
 }
 
 /// One settled body's metadata coupled to its sole draft-owned instruction slice.
@@ -657,7 +619,8 @@ impl LoweredFn {
 pub fn compile(project: &ProjectInput) -> Result<Compiled, CompileFailure> {
     let built = drive(project, TestMode::Exclude)
         .map_err(CompileFailure::ResourceLimit)?
-        .production_built()?;
+        .resolve(StageJoin::First)?
+        .encode()?;
     Ok(Compiled {
         image: built.image,
         exports: built.exports,
@@ -670,10 +633,10 @@ pub fn compile(project: &ProjectInput) -> Result<Compiled, CompileFailure> {
 /// each test's title with its location for `marrow test`. Failure uses the same
 /// source-diagnostic or opaque compiler-invariant boundary as [`compile`].
 pub fn compile_with_tests(project: &ProjectInput) -> Result<CompiledTests, CompileFailure> {
-    let built = drive(project, TestMode::Include)
+    Ok(drive(project, TestMode::Include)
         .map_err(CompileFailure::ResourceLimit)?
-        .production_built()?;
-    Ok(built.into())
+        .resolve(StageJoin::First)?
+        .encode()?)
 }
 
 /// Check a captured project as `marrow check` does: one drive with tests included,
@@ -685,30 +648,10 @@ pub fn compile_with_tests(project: &ProjectInput) -> Result<CompiledTests, Compi
 /// [`compile`] still fits. The editor-fact retention bound is not consulted: no editor
 /// fact is published.
 pub fn check(project: &ProjectInput) -> Result<CompiledTests, CompileFailure> {
-    let built = drive(project, TestMode::Include)
+    Ok(drive(project, TestMode::Include)
         .map_err(CompileFailure::ResourceLimit)?
-        .check_built()?;
-    Ok(built.into())
-}
-
-/// The image, export directory, and (when included) test directory a compilation
-/// produced.
-struct Built {
-    image: EncodedImage,
-    exports: Vec<ExportEntry>,
-    tests: Vec<TestEntry>,
-    naming: DurableNaming,
-}
-
-impl From<Built> for CompiledTests {
-    fn from(built: Built) -> Self {
-        CompiledTests {
-            image: built.image,
-            exports: built.exports,
-            tests: built.tests,
-            naming: built.naming,
-        }
-    }
+        .resolve(StageJoin::Union)?
+        .encode()?)
 }
 
 /// The staged outcome of one analysis/lowering pass over a project. Diagnostics are
@@ -941,9 +884,9 @@ impl CheckedProgram {
     /// Encode the checked draft into canonical image bytes. The single point at which a
     /// public image-policy bound is consulted, taken strictly after the projection has
     /// ruled out its own failure.
-    fn encode(self) -> Result<Built, ImagePolicyOutcome> {
+    fn encode(self) -> Result<CompiledTests, ImagePolicyOutcome> {
         match self.draft.encode() {
-            Ok(image) => Ok(Built {
+            Ok(image) => Ok(CompiledTests {
                 image,
                 exports: self.exports,
                 tests: self.tests,
@@ -965,76 +908,27 @@ impl From<ImagePolicyOutcome> for CompileFailure {
     }
 }
 
+/// How the three stage terminals combine into the one terminal a projection reports.
+/// Rows are never sorted, deduped, or merged within a stage, so a limit arises only
+/// within the stage whose own collector crossed it — or, under the union, across
+/// stages, where an OwnedBytes limit may strengthen to Count.
+#[derive(Clone, Copy)]
+enum StageJoin {
+    /// The first logically non-empty stage in order — parse, then structural, then
+    /// semantic — is the terminal: the production compile's projection.
+    First,
+    /// Every stage's rows in order: the resilient union the editor snapshot and `check`
+    /// consume, in which a syntax error in one module does not suppress the semantic
+    /// findings of an independent one.
+    Union,
+}
+
 impl Driven {
-    /// The production compile result: the production projection's checked program,
-    /// encoded.
-    fn production_built(self) -> Result<Built, CompileFailure> {
-        Ok(self.production()?.encode()?)
-    }
-
-    /// The check result: the complete projection's checked program, encoded.
-    fn check_built(self) -> Result<Built, CompileFailure> {
-        Ok(self.complete()?.encode()?)
-    }
-
-    /// The production projection: the first logically non-empty stage in order — parse,
-    /// then structural, then semantic — is the failure.
-    ///
-    /// A stage's rows are never sorted, deduped, or merged with another stage's, so a
-    /// limit arises only within the stage whose own collector crossed it. The parse and
-    /// structural stages carry no stage tag: an empty terminal passes over and a non-empty
-    /// one is already the failure, so only a semantic stage can reach the tagged empty
-    /// boundary, which is an invariant. A fully clean pass yields the checked program.
-    ///
-    /// An invariant the semantic pass discovered is reported before any stage's findings:
-    /// it is a compiler-coherence failure over executed work, and a precheck finding
-    /// cannot make that work coherent.
-    fn production(self) -> Result<Box<CheckedProgram>, CompileFailure> {
-        let Self {
-            parse,
-            structural,
-            semantic,
-            facts: _,
-            symbol_bounded_files: _,
-        } = self;
-        let checked = match semantic {
-            SemanticOutcome::Invariant(cause) => {
-                return Err(CompileFailure::Invariant(CompileInvariant(cause)));
-            }
-            SemanticOutcome::Checked(program) => Ok(program),
-            SemanticOutcome::Diagnostics(diagnostics, stage) => {
-                Err(match stage_failure(diagnostics) {
-                    Some(failure) => failure,
-                    None => CompileFailure::Invariant(CompileInvariant(
-                        InvariantCause::EmptyDiagnostics(stage),
-                    )),
-                })
-            }
-            SemanticOutcome::ResourceLimit(limit) => Err(CompileFailure::ResourceLimit(limit)),
-        };
-        if let Some(failure) = stage_failure(parse) {
-            return Err(failure);
-        }
-        if let Some(failure) = stage_failure(structural) {
-            return Err(failure);
-        }
-        checked
-    }
-
-    /// The check projection: the complete diagnostic union the editor snapshot reads,
-    /// resolved under the same precedence, or the checked program. The retained editor
-    /// facts and per-file outline bounds are dropped unread: a fact ceiling bounds what
-    /// a snapshot publishes, and this projection publishes none. A capacity stop or a
-    /// resource limit arrives here with no program, so nothing is encoded for it.
-    fn complete(self) -> Result<Box<CheckedProgram>, CompileFailure> {
-        let Self {
-            parse,
-            structural,
-            semantic,
-            facts: _,
-            symbol_bounded_files: _,
-        } = self;
-        match analyze_outcome(parse, structural, semantic) {
+    /// The checked program, or the failure the stage terminals force under `join`. The
+    /// retained editor facts and per-file outline bounds are dropped unread: a fact
+    /// ceiling bounds what a snapshot publishes, and neither projection publishes one.
+    fn resolve(self, join: StageJoin) -> Result<Box<CheckedProgram>, CompileFailure> {
+        match resolve_stages(self.parse, self.structural, self.semantic, join) {
             Analyzed::Checked(program) => Ok(program),
             Analyzed::Diagnostics(diagnostics) => Err(CompileFailure::Diagnostics(diagnostics)),
             Analyzed::ResourceLimit(limit) => Err(CompileFailure::ResourceLimit(limit)),
@@ -1098,9 +992,13 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
     let mut parsed: Vec<Module> = Vec::new();
     for (file, at, name, source) in decoded {
         let result = parse_source(source);
-        let broken = result.diagnostics.summary().count() != 0;
+        let status = if result.diagnostics.summary().count() == 0 {
+            ParseStatus::Clean
+        } else {
+            ParseStatus::Broken
+        };
         parse.absorb_syntax(&file, result.diagnostics);
-        if broken {
+        if status == ParseStatus::Broken {
             facts.admit_broken(at);
             unparsed.push(UnparsedModule {
                 name: name.clone(),
@@ -1114,14 +1012,17 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
             at,
             name,
             ast: result.file,
-            broken,
+            parse: status,
         });
     }
 
     // Only cleanly-parsed modules enter analysis; a module with a parse error is skipped
     // as a dependent unit, its parse diagnostics and broken status already recorded. Its
     // tree is dropped here rather than carried: no query reads a retained tree.
-    let clean: Vec<Module> = parsed.into_iter().filter(|module| !module.broken).collect();
+    let clean: Vec<Module> = parsed
+        .into_iter()
+        .filter(|module| module.parse == ParseStatus::Clean)
+        .collect();
 
     // Project each cleanly-parsed module's declaration hierarchy from its parse tree — a
     // pure analysis byproduct of the one traversal, orthogonal to the semantic outcome
@@ -1873,18 +1774,6 @@ impl DeclarationExit {
     }
 }
 
-/// The declared monomorphic function bodies, lowered into the draft.
-struct LoweredFunctions {
-    exports: Vec<ExportEntry>,
-    exit: DeclarationExit,
-}
-
-/// The declared test bodies, lowered into the draft and bound into the test-entry table.
-struct LoweredTests {
-    entries: Vec<TestEntry>,
-    exit: DeclarationExit,
-}
-
 /// The once-checked template pass, run before the shared resolution borrows form:
 /// every generic function's body is type-checked once against its type parameters'
 /// constraints — independently of whether or how it is instantiated — under the
@@ -1957,7 +1846,7 @@ fn registry_phases(
     }
     let mut lowered = LoweredFunctionSet::new(draft);
 
-    let functions = lower_declared_functions(
+    let (exports, functions) = lower_declared_functions(
         parsed,
         records,
         resolution,
@@ -1966,9 +1855,7 @@ fn registry_phases(
         facts,
         &mut lowered,
     )?;
-    let function_bodies = functions.exit.complete();
-
-    let tests = lower_declared_tests(
+    let (tests, test_exit) = lower_declared_tests(
         &reserved_tests,
         records,
         resolution,
@@ -1977,7 +1864,6 @@ fn registry_phases(
         facts,
         &mut lowered,
     )?;
-    let test_bodies = tests.exit.complete();
 
     // A refused instance leaves its reserved slot vacant, but does not discard work
     // already queued by other bodies or discovered before the refusal.
@@ -1989,59 +1875,65 @@ fn registry_phases(
             break;
         };
         let template = &resolution.generics.templates()[template_index];
-        // One admitted generic-owner batch per drained instance body.
-        let batch = StagedBodyTxn::begin(records, draft)
-            .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
-        // This instance's refusal rows are staged outside the caller's collector while
-        // the batch is armed, exactly as a declared body's are: an invariant leaves
-        // through `?` below while the producer-owning aggregate drops both owners.
         // The instance's editor facts were collected once at its template's proof, so
         // its staged fact payload stays empty.
-        let (released, outcome) = batch
-            .lower_instance(resolution, template, &args, reserved)
-            .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
+        let batch = StagedBodyTxn::begin(records, draft)?;
+        let (released, outcome) = batch.lower_instance(resolution, template, &args, reserved)?;
         released.absorb(diagnostics, facts);
-        let lowered_body = match outcome {
-            BodyOutcome::Lowered(result) => Some(result),
-            // An ordinary refusal committed with the registry and draft aligned.
-            BodyOutcome::Refused => None,
-        };
         records.consume_fn_pending();
-        let Some(result) = lowered_body else {
-            continue;
-        };
-        if !records.has_instantiation_limit() {
-            settle_image_capacity(draft)?;
-        }
-        lowered.retain(
-            draft,
-            LoweredFn {
-                func: result.func,
-                file: template.source_file().clone(),
-                name: template.name().to_string(),
-                span: template.span(),
-                callees: result.callees,
-                is_export: false,
-                is_test: false,
-                unwrapped_mutations: result.unwrapped_mutations,
-                unwrapped_calls: result.unwrapped_calls,
-                erased_families: result.erased_families,
-                presence_obligations: result.presence_obligations,
-                has_direct_durable_op: result.has_direct_durable_op,
-                code_spans: result.code_spans,
-            },
-        );
+        settle_body(outcome, records, draft, &mut lowered)?;
     }
 
     lowered.0.resize_with(draft.function_count(), || None);
 
     Ok(RegistryPhases {
-        function_bodies,
-        test_bodies,
+        function_bodies: functions.complete(),
+        test_bodies: test_exit.complete(),
         lowered_set: lowered,
-        exports: functions.exports,
-        tests: tests.entries,
+        exports,
+        tests,
     })
+}
+
+/// How one body's settlement left the declaration set.
+enum BodySettlement {
+    /// The body took its reserved index and the image still fits.
+    Retained,
+    /// The body was refused; its reserved slot remains vacant.
+    Refused,
+    /// The shared instantiation limit stopped this body's batch, so the set's
+    /// unvisited suffix stays unlowered.
+    StoppedOnInstantiationLimit,
+}
+
+/// Retain one settled body — declared, test, or generic instance — after its batch
+/// committed. One admitted generic-owner batch lowered it: its interns, site requests,
+/// function fill, and every registry row its mints appended landed as one unit, and
+/// an ordinary refusal committed rather than rolled back, because the rows it minted
+/// can be referenced from outside it. The instantiation-limit verdict is read after
+/// the body's own rows, so a finding the same body reported is not displaced, and the
+/// image ceiling is polled exactly once per retained body.
+fn settle_body(
+    outcome: BodyOutcome,
+    records: &TypeRegistry,
+    draft: &ImageDraft,
+    lowered: &mut LoweredFunctionSet,
+) -> Result<BodySettlement, PhaseStop> {
+    let retained = match outcome {
+        BodyOutcome::Lowered(body) => {
+            lowered.retain(draft, *body);
+            true
+        }
+        BodyOutcome::Refused => false,
+    };
+    if records.has_instantiation_limit() {
+        return Ok(BodySettlement::StoppedOnInstantiationLimit);
+    }
+    if !retained {
+        return Ok(BodySettlement::Refused);
+    }
+    settle_image_capacity(draft)?;
+    Ok(BodySettlement::Retained)
 }
 
 /// Poll the image owner once a body has been retained: when the settled bodies alone
@@ -2058,9 +1950,9 @@ fn settle_image_capacity(draft: &ImageDraft) -> Result<(), PhaseStop> {
 }
 
 /// Lower each declared monomorphic function, in the same order the registry assigned
-/// indices, minting an export for each public function from its declaration path and
-/// recording its direct-call edges for recursion detection. Generic templates are
-/// skipped — they are monomorphized on demand and drained separately.
+/// indices, minting an export for each public function from its declaration path.
+/// Generic templates are skipped — they are monomorphized on demand and drained
+/// separately.
 fn lower_declared_functions(
     parsed: &[Module],
     records: &mut TypeRegistry,
@@ -2069,7 +1961,7 @@ fn lower_declared_functions(
     diagnostics: &mut DiagnosticCollector,
     facts: &mut AnalysisFactCollector,
     lowered: &mut LoweredFunctionSet,
-) -> Result<LoweredFunctions, PhaseStop> {
+) -> Result<(Vec<ExportEntry>, DeclarationExit), PhaseStop> {
     let mut exports: Vec<ExportEntry> = Vec::new();
     let mut exit = DeclarationExit::Exhausted;
     // The signature build walked these same declarations in this same order, so the
@@ -2080,115 +1972,97 @@ fn lower_declared_functions(
     for module in parsed {
         for declaration in &module.ast.declarations {
             let Declaration::Function(function) = declaration else {
-                // Constants are evaluated into the const registry before this pass;
-                // aliases, nominals, records, resources, and stores are handled by their
-                // own registries; test declarations are lowered after every function has
-                // an index.
                 continue;
             };
             if !function.type_params.is_empty() {
-                // A generic template is not lowered in place.
                 continue;
             }
             let func = match signatures.next_at(module.at, function.name_span) {
                 // The signature was refused and reported at the annotation it could
-                // not resolve. Lowering the body would resolve the same annotation
-                // again and report it a second time, and there is no parameter list
-                // to bind, so the declaration is refused whole: it takes no image
-                // index. A body refusal instead leaves its existing slot vacant.
+                // not resolve. Lowering the body would report it a second time, and
+                // there is no parameter list to bind, so the declaration is refused
+                // whole: it takes no image index.
                 Ok(SignatureOutcome::Refused) => {
                     exit = DeclarationExit::Refused;
                     continue;
                 }
                 Ok(SignatureOutcome::Resolved(func)) => func,
-                Err(drift) => {
-                    return Err(PhaseStop::Invariant(InvariantCause::Generic(drift.into())));
-                }
+                Err(drift) => return Err(GenericInvariant::from(drift).into()),
             };
-            // One admitted generic-owner batch per lowered body: the body's interns,
-            // site requests, function fill, export row, and every registry row its
-            // mints appended land as one unit; the guard mutates immediately and in
-            // place, so mint order is call order.
-            let batch = StagedBodyTxn::begin(records, draft)
-                .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
-            // This body's refusal rows are staged outside the caller's collector while the
-            // batch is armed. An invariant leaves through `?` below and drops producer,
-            // diagnostics, and facts as one aggregate.
-            let (released, outcome, export) = batch
-                .lower_function(
-                    resolution,
-                    facts,
-                    BodySite {
-                        at: module.at,
-                        file: &module.file,
-                        module: &module.name,
-                    },
-                    function,
-                    func,
-                )
-                .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
-            released.absorb(diagnostics, facts);
-            let lowered_body = match outcome {
-                BodyOutcome::Lowered(result) => Some(result),
-                // An ordinary refusal commits rather than rolling back: the interns and
-                // registry rows it already minted can be referenced by rows outside it.
-                BodyOutcome::Refused => None,
-            };
-            let Some(result) = lowered_body else {
-                if records.has_instantiation_limit() {
-                    return Ok(LoweredFunctions {
-                        exports,
-                        exit: DeclarationExit::StoppedOnInstantiationLimit,
-                    });
-                }
-                exit = DeclarationExit::Refused;
-                continue;
-            };
-            lowered.retain(
-                draft,
-                LoweredFn {
-                    func: result.func,
-                    file: module.file.clone(),
-                    name: function.name.clone(),
-                    span: function.span,
-                    callees: result.callees,
-                    is_export: is_compilation_export(function, &module.file),
-                    is_test: false,
-                    unwrapped_mutations: result.unwrapped_mutations,
-                    unwrapped_calls: result.unwrapped_calls,
-                    erased_families: result.erased_families,
-                    presence_obligations: result.presence_obligations,
-                    has_direct_durable_op: result.has_direct_durable_op,
-                    code_spans: result.code_spans,
-                },
-            );
-            // Every appended body is polled exactly once, before the export bookkeeping
-            // that may skip the rest of this iteration.
-            if records.has_instantiation_limit() {
-                return Ok(LoweredFunctions {
-                    exports,
-                    exit: DeclarationExit::StoppedOnInstantiationLimit,
-                });
-            }
-            settle_image_capacity(draft)?;
-            let export = if is_compilation_export(function, &module.file) {
-                // Export validation and minting ran before the lowering transaction
-                // committed; the driver sees the accepted id only after settlement.
-                let Some(id) = export else {
-                    continue;
-                };
-                Some(ExportEntry {
-                    module: module.name.clone(),
-                    item: function.name.clone(),
-                    id,
-                })
+            let role = if is_compilation_export(function, &module.file) {
+                BodyRole::Export
             } else {
-                None
+                BodyRole::Helper
             };
-            exports.extend(export);
+            let batch = StagedBodyTxn::begin(records, draft)?;
+            let (released, outcome) = batch.lower_function(
+                resolution,
+                facts,
+                BodySite {
+                    at: module.at,
+                    file: &module.file,
+                    module: &module.name,
+                },
+                function,
+                func,
+                role,
+            )?;
+            released.absorb(diagnostics, facts);
+            match settle_body(outcome, records, draft, lowered)? {
+                BodySettlement::StoppedOnInstantiationLimit => {
+                    return Ok((exports, DeclarationExit::StoppedOnInstantiationLimit));
+                }
+                BodySettlement::Refused => exit = DeclarationExit::Refused,
+                BodySettlement::Retained if role == BodyRole::Export => {
+                    exports.extend(mint_export(
+                        draft,
+                        diagnostics,
+                        &module.file,
+                        &module.name,
+                        function,
+                        func,
+                    ));
+                }
+                BodySettlement::Retained => {}
+            }
         }
     }
-    Ok(LoweredFunctions { exports, exit })
+    Ok((exports, exit))
+}
+
+/// Mint a lowered export's row: its id in the image's export table and the directory
+/// entry that pairs the human path with it. A declaration path the id cannot carry is
+/// refused at the declaration and takes no export slot.
+fn mint_export(
+    draft: &mut ImageDraft,
+    diagnostics: &mut DiagnosticCollector,
+    file: &ProjectFile,
+    module: &str,
+    function: &FunctionDecl,
+    func: FuncId,
+) -> Option<ExportEntry> {
+    if !valid_export_path(module, &function.name) {
+        diagnostics.push(SourceDiagnostic::at(
+            Code::CheckModulePath,
+            file,
+            function.span,
+            format!(
+                "export `{}` in module `{module}` is not an ASCII identifier path, so it \
+                 cannot be exported",
+                function.name
+            ),
+        ));
+        return None;
+    }
+    let id = ExportId::of_local(module, &function.name);
+    let mut txn = admitted(draft);
+    txn.add_export(id, func);
+    txn.commit();
+    Some(ExportEntry {
+        module: module.to_string(),
+        item: function.name.clone(),
+        id,
+    })
 }
 
 /// Lower each `test "name"` body into a storeless, zero-argument function and bind its
@@ -2205,13 +2079,10 @@ fn lower_declared_tests(
     diagnostics: &mut DiagnosticCollector,
     facts: &mut AnalysisFactCollector,
     lowered: &mut LoweredFunctionSet,
-) -> Result<LoweredTests, PhaseStop> {
+) -> Result<(Vec<TestEntry>, DeclarationExit), PhaseStop> {
     let mut entries: Vec<TestEntry> = Vec::new();
     if records.has_instantiation_limit() {
-        return Ok(LoweredTests {
-            entries,
-            exit: DeclarationExit::StoppedOnInstantiationLimit,
-        });
+        return Ok((entries, DeclarationExit::StoppedOnInstantiationLimit));
     }
     // Declared test titles are unique across the project, so a repeat is refused at its
     // own declaration rather than found by rescanning the entries built so far.
@@ -2228,76 +2099,43 @@ fn lower_declared_tests(
             exit = DeclarationExit::Refused;
             continue;
         }
-        // One admitted generic-owner batch per lowered test body, its test-entry
-        // append included.
-        let batch = StagedBodyTxn::begin(records, draft)
-            .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
-        // Staged inside the producer-owning guard exactly as a declared body's rows are.
-        let (released, outcome) = batch
-            .lower_test(
-                resolution,
-                facts,
-                BodySite {
-                    at: module.at,
-                    file: &module.file,
-                    module: &module.name,
-                },
-                &test.name,
-                &test.body,
-                func,
-            )
-            .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
+        let batch = StagedBodyTxn::begin(records, draft)?;
+        let (released, outcome) = batch.lower_test(
+            resolution,
+            facts,
+            BodySite {
+                at: module.at,
+                file: &module.file,
+                module: &module.name,
+            },
+            test,
+            func,
+        )?;
         released.absorb(diagnostics, facts);
-        let lowered_body = match outcome {
-            BodyOutcome::Lowered(result) => Some(result),
-            // An ordinary refusal committed with the registry and draft aligned.
-            BodyOutcome::Refused => None,
-        };
-        let Some(result) = lowered_body else {
-            if records.has_instantiation_limit() {
-                return Ok(LoweredTests {
-                    entries,
-                    exit: DeclarationExit::StoppedOnInstantiationLimit,
+        match settle_body(outcome, records, draft, lowered)? {
+            BodySettlement::StoppedOnInstantiationLimit => {
+                return Ok((entries, DeclarationExit::StoppedOnInstantiationLimit));
+            }
+            BodySettlement::Refused => exit = DeclarationExit::Refused,
+            BodySettlement::Retained => {
+                let mut txn = admitted(draft);
+                let title = txn
+                    .intern_string(&test.name)
+                    .map_err(GenericInvariant::BuilderDomain)?;
+                txn.add_test_entry(title, func);
+                txn.commit();
+                entries.push(TestEntry {
+                    name: test.name.clone(),
+                    module: module.name.clone(),
+                    file: module.file.spelling(),
+                    module_index: module.at.index(),
+                    line: test.name_span.line,
+                    column: test.name_span.column,
                 });
             }
-            exit = DeclarationExit::Refused;
-            continue;
-        };
-        lowered.retain(
-            draft,
-            LoweredFn {
-                func: result.func,
-                file: module.file.clone(),
-                name: test.name.clone(),
-                span: test.name_span,
-                callees: result.callees,
-                is_export: false,
-                is_test: true,
-                unwrapped_mutations: result.unwrapped_mutations,
-                unwrapped_calls: result.unwrapped_calls,
-                erased_families: result.erased_families,
-                presence_obligations: result.presence_obligations,
-                has_direct_durable_op: result.has_direct_durable_op,
-                code_spans: result.code_spans,
-            },
-        );
-        entries.push(TestEntry {
-            name: test.name.clone(),
-            module: module.name.clone(),
-            file: module.file.spelling(),
-            module_index: module.at.index(),
-            line: test.name_span.line,
-            column: test.name_span.column,
-        });
-        if records.has_instantiation_limit() {
-            return Ok(LoweredTests {
-                entries,
-                exit: DeclarationExit::StoppedOnInstantiationLimit,
-            });
         }
-        settle_image_capacity(draft)?;
     }
-    Ok(LoweredTests { entries, exit })
+    Ok((entries, exit))
 }
 
 /// The complete diagnostic picture of one drive: every stage's diagnostics over every
@@ -2343,7 +2181,12 @@ pub(crate) fn analyze_project(
     // limit.
     let facts = driven.facts;
     let symbol_bounded_files = driven.symbol_bounded_files.into_boxed_slice();
-    let outcome = analyze_outcome(driven.parse, driven.structural, driven.semantic);
+    let outcome = resolve_stages(
+        driven.parse,
+        driven.structural,
+        driven.semantic,
+        StageJoin::Union,
+    );
     Ok(ProjectAnalysis {
         outcome,
         facts,
@@ -2351,61 +2194,65 @@ pub(crate) fn analyze_project(
     })
 }
 
-/// Resolve the complete diagnostic outcome under the shared precedence from the driven
-/// stage terminals. A temporary fourth collector consumes parse, then structural, then
-/// semantic diagnostics before one finish — the ordered cross-stage union, in which an
-/// OwnedBytes limit may strengthen to Count across stages (the production projection
-/// never merges stages, so it never strengthens across them).
-fn analyze_outcome(
+/// Resolve the driven stage terminals under the one precedence
+/// `Invariant > Diagnostics > ResourceLimit`. An invariant the semantic pass discovered
+/// is reported before any stage's findings: it is a compiler-coherence failure over
+/// executed work, and a precheck finding cannot make that work coherent. A parse or
+/// structural finding then dominates the semantic pass's resource limit, exactly as
+/// the stages run in order. A logically empty semantic terminal is the empty-boundary
+/// invariant: an unavailable artifact always follows a refusal that reported.
+fn resolve_stages(
     parse: BoundedDiagnostics,
     structural: BoundedDiagnostics,
     semantic: SemanticOutcome,
+    join: StageJoin,
 ) -> Analyzed {
-    /// What the semantic pass left beside the union: the checked program, or why an
-    /// empty complete union is not one.
-    enum BesideUnion {
+    /// What the semantic pass left beside the terminal: the checked program, or why an
+    /// empty complete terminal is not one.
+    enum Beside {
         Checked(Box<CheckedProgram>),
-        /// The semantic terminal was logically empty. An unavailable artifact always
-        /// follows a refusal that reported, so an empty union here is the same
-        /// empty-boundary invariant the production projection reports.
         EmptyTerminal(CompileStage),
         /// A semantic stop beneath a precheck finding. The precheck terminal is
-        /// logically non-empty, so the union cannot be empty; the arm keeps the
+        /// logically non-empty, so the terminal cannot be empty; the arm keeps the
         /// mapping total without an abort.
         Stopped(CompileResourceLimit),
     }
 
-    // The parse and structural prechecks preempt the semantic pass's resource limit in
-    // the production compile: `production` returns those stages before it. So a real
-    // precheck diagnostic dominates a semantic resource limit here too, and the
-    // semantic pass's own diagnostics still union in for dependency resilience. An
-    // invariant the pass discovered in executed work is reported first in both
-    // projections: a precheck finding cannot make that work coherent.
     let precheck_present = !parse.is_empty() || !structural.is_empty();
-    let mut union = DiagnosticCollector::new();
-    union.absorb(parse);
-    union.absorb(structural);
-    let beside = match semantic {
+    let (semantic, beside) = match semantic {
         SemanticOutcome::Invariant(cause) => {
             return Analyzed::Invariant(CompileInvariant(cause));
         }
-        SemanticOutcome::Diagnostics(semantic, stage) => {
-            union.absorb(semantic);
-            BesideUnion::EmptyTerminal(stage)
+        SemanticOutcome::Diagnostics(terminal, stage) => {
+            (Some(terminal), Beside::EmptyTerminal(stage))
         }
-        // A checked program contributes no diagnostic and is never encoded here: the
-        // only image-policy bound this projection reaches is the settled-body byte
-        // ceiling, which arrives as the semantic resource limit below.
-        SemanticOutcome::Checked(program) => BesideUnion::Checked(program),
-        // A semantic bound the pass could not run past. It is a resource limit for
-        // the same reason a precheck one is — no source construct is at fault — and
-        // it yields to a real precheck diagnostic like the other semantic arms.
+        // A checked program is never encoded here: the only image-policy bound this
+        // projection reaches is the settled-body byte ceiling, which arrives as the
+        // semantic resource limit.
+        SemanticOutcome::Checked(program) => (None, Beside::Checked(program)),
         SemanticOutcome::ResourceLimit(limit) if !precheck_present => {
             return Analyzed::ResourceLimit(limit);
         }
-        SemanticOutcome::ResourceLimit(limit) => BesideUnion::Stopped(limit),
+        SemanticOutcome::ResourceLimit(limit) => (None, Beside::Stopped(limit)),
     };
-    let rows = match union.finish() {
+    let stages = [Some(parse), Some(structural), semantic]
+        .into_iter()
+        .flatten();
+    let terminal = match join {
+        // The stage's own terminal is the failure, allocation and all.
+        StageJoin::First => stages
+            .into_iter()
+            .find(|stage| !stage.is_empty())
+            .unwrap_or_else(|| DiagnosticCollector::new().finish()),
+        StageJoin::Union => {
+            let mut union = DiagnosticCollector::new();
+            for stage in stages {
+                union.absorb(stage);
+            }
+            union.finish()
+        }
+    };
+    let rows = match terminal {
         BoundedDiagnostics::Complete { rows, .. } => rows,
         BoundedDiagnostics::Limited { limit, .. } => {
             return Analyzed::ResourceLimit(diagnostic_limit_failure(limit));
@@ -2414,11 +2261,11 @@ fn analyze_outcome(
     match NonEmptySourceDiagnostics::new(rows) {
         Some(diagnostics) => Analyzed::Diagnostics(diagnostics),
         None => match beside {
-            BesideUnion::Checked(program) => Analyzed::Checked(program),
-            BesideUnion::EmptyTerminal(stage) => {
+            Beside::Checked(program) => Analyzed::Checked(program),
+            Beside::EmptyTerminal(stage) => {
                 Analyzed::Invariant(CompileInvariant(InvariantCause::EmptyDiagnostics(stage)))
             }
-            BesideUnion::Stopped(limit) => Analyzed::ResourceLimit(limit),
+            Beside::Stopped(limit) => Analyzed::ResourceLimit(limit),
         },
     }
 }
@@ -2537,12 +2384,12 @@ fn reject_missing_transaction(
     // one span) yields one diagnostic.
     let mut reported = false;
     for function in lowered.eligible(acyclic) {
-        if !function.is_export && !function.is_test {
+        if function.role == BodyRole::Helper {
             continue;
         }
         let mut seen: BTreeSet<(u32, u32)> = BTreeSet::new();
         for span in &function.unwrapped_mutations {
-            if function.is_test {
+            if function.role == BodyRole::Test {
                 continue;
             }
             if seen.insert((span.line, span.column)) {
@@ -2571,7 +2418,7 @@ fn reject_missing_transaction(
                     Code::CheckRequiresTransaction,
                     &function.file,
                     *span,
-                    if function.is_test {
+                    if function.role == BodyRole::Test {
                         format!(
                             "calling `{name}` here has no ambient transaction. Call an export \
                              that owns the durable work in a `transaction` block."
@@ -2684,7 +2531,7 @@ fn reject_transaction_ownership(
         // an owner as a terminal would, each call its own invocation boundary. Reported at
         // every call site to an owner; the verifier returns on the first, so a function
         // that calls an owner is not examined for its own ownership laws besides this.
-        if !function.is_test {
+        if function.role != BodyRole::Test {
             let mut reported = false;
             for (idx, instr) in body.code.iter().enumerate() {
                 let Instr::Call(target) = instr else { continue };
@@ -2718,7 +2565,7 @@ fn reject_transaction_ownership(
 
         // A `transaction` whose closure performs no durable operation commits nothing and
         // opens no session; refuse it at the block.
-        if function.is_export && has_begin[i] && !durable[i] {
+        if function.role == BodyRole::Export && has_begin[i] && !durable[i] {
             if let Some(span) = first_marker_span(body) {
                 diagnostics.push(SourceDiagnostic::at(
                     Code::CheckTransactionEmpty,
@@ -2734,7 +2581,7 @@ fn reject_transaction_ownership(
         }
 
         // A mutating (or region-owning) export runs the owner lattice.
-        if function.is_export && (mutates[i] || has_begin[i]) {
+        if function.role == BodyRole::Export && (mutates[i] || has_begin[i]) {
             if let Some((code, span, message)) = owner_lattice_violation(body, &durable, count) {
                 diagnostics.push(SourceDiagnostic::at(code, &function.file, span, message));
             }
@@ -2873,7 +2720,7 @@ fn reject_direct_test_operations(
 ) {
     for test in lowered
         .eligible(acyclic)
-        .filter(|function| function.is_test)
+        .filter(|function| function.role == BodyRole::Test)
     {
         if !test.has_direct_durable_op {
             continue;

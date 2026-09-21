@@ -34,7 +34,7 @@ use crate::analysis::{AnalysisFactCollector, DefinitionTarget, FactSink, FileRef
 use marrow_syntax::{
     Argument, BinaryOp, Block, CheckedBind, ElseIf, Expression, ForBinding, FunctionDecl,
     InterpolationPart, LiteralKind, MatchArm, NameSegment, RangeExpr, SourceSpan, Statement,
-    TraversalBound, TypeExpr, UnaryOp, decode_interpolation_text, decode_string_literal,
+    TestDecl, TraversalBound, TypeExpr, UnaryOp, decode_interpolation_text, decode_string_literal,
     duration_unit_seconds, range_expr,
 };
 
@@ -90,11 +90,18 @@ enum RetType {
     Value(LTy),
 }
 
-/// Which body is being lowered. Only a `test` body admits the owned `assert`
-/// statement; an ordinary function body rejects it with `check.assert_outside_test`.
+/// A body's role in the ownership passes: which transaction laws apply to it and
+/// whether it admits the owned `assert`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BodyKind {
-    Function,
+pub(crate) enum BodyRole {
+    /// A function that runs inside its caller's region: a private function, a generic
+    /// instance, or a dependency's `pub fn`.
+    Helper,
+    /// An export of this compilation: an invocation boundary that owns its transaction
+    /// when it mutates durable state.
+    Export,
+    /// A `test` body: it drives exports as a terminal would, each call its own
+    /// invocation boundary, and is the only body that admits `assert`.
     Test,
 }
 
@@ -142,26 +149,33 @@ pub(super) fn decl_range(decl: &FunctionDecl) -> SourceSpan {
     }
 }
 
-/// A successfully lowered function: its image index and the indices of the
-/// functions it calls directly (for check-time recursion detection).
-pub(crate) struct Lowered {
-    pub func: FuncId,
-    pub callees: Vec<u16>,
+/// A settled body: its image index, its identity for the ownership passes, and the
+/// facts those passes read — the functions it calls directly, the durable mutations
+/// and calls it performs outside any `transaction` block, and its erasures.
+pub(crate) struct LoweredFn {
+    pub(crate) func: FuncId,
+    pub(crate) file: ProjectFile,
+    pub(crate) name: String,
+    /// Where a body-level ownership report lands: the declaration for a function, the
+    /// title for a test.
+    pub(crate) span: SourceSpan,
+    pub(crate) role: BodyRole,
+    pub(crate) callees: Vec<u16>,
     /// Spans of durable mutations this body performs outside any `transaction` block.
-    pub unwrapped_mutations: Vec<SourceSpan>,
+    pub(crate) unwrapped_mutations: Vec<SourceSpan>,
     /// Calls this body performs outside any `transaction` block, with their spans.
-    pub unwrapped_calls: Vec<(u16, SourceSpan)>,
+    pub(crate) unwrapped_calls: Vec<(u16, SourceSpan)>,
     /// Whether this body performs a durable-place operation directly rather than only
     /// through calls. Consumed by the test-body direct-operation refusal.
-    pub has_direct_durable_op: bool,
+    pub(crate) has_direct_durable_op: bool,
     /// Entry families directly erased by this body. Calls inherit only these
     /// erasures when checking the lifetime of a presence fact.
-    pub erased_families: Vec<Family>,
+    pub(crate) erased_families: Vec<Family>,
     /// Present-form writes whose proofs a call may have ended.
-    pub presence_obligations: Vec<PresenceObligation>,
+    pub(crate) presence_obligations: Vec<PresenceObligation>,
     /// Full source spans parallel to the instructions owned by `func` in the draft.
     /// Transaction-ownership validation borrows that code after body settlement.
-    pub code_spans: Vec<SourceSpan>,
+    pub(crate) code_spans: Vec<SourceSpan>,
 }
 
 /// The outcome of resolving a call target against module scope.
@@ -187,18 +201,21 @@ pub(crate) enum CallResolution<'a> {
 /// Naming the two cases keeps that consequence at the call site rather than in an
 /// untyped `None`.
 pub(crate) enum BodyOutcome {
-    Lowered(Lowered),
+    /// Boxed: the settled body's spans dominate this outcome, and a refusal is the
+    /// common arm on a failing edit.
+    Lowered(Box<LoweredFn>),
     Refused,
 }
 
 type LowerResult = Result<BodyOutcome, LowerInvariant>;
 
 /// Which lowering pass a body is in: an ordinary or instance body that emits an image
-/// function and monomorphizes its generic calls, or the once-checked template pass that
-/// lowers against abstract parameters in a transaction whose additions are erased.
+/// function and monomorphizes its generic calls, carrying the role the ownership passes
+/// give it, or the once-checked template pass that lowers against abstract parameters
+/// in a transaction whose additions are erased.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LowerMode {
-    Concrete,
+    Concrete(BodyRole),
     Template,
 }
 
@@ -388,8 +405,8 @@ pub(crate) struct FnLowerer<'a, 'd> {
     /// makes every nested flow owner stop before it can use a missing slot.
     local_limit_reached: bool,
     ret: RetType,
-    /// Whether this is a function or a test body; gates the owned `assert`.
-    body_kind: BodyKind,
+    /// Where a body-level ownership report lands.
+    span: SourceSpan,
     failed: bool,
     invariant: Option<LowerInvariant>,
 }
@@ -450,7 +467,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         file: &'a ProjectFile,
         module: &'a str,
         ret: RetType,
-        body_kind: BodyKind,
+        mode: LowerMode,
+        span: SourceSpan,
     ) -> Self {
         let LowerCtx {
             draft,
@@ -477,7 +495,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             file,
             module,
             type_env: Vec::new(),
-            mode: LowerMode::Concrete,
+            mode,
             code: Vec::new(),
             code_bytes: 0,
             code_limit_reached: false,
@@ -497,9 +515,18 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             slot_count: 0,
             local_limit_reached: false,
             ret,
-            body_kind,
+            span,
             failed: false,
             invariant: None,
+        }
+    }
+
+    /// The role the ownership passes give this body. The template pass emits nothing
+    /// they read, so it reports as the helper its instances are.
+    fn role(&self) -> BodyRole {
+        match self.mode {
+            LowerMode::Concrete(role) => role,
+            LowerMode::Template => BodyRole::Helper,
         }
     }
 
@@ -542,15 +569,16 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         ty.spelling(self.records)
     }
 
-    /// Lower `function` into its reserved draft slot, returning its [`FuncId`] and the
-    /// indices of the functions it calls directly. Export minting is the caller's job:
-    /// it holds the dotted module name the export's [`marrow_image::ExportId`] needs.
+    /// Lower `function` into its reserved draft slot under `role`. Export minting is the
+    /// caller's job: it holds the dotted module name the export's
+    /// [`marrow_image::ExportId`] needs.
     pub(crate) fn lower(
         ctx: LowerCtx<'a, 'd>,
         file: &'a ProjectFile,
         module: &'a str,
         function: &FunctionDecl,
         func: FuncId,
+        role: BodyRole,
     ) -> LowerResult {
         Self::lower_with_env(
             ctx,
@@ -559,7 +587,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             function,
             func,
             Vec::new(),
-            LowerMode::Concrete,
+            LowerMode::Concrete(role),
         )
     }
 
@@ -587,7 +615,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             template.decl,
             func,
             type_env,
-            LowerMode::Concrete,
+            LowerMode::Concrete(BodyRole::Helper),
         )
     }
 
@@ -689,9 +717,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
         };
 
-        let mut lowerer = FnLowerer::new(ctx, file, module, ret, BodyKind::Function);
+        let mut lowerer = FnLowerer::new(ctx, file, module, ret, mode, function.span);
         lowerer.type_env = type_env;
-        lowerer.mode = mode;
 
         // Params occupy the first slots, pre-initialized to their type: a bare scalar, a
         // bare nominal (int-shaped), or a bare struct record ref.
@@ -822,20 +849,27 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Lower a `test` body into a storeless, zero-argument, unit-returning function. The
-    /// body is the only place the owned `assert` is legal; `name` is the test title,
-    /// interned as the function name and bound by the caller into the TEST-ENTRY table.
+    /// body is the only place the owned `assert` is legal; the title is interned as the
+    /// function name and bound by the caller into the TEST-ENTRY table.
     pub(crate) fn lower_test(
         ctx: LowerCtx<'a, 'd>,
         file: &'a ProjectFile,
         module: &'a str,
-        name: &str,
-        body: &Block,
+        test: &TestDecl,
         func: FuncId,
     ) -> LowerResult {
-        let mut lowerer = FnLowerer::new(ctx, file, module, RetType::Unit, BodyKind::Test);
-        match lowerer.lower_block(body) {
+        let mut lowerer = FnLowerer::new(
+            ctx,
+            file,
+            module,
+            RetType::Unit,
+            LowerMode::Concrete(BodyRole::Test),
+            test.name_span,
+        );
+        let name = &test.name;
+        match lowerer.lower_block(&test.body) {
             Ok(Flow::Fallthrough) => {
-                if lowerer.push(Instr::Return, body.span).is_err() {
+                if lowerer.push(Instr::Return, test.body.span).is_err() {
                     return lowerer.finish(func, name, Vec::new(), ImageType::Unit);
                 }
             }
@@ -881,8 +915,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 spans,
             },
         )?;
-        Ok(BodyOutcome::Lowered(Lowered {
+        Ok(BodyOutcome::Lowered(Box::new(LoweredFn {
             func: func_id,
+            file: self.file.clone(),
+            name: name.to_string(),
+            span: self.span,
+            role: self.role(),
             callees: std::mem::take(&mut self.calls),
             unwrapped_mutations: std::mem::take(&mut self.unwrapped_mutations),
             unwrapped_calls: std::mem::take(&mut self.unwrapped_calls),
@@ -890,7 +928,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             presence_obligations: std::mem::take(&mut self.presence_obligations),
             has_direct_durable_op,
             code_spans,
-        }))
+        })))
     }
 
     // --- emission helpers ---

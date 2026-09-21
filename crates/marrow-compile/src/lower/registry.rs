@@ -516,22 +516,10 @@ impl<'p> GenericRegistry<'p> {
     }
 }
 
-impl<'p> GenericTemplate<'p> {
-    pub(crate) fn source_file(&self) -> &ProjectFile {
-        &self.file
-    }
-
+impl GenericTemplate<'_> {
     /// The snapshot coordinate this template's editor facts are retained under.
     pub(crate) fn at(&self) -> FileRef {
         self.at
-    }
-
-    pub(crate) fn name(&self) -> &str {
-        &self.decl.name
-    }
-
-    pub(crate) fn span(&self) -> SourceSpan {
-        self.decl.span
     }
 }
 

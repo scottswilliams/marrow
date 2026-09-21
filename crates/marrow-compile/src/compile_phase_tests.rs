@@ -5,9 +5,40 @@ use crate::compile::admitted;
 
 use super::valid_export_path;
 use super::{
-    Analyzed, BoundedDiagnostics, Built, CompileFailure, CompileStage, DeclarationExit, Driven,
-    InvariantCause, SemanticOutcome, analyze_outcome,
+    Analyzed, BoundedDiagnostics, CheckedProgram, CompileFailure, CompileStage, CompiledTests,
+    DeclarationExit, Driven, InvariantCause, SemanticOutcome, StageJoin, resolve_stages,
 };
+use crate::lower::BodyRole;
+
+/// The two projections as the public entry points take them, spelled once for the
+/// driver fixtures below.
+trait Projections {
+    fn production(self) -> Result<Box<CheckedProgram>, CompileFailure>;
+    fn production_built(self) -> Result<CompiledTests, CompileFailure>;
+    fn check_built(self) -> Result<CompiledTests, CompileFailure>;
+}
+
+impl Projections for Driven {
+    fn production(self) -> Result<Box<CheckedProgram>, CompileFailure> {
+        self.resolve(StageJoin::First)
+    }
+
+    fn production_built(self) -> Result<CompiledTests, CompileFailure> {
+        Ok(self.production()?.encode()?)
+    }
+
+    fn check_built(self) -> Result<CompiledTests, CompileFailure> {
+        Ok(self.resolve(StageJoin::Union)?.encode()?)
+    }
+}
+
+fn analyze_outcome(
+    parse: BoundedDiagnostics,
+    structural: BoundedDiagnostics,
+    semantic: SemanticOutcome,
+) -> Analyzed {
+    resolve_stages(parse, structural, semantic, StageJoin::Union)
+}
 use crate::compile::Declaration;
 use crate::diag::{DiagnosticCollector, MAX_DIAGNOSTIC_COUNT, SourceDiagnostic};
 use crate::lower::FunctionRegistry;
@@ -43,8 +74,7 @@ fn borrowed_bodies_require_the_actual_function_and_every_instruction_span() {
         name: "body".to_string(),
         span: SourceSpan::default(),
         callees: Vec::new(),
-        is_export: false,
-        is_test: false,
+        role: BodyRole::Helper,
         unwrapped_mutations: Vec::new(),
         unwrapped_calls: Vec::new(),
         erased_families: Vec::new(),
@@ -165,7 +195,7 @@ fn finished(rows: Vec<SourceDiagnostic>) -> BoundedDiagnostics {
 /// No partial image, a private cause, and the fixed rendering.
 #[test]
 fn a_semantic_invariant_is_opaque_at_the_public_boundary() {
-    let outcome: Result<Built, CompileFailure> = driven(
+    let outcome: Result<CompiledTests, CompileFailure> = driven(
         empty_terminal(),
         empty_terminal(),
         SemanticOutcome::Invariant(template_proof_cause()),

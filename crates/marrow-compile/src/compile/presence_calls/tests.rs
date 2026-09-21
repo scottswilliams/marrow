@@ -1,4 +1,5 @@
 use super::*;
+use crate::lower::BodyRole;
 use marrow_codes::Code;
 use marrow_image::{
     AdmittedGraphInputPlan, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
@@ -179,8 +180,7 @@ fn named_functions(names: &[&str]) -> Vec<Option<LoweredFn>> {
                 name: name.to_string(),
                 span: SourceSpan::default(),
                 callees: vec![0, 1],
-                is_export: false,
-                is_test: false,
+                role: BodyRole::Helper,
                 unwrapped_mutations: Vec::new(),
                 unwrapped_calls: Vec::new(),
                 erased_families: Vec::new(),

@@ -6,20 +6,17 @@
 //! release consumes that aggregate after its producer has committed or erased.
 
 use crate::source::ProjectFile;
-use marrow_codes::Code;
-use marrow_image::{ExportId, ImageDraft};
-use marrow_syntax::{Block, FunctionDecl};
+use marrow_image::ImageDraft;
+use marrow_syntax::{FunctionDecl, TestDecl};
 
 use super::{
     AnalysisFactCollector, DiagnosticCollector, FactSink, FileRef, ReleasedBody, StagedFacts,
 };
-use crate::compile::{is_compilation_export, valid_export_path};
-use crate::diag::SourceDiagnostic;
-use crate::lower::{BodyOutcome, FnLowerer, GenericTemplate, LowerCtx, Resolution};
+use crate::lower::{BodyOutcome, BodyRole, FnLowerer, GenericTemplate, LowerCtx, Resolution};
 use crate::types::{GArg, GenericDiagnostics, GenericInvariant, GenericOwnerTxn, TypeRegistry};
 
 /// Where one declared body was written: the retained coordinate, the owned identity a
-/// diagnostic renders, and the dotted module its export path is built from.
+/// diagnostic renders, and the dotted module its unqualified calls resolve in.
 #[derive(Clone, Copy)]
 pub(crate) struct BodySite<'a> {
     pub(crate) at: FileRef,
@@ -67,7 +64,8 @@ impl<'r, 'd> StagedBodyTxn<'r, 'd> {
         site: BodySite<'a>,
         function: &'a FunctionDecl,
         func: marrow_image::FuncId,
-    ) -> Result<(ReleasedBody, BodyOutcome, Option<ExportId>), GenericInvariant> {
+        role: BodyRole,
+    ) -> Result<(ReleasedBody, BodyOutcome), GenericInvariant> {
         let Self {
             mut owner,
             mut staged_diagnostics,
@@ -88,36 +86,11 @@ impl<'r, 'd> StagedBodyTxn<'r, 'd> {
                 module,
                 function,
                 func,
+                role,
             )?
         };
-        let export = match &outcome {
-            BodyOutcome::Lowered(lowered) if is_compilation_export(function, file) => {
-                if valid_export_path(module, &function.name) {
-                    let id = ExportId::of_local(module, &function.name);
-                    owner.parts().1.add_export(id, lowered.func);
-                    Some(id)
-                } else {
-                    staged_diagnostics.push(SourceDiagnostic::at(
-                        Code::CheckModulePath,
-                        file,
-                        function.span,
-                        format!(
-                            "export `{}` in module `{module}` is not an ASCII identifier path, \
-                             so it cannot be exported",
-                            function.name
-                        ),
-                    ));
-                    None
-                }
-            }
-            BodyOutcome::Lowered(_) | BodyOutcome::Refused => None,
-        };
         owner.commit();
-        Ok((
-            Self::release(staged_diagnostics, staged_facts),
-            outcome,
-            export,
-        ))
+        Ok((Self::release(staged_diagnostics, staged_facts), outcome))
     }
 
     pub(crate) fn lower_instance<'a>(
@@ -156,8 +129,7 @@ impl<'r, 'd> StagedBodyTxn<'r, 'd> {
         resolution: Resolution<'a, 'a>,
         settled_facts: &'a AnalysisFactCollector,
         site: BodySite<'a>,
-        name: &'a str,
-        body: &'a Block,
+        test: &'a TestDecl,
         func: marrow_image::FuncId,
     ) -> Result<(ReleasedBody, BodyOutcome), GenericInvariant> {
         let Self {
@@ -178,18 +150,10 @@ impl<'r, 'd> StagedBodyTxn<'r, 'd> {
                 },
                 file,
                 module,
-                name,
-                body,
+                test,
                 func,
             )?
         };
-        if let BodyOutcome::Lowered(lowered) = &outcome {
-            let draft = owner.parts().1;
-            let name = draft
-                .intern_string(name)
-                .map_err(GenericInvariant::BuilderDomain)?;
-            draft.add_test_entry(name, lowered.func);
-        }
         owner.commit();
         Ok((Self::release(staged_diagnostics, staged_facts), outcome))
     }

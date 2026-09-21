@@ -308,7 +308,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// Lower `assert <expr>`: the condition must be bool, and on false the emitted
     /// `Assert` op faults the running test with `run.assert`. Legal only in a test body.
     fn lower_assert(&mut self, value: &Expression, span: SourceSpan) -> ConstructResult<()> {
-        if self.body_kind != BodyKind::Test {
+        if self.role() != BodyRole::Test {
             self.fail(SourceDiagnostic::at(
                 Code::CheckAssertOutsideTest,
                 self.file,

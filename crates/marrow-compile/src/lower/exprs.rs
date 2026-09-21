@@ -1640,7 +1640,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     RetType::Value(ty) => CallResult::Value(ty),
                 })
             }
-            LowerMode::Concrete => {
+            LowerMode::Concrete(_) => {
                 let func = match self.records.reserve_fn_instance(
                     self.draft,
                     template_index,
