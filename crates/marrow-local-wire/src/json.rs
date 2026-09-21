@@ -364,6 +364,17 @@ impl<'a> Lexer<'a> {
         self.pos == self.bytes.len()
     }
 
+    /// The byte offset the next token starts at.
+    pub fn offset(&self) -> usize {
+        self.pos
+    }
+
+    /// The text consumed since `start`, an offset this lexer reported earlier.
+    pub fn since(&self, start: usize) -> &'a str {
+        std::str::from_utf8(&self.bytes[start..self.pos])
+            .expect("token boundaries are char boundaries")
+    }
+
     /// Consume `byte` when it is next.
     pub fn take(&mut self, byte: u8) -> bool {
         let found = self.peek() == Some(byte);
@@ -418,21 +429,12 @@ impl<'a> Lexer<'a> {
         if self.peek() == Some(b'-') {
             self.pos += 1;
         }
-        match self.peek() {
-            // JSON spells zero as a lone `0`; a digit after it is the non-minimal spelling
-            // the wire refuses as non-canonical, and no tolerant reading admits it either.
-            Some(b'0') => {
-                self.pos += 1;
-                if matches!(self.peek(), Some(b'0'..=b'9')) {
-                    return Err(WireError::Noncanonical);
-                }
-            }
-            Some(b'1'..=b'9') => {
-                while matches!(self.peek(), Some(b'0'..=b'9')) {
-                    self.pos += 1;
-                }
-            }
-            _ => return Err(WireError::Malformed),
+        let digits_start = self.pos;
+        while matches!(self.peek(), Some(b'0'..=b'9')) {
+            self.pos += 1;
+        }
+        if self.pos == digits_start {
+            return Err(WireError::Malformed);
         }
         // A fraction or exponent is not an integer value Marrow can carry.
         if matches!(self.peek(), Some(b'.') | Some(b'e') | Some(b'E')) {
@@ -618,7 +620,7 @@ mod tests {
     use crate::error::WireError;
 
     /// The tolerant reading the importer drives: whitespace passes only where it is skipped,
-    /// a leading zero is the same non-canonical verdict the wire reaches, and a string past
+    /// a number's spelling is reported for the caller to hold canonical, and a string past
     /// the caller's bound is a limit rather than malformed text.
     #[test]
     fn the_lexer_reads_scalars_tolerantly_within_the_caller_bound() {
@@ -628,7 +630,9 @@ mod tests {
         lexer.skip_ws();
         assert!(lexer.take(b':'));
         lexer.skip_ws();
+        let start = lexer.offset();
         assert_eq!(lexer.scalar(), Ok(Json::Int(-12)));
+        assert_eq!(lexer.since(start), "-12");
         assert_eq!(lexer.expect(b','), Err(WireError::Malformed));
         lexer.skip_ws();
         assert_eq!(lexer.expect(b','), Ok(()));
@@ -637,7 +641,7 @@ mod tests {
         lexer.skip_ws();
         assert_eq!(lexer.scalar(), Ok(Json::Null));
         assert!(lexer.at_end());
-        assert_eq!(Lexer::new("01", 16).scalar(), Err(WireError::Noncanonical));
+        assert_eq!(Lexer::new("01", 16).scalar(), Ok(Json::Int(1)));
         assert_eq!(Lexer::new("1.5", 16).scalar(), Err(WireError::Malformed));
         assert_eq!(Lexer::new("[1]", 16).scalar(), Err(WireError::Malformed));
         assert_eq!(
@@ -883,6 +887,7 @@ mod tests {
             "truefalse",            // trailing bytes
             "99999999999999999999", // out of i64 range
             "\"\\x\"",              // bad escape
+            "01x",                  // trailing bytes outrank a non-minimal number
         ] {
             assert_eq!(
                 parse_strict(input.as_bytes()),

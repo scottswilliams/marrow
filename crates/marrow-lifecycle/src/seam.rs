@@ -65,7 +65,7 @@ pub(crate) enum StagePoint {
 /// What an observer is shown: a step over the directory it runs in, or one of the points
 /// outside a store directory that a sequence passes. The payload is read by the observers
 /// tests arm; production arms none.
-#[cfg_attr(not(test), allow(dead_code, reason = "read only by armed observers"))]
+#[cfg_attr(not(test), expect(dead_code, reason = "read only by armed observers"))]
 pub(crate) enum Event<'a> {
     /// `step` is about to run over `dir`.
     Step {
@@ -97,7 +97,7 @@ pub(crate) trait Observer {
 }
 
 /// The seam a sequence runs through: no observer in production, one in a test.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct Seam(Option<Rc<dyn Observer>>);
 
 impl Seam {

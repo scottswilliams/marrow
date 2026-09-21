@@ -31,7 +31,7 @@ use marrow_kernel::durable::{
     EntryValue, InvocationGrant, KernelFault, SessionError, SessionHost, SiteTarget, StoreSchema,
 };
 use marrow_kernel::equality::ValueDomain;
-use marrow_local_wire::{Json, Lexer, WireError};
+use marrow_local_wire::{Json, Lexer, WireError, encode};
 
 use crate::actor::{AdmissionRefusal, BindingStrictness, ImageAdmission};
 use crate::attachment::PreparedImage;
@@ -899,7 +899,13 @@ fn parse_row_object(line: &[u8], limits: &ImportLimits) -> Result<RowObject, Row
             if matches!(lexer.peek(), Some(b'{' | b'[')) {
                 return Err(RowFault::Nested { name: key });
             }
+            let start = lexer.offset();
             let value = lexer.scalar().map_err(RowFault::Malformed)?;
+            // The lexer reads any digit run; an integer is held to the wire's one canonical
+            // spelling here, so `01` is refused rather than read as `1`.
+            if matches!(value, Json::Int(_)) && lexer.since(start) != encode(&value) {
+                return Err(RowFault::Malformed(WireError::Noncanonical));
+            }
             members.push((key, value));
             lexer.skip_ws();
             if lexer.take(b',') {

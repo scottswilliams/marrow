@@ -246,19 +246,10 @@ pub(crate) enum OwnerStep {
 }
 
 /// A test's view of the open sequence over one store directory.
-pub(crate) trait OwnerObserver {
-    fn at(&self, dir: &Path, step: OwnerStep);
-}
-
-impl<F: Fn(&Path, OwnerStep)> OwnerObserver for F {
-    fn at(&self, dir: &Path, step: OwnerStep) {
-        self(dir, step);
-    }
-}
+type OwnerObserver = dyn Fn(&Path, OwnerStep);
 
 /// The one seam the open sequence exposes.
-#[derive(Clone, Default)]
-pub(crate) struct OwnerSeam(Option<Rc<dyn OwnerObserver>>);
+pub(crate) struct OwnerSeam(Option<Rc<OwnerObserver>>);
 
 impl OwnerSeam {
     const NONE: Self = Self(None);
@@ -270,7 +261,7 @@ impl OwnerSeam {
 
     fn at(&self, dir: &Path, step: OwnerStep) {
         if let Some(observer) = &self.0 {
-            observer.at(dir, step);
+            observer(dir, step);
         }
     }
 }

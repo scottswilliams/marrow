@@ -13,8 +13,53 @@ use crate::test_support::{
 };
 use crate::{
     AdmissionRefusal, AuditError, LifecycleError, LogicalHead, StoreInstanceId, accepted_ceiling,
-    active_binding, prepare, provision,
+    active_binding, head_map, prepare, provision,
 };
+
+/// A head whose accepted-ceiling payload does not decode is store corruption to the
+/// compatible gate (attach) and the exact gate (apply) alike, decided before any engine call.
+#[test]
+fn a_corrupt_accepted_ceiling_is_refused_as_corruption_before_the_engine_opens() {
+    let (old, new) = sparse_images();
+    let old = marrow_verify::verify(&old).expect("old image");
+    let new = marrow_verify::verify(&new).expect("new image");
+    let scratch = Scratch::new("apply");
+    provision(
+        &scratch.store(),
+        request(&old, StoreInstanceId::draw().expect("instance")),
+    )
+    .expect("provision");
+    let corrupt = LogicalHead::provision(
+        active_binding(&old),
+        vec![0xff; 3],
+        head_map(&old).expect("head map"),
+    );
+    std::fs::write(scratch.store().join(crate::HEAD_FILE), corrupt.encode()).expect("head");
+    std::fs::write(scratch.store().join(crate::ENGINE_FILE), b"not an engine")
+        .expect("engine control");
+    let refused = match crate::attach(&scratch.store(), prepare(old.clone())) {
+        Err(error) => error,
+        Ok(_) => panic!("a corrupt ceiling cannot attach"),
+    };
+    assert!(matches!(
+        refused,
+        LifecycleError::Refused(AdmissionRefusal::CeilingCorrupt)
+    ));
+    assert_eq!(refused.code(), marrow_codes::Code::StoreCorruption);
+    let refused = apply(&scratch.store(), prepare(old), prepare(new), None)
+        .expect_err("a corrupt ceiling cannot apply");
+    assert!(matches!(
+        refused,
+        ApplyError::Lifecycle(LifecycleError::Audit(AuditError::Refused(
+            AdmissionRefusal::CeilingCorrupt
+        )))
+    ));
+    assert_eq!(refused.code(), marrow_codes::Code::StoreCorruption);
+    assert_eq!(
+        std::fs::read(scratch.store().join(crate::ENGINE_FILE)).expect("engine"),
+        b"not an engine"
+    );
+}
 
 fn sparse_images() -> (Vec<u8>, Vec<u8>) {
     let source = format!(

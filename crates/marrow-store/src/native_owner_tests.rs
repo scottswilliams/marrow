@@ -76,14 +76,18 @@ fn promote(
 }
 
 /// A seam that corrupts the live engine once, right after it opens, and reports whether
-/// that point was reached.
+/// that point was reached. A marker handoff it sees is held to the same exclusion check
+/// as [`promote`].
 #[cfg(unix)]
 fn corrupt_after_open() -> (OwnerSeam, Rc<std::cell::Cell<bool>>) {
     let fired = Rc::new(std::cell::Cell::new(false));
     let armed = Rc::clone(&fired);
-    let seam = OwnerSeam::armed(move |dir, step| {
-        if step == OwnerStep::EngineOpened && !armed.replace(true) {
-            corrupt_live_engine_for_audit(dir);
+    let seam = OwnerSeam::armed(move |dir, step| match step {
+        OwnerStep::MarkerHandoff => assert_handoff_excludes_contenders(dir),
+        OwnerStep::EngineOpened => {
+            if !armed.replace(true) {
+                corrupt_live_engine_for_audit(dir);
+            }
         }
     });
     (seam, fired)
@@ -162,9 +166,7 @@ fn service_promotion_preserves_exclusion_and_returns_write_access() {
                 .as_deref(),
             marker
         );
-        let mut owner = owner
-            .into_service([0x71; 16])
-            .expect("promote without self-contention");
+        let mut owner = promote(owner, [0x71; 16]).expect("promote without self-contention");
         assert!(matches!(
             NativeEngineOwner::acquire_existing(scratch.path()),
             Err(NativeOwnerAcquireError::Lock(
