@@ -523,19 +523,15 @@ mod tests {
     use crate::bounds::MAX_INTERFACE_TRANSFER_NODES;
     use crate::demand::{DemandAtom, ExportDemand, OperationClass};
     use crate::draft::{CollTypeId, EnumId, RootId, TypeId};
-    use crate::durable_id::LedgerIdBytes;
     use crate::export_id::ExportId;
+    use crate::fixtures::id;
     use crate::semantic::SemanticPath;
     use crate::ty::{ImageType, Scalar};
     use sha2::{Digest, Sha256};
 
-    fn ledger(byte: u8) -> LedgerIdBytes {
-        LedgerIdBytes::from_bytes([byte; 16])
-    }
-
     fn demand_a() -> crate::DemandSetId {
         ExportDemand::from_atoms([DemandAtom::new(
-            SemanticPath::root(ledger(0x0a), ledger(0x0b)),
+            SemanticPath::root(id(0x0a), id(0x0b)),
             OperationClass::Read,
         )])
         .demand_set_id()
@@ -836,12 +832,9 @@ mod tests {
         let lookup_more_demand = ExportSignature {
             demand_id: {
                 ExportDemand::from_atoms([
+                    DemandAtom::new(SemanticPath::root(id(0x0a), id(0x0b)), OperationClass::Read),
                     DemandAtom::new(
-                        SemanticPath::root(ledger(0x0a), ledger(0x0b)),
-                        OperationClass::Read,
-                    ),
-                    DemandAtom::new(
-                        SemanticPath::root(ledger(0x0a), ledger(0x0b)),
+                        SemanticPath::root(id(0x0a), id(0x0b)),
                         OperationClass::Write,
                     ),
                 ])

@@ -135,13 +135,9 @@ impl CeilingId {
 mod tests {
     use super::{CEILING_KIND, CeilingDescriptor, CeilingId};
     use crate::demand::{DemandAtom, ExportDemand, OperationClass};
-    use crate::durable_id::LedgerIdBytes;
+    use crate::fixtures::id;
     use crate::semantic::{SemanticPath, SemanticStep, SemanticStepKind};
     use sha2::{Digest, Sha256};
-
-    fn id(byte: u8) -> LedgerIdBytes {
-        LedgerIdBytes::from_bytes([byte; 16])
-    }
 
     /// The path `[application 0x0a, placement 0x0b]` — a whole-entry root site.
     fn root_path() -> SemanticPath {

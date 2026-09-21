@@ -798,6 +798,7 @@ fn push_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixtures::id;
 
     #[test]
     fn paired_values_authenticate_arenas_and_compare_late_enum_payloads() {
@@ -807,22 +808,13 @@ mod tests {
         let right = new.scalar(Scalar::Int).expect("independent scalar");
         let changed = new.scalar(Scalar::Bool).expect("changed scalar");
         let before = old
-            .enum_shape(
-                ledger_id(1),
-                vec![(ledger_id(2), vec![]), (ledger_id(3), vec![left])],
-            )
+            .enum_shape(id(1), vec![(id(2), vec![]), (id(3), vec![left])])
             .expect("enum");
         let same = new
-            .enum_shape(
-                ledger_id(1),
-                vec![(ledger_id(2), vec![]), (ledger_id(3), vec![right])],
-            )
+            .enum_shape(id(1), vec![(id(2), vec![]), (id(3), vec![right])])
             .expect("enum");
         let after = new
-            .enum_shape(
-                ledger_id(1),
-                vec![(ledger_id(2), vec![]), (ledger_id(3), vec![changed])],
-            )
+            .enum_shape(id(1), vec![(id(2), vec![]), (id(3), vec![changed])])
             .expect("changed enum");
         let mut compare = old.compare_with(&new);
         assert_eq!(compare.same(before, same), Some(true));
@@ -854,10 +846,6 @@ mod tests {
             crate::bounds::MAX_DURABLE_VALUE_DEPTH
         );
         assert_eq!(compare.same(too_deep, too_deep), None);
-    }
-
-    fn ledger_id(byte: u8) -> LedgerIdBytes {
-        LedgerIdBytes::from_bytes([byte; 16])
     }
 
     #[test]
@@ -958,7 +946,7 @@ mod tests {
             Err(DraftStateError::ForeignDraft),
         );
         assert_eq!(
-            empty.enum_shape(ledger_id(1), vec![(ledger_id(2), vec![foreign])]),
+            empty.enum_shape(id(1), vec![(id(2), vec![foreign])]),
             Err(DraftStateError::ForeignDraft),
         );
         assert_eq!(empty, CanonicalValueShapeDag::new(), "no node was minted");
@@ -1270,7 +1258,7 @@ mod tests {
         let mut dag = CanonicalValueShapeDag::new();
         let int = dag.scalar(Scalar::Int).expect("the test arena mints");
         let shape = dag
-            .enum_shape(ledger_id(1), vec![(ledger_id(2), vec![int])])
+            .enum_shape(id(1), vec![(id(2), vec![int])])
             .expect("the test arena mints");
 
         let mut payload = Vec::new();
@@ -1294,6 +1282,6 @@ mod tests {
         assert_eq!(payload[0], VSHAPE_ENUM);
         assert_eq!(payload[1], IDREF_SUM);
         assert_eq!(section[0], VSHAPE_ENUM);
-        assert_eq!(&section[1..17], ledger_id(1).bytes());
+        assert_eq!(&section[1..17], id(1).bytes());
     }
 }

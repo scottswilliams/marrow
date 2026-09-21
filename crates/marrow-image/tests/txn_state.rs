@@ -873,8 +873,8 @@ fn every_pair_of_policy_crossings_yields_the_canonical_minimum_in_either_order()
 /// The function-slot mint is checked at its own mutator, like every other id-minting
 /// mutator on this surface.
 ///
-/// This surface is `#[doc(hidden)] pub` and is not a privacy boundary, so an arbitrary
-/// external caller can drive the row count past what the ordinal spells — and unlike the
+/// This surface is public and not a privacy boundary, so an external caller can drive
+/// the row count past what the ordinal spells — and unlike the
 /// wide carriers, that boundary is reachable at 65,536 rows. An unchecked mint would wrap
 /// the 65,537th function to slot zero, aliasing two functions onto one image index.
 #[test]

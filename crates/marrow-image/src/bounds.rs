@@ -287,4 +287,3 @@ const _: () = {
 /// slack, plus the buffer it still holds while it copies into its successor. Stated
 /// once here so every accounting that charges growth reads one number.
 pub const GROWTH_AND_COPY: u64 = 3;
-

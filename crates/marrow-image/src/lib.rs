@@ -96,3 +96,14 @@ pub use value_dag::{
     CanonicalValueShapeDag, ValueShapeComparison, ValueShapeEnumMember, ValueShapeNodeId,
     ValueShapeView,
 };
+
+#[cfg(test)]
+mod fixtures {
+    use crate::durable_id::LedgerIdBytes;
+
+    /// The sixteen-byte ledger id every byte of which is `byte`: the fixed fixture id the
+    /// inline tests spell.
+    pub(crate) fn id(byte: u8) -> LedgerIdBytes {
+        LedgerIdBytes::from_bytes([byte; 16])
+    }
+}

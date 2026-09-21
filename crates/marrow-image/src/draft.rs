@@ -1874,10 +1874,7 @@ mod site_binding_tests {
 
     /// Declare one Product of one required int field and admit one keyless root over it,
     /// carrying `indexes`.
-    fn declare_one_root(
-        txn: &mut DraftTxn<'_>,
-        indexes: Vec<DurableIndexShape>,
-    ) -> AdmittedRoot {
+    fn declare_one_root(txn: &mut DraftTxn<'_>, indexes: Vec<DurableIndexShape>) -> AdmittedRoot {
         txn.set_application_identity(LedgerIdBytes::from_bytes([0x01; 16]));
         let name = txn.intern_string("r").expect("a within-domain mint");
         let value = txn.value_scalar(Scalar::Int).expect("the test arena mints");

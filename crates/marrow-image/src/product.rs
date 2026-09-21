@@ -1516,15 +1516,12 @@ impl DurableContractGraph {
 mod tests {
     use super::{
         DeclarationCommandError, DeclarationMemberDef, DeclarationMemberShape, KeyColumn,
-        LedgerIdBytes, MAX_DURABLE_MEMBERS, ProductDeclarationGraph,
+        MAX_DURABLE_MEMBERS, ProductDeclarationGraph,
     };
     use crate::draft::{StrId, TypeId};
+    use crate::fixtures::id;
     use crate::ty::Scalar;
     use crate::value_dag::CanonicalValueShapeDag;
-
-    fn id(byte: u8) -> LedgerIdBytes {
-        LedgerIdBytes::from_bytes([byte; 16])
-    }
 
     /// **The enforcement artifact for the published row charges.** Every row the
     /// maximum-live equations price names all of its fields here, so adding one fails to

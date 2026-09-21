@@ -817,8 +817,6 @@ impl<R: Operands> Instruction<R> {
             | Self::IntRemChecked(target) => (Some(R::index_of(target)), true),
             _ => (None, true),
         };
-        target
-            .into_iter()
-            .chain(falls_through.then_some(index + 1))
+        target.into_iter().chain(falls_through.then_some(index + 1))
     }
 }

@@ -895,17 +895,14 @@ mod tests {
     };
     use crate::bounds;
     use crate::draft::{
-        AdmittedGraphInputPlan, DraftTxn, ImageDraft, KeyColumn, RecordTypeDef,
-        RootOccurrenceDef, TypeId,
+        AdmittedGraphInputPlan, DraftTxn, ImageDraft, KeyColumn, RecordTypeDef, RootOccurrenceDef,
+        TypeId,
     };
+    use crate::fixtures::id;
     use crate::product::{DeclarationMemberDef, DeclarationMemberShape, DeclarationNode};
     use crate::ty::Scalar;
     use crate::value_dag::{CanonicalValueShapeDag, ValueShapeNodeId, ValueShapeView};
     use sha2::{Digest, Sha256};
-
-    fn id(byte: u8) -> LedgerIdBytes {
-        LedgerIdBytes::from_bytes([byte; 16])
-    }
 
     /// The construction budget these graphs are stated under. Every graph below is built
     /// through the draft's own flat entry points, so a test states ids and member commands

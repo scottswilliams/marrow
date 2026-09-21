@@ -873,10 +873,7 @@ fn test_entry_relations(
         let function = draft.functions()[entry.func() as usize].as_ref().ok_or(
             ImageBuildError::InvalidReference(ReferenceKind::VacantFunction),
         )?;
-        let has_direct_durable = function
-            .code
-            .iter()
-            .any(|instr| instr.site().is_some());
+        let has_direct_durable = function.code.iter().any(|instr| instr.site().is_some());
         if has_direct_durable {
             return Err(ImageBuildError::InvalidReference(ReferenceKind::TestTable));
         }

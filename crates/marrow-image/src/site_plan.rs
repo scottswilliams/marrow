@@ -136,7 +136,6 @@ impl std::error::Error for SitePlanStateError {}
 /// `DraftTxn::commit`, so a ref for a preexisting unchanged occurrence and receipt
 /// remains valid across a function-only rollback, while a ref whose rows a rollback
 /// invalidated cannot authenticate after deterministic ordinal reuse.
-#[doc(hidden)]
 #[derive(Clone)]
 pub struct PlannedSiteRef {
     kind: PlannedSiteRefKind,

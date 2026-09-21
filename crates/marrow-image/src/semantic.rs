@@ -252,16 +252,12 @@ pub struct SemanticNode {
 
 #[cfg(test)]
 mod tests {
+    use crate::fixtures::id;
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
     use super::{SemanticPath, SemanticPathRefusal, SemanticStep, SemanticStepKind};
     use crate::bounds::MAX_SITE_PATH_STEPS;
-    use crate::durable_id::LedgerIdBytes;
-
-    fn id(byte: u8) -> LedgerIdBytes {
-        LedgerIdBytes::from_bytes([byte; 16])
-    }
 
     /// A chain of `steps` steps: the application step followed by field steps.
     fn chain(steps: usize) -> Vec<SemanticStep> {
