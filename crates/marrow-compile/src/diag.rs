@@ -829,6 +829,17 @@ impl SourceDiagnostic {
     }
 }
 
+/// A well-formed construct outside the compiled subset: a typed `check.unsupported`
+/// row at the construct, never a silent drop.
+pub(crate) fn unsupported(file: &ProjectFile, span: SourceSpan, subject: &str) -> SourceDiagnostic {
+    SourceDiagnostic::at(
+        Code::CheckUnsupported,
+        file,
+        span,
+        format!("{subject} is not yet supported on the beta line"),
+    )
+}
+
 /// The typed compiler ceiling that discarded a diagnostic payload. Maps
 /// exhaustively to `ResourceLimitKind::{DiagnosticCount, DiagnosticBytes}` at
 /// the failure boundary.

@@ -42,7 +42,9 @@ use crate::decl::{
     Binding, DeclarationIndexDrift, DeclarationNamespace, DeclarationRefusalId,
     DeclarationRefusalSummary, MemberNamespace, declaration_refused,
 };
-use crate::diag::{DiagnosticCollector, NameFamily, SourceDiagnostic, operator_symbol};
+use crate::diag::{
+    DiagnosticCollector, NameFamily, SourceDiagnostic, operator_symbol, unsupported,
+};
 use crate::durable::{DurableRegistry, Family, ProductBinding, RootBinding};
 use crate::konst::{ConstRegistry, ConstScalar};
 use crate::scalar::ScalarType;

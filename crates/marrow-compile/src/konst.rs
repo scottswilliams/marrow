@@ -292,11 +292,9 @@ fn unsupported(
     span: SourceSpan,
     subject: &str,
 ) -> DeclarationRefusalSummary {
-    refuse_at(
+    refuse_row(
         diagnostics,
-        declared,
-        span,
-        Code::CheckUnsupported,
-        format!("{subject} is not yet supported on the beta line"),
+        DeclarationSite { span, ..declared },
+        crate::diag::unsupported(declared.file, span, subject),
     )
 }

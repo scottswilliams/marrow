@@ -13,6 +13,22 @@ struct ForLoop<'a> {
     span: SourceSpan,
 }
 
+/// Whether a checked operation can fault with a zero divisor: only a `/` or `%`
+/// whose divisor is not a nonzero integer literal can.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DivisorClass {
+    NotADivision,
+    NonzeroLiteral,
+    MayBeZero,
+}
+
+/// Whether a let-else binding may be reassigned: `const x = … else` or `var x = … else`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mutability {
+    Const,
+    Var,
+}
+
 /// The operation a `checked` form wraps: a single int `+`/`-`/`*`/`/`/`%` or negation.
 enum Wrapped<'e> {
     Binary(BinaryOp, &'e Expression, &'e Expression),
@@ -135,7 +151,14 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 value,
                 else_block,
                 span: _,
-            } => self.lower_let_else(*is_var, name, ty.as_deref(), value, else_block),
+            } => {
+                let mutability = if *is_var {
+                    Mutability::Var
+                } else {
+                    Mutability::Const
+                };
+                self.lower_let_else(mutability, name, ty.as_deref(), value, else_block)
+            }
             Statement::Require {
                 condition,
                 value,
@@ -1148,7 +1171,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// divergence analysis, so let-else adds no new control-flow analysis.
     fn lower_let_else(
         &mut self,
-        is_var: bool,
+        mutability: Mutability,
         name: &str,
         annotation: Option<&TypeExpr>,
         value: &Expression,
@@ -1182,7 +1205,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // rather than an uninitialized-slot image rejection, then restore them.
         let mut bound_locals = self.locals.split_off(mark);
         let mut bound_present = self.present_places.split_off(present_mark);
-        if is_var {
+        if mutability == Mutability::Var {
             for local in &mut bound_locals {
                 local.mutable = true;
             }
@@ -2005,7 +2028,55 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             },
             span,
         )?;
-        // Bind the on-more bit and the frozen list into fresh slots.
+        let node = target.node;
+        let key_name = var.name.clone();
+        let place_name = place_var.map(|name| name.name.clone());
+        self.lower_frozen_walk(body, on_more, span, move |lower| {
+            let key_slot = lower
+                .alloc_slot(var.span)
+                .ok_or(LoweringFailure::Recoverable)?;
+            // Rebinding the key slot each iteration kills, through the verifier's
+            // LocalSet presence-lattice rule, any presence fact an earlier iteration
+            // established on this key.
+            lower.push(Instr::LocalSet(key_slot), span)?;
+            // Traversal establishes no presence fact for the body: `k` names a frozen
+            // key whose entry an earlier iteration may already have erased.
+            lower.locals.push(Local {
+                name: key_name,
+                ty: LTy::bare_scalar(key_ty),
+                mutable: false,
+                slot: key_slot,
+            });
+            // The optional second binding is a per-iteration address pin: a `place`
+            // over the entry at the current key, keyed by the captured ancestor slots
+            // followed by this iteration's key slot. It reads nothing and establishes
+            // no presence fact, so a write through it is an ordinary sparse set unless
+            // a dominating `exists` proves the entry present.
+            if let Some(place_name) = place_name {
+                let mut key_slots = ancestor_slots;
+                key_slots.push((key_slot, key_ty));
+                lower.places.push(PlaceLocal {
+                    name: place_name,
+                    key_slots,
+                    node,
+                });
+            }
+            Ok(())
+        })
+    }
+
+    /// The shared tail of a bounded traversal and an index scan, entered with the
+    /// on-more bit and the frozen `List[K]` on the stack: bind both into fresh slots,
+    /// walk the list positionally with each position's element left on the stack for
+    /// `bind` to name as the loop variable, then run `on more` when a further key
+    /// existed. A body `break` or `return` skips past the `on more` decision.
+    fn lower_frozen_walk(
+        &mut self,
+        body: &Block,
+        on_more: &Block,
+        span: SourceSpan,
+        bind: impl FnOnce(&mut Self) -> ConstructResult<()>,
+    ) -> ConstructResult<Flow> {
         let Some(more_slot) = self.alloc_slot(span) else {
             return Ok(Flow::Rejected);
         };
@@ -2014,59 +2085,21 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             return Ok(Flow::Rejected);
         };
         self.push(Instr::LocalSet(coll_slot), span)?;
-
-        // A positional walk over the frozen `List[K]` binds `k` per position. A body
-        // `break`/`return` skips past the `on more` block.
-        let node = target.node;
-        let key_name = var.name.clone();
-        let place_name = place_var.map(|name| name.name.clone());
         let break_jumps = match self.lower_positional_walk(
             coll_slot,
             Instr::ListLen,
             body,
             span,
             move |lower, index_slot| {
-                let key_slot = lower
-                    .alloc_slot(var.span)
-                    .ok_or(LoweringFailure::Recoverable)?;
                 lower.push(Instr::LocalGet(coll_slot), span)?;
                 lower.push(Instr::LocalGet(index_slot), span)?;
                 lower.push(Instr::ListGet, span)?;
-                // Rebinding the key slot each iteration kills, through the verifier's
-                // LocalSet presence-lattice rule, any presence fact an earlier iteration
-                // established on this key.
-                lower.push(Instr::LocalSet(key_slot), span)?;
-                // Traversal establishes no presence fact for the body: `k` names a frozen
-                // key whose entry an earlier iteration may already have erased.
-                lower.locals.push(Local {
-                    name: key_name,
-                    ty: LTy::bare_scalar(key_ty),
-                    mutable: false,
-                    slot: key_slot,
-                });
-                // The optional second binding is a per-iteration address pin: a `place`
-                // over the entry at the current key, keyed by the captured ancestor slots
-                // followed by this iteration's key slot. It reads nothing and establishes
-                // no presence fact, so a write through it is an ordinary sparse set unless
-                // a dominating `exists` proves the entry present.
-                if let Some(place_name) = place_name {
-                    let mut key_slots = ancestor_slots;
-                    key_slots.push((key_slot, key_ty));
-                    lower.places.push(PlaceLocal {
-                        name: place_name,
-                        key_slots,
-                        node,
-                    });
-                }
-                Ok(())
+                bind(lower)
             },
         )? {
             PositionalWalkOutcome::Complete(break_jumps) => break_jumps,
             PositionalWalkOutcome::Rejected => return Ok(Flow::Rejected),
         };
-
-        // Normal exhaustion falls through to here: run `on more` iff a further key
-        // existed.
         self.push(Instr::LocalGet(more_slot), span)?;
         let skip_on_more = self.push_jif(span)?;
         if self.lower_block(on_more)? == Flow::Rejected {
@@ -2074,7 +2107,6 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
         let end = self.here();
         self.patch(skip_on_more, end);
-        // A body break jumps past the whole loop, skipping the `on more` decision.
         self.patch_all(break_jumps, end);
         Ok(Flow::Fallthrough)
     }
@@ -2216,64 +2248,33 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             },
             span,
         )?;
-        let Some(more_slot) = self.alloc_slot(span) else {
-            return Ok(Flow::Rejected);
-        };
-        self.push(Instr::LocalSet(more_slot), span)?;
-        let Some(coll_slot) = self.alloc_slot(span) else {
-            return Ok(Flow::Rejected);
-        };
-        self.push(Instr::LocalSet(coll_slot), span)?;
-
-        // A positional walk over the frozen `List[K]`: each raw identity key is wrapped
-        // into the source `Id(^root)` the loop variable binds — the scanned root's identity.
+        // Each frozen raw identity key is wrapped into the source `Id(^root)` the loop
+        // variable binds — the scanned root's identity.
         let key_name = var.name.clone();
         let scan_root_id = root.root_id;
-        let break_jumps = match self.lower_positional_walk(
-            coll_slot,
-            Instr::ListLen,
-            body,
-            span,
-            move |lower, index_slot| {
-                let id_slot = lower
-                    .alloc_slot(var.span)
-                    .ok_or(LoweringFailure::Recoverable)?;
-                lower.push(Instr::LocalGet(coll_slot), span)?;
-                lower.push(Instr::LocalGet(index_slot), span)?;
-                lower.push(Instr::ListGet, span)?;
-                lower.push(
-                    Instr::MakeIdentity {
-                        root: scan_root_id,
-                        cols: 1,
-                    },
-                    span,
-                )?;
-                lower.push(Instr::LocalSet(id_slot), span)?;
-                lower.locals.push(Local {
-                    name: key_name,
-                    ty: LTy::Identity {
-                        root: scan_root_id,
-                        optional: false,
-                    },
-                    mutable: false,
-                    slot: id_slot,
-                });
-                Ok(())
-            },
-        )? {
-            PositionalWalkOutcome::Complete(break_jumps) => break_jumps,
-            PositionalWalkOutcome::Rejected => return Ok(Flow::Rejected),
-        };
-
-        self.push(Instr::LocalGet(more_slot), span)?;
-        let skip_on_more = self.push_jif(span)?;
-        if self.lower_block(on_more)? == Flow::Rejected {
-            return Ok(Flow::Rejected);
-        }
-        let end = self.here();
-        self.patch(skip_on_more, end);
-        self.patch_all(break_jumps, end);
-        Ok(Flow::Fallthrough)
+        self.lower_frozen_walk(body, on_more, span, move |lower| {
+            let id_slot = lower
+                .alloc_slot(var.span)
+                .ok_or(LoweringFailure::Recoverable)?;
+            lower.push(
+                Instr::MakeIdentity {
+                    root: scan_root_id,
+                    cols: 1,
+                },
+                span,
+            )?;
+            lower.push(Instr::LocalSet(id_slot), span)?;
+            lower.locals.push(Local {
+                name: key_name,
+                ty: LTy::Identity {
+                    root: scan_root_id,
+                    optional: false,
+                },
+                mutable: false,
+                slot: id_slot,
+            });
+            Ok(())
+        })
     }
 
     /// Evaluate an `at most N` bound: a positive compile-time integer literal within
@@ -2622,8 +2623,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         &mut self,
         out_of_range: Option<&'b Block>,
         zero_divisor: Option<&Block>,
-        is_div: bool,
-        can_zero_fault: bool,
+        divisor: DivisorClass,
         span: SourceSpan,
     ) -> Option<&'b Block> {
         let Some(out_of_range) = out_of_range else {
@@ -2634,24 +2634,23 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             ));
             return None;
         };
-        if can_zero_fault && zero_divisor.is_none() {
-            self.fail(checked_arm_error(
-                self.file,
-                span,
-                "a checked `/` or `%` requires an `on zero_divisor` arm",
-            ));
-            return None;
-        }
-        if !can_zero_fault && zero_divisor.is_some() {
-            let reason = if is_div {
+        let reason = match (divisor, zero_divisor) {
+            (DivisorClass::MayBeZero, None) => {
+                "a checked `/` or `%` requires an `on zero_divisor` arm"
+            }
+            (DivisorClass::NonzeroLiteral, Some(_)) => {
                 "the divisor is a nonzero literal, so this checked operation cannot fault with a zero divisor and takes no `on zero_divisor` arm"
-            } else {
+            }
+            (DivisorClass::NotADivision, Some(_)) => {
                 "this checked operation cannot fault with a zero divisor, so it takes no `on zero_divisor` arm"
-            };
-            self.fail(checked_arm_error(self.file, span, reason));
-            return None;
-        }
-        Some(out_of_range)
+            }
+            (DivisorClass::MayBeZero, Some(_))
+            | (DivisorClass::NonzeroLiteral | DivisorClass::NotADivision, None) => {
+                return Some(out_of_range);
+            }
+        };
+        self.fail(checked_arm_error(self.file, span, reason));
+        None
     }
 
     /// Lower the adjacent single-operation checked-arithmetic form. It wraps one int
@@ -2677,21 +2676,22 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let Some(wrapped) = self.classify_checked_op(op) else {
             return Ok(Flow::Fallthrough);
         };
-        let is_div = matches!(
-            wrapped,
-            Wrapped::Binary(BinaryOp::Divide | BinaryOp::Remainder, _, _)
-        );
         // A `/`/`%` whose divisor is a nonzero integer literal cannot fault with a zero
         // divisor. Overflow stays possible regardless (the `i64::MIN / -1` case), so the
         // `out_of_range` arm is untouched.
-        let divisor_provably_nonzero = matches!(
-            &wrapped,
-            Wrapped::Binary(_, _, right) if divisor_nonzero_literal(right)
-        );
-        let can_zero_fault = is_div && !divisor_provably_nonzero;
+        let divisor = match &wrapped {
+            Wrapped::Binary(BinaryOp::Divide | BinaryOp::Remainder, _, right) => {
+                if divisor_nonzero_literal(right) {
+                    DivisorClass::NonzeroLiteral
+                } else {
+                    DivisorClass::MayBeZero
+                }
+            }
+            Wrapped::Binary(..) | Wrapped::Neg(_) => DivisorClass::NotADivision,
+        };
 
         let Some(out_of_range) =
-            self.require_checked_arms(out_of_range, zero_divisor, is_div, can_zero_fault, span)
+            self.require_checked_arms(out_of_range, zero_divisor, divisor, span)
         else {
             return Ok(Flow::Fallthrough);
         };
@@ -2733,7 +2733,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
         // A checked `/`/`%` tests its divisor first, running the diverging
         // `on zero_divisor` arm. A provably-nonzero literal divisor needs no such test.
-        if is_div && let Some(zero_block) = zero_divisor {
+        if divisor == DivisorClass::MayBeZero
+            && let Some(zero_block) = zero_divisor
+        {
             #[expect(
                 clippy::expect_used,
                 reason = "parser-guaranteed shape: a division parses with a right operand, so its lowered slot is bound whenever a zero-divisor arm is present"

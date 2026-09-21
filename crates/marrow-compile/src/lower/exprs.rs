@@ -972,6 +972,82 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Ok(LTy::bare_scalar(ScalarType::Bool))
     }
 
+    /// A member-shaped callee `base.name(…)`: `Age.checked(n)`, the nominal range test;
+    /// `Resource.branch.…(…)`, a keyed branch entry constructor at any depth; or
+    /// `Resource.group(…)`, a group value constructor. A value has no methods, so any
+    /// other shape is refused.
+    fn lower_member_callee(
+        &mut self,
+        base: &Expression,
+        name: &str,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> ConstructResult<CallResult> {
+        if name == "checked"
+            && let Expression::Name { segments, .. } = base
+            && let [type_name] = &segments[..]
+            && let Some((id, _)) = self
+                .records
+                .nominal_by_name(&self.scoped_name(type_name.text()))
+        {
+            return self
+                .lower_checked_nominal(id, args, span)
+                .map(CallResult::Value);
+        }
+        // `Resource.branch.…(field: value, …)`: a keyed branch entry constructor at
+        // any depth, symmetric with the root constructor.
+        if let Some((resource, head_span, mut path)) = split_dotted_head(base) {
+            path.push(name);
+            if let Some(branch) = self.declared_branch_record(resource, &path) {
+                let display = branch_ctor_display(resource, &path);
+                return self
+                    .lower_branch_constructor(resource, &display, branch, head_span, args, span)
+                    .map(CallResult::Value);
+            }
+            // `Resource.group(field: value, …)`: a group value constructor. A group
+            // is an unkeyed single-level namespace, so its qualified head is the
+            // resource then the group name.
+            if let [group_name] = path.as_slice()
+                && self
+                    .records
+                    .by_name(&self.scoped_name(resource))
+                    .is_some_and(|record| record.group(group_name).is_some())
+            {
+                return self
+                    .lower_group_constructor(resource, group_name, head_span, args, span)
+                    .map(CallResult::Value);
+            }
+            // The store this resource backs was refused, so its branch tree was
+            // never built and whether `Resource.member(…)` names one of its
+            // branches is not knowable here.
+            let backing = match self.durable.product(&self.scoped_name(resource)) {
+                Ok(binding) => binding,
+                Err(drift) => {
+                    self.ledger_drift::<()>(drift);
+                    return Err(LoweringFailure::Recoverable);
+                }
+            };
+            if let ProductBinding::Refused(summary) = backing {
+                self.steer_refusal(summary, span);
+                return Err(LoweringFailure::Recoverable);
+            }
+        }
+        // A method-shaped call on a value: `s.trim()`. Member syntax reaches fields
+        // and constructor paths only, so this is not a call the subset admits.
+        self.fail(SourceDiagnostic::at(
+            Code::CheckUnsupported,
+            self.file,
+            span,
+            format!(
+                "`{name}` is written as a method call on `{receiver}`. A value has no \
+                     methods; an operation on a value is an ordinary function call. Write \
+                     `{name}({receiver})`.",
+                receiver = marrow_syntax::format_expression(base)
+            ),
+        ));
+        Err(LoweringFailure::Recoverable)
+    }
+
     /// A parenthesized application is a record constructor (`Note(title: t, ...)`)
     /// or a direct function call.
     pub(super) fn lower_call_core(
@@ -981,74 +1057,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         span: SourceSpan,
     ) -> ConstructResult<CallResult> {
         let Expression::Name { segments, .. } = callee else {
-            // `Age.checked(n)`: the nominal range test, the one member call the
-            // subset admits. Any other field-shaped callee stays unsupported.
             if let Expression::Field { base, name, .. } = callee {
-                if &**name == "checked"
-                    && let Expression::Name { segments, .. } = &**base
-                    && let [type_name] = &segments[..]
-                    && let Some((id, _)) = self
-                        .records
-                        .nominal_by_name(&self.scoped_name(type_name.text()))
-                {
-                    return self
-                        .lower_checked_nominal(id, args, span)
-                        .map(CallResult::Value);
-                }
-                // `Resource.branch.…(field: value, …)`: a keyed branch entry constructor at
-                // any depth, symmetric with the root constructor.
-                if let Some((resource, head_span, mut path)) = split_dotted_head(base) {
-                    path.push(&**name);
-                    if let Some(branch) = self.declared_branch_record(resource, &path) {
-                        let display = branch_ctor_display(resource, &path);
-                        return self
-                            .lower_branch_constructor(
-                                resource, &display, branch, head_span, args, span,
-                            )
-                            .map(CallResult::Value);
-                    }
-                    // `Resource.group(field: value, …)`: a group value constructor. A group
-                    // is an unkeyed single-level namespace, so its qualified head is the
-                    // resource then the group name.
-                    if let [group_name] = path.as_slice()
-                        && self
-                            .records
-                            .by_name(&self.scoped_name(resource))
-                            .is_some_and(|record| record.group(group_name).is_some())
-                    {
-                        return self
-                            .lower_group_constructor(resource, group_name, head_span, args, span)
-                            .map(CallResult::Value);
-                    }
-                    // The store this resource backs was refused, so its branch tree was
-                    // never built and whether `Resource.member(…)` names one of its
-                    // branches is not knowable here.
-                    let backing = match self.durable.product(&self.scoped_name(resource)) {
-                        Ok(binding) => binding,
-                        Err(drift) => {
-                            self.ledger_drift::<()>(drift);
-                            return Err(LoweringFailure::Recoverable);
-                        }
-                    };
-                    if let ProductBinding::Refused(summary) = backing {
-                        self.steer_refusal(summary, span);
-                        return Err(LoweringFailure::Recoverable);
-                    }
-                }
-                // A method-shaped call on a value: `s.trim()`. Member syntax reaches fields
-                // and constructor paths only, so this is not a call the subset admits.
-                self.fail(SourceDiagnostic::at(
-                    Code::CheckUnsupported,
-                    self.file,
-                    span,
-                    format!(
-                        "`{name}` is written as a method call on `{receiver}`. A value has no \
-                         methods; an operation on a value is an ordinary function call. Write \
-                         `{name}({receiver})`.",
-                        receiver = marrow_syntax::format_expression(base)
-                    ),
-                ));
-                return Err(LoweringFailure::Recoverable);
+                return self.lower_member_callee(base, name, args, span);
             }
             self.fail(unsupported(self.file, span, "this call"));
             return Err(LoweringFailure::Recoverable);

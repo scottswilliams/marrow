@@ -135,15 +135,6 @@ pub(super) fn simple_value_spelling(value: &Expression) -> Option<String> {
     }
 }
 
-pub(super) fn unsupported(file: &ProjectFile, span: SourceSpan, subject: &str) -> SourceDiagnostic {
-    SourceDiagnostic::at(
-        Code::CheckUnsupported,
-        file,
-        span,
-        format!("{subject} is not yet supported on the beta line"),
-    )
-}
-
 /// The store-root name a durable address expression bottoms out at: the leftmost
 /// `^name` leaf reached through keyed accesses and field/branch selectors, or `None`
 /// when `expr` is not rooted at a `SavedRoot`. The one owner that extracts which store
@@ -403,13 +394,6 @@ pub(crate) fn requires_presence(
     )
 }
 
-/// The presence steer, carried when the found type is the required one under exactly one
-/// optional layer, so binding or coalescing the value is the whole fix. A different bare
-/// type survives making the value present and is not presence-fixable.
-fn presence_steer(fixable: bool) -> Option<Steer> {
-    fixable.then_some(Steer::Presence)
-}
-
 /// A value whose type does not fit the position it is written in.
 pub(super) fn type_mismatch(
     records: &TypeRegistry,
@@ -425,7 +409,8 @@ pub(super) fn type_mismatch(
             found: TypeSpelling::new(found.spelling(records)),
             expected: TypeSpelling::new(want.spelling(records)),
         },
-        presence_steer(found.is_optional() && !want.is_optional() && found.to_bare() == want),
+        (found.is_optional() && !want.is_optional() && found.to_bare() == want)
+            .then_some(Steer::Presence),
     )
 }
 
@@ -449,7 +434,7 @@ pub(super) fn unary_error(
             op,
             found: TypeSpelling::new(ty.spelling(records)),
         },
-        presence_steer(ty.is_optional() && ty.to_bare() == wanted),
+        (ty.is_optional() && ty.to_bare() == wanted).then_some(Steer::Presence),
     )
 }
 
@@ -462,8 +447,11 @@ pub(super) fn binary_error(
     left: LTy,
     right: LTy,
 ) -> SourceDiagnostic {
-    // The operands differ solely in presence — same bare type, at least one optional.
-    let fixable = (left.is_optional() || right.is_optional()) && left.to_bare() == right.to_bare();
+    // The presence steer is carried when the operands differ solely in presence — the
+    // same bare type, at least one optional — so binding or coalescing the value is the
+    // whole fix. A different bare type survives making the value present.
+    let same_bare_type =
+        (left.is_optional() || right.is_optional()) && left.to_bare() == right.to_bare();
     SourceDiagnostic::with_type_mismatch(
         file,
         span,
@@ -472,7 +460,7 @@ pub(super) fn binary_error(
             left: TypeSpelling::new(left.spelling(records)),
             right: TypeSpelling::new(right.spelling(records)),
         },
-        presence_steer(fixable),
+        same_bare_type.then_some(Steer::Presence),
     )
 }
 
@@ -528,7 +516,8 @@ pub(super) fn logic_operand(
             found: TypeSpelling::new(ty.spelling(records)),
         },
         // `and`/`or` require bool, so only a `bool?` operand is presence-fixable.
-        presence_steer(ty.is_optional() && ty.to_bare() == LTy::bare_scalar(ScalarType::Bool)),
+        (ty.is_optional() && ty.to_bare() == LTy::bare_scalar(ScalarType::Bool))
+            .then_some(Steer::Presence),
     )
 }
 
