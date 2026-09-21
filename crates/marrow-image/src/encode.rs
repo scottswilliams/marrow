@@ -457,6 +457,14 @@ fn encode_code<S: ImageByteSink>(
 ) -> Result<(), ImageBuildError> {
     for instr in code {
         sink.push(instr.opcode());
+        if let Some(target) = instr.jump_target() {
+            let byte_offset = *layout
+                .offsets
+                .get(*target as usize)
+                .ok_or(ImageBuildError::InvalidReference(ReferenceKind::JumpTarget))?;
+            push_u32(sink, byte_offset);
+            continue;
+        }
         match instr {
             Instr::ConstLoad(raw) | Instr::Unreachable(raw) | Instr::Todo(raw) => {
                 consts.token(*raw).emit(sink)
@@ -478,21 +486,6 @@ fn encode_code<S: ImageByteSink>(
             | Instr::DurEraseEntry(s)
             | Instr::DurReadGroup(s)
             | Instr::DurEraseGroup(s) => push_u16(sink, sites.ordinal(s)?),
-            Instr::Jump(target)
-            | Instr::JumpIfFalse(target)
-            | Instr::BranchPresent(target)
-            | Instr::IntAddChecked(target)
-            | Instr::IntSubChecked(target)
-            | Instr::IntMulChecked(target)
-            | Instr::IntNegChecked(target)
-            | Instr::IntDivChecked(target)
-            | Instr::IntRemChecked(target) => {
-                let byte_offset = *layout
-                    .offsets
-                    .get(*target as usize)
-                    .ok_or(ImageBuildError::InvalidReference(ReferenceKind::JumpTarget))?;
-                push_u32(sink, byte_offset);
-            }
             Instr::VacantLoad(ty) => ty.encode(sink),
             Instr::RangeGuard { lo, hi } => {
                 sink.extend_bytes(&lo.to_be_bytes());
@@ -686,12 +679,10 @@ fn push_u32(out: &mut impl ImageByteSink, value: u32) {
     out.extend_bytes(&value.to_be_bytes());
 }
 
-/// Encoder fixtures built directly through the draft API — this crate cannot compile
-/// the frozen corpus programs, whose byte digests stay pinned in `marrow-compile`.
-/// They cover every section family those programs cover: sorted strings and constants
-/// of every tag, records, enums, collections, a keyed and an indexed durable root with
-/// group/branch/struct-shape members and an operation site, functions with jumps and
-/// remapped operands, spans, exports, and test entries.
+/// Encoder pins this crate can state without compiling a program: the code-offset
+/// refusal and the determinism of a relation-heavy draft. The per-section row orders are
+/// pinned in `tests/canonical_order.rs`; whole-image bytes over every section family stay
+/// pinned by the frozen corpus digests in `marrow-compile`.
 #[cfg(test)]
 mod encoder_fixtures {
     use super::checked_code_offset;

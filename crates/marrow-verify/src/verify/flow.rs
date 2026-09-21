@@ -1182,11 +1182,6 @@ fn map_kv(ctx: &Ctx, value: VType) -> Result<(CollTypeId, ImageType, ImageType),
     }
 }
 
-/// The site operand of a durable op, or `None` for a transaction marker.
-pub(super) fn durable_site(instr: &SealedInstr) -> Option<u16> {
-    instr.site().copied()
-}
-
 /// Whether `instr` stages a durable mutation (a write or erase).
 pub(super) fn is_mutation(instr: &SealedInstr) -> bool {
     instr.op_class() == OpClass::DurableMutation
@@ -1212,7 +1207,7 @@ fn apply_durable(
     instr: &SealedInstr,
     frame: &mut Frame,
 ) -> Result<Control, VerifyRejection> {
-    let Some(site_index) = durable_site(instr) else {
+    let Some(site_index) = instr.site().copied() else {
         // TxnBegin / TxnCommit: no stack effect here.
         return Ok(Control::Fallthrough);
     };

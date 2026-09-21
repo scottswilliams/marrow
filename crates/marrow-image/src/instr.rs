@@ -576,10 +576,10 @@ pub enum OpClass {
 /// One instruction's frozen wire facts: its opcode byte, its immediate-operand width,
 /// and the durable authority atom it stages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct OpSpec {
-    pub(crate) opcode: u8,
-    pub(crate) operand_len: usize,
-    pub(crate) class: Option<OperationClass>,
+struct OpSpec {
+    opcode: u8,
+    operand_len: usize,
+    class: Option<OperationClass>,
 }
 
 const fn pure(opcode: u8, operand_len: usize) -> OpSpec {
@@ -615,7 +615,7 @@ impl<R: Operands> Instruction<R> {
     /// `u16` slot count and one `u16` per slot; a bounded traversal a `u16` site, a `u32`
     /// bound, a one-byte `from` flag and a `u16` COLLTYPES index; `VacantLoad` one full
     /// optional `ImageType`; `RangeGuard` two `i64` bounds.
-    pub(crate) fn spec(&self) -> OpSpec {
+    fn spec(&self) -> OpSpec {
         use OperationClass::{Erase, IndexRead, Presence, Read, Write};
         match self {
             Self::ConstLoad(_) => pure(OP_CONST_LOAD, 2),
@@ -800,23 +800,51 @@ impl<R: Operands> Instruction<R> {
         }
     }
 
-    /// The control-flow successors of this instruction at tape index `index`: the jump
-    /// target first, then the fallthrough. A terminator has none, a plain jump only its
-    /// target, and a conditional branch or a checked-arithmetic trap edge both.
-    pub fn successors(&self, index: usize) -> impl Iterator<Item = usize> {
-        let (target, falls_through) = match self {
-            Self::Return | Self::Unreachable(_) | Self::Todo(_) => (None, false),
-            Self::Jump(target) => (Some(R::index_of(target)), false),
-            Self::JumpIfFalse(target)
+    /// The transfer target this instruction carries, if it carries one: the one closed
+    /// set of jump-bearing opcodes, read by the flow successors, the encoder's offset
+    /// resolution, the measure core's target check, and the verifier's offset rewrite.
+    pub fn jump_target(&self) -> Option<&R::Jump> {
+        match self {
+            Self::Jump(target)
+            | Self::JumpIfFalse(target)
             | Self::BranchPresent(target)
             | Self::IntAddChecked(target)
             | Self::IntSubChecked(target)
             | Self::IntMulChecked(target)
             | Self::IntNegChecked(target)
             | Self::IntDivChecked(target)
-            | Self::IntRemChecked(target) => (Some(R::index_of(target)), true),
-            _ => (None, true),
-        };
-        target.into_iter().chain(falls_through.then_some(index + 1))
+            | Self::IntRemChecked(target) => Some(target),
+            _ => None,
+        }
+    }
+
+    /// The transfer target, mutably, for the decoder's byte-offset-to-index rewrite.
+    pub fn jump_target_mut(&mut self) -> Option<&mut R::Jump> {
+        match self {
+            Self::Jump(target)
+            | Self::JumpIfFalse(target)
+            | Self::BranchPresent(target)
+            | Self::IntAddChecked(target)
+            | Self::IntSubChecked(target)
+            | Self::IntMulChecked(target)
+            | Self::IntNegChecked(target)
+            | Self::IntDivChecked(target)
+            | Self::IntRemChecked(target) => Some(target),
+            _ => None,
+        }
+    }
+
+    /// The control-flow successors of this instruction at tape index `index`: the jump
+    /// target first, then the fallthrough. A terminator has none, a plain jump only its
+    /// target, and a conditional branch or a checked-arithmetic trap edge both.
+    pub fn successors(&self, index: usize) -> impl Iterator<Item = usize> {
+        let falls_through = !matches!(
+            self,
+            Self::Return | Self::Unreachable(_) | Self::Todo(_) | Self::Jump(_)
+        );
+        self.jump_target()
+            .map(R::index_of)
+            .into_iter()
+            .chain(falls_through.then_some(index + 1))
     }
 }

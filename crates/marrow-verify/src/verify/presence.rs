@@ -50,25 +50,6 @@ impl<'a> EntryFamilies<'a> {
     }
 }
 
-/// The control-flow successors of the sealed instruction at `index`.
-pub(super) fn flow_successors(code: &[SealedInstr], index: usize) -> Vec<usize> {
-    match &code[index] {
-        SealedInstr::Return | SealedInstr::Unreachable(_) | SealedInstr::Todo(_) => Vec::new(),
-        SealedInstr::Jump(target) => vec![*target],
-        SealedInstr::JumpIfFalse(target)
-        | SealedInstr::BranchPresent(target)
-        | SealedInstr::IntAddChecked(target)
-        | SealedInstr::IntSubChecked(target)
-        | SealedInstr::IntMulChecked(target)
-        | SealedInstr::IntNegChecked(target)
-        | SealedInstr::IntDivChecked(target)
-        | SealedInstr::IntRemChecked(target) => {
-            vec![*target, index + 1]
-        }
-        _ => vec![index + 1],
-    }
-}
-
 /// Phase 5 (presence): the place-slot presence lattice. A present-form
 /// instruction — field set, group read or replacement through place slots — asserts
 /// its containing entry is present; this recheck proves that independently of the
@@ -306,7 +287,7 @@ fn presence_edges(
             vec![(index + 1, present)]
         }
         _ => {
-            let mut successors = flow_successors(code, index);
+            let mut successors: Vec<usize> = code[index].successors(index).collect();
             let Some(last) = successors.pop() else {
                 return Vec::new();
             };

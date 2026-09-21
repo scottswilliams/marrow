@@ -641,16 +641,10 @@ fn tape_references(draft: &ImageDraft, code: &[Instr]) -> Result<(), ImageBuildE
                     return Err(ImageBuildError::InvalidReference(ReferenceKind::RootTable));
                 }
             }
-            Instr::Jump(target)
-            | Instr::JumpIfFalse(target)
-            | Instr::BranchPresent(target)
-            | Instr::IntAddChecked(target)
-            | Instr::IntSubChecked(target)
-            | Instr::IntMulChecked(target)
-            | Instr::IntNegChecked(target)
-            | Instr::IntDivChecked(target)
-            | Instr::IntRemChecked(target) => jump_ref(*target)?,
             _ => {}
+        }
+        if let Some(target) = instr.jump_target() {
+            jump_ref(*target)?;
         }
     }
     Ok(())
@@ -1011,16 +1005,14 @@ mod decisive_saturation {
         let mut owner = ImageDraft::new();
         let mut draft = owner.begin_transaction();
         draft.set_application_identity(crate::durable_id::LedgerIdBytes::from_bytes([0x01; 16]));
-        let value = {
-            let values = draft.value_shapes_mut();
-            let mut level = values.scalar(Scalar::Int).expect("the test arena mints");
-            for _ in 0..31 {
-                level = values
-                    .struct_shape(vec![level; 64])
-                    .expect("the test arena mints");
-            }
-            level
-        };
+        let mut value = draft
+            .value_scalar(Scalar::Int)
+            .expect("the test arena mints");
+        for _ in 0..31 {
+            value = draft
+                .value_struct(vec![value; 64])
+                .expect("sixty-four leaves fit the checked surface");
+        }
         let type_name = draft.intern_string("R").expect("a within-domain mint");
         let record = draft
             .add_record_type(crate::draft::RecordTypeDef {

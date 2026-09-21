@@ -1,8 +1,6 @@
 //! Shared checking context, certified direct calls, and durable-effect closures.
 
-use super::flow::durable_site;
 use super::flow::is_mutation;
-use super::presence::flow_successors;
 use super::reject;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::FunctionDemands;
@@ -153,7 +151,7 @@ impl Effects {
             let mut begins = false;
             let mut commits = false;
             for instr in function.instrs() {
-                if let Some(site) = durable_site(instr) {
+                if let Some(site) = instr.site().copied() {
                     sites.insert(site);
                     if let Some(class) = instr.operation_class() {
                         let next = lookup.len();
@@ -354,7 +352,7 @@ impl Effects {
                     state
                 }
             };
-            for successor in flow_successors(code, index) {
+            for successor in code[index].successors(index) {
                 match entry[successor] {
                     None => {
                         entry[successor] = Some(next_state);

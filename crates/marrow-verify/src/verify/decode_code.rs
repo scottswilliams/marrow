@@ -356,22 +356,11 @@ pub(super) fn resolve_jumps(code: &mut [Decoded]) -> Result<Vec<bool>, VerifyRej
     };
     let mut non_fallthrough_entries = vec![false; code.len()];
     for (index, decoded) in code.iter_mut().enumerate() {
-        match &mut decoded.instr {
-            SealedInstr::Jump(target)
-            | SealedInstr::JumpIfFalse(target)
-            | SealedInstr::BranchPresent(target)
-            | SealedInstr::IntAddChecked(target)
-            | SealedInstr::IntSubChecked(target)
-            | SealedInstr::IntMulChecked(target)
-            | SealedInstr::IntNegChecked(target)
-            | SealedInstr::IntDivChecked(target)
-            | SealedInstr::IntRemChecked(target) => {
-                *target = index_of(*target)?;
-                if *target != index + 1 {
-                    non_fallthrough_entries[*target] = true;
-                }
+        if let Some(target) = decoded.instr.jump_target_mut() {
+            *target = index_of(*target)?;
+            if *target != index + 1 {
+                non_fallthrough_entries[*target] = true;
             }
-            _ => {}
         }
     }
     Ok(non_fallthrough_entries)
@@ -966,14 +955,9 @@ mod index_site_partition {
     /// the integration hostile suite uses so a forged managed-index or bounded-traversal
     /// opcode over the field-leaf site reaches the same `apply_durable` guards. Returns
     /// the draft, the field-leaf (non-index) site operand, and the list-type index.
-    /// The armed transaction over `owner`.
-    fn admitted(owner: &mut marrow_image::ImageDraft) -> DraftTxn<'_> {
-        owner.begin_transaction()
-    }
-
     fn field_leaf_schema() -> (ImageDraft, PlannedSiteRef, CollTypeId) {
         let mut draft_owner = ImageDraft::new();
-        let mut draft = admitted(&mut draft_owner);
+        let mut draft = draft_owner.begin_transaction();
         let counter = draft
             .intern_string("Counter")
             .expect("a within-domain mint");
@@ -1103,7 +1087,7 @@ mod index_site_partition {
         let mut exercised = 0usize;
         for sample in samples() {
             let (mut draft_owner, value_site, list_ty) = field_leaf_schema();
-            let mut draft = admitted(&mut draft_owner);
+            let mut draft = draft_owner.begin_transaction();
             let (forged, expected_detail) = match role(&sample, &value_site, list_ty) {
                 Role::ManagedIndexRead(forged) => {
                     (forged, "a managed-index opcode over a non-index site")
