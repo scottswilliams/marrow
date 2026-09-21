@@ -601,15 +601,15 @@ pub enum RejectionKind {
 impl fmt::Display for RejectionKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RejectionKind::Truncated(region) => write!(f, "truncated {region}"),
-            RejectionKind::Trailing(region) => write!(f, "trailing bytes in {region}"),
-            RejectionKind::Unsorted(region) => write!(f, "unsorted or repeated rows in {region}"),
-            RejectionKind::OutOfRange(what) => write!(f, "a {what} index out of range"),
-            RejectionKind::OverBound(bound) => write!(f, "over the {bound} bound"),
-            RejectionKind::Duplicate(what) => write!(f, "a duplicate {what}"),
-            RejectionKind::Unknown(tag) => write!(f, "an unknown {tag}"),
-            RejectionKind::Flag(flag) => write!(f, "a {flag} flag that is not 0 or 1"),
-            RejectionKind::TypeRef { position, fault } => match fault {
+            Self::Truncated(region) => write!(f, "truncated {region}"),
+            Self::Trailing(region) => write!(f, "trailing bytes in {region}"),
+            Self::Unsorted(region) => write!(f, "unsorted or repeated rows in {region}"),
+            Self::OutOfRange(what) => write!(f, "a {what} index out of range"),
+            Self::OverBound(bound) => write!(f, "over the {bound} bound"),
+            Self::Duplicate(what) => write!(f, "a duplicate {what}"),
+            Self::Unknown(tag) => write!(f, "an unknown {tag}"),
+            Self::Flag(flag) => write!(f, "a {flag} flag that is not 0 or 1"),
+            Self::TypeRef { position, fault } => match fault {
                 TypeRefFault::Truncated => write!(f, "a truncated {position} type"),
                 TypeRefFault::Optionality => {
                     write!(f, "a {position} type with an inadmissible optional flag")
@@ -619,180 +619,143 @@ impl fmt::Display for RejectionKind {
                     write!(f, "a {position} type tag not admitted there")
                 }
             },
-            RejectionKind::DigestMismatch => {
-                f.write_str("a digest that does not cover the payload")
-            }
-            RejectionKind::SectionCount => f.write_str("a section count other than 10"),
-            RejectionKind::SectionIds => f.write_str("section ids other than 1..10 in order"),
-            RejectionKind::InvalidUtf8 => f.write_str("a string that is not valid UTF-8"),
-            RejectionKind::ConstDomain(scalar) => {
+            Self::ConstDomain(scalar) => {
                 write!(
                     f,
                     "a {} constant outside its supported range",
                     scalar_name(*scalar)
                 )
             }
-            RejectionKind::MapKeyNotScalar => f.write_str("a map key that is not a bare scalar"),
-            RejectionKind::ValueTypeCycle => f.write_str("a cycle in the value type graph"),
-            RejectionKind::LocalsBelowParams => {
-                f.write_str("a local count below the parameter count")
+            Self::DurableGraph(refusal) => f.write_str(graph_refusal(*refusal)),
+            Self::RecordTie { node, fault } => write!(f, "a {node} member tree that {fault}"),
+            Self::IndexProjection(fault) => write!(f, "a managed-index projection {fault}"),
+            Self::Site(fault) => fault.fmt(f),
+            Self::RequiresSite(kind) => kind.fmt(f),
+            Self::OperandType(want) => write!(f, "an operand that is not {want}"),
+            unit => f.write_str(unit.sentence()),
+        }
+    }
+}
+
+fn graph_refusal(refusal: DurableGraphInputRefusal) -> &'static str {
+    match refusal {
+        DurableGraphInputRefusal::OverPlan | DurableGraphInputRefusal::UnaddressableOccurrence => {
+            "more durable roots than admitted"
+        }
+        DurableGraphInputRefusal::MalformedCommands
+        | DurableGraphInputRefusal::UndeclaredProduct => {
+            "a durable member graph that is not a well-formed declaration"
+        }
+        DurableGraphInputRefusal::OverDepth => "a durable member tree past the depth bound",
+        DurableGraphInputRefusal::DivergentGraph => {
+            "a repeated durable Product declaring a different member graph"
+        }
+        DurableGraphInputRefusal::DivergentEntryRecord => {
+            "a repeated durable Product declaring a different entry record"
+        }
+    }
+}
+
+impl RejectionKind {
+    /// The sentence of a kind that carries no payload; a kind with one is rendered by
+    /// `Display` around its payload and never reaches here.
+    fn sentence(&self) -> &'static str {
+        match self {
+            Self::DigestMismatch => "a digest that does not cover the payload",
+            Self::SectionCount => "a section count other than 10",
+            Self::SectionIds => "section ids other than 1..10 in order",
+            Self::InvalidUtf8 => "a string that is not valid UTF-8",
+            Self::MapKeyNotScalar => "a map key that is not a bare scalar",
+            Self::ValueTypeCycle => "a cycle in the value type graph",
+            Self::LocalsBelowParams => "a local count below the parameter count",
+            Self::SpanNotOneBased => "a span line or column that is not 1-based",
+            Self::SpanStart => "a first span not at instruction offset 0",
+            Self::SpanMissing => "code with no span mapping",
+            Self::SpanBoundary => "a span offset off an instruction boundary",
+            Self::KeyNotOrderable => "a key column that is not an orderable durable-key scalar",
+            Self::EnumIdentityReused => {
+                "a durable enum identity reused with a different member set"
             }
-            RejectionKind::SpanNotOneBased => {
-                f.write_str("a span line or column that is not 1-based")
+            Self::ValueArenaExhausted => "a durable value shape outside the value arena's domain",
+            Self::IndexReadKind => "an index read kind disagreeing with the index's unique flag",
+            Self::ContractUnidentifiable => "a durable graph too large to identify",
+            Self::ContractMismatch => "a durable contract id that does not match the durable graph",
+            Self::RangeGuardEmpty => "an empty range-guard interval",
+            Self::KeySlotArity => "a present-entry key-path arity that does not match its site",
+            Self::KeySlotType => "a present-entry key slot of the wrong type",
+            Self::KeySlotUninit => "a present-entry key slot that is uninitialized or out of range",
+            Self::JumpTarget => "a jump target off an instruction boundary",
+            Self::EmptyCode => "a function with no code",
+            Self::UnreachableInstruction => "an unreachable instruction",
+            Self::FallsOffEnd => "execution falling off the end of the code",
+            Self::StackMerge => "operand stacks that disagree at a merge",
+            Self::StackUnderflow => "an operand stack underflow",
+            Self::LocalUninit => "a local read before initialization",
+            Self::LocalRetyped => "a local slot reused at a different type",
+            Self::ReturnType => "a return that does not match the return type",
+            Self::ReturnStack => "an operand stack not empty at return",
+            Self::MarkerOperandNotText => "a diverging-marker operand that is not a text constant",
+            Self::EnumMismatch => "enum operands of different enums",
+            Self::IdentityRootMismatch => "identity operands naming different store roots",
+            Self::IdentityArity => {
+                "an identity column count that does not match the root's key columns"
             }
-            RejectionKind::SpanStart => f.write_str("a first span not at instruction offset 0"),
-            RejectionKind::SpanMissing => f.write_str("code with no span mapping"),
-            RejectionKind::SpanBoundary => f.write_str("a span offset off an instruction boundary"),
-            RejectionKind::DurableGraph(refusal) => f.write_str(match refusal {
-                DurableGraphInputRefusal::OverPlan
-                | DurableGraphInputRefusal::UnaddressableOccurrence => {
-                    "more durable roots than admitted"
-                }
-                DurableGraphInputRefusal::MalformedCommands
-                | DurableGraphInputRefusal::UndeclaredProduct => {
-                    "a durable member graph that is not a well-formed declaration"
-                }
-                DurableGraphInputRefusal::OverDepth => "a durable member tree past the depth bound",
-                DurableGraphInputRefusal::DivergentGraph => {
-                    "a repeated durable Product declaring a different member graph"
-                }
-                DurableGraphInputRefusal::DivergentEntryRecord => {
-                    "a repeated durable Product declaring a different entry record"
-                }
-            }),
-            RejectionKind::KeyNotOrderable => {
-                f.write_str("a key column that is not an orderable durable-key scalar")
+            Self::UnsetRequiredField => "an unset of a required field",
+            Self::EraseRequiredField => "an erase of a required field",
+            Self::EraseRequiredGroup => "an erase of a group holding a required leaf",
+            Self::PresentReadOfSparseField => "a present field read of a sparse field",
+            Self::NotList => "a collection type that is not a list",
+            Self::NotMap => "a collection type that is not a map",
+            Self::NotListOfString => "a collection type that is not a list of string",
+            Self::FrozenListType => "a frozen list type that is not a list of the traversed key",
+            Self::ParkedSite => "an operation over a site that is not executable",
+            Self::RootNotExecutable => "an operation over a root that is not flat-executable",
+            Self::CompositeKeyTraversal => {
+                "a traversal over a composite key, which is not yet executable"
             }
-            RejectionKind::RecordTie { node, fault } => {
-                write!(f, "a {node} member tree that {fault}")
+            Self::TraversalBound => "a traversal bound that is zero or too large",
+            Self::IndexRootMismatch => "an index read site naming an index of a different root",
+            Self::ForeignIdentityKey => {
+                "an entry identity keying a durable operation on a different store root"
             }
-            RejectionKind::IndexProjection(fault) => {
-                write!(f, "a managed-index projection {fault}")
+            Self::CallCycle => "a cycle in the call graph",
+            Self::OwnerCalled => "a call to a transaction owner",
+            Self::EmptyTransaction => "a transaction performing no durable operation",
+            Self::MarkerOutsideOwner => "a transaction marker outside its owning export",
+            Self::BeginTwice => "a transaction begun more than once",
+            Self::CommitOutsideRegion => "a transaction committed outside its region",
+            Self::ReturnWithoutCommit => "a path returning without committing the transaction",
+            Self::MutationOutsideRegion => "a mutation outside the transaction region",
+            Self::OperationAfterCommit => "a durable operation after the transaction's commit",
+            Self::TransactionMerge => "transaction states that disagree at a merge",
+            Self::PresenceSite => {
+                "a present-entry operation over a site that is not a field or group"
             }
-            RejectionKind::EnumIdentityReused => {
-                f.write_str("a durable enum identity reused with a different member set")
+            Self::PresenceUnproven => "a present-entry operation not dominated by a presence fact",
+            Self::AssertOutsideTest => "an assert outside a test entry",
+            Self::TestEntryExported => "a test entry that is also an export",
+            Self::TestEntrySignature => "a test entry taking parameters or returning a value",
+            Self::TestEntryCalled => "a call to a test entry",
+            Self::TestDirectDurable => "a test body performing a direct durable operation",
+            Self::TestCallsUnownedMutation => {
+                "a test calling a mutating function without its own transaction"
             }
-            RejectionKind::ValueArenaExhausted => {
-                f.write_str("a durable value shape outside the value arena's domain")
-            }
-            RejectionKind::Site(fault) => fault.fmt(f),
-            RejectionKind::IndexReadKind => {
-                f.write_str("an index read kind disagreeing with the index's unique flag")
-            }
-            RejectionKind::ContractUnidentifiable => {
-                f.write_str("a durable graph too large to identify")
-            }
-            RejectionKind::ContractMismatch => {
-                f.write_str("a durable contract id that does not match the durable graph")
-            }
-            RejectionKind::RangeGuardEmpty => f.write_str("an empty range-guard interval"),
-            RejectionKind::KeySlotArity => {
-                f.write_str("a present-entry key-path arity that does not match its site")
-            }
-            RejectionKind::KeySlotType => f.write_str("a present-entry key slot of the wrong type"),
-            RejectionKind::KeySlotUninit => {
-                f.write_str("a present-entry key slot that is uninitialized or out of range")
-            }
-            RejectionKind::JumpTarget => f.write_str("a jump target off an instruction boundary"),
-            RejectionKind::EmptyCode => f.write_str("a function with no code"),
-            RejectionKind::UnreachableInstruction => f.write_str("an unreachable instruction"),
-            RejectionKind::FallsOffEnd => f.write_str("execution falling off the end of the code"),
-            RejectionKind::StackMerge => f.write_str("operand stacks that disagree at a merge"),
-            RejectionKind::StackUnderflow => f.write_str("an operand stack underflow"),
-            RejectionKind::LocalUninit => f.write_str("a local read before initialization"),
-            RejectionKind::LocalRetyped => f.write_str("a local slot reused at a different type"),
-            RejectionKind::ReturnType => {
-                f.write_str("a return that does not match the return type")
-            }
-            RejectionKind::ReturnStack => f.write_str("an operand stack not empty at return"),
-            RejectionKind::MarkerOperandNotText => {
-                f.write_str("a diverging-marker operand that is not a text constant")
-            }
-            RejectionKind::OperandType(want) => write!(f, "an operand that is not {want}"),
-            RejectionKind::EnumMismatch => f.write_str("enum operands of different enums"),
-            RejectionKind::IdentityRootMismatch => {
-                f.write_str("identity operands naming different store roots")
-            }
-            RejectionKind::IdentityArity => {
-                f.write_str("an identity column count that does not match the root's key columns")
-            }
-            RejectionKind::UnsetRequiredField => f.write_str("an unset of a required field"),
-            RejectionKind::EraseRequiredField => f.write_str("an erase of a required field"),
-            RejectionKind::EraseRequiredGroup => {
-                f.write_str("an erase of a group holding a required leaf")
-            }
-            RejectionKind::PresentReadOfSparseField => {
-                f.write_str("a present field read of a sparse field")
-            }
-            RejectionKind::NotList => f.write_str("a collection type that is not a list"),
-            RejectionKind::NotMap => f.write_str("a collection type that is not a map"),
-            RejectionKind::NotListOfString => {
-                f.write_str("a collection type that is not a list of string")
-            }
-            RejectionKind::FrozenListType => {
-                f.write_str("a frozen list type that is not a list of the traversed key")
-            }
-            RejectionKind::ParkedSite => {
-                f.write_str("an operation over a site that is not executable")
-            }
-            RejectionKind::RootNotExecutable => {
-                f.write_str("an operation over a root that is not flat-executable")
-            }
-            RejectionKind::RequiresSite(kind) => kind.fmt(f),
-            RejectionKind::CompositeKeyTraversal => {
-                f.write_str("a traversal over a composite key, which is not yet executable")
-            }
-            RejectionKind::TraversalBound => {
-                f.write_str("a traversal bound that is zero or too large")
-            }
-            RejectionKind::IndexRootMismatch => {
-                f.write_str("an index read site naming an index of a different root")
-            }
-            RejectionKind::ForeignIdentityKey => f.write_str(
-                "an entry identity keying a durable operation on a different store root",
-            ),
-            RejectionKind::CallCycle => f.write_str("a cycle in the call graph"),
-            RejectionKind::OwnerCalled => f.write_str("a call to a transaction owner"),
-            RejectionKind::EmptyTransaction => {
-                f.write_str("a transaction performing no durable operation")
-            }
-            RejectionKind::MarkerOutsideOwner => {
-                f.write_str("a transaction marker outside its owning export")
-            }
-            RejectionKind::BeginTwice => f.write_str("a transaction begun more than once"),
-            RejectionKind::CommitOutsideRegion => {
-                f.write_str("a transaction committed outside its region")
-            }
-            RejectionKind::ReturnWithoutCommit => {
-                f.write_str("a path returning without committing the transaction")
-            }
-            RejectionKind::MutationOutsideRegion => {
-                f.write_str("a mutation outside the transaction region")
-            }
-            RejectionKind::OperationAfterCommit => {
-                f.write_str("a durable operation after the transaction's commit")
-            }
-            RejectionKind::TransactionMerge => {
-                f.write_str("transaction states that disagree at a merge")
-            }
-            RejectionKind::PresenceSite => {
-                f.write_str("a present-entry operation over a site that is not a field or group")
-            }
-            RejectionKind::PresenceUnproven => {
-                f.write_str("a present-entry operation not dominated by a presence fact")
-            }
-            RejectionKind::AssertOutsideTest => f.write_str("an assert outside a test entry"),
-            RejectionKind::TestEntryExported => f.write_str("a test entry that is also an export"),
-            RejectionKind::TestEntrySignature => {
-                f.write_str("a test entry taking parameters or returning a value")
-            }
-            RejectionKind::TestEntryCalled => f.write_str("a call to a test entry"),
-            RejectionKind::TestDirectDurable => {
-                f.write_str("a test body performing a direct durable operation")
-            }
-            RejectionKind::TestCallsUnownedMutation => {
-                f.write_str("a test calling a mutating function without its own transaction")
-            }
+            Self::Truncated(_)
+            | Self::Trailing(_)
+            | Self::Unsorted(_)
+            | Self::OutOfRange(_)
+            | Self::OverBound(_)
+            | Self::Duplicate(_)
+            | Self::Unknown(_)
+            | Self::Flag(_)
+            | Self::TypeRef { .. }
+            | Self::ConstDomain(_)
+            | Self::DurableGraph(_)
+            | Self::RecordTie { .. }
+            | Self::IndexProjection(_)
+            | Self::Site(_)
+            | Self::RequiresSite(_)
+            | Self::OperandType(_) => unreachable!("a kind with a payload is rendered by Display"),
         }
     }
 }
