@@ -898,8 +898,6 @@ fn support_set(
     Ok(supports)
 }
 
-/// One struct reserved in pass one: the file it was declared in, its declaration,
-/// and the image record index it will fill in pass two.
 /// A struct or enum declaration whose image row pass one reserved, addressed by its
 /// position in the registry table its kind fills.
 pub(super) struct ReservedRow<'a, D> {
@@ -915,13 +913,12 @@ pub(super) struct ReservedRow<'a, D> {
 pub(super) trait DeclaredRow {
     type Members;
     const KIND: NamedTypeKind;
-    fn name(&self) -> &str;
-    fn name_span(&self) -> SourceSpan;
+    fn site<'a>(&'a self, file: &'a ProjectFile, at: FileRef) -> DeclarationSite<'a>;
     fn resolve(
+        &self,
         draft: &mut DraftTxn<'_>,
         registry: &mut TypeRegistry,
         declared: DeclarationSite<'_>,
-        decl: &Self,
         diagnostics: &mut DiagnosticCollector,
     ) -> Result<DeclarationOccurrence<Self::Members>, BuildError>;
     fn commit(
@@ -937,22 +934,23 @@ impl DeclaredRow for StructDecl {
     type Members = ResolvedStructFields;
     const KIND: NamedTypeKind = NamedTypeKind::Struct;
 
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn name_span(&self) -> SourceSpan {
-        self.name_span
+    fn site<'a>(&'a self, file: &'a ProjectFile, at: FileRef) -> DeclarationSite<'a> {
+        DeclarationSite {
+            name: &self.name,
+            file,
+            at,
+            span: self.name_span,
+        }
     }
 
     fn resolve(
+        &self,
         draft: &mut DraftTxn<'_>,
         registry: &mut TypeRegistry,
         declared: DeclarationSite<'_>,
-        decl: &Self,
         diagnostics: &mut DiagnosticCollector,
     ) -> Result<DeclarationOccurrence<Self::Members>, BuildError> {
-        Ok(struct_fields(draft, registry, declared, decl, diagnostics)?)
+        Ok(struct_fields(draft, registry, declared, self, diagnostics)?)
     }
 
     fn commit(
@@ -981,22 +979,23 @@ impl DeclaredRow for EnumDecl {
     type Members = EnumVariants;
     const KIND: NamedTypeKind = NamedTypeKind::Enum;
 
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn name_span(&self) -> SourceSpan {
-        self.name_span
+    fn site<'a>(&'a self, file: &'a ProjectFile, at: FileRef) -> DeclarationSite<'a> {
+        DeclarationSite {
+            name: &self.name,
+            file,
+            at,
+            span: self.name_span,
+        }
     }
 
     fn resolve(
+        &self,
         draft: &mut DraftTxn<'_>,
         registry: &mut TypeRegistry,
         declared: DeclarationSite<'_>,
-        decl: &Self,
         diagnostics: &mut DiagnosticCollector,
     ) -> Result<DeclarationOccurrence<Self::Members>, BuildError> {
-        enum_variants(draft, registry, declared, decl, diagnostics)
+        enum_variants(draft, registry, declared, self, diagnostics)
     }
 
     fn commit(
@@ -1036,13 +1035,10 @@ pub(super) fn fill_rows<D: DeclaredRow>(
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<(), BuildError> {
     for item in reserved {
-        let declared = DeclarationSite {
-            name: item.decl.name(),
-            file: &item.file,
-            at: item.at,
-            span: item.decl.name_span(),
-        };
-        let occurrence = D::resolve(draft, registry, declared, item.decl, diagnostics)?
+        let declared = item.decl.site(&item.file, item.at);
+        let occurrence = item
+            .decl
+            .resolve(draft, registry, declared, diagnostics)?
             .map_accepted(|members| {
                 D::commit(draft, registry, item.index, members);
                 D::KIND
@@ -1050,10 +1046,9 @@ pub(super) fn fill_rows<D: DeclaredRow>(
         if matches!(occurrence, DeclarationOccurrence::Refused(_)) {
             D::refuse(registry, item.index);
         }
-        registry.named.declare(
-            ScopedName::new(item.file.origin(), item.decl.name()),
-            occurrence,
-        )?;
+        registry
+            .named
+            .declare(ScopedName::declared(&declared), occurrence)?;
     }
     Ok(())
 }
@@ -1183,8 +1178,6 @@ fn struct_fields(
     })
 }
 
-/// One enum reserved in pass one: the file it was declared in, its declaration,
-/// and the image ENUMS index it will fill in pass two.
 /// Pass one for the closed flat enum types: reserve each admitted enum's image
 /// [`EnumTypeDef`] index (empty for now) and register its name. A name collision with a
 /// scalar, alias, nominal, resource, struct, or earlier enum is a `check.name_conflict`,

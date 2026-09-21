@@ -7,7 +7,7 @@ use super::ParseError;
 use super::tokens::{comment_from_token, first_line_end, is_line_comment, line_end};
 use crate::ast::{Comment, CommentMarker, CommentPlacement};
 use crate::diagnostic::{
-    DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, SourceSpan, SyntaxError,
+    DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, SourceSpan, SyntaxError, nesting_limit,
 };
 use crate::token::{ContextualKeyword, Keyword, Token, TokenKind};
 
@@ -140,25 +140,18 @@ impl<'a> DeclParser<'a, '_> {
         self.pos
     }
 
-    /// Report a stray `{ … }` block at the top level, where a declaration was
-    /// expected, and consume it so the following declarations still parse.
     /// Refuse the member block under the cursor because opening it would pass
     /// [`crate::NESTING_DEPTH_LIMIT`]: report the located limit at its `{` and skip the
     /// whole block, so an over-deep nest reports once and the descent never deepens.
     pub(super) fn refuse_over_deep_block(&mut self) {
         let span = self.tokens[self.pos].span;
-        self.error_span(
-            span,
-            ParseDiagnosticReason::NestingLimit,
-            format!(
-                "source nests deeper than the limit of {}",
-                crate::NESTING_DEPTH_LIMIT
-            ),
-        );
+        self.sink.push(nesting_limit(span));
         self.advance(); // `{`
         self.skip_to_block_end();
     }
 
+    /// Report a stray `{ … }` block at the top level, where a declaration was
+    /// expected, and consume it so the following declarations still parse.
     pub(super) fn report_stray_indented_lines(&mut self) {
         let span = self.content_span_of(self.tokens[self.pos]);
         self.error_span(

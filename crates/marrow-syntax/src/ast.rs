@@ -1238,11 +1238,11 @@ pub struct KeyParam {
 /// this node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeExpr {
-    /// A name that is not a recognized special form: a scalar spelling, `unknown`,
-    /// an enum or resource name, a qualified name, or an unresolvable spelling.
-    /// `text` is the whitespace-free source spelling; classifying it as a scalar,
-    /// `unknown`, or a named type is a resolution concern that needs project
-    /// knowledge, so it stays with the semantic owner.
+    /// A name that is not a recognized special form: a scalar spelling, an enum or
+    /// resource name, a qualified name, or an unresolvable spelling. `text` is the
+    /// whitespace-free source spelling; classifying it as a scalar or a named type is
+    /// a resolution concern that needs project knowledge, so it stays with the
+    /// semantic owner.
     Name {
         text: String,
         segment_spans: Vec<SourceSpan>,

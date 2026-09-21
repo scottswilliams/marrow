@@ -424,6 +424,21 @@ impl SyntaxErrorSink for SyntaxSink<'_> {
     }
 }
 
+/// The refusal every recursive descent reports at the token it declines to open past
+/// [`crate::NESTING_DEPTH_LIMIT`], so the statement and declaration parsers cannot
+/// drift on the sentence.
+pub(crate) fn nesting_limit(span: SourceSpan) -> SyntaxError {
+    SyntaxError::new(
+        DiagnosticReason::Parser(ParseDiagnosticReason::NestingLimit),
+        format!(
+            "source nests deeper than the limit of {}",
+            crate::NESTING_DEPTH_LIMIT
+        ),
+        None,
+        span,
+    )
+}
+
 /// The sink a silent probe writes to: rows vanish without touching any collector total.
 pub(crate) struct DiscardingSyntaxErrorSink;
 
@@ -533,8 +548,9 @@ impl ParseDiagnosticReason {
 pub enum ExpectedSyntax {
     AliasName,
     AliasType,
-    /// A compound-statement header or trailing clause with no `{ … }` block where the
-    /// grammar requires one, reported at the zero-width gap the block would open at.
+    /// A compound-statement header, `match` head, or trailing clause with no `{ … }`
+    /// block where the grammar requires one, reported at the zero-width gap the block
+    /// would open at.
     Block,
     CloseBrace,
     CloseBracket,
@@ -564,7 +580,6 @@ pub enum ExpectedSyntax {
     KeyName,
     KeyParameterList,
     KeyType,
-    MatchBody,
     ModuleName,
     NominalBase,
     NominalInterval,

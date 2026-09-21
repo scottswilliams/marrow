@@ -406,20 +406,6 @@ fn slash_slash_is_a_line_comment() {
     clean("module app\n// a line comment\nfn run() {\n    return // trailing\n}\n");
 }
 
-#[test]
-fn a_match_arm_body_expression_uses_expected_syntax() {
-    // A `match` with no body reports the missing body, not zero arms.
-    let parsed = parse_source("module app\nfn run(s: Shape) {\n    match s\n}\n");
-    assert!(
-        parsed.diagnostics.complete().iter().any(|d| d.reason
-            == DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
-                ExpectedSyntax::MatchBody
-            ))),
-        "a match with no brace body reports MatchBody: {:#?}",
-        parsed.diagnostics
-    );
-}
-
 // ---- unclosed declaration bodies terminate with a bounded diagnostic ----
 
 #[test]
@@ -486,8 +472,18 @@ fn an_if_const_chain_with_a_trailing_and_never_anchors_at_zero() {
     );
 }
 
-/// A compound-statement header with no `{`, or a trailing clause with neither a block
-/// nor an inline statement, is a syntax error at the zero-width gap where the block
+/// The byte offset of a 1-based `(line, column)` in `source`.
+fn offset_of(source: &str, line: u32, column: u32) -> usize {
+    let line_start: usize = source
+        .split_inclusive('\n')
+        .take(line as usize - 1)
+        .map(str::len)
+        .sum();
+    line_start + column as usize - 1
+}
+
+/// A compound-statement header, `match` head, or trailing clause with neither a block
+/// nor an inline statement is a syntax error at the zero-width gap where the block
 /// would open: the next token's start, or the end of the clause's line when the body
 /// ends there. An empty block stands in for recovery so the statement after it still
 /// parses as a sibling.
@@ -506,6 +502,8 @@ fn a_header_without_a_block_reports_the_gap_and_stands_an_empty_block() {
             4,
             5,
         ),
+        ("module app\nfn f() {\n    match s\n    return\n}\n", 4, 5),
+        ("module app\nfn f() {\n    match s\n}\n", 3, 12),
         (
             "module app\nfn f() {\n    if a {\n    } else if b\n    return\n}\n",
             5,
@@ -546,6 +544,11 @@ fn a_header_without_a_block_reports_the_gap_and_stands_an_empty_block() {
             (gap.span.line, gap.span.column),
             (line, column),
             "{source:?}"
+        );
+        assert_eq!(
+            gap.span.start_byte,
+            offset_of(source, line, column),
+            "{source:?}: the gap's byte and its line/column name the same point"
         );
     }
 

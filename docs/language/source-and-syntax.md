@@ -110,12 +110,14 @@ recognizes direct byte-literal spelling such as `b"Marrow"`; today it reports
 
 A header line ends with `{`, the block closes with `}` on its own line, and a
 trailing clause cuddles the closing brace: `} else {`, `} else if c {`,
-`} on more {`. Every block takes braces, including a single statement; a
-header with no `{` is a `parse.syntax` error at the point where the block would
-open. A trailing clause (`else`, `on more`, a `match` arm, a checked arm, or a
-let-else `else`) may take one statement in place of the block, and `marrow fmt`
-writes it as a block. There is no statement separator, so a `;` is a syntax
-error.
+`} on more {`. Every block takes braces; a header with no `{` is a
+`parse.syntax` error at the gap where the block would open:
+
+```text
+src/main.mw:4:5: parse.syntax: expected a `{ … }` block
+```
+
+There is no statement separator, so a `;` is a syntax error.
 
 A line break ends a statement. A logical line continues across a physical line
 break in exactly two cases: while inside an open `(` or `[`, and after a

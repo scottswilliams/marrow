@@ -1601,8 +1601,8 @@ fn a_binding_refused_for_its_annotation_is_not_out_of_scope_at_its_uses() {
 // the `check.unsupported` row reported at the declaration.
 //
 // Both fill-ordering directions that can bind a refused leaf are covered:
-// `fill_records` before `fill_structs`/`fill_enums`, and `fill_structs` filling one
-// struct before a later sibling it names.
+// `fill_records` before the struct and enum `fill_rows` passes, and the struct pass
+// filling one struct before a later sibling it names.
 // ---------------------------------------------------------------------------
 
 /// One member position naming a value type a later declaration pass refuses, and the

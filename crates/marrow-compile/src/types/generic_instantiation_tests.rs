@@ -58,8 +58,12 @@ fn fn_axis_fixture(v: usize) -> String {
 /// Collection axis: `v` seeds, each applied through eight distinct `List`/`Map`/
 /// `Option` shapes as the parameters of one function, so the program mints `8 * v`
 /// distinct collection and reserved-enum instantiations without constructing a value
-/// of any. Every mint validates its arguments against the row directory, so this axis
-/// is the one that stays flat only while that directory is reused across mints.
+/// of any. Every mint validates its arguments through the registry's cached row
+/// directory; the test pins that the population encodes deterministically as it
+/// widens. That the directory is reused rather than rebuilt per mint is enforced by
+/// construction, not by a clock: `MetadataScratch::try_new` is private to the
+/// directory module with `RowDirectory::build_full` as its sole caller, and a
+/// directory leaves the registry only through `RowDirectoryGuard::seat`.
 fn collection_axis_fixture(v: usize) -> String {
     let mut source = String::from("module main\n\n");
     seed_structs(&mut source, v);

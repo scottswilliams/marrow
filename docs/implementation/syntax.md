@@ -9,9 +9,10 @@ recovery nodes, and syntax diagnostics. It does not resolve names or types.
 | Area | Files |
 |---|---|
 | Tokenization and literals | `lexer.rs`, `token.rs`, `literal.rs` |
-| Declaration parsing | `parse_decl/` |
+| Declaration parsing | `parse_decl/decl.rs`, `parse_decl/members.rs` |
+| Statement parsing | `parse_decl/stmt.rs`, `parse_decl/statement_lines.rs`, `parse_decl/body.rs` |
 | Position-query syntax | `query.rs` |
-| Expression and statement parsing | `parse_expr.rs` |
+| Expression parsing | `parse_expr.rs` |
 | AST | `ast.rs` |
 | Syntax diagnostics | `diagnostic.rs` |
 | Formatting | `format.rs` |

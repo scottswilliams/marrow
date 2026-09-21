@@ -15,7 +15,7 @@ use crate::ast::{
 };
 use crate::diagnostic::{
     DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, ReservedSyntax, SourceSpan,
-    SyntaxError, SyntaxSink, UnsupportedSyntax,
+    SyntaxError, SyntaxSink, UnsupportedSyntax, nesting_limit,
 };
 use crate::parse_expr::join_spans;
 use crate::token::{ContextualKeyword, Keyword, Token, TokenKind};
@@ -101,32 +101,22 @@ impl<'a, 'c> StmtParser<'a, 'c> {
     }
 
     /// Run `body` one statement-body level deeper, or refuse without running it when that
-    /// level would pass [`crate::NESTING_DEPTH_LIMIT`].
+    /// level would pass [`crate::NESTING_DEPTH_LIMIT`]. A refusal is reported here, at
+    /// the `{` or inline statement the descent declines to open; the caller only skips
+    /// the refused region, so an over-deep nest reports once rather than per level.
     ///
     /// The sole place the descent deepens; a caller that reaches a nested body any other
     /// way is unbounded by construction.
     fn descend<T>(&mut self, body: impl FnOnce(&mut Self) -> T) -> Option<T> {
         if self.depth >= crate::NESTING_DEPTH_LIMIT {
+            let span = self.tokens[self.pos].span;
+            self.sink.push(nesting_limit(span));
             return None;
         }
         self.depth += 1;
         let value = body(self);
         self.depth -= 1;
         Some(value)
-    }
-
-    /// Report the refusal to descend past [`crate::NESTING_DEPTH_LIMIT`], at the `{` or
-    /// inline statement the descent declines to open. The refused region is then
-    /// skipped whole, so an over-deep nest reports once rather than per level.
-    fn report_nesting_limit(&mut self, span: SourceSpan) {
-        self.error_span_reason(
-            span,
-            ParseDiagnosticReason::NestingLimit,
-            format!(
-                "source nests deeper than the limit of {}",
-                crate::NESTING_DEPTH_LIMIT
-            ),
-        );
     }
 
     pub(super) fn parse_block(mut self) -> (Box<[Statement]>, Vec<Comment>) {
@@ -217,9 +207,6 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         );
     }
 
-    /// Parse statements until the block closes. `capacity` is the measured number of
-    /// statement starts this block opens, and at most one statement is structured per
-    /// start, so the list is allocated once and never grows.
     /// Parse statements up to the enclosing `}` or the end of the body. The list is
     /// grown by pushing and boxed at close; the growth slack is part of the published
     /// per-source-byte parse charge.
@@ -664,7 +651,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         // A comment trailing the `match` header becomes an own-line comment leading the
         // first arm, the one owner `match` arms share.
         self.own_header_comment_in_place(start.start_byte);
-        let (arms, end) = self.match_body(start);
+        let (arms, end) = self.match_body();
         Statement::Match {
             scrutinee,
             arms,
@@ -675,23 +662,14 @@ impl<'a, 'c> StmtParser<'a, 'c> {
     /// Parse a `match` statement's `{ <arms> }` and return its arms and closing span.
     /// A match body is a brace-delimited region like any other, so it costs the same
     /// frame a block does.
-    fn match_body(&mut self, start: SourceSpan) -> (Vec<MatchArm>, SourceSpan) {
+    fn match_body(&mut self) -> (Vec<MatchArm>, SourceSpan) {
         if !matches!(self.peek(), Some(TokenKind::LeftBrace)) {
-            self.error_span_reason(
-                start,
-                ParseDiagnosticReason::Expected(ExpectedSyntax::MatchBody),
-                "expected a `{ … }` match body",
-            );
-            return (Vec::new(), start);
+            let gap = self.gap();
+            self.report_missing_block(gap);
+            return (Vec::new(), gap);
         }
-        match self.descend(Self::match_arms) {
-            Some(parsed) => parsed,
-            None => {
-                let span = self.tokens[self.pos].span;
-                self.report_nesting_limit(span);
-                (Vec::new(), self.skipped_block().span)
-            }
-        }
+        self.descend(Self::match_arms)
+            .unwrap_or_else(|| (Vec::new(), self.skipped_block().span))
     }
 
     /// Parse the arms of a match body. Runs one level inside [`StmtParser::descend`];
@@ -1172,19 +1150,24 @@ impl<'a, 'c> StmtParser<'a, 'c> {
                 end_byte: token.span.start_byte,
                 ..token.span
             },
-            None => {
-                let end = self
-                    .tokens
-                    .get(self.pos.saturating_sub(1))
-                    .map(|token| token.span)
-                    .unwrap_or_default();
-                SourceSpan {
-                    start_byte: end.end_byte,
-                    end_byte: end.end_byte,
-                    line: end.line,
-                    column: end.column,
+            // A trailing `NEWLINE` anchors at its own start, the end of its line; any
+            // other last token anchors just past its end, on the same line.
+            None => match self.tokens.get(self.pos.saturating_sub(1)) {
+                Some(token) if token.kind == TokenKind::Newline => SourceSpan {
+                    end_byte: token.span.start_byte,
+                    ..token.span
+                },
+                Some(token) => {
+                    let width = token.text(self.source).chars().count();
+                    SourceSpan {
+                        start_byte: token.span.end_byte,
+                        end_byte: token.span.end_byte,
+                        line: token.span.line,
+                        column: token.span.column + width as u32,
+                    }
                 }
-            }
+                None => SourceSpan::default(),
+            },
         }
     }
 
@@ -1200,14 +1183,8 @@ impl<'a, 'c> StmtParser<'a, 'c> {
     /// body token slice. A fresh comment accumulator is swapped in for the duration
     /// so this nested block's comments do not leak into the parent block.
     fn parse_braced_block(&mut self) -> Block {
-        match self.descend(Self::braced_block) {
-            Some(block) => block,
-            None => {
-                let span = self.tokens[self.pos].span;
-                self.report_nesting_limit(span);
-                self.skipped_block()
-            }
-        }
+        self.descend(Self::braced_block)
+            .unwrap_or_else(|| self.skipped_block())
     }
 
     /// Parse `{ statement* }` at the `{` under the cursor. Runs one level inside
@@ -1274,14 +1251,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
             self.report_missing_block(anchor);
             None
         } else {
-            match self.descend(Self::statement) {
-                Some(statement) => statement,
-                None => {
-                    let span = self.tokens[self.pos].span;
-                    self.report_nesting_limit(span);
-                    None
-                }
-            }
+            self.descend(Self::statement).flatten()
         };
         let comments = std::mem::replace(&mut self.comments, outer);
         let span = statement.as_ref().map_or(anchor, Statement::span);
