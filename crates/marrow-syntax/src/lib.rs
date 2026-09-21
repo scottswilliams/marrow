@@ -229,49 +229,38 @@ mod decl_parser_corpus {
             "const X: =\n",
             "const X: notatype = 5\n",
             "const 1: int = 5\n",
-            // resources, groups, indexes, keyed roots
-            "resource Book\n    required title: string\n    tags(pos: int): string\nstore ^books(id: int): Book\n",
-            "resource Tag\n    name: string\n",
-            "resource Book\n    title: string\n    notes(noteId: string)\n        text: string\nstore ^books: Book\n    index byShelf(shelf, id)\n    index uniq(id) unique\n",
-            "resource Book\n    title: string\nstore ^books(): Book\n",
-            "resource Book\nstore ^books: Book\n",
-            "resource\n    title: string\n",
-            "resource Book extra\n    title: string\n",
-            "resource Book\n    required missing\nstore ^books: Book\n",
-            "resource Book\n    name: string\n        nested: int\nstore ^books: Book\n",
-            // functions and parameters
-            "pub fn add(a: int, b: int): int\n    return a\n",
-            "fn run()\n    return\n",
-            "internal fn main()\n    return\n",
-            "private fn main()\n    return\n",
-            "fn f<T>(x: T)\n    return\n",
-            "fn f(x: int = 5)\n    return\n",
-            "fn main(value:)\n    return\n",
+            // resources and functions, with malformed headers and bodies
+            "resource Book {\n    required title: string\n    tags(pos: int): string\n}\nstore ^books(id: int): Book\n",
+            "resource Book {\n    title: string\n    notes(noteId: string) {\n        text: string\n    }\n}\nstore ^books: Book {\n    index byShelf(shelf, id)\n    index uniq(id) unique\n}\n",
+            "resource {\n    title: string\n}\n",
+            "resource Book extra {\n    title: string\n}\n",
+            "resource Book {\n    required missing\n}\nstore ^books: Book\n",
+            "pub fn add(a: int, b: int): int {\n    return a\n}\n",
+            "internal fn main() {\n    return\n}\n",
+            "fn f<T>(x: T) {\n    return\n}\n",
+            "fn f(x: int = 5) {\n    return\n}\n",
+            "fn main(value:) {\n    return\n}\n",
             "pub fn empty()\n",
-            "fn weird(value:)\n    return\n",
             // top-level dispatch errors and stray indentation
             "type Foo = int\n",
             "wat\n",
             "    indented\n",
             // `;;` lexes as an unexpected character; held here as malformed input a
             // reader may still type, against the determinism and no-panic properties.
-            "module app\n;; a retired doc-comment spelling\nfn main()\n    return\n",
-            ";; a retired doc-comment spelling\nresource Tag\n    name: string\n",
+            "module app\n;; a retired doc-comment spelling\nfn main() {\n    return\n}\n",
             // the comment spelling, in the same positions
             "module app\n// a comment\nfn main() {\n    return\n}\n",
             "// a leading comment\nresource Tag {\n    name: string\n}\n",
             // statement bodies that exercise StmtParser delegation
-            "fn main()\n    foo +\n",
-            "fn main()\n    const x: int\n",
-            "fn touch(id: int)\n    ^events(id).status = now\n",
-            "fn run()\n    log(level: 1, 2)\n",
-            "fn classify(n: int)\n    if n < 0\n        return\n    else if n > 0\n        return\n    else\n        return\n",
+            "fn main() {\n    foo +\n}\n",
+            "fn main() {\n    const x: int\n}\n",
+            "fn touch(id: int) {\n    ^events(id).status = now\n}\n",
+            "fn run() {\n    log(level: 1, 2)\n}\n",
+            "fn classify(n: int) {\n    if n < 0 {\n        return\n    } else if n > 0 {\n        return\n    } else {\n        return\n    }\n}\n",
             // interleaved blank lines and comments inside a resource body
-            "resource Book\n    ;; a field\n    required title: string\n\n    required author: string\nstore ^books: Book\n",
             "resource Book {\n    // a field\n    required title: string\n\n    required author: string\n}\nstore ^books: Book\n",
             // trailing blank lines inside a function body before the next decl
-            "fn a()\n    return\n\nfn b()\n    return\n",
-            "fn a()\n    return\n\n\npub fn b(x: int)\n    return x\n",
+            "fn a() {\n    return\n\n}\n\n\npub fn b(x: int) {\n    return x\n}\n",
             // empty and whitespace-only inputs
             "",
             "\n\n",
@@ -558,21 +547,20 @@ mod decl_parser_corpus {
     #[test]
     fn no_empty_operand_form_reports_a_line_or_column_zero_span() {
         for source in [
-            "fn f()\n    const x: int =\n",
-            "fn f()\n    var x: int =\n",
-            "fn f()\n    return 1 +\n",
-            "fn f()\n    throw\n",
-            "fn f()\n    delete\n",
-            "fn f()\n    x =\n",
-            "fn f()\n    = 5\n",
-            "fn f()\n    for\n        x\n",
-            "fn f()\n    for x in\n        x\n",
-            "fn f()\n    for x in 1..2 by\n        x\n",
-            "fn f()\n    if\n        x\n",
-            "fn f()\n    if const x =\n        x\n",
-            "fn f()\n    if true\n        x\n    else if\n        x\n",
-            "fn f()\n    while\n        x\n",
-            "fn f()\n    match\n        a\n            x\n",
+            "fn f() {\n    const x: int =\n}\n",
+            "fn f() {\n    var x: int =\n}\n",
+            "fn f() {\n    return 1 +\n}\n",
+            "fn f() {\n    delete\n}\n",
+            "fn f() {\n    x =\n}\n",
+            "fn f() {\n    = 5\n}\n",
+            "fn f() {\n    for {\n        x\n    }\n}\n",
+            "fn f() {\n    for x in {\n        x\n    }\n}\n",
+            "fn f() {\n    for x in 1..2 by {\n        x\n    }\n}\n",
+            "fn f() {\n    if {\n        x\n    }\n}\n",
+            "fn f() {\n    if const x = {\n        x\n    }\n}\n",
+            "fn f() {\n    if true {\n        x\n    } else if {\n        x\n    }\n}\n",
+            "fn f() {\n    while {\n        x\n    }\n}\n",
+            "fn f() {\n    match {\n        a => x\n    }\n}\n",
         ] {
             let ParsedSource { diagnostics, .. } = parse_source(source);
             assert!(
@@ -1141,11 +1129,13 @@ mod statement_recursion_depth {
     }
 
     /// A body of `levels` `if` statements, each the inline body of the previous one's
-    /// `else`. No brace appears anywhere in the nest.
+    /// `else`. Each then-block is an empty braced block whose descent closes before
+    /// the `else` is read, so the nest holds one frame per level and opens no brace on
+    /// the path that recurses.
     fn brace_free_else_chain(levels: usize) -> String {
         let mut source = String::from("module app\n\nfn main() {\n");
         for _ in 0..levels {
-            source.push_str("if a\nelse\n");
+            source.push_str("if a {\n} else\n");
         }
         source.push_str("return\n}\n");
         source

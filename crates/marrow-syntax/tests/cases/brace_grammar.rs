@@ -486,6 +486,63 @@ fn an_if_const_chain_with_a_trailing_and_never_anchors_at_zero() {
     );
 }
 
+/// A compound-statement header with no `{`, or a trailing clause with neither a block
+/// nor an inline statement, is a syntax error at the zero-width gap where the block
+/// would open: the next token's start, or the end of the clause's line when the body
+/// ends there. An empty block stands in for recovery so the statement after it still
+/// parses as a sibling.
+#[test]
+fn a_header_without_a_block_reports_the_gap_and_stands_an_empty_block() {
+    for (source, line, column) in [
+        ("module app\nfn f() {\n    if a\n    return\n}\n", 4, 5),
+        ("module app\nfn f() {\n    while a\n    return\n}\n", 4, 5),
+        ("module app\nfn f() {\n    for i in xs\n    return\n}\n", 4, 5),
+        ("module app\nfn f() {\n    transaction\n    return\n}\n", 4, 5),
+        ("module app\nfn f() {\n    if a {\n    } else if b\n    return\n}\n", 5, 5),
+        ("module app\nfn f() {\n    if a {\n    } else\n}\n", 4, 11),
+        ("module app\nfn f() {\n    match s {\n        dot =>\n    }\n}\n", 5, 5),
+        ("module app\nfn f() {\n    const x = y else\n}\n", 3, 21),
+        (
+            "module app\nfn f() {\n    for a in b at most 8 {\n    } on more\n}\n",
+            4,
+            14,
+        ),
+        (
+            "module app\nfn f() {\n    const p: int = checked a * b\n        on out_of_range\n}\n",
+            4,
+            24,
+        ),
+    ] {
+        let parsed = parse_bounded(source);
+        let diagnostics = parsed.diagnostics.complete();
+        assert_eq!(diagnostics.len(), 1, "{source:?}: {diagnostics:#?}");
+        let gap = &diagnostics[0];
+        assert_eq!(
+            gap.reason,
+            DiagnosticReason::Parser(ParseDiagnosticReason::Expected(ExpectedSyntax::Block)),
+            "{source:?}"
+        );
+        assert_eq!(gap.span.start_byte, gap.span.end_byte, "{source:?}: {gap:#?}");
+        assert_eq!((gap.span.line, gap.span.column), (line, column), "{source:?}");
+    }
+
+    let parsed = parse_bounded("module app\nfn f() {\n    if a\n    return\n}\n");
+    let Some(Declaration::Function(function)) = parsed.file.declarations.first() else {
+        panic!("the function still parses");
+    };
+    assert!(
+        matches!(
+            function.body.statements.as_ref(),
+            [
+                Statement::If { then_block, .. },
+                Statement::Return { .. }
+            ] if then_block.statements.is_empty()
+        ),
+        "{:#?}",
+        function.body.statements
+    );
+}
+
 /// The whole brace-grammar hostile corpus must never surface a diagnostic at the
 /// invalid line-0/column-0 default span.
 #[test]

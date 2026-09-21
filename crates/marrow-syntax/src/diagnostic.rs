@@ -535,6 +535,9 @@ impl ParseDiagnosticReason {
 pub enum ExpectedSyntax {
     AliasName,
     AliasType,
+    /// A compound-statement header or trailing clause with no `{ … }` block where the
+    /// grammar requires one, reported at the zero-width gap the block would open at.
+    Block,
     CloseBrace,
     CloseBracket,
     CloseParen,

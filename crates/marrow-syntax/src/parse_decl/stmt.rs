@@ -1156,8 +1156,9 @@ impl<'a, 'c> StmtParser<'a, 'c> {
 
     /// Parse the mandatory `{ … }` block following a compound-statement header whose
     /// keyword starts at `header_start`. A comment trailing the header moves into the
-    /// block as its first leading comment. A missing `{` yields an empty block; the
-    /// missing brace is a formatter/checker concern.
+    /// block as its first leading comment. A missing `{` is reported at the gap the
+    /// block would open at, and an empty block stands there so the statements that
+    /// follow still parse as siblings.
     fn block_body(&mut self, header_start: usize) -> Block {
         let leading = self.detach_header_comment(header_start);
         if matches!(self.peek(), Some(TokenKind::LeftBrace)) {
@@ -1167,37 +1168,49 @@ impl<'a, 'c> StmtParser<'a, 'c> {
             }
             block
         } else {
-            // An empty body occupies no source, so anchor a zero-width span where a
-            // body would start rather than adopting a whole token's span: otherwise the
-            // enclosing statement's span extends over a following sibling comment or
-            // statement and mis-claims it, dropping that sibling when the block is
-            // formatted. The point is the next token's start, or the end of the last
-            // consumed token at end of input.
-            let point = match self.tokens.get(self.pos) {
-                Some(token) => SourceSpan {
-                    end_byte: token.span.start_byte,
-                    ..token.span
-                },
-                None => {
-                    let end = self
-                        .tokens
-                        .get(self.pos.saturating_sub(1))
-                        .map(|token| token.span)
-                        .unwrap_or_default();
-                    SourceSpan {
-                        start_byte: end.end_byte,
-                        end_byte: end.end_byte,
-                        line: end.line,
-                        column: end.column,
-                    }
-                }
-            };
+            let point = self.gap();
+            self.report_missing_block(point);
             Block {
                 statements: Box::new([]),
                 comments: leading.into_iter().collect(),
                 span: point,
             }
         }
+    }
+
+    /// The zero-width span where a block would open: the next token's start, or the
+    /// end of the last consumed token at end of input. An empty body occupies no
+    /// source, so it is anchored here rather than on a whole token: otherwise the
+    /// enclosing statement's span would extend over a following sibling comment or
+    /// statement and mis-claim it, dropping that sibling when the block is formatted.
+    fn gap(&self) -> SourceSpan {
+        match self.tokens.get(self.pos) {
+            Some(token) => SourceSpan {
+                end_byte: token.span.start_byte,
+                ..token.span
+            },
+            None => {
+                let end = self
+                    .tokens
+                    .get(self.pos.saturating_sub(1))
+                    .map(|token| token.span)
+                    .unwrap_or_default();
+                SourceSpan {
+                    start_byte: end.end_byte,
+                    end_byte: end.end_byte,
+                    line: end.line,
+                    column: end.column,
+                }
+            }
+        }
+    }
+
+    fn report_missing_block(&mut self, gap: SourceSpan) {
+        self.error_span_reason(
+            gap,
+            ParseDiagnosticReason::Expected(ExpectedSyntax::Block),
+            "expected a `{ … }` block",
+        );
     }
 
     /// Parse `{ statement* }`, tolerating a missing trailing `}` at the end of the
@@ -1258,7 +1271,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
 
     /// Parse a trailing-clause body: a `{ … }` block, or a single inline statement
     /// as a one-statement block (the inline diverging form of `else`, `on more`, a
-    /// checked arm, or a match arm). Inline-vs-block enforcement is the formatter's.
+    /// checked arm, or a match arm), which the formatter writes as a block.
     fn parse_clause_body(&mut self) -> Block {
         // The body may cuddle the clause keyword or sit on the next line.
         self.skip_newlines();
@@ -1269,9 +1282,9 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         }
     }
 
-    /// Parse one inline statement as a one-statement block. A missing statement yields
-    /// an empty block anchored at the cursor, so the enclosing statement does not
-    /// over-claim a sibling.
+    /// Parse one inline statement as a one-statement block. A clause with neither a
+    /// block nor a statement is reported at the gap, and an empty block anchored there
+    /// stands in so the enclosing statement does not over-claim a sibling.
     ///
     /// This is the descent that opens no brace, so the frame bound is the only thing
     /// standing between it and the native stack. Past the limit the clause is left
@@ -1279,15 +1292,13 @@ impl<'a, 'c> StmtParser<'a, 'c> {
     /// structured as siblings of the enclosing body rather than its descendants: the
     /// parse stays total and terminating while the tree stays bounded.
     fn inline_statement_block(&mut self) -> Block {
-        let anchor = self.tokens.get(self.pos).map(|token| SourceSpan {
-            end_byte: token.span.start_byte,
-            ..token.span
-        });
+        let anchor = self.gap();
         let outer = std::mem::take(&mut self.comments);
         let statement = if matches!(
             self.peek(),
             None | Some(TokenKind::Newline | TokenKind::RightBrace)
         ) {
+            self.report_missing_block(anchor);
             None
         } else {
             match self.descend(Self::statement) {
@@ -1300,11 +1311,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
             }
         };
         let comments = std::mem::replace(&mut self.comments, outer);
-        let span = statement
-            .as_ref()
-            .map(Statement::span)
-            .or(anchor)
-            .unwrap_or_default();
+        let span = statement.as_ref().map_or(anchor, Statement::span);
         Block {
             statements: statement.into_iter().collect(),
             comments,
