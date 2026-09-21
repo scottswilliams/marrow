@@ -181,20 +181,10 @@ impl AnalysisFactCollector {
 }
 
 /// One lowered body's editor facts, held outside every ledger a consumer can reach until
-/// the transaction that produced them has committed or run its inverse.
-///
-/// The **charge** is live: every fact composes over the ledger's settled totals at the
-/// push that produced it, so a body whose facts cross the snapshot ceiling stops
-/// rendering displays inside itself rather than after it. The ledger is borrowed shared
-/// for the body's whole extent, so a push and release compose over the same totals.
-///
-/// The **retain** is body-local: the rows and the charge they made live here, and the
-/// private [`Self::finish`] is reachable only through the producer-owning aggregate.
-///
-/// The **inverse** is this value's drop, total because it is structural rather than
-/// arithmetic: the ledger was never touched, so undoing the charge cannot fail.
-/// Subtracting a charge back out could not be total — a crossing discards the ledger's
-/// whole retained payload, and no subtraction re-materializes it.
+/// the transaction that produced them has committed or run its inverse. Each fact
+/// charges live over the ledger's settled totals, so a body that crosses the snapshot
+/// ceiling stops rendering inside itself; the rows are retained here; and the inverse is
+/// this value's drop, total because the ledger was never touched.
 struct StagedFacts(Bounded<FactCeiling>);
 
 /// One settled body's facts on their way into the ledger. Produced only by the private

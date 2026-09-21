@@ -1020,21 +1020,10 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
         .filter(|module| module.parse == ParseStatus::Clean)
         .collect();
 
-    // Project each cleanly-parsed module's declaration hierarchy from its parse tree — a
-    // pure analysis byproduct of the one traversal, orthogonal to the semantic outcome
-    // and ignored by the production compile's projection. A broken module contributes no
-    // outline (a `document_symbols` query for it is syntax-unavailable).
-    //
-    // A module whose outline crosses a per-file count or depth bound is recorded here and
-    // skipped: that file's outline becomes an unavailable fact, so nothing partial is
-    // retained for it, while every other module still contributes its complete outline and
-    // every other query for that same file still answers. The bound is per file and its
-    // consequence is per file; it refuses no other fact and no snapshot.
-    //
-    // Deliberately no early-out on a crossed global ceiling, unlike the hover family: the
-    // projection must visit every module to record each per-file crossing, and charging an
-    // already-built outline allocates nothing. Each outline is dropped as it is charged,
-    // so the live peak is one module's outline either way.
+    // Each clean module's declaration outline is an analysis byproduct the production
+    // projection ignores. A per-file count or depth bound refuses only that file's
+    // outline, so every module is visited even past a crossed global ceiling: charging a
+    // built outline allocates nothing, and each is dropped as it is charged.
     let mut symbol_bounded_files: Vec<FileRef> = Vec::new();
     for module in &clean {
         match crate::analysis::project_document_symbols(&module.ast.declarations) {
@@ -2426,24 +2415,12 @@ enum TxnState {
     AfterCommit,
 }
 
-/// Report the transaction-ownership lattice laws at check time, at their source spans.
-///
-/// The ownership contract has three remaining laws the verifier reconstructs from the
-/// image (image.flow) and this pass promotes to source-facing `check.*` diagnostics:
-///
-/// - the owner lattice — a mutating export owns exactly one `transaction` region,
-///   begun at most once and committed on every normal exit after begin, with no durable operation after the
-///   commit and no empty (no-op) region;
-/// - a transaction owner is not called by another function;
-/// - a `transaction` marker sits only in the export that owns it.
-///
-/// The pass walks each function's lowered tape — the same instruction sequence the
-/// verifier reconstructs from the image. The verifier separately checks agreement
-/// at control-flow joins. The requires-ambient-transaction pass runs first and already
-/// covers a durable mutation outside any region, so this pass need not restate it.
-/// Run only once the requires-ambient-transaction pass has reported nothing: otherwise
-/// a single unwrapped mutation would cascade into a second ownership report. `acyclic`
-/// carries the shared callee-before-caller order for the two ownership relations.
+/// Report the transaction-ownership laws the verifier reconstructs from the image, at
+/// their source spans: a mutating export owns exactly one region, begun once, committed
+/// on every normal exit, with no durable operation after the commit and no empty region;
+/// an owner is not called by another function; and a `transaction` marker sits only in
+/// the export that owns it. Runs only once the requires-ambient-transaction pass has
+/// reported nothing, so one unwrapped mutation does not cascade into a second report.
 fn reject_transaction_ownership(
     lowered: &[Option<LoweredBody<'_>>],
     acyclic: &AcyclicCallOrder,

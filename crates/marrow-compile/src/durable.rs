@@ -531,23 +531,12 @@ impl DurableRegistry {
     }
 
     /// What the resource `resource` declares as a durable Product, reached through the
-    /// store declarations that bind it.
-    ///
-    /// The owner of a branch constructor `Resource.branch(…)` and of the branch steer on
-    /// a materialized entry value. Both are questions about what the Product declares, so
-    /// any admitted store over the resource answers them: the branch tree they carry is
-    /// the resource's own. A store this project declared and the compiler refused answers
-    /// `Refused` only when no sibling store over the same resource was admitted — one
-    /// store's cause must not be sent to a reader whose Product is fine.
-    ///
-    /// One admitted store is the whole `Declared` answer. Nothing here consults the
-    /// executable list: the loop over the admitted names is a drift guard on the projection
-    /// table, not the source of the verdict.
-    ///
-    /// `Absent` means *no store binds this resource*, which only the missing projection
-    /// entry establishes. A projection entry naming a placement the ledger does not know
-    /// is the two having drifted — they are written in the same statement — and is
-    /// reported rather than answered.
+    /// store declarations that bind it: any admitted store answers `Declared`, since the
+    /// branch tree it carries is the resource's own; `Refused` only when every store over
+    /// the resource was refused, so one store's cause never reaches a reader whose
+    /// Product is fine; and `Absent` only when no store binds the resource. A projection
+    /// entry naming a placement the ledger does not know is drift, since the two are
+    /// written in one statement.
     pub(crate) fn product(
         &self,
         resource: &ScopedName,
@@ -1480,24 +1469,10 @@ fn build_one(
         key_ids,
     } = resolve_store_anchors(&mut resolver, store, row, file, &key_columns);
 
-    // The resource's member tree, in canonical order: its top-level fields
-    // (aligned with the materialized record), then its static `group`
-    // namespaces, then its keyed `branch` placements — each group and branch
-    // recursively holding its own members. A top-level field's value shape is
-    // drawn from the closed acyclic durable value set (a nominal scalar, a dense
-    // struct, a closed enum, or an `Option` of one), the field anchoring the
-    // ledger id while nested product leaves are shape bytes and each durable-
-    // reachable enum contributes its own sum/member identities. `has_extras`
-    // records whether the resource declares any group or branch.
-    //
-    // The graph is built once, at this Product's first root in canonical store-traversal
-    // order: a later root over the same Product references the declaration the draft
-    // already holds, resolving no anchor a second time and minting no second entry record
-    // type for its nested branches.
-    //
-    // The declaration is only *admitted* into the draft once this store's identity is
-    // known complete (below). A graph with an unresolved anchor carries placeholder ids,
-    // including a placeholder Product identity, so admitting it would let one refused
+    // The member graph is built once, at the Product's first root in canonical
+    // store-traversal order; a later root references the declaration the draft holds.
+    // It is admitted only once this store's identity is known complete: a graph with an
+    // unresolved anchor carries placeholder ids, so admitting it would let one refused
     // store's declaration answer for every other refused store's resource.
     let built = match draft.product_members(product) {
         Some(members) => Some(ProductDeclarationSource::Held(members)),
@@ -2664,20 +2639,13 @@ fn request_eager_site(
     Ok(())
 }
 
-/// Emit the eager (bounded, per-node) operation sites of the root's member graph and
-/// capture what the flat executable lowerer needs: each root-level group's canonical path
-/// (in declaration order), each top-level branch's path and record (recursively), and the
-/// canonical paths of the root's direct fields. Field-leaf sites are not emitted here —
-/// the lowerer binds and allocates one lazily on first reference — so a wide resource's
-/// site table scales with referenced fields, not declared width. A group is a namespace
-/// whose leaves are addressed through its whole-group site, so no per-leaf site is emitted.
-/// The eager sites are emitted pre-order, a placement or group node before its members,
-/// mirroring [`marrow_image::DurableContractView::semantic_nodes`] so every emitted
-/// site resolves against the verifier's independently reconstructed node set.
-///
-/// A [`ProductOccurrenceMultiplicity::Shared`] Product emits none of them: its member nodes
-/// are minted on first reference, like a field leaf. A descriptor holds selectors, never
-/// site ids, so the lowerer resolves the same place either way.
+/// Emit the eager per-node sites of the root's member graph — one per group and branch,
+/// pre-order as [`marrow_image::DurableContractView::semantic_nodes`] reconstructs
+/// them — and capture the canonical paths the executable lowerer addresses. Field
+/// leaves get no eager site: the lowerer binds one on first reference, so the site
+/// table scales with referenced fields, not declared width. A
+/// [`ProductOccurrenceMultiplicity::Shared`] Product emits none; its descriptors hold
+/// selectors, never site ids, so the lowerer resolves the same place either way.
 fn emit_root_member_sites(
     draft: &mut DraftTxn<'_>,
     occurrence: &RootOccurrenceSelector,

@@ -493,24 +493,13 @@ impl AnalysisSnapshot {
         }
     }
 
-    /// The completion classification and candidate namespace at a byte offset in a file.
-    ///
-    /// The position class is derived purely positionally from the checker's resolution
-    /// model over a parse of this file's own retained bytes — never from the trigger
-    /// character, document text, or a token scan. The candidate set is the complete
-    /// in-scope namespace for the class, as [`PositionClass`] enumerates it.
-    ///
-    /// The set is never prefix-filtered, ranked, or truncated: an over-cap namespace is a
-    /// query-local [`CompletionOutcome::Refused`]. The parse and the re-resolution over
-    /// it are per query and transient, and the traversal is strictly read-only — it never
-    /// drives the compile-path lowerer or resolver, so a partial or malformed base yields
-    /// an empty classification and leaks no diagnostic into the snapshot.
-    ///
-    /// An unknown file or an out-of-range offset is a typed [`QueryError`]. A file that
-    /// produced no parse tree (a non-UTF-8 file) is [`Unavailability::Syntax`]. A broken
-    /// file still classifies: a position over a recovered incomplete form (`base.`,
-    /// `Enum::`) yields its class and candidates. A position with no class (a literal, a
-    /// comment, whitespace outside any recovered node) is `Absent`.
+    /// The completion classification and candidate namespace at a byte offset in a file:
+    /// the [`PositionClass`] a transient, read-only parse of the file's retained bytes
+    /// yields, and the complete in-scope namespace for it — never prefix-filtered,
+    /// ranked, or truncated, so an over-cap namespace is [`CompletionOutcome::Refused`].
+    /// An unknown file or offset is a [`QueryError`]; an undecodable file is
+    /// [`Unavailability::Syntax`]; a broken file still classifies its recovered forms;
+    /// a position with no class is `Absent`.
     pub fn completions(
         &self,
         file: &ProjectFile,
