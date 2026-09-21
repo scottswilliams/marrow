@@ -264,7 +264,7 @@ impl OwnerSeam {
     const NONE: Self = Self(None);
 
     #[cfg(test)]
-    pub(crate) fn armed(observer: impl OwnerObserver + 'static) -> Self {
+    pub(crate) fn armed(observer: impl Fn(&Path, OwnerStep) + 'static) -> Self {
         Self(Some(Rc::new(observer)))
     }
 
