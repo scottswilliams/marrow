@@ -491,7 +491,7 @@ fn anchor_and_sites(draft: &ImageDraft) -> Result<(), ImageBuildError> {
             ReferenceKind::VacantFunction,
         ))?;
         for instr in &function.code {
-            if let Some(site) = instr.site_operand()
+            if let Some(site) = instr.site()
                 && !draft.site_ref_is_live(site)
             {
                 return Err(ImageBuildError::InvalidReference(
@@ -876,7 +876,7 @@ fn test_entry_relations(
         let has_direct_durable = function
             .code
             .iter()
-            .any(|instr| instr.site_operand().is_some());
+            .any(|instr| instr.site().is_some());
         if has_direct_durable {
             return Err(ImageBuildError::InvalidReference(ReferenceKind::TestTable));
         }

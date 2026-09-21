@@ -1184,27 +1184,7 @@ fn map_kv(ctx: &Ctx, value: VType) -> Result<(CollTypeId, ImageType, ImageType),
 
 /// The site operand of a durable op, or `None` for a transaction marker.
 pub(super) fn durable_site(instr: &SealedInstr) -> Option<u16> {
-    match instr {
-        SealedInstr::DurExists(site)
-        | SealedInstr::DurFamilyExists(site)
-        | SealedInstr::DurReadField(site)
-        | SealedInstr::DurReadFieldPresent { site, .. }
-        | SealedInstr::DurReadEntry(site)
-        | SealedInstr::DurSetField { site, .. }
-        | SealedInstr::DurCreateEntry(site)
-        | SealedInstr::DurReplaceEntry(site)
-        | SealedInstr::DurEraseField(site)
-        | SealedInstr::DurEraseEntry(site)
-        | SealedInstr::DurReadGroup(site)
-        | SealedInstr::DurReadGroupPresent { site, .. }
-        | SealedInstr::DurReplaceGroup { site, .. }
-        | SealedInstr::DurEraseGroup(site)
-        | SealedInstr::DurIterateBounded { site, .. }
-        | SealedInstr::DurIndexScan { site, .. }
-        | SealedInstr::DurIndexLookup(site)
-        | SealedInstr::DurIndexExists(site) => Some(*site),
-        _ => None,
-    }
+    instr.site().copied()
 }
 
 /// Whether `instr` stages a durable mutation (a write or erase).

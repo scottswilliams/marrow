@@ -1418,7 +1418,7 @@ impl ImageDraft {
 
     fn validate_function(&self, def: &FunctionDef) -> Result<(), DraftStateError> {
         for instr in &def.code {
-            if let Some(site) = instr.site_operand() {
+            if let Some(site) = instr.site() {
                 self.validate_site_ref(site)?;
             }
         }

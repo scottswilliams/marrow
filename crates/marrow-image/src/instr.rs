@@ -198,6 +198,9 @@ pub trait Operands {
     type Root: std::fmt::Debug + Clone + PartialEq + Eq;
     /// A durable operation site.
     type Site: std::fmt::Debug + Clone + PartialEq + Eq;
+
+    /// The instruction index a transfer target names within its function.
+    fn index_of(jump: &Self::Jump) -> usize;
 }
 
 /// The compiler's spelling: typed draft ids the encoder resolves, and site
@@ -214,6 +217,10 @@ impl Operands for Draft {
     type Coll = CollTypeId;
     type Root = RootId;
     type Site = PlannedSiteRef;
+
+    fn index_of(jump: &u32) -> usize {
+        *jump as usize
+    }
 }
 
 /// The verifier's spelling: wire ordinals it bounds-checked against the image's own
@@ -230,6 +237,10 @@ impl Operands for Sealed {
     type Coll = u16;
     type Root = u16;
     type Site = u16;
+
+    fn index_of(jump: &usize) -> usize {
+        *jump
+    }
 }
 
 /// One instruction of the v0 tape, in the operand spelling `R` states.
@@ -545,7 +556,7 @@ pub enum Instruction<R: Operands> {
     MapValueAt,
 }
 
-/// What an instruction does to durable state: the coarse partition, derived from
+/// What an instruction does to durable state: the coarse partition of
 /// [`Instruction::operation_class`].
 ///
 /// The compiler's requires-ambient-transaction check and its direct-durable-operation
@@ -562,140 +573,195 @@ pub enum OpClass {
     Pure,
 }
 
+/// One instruction's frozen wire facts: its opcode byte, its immediate-operand width,
+/// and the durable authority atom it stages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OpSpec {
+    pub(crate) opcode: u8,
+    pub(crate) operand_len: usize,
+    pub(crate) class: Option<OperationClass>,
+}
+
+const fn pure(opcode: u8, operand_len: usize) -> OpSpec {
+    OpSpec {
+        opcode,
+        operand_len,
+        class: None,
+    }
+}
+
+const fn durable(opcode: u8, operand_len: usize, class: OperationClass) -> OpSpec {
+    OpSpec {
+        opcode,
+        operand_len,
+        class: Some(class),
+    }
+}
+
 impl<R: Operands> Instruction<R> {
+    /// The one per-opcode table: the opcode byte, the immediate-operand width, and the
+    /// durable authority atom the instruction stages — `None` for an instruction naming
+    /// no `^` place, the transaction markers included.
+    ///
+    /// The durable arms are the closed projection of the durable operation algebra onto
+    /// authority atoms: `create`, `replace` and the field set are writes; the erases are
+    /// erases; presence is a probe; field, entry and group reads are reads; the bounded
+    /// traversal and every managed-index access are ordered index reads — a unique-index
+    /// presence probe reads the same index cell family as the lookup and reveals strictly
+    /// less, so it demands the same authority rather than a novel atom.
+    ///
+    /// Operand widths: a table reference, local slot, or key-column count is a big-endian
+    /// `u16`; a transfer target a `u32` byte offset; a keyed sparse access a `u16` site, a
+    /// `u16` slot count and one `u16` per slot; a bounded traversal a `u16` site, a `u32`
+    /// bound, a one-byte `from` flag and a `u16` COLLTYPES index; `VacantLoad` one full
+    /// optional `ImageType`; `RangeGuard` two `i64` bounds.
+    pub(crate) fn spec(&self) -> OpSpec {
+        use OperationClass::{Erase, IndexRead, Presence, Read, Write};
+        match self {
+            Self::ConstLoad(_) => pure(OP_CONST_LOAD, 2),
+            Self::LocalGet(_) => pure(OP_LOCAL_GET, 2),
+            Self::LocalSet(_) => pure(OP_LOCAL_SET, 2),
+            Self::Pop => pure(OP_POP, 0),
+            Self::Return => pure(OP_RETURN, 0),
+            Self::Call(_) => pure(OP_CALL, 2),
+            Self::Jump(_) => pure(OP_JUMP, 4),
+            Self::JumpIfFalse(_) => pure(OP_JUMP_IF_FALSE, 4),
+            Self::BranchPresent(_) => pure(OP_BRANCH_PRESENT, 4),
+            Self::Unreachable(_) => pure(OP_UNREACHABLE, 2),
+            Self::Todo(_) => pure(OP_TODO, 2),
+            Self::Assert => pure(OP_ASSERT, 0),
+            Self::IntAdd => pure(OP_INT_ADD, 0),
+            Self::IntSub => pure(OP_INT_SUB, 0),
+            Self::IntMul => pure(OP_INT_MUL, 0),
+            Self::IntRem => pure(OP_INT_REM, 0),
+            Self::IntDiv => pure(OP_INT_DIV, 0),
+            Self::IntNeg => pure(OP_INT_NEG, 0),
+            Self::BoolNot => pure(OP_BOOL_NOT, 0),
+            Self::IntLt => pure(OP_INT_LT, 0),
+            Self::IntLe => pure(OP_INT_LE, 0),
+            Self::IntGt => pure(OP_INT_GT, 0),
+            Self::IntGe => pure(OP_INT_GE, 0),
+            Self::EqInt => pure(OP_EQ_INT, 0),
+            Self::EqBool => pure(OP_EQ_BOOL, 0),
+            Self::EqText => pure(OP_EQ_TEXT, 0),
+            Self::TextConcat => pure(OP_TEXT_CONCAT, 0),
+            Self::TextLt => pure(OP_TEXT_LT, 0),
+            Self::TextLe => pure(OP_TEXT_LE, 0),
+            Self::TextGt => pure(OP_TEXT_GT, 0),
+            Self::TextGe => pure(OP_TEXT_GE, 0),
+            Self::EqBytes => pure(OP_EQ_BYTES, 0),
+            Self::BytesLt => pure(OP_BYTES_LT, 0),
+            Self::BytesLe => pure(OP_BYTES_LE, 0),
+            Self::BytesGt => pure(OP_BYTES_GT, 0),
+            Self::BytesGe => pure(OP_BYTES_GE, 0),
+            Self::ConvString => pure(OP_CONV_STRING, 0),
+            Self::ConvBytesText => pure(OP_CONV_BYTES_TEXT, 0),
+            Self::TextIsEmpty => pure(OP_TEXT_IS_EMPTY, 0),
+            Self::TextContains => pure(OP_TEXT_CONTAINS, 0),
+            Self::TextTrim => pure(OP_TEXT_TRIM, 0),
+            Self::TextSplit(_) => pure(OP_TEXT_SPLIT, 2),
+            Self::TextLines(_) => pure(OP_TEXT_LINES, 2),
+            Self::TextJoin => pure(OP_TEXT_JOIN, 0),
+            Self::EqDate => pure(OP_EQ_DATE, 0),
+            Self::DateLt => pure(OP_DATE_LT, 0),
+            Self::DateLe => pure(OP_DATE_LE, 0),
+            Self::DateGt => pure(OP_DATE_GT, 0),
+            Self::DateGe => pure(OP_DATE_GE, 0),
+            Self::EqInstant => pure(OP_EQ_INSTANT, 0),
+            Self::InstantLt => pure(OP_INSTANT_LT, 0),
+            Self::InstantLe => pure(OP_INSTANT_LE, 0),
+            Self::InstantGt => pure(OP_INSTANT_GT, 0),
+            Self::InstantGe => pure(OP_INSTANT_GE, 0),
+            Self::EqDuration => pure(OP_EQ_DURATION, 0),
+            Self::DurationLt => pure(OP_DURATION_LT, 0),
+            Self::DurationLe => pure(OP_DURATION_LE, 0),
+            Self::DurationGt => pure(OP_DURATION_GT, 0),
+            Self::DurationGe => pure(OP_DURATION_GE, 0),
+            Self::DateAddDays => pure(OP_DATE_ADD_DAYS, 0),
+            Self::DateDaysBetween => pure(OP_DATE_DAYS_BETWEEN, 0),
+            Self::DurationAdd => pure(OP_DURATION_ADD, 0),
+            Self::DurationSub => pure(OP_DURATION_SUB, 0),
+            Self::InstantAddDuration => pure(OP_INSTANT_ADD_DURATION, 0),
+            Self::InstantSubDuration => pure(OP_INSTANT_SUB_DURATION, 0),
+            Self::IntAddChecked(_) => pure(OP_INT_ADD_CHECKED, 4),
+            Self::IntSubChecked(_) => pure(OP_INT_SUB_CHECKED, 4),
+            Self::IntMulChecked(_) => pure(OP_INT_MUL_CHECKED, 4),
+            Self::IntNegChecked(_) => pure(OP_INT_NEG_CHECKED, 4),
+            Self::IntDivChecked(_) => pure(OP_INT_DIV_CHECKED, 4),
+            Self::IntRemChecked(_) => pure(OP_INT_REM_CHECKED, 4),
+            Self::RangeGuard { .. } => pure(OP_RANGE_GUARD, 16),
+            Self::RecordNew(_) => pure(OP_RECORD_NEW, 2),
+            Self::FieldGet(_) => pure(OP_FIELD_GET, 2),
+            Self::FieldSet(_) => pure(OP_FIELD_SET, 2),
+            Self::FieldUnset(_) => pure(OP_FIELD_UNSET, 2),
+            Self::SomeWrap => pure(OP_SOME_WRAP, 0),
+            Self::VacantLoad(ty) => pure(OP_VACANT_LOAD, ty.encoded_len()),
+            Self::EnumConstruct { .. } => pure(OP_ENUM_CONSTRUCT, 4),
+            Self::EnumTag => pure(OP_ENUM_TAG, 0),
+            Self::EnumPayloadGet { .. } => pure(OP_ENUM_PAYLOAD_GET, 4),
+            Self::EqEnum => pure(OP_EQ_ENUM, 0),
+            Self::EqId => pure(OP_EQ_ID, 0),
+            Self::MakeIdentity { .. } => pure(OP_MAKE_IDENTITY, 4),
+            Self::IdentityKeyPath(_) => pure(OP_IDENTITY_KEY_PATH, 2),
+            Self::DurExists(_) => durable(OP_DUR_EXISTS, 2, Presence),
+            Self::DurFamilyExists(_) => durable(OP_DUR_FAMILY_EXISTS, 2, Presence),
+            Self::DurReadField(_) => durable(OP_DUR_READ_FIELD, 2, Read),
+            Self::DurReadFieldPresent { key_slots, .. } => {
+                durable(OP_DUR_READ_FIELD_PRESENT, 4 + 2 * key_slots.len(), Read)
+            }
+            Self::DurReadEntry(_) => durable(OP_DUR_READ_ENTRY, 2, Read),
+            Self::DurSetField { key_slots, .. } => {
+                durable(OP_DUR_SET_FIELD, 4 + 2 * key_slots.len(), Write)
+            }
+            Self::DurCreateEntry(_) => durable(OP_DUR_CREATE_ENTRY, 2, Write),
+            Self::DurReplaceEntry(_) => durable(OP_DUR_REPLACE_ENTRY, 2, Write),
+            Self::DurEraseField(_) => durable(OP_DUR_ERASE_FIELD, 2, Erase),
+            Self::DurEraseEntry(_) => durable(OP_DUR_ERASE_ENTRY, 2, Erase),
+            Self::DurReadGroup(_) => durable(OP_DUR_READ_GROUP, 2, Read),
+            Self::DurReadGroupPresent { key_slots, .. } => {
+                durable(OP_DUR_READ_GROUP_PRESENT, 4 + 2 * key_slots.len(), Read)
+            }
+            Self::DurReplaceGroup { key_slots, .. } => {
+                durable(OP_DUR_REPLACE_GROUP, 4 + 2 * key_slots.len(), Write)
+            }
+            Self::DurEraseGroup(_) => durable(OP_DUR_ERASE_GROUP, 2, Erase),
+            Self::DurIterateBounded { .. } => durable(OP_DUR_ITERATE_BOUNDED, 9, IndexRead),
+            Self::TxnBegin => pure(OP_TXN_BEGIN, 0),
+            Self::TxnCommit => pure(OP_TXN_COMMIT, 0),
+            Self::DurIndexScan { .. } => durable(OP_DUR_INDEX_SCAN, 9, IndexRead),
+            Self::DurIndexLookup(_) => durable(OP_DUR_INDEX_LOOKUP, 2, IndexRead),
+            Self::DurIndexExists(_) => durable(OP_DUR_INDEX_EXISTS, 2, IndexRead),
+            Self::ListNew(_) => pure(OP_LIST_NEW, 2),
+            Self::ListAppend => pure(OP_LIST_APPEND, 0),
+            Self::ListLen => pure(OP_LIST_LEN, 0),
+            Self::ListGet => pure(OP_LIST_GET, 0),
+            Self::ListIndex => pure(OP_LIST_INDEX, 0),
+            Self::MapNew(_) => pure(OP_MAP_NEW, 2),
+            Self::MapInsert => pure(OP_MAP_INSERT, 0),
+            Self::MapRemove => pure(OP_MAP_REMOVE, 0),
+            Self::MapGet => pure(OP_MAP_GET, 0),
+            Self::MapLen => pure(OP_MAP_LEN, 0),
+            Self::MapKeyAt => pure(OP_MAP_KEY_AT, 0),
+            Self::MapValueAt => pure(OP_MAP_VALUE_AT, 0),
+        }
+    }
+
+    /// The opcode byte for this instruction.
+    pub fn opcode(&self) -> u8 {
+        self.spec().opcode
+    }
+
+    /// This instruction's exact encoded width (opcode plus operands) in the v0 code
+    /// tape. Lowering reads it before retaining an instruction, so the per-function byte
+    /// limit is enforced at the source construct that would cross it.
+    pub fn encoded_len(&self) -> usize {
+        1 + self.spec().operand_len
+    }
+
     /// The durable authority atom this instruction stages, or `None` when it names no
     /// `^` place.
-    ///
-    /// The sole owner of the durable opcode partition, and the closed projection of
-    /// the durable operation algebra onto authority atoms: `create`, `replace` and
-    /// the field set are writes; the two erases are erases; presence is a probe;
-    /// field, entry and group reads are reads; the bounded traversal and every
-    /// managed-index access are ordered index reads — a unique-index presence probe
-    /// reads the same index cell family as the lookup and reveals strictly less, so
-    /// it demands the same authority rather than a novel atom. Transaction markers
-    /// open and close the region but stage no access.
-    ///
-    /// The match is exhaustive with no `_` fallthrough — the pure complement is
-    /// listed rather than elided — so a new opcode fails to compile until it is
-    /// classified, welding the partition to the instruction set.
     pub fn operation_class(&self) -> Option<OperationClass> {
-        match self {
-            Self::DurExists(_) | Self::DurFamilyExists(_) => Some(OperationClass::Presence),
-            Self::DurReadField(_)
-            | Self::DurReadFieldPresent { .. }
-            | Self::DurReadEntry(_)
-            | Self::DurReadGroup(_)
-            | Self::DurReadGroupPresent { .. } => Some(OperationClass::Read),
-            Self::DurSetField { .. }
-            | Self::DurCreateEntry(_)
-            | Self::DurReplaceEntry(_)
-            | Self::DurReplaceGroup { .. } => Some(OperationClass::Write),
-            Self::DurEraseField(_) | Self::DurEraseEntry(_) | Self::DurEraseGroup(_) => {
-                Some(OperationClass::Erase)
-            }
-            Self::DurIterateBounded { .. }
-            | Self::DurIndexScan { .. }
-            | Self::DurIndexLookup(_)
-            | Self::DurIndexExists(_) => Some(OperationClass::IndexRead),
-            Self::TxnBegin | Self::TxnCommit => None,
-            Self::ConstLoad(_)
-            | Self::LocalGet(_)
-            | Self::LocalSet(_)
-            | Self::Pop
-            | Self::Return
-            | Self::Call(_)
-            | Self::Jump(_)
-            | Self::JumpIfFalse(_)
-            | Self::BranchPresent(_)
-            | Self::Unreachable(_)
-            | Self::Todo(_)
-            | Self::Assert
-            | Self::IntAdd
-            | Self::IntSub
-            | Self::IntMul
-            | Self::IntRem
-            | Self::IntDiv
-            | Self::IntNeg
-            | Self::BoolNot
-            | Self::IntLt
-            | Self::IntLe
-            | Self::IntGt
-            | Self::IntGe
-            | Self::EqInt
-            | Self::EqBool
-            | Self::EqText
-            | Self::TextConcat
-            | Self::TextLt
-            | Self::TextLe
-            | Self::TextGt
-            | Self::TextGe
-            | Self::EqBytes
-            | Self::BytesLt
-            | Self::BytesLe
-            | Self::BytesGt
-            | Self::BytesGe
-            | Self::ConvString
-            | Self::ConvBytesText
-            | Self::TextIsEmpty
-            | Self::TextContains
-            | Self::TextTrim
-            | Self::TextSplit(_)
-            | Self::TextLines(_)
-            | Self::TextJoin
-            | Self::EqDate
-            | Self::DateLt
-            | Self::DateLe
-            | Self::DateGt
-            | Self::DateGe
-            | Self::EqInstant
-            | Self::InstantLt
-            | Self::InstantLe
-            | Self::InstantGt
-            | Self::InstantGe
-            | Self::EqDuration
-            | Self::DurationLt
-            | Self::DurationLe
-            | Self::DurationGt
-            | Self::DurationGe
-            | Self::DateAddDays
-            | Self::DateDaysBetween
-            | Self::DurationAdd
-            | Self::DurationSub
-            | Self::InstantAddDuration
-            | Self::InstantSubDuration
-            | Self::IntAddChecked(_)
-            | Self::IntSubChecked(_)
-            | Self::IntMulChecked(_)
-            | Self::IntNegChecked(_)
-            | Self::IntDivChecked(_)
-            | Self::IntRemChecked(_)
-            | Self::RangeGuard { .. }
-            | Self::RecordNew(_)
-            | Self::FieldGet(_)
-            | Self::FieldSet(_)
-            | Self::FieldUnset(_)
-            | Self::SomeWrap
-            | Self::VacantLoad(_)
-            | Self::EnumConstruct { .. }
-            | Self::EnumTag
-            | Self::EnumPayloadGet { .. }
-            | Self::EqEnum
-            | Self::EqId
-            | Self::MakeIdentity { .. }
-            | Self::IdentityKeyPath(_)
-            | Self::ListNew(_)
-            | Self::ListAppend
-            | Self::ListLen
-            | Self::ListGet
-            | Self::ListIndex
-            | Self::MapNew(_)
-            | Self::MapInsert
-            | Self::MapRemove
-            | Self::MapGet
-            | Self::MapLen
-            | Self::MapKeyAt
-            | Self::MapValueAt => None,
-        }
+        self.spec().class
     }
 
     /// This instruction's place in the coarse durable partition.
@@ -706,219 +772,11 @@ impl<R: Operands> Instruction<R> {
             None => OpClass::Pure,
         }
     }
-}
 
-impl<R: Operands> Instruction<R> {
-    /// The opcode byte for this instruction.
-    pub fn opcode(&self) -> u8 {
-        match self {
-            Self::ConstLoad(_) => OP_CONST_LOAD,
-            Self::LocalGet(_) => OP_LOCAL_GET,
-            Self::LocalSet(_) => OP_LOCAL_SET,
-            Self::Pop => OP_POP,
-            Self::Return => OP_RETURN,
-            Self::Call(_) => OP_CALL,
-            Self::Jump(_) => OP_JUMP,
-            Self::JumpIfFalse(_) => OP_JUMP_IF_FALSE,
-            Self::BranchPresent(_) => OP_BRANCH_PRESENT,
-            Self::Unreachable(_) => OP_UNREACHABLE,
-            Self::Todo(_) => OP_TODO,
-            Self::Assert => OP_ASSERT,
-            Self::IntAdd => OP_INT_ADD,
-            Self::IntSub => OP_INT_SUB,
-            Self::IntMul => OP_INT_MUL,
-            Self::IntRem => OP_INT_REM,
-            Self::IntDiv => OP_INT_DIV,
-            Self::IntNeg => OP_INT_NEG,
-            Self::BoolNot => OP_BOOL_NOT,
-            Self::IntLt => OP_INT_LT,
-            Self::IntLe => OP_INT_LE,
-            Self::IntGt => OP_INT_GT,
-            Self::IntGe => OP_INT_GE,
-            Self::EqInt => OP_EQ_INT,
-            Self::EqBool => OP_EQ_BOOL,
-            Self::EqText => OP_EQ_TEXT,
-            Self::TextConcat => OP_TEXT_CONCAT,
-            Self::TextLt => OP_TEXT_LT,
-            Self::TextLe => OP_TEXT_LE,
-            Self::TextGt => OP_TEXT_GT,
-            Self::TextGe => OP_TEXT_GE,
-            Self::EqBytes => OP_EQ_BYTES,
-            Self::BytesLt => OP_BYTES_LT,
-            Self::BytesLe => OP_BYTES_LE,
-            Self::BytesGt => OP_BYTES_GT,
-            Self::BytesGe => OP_BYTES_GE,
-            Self::ConvString => OP_CONV_STRING,
-            Self::ConvBytesText => OP_CONV_BYTES_TEXT,
-            Self::TextIsEmpty => OP_TEXT_IS_EMPTY,
-            Self::TextContains => OP_TEXT_CONTAINS,
-            Self::TextTrim => OP_TEXT_TRIM,
-            Self::TextSplit(_) => OP_TEXT_SPLIT,
-            Self::TextLines(_) => OP_TEXT_LINES,
-            Self::TextJoin => OP_TEXT_JOIN,
-            Self::EqDate => OP_EQ_DATE,
-            Self::DateLt => OP_DATE_LT,
-            Self::DateLe => OP_DATE_LE,
-            Self::DateGt => OP_DATE_GT,
-            Self::DateGe => OP_DATE_GE,
-            Self::EqInstant => OP_EQ_INSTANT,
-            Self::InstantLt => OP_INSTANT_LT,
-            Self::InstantLe => OP_INSTANT_LE,
-            Self::InstantGt => OP_INSTANT_GT,
-            Self::InstantGe => OP_INSTANT_GE,
-            Self::EqDuration => OP_EQ_DURATION,
-            Self::DurationLt => OP_DURATION_LT,
-            Self::DurationLe => OP_DURATION_LE,
-            Self::DurationGt => OP_DURATION_GT,
-            Self::DurationGe => OP_DURATION_GE,
-            Self::DateAddDays => OP_DATE_ADD_DAYS,
-            Self::DateDaysBetween => OP_DATE_DAYS_BETWEEN,
-            Self::DurationAdd => OP_DURATION_ADD,
-            Self::DurationSub => OP_DURATION_SUB,
-            Self::InstantAddDuration => OP_INSTANT_ADD_DURATION,
-            Self::InstantSubDuration => OP_INSTANT_SUB_DURATION,
-            Self::IntAddChecked(_) => OP_INT_ADD_CHECKED,
-            Self::IntSubChecked(_) => OP_INT_SUB_CHECKED,
-            Self::IntMulChecked(_) => OP_INT_MUL_CHECKED,
-            Self::IntNegChecked(_) => OP_INT_NEG_CHECKED,
-            Self::IntDivChecked(_) => OP_INT_DIV_CHECKED,
-            Self::IntRemChecked(_) => OP_INT_REM_CHECKED,
-            Self::RangeGuard { .. } => OP_RANGE_GUARD,
-            Self::RecordNew(_) => OP_RECORD_NEW,
-            Self::FieldGet(_) => OP_FIELD_GET,
-            Self::FieldSet(_) => OP_FIELD_SET,
-            Self::FieldUnset(_) => OP_FIELD_UNSET,
-            Self::SomeWrap => OP_SOME_WRAP,
-            Self::VacantLoad(_) => OP_VACANT_LOAD,
-            Self::EnumConstruct { .. } => OP_ENUM_CONSTRUCT,
-            Self::EnumTag => OP_ENUM_TAG,
-            Self::EnumPayloadGet { .. } => OP_ENUM_PAYLOAD_GET,
-            Self::EqEnum => OP_EQ_ENUM,
-            Self::EqId => OP_EQ_ID,
-            Self::MakeIdentity { .. } => OP_MAKE_IDENTITY,
-            Self::IdentityKeyPath(_) => OP_IDENTITY_KEY_PATH,
-            Self::DurExists(_) => OP_DUR_EXISTS,
-            Self::DurFamilyExists(_) => OP_DUR_FAMILY_EXISTS,
-            Self::DurReadField(_) => OP_DUR_READ_FIELD,
-            Self::DurReadFieldPresent { .. } => OP_DUR_READ_FIELD_PRESENT,
-            Self::DurReadEntry(_) => OP_DUR_READ_ENTRY,
-            Self::DurSetField { .. } => OP_DUR_SET_FIELD,
-            Self::DurCreateEntry(_) => OP_DUR_CREATE_ENTRY,
-            Self::DurReplaceEntry(_) => OP_DUR_REPLACE_ENTRY,
-            Self::DurEraseField(_) => OP_DUR_ERASE_FIELD,
-            Self::DurEraseEntry(_) => OP_DUR_ERASE_ENTRY,
-            Self::DurReadGroup(_) => OP_DUR_READ_GROUP,
-            Self::DurReadGroupPresent { .. } => OP_DUR_READ_GROUP_PRESENT,
-            Self::DurReplaceGroup { .. } => OP_DUR_REPLACE_GROUP,
-            Self::DurEraseGroup(_) => OP_DUR_ERASE_GROUP,
-            Self::DurIterateBounded { .. } => OP_DUR_ITERATE_BOUNDED,
-            Self::TxnBegin => OP_TXN_BEGIN,
-            Self::TxnCommit => OP_TXN_COMMIT,
-            Self::DurIndexScan { .. } => OP_DUR_INDEX_SCAN,
-            Self::DurIndexLookup(_) => OP_DUR_INDEX_LOOKUP,
-            Self::DurIndexExists(_) => OP_DUR_INDEX_EXISTS,
-            Self::ListNew(_) => OP_LIST_NEW,
-            Self::ListAppend => OP_LIST_APPEND,
-            Self::ListLen => OP_LIST_LEN,
-            Self::ListGet => OP_LIST_GET,
-            Self::ListIndex => OP_LIST_INDEX,
-            Self::MapNew(_) => OP_MAP_NEW,
-            Self::MapInsert => OP_MAP_INSERT,
-            Self::MapRemove => OP_MAP_REMOVE,
-            Self::MapGet => OP_MAP_GET,
-            Self::MapLen => OP_MAP_LEN,
-            Self::MapKeyAt => OP_MAP_KEY_AT,
-            Self::MapValueAt => OP_MAP_VALUE_AT,
-        }
-    }
-
-    /// The number of immediate-operand bytes after the opcode.
-    fn operand_len(&self) -> usize {
-        match self {
-            Self::ConstLoad(_)
-            | Self::LocalGet(_)
-            | Self::LocalSet(_)
-            | Self::Unreachable(_)
-            | Self::Todo(_)
-            | Self::Call(_)
-            | Self::RecordNew(_)
-            | Self::FieldGet(_)
-            | Self::FieldSet(_)
-            | Self::FieldUnset(_)
-            | Self::DurExists(_)
-            | Self::DurFamilyExists(_)
-            | Self::DurReadField(_)
-            | Self::DurReadEntry(_)
-            | Self::DurCreateEntry(_)
-            | Self::DurReplaceEntry(_)
-            | Self::DurEraseField(_)
-            | Self::DurEraseEntry(_)
-            | Self::DurReadGroup(_)
-            | Self::DurEraseGroup(_)
-            | Self::ListNew(_)
-            | Self::MapNew(_)
-            | Self::TextSplit(_)
-            | Self::TextLines(_)
-            // A big-endian `u16` root key-column count.
-            | Self::IdentityKeyPath(_)
-            // A big-endian `u16` index lookup site.
-            | Self::DurIndexLookup(_)
-            // A big-endian `u16` unique-index presence-probe site.
-            | Self::DurIndexExists(_) => 2,
-            // Two big-endian `u16` operands: the store-root index and the key-column count.
-            Self::MakeIdentity { .. } => 4,
-            Self::Jump(_)
-            | Self::JumpIfFalse(_)
-            | Self::BranchPresent(_)
-            | Self::IntAddChecked(_)
-            | Self::IntSubChecked(_)
-            | Self::IntMulChecked(_)
-            | Self::IntNegChecked(_)
-            | Self::IntDivChecked(_)
-            | Self::IntRemChecked(_) => 4,
-            // A `VacantLoad` operand is a full optional `ImageType`: one tag byte
-            // for an optional scalar, or a tag plus a big-endian `u16` index for an
-            // optional enum (a defaulted sparse enum field).
-            Self::VacantLoad(ty) => ty.encoded_len(),
-            // Two big-endian `i64` interval bounds.
-            Self::RangeGuard { .. } => 16,
-            // Two big-endian `u16` operands.
-            Self::EnumConstruct { .. } | Self::EnumPayloadGet { .. } => 4,
-            // A big-endian `u16` site, a big-endian `u16` key-path length, then one
-            // big-endian `u16` per key-path slot.
-            Self::DurSetField { key_slots, .. }
-            | Self::DurReadFieldPresent { key_slots, .. }
-            | Self::DurReadGroupPresent { key_slots, .. }
-            | Self::DurReplaceGroup { key_slots, .. } => {
-                4 + 2 * key_slots.len()
-            }
-            // A big-endian `u16` site, a big-endian `u32` bound, a one-byte
-            // `from`-present flag, and a big-endian `u16` frozen-`List[K]` COLLTYPES
-            // index.
-            Self::DurIterateBounded { .. } | Self::DurIndexScan { .. } => 9,
-            _ => 0,
-        }
-    }
-
-    /// This instruction's exact encoded width (opcode plus operands) in the v0 code
-    /// tape.
-    ///
-    /// Lowering reads the same owner before retaining an instruction, so the
-    /// per-function byte limit is enforced at the source construct that would cross
-    /// it rather than rediscovered only after a complete tape has been built.
-    #[doc(hidden)]
-    pub fn encoded_len(&self) -> usize {
-        1 + self.operand_len()
-    }
-}
-
-impl Instr {
-    /// The operation site this instruction names, if it names one.
-    ///
-    /// This is the one place that answers "which instructions carry a site", so the
-    /// checked function append and the encoder read one closed set rather than each
-    /// keeping its own list of site-bearing opcodes.
-    pub(crate) fn site_operand(&self) -> Option<&PlannedSiteRef> {
+    /// The operation site this instruction names, if it names one: the one closed set of
+    /// site-bearing opcodes, read by the checked function append, the encoder, and the
+    /// verifier's site resolution alike.
+    pub fn site(&self) -> Option<&R::Site> {
         match self {
             Self::DurExists(site)
             | Self::DurFamilyExists(site)
@@ -940,5 +798,27 @@ impl Instr {
             | Self::DurIndexExists(site) => Some(site),
             _ => None,
         }
+    }
+
+    /// The control-flow successors of this instruction at tape index `index`: the jump
+    /// target first, then the fallthrough. A terminator has none, a plain jump only its
+    /// target, and a conditional branch or a checked-arithmetic trap edge both.
+    pub fn successors(&self, index: usize) -> impl Iterator<Item = usize> {
+        let (target, falls_through) = match self {
+            Self::Return | Self::Unreachable(_) | Self::Todo(_) => (None, false),
+            Self::Jump(target) => (Some(R::index_of(target)), false),
+            Self::JumpIfFalse(target)
+            | Self::BranchPresent(target)
+            | Self::IntAddChecked(target)
+            | Self::IntSubChecked(target)
+            | Self::IntMulChecked(target)
+            | Self::IntNegChecked(target)
+            | Self::IntDivChecked(target)
+            | Self::IntRemChecked(target) => (Some(R::index_of(target)), true),
+            _ => (None, true),
+        };
+        target
+            .into_iter()
+            .chain(falls_through.then_some(index + 1))
     }
 }

@@ -2595,25 +2595,6 @@ enum TxnState {
     AfterCommit,
 }
 
-/// The control-flow successors of the instruction at `index`, in tape order. Mirrors
-/// the verifier's flow-successor relation over the same opcode set so the check-time
-/// lattice walks the identical CFG the image verification does.
-fn instr_successors(code: &[Instr], index: usize) -> Vec<usize> {
-    match &code[index] {
-        Instr::Return | Instr::Unreachable(_) | Instr::Todo(_) => Vec::new(),
-        Instr::Jump(target) => vec![*target as usize],
-        Instr::JumpIfFalse(target)
-        | Instr::BranchPresent(target)
-        | Instr::IntAddChecked(target)
-        | Instr::IntSubChecked(target)
-        | Instr::IntMulChecked(target)
-        | Instr::IntNegChecked(target)
-        | Instr::IntDivChecked(target)
-        | Instr::IntRemChecked(target) => vec![*target as usize, index + 1],
-        _ => vec![index + 1],
-    }
-}
-
 /// Report the transaction-ownership lattice laws at check time, at their source spans.
 ///
 /// The ownership contract has three remaining laws the verifier reconstructs from the
@@ -2827,7 +2808,7 @@ fn owner_lattice_violation(
             Instr::TxnCommit => TxnState::AfterCommit,
             _ => state,
         };
-        for successor in instr_successors(code, index) {
+        for successor in code[index].successors(index) {
             if successor < code.len() && entry[successor].is_none() {
                 entry[successor] = Some(next);
                 worklist.push(successor);
