@@ -1,43 +1,52 @@
-//! Phase 2 orchestration: seal the decoded image into a VerifiedImage.
+//! Phases 3 to 5 over the decoded image, sealing it into a `VerifiedImage`.
 
-use super::context::{CallGraph, Ctx, Effects, FnSig};
+use super::context::{CallGraph, Ctx, Effects, EntryKind, FnSig};
 use super::durable::{
     is_flat_executable_root, member_flat_at_root, seal_branches, seal_groups, seal_root_indexes,
 };
-use super::model::DecodedImage;
+use super::model::{DecodedImage, DecodedRoot};
 use super::presence::{EntryFamilies, check_presence_flow, verify_function};
 use super::reject;
 use crate::reject::{Duplicate, RejectionKind as Kind, VerifyPhase, VerifyRejection};
 use crate::sealed::{
     SealedExport, SealedFunction, SealedIndex, SealedInstr, SealedRecordType, SealedRoot,
-    SealedSite, SealedTestEntry, VerifiedImage,
+    SealedTestEntry, VerifiedImage,
 };
 use marrow_image::ImageType;
+use std::rc::Rc;
 
 pub(super) fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
-    let types = decoded.types.clone();
-    let enums = decoded.enums.clone();
-    let roots = seal_roots(&decoded, &types);
-    // The managed indexes seal from the decoded roots, each carrying the index of the
-    // root it belongs to. Their projections were re-resolved against the decoded graph
-    // in `decode_indexes`, so the sealed set trusts no image-side incidence summary. Each
-    // ledger-id projection component also resolves to a record/key position here — the
-    // form the path kernel maintains — against the same decoded root.
+    let DecodedImage {
+        durable_graph,
+        image_id,
+        strings,
+        types,
+        enums,
+        collections,
+        roots: decoded_roots,
+        sites,
+        site_paths,
+        durable_contract,
+        semantic_nodes,
+        consts,
+        functions: decoded_functions,
+        exports: decoded_exports,
+        test_entries: decoded_test_entries,
+    } = decoded;
+    let roots = seal_roots(&decoded_roots, &strings, &types);
+    // Each index seals against the one root that declared it, so its projection resolves
+    // to that occurrence's record and key positions and no other's.
     let mut indexes: Vec<SealedIndex> = Vec::new();
-    for (root_index, root) in decoded.roots.iter().enumerate() {
+    for (root_index, root) in decoded_roots.iter().enumerate() {
         indexes.extend(seal_root_indexes(root_index as u16, root)?);
     }
-    let sites: Vec<SealedSite> = decoded.sites.clone();
-    // Function signatures feed the per-function `Call` type check (phase 3).
-    let signatures: Vec<FnSig> = decoded
-        .functions
+    let signatures: Vec<FnSig> = decoded_functions
         .iter()
         .map(|function| FnSig {
             params: function.params.clone(),
             ret: function.ret,
         })
         .collect();
-    let collections = decoded.collections.clone();
     let ctx = Ctx {
         types: &types,
         enums: &enums,
@@ -47,177 +56,135 @@ pub(super) fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejecti
         indexes: &indexes,
         signatures: &signatures,
     };
-    let mut functions = Vec::with_capacity(decoded.functions.len());
-    let mut non_fallthrough_entries = Vec::with_capacity(decoded.functions.len());
-    for function in &decoded.functions {
-        let (verified, entries) = verify_function(function, &ctx, &decoded)?;
+    let mut functions = Vec::with_capacity(decoded_functions.len());
+    let mut non_fallthrough_entries = Vec::with_capacity(decoded_functions.len());
+    for function in &decoded_functions {
+        let (verified, entries) = verify_function(function, &ctx, &consts, &strings)?;
         functions.push(verified);
         non_fallthrough_entries.push(entries);
     }
 
-    // Phase 4: the call graph over the recorded direct calls must be acyclic
-    // (recursion is not admitted).
     let calls = CallGraph::new(&functions)?;
-
-    // Phase 4/5: closure-informed effect and transaction-flow validation. An export
-    // entry that mutates in closure is the owner of a transaction.
-    let effects = Effects::compute(&functions, &decoded.site_paths, &calls);
-    let export_entries: Vec<bool> = {
-        let mut entries = vec![false; functions.len()];
-        for (_, func) in &decoded.exports {
-            entries[*func as usize] = true;
-        }
-        entries
-    };
-    let test_entry_mask: Vec<bool> = {
-        let mut entries = vec![false; functions.len()];
-        for (_, func) in &decoded.test_entries {
-            entries[*func as usize] = true;
-        }
-        entries
-    };
+    let effects = Effects::compute(&functions, &site_paths, &calls);
+    let entry_kinds = entry_kinds(functions.len(), &decoded_exports, &decoded_test_entries)?;
     for (index, function) in functions.iter().enumerate() {
-        effects.check_transaction_flow(
-            index,
-            function,
-            &calls,
-            export_entries[index],
-            test_entry_mask[index],
-        )?;
+        effects.check_transaction_flow(index, function, &calls, entry_kinds[index])?;
     }
 
-    // Every present-entry operation requires an independently reconstructed fact.
-    // Call effects and the executed-producer mask come from their existing owners.
-    {
-        let entry_families = EntryFamilies::new(&sites, &decoded.site_paths);
-        for (function, entries) in functions.iter().zip(non_fallthrough_entries) {
-            check_presence_flow(function, &ctx, &entries, &effects, &entry_families)?;
-        }
+    let entry_families = EntryFamilies::new(&sites, &site_paths);
+    for (function, entries) in functions.iter().zip(non_fallthrough_entries) {
+        check_presence_flow(function, &ctx, &entries, &effects, &entry_families)?;
     }
 
-    let exports = decoded
-        .exports
+    let exports = decoded_exports
         .iter()
         .map(|(id, func)| {
             let demand = effects.demands.get(usize::from(*func));
-            let demand_id = demand.demand_set_id();
             SealedExport {
                 id: *id,
                 func: *func,
                 mutating: effects.mutates_closure[*func as usize],
-                demand_id,
+                demand_id: demand.demand_set_id(),
                 reachable_sites: effects.reachable_sites(*func),
             }
         })
         .collect();
-
-    // Record each export's effect class on its entry function too, for tools.
-    for (_, func) in &decoded.exports {
+    for (_, func) in &decoded_exports {
         functions[*func as usize].mutating = effects.mutates_closure[*func as usize];
     }
 
-    let test_entries = check_test_entries(&decoded, &functions, &export_entries, &effects, &calls)?;
-
-    // Move the one atom owner only after every consumer has finished validating.
-    let Effects {
-        demands: function_demands,
-        sites_closure,
-        mutates_closure,
-        has_begin,
-        has_commit,
-    } = effects;
-    drop((sites_closure, mutates_closure, has_begin, has_commit));
-    drop(calls);
+    let test_entries = check_test_entries(
+        &decoded_test_entries,
+        &strings,
+        &functions,
+        &entry_kinds,
+        &effects,
+        &calls,
+    )?;
 
     Ok(VerifiedImage {
-        durable_graph: decoded.durable_graph,
-        image_id: decoded.image_id,
+        durable_graph,
+        image_id,
         types,
         enums,
         collections,
         roots,
         indexes,
         sites,
-        durable_contract: decoded.durable_contract,
-        semantic_nodes: decoded.semantic_nodes,
-        consts: decoded.consts,
+        durable_contract,
+        semantic_nodes,
+        consts,
         functions,
         exports,
         test_entries,
-        function_demands,
+        function_demands: effects.demands,
     })
 }
 
-/// After transaction and presence checks, validate test-entry identity, signatures,
-/// assert placement and call boundaries. Entries may be storeless, perform direct
-/// durable work, or drive exports; direct work cannot also drive a transaction
-/// owner. Return their function selections and kinds in ascending-name order.
+/// Each function's entry role, from the export and test-entry tables. A function is at
+/// most one of them: a test entry is never an export, and two test names never alias one
+/// function (the report would double-count it).
+fn entry_kinds(
+    count: usize,
+    exports: &[(marrow_image::ExportId, u16)],
+    test_entries: &[(u16, u16)],
+) -> Result<Vec<EntryKind>, VerifyRejection> {
+    let mut kinds = vec![EntryKind::Internal; count];
+    for (_, func) in exports {
+        kinds[usize::from(*func)] = EntryKind::Export;
+    }
+    for (_, func) in test_entries {
+        match kinds[usize::from(*func)] {
+            EntryKind::Internal => kinds[usize::from(*func)] = EntryKind::Test,
+            EntryKind::Export => {
+                return Err(reject(VerifyPhase::TestEntry, Kind::TestEntryExported));
+            }
+            EntryKind::Test => {
+                return Err(reject(
+                    VerifyPhase::TestEntry,
+                    Kind::Duplicate(Duplicate::TestEntryFunction),
+                ));
+            }
+        }
+    }
+    Ok(kinds)
+}
+
+/// Test entries take no arguments, return unit, are never called, hold every `assert`,
+/// and open no session of their own: a body performs no direct durable operation and
+/// calls a mutating function only through that function's own transaction.
 fn check_test_entries(
-    decoded: &DecodedImage,
+    test_entries: &[(u16, u16)],
+    strings: &[Rc<str>],
     functions: &[SealedFunction],
-    export_entries: &[bool],
+    kinds: &[EntryKind],
     effects: &Effects,
     calls: &CallGraph,
 ) -> Result<Vec<SealedTestEntry>, VerifyRejection> {
-    let mut is_test_entry = vec![false; functions.len()];
-    for (_, func) in &decoded.test_entries {
-        // The decoder proved every function index in range. Two names aliasing
-        // one function would make the report double-count it; entries are unique
-        // by function as well as by name.
-        if is_test_entry[*func as usize] {
-            return Err(reject(
-                VerifyPhase::TestEntry,
-                Kind::Duplicate(Duplicate::TestEntryFunction),
-            ));
-        }
-        is_test_entry[*func as usize] = true;
-    }
-
-    // `assert` may appear only in a test-entry function.
     for (index, function) in functions.iter().enumerate() {
         let has_assert = function
             .instrs()
             .iter()
             .any(|instr| matches!(instr, SealedInstr::Assert));
-        if has_assert && !is_test_entry[index] {
+        if has_assert && kinds[index] != EntryKind::Test {
             return Err(reject(VerifyPhase::TestEntry, Kind::AssertOutsideTest));
         }
-    }
-
-    // Each test entry takes no arguments, returns unit, and is not an export.
-    for (_, func) in &decoded.test_entries {
-        let function = &functions[*func as usize];
-        if export_entries[*func as usize] {
-            return Err(reject(VerifyPhase::TestEntry, Kind::TestEntryExported));
-        }
-        if !function.params.is_empty() {
-            return Err(reject(VerifyPhase::TestEntry, Kind::TestEntrySignature));
-        }
-        if function.ret != ImageType::Unit {
-            return Err(reject(VerifyPhase::TestEntry, Kind::TestEntrySignature));
-        }
-        // A test entry may call durable functions; its demand contributes to
-        // the test-image union. It is never an export and carries no wire identity.
-    }
-
-    // A test entry is an entry point: no function may call one.
-    for index in 0..functions.len() {
         for &callee in calls.callees(index) {
-            if is_test_entry[usize::from(callee)] {
+            if kinds[usize::from(callee)] == EntryKind::Test {
                 return Err(reject(VerifyPhase::TestEntry, Kind::TestEntryCalled));
             }
         }
     }
-
-    // Test calls open ordinary invocation sessions. The body has no ambient session
-    // for direct operations or for a mutating helper that does not own a transaction.
-    for (_, func) in &decoded.test_entries {
-        let function = &functions[*func as usize];
-        let has_direct_durable = function
+    for (_, func) in test_entries {
+        let function = &functions[usize::from(*func)];
+        if !function.params.is_empty() || function.ret != ImageType::Unit {
+            return Err(reject(VerifyPhase::TestEntry, Kind::TestEntrySignature));
+        }
+        if function
             .instrs()
             .iter()
-            .any(|instr| instr.operation_class().is_some());
-        if has_direct_durable {
+            .any(|instr| instr.operation_class().is_some())
+        {
             return Err(reject(VerifyPhase::TestEntry, Kind::TestDirectDurable));
         }
         for &callee in calls.callees(usize::from(*func)) {
@@ -230,42 +197,33 @@ fn check_test_entries(
             }
         }
     }
-
-    Ok(decoded
-        .test_entries
+    Ok(test_entries
         .iter()
         .map(|(name, func)| SealedTestEntry {
-            name: decoded.strings[*name as usize].clone(),
+            name: strings[usize::from(*name)].clone(),
             func: *func,
         })
         .collect())
 }
 
-/// Project the decoded roots into sealed ones. A flat-executable root carries its
-/// branch tree and its groups; a non-flat root parks every branch and group site, so it
-/// needs neither list.
-fn seal_roots(decoded: &DecodedImage, types: &[SealedRecordType]) -> Vec<SealedRoot> {
-    decoded
-        .roots
+/// A flat-executable root carries its branch tree and groups; a non-flat root parks every
+/// branch and group site, so it needs neither list.
+fn seal_roots(
+    roots: &[DecodedRoot],
+    strings: &[Rc<str>],
+    types: &[SealedRecordType],
+) -> Vec<SealedRoot> {
+    roots
         .iter()
         .map(|root| {
             let flat = is_flat_executable_root(root);
             SealedRoot {
-                name: decoded.strings[root.name as usize].clone(),
+                name: strings[root.name as usize].clone(),
                 keys: root.keys.iter().map(|(scalar, _)| *scalar).collect(),
                 record: root.record,
-                // A root's members are extra-free when every direct member keeps it flat:
-                // a field (scalar or widened composite), a root-level unkeyed group of
-                // storable-value fields, or a simple branch. A nested/composite branch, or
-                // a group nested below the root, is an extra that parks the root's
-                // operations; a widened field no longer parks (it is framed inline). This
-                // is a member-shape predicate independent of keyed-ness — a keyless
-                // singleton parks separately.
                 has_extras: !root.members.iter().all(member_flat_at_root),
-                // Sealed in declaration order so a BranchEntry branch path indexes the
-                // tree level by level.
                 branches: if flat {
-                    seal_branches(&root.members, &decoded.strings)
+                    seal_branches(&root.members, strings)
                 } else {
                     Vec::new()
                 },

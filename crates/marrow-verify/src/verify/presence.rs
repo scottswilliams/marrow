@@ -4,13 +4,14 @@ use super::context::{Ctx, Effects};
 use super::decode_code::decode_code;
 use super::decode_code::resolve_jumps;
 use super::flow::{branch_key_columns, check_flow};
-use super::model::{DecodedFunction, DecodedImage};
+use super::model::DecodedFunction;
 use super::reject;
 use super::spans::map_spans;
 use crate::reject::{RejectionKind as Kind, VerifyPhase, VerifyRejection};
-use crate::sealed::{SealedFunction, SealedInstr, SealedSite, SealedSiteTarget};
+use crate::sealed::{SealedConst, SealedFunction, SealedInstr, SealedSite, SealedSiteTarget};
 use marrow_image::{OperationClass, SemanticPath};
 use std::collections::BTreeSet;
+use std::rc::Rc;
 
 #[cfg(test)]
 #[path = "presence/family_lookup_tests.rs"]
@@ -438,7 +439,8 @@ fn entry_write_key_slots(
 pub(super) fn verify_function(
     function: &DecodedFunction,
     ctx: &Ctx,
-    decoded: &DecodedImage,
+    consts: &[SealedConst],
+    strings: &[Rc<str>],
 ) -> Result<(SealedFunction, Vec<bool>), VerifyRejection> {
     let mut decoded_code = decode_code(&function.code)?;
     let non_fallthrough_entries = resolve_jumps(&mut decoded_code)?;
@@ -446,14 +448,14 @@ pub(super) fn verify_function(
         function,
         ctx,
         &decoded_code,
-        &decoded.consts,
+        consts,
         &non_fallthrough_entries,
     )?;
     let spans = map_spans(function, &decoded_code)?;
     Ok((
         SealedFunction {
-            name: decoded.strings[function.name as usize].clone(),
-            source: decoded.strings[function.source as usize].clone(),
+            name: strings[function.name as usize].clone(),
+            source: strings[function.source as usize].clone(),
             params: function.params.clone(),
             ret: function.ret,
             local_count: function.local_count,

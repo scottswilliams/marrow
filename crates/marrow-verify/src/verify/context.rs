@@ -26,6 +26,14 @@ pub(super) struct Ctx<'a> {
     pub(super) signatures: &'a [FnSig],
 }
 
+/// A function's entry role, decided once from the export and test-entry tables.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum EntryKind {
+    Internal,
+    Export,
+    Test,
+}
+
 /// A callee's signature, consulted by the per-function `Call` type check.
 pub(super) struct FnSig {
     pub(super) params: Vec<ImageType>,
@@ -222,49 +230,34 @@ impl Effects {
         self.sites_closure[func as usize].iter().copied().collect()
     }
 
-    /// Phase 5: exports with a begin or mutating closure run the
-    /// {BeforeBegin, InTxn, AfterCommit} lattice. Other functions may not contain
-    /// transaction markers; only test-entry drivers may call transaction owners.
+    /// Phase 5: an export with a begin or a mutating closure runs the
+    /// {BeforeBegin, InTxn, AfterCommit} lattice; every other function carries no
+    /// transaction marker; only a test entry may call a transaction owner, each call
+    /// being its own invocation.
     pub(super) fn check_transaction_flow(
         &self,
         index: usize,
         function: &SealedFunction,
         calls: &CallGraph,
-        is_export_entry: bool,
-        is_test_entry: bool,
+        kind: EntryKind,
     ) -> Result<(), VerifyRejection> {
-        // A function containing `TxnBegin` is a transaction owner and may never be
-        // called — except from a test-entry driver, where each export call is its own
-        // invocation boundary. The test-entry phase separately refuses direct durable
-        // operations and calls to mutating helpers without their own transaction.
-        if !is_test_entry {
+        if kind != EntryKind::Test {
             for &callee in calls.callees(index) {
                 if self.has_begin[usize::from(callee)] {
                     return Err(reject(VerifyPhase::Flow, Kind::OwnerCalled));
                 }
             }
         }
-
-        // A transaction owns durable work: a `transaction` block whose closure performs
-        // no durable operation is a no-op region. It commits nothing, so the runtime
-        // opens no session for it (its demand is empty) and its `TxnCommit` would have
-        // no session to consume. Refuse it here rather than admit a region that cannot
-        // run. A region that reads carries read demand and is admitted below.
-        if is_export_entry && self.has_begin[index] && self.demands.get(index).is_empty() {
-            return Err(reject(VerifyPhase::Flow, Kind::EmptyTransaction));
+        if kind == EntryKind::Export {
+            // A region whose closure performs no durable operation opens no session, so
+            // its commit would have nothing to consume; a read-only region is admitted.
+            if self.has_begin[index] && self.demands.get(index).is_empty() {
+                return Err(reject(VerifyPhase::Flow, Kind::EmptyTransaction));
+            }
+            if self.mutates_closure[index] || self.has_begin[index] {
+                return self.check_owner_lattice(function);
+            }
         }
-
-        // An export entry that owns a transaction runs the lattice: every mutation
-        // is inside the region and every normal exit after begin commits. A read-only region (a
-        // transaction whose closure only reads) is admitted here — the read demand
-        // inside the owned region is coherent — while a mutating export with no begin is
-        // still caught, since the lattice rejects a mutation before begin.
-        if is_export_entry && (self.mutates_closure[index] || self.has_begin[index]) {
-            return self.check_owner_lattice(function);
-        }
-
-        // Every other function is a read-only function or a mutating helper (wholly
-        // inside its caller's transaction). Neither may carry a transaction marker.
         if self.has_begin[index] || self.has_commit[index] {
             return Err(reject(VerifyPhase::Flow, Kind::MarkerOutsideOwner));
         }
