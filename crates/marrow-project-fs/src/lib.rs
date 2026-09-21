@@ -22,6 +22,11 @@
 //! }
 //! ```
 //!
+//! ```compile_fail
+//! use marrow_project_fs::CaptureFailure;
+//! let _ = CaptureFailure(std::process::abort());
+//! ```
+//!
 //! [`ProjectInput`]: marrow_project::ProjectInput
 //! [`SourceOrigin`]: marrow_project::SourceOrigin
 //! [`DependencyAlias`]: marrow_project::DependencyAlias

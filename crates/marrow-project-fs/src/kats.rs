@@ -27,6 +27,7 @@ use crate::failure::{
 };
 use crate::limits::AdapterLimits;
 use crate::overlay::{OverlayBound, OverlayEntry, OverlayFailure, OverlayReason, OverlaySnapshot};
+use crate::path::native_units;
 use crate::scratch::TempDir;
 
 const ROOT: &str = "/proj";
@@ -1021,15 +1022,6 @@ fn lexically_invalid_keys_are_rejected() {
     }
 }
 
-/// A drive-prefixed key is a canonical relative spelling to the one identity
-/// owner — a directory named `C:` — so construction admits it and capture
-/// settles it as a nonmember.
-#[test]
-fn control_a_drive_prefixed_key_constructs() {
-    let entries = [OverlayEntry::new("C:/drive.mw", b"x")];
-    assert!(OverlaySnapshot::try_new(&entries).is_ok());
-}
-
 #[test]
 fn control_case_distinct_overlay_keys_are_accepted() {
     let entries = [
@@ -1081,19 +1073,61 @@ fn an_exact_member_overlay_replaces_the_disk_body() {
     assert_eq!(result.unwrap().modules()[0].source(), b"overlay-body");
 }
 
+/// A key no admitted source carries constructs, is refused as a nonmember at
+/// its original index after a successful pure capture, and presents under the
+/// source-path code without a location. A drive-prefixed spelling is such a
+/// key: the identity owner reads `C:` as a directory outside `src`.
 #[test]
-fn a_nonmember_overlay_reports_its_original_index() {
+fn a_nonmember_overlay_is_refused_at_its_index_and_presented() {
     let temp = TempDir::new("overlay-nonmember");
     valid_project(&temp);
     temp.write("src/main.mw", b"pub fn main()\n");
-    let entries = [OverlayEntry::new("src/ghost.mw", b"x")];
-    let snapshot = OverlaySnapshot::try_new(&entries).expect("infallible");
-    let failure = capture_project_with_limits(temp.path(), snapshot, &base_limits())
-        .expect_err("a nonmember overlay refuses");
-    match as_overlay(&failure).reason() {
-        OverlayReason::Nonmember { entry } => assert_eq!(entry.0, 0),
-        other => panic!("a nonmember overlay key must report Nonmember, got {other:?}"),
+    for key in ["src/ghost.mw", "C:/x"] {
+        let entries = [OverlayEntry::new(key, b"x")];
+        let snapshot = OverlaySnapshot::try_new(&entries).expect("a canonical key constructs");
+        let failure = capture_project_with_limits(temp.path(), snapshot, &base_limits())
+            .expect_err("a nonmember overlay refuses");
+        match as_overlay(&failure).reason() {
+            OverlayReason::Nonmember { entry } => assert_eq!(entry.0, 0, "{key}"),
+            other => panic!("{key}: a nonmember overlay key must report Nonmember, got {other:?}"),
+        }
+        let presentation = present(&failure, Path::new(ROOT));
+        assert_eq!(presentation.code(), Code::ProjectSourcePath, "{key}");
+        assert_eq!(
+            both_messages(&failure),
+            "overlay key is not a captured source",
+            "{key}"
+        );
+        assert!(presentation.position().is_none(), "{key}");
     }
+}
+
+/// A source's native-path lease is released once its bytes are captured, so the
+/// live retained set during an admission is the tree root, `src`, one absolute
+/// path per entry of the directory being walked, and the file's own evidence
+/// path — never every source captured so far. The limit here admits that set
+/// with half the sources' total to spare, far below what holding every source
+/// lease to the end would need.
+#[test]
+fn source_leases_release_before_the_next_admission() {
+    let temp = TempDir::new("source-lease-release");
+    valid_project(&temp);
+    let names: Vec<String> = (0..8)
+        .map(|index| format!("{}{index}.mw", "f".repeat(200)))
+        .collect();
+    for name in &names {
+        temp.write(&format!("src/{name}"), b"");
+    }
+    let root =
+        native_units(&fs::canonicalize(temp.path()).expect("the fixture root canonicalizes"));
+    let evidence = "src/".len() + names[0].len();
+    let live_during_admission =
+        root + "src".len() + names.len() * (root + "/src/".len() + names[0].len()) + evidence;
+    let mut limits = base_limits();
+    limits.max_retained_path_units = live_during_admission + names.len() * evidence / 2;
+    let input = capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &limits)
+        .expect("a lease released per source keeps every admission under the live bound");
+    assert_eq!(input.modules().len(), names.len());
 }
 
 // --- Row: high-level stages ---------------------------------------------------

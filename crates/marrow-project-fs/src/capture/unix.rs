@@ -415,9 +415,10 @@ impl Child {
 /// function over one observation sequence. It is generic over that sequence so
 /// tests drive synthetic yield orders while production feeds the real `read_dir`
 /// entries. It counts at most the remaining visit allowance plus one, measures the
-/// aggregate carrier units commutatively, settles the aggregate bounds once
-/// (retained wins), reserves live-only carriers, commits the aggregate work and the
-/// visit count once, and sorts the carriers in native lexical order.
+/// aggregate carrier units commutatively, retains provisional carriers only within
+/// the live bound, settles the aggregate bounds once (retained wins), reserves
+/// live-only carriers, commits the aggregate work and the visit count once, and
+/// sorts the carriers in native lexical order.
 ///
 /// A partially settled batch is unrepresentable: every refusal returns before any
 /// commit, so a refused batch leaves `visited`, `work`, and the live counter at
@@ -465,6 +466,12 @@ impl DirectoryAdmission {
             aggregate = aggregate
                 .checked_add(native_units(&absolute))
                 .ok_or_else(dir_oom)?;
+            // Provisional retention never passes the live bound: a candidate past
+            // it is dropped here, and the batch refuses once the poll completes,
+            // so the poll's own precedence is unchanged and the bound is a peak.
+            if budget.retained().saturating_add(aggregate) > limits.max_retained_path_units {
+                continue;
+            }
             candidates.push(absolute);
         }
 
@@ -499,7 +506,9 @@ impl DirectoryAdmission {
         // Stage carriers with live-only reservations, then commit the aggregate work
         // and the visit count once. No ordered `reserve` runs inside this batch.
         let mut children: Vec<Child> = Vec::new();
-        children.try_reserve_exact(count).map_err(|_| dir_oom())?;
+        children
+            .try_reserve_exact(candidates.len())
+            .map_err(|_| dir_oom())?;
         for absolute in candidates {
             let units = native_units(&absolute);
             let lease = budget

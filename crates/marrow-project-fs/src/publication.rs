@@ -177,6 +177,12 @@ pub enum IdsPublication {
 /// received one adopts whatever marker is on disk, and a finish that refused
 /// after its own unlink reports the terminal it had already recorded. Every arm
 /// is a publication this process claimed and did not conclude.
+///
+/// ```compile_fail
+/// fn duplicate(pending: marrow_project_fs::IdsPublicationPending<'_>) {
+///     let _second = pending.clone();
+/// }
+/// ```
 #[must_use = "a durably claimed publication advances only by consuming `recover`"]
 pub struct IdsPublicationPending<'a> {
     work: PendingWork<'a>,
