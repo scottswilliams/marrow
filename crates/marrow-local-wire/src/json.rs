@@ -310,13 +310,10 @@ impl<'key> ObjectWriter<'_, 'key> {
 /// malformed, non-canonical, and over-limit inputs are distinguished.
 pub fn parse_strict(input: &[u8]) -> Result<Json, WireError> {
     let text = std::str::from_utf8(input).map_err(|_| WireError::Malformed)?;
-    let mut parser = Parser {
-        bytes: text.as_bytes(),
-        pos: 0,
-    };
-    let value = parser.parse_value(0)?;
-    parser.skip_ws();
-    if parser.pos != parser.bytes.len() {
+    let mut lexer = Lexer::new(text, MAX_STRING_BYTES);
+    let value = lexer.parse_value(0)?;
+    lexer.skip_ws();
+    if !lexer.at_end() {
         return Err(WireError::Malformed);
     }
     if encode(&value).as_bytes() != input {
@@ -325,13 +322,29 @@ pub fn parse_strict(input: &[u8]) -> Result<Json, WireError> {
     Ok(value)
 }
 
-struct Parser<'a> {
+/// The one JSON lexer: a cursor over one JSON text that reads scalars, strings, and the
+/// punctuation between them, each refusal a typed [`WireError`]. Whitespace is skipped only
+/// on request, so [`parse_strict`] can hold the wire to its canonical spelling while a
+/// tolerant caller (the lifecycle's flat-row importer) accepts insignificant whitespace.
+/// Every string is bounded by `max_string_bytes` before it is accumulated.
+pub struct Lexer<'a> {
     bytes: &'a [u8],
     pos: usize,
+    max_string_bytes: usize,
 }
 
-impl Parser<'_> {
-    fn skip_ws(&mut self) {
+impl<'a> Lexer<'a> {
+    /// A lexer at the start of `text`, refusing any string longer than `max_string_bytes`.
+    pub fn new(text: &'a str, max_string_bytes: usize) -> Self {
+        Self {
+            bytes: text.as_bytes(),
+            pos: 0,
+            max_string_bytes,
+        }
+    }
+
+    /// Skip the JSON whitespace characters.
+    pub fn skip_ws(&mut self) {
         while let Some(&b) = self.bytes.get(self.pos) {
             if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' {
                 self.pos += 1;
@@ -341,8 +354,45 @@ impl Parser<'_> {
         }
     }
 
-    fn peek(&self) -> Option<u8> {
+    /// The next byte, unconsumed.
+    pub fn peek(&self) -> Option<u8> {
         self.bytes.get(self.pos).copied()
+    }
+
+    /// Whether every byte has been consumed.
+    pub fn at_end(&self) -> bool {
+        self.pos == self.bytes.len()
+    }
+
+    /// Consume `byte` when it is next.
+    pub fn take(&mut self, byte: u8) -> bool {
+        let found = self.peek() == Some(byte);
+        if found {
+            self.pos += 1;
+        }
+        found
+    }
+
+    /// Consume `byte`, refusing any other next byte as malformed.
+    pub fn expect(&mut self, byte: u8) -> Result<(), WireError> {
+        if self.take(byte) {
+            Ok(())
+        } else {
+            Err(WireError::Malformed)
+        }
+    }
+
+    /// One scalar: `null`, a boolean, an integer, or a string. A container opener is
+    /// malformed here; [`parse_strict`] handles containers itself.
+    pub fn scalar(&mut self) -> Result<Json, WireError> {
+        match self.peek().ok_or(WireError::Malformed)? {
+            b'"' => Ok(Json::Str(self.string()?)),
+            b't' => self.literal(b"true", Json::Bool(true)),
+            b'f' => self.literal(b"false", Json::Bool(false)),
+            b'n' => self.literal(b"null", Json::Null),
+            b'-' | b'0'..=b'9' => self.number(),
+            _ => Err(WireError::Malformed),
+        }
     }
 
     fn parse_value(&mut self, depth: usize) -> Result<Json, WireError> {
@@ -350,16 +400,11 @@ impl Parser<'_> {
         match self.peek().ok_or(WireError::Malformed)? {
             b'{' => self.parse_object(depth),
             b'[' => self.parse_array(depth),
-            b'"' => Ok(Json::Str(self.parse_string()?)),
-            b't' => self.parse_literal(b"true", Json::Bool(true)),
-            b'f' => self.parse_literal(b"false", Json::Bool(false)),
-            b'n' => self.parse_literal(b"null", Json::Null),
-            b'-' | b'0'..=b'9' => self.parse_number(),
-            _ => Err(WireError::Malformed),
+            _ => self.scalar(),
         }
     }
 
-    fn parse_literal(&mut self, word: &[u8], value: Json) -> Result<Json, WireError> {
+    fn literal(&mut self, word: &[u8], value: Json) -> Result<Json, WireError> {
         if self.bytes[self.pos..].starts_with(word) {
             self.pos += word.len();
             Ok(value)
@@ -368,31 +413,40 @@ impl Parser<'_> {
         }
     }
 
-    fn parse_number(&mut self) -> Result<Json, WireError> {
+    fn number(&mut self) -> Result<Json, WireError> {
         let start = self.pos;
         if self.peek() == Some(b'-') {
             self.pos += 1;
         }
-        let digits_start = self.pos;
-        while matches!(self.peek(), Some(b'0'..=b'9')) {
-            self.pos += 1;
-        }
-        if self.pos == digits_start {
-            return Err(WireError::Malformed);
+        match self.peek() {
+            // JSON spells zero as a lone `0`; a digit after it is the non-minimal spelling
+            // the wire refuses as non-canonical, and no tolerant reading admits it either.
+            Some(b'0') => {
+                self.pos += 1;
+                if matches!(self.peek(), Some(b'0'..=b'9')) {
+                    return Err(WireError::Noncanonical);
+                }
+            }
+            Some(b'1'..=b'9') => {
+                while matches!(self.peek(), Some(b'0'..=b'9')) {
+                    self.pos += 1;
+                }
+            }
+            _ => return Err(WireError::Malformed),
         }
         // A fraction or exponent is not an integer value Marrow can carry.
         if matches!(self.peek(), Some(b'.') | Some(b'e') | Some(b'E')) {
             return Err(WireError::Malformed);
         }
         let text = std::str::from_utf8(&self.bytes[start..self.pos]).expect("ascii digits");
-        // A well-formed but out-of-i64 integer (or a lone `-`) is not representable.
+        // A well-formed but out-of-i64 integer is not representable.
         let n = text.parse::<i64>().map_err(|_| WireError::Malformed)?;
         Ok(Json::Int(n))
     }
 
-    fn parse_string(&mut self) -> Result<String, WireError> {
-        debug_assert_eq!(self.peek(), Some(b'"'));
-        self.pos += 1;
+    /// One quoted string with the JSON escapes decoded, bounded by the lexer's string limit.
+    pub fn string(&mut self) -> Result<String, WireError> {
+        self.expect(b'"')?;
         let mut out = String::new();
         loop {
             let byte = self.peek().ok_or(WireError::Malformed)?;
@@ -416,7 +470,7 @@ impl Parser<'_> {
                     self.pos = end;
                 }
             }
-            if out.len() > MAX_STRING_BYTES {
+            if out.len() > self.max_string_bytes {
                 return Err(WireError::StringLimit);
             }
         }
@@ -519,7 +573,7 @@ impl Parser<'_> {
             if self.peek() != Some(b'"') {
                 return Err(WireError::Malformed);
             }
-            let key = self.parse_string()?;
+            let key = self.string()?;
             // Duplicate keys take precedence over the following colon or value.
             let Entry::Vacant(entry) = pairs.entry(key) else {
                 return Err(WireError::Noncanonical);
@@ -560,8 +614,37 @@ fn utf8_len(lead: u8) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Encoder, Json, encode, parse_strict};
+    use super::{Encoder, Json, Lexer, encode, parse_strict};
     use crate::error::WireError;
+
+    /// The tolerant reading the importer drives: whitespace passes only where it is skipped,
+    /// a leading zero is the same non-canonical verdict the wire reaches, and a string past
+    /// the caller's bound is a limit rather than malformed text.
+    #[test]
+    fn the_lexer_reads_scalars_tolerantly_within_the_caller_bound() {
+        let mut lexer = Lexer::new(" \"a\\u00e9\" : -12 ,true null", 16);
+        lexer.skip_ws();
+        assert_eq!(lexer.scalar(), Ok(Json::Str("aé".into())));
+        lexer.skip_ws();
+        assert!(lexer.take(b':'));
+        lexer.skip_ws();
+        assert_eq!(lexer.scalar(), Ok(Json::Int(-12)));
+        assert_eq!(lexer.expect(b','), Err(WireError::Malformed));
+        lexer.skip_ws();
+        assert_eq!(lexer.expect(b','), Ok(()));
+        assert_eq!(lexer.scalar(), Ok(Json::Bool(true)));
+        assert!(!lexer.at_end());
+        lexer.skip_ws();
+        assert_eq!(lexer.scalar(), Ok(Json::Null));
+        assert!(lexer.at_end());
+        assert_eq!(Lexer::new("01", 16).scalar(), Err(WireError::Noncanonical));
+        assert_eq!(Lexer::new("1.5", 16).scalar(), Err(WireError::Malformed));
+        assert_eq!(Lexer::new("[1]", 16).scalar(), Err(WireError::Malformed));
+        assert_eq!(
+            Lexer::new("\"01234567890123456\"", 16).scalar(),
+            Err(WireError::StringLimit)
+        );
+    }
 
     #[test]
     fn bounded_destination_retains_only_canonical_prefix() {

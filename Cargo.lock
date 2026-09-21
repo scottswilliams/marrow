@@ -187,6 +187,7 @@ dependencies = [
  "marrow-fs-journal",
  "marrow-image",
  "marrow-kernel",
+ "marrow-local-wire",
  "marrow-project",
  "marrow-test-support",
  "marrow-verify",

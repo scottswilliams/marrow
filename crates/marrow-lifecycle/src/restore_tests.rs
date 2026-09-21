@@ -200,12 +200,15 @@ fn rehashed_incompatible_headers_refuse_before_private_construction() {
         let destination = scratch.base().join(name);
         let error = restore(&mut io::Cursor::new(bytes), &destination).unwrap_err();
         match (name, &error.fault) {
-            ("binding", RestoreFault::Admission(AuditError::Refused(AdmissionRefusal::NotActive)))
+            (
+                "binding",
+                RestoreFault::Admission(AuditError::Refused(AdmissionRefusal::NotActive)),
+            )
             | (
                 "generation",
-                RestoreFault::Input(BackupReadError::Format(
-                    crate::FormatError::UnknownVersion { found: 1 },
-                )),
+                RestoreFault::Input(BackupReadError::Format(crate::FormatError::UnknownVersion {
+                    found: 1,
+                })),
             )
             | ("image", RestoreFault::Image(_)) => {}
             _ => panic!("{name}: {error:?}"),
@@ -360,10 +363,9 @@ fn final_admission_rejects_changed_metadata_and_retains_published_store() {
         )
         .unwrap_err();
         reached.assert();
-        let record = EnvelopeRecord::decode(
-            &std::fs::read(destination.join(crate::ENVELOPE_FILE)).unwrap(),
-        )
-        .unwrap();
+        let record =
+            EnvelopeRecord::decode(&std::fs::read(destination.join(crate::ENVELOPE_FILE)).unwrap())
+                .unwrap();
         assert!(matches!(error.fault,
             RestoreFault::Completion {
                 instance,
@@ -425,8 +427,7 @@ fn occupied_destination_retains_completed_unpublished_stage() {
     #[cfg(not(unix))]
     let _ = metadata;
     let record =
-        EnvelopeRecord::decode(&std::fs::read(stage.join(crate::ENVELOPE_FILE)).unwrap())
-            .unwrap();
+        EnvelopeRecord::decode(&std::fs::read(stage.join(crate::ENVELOPE_FILE)).unwrap()).unwrap();
     let (_, digest) =
         LogicalHead::decode_with_digest(&std::fs::read(stage.join(crate::HEAD_FILE)).unwrap())
             .unwrap();
@@ -457,10 +458,9 @@ fn publication_and_activation_barrier_failures_retain_destination_and_instance()
         )
         .unwrap_err();
         assert!(error.stage.is_none());
-        let record = EnvelopeRecord::decode(
-            &std::fs::read(destination.join(crate::ENVELOPE_FILE)).unwrap(),
-        )
-        .unwrap();
+        let record =
+            EnvelopeRecord::decode(&std::fs::read(destination.join(crate::ENVELOPE_FILE)).unwrap())
+                .unwrap();
         let (_, digest) = LogicalHead::decode_with_digest(
             &std::fs::read(destination.join(crate::HEAD_FILE)).unwrap(),
         )
@@ -468,18 +468,14 @@ fn publication_and_activation_barrier_failures_retain_destination_and_instance()
         let instance = match (activation, error.fault) {
             (
                 false,
-                RestoreFault::Provision(ProvisionFault::PublicationUncertain {
-                    instance, ..
-                }),
+                RestoreFault::Provision(ProvisionFault::PublicationUncertain { instance, .. }),
             ) => {
                 assert_eq!(record.state, EnvelopeState::Provision { head: digest });
                 instance
             }
             (
                 true,
-                RestoreFault::Provision(ProvisionFault::ActivationUncertain {
-                    instance, ..
-                }),
+                RestoreFault::Provision(ProvisionFault::ActivationUncertain { instance, .. }),
             ) => {
                 assert_eq!(record.state, EnvelopeState::Active);
                 instance

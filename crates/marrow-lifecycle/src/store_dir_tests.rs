@@ -10,8 +10,7 @@ fn preservation_refuses_collision_and_entropy_failure_without_changing_files() {
     let root = scratch.base();
     let directory = AdmittedStoreDir::admit(root, Seam::NONE).expect("admit");
     let source = root.join("envelope.replacing");
-    let destination =
-        root.join("envelope.replacing.preserved.00000000000000000000000000000000");
+    let destination = root.join("envelope.replacing.preserved.00000000000000000000000000000000");
     std::fs::write(&source, b"partial").expect("source");
     std::fs::write(&destination, b"previous preserved bytes").expect("collision");
     let mut preserved = Vec::new();

@@ -76,7 +76,7 @@ process; `marrow-lsp` projects compiler snapshot facts and adds no semantics.
 | `marrow-fs-journal` | Descriptor-rooted file publication: entry-name admission, the cooperative lock, and the pending-journal frame with replay and crash-debris classification | [Storage](storage.md) |
 | `marrow-project` | Manifest schema including the `[dependencies]` alias and relative-path vocabulary, module discovery, file identities, and the `.marrow/ids` ledger, all over caller-supplied bytes | [Projects](../tools/projects.md) |
 | `marrow-project-fs` | Bounded reads of the project root, manifest, source tree, and ledger; locating each declared dependency and capturing its tree beside the root's under one limit accumulator, read-only; and the sole publisher of `.marrow/ids` | [Projects](../tools/projects.md) |
-| `marrow-local-wire` | The framed protocol between a runner and its client: framing, limits, one canonical JSON writer, completed bounded frames, and the closed request, response, fault, and incomplete grammar | [TypeScript client](../tools/typescript-client.md) |
+| `marrow-local-wire` | The framed protocol between a runner and its client: framing, limits, the workspace's one canonical JSON writer and lexer, completed bounded frames, and the closed request, response, fault, and incomplete grammar | [TypeScript client](../tools/typescript-client.md) |
 | `marrow-runner` | The runner binary and library: the supervised Unix-domain channel, export dispatch over a verified image, and the one-shot provision, import, audit, apply, recovery, backup and restore commands over the lifecycle owners | [Operations](../operations/README.md) |
 | `marrow-lsp` | The standalone `marrow-lsp` executable: JSON-RPC over stdio, document sync, and diagnostics, formatting, hover, definition, completion, signature help, and document symbols projected from the compiler's `AnalysisSnapshot` | [Language server](../tools/lsp.md) |
 | `marrow-test-support` | The image-construction fixtures more than one crate's tests build over: the admitted plan, the armed draft transaction, the site seam, and the container byte forger. A `dev-dependencies` edge only; it ships in nothing | [Contributing](../../CONTRIBUTING.md) |
@@ -92,9 +92,9 @@ it, so a change in a leaf rebuilds the leaf and its consumers and nothing else.
 ```text
 marrow (CLI)        marrow-lsp
 marrow-runner       marrow-project-fs
-marrow-vm           marrow-local-wire    marrow-compile
+marrow-vm                                marrow-compile
 marrow-lifecycle                         marrow-project
-marrow-kernel       marrow-verify        marrow-syntax
+marrow-kernel       marrow-verify        marrow-syntax      marrow-local-wire
 marrow-store        marrow-image         marrow-fs-journal  marrow-codes  marrow-temporal
 ```
 

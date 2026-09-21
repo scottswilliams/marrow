@@ -105,7 +105,10 @@ fn construction(cut: Option<Step>, removal: Option<std::io::ErrorKind>) -> Rc<Co
 
 #[test]
 fn provision_retains_the_original_failure_and_failed_cleanup_location() {
-    for point in [Some(Step::FileSync(Body::Artifact(Artifact::Envelope))), None] {
+    for point in [
+        Some(Step::FileSync(Body::Artifact(Artifact::Envelope))),
+        None,
+    ] {
         let scratch = std::mem::ManuallyDrop::new(Scratch::new("cleanup-failure"));
         eprintln!("cleanup-failure fixture: {}", scratch.base().display());
         let destination = scratch.base().join("destination");
@@ -131,8 +134,7 @@ fn provision_retains_the_original_failure_and_failed_cleanup_location() {
         assert_eq!(cleanup.source.kind(), std::io::ErrorKind::PermissionDenied);
         assert!(matches!(
             (&point, &error.fault),
-            (Some(_), ProvisionFault::Admission(_))
-                | (None, ProvisionFault::AlreadyProvisioned)
+            (Some(_), ProvisionFault::Admission(_)) | (None, ProvisionFault::AlreadyProvisioned)
         ));
         assert_eq!(
             error.code(),
@@ -257,8 +259,8 @@ fn a_complete_unpublished_stage_is_adopted_at_its_current_location() {
         EnvelopeState::Provision { head: digest }
     );
     assert!(!destination.exists());
-    let held = crate::recover(&stage, crate::prepare(image.clone()))
-        .expect_err("construction owner held");
+    let held =
+        crate::recover(&stage, crate::prepare(image.clone())).expect_err("construction owner held");
     assert!(matches!(
         held.fault,
         crate::RecoveryFault::Validation(crate::AuditError::Open(OpenError::Lock(
@@ -334,7 +336,9 @@ impl Observer for PublicationObservation {
                 marrow_kernel::durable::NativeLockError::StoreInUse { .. }
             ))
         ));
-        self.seen.borrow_mut().push((at, actual.dev(), actual.ino()));
+        self.seen
+            .borrow_mut()
+            .push((at, actual.dev(), actual.ino()));
         let armed = self
             .mutation
             .borrow()
@@ -382,8 +386,7 @@ fn public_provision_holds_the_same_directory_owner_across_rename() {
     assert_eq!(seen[1], (StagePoint::Published, device, inode));
     drop(seen);
     assert!(matches!(
-        crate::attach(&destination, crate::prepare(image))
-            .expect("released completed provision"),
+        crate::attach(&destination, crate::prepare(image)).expect("released completed provision"),
         crate::AttachOutcome::AlreadyActive(_)
     ));
 }
@@ -413,8 +416,7 @@ fn late_collision_and_identity_changes_preserve_actual_custody() {
         let (_, request) = compiled_request();
         let instance = request.envelope.instance;
         let observer = publication_observation(&destination, Some((at, action)));
-        let error =
-            provision_observed(&destination, request, Seam::armed(observer)).unwrap_err();
+        let error = provision_observed(&destination, request, Seam::armed(observer)).unwrap_err();
         match case {
             0 => {
                 assert!(matches!(error.fault, ProvisionFault::AlreadyProvisioned));

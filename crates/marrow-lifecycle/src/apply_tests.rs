@@ -12,8 +12,8 @@ use crate::test_support::{
     IDS, SOURCE, Scratch, compile, compile_bytes, cut, mutate_at, populate_counter, request,
 };
 use crate::{
-    AdmissionRefusal, AuditError, LifecycleError, LogicalHead, StoreInstanceId, accepted_ceiling, active_binding,
-    prepare, provision,
+    AdmissionRefusal, AuditError, LifecycleError, LogicalHead, StoreInstanceId, accepted_ceiling,
+    active_binding, prepare, provision,
 };
 
 fn sparse_images() -> (Vec<u8>, Vec<u8>) {

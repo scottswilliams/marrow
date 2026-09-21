@@ -17,6 +17,8 @@ marrow-codes = { path = "../marrow-codes" }
 marrow-fs-journal = { path = "../marrow-fs-journal" }
 marrow-image = { path = "../marrow-image" }
 marrow-kernel = { path = "../marrow-kernel" }
+# The workspace's one JSON lexer; the flat-row importer reads its scalars through it.
+marrow-local-wire = { path = "../marrow-local-wire" }
 marrow-verify = { path = "../marrow-verify" }
 
 [dev-dependencies]

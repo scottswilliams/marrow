@@ -324,12 +324,13 @@ pub(crate) fn complete_publication(
 }
 
 fn cleanup_after_failure(stage: &Path, fault: ProvisionFault, seam: &Seam) -> ProvisionError {
-    let cleanup = remove_unpublished_stage(stage, seam)
-        .err()
-        .map(|source| ProvisionCleanupFailure {
-            stage: stage.to_path_buf(),
-            source,
-        });
+    let cleanup =
+        remove_unpublished_stage(stage, seam)
+            .err()
+            .map(|source| ProvisionCleanupFailure {
+                stage: stage.to_path_buf(),
+                source,
+            });
     ProvisionError { fault, cleanup }
 }
 
@@ -352,8 +353,8 @@ fn build_in_temp(
 > {
     let owner = NativeStore::acquire_existing(temp)
         .map_err(|error| ProvisionFault::Io(std::io::Error::other(error)))?;
-    let admitted = AdmittedStoreDir::admit_under_owner(&owner, seam)
-        .map_err(ProvisionFault::Admission)?;
+    let admitted =
+        AdmittedStoreDir::admit_under_owner(&owner, seam).map_err(ProvisionFault::Admission)?;
     let (head_bytes, head) = request.head.encode_with_digest();
     let pending = EnvelopeRecord {
         metadata: request.envelope.clone(),

@@ -26,7 +26,7 @@ pub use error::WireError;
 pub use frame::{EncodedFrame, frame_body_len};
 pub use id::Id32;
 pub use json::{
-    ArrayWriter, Json, ObjectWriter, ValueWriter, encode, parse_strict, write_json_string,
+    ArrayWriter, Json, Lexer, ObjectWriter, ValueWriter, encode, parse_strict, write_json_string,
 };
 pub use message::{ClientMessage, ServerMessage};
 pub use span::Span;

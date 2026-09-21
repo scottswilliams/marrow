@@ -31,6 +31,7 @@ use marrow_kernel::durable::{
     EntryValue, InvocationGrant, KernelFault, SessionError, SessionHost, SiteTarget, StoreSchema,
 };
 use marrow_kernel::equality::ValueDomain;
+use marrow_local_wire::{Json, Lexer, WireError};
 
 use crate::actor::{AdmissionRefusal, BindingStrictness, ImageAdmission};
 use crate::attachment::PreparedImage;
@@ -164,12 +165,18 @@ impl std::fmt::Display for ShapeFault {
 }
 
 /// Why a source row could not be decoded or mapped to the target. A typed fact so a caller (or
-/// test) asserts the category rather than parsing prose; the malformed-JSON detail is retained
-/// as text because it is inherently free-form.
+/// test) asserts the category rather than parsing prose.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowFault {
-    /// The line was not a valid flat-scalar JSON object; carries the decoder's detail.
-    Malformed(String),
+    /// The line is not well-formed JSON, or a string in it exceeds
+    /// [`ImportLimits::max_string_bytes`]: the lexer's typed refusal.
+    Malformed(WireError),
+    /// A member's value is an object or an array; the flat importer maps scalars only.
+    Nested { name: String },
+    /// A member name appears twice in one row.
+    DuplicateMember { name: String },
+    /// The row carries more members than [`ImportLimits::max_fields_per_row`].
+    TooManyMembers { limit: usize },
     /// A key column is absent from the row.
     MissingKey { column: String },
     /// A key column is present but `null`.
@@ -199,7 +206,18 @@ pub enum RowFault {
 impl std::fmt::Display for RowFault {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RowFault::Malformed(detail) => write!(f, "{detail}"),
+            RowFault::Malformed(WireError::StringLimit) => {
+                write!(f, "a string value exceeds the import string limit")
+            }
+            RowFault::Malformed(_) => write!(f, "the line is not a well-formed JSON object"),
+            RowFault::Nested { name } => write!(
+                f,
+                "member `{name}` is an object or array; the importer maps scalar members only"
+            ),
+            RowFault::DuplicateMember { name } => write!(f, "duplicate member `{name}`"),
+            RowFault::TooManyMembers { limit } => {
+                write!(f, "more than {limit} members in one row")
+            }
             RowFault::MissingKey { column } => write!(f, "missing key column `{column}`"),
             RowFault::NullKey { column } => write!(f, "key column `{column}` is null"),
             RowFault::KeyType {
@@ -563,12 +581,12 @@ impl RowPlan {
                 .ok_or_else(|| RowFault::MissingKey {
                     column: column.name.clone(),
                 })?;
-            if value == JsonScalar::Null {
+            if value == Json::Null {
                 return Err(RowFault::NullKey {
                     column: column.name.clone(),
                 });
             }
-            let found = value.describe();
+            let found = describe(&value);
             let scalar = key_scalar(column.kind, value).ok_or_else(|| RowFault::KeyType {
                 column: column.name.clone(),
                 expected: column.kind,
@@ -580,7 +598,7 @@ impl RowPlan {
         let mut fields = Vec::with_capacity(self.fields.len());
         for slot in &self.fields {
             let slot_value = match object.take(&slot.name) {
-                None | Some(JsonScalar::Null) => {
+                None | Some(Json::Null) => {
                     if slot.required {
                         return Err(RowFault::MissingRequiredField {
                             field: slot.name.clone(),
@@ -589,7 +607,7 @@ impl RowPlan {
                     None
                 }
                 Some(value) => {
-                    let found = value.describe();
+                    let found = describe(&value);
                     Some(
                         value_domain(slot.kind, value).ok_or_else(|| RowFault::FieldType {
                             field: slot.name.clone(),
@@ -795,60 +813,48 @@ fn importable_scalar(kind: ScalarKind) -> bool {
 }
 
 /// Mint the key scalar of `kind` from a JSON value, or `None` on a type mismatch (no coercion).
-fn key_scalar(kind: ScalarKind, value: JsonScalar) -> Option<KeyScalar> {
+fn key_scalar(kind: ScalarKind, value: Json) -> Option<KeyScalar> {
     Some(match (kind, value) {
-        (ScalarKind::Int, JsonScalar::Int(n)) => KeyScalar::Int(n),
-        (ScalarKind::Bool, JsonScalar::Bool(b)) => KeyScalar::Bool(b),
-        (ScalarKind::Str, JsonScalar::Str(s)) => KeyScalar::Str(s),
+        (ScalarKind::Int, Json::Int(n)) => KeyScalar::Int(n),
+        (ScalarKind::Bool, Json::Bool(b)) => KeyScalar::Bool(b),
+        (ScalarKind::Str, Json::Str(s)) => KeyScalar::Str(s),
         _ => return None,
     })
 }
 
 /// Build the value domain of `kind` from a JSON scalar, or `None` on a type mismatch.
-fn value_domain(kind: ScalarKind, value: JsonScalar) -> Option<ValueDomain> {
+fn value_domain(kind: ScalarKind, value: Json) -> Option<ValueDomain> {
     let scalar = match (kind, value) {
-        (ScalarKind::Int, JsonScalar::Int(n)) => RuntimeScalar::Int(n),
-        (ScalarKind::Bool, JsonScalar::Bool(b)) => RuntimeScalar::Bool(b),
-        (ScalarKind::Str, JsonScalar::Str(s)) => RuntimeScalar::Str(s),
+        (ScalarKind::Int, Json::Int(n)) => RuntimeScalar::Int(n),
+        (ScalarKind::Bool, Json::Bool(b)) => RuntimeScalar::Bool(b),
+        (ScalarKind::Str, Json::Str(s)) => RuntimeScalar::Str(s),
         _ => return None,
     };
     Some(ValueDomain::Scalar(scalar))
 }
 
-// ---------------------------------------------------------------------------
-// Bounded flat-scalar JSONL decoder
-// ---------------------------------------------------------------------------
-
-/// A decoded JSON scalar — the whole value grammar the flat importer accepts. Nested objects,
-/// arrays, and fractional/exponent numbers are rejected by the decoder before they reach here.
-#[derive(Debug, Clone, PartialEq)]
-enum JsonScalar {
-    Str(String),
-    Int(i64),
-    Bool(bool),
-    Null,
-}
-
-impl JsonScalar {
-    fn describe(&self) -> &'static str {
-        match self {
-            JsonScalar::Str(_) => "a string",
-            JsonScalar::Int(_) => "an integer",
-            JsonScalar::Bool(_) => "a boolean",
-            JsonScalar::Null => "null",
-        }
+/// The kind of a JSON value in a type-mismatch report.
+fn describe(value: &Json) -> &'static str {
+    match value {
+        Json::Str(_) => "a string",
+        Json::Int(_) => "an integer",
+        Json::Bool(_) => "a boolean",
+        Json::Null => "null",
+        Json::Array(_) => "an array",
+        Json::Object(_) => "an object",
     }
 }
 
 /// One decoded row object: its members in source order. Lookup removes a member so each is
 /// consumed once and a leftover is a detectable unrecognized column.
+#[derive(Debug)]
 struct RowObject {
-    members: Vec<(String, JsonScalar)>,
+    members: Vec<(String, Json)>,
 }
 
 impl RowObject {
     /// Remove and return the value of member `name`, or `None` if absent.
-    fn take(&mut self, name: &str) -> Option<JsonScalar> {
+    fn take(&mut self, name: &str) -> Option<Json> {
         let position = self.members.iter().position(|(key, _)| key == name)?;
         Some(self.members.remove(position).1)
     }
@@ -864,270 +870,52 @@ fn is_blank(line: &[u8]) -> bool {
     line.iter().all(|b| b.is_ascii_whitespace())
 }
 
-/// Parse a bounded flat JSON object of scalar members, rejecting a non-UTF-8 line and mapping a
-/// decode failure to a typed [`RowFault::Malformed`] carrying the decoder's detail. The UTF-8
-/// check up front lets the decoder pass raw string bytes through without re-validating each
-/// continuation byte.
+/// Decode one line as a flat JSON object of scalar members through the workspace's one JSON
+/// lexer. Insignificant whitespace is accepted; a nested value, a duplicate member, a member
+/// count over the limit, and trailing content are each a typed refusal. The input slice is
+/// already bounded by the line limit; each string is bounded by the lexer.
 fn parse_row_object(line: &[u8], limits: &ImportLimits) -> Result<RowObject, RowFault> {
-    if std::str::from_utf8(line).is_err() {
-        return Err(RowFault::Malformed(
-            "the line is not valid UTF-8".to_string(),
-        ));
-    }
-    decode_object(line, limits).map_err(RowFault::Malformed)
-}
-
-/// Decode a bounded flat JSON object of scalar members from a UTF-8-validated line. Rejects
-/// nesting, arrays, non-integer numbers, duplicate keys, an over-limit member count, and
-/// trailing content. Bounded by `limits` throughout; the input slice is already bounded by the
-/// line limit.
-fn decode_object(line: &[u8], limits: &ImportLimits) -> Result<RowObject, String> {
-    let mut parser = JsonLine {
-        bytes: line,
-        pos: 0,
-        max_string_bytes: limits.max_string_bytes,
-    };
-    parser.skip_ws();
-    parser.expect(b'{')?;
-    let mut members: Vec<(String, JsonScalar)> = Vec::new();
-
-    parser.skip_ws();
-    if parser.peek() == Some(b'}') {
-        parser.pos += 1;
-    } else {
+    let text = std::str::from_utf8(line).map_err(|_| RowFault::Malformed(WireError::Malformed))?;
+    let mut lexer = Lexer::new(text, limits.max_string_bytes);
+    lexer.skip_ws();
+    lexer.expect(b'{').map_err(RowFault::Malformed)?;
+    let mut members: Vec<(String, Json)> = Vec::new();
+    lexer.skip_ws();
+    if !lexer.take(b'}') {
         loop {
-            parser.skip_ws();
-            let key = parser.parse_string()?;
+            lexer.skip_ws();
+            let key = lexer.string().map_err(RowFault::Malformed)?;
             if members.iter().any(|(existing, _)| *existing == key) {
-                return Err(format!("duplicate member `{key}`"));
+                return Err(RowFault::DuplicateMember { name: key });
             }
             if members.len() >= limits.max_fields_per_row {
-                return Err(format!(
-                    "more than {} members in one row",
-                    limits.max_fields_per_row
-                ));
+                return Err(RowFault::TooManyMembers {
+                    limit: limits.max_fields_per_row,
+                });
             }
-            parser.skip_ws();
-            parser.expect(b':')?;
-            parser.skip_ws();
-            let value = parser.parse_scalar()?;
+            lexer.skip_ws();
+            lexer.expect(b':').map_err(RowFault::Malformed)?;
+            lexer.skip_ws();
+            if matches!(lexer.peek(), Some(b'{' | b'[')) {
+                return Err(RowFault::Nested { name: key });
+            }
+            let value = lexer.scalar().map_err(RowFault::Malformed)?;
             members.push((key, value));
-            parser.skip_ws();
-            match parser.next_byte() {
-                Some(b',') => continue,
-                Some(b'}') => break,
-                Some(other) => {
-                    return Err(format!("expected `,` or `}}`, found `{}`", other as char));
-                }
-                None => return Err("unterminated object".to_string()),
+            lexer.skip_ws();
+            if lexer.take(b',') {
+                continue;
             }
+            if lexer.take(b'}') {
+                break;
+            }
+            return Err(RowFault::Malformed(WireError::Malformed));
         }
     }
-
-    parser.skip_ws();
-    if parser.pos != parser.bytes.len() {
-        return Err("trailing content after the object".to_string());
+    lexer.skip_ws();
+    if !lexer.at_end() {
+        return Err(RowFault::Malformed(WireError::Malformed));
     }
     Ok(RowObject { members })
-}
-
-/// A cursor over one JSONL line's bytes.
-struct JsonLine<'a> {
-    bytes: &'a [u8],
-    pos: usize,
-    max_string_bytes: usize,
-}
-
-impl JsonLine<'_> {
-    fn peek(&self) -> Option<u8> {
-        self.bytes.get(self.pos).copied()
-    }
-
-    fn next_byte(&mut self) -> Option<u8> {
-        let byte = self.bytes.get(self.pos).copied()?;
-        self.pos += 1;
-        Some(byte)
-    }
-
-    fn skip_ws(&mut self) {
-        while matches!(self.peek(), Some(b) if b == b' ' || b == b'\t' || b == b'\r' || b == b'\n')
-        {
-            self.pos += 1;
-        }
-    }
-
-    fn expect(&mut self, byte: u8) -> Result<(), String> {
-        match self.next_byte() {
-            Some(found) if found == byte => Ok(()),
-            Some(found) => Err(format!(
-                "expected `{}`, found `{}`",
-                byte as char, found as char
-            )),
-            None => Err(format!("expected `{}`, found end of line", byte as char)),
-        }
-    }
-
-    /// Parse a JSON scalar value: a string, integer, `true`, `false`, or `null`. A nested
-    /// object/array or a fractional/exponent number is a typed refusal.
-    fn parse_scalar(&mut self) -> Result<JsonScalar, String> {
-        match self.peek() {
-            Some(b'"') => self.parse_string().map(JsonScalar::Str),
-            Some(b't') | Some(b'f') => self.parse_bool(),
-            Some(b'n') => self.parse_null(),
-            Some(b) if b == b'-' || b.is_ascii_digit() => self.parse_integer(),
-            Some(b'{') | Some(b'[') => {
-                Err("nested objects and arrays are not importable".to_string())
-            }
-            Some(other) => Err(format!("unexpected value byte `{}`", other as char)),
-            None => Err("expected a value, found end of line".to_string()),
-        }
-    }
-
-    fn parse_bool(&mut self) -> Result<JsonScalar, String> {
-        if self.consume_literal(b"true") {
-            Ok(JsonScalar::Bool(true))
-        } else if self.consume_literal(b"false") {
-            Ok(JsonScalar::Bool(false))
-        } else {
-            Err("malformed boolean literal".to_string())
-        }
-    }
-
-    fn parse_null(&mut self) -> Result<JsonScalar, String> {
-        if self.consume_literal(b"null") {
-            Ok(JsonScalar::Null)
-        } else {
-            Err("malformed null literal".to_string())
-        }
-    }
-
-    fn consume_literal(&mut self, literal: &[u8]) -> bool {
-        if self.bytes[self.pos..].starts_with(literal) {
-            self.pos += literal.len();
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Parse a JSON integer: optional `-`, then `0` alone or a non-zero leading digit run. A
-    /// `.`, `e`, or `E` is rejected (floats are outside the scalar domain). Range-checked to
-    /// `i64`.
-    fn parse_integer(&mut self) -> Result<JsonScalar, String> {
-        let start = self.pos;
-        if self.peek() == Some(b'-') {
-            self.pos += 1;
-        }
-        match self.peek() {
-            Some(b'0') => {
-                self.pos += 1;
-                // A leading zero must stand alone (no `0123`).
-                if matches!(self.peek(), Some(d) if d.is_ascii_digit()) {
-                    return Err("a leading zero is not a valid integer".to_string());
-                }
-            }
-            Some(d) if d.is_ascii_digit() => {
-                while matches!(self.peek(), Some(d) if d.is_ascii_digit()) {
-                    self.pos += 1;
-                }
-            }
-            _ => return Err("malformed number".to_string()),
-        }
-        if matches!(self.peek(), Some(b'.') | Some(b'e') | Some(b'E')) {
-            return Err("fractional and exponent numbers are not importable".to_string());
-        }
-        let text = std::str::from_utf8(&self.bytes[start..self.pos])
-            .map_err(|_| "malformed number".to_string())?;
-        text.parse::<i64>()
-            .map(JsonScalar::Int)
-            .map_err(|_| "integer out of the signed 64-bit range".to_string())
-    }
-
-    /// Parse a JSON string: an opening quote, UTF-8 content with the JSON escapes (`\" \\ \/ \b
-    /// \f \n \r \t` and `\uXXXX` including surrogate pairs), and a closing quote. Bounded by
-    /// `max_string_bytes`; a raw control byte or a lone/invalid escape is a typed refusal.
-    fn parse_string(&mut self) -> Result<String, String> {
-        self.expect(b'"')?;
-        // Accumulate bytes: pass-through bytes come from a UTF-8-validated line, and each escape
-        // produces a valid scalar's bytes, so the whole is valid UTF-8 (checked once at the end).
-        let mut out: Vec<u8> = Vec::new();
-        loop {
-            let byte = self.next_byte().ok_or("unterminated string")?;
-            match byte {
-                b'"' => break,
-                b'\\' => {
-                    let escape = self.next_byte().ok_or("unterminated escape")?;
-                    match escape {
-                        b'"' => out.push(b'"'),
-                        b'\\' => out.push(b'\\'),
-                        b'/' => out.push(b'/'),
-                        b'b' => out.push(0x08),
-                        b'f' => out.push(0x0C),
-                        b'n' => out.push(b'\n'),
-                        b'r' => out.push(b'\r'),
-                        b't' => out.push(b'\t'),
-                        b'u' => {
-                            let ch = self.parse_unicode_escape()?;
-                            let mut encoded = [0u8; 4];
-                            out.extend_from_slice(ch.encode_utf8(&mut encoded).as_bytes());
-                        }
-                        other => {
-                            return Err(format!("invalid string escape `\\{}`", other as char));
-                        }
-                    }
-                }
-                // A raw control character is invalid JSON inside a string.
-                0x00..=0x1F => return Err("a raw control character in a string".to_string()),
-                // Any other byte passes through verbatim: an ASCII byte, or a byte of a multibyte
-                // sequence the line-level UTF-8 validation already accepted.
-                _ => out.push(byte),
-            }
-            if out.len() > self.max_string_bytes {
-                return Err(format!(
-                    "a string value exceeds {} bytes",
-                    self.max_string_bytes
-                ));
-            }
-        }
-        String::from_utf8(out).map_err(|_| "an invalid UTF-8 sequence in a string".to_string())
-    }
-
-    /// Parse the four hex digits after a `\u`, decoding a UTF-16 unit and pairing a high
-    /// surrogate with a following `\u` low surrogate.
-    fn parse_unicode_escape(&mut self) -> Result<char, String> {
-        let unit = self.parse_hex4()?;
-        // A high surrogate must be followed by a `\u` low surrogate; combine to a scalar.
-        if (0xD800..=0xDBFF).contains(&unit) {
-            if self.next_byte() != Some(b'\\') || self.next_byte() != Some(b'u') {
-                return Err("a high surrogate without a low surrogate".to_string());
-            }
-            let low = self.parse_hex4()?;
-            if !(0xDC00..=0xDFFF).contains(&low) {
-                return Err("an invalid low surrogate".to_string());
-            }
-            let combined = 0x1_0000 + (((unit - 0xD800) as u32) << 10) + (low - 0xDC00) as u32;
-            char::from_u32(combined).ok_or_else(|| "an invalid surrogate pair".to_string())
-        } else if (0xDC00..=0xDFFF).contains(&unit) {
-            Err("a lone low surrogate".to_string())
-        } else {
-            char::from_u32(unit as u32).ok_or_else(|| "an invalid unicode escape".to_string())
-        }
-    }
-
-    fn parse_hex4(&mut self) -> Result<u16, String> {
-        let mut value: u16 = 0;
-        for _ in 0..4 {
-            let digit = self.next_byte().ok_or("a truncated \\u escape")?;
-            let nibble = match digit {
-                b'0'..=b'9' => digit - b'0',
-                b'a'..=b'f' => digit - b'a' + 10,
-                b'A'..=b'F' => digit - b'A' + 10,
-                _ => return Err("a non-hex digit in a \\u escape".to_string()),
-            };
-            value = (value << 4) | u16::from(nibble);
-        }
-        Ok(value)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1203,7 +991,7 @@ mod tests {
             &ImportLimits::DEFAULT,
         )
         .expect("parse");
-        let JsonScalar::Str(text) = object.take("t").expect("member") else {
+        let Json::Str(text) = object.take("t").expect("member") else {
             panic!("expected a string");
         };
         assert_eq!(text, "a\t\"b\"\nA\u{1F600}\u{00E9}");
@@ -1211,13 +999,48 @@ mod tests {
 
     #[test]
     fn nested_and_float_and_dupes_are_refused() {
-        let limits = ImportLimits::DEFAULT;
-        assert!(parse_row_object(br#"{"a": {"b": 1}}"#, &limits).is_err());
-        assert!(parse_row_object(br#"{"a": [1,2]}"#, &limits).is_err());
-        assert!(parse_row_object(br#"{"a": 1.5}"#, &limits).is_err());
-        assert!(parse_row_object(br#"{"a": 1, "a": 2}"#, &limits).is_err());
-        assert!(parse_row_object(br#"{"a": 01}"#, &limits).is_err());
-        assert!(parse_row_object(br#"{"a": 1} junk"#, &limits).is_err());
+        let limits = ImportLimits {
+            max_fields_per_row: 2,
+            max_string_bytes: 4,
+            ..ImportLimits::DEFAULT
+        };
+        let refusal = |line: &[u8]| parse_row_object(line, &limits).expect_err("refused");
+        assert_eq!(
+            refusal(br#"{"a": {"b": 1}}"#),
+            RowFault::Nested { name: "a".into() }
+        );
+        assert_eq!(
+            refusal(br#"{"a": [1,2]}"#),
+            RowFault::Nested { name: "a".into() }
+        );
+        assert_eq!(
+            refusal(br#"{"a": 1.5}"#),
+            RowFault::Malformed(WireError::Malformed)
+        );
+        assert_eq!(
+            refusal(br#"{"a": 1, "a": 2}"#),
+            RowFault::DuplicateMember { name: "a".into() }
+        );
+        assert_eq!(
+            refusal(br#"{"a": 01}"#),
+            RowFault::Malformed(WireError::Noncanonical)
+        );
+        assert_eq!(
+            refusal(br#"{"a": 1} junk"#),
+            RowFault::Malformed(WireError::Malformed)
+        );
+        assert_eq!(
+            refusal(br#"{"a": 1, "b": 2, "c": 3}"#),
+            RowFault::TooManyMembers { limit: 2 }
+        );
+        assert_eq!(
+            refusal(br#"{"a": "12345"}"#),
+            RowFault::Malformed(WireError::StringLimit)
+        );
+        assert_eq!(
+            refusal(&[b'{', 0xff, b'}']),
+            RowFault::Malformed(WireError::Malformed)
+        );
     }
 
     #[test]

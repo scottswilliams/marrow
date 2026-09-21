@@ -166,7 +166,11 @@ pub(crate) fn cut(step: Step) -> Seam {
         Step::Append(_) => CustodyOp::Append,
         _ => CustodyOp::Sync,
     };
-    once(move |event| is_step(event, step), move |_| Err(io_fault(op))).0
+    once(
+        move |event| is_step(event, step),
+        move |_| Err(io_fault(op)),
+    )
+    .0
 }
 
 /// A seam that fails the publication's parent sync.

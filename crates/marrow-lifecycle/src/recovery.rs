@@ -227,7 +227,10 @@ fn recover_inner(
             .directory
             .sync(Step::RecoveryActive)
             .map_err(metadata_error)?;
-        opened.directory.at(Step::FinalRead).map_err(metadata_error)?;
+        opened
+            .directory
+            .at(Step::FinalRead)
+            .map_err(metadata_error)?;
         audit::verify_published(&opened.directory, &location, &record, opened.head_digest)
     };
     finish().map_err(|source| RecoveryFault::Completion { instance, source })?;

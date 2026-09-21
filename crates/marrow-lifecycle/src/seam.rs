@@ -68,7 +68,10 @@ pub(crate) enum StagePoint {
 #[cfg_attr(not(test), allow(dead_code, reason = "read only by armed observers"))]
 pub(crate) enum Event<'a> {
     /// `step` is about to run over `dir`.
-    Step { dir: &'a AdmittedStoreDir, step: Step },
+    Step {
+        dir: &'a AdmittedStoreDir,
+        step: Step,
+    },
     /// The owner lock over the directory at `path` is held; nothing in it has been read.
     Locked { path: &'a Path },
     /// A provisioning stage is complete under `owner` and admitted as `admitted`, currently
