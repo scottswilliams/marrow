@@ -83,6 +83,8 @@ const IDS_NOTICE: &str = "machine-written by marrow; do not edit";
 const IDS_END: &str = "end";
 /// The one lowercase alphabet used by both public and artifact id rendering.
 const ID_HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+/// The fixed width of an id's artifact spelling: 16 bytes as lowercase hex digits.
+const ID_HEX_WIDTH: usize = 32;
 
 /// The fixed artifact bounds: total bytes and total rows (entries plus
 /// tombstones). Both guard the reader against an unbounded or hostile file, and
@@ -214,7 +216,7 @@ impl DurableIdentityId {
     }
 
     fn parse_hex(text: &str) -> Option<Self> {
-        if text.len() != 32 {
+        if text.len() != ID_HEX_WIDTH {
             return None;
         }
         let mut bytes = [0u8; 16];
@@ -230,7 +232,7 @@ impl DurableIdentityId {
 /// The canonical 32-digit lowercase-hex artifact spelling.
 impl fmt::Display for DurableIdentityId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut hex = [0; 32];
+        let mut hex = [0; ID_HEX_WIDTH];
         for (index, byte) in self.0.into_iter().enumerate() {
             hex[index * 2] = ID_HEX_DIGITS[usize::from(byte >> 4)];
             hex[index * 2 + 1] = ID_HEX_DIGITS[usize::from(byte & 0x0f)];
@@ -626,7 +628,6 @@ pub enum IdentityMintFailure<E> {
 /// it was admitted against. Only project admission constructs it; the
 /// publication owner installs `next` over a filesystem that still holds
 /// `expected`.
-#[derive(Debug)]
 #[must_use = "a ledger publication plan must be consumed by the publication owner"]
 pub struct LedgerPublicationPlan {
     expected: Option<Arc<[u8]>>,
@@ -642,6 +643,18 @@ impl LedgerPublicationPlan {
     /// The canonical admitted successor bytes.
     pub fn next(&self) -> &[u8] {
         &self.next
+    }
+}
+
+impl fmt::Debug for LedgerPublicationPlan {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LedgerPublicationPlan")
+            .field(
+                "expected_byte_len",
+                &self.expected.as_ref().map(|bytes| bytes.len()),
+            )
+            .field("next_byte_len", &self.next.len())
+            .finish()
     }
 }
 
@@ -759,7 +772,7 @@ fn valid_anchor_path(path: &str) -> bool {
 }
 
 /// The successor's exact canonical byte length, measured by running the one
-/// serializer into a counting sink. An id renders at a fixed width, so the
+/// serializer into a counting sink. Every id renders at `ID_HEX_WIDTH`, so the
 /// requests are counted under a placeholder id before any candidate exists.
 fn projected_canonical_len(ledger: &IdentityLedger, requests: &[IdentityAnchor]) -> usize {
     let placeholder = DurableIdentityId([0; 16]);
@@ -1833,6 +1846,23 @@ mod tests {
         ] {
             assert!(!debug.contains("marrow ids v0"));
             assert!(!debug.contains("\\r\\n"));
+        }
+    }
+
+    #[test]
+    fn debug_renderings_carry_byte_lengths_and_never_artifact_bytes() {
+        let canonical = counter_bytes();
+        let captured = CapturedLedger::capture(Some(&canonical)).expect("capture counter");
+        let plan = plan_mints(
+            &captured,
+            vec![(anchor(IdentityKind::Field, "Counter.note"), id(0x20))],
+        )
+        .expect("successor");
+        let debug = format!("{plan:?}");
+        assert!(debug.contains(&format!("expected_byte_len: Some({})", canonical.len())));
+        assert!(debug.contains(&format!("next_byte_len: {}", plan.next().len())));
+        for debug in [debug, format!("{captured:?}")] {
+            assert!(!debug.contains("marrow ids v0"));
         }
     }
 

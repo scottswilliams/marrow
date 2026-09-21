@@ -236,7 +236,7 @@ fn compile_or_mint(
                 MintOutcome::NotApplicable => {
                     Err(Outcome::failed(Record::diagnostics(diagnostics.as_slice())))
                 }
-                MintOutcome::Failed(code) => Err(Outcome::operational(code, None)),
+                MintOutcome::Failed(code, detail) => Err(Outcome::operational(code, detail)),
             }
         }
         Err(failure) => Err(Outcome::failed(Record::compile_failure(&failure))),
@@ -251,7 +251,7 @@ enum MintOutcome {
     /// The failure is not (only) missing mintable identity; report it as-is.
     NotApplicable,
     /// Minting itself failed; `.marrow/ids` is unchanged.
-    Failed(Code),
+    Failed(Code, Option<String>),
 }
 
 /// The `marrow run` mint: when a compile failed *only* because fresh durable
@@ -298,7 +298,7 @@ fn mint_missing_identities(
     // whose committed generation is still undecided would be admitted against
     // the wrong state.
     if let Err(failure) = crate::project::recover_identity_publication(Path::new(".")) {
-        return MintOutcome::Failed(failure.code);
+        return MintOutcome::Failed(failure.code, None);
     }
     let publication = match project.admit_identity_mints_with(first, rest, |exact_count| {
         let mut candidates = Vec::with_capacity(exact_count);
@@ -308,25 +308,31 @@ fn mint_missing_identities(
         Ok::<_, std::io::Error>(candidates)
     }) {
         Ok(publication) => publication,
-        Err(failure) => return MintOutcome::Failed(mint_failure_code(&failure)),
+        Err(failure) => {
+            let (code, detail) = mint_failure_record(&failure);
+            return MintOutcome::Failed(code, detail);
+        }
     };
     match crate::project::publish_identity_ledger(Path::new("."), publication) {
         Ok(IdsPublication::Published) => MintOutcome::Minted,
         // The ledger was replaced between admission and publication, so the
         // successor was never installed and the artifact is the other writer's.
         Ok(IdsPublication::ConcurrentChange) => {
-            MintOutcome::Failed(marrow_codes::Code::ProjectIdsMint)
+            MintOutcome::Failed(marrow_codes::Code::ProjectIdsMint, None)
         }
-        Err(failure) => MintOutcome::Failed(failure.code),
+        Err(failure) => MintOutcome::Failed(failure.code, None),
     }
 }
 
-/// The code a refused mint reports: a candidate-supply failure is the entropy
-/// read's own operational failure, and an admission refusal is the ledger's.
-fn mint_failure_code(failure: &IdentityMintFailure<io::Error>) -> Code {
+/// The code and detail a refused mint reports: a candidate-supply failure is the
+/// entropy read's own operational failure carrying its text, and an admission
+/// refusal is the ledger's code.
+fn mint_failure_record(failure: &IdentityMintFailure<io::Error>) -> (Code, Option<String>) {
     match failure {
-        IdentityMintFailure::Supply(_) => Code::IoRead,
-        IdentityMintFailure::Mutation(refusal) => refusal.code(),
+        IdentityMintFailure::Supply(error) => {
+            (Code::IoRead, Some(format!("entropy source: {error}")))
+        }
+        IdentityMintFailure::Mutation(refusal) => (refusal.code(), None),
     }
 }
 
@@ -1025,15 +1031,24 @@ mod mint_tests {
     use super::*;
 
     #[test]
-    fn a_supply_failure_reports_the_read_code_and_a_refusal_the_mint_code() {
-        let supply = IdentityMintFailure::Supply(io::Error::from(io::ErrorKind::PermissionDenied));
-        assert_eq!(mint_failure_code(&supply), Code::IoRead);
+    fn a_supply_failure_reports_the_read_code_with_its_text_and_a_refusal_the_mint_code() {
+        let supply = IdentityMintFailure::Supply(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "urandom closed",
+        ));
+        assert_eq!(
+            mint_failure_record(&supply),
+            (
+                Code::IoRead,
+                Some("entropy source: urandom closed".to_string())
+            ),
+        );
 
         let refusal =
             IdentityMintFailure::Mutation(marrow_project::IdentityMutationError::CandidateCount {
                 expected: 1,
                 actual: 0,
             });
-        assert_eq!(mint_failure_code(&refusal), Code::ProjectIdsMint);
+        assert_eq!(mint_failure_record(&refusal), (Code::ProjectIdsMint, None));
     }
 }
