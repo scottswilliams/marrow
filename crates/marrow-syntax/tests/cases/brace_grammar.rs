@@ -472,9 +472,16 @@ fn an_if_const_chain_with_a_trailing_and_never_anchors_at_zero() {
     );
 }
 
+/// A diagnostic as its typed reason and 1-based position.
+type Located = (DiagnosticReason, u32, u32);
+
+/// One row of the parse matrix: the source, the diagnostics it reports, and the shape
+/// of the statements standing in its function body afterwards.
+type MatrixCase = (&'static str, Vec<Located>, fn(&[Statement]) -> bool);
+
 /// Every diagnostic of `source` as its typed reason and 1-based position, each checked
 /// to name the same point by byte and by line/column.
-fn located_reasons(source: &str) -> Vec<(DiagnosticReason, u32, u32)> {
+fn located_reasons(source: &str) -> Vec<Located> {
     parse_bounded(source)
         .diagnostics
         .complete()
@@ -501,11 +508,7 @@ fn the_block_grammar_parse_matrix() {
             column,
         )
     };
-    let cases: [(
-        &str,
-        Vec<(DiagnosticReason, u32, u32)>,
-        fn(&[Statement]) -> bool,
-    ); 7] = [
+    let cases: [MatrixCase; 7] = [
         (
             "module app\nfn f() {\n    if a\n    return\n}\n",
             vec![block(4, 5)],
