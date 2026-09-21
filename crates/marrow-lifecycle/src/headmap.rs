@@ -24,7 +24,7 @@ use crate::codec::{FormatError, FormatField, MalformedReason, Reader, put_u32};
 /// Maximum entries in one Head map, bounding decode allocation. This count limit matches
 /// the kernel's `MAX_STORE_NODES`, enforced by a drift test. Physical addresses and the
 /// high-water mark use an independent `u32` lifetime space.
-pub const MAX_HEAD_MAP_ENTRIES: u32 = 1 << 16;
+pub(crate) const MAX_HEAD_MAP_ENTRIES: u32 = 1 << 16;
 
 /// One binding in the head map: a durable node's ledger id and its compact store-local
 /// number.

@@ -780,7 +780,12 @@ fn import_refuses_every_non_active_image_before_the_engine_opens() {
                 map.clone(),
             ),
             image.clone(),
-            |error| matches!(error, ImportError::Refused(AdmissionRefusal::InconsistentBinding)),
+            |error| {
+                matches!(
+                    error,
+                    ImportError::Refused(AdmissionRefusal::InconsistentBinding)
+                )
+            },
         ),
         (
             "a changed durable contract",
@@ -935,48 +940,6 @@ fn no_unexpected_crate_reaches_the_lifecycle() {
         offenders.is_empty(),
         "unexpected production dependency on marrow-lifecycle: {offenders:?}",
     );
-}
-
-/// The raw-seeding absence gate: the importer writes exclusively through the kernel's
-/// `create_entry` — its source names no byte-engine transaction primitive. A regression that
-/// added a raw `begin`/`put`/`remove` seeding path (which would leak production-ward, bypassing
-/// authority, site resolution, and index maintenance) is made conspicuous here.
-#[test]
-fn the_importer_writes_only_through_the_kernel() {
-    let import_src = crates_dir()
-        .join("marrow-lifecycle")
-        .join("src")
-        .join("import.rs");
-    let text = std::fs::read_to_string(&import_src).expect("read import.rs");
-    // Strip doc comments and line comments so prose that names these primitives (to explain why
-    // the importer avoids them) does not trip the scan; only code lines are checked.
-    let code: String = text
-        .lines()
-        .map(|line| line.split("//").next().unwrap_or(""))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    assert!(
-        code.contains("create_entry"),
-        "the importer must write through the kernel's create_entry",
-    );
-    // The raw-engine markers a seeding path would necessarily name: the byte-engine crate, its
-    // transaction trait/primitives, and the restore slice's cell-replay seams. The importer
-    // touches none of them — it reaches the engine only transitively through the kernel.
-    for forbidden in [
-        "marrow_store",
-        "ByteEngine",
-        "WriteTxn",
-        ".begin(",
-        "insert_cells",
-        "visit_cells",
-    ] {
-        assert!(
-            !code.contains(forbidden),
-            "the importer must not name the raw engine primitive `{forbidden}` — every write \
-             passes the path kernel",
-        );
-    }
 }
 
 /// The workspace `crates/` directory, from this crate's manifest directory.

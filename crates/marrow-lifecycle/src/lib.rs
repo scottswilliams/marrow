@@ -67,9 +67,9 @@ pub use authority::{DemandExceedsCeiling, ExceedingDemand};
 pub use backup::{BackupError, BackupFault, StoreBackup, backup};
 pub use backup_stream::StreamError as BackupReadError;
 pub use codec::{FormatError, FormatField, MalformedReason};
-pub use envelope::{EngineKind, MAX_ENVELOPE_FILE_BYTES, StoreEnvelope};
-pub use head::{ActiveBinding, LogicalHead, MAX_HEAD_FILE_BYTES};
-pub use headmap::{HeadMap, HeadMapEntry, MAX_HEAD_MAP_ENTRIES};
+pub use envelope::{EngineKind, StoreEnvelope};
+pub use head::{ActiveBinding, LogicalHead};
+pub use headmap::{HeadMap, HeadMapEntry};
 pub use image::{
     HeadMapPinMismatch, PinDisagreement, accepted_ceiling, active_binding, head_map,
     head_map_node_order,
@@ -93,7 +93,7 @@ pub use marrow_kernel::durable::InvocationGrant;
 // taking an edge to the adapter crate itself.
 pub use marrow_fs_journal::CustodyError;
 pub use provision::{
-    OpenError, OpenStore, Preflight, ProvisionCleanupFailure, ProvisionError, ProvisionFault,
+    OpenError, Preflight, ProvisionCleanupFailure, ProvisionError, ProvisionFault,
     ProvisionRequest, Provisioned, preflight, provision,
 };
 pub use recovery::{RecoveredStore, RecoveryError, RecoveryFault, recover};

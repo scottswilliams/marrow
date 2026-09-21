@@ -617,7 +617,7 @@ fn the_envelope_ceiling_admits_its_maximum_and_refuses_one_byte_more() {
     .expect("maximal record");
     assert_eq!(
         bytes.len() as u64,
-        crate::MAX_ENVELOPE_FILE_BYTES,
+        crate::envelope::MAX_ENVELOPE_FILE_BYTES,
         "the largest envelope the encoder produces is the ceiling admission applies",
     );
     provision(
@@ -662,7 +662,7 @@ fn the_head_ceiling_admits_its_maximum_and_refuses_one_byte_more() {
     let bytes = maximal.encode();
     assert_eq!(
         bytes.len() as u64,
-        crate::MAX_HEAD_FILE_BYTES,
+        crate::head::MAX_HEAD_FILE_BYTES,
         "the largest head the encoder produces is the ceiling admission applies",
     );
     provision(

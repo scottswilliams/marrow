@@ -12,8 +12,9 @@ use std::io::{self, Read, Write};
 use marrow_image::{StoreBackupDigest, bounds::MAX_IMAGE_BYTES};
 use marrow_kernel::durable::{Cell, ExportSink, MAX_KEY_LEN, MAX_VALUE_LEN};
 
+use crate::FormatError;
 use crate::codec::{FormatField, MalformedReason};
-use crate::{FormatError, MAX_HEAD_FILE_BYTES};
+use crate::head::MAX_HEAD_FILE_BYTES;
 use marrow_codes::Code;
 
 const PREFIX: &[u8; 5] = b"MWBK\0";

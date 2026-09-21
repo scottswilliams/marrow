@@ -26,7 +26,7 @@ const MAX_TOOLCHAIN_BYTES: u32 = 64;
 /// The maximum envelope: magic, version, instance, the bounded toolchain string, engine
 /// kind and format, one state byte, at most two head digests and the sealing digest.
 /// Admission enforces it before allocation.
-pub const MAX_ENVELOPE_FILE_BYTES: u64 = 30 + MAX_TOOLCHAIN_BYTES as u64 + 32 + 1 + 2 * 32;
+pub(crate) const MAX_ENVELOPE_FILE_BYTES: u64 = 30 + MAX_TOOLCHAIN_BYTES as u64 + 32 + 1 + 2 * 32;
 
 /// The record ceiling for a recognized version, before allocating its body.
 pub(crate) fn file_ceiling(prefix: &[u8; ARTIFACT_PREFIX_BYTES]) -> Result<u64, FormatError> {

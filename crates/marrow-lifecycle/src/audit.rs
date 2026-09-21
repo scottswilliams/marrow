@@ -191,7 +191,7 @@ pub(crate) fn verify_published(
 }
 
 pub(crate) fn inspect(
-    opened: &crate::OpenStore,
+    opened: &crate::provision::OpenStore,
     names: &Names,
     image_id: ImageId,
 ) -> Result<StoreAudit, AuditError> {

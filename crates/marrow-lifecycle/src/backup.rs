@@ -210,7 +210,7 @@ pub(crate) fn backup_observed(
 }
 
 fn write_backup(
-    opened: &crate::OpenStore,
+    opened: &crate::provision::OpenStore,
     names: &Names,
     image_id: marrow_image::ImageId,
     image_bytes: &[u8],

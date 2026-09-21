@@ -20,7 +20,10 @@ use marrow_kernel::durable::{SiteTarget, StoreProjection, StoreSchemaBuilder};
 
 /// Open the two-node directory fixture without image admission. These tests exercise
 /// filesystem publication and custody; their synthetic Head carries no executable image.
-pub(crate) fn open(dir: &Path, projection: StoreProjection) -> Result<crate::OpenStore, OpenError> {
+pub(crate) fn open(
+    dir: &Path,
+    projection: StoreProjection,
+) -> Result<crate::provision::OpenStore, OpenError> {
     open_observed(dir, projection, crate::seam::Seam::NONE)
 }
 
@@ -29,7 +32,7 @@ pub(crate) fn open_observed(
     dir: &Path,
     projection: StoreProjection,
     seam: crate::seam::Seam,
-) -> Result<crate::OpenStore, OpenError> {
+) -> Result<crate::provision::OpenStore, OpenError> {
     use crate::provision::{AdmitError, open_admitted};
     use marrow_kernel::durable::{NativeOpenAccess, NumberedProjection};
     open_admitted(dir, NativeOpenAccess::ReadWrite, seam, |_| {

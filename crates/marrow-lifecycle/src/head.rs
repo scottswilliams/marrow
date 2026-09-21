@@ -44,7 +44,7 @@ const HEAD_FIXED_PREFIX_BYTES: u64 = 4 + 1 + 1 + 32 * 3 + 8 + 32 + 8;
 /// identity map at [`MAX_HEAD_MAP_ENTRIES`] entries behind its high-water and count, the
 /// length-prefixed accepted-ceiling payload at [`MAX_ACCEPTED_CEILING_BYTES`], and the
 /// 32-byte sealing digest.
-pub const MAX_HEAD_FILE_BYTES: u64 = HEAD_FIXED_PREFIX_BYTES
+pub(crate) const MAX_HEAD_FILE_BYTES: u64 = HEAD_FIXED_PREFIX_BYTES
     + 4
     + 4
     + MAX_HEAD_MAP_ENTRIES as u64 * (16 + 4)
