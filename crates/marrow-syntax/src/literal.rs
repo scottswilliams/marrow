@@ -1,13 +1,11 @@
-//! Canonical decoding of string- and bytes-literal text into their runtime values.
+//! Canonical decoding of string-literal text into its runtime value.
 //!
 //! A Marrow string literal recognizes exactly five escapes: `\\`, `\"`, `\n`, `\r`, and
-//! `\t`, plus `\u{H}` in text. A bytes literal recognizes those same five plus `\xNN`
-//! hex. Any other backslash escape, a trailing lone backslash, and a malformed or
-//! truncated hex escape are rejected. Every layer that interprets string-literal text —
-//! literal lowering, constant folding, the saved-path key parser — decodes through the
-//! string entry points here, so the escape grammar has one owner. The bytes decoder owns
-//! the bytes escape grammar the same way, though no production layer reaches it yet: a
-//! byte literal lowers to a typed `check.unsupported` rejection instead.
+//! `\t`, plus `\u{H}`. Any other backslash escape, a trailing lone backslash, and a
+//! malformed or truncated unicode escape are rejected. Every layer that interprets
+//! string-literal text — literal lowering, constant folding, the saved-path key parser —
+//! decodes through the entry points here, so the escape grammar has one owner. A bytes
+//! literal has no decoder: it lowers to a typed `check.unsupported` rejection.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StringLiteralError {
@@ -16,15 +14,6 @@ pub enum StringLiteralError {
     /// An unrecognized escape, or a trailing lone backslash. The offset is the byte
     /// position of the opening backslash, so a diagnostic can point at the escape rather
     /// than the whole literal.
-    BadEscape { offset: usize },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BytesLiteralError {
-    /// Missing the surrounding `b"` … `"` delimiters.
-    Unquoted,
-    /// An unrecognized escape, a trailing lone backslash, or a malformed or truncated
-    /// `\xNN` hex escape, at the byte position of the opening backslash.
     BadEscape { offset: usize },
 }
 
@@ -141,8 +130,7 @@ pub fn decode_interpolation_text(inner: &str) -> Result<String, StringLiteralErr
 /// Decode the tail of a `\u{H}` string escape, positioned just after the `u`. The braces
 /// enclose one to six hexadecimal digits naming a Unicode scalar value, at most
 /// `0x10FFFF` and not a UTF-16 surrogate; anything else is a bad escape at
-/// `escape_offset`, the byte position of the opening backslash. Text-only:
-/// [`decode_bytes_escapes`] does not admit it, keeping the byte/text boundary typed.
+/// `escape_offset`, the byte position of the opening backslash.
 fn decode_unicode_escape(
     chars: &mut std::str::CharIndices,
     escape_offset: usize,
@@ -175,65 +163,11 @@ fn decode_unicode_escape(
     char::from_u32(value).ok_or(bad)
 }
 
-/// Decode a full bytes literal — surrounding `b"` … `"` included — into its bytes. A
-/// bad-escape offset is relative to the full literal, accounting for the stripped `b"`.
-pub fn decode_bytes_literal(text: &str) -> Result<Vec<u8>, BytesLiteralError> {
-    let inner = text
-        .strip_prefix("b\"")
-        .and_then(|rest| rest.strip_suffix('"'))
-        .ok_or(BytesLiteralError::Unquoted)?;
-    decode_bytes_escapes(inner).map_err(|error| shift_bytes_offset(error, 2))
-}
-
-fn shift_bytes_offset(error: BytesLiteralError, by: usize) -> BytesLiteralError {
-    match error {
-        BytesLiteralError::BadEscape { offset } => BytesLiteralError::BadEscape {
-            offset: offset + by,
-        },
-        other => other,
-    }
-}
-
-/// Decode escapes in already-unquoted bytes-literal text. Ordinary characters contribute
-/// their UTF-8 bytes; the five string escapes plus `\xNN` emit individual byte values.
-pub fn decode_bytes_escapes(inner: &str) -> Result<Vec<u8>, BytesLiteralError> {
-    let mut decoded = Vec::with_capacity(inner.len());
-    let mut chars = inner.char_indices();
-    while let Some((offset, ch)) = chars.next() {
-        if ch != '\\' {
-            let mut buffer = [0; 4];
-            decoded.extend_from_slice(ch.encode_utf8(&mut buffer).as_bytes());
-            continue;
-        }
-        let bad = BytesLiteralError::BadEscape { offset };
-        let (_, escaped) = chars.next().ok_or(bad)?;
-        match escaped {
-            '\\' => decoded.push(b'\\'),
-            '"' => decoded.push(b'"'),
-            'n' => decoded.push(b'\n'),
-            'r' => decoded.push(b'\r'),
-            't' => decoded.push(b'\t'),
-            'x' => {
-                let high = chars.next().and_then(|(_, c)| hex_digit(c)).ok_or(bad)?;
-                let low = chars.next().and_then(|(_, c)| hex_digit(c)).ok_or(bad)?;
-                decoded.push((high << 4) | low);
-            }
-            _ => return Err(bad),
-        }
-    }
-    Ok(decoded)
-}
-
-fn hex_digit(ch: char) -> Option<u8> {
-    ch.to_digit(16).and_then(|digit| u8::try_from(digit).ok())
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        BytesLiteralError, StringLiteralError, decode_bytes_escapes, decode_bytes_literal,
-        decode_interpolation_text, decode_string_escapes, decode_string_literal,
-        encode_string_literal,
+        StringLiteralError, decode_interpolation_text, decode_string_escapes,
+        decode_string_literal, encode_string_literal,
     };
 
     #[test]
@@ -341,16 +275,6 @@ mod tests {
     }
 
     #[test]
-    fn bytes_reject_unicode_escapes() {
-        // A unicode escape spells a scalar, a text concept; bytes spell bytes with
-        // `\xNN`, so `\u{...}` stays rejected in a bytes literal.
-        assert_eq!(
-            decode_bytes_escapes(r"\u{41}"),
-            Err(BytesLiteralError::BadEscape { offset: 0 })
-        );
-    }
-
-    #[test]
     fn reports_the_offset_of_a_bad_escape() {
         // The offset points at the backslash, and the full-literal decoder shifts it
         // past the opening quote.
@@ -400,62 +324,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn bytes_decode_the_five_escapes_and_hex() {
-        assert_eq!(
-            decode_bytes_escapes(r#"a\\b\"c\nd\re\tf\xff"#).unwrap(),
-            b"a\\b\"c\nd\re\tf\xff"
-        );
-    }
-
-    #[test]
-    fn bytes_pass_through_unescaped_utf8() {
-        assert_eq!(
-            decode_bytes_escapes("plain \u{00e9}").unwrap(),
-            "plain \u{00e9}".as_bytes()
-        );
-    }
-
-    #[test]
-    fn bytes_reject_unknown_and_truncated_escapes() {
-        for (bad, offset) in [
-            (r"\q", 0),
-            (r"\x", 0),
-            (r"\x1", 0),
-            (r"\xg0", 0),
-            (r"ok\", 2),
-        ] {
-            assert_eq!(
-                decode_bytes_escapes(bad),
-                Err(BytesLiteralError::BadEscape { offset }),
-                "expected {bad:?} to be rejected"
-            );
-        }
-    }
-
-    #[test]
-    fn bytes_literal_offset_accounts_for_the_b_prefix() {
-        // The `b"` prefix is two bytes, so a bad escape at inner offset 1 lands at
-        // full-literal offset 3.
-        assert_eq!(
-            decode_bytes_literal(r#"b"a\q""#),
-            Err(BytesLiteralError::BadEscape { offset: 3 })
-        );
-    }
-
-    #[test]
-    fn decode_bytes_literal_strips_delimiters() {
-        assert_eq!(decode_bytes_literal(r#"b"\xff\n""#).unwrap(), b"\xff\n");
-    }
-
-    #[test]
-    fn decode_bytes_literal_requires_delimiters() {
-        for unquoted in [r#""hi""#, r#"b"hi"#, "hi", ""] {
-            assert_eq!(
-                decode_bytes_literal(unquoted),
-                Err(BytesLiteralError::Unquoted),
-                "expected {unquoted:?} to be unquoted"
-            );
-        }
-    }
 }

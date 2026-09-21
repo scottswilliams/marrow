@@ -184,8 +184,7 @@ impl DiagnosticReason {
     fn owned_bytes(&self) -> usize {
         match self {
             Self::Lexer(reason) => match reason {
-                LexerDiagnosticReason::IndentationMismatch
-                | LexerDiagnosticReason::ObsoleteOperator(_)
+                LexerDiagnosticReason::ObsoleteOperator(_)
                 | LexerDiagnosticReason::ReservedTilde
                 | LexerDiagnosticReason::TabIndentation
                 | LexerDiagnosticReason::UnexpectedCharacter(_)
@@ -450,7 +449,6 @@ pub enum DiagnosticReason {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LexerDiagnosticReason {
-    IndentationMismatch,
     ObsoleteOperator(ObsoleteOperator),
     ReservedTilde,
     TabIndentation,

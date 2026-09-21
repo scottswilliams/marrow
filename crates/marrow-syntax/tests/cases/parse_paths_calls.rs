@@ -381,7 +381,7 @@ fn quoted_field_segments_are_parse_errors() {
         panic!("expected const declaration");
     };
     assert!(
-        matches!(&decl.value, Some(Expression::Field { name, quoted: false, .. }) if &**name == "title"),
+        matches!(&decl.value, Some(Expression::Field { name, .. }) if &**name == "title"),
         "plain field should be unquoted: {:?}",
         decl.value
     );

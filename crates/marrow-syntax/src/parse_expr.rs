@@ -38,7 +38,6 @@ enum FieldSegment {
     /// A well-formed field name.
     Named {
         name: String,
-        quoted: bool,
         name_span: SourceSpan,
     },
     /// `.`/`?.` reached with no following token: the incomplete member-access form.
@@ -776,7 +775,6 @@ impl<'a, 's> ExprParser<'a, 's> {
                 Some(TokenKind::Dot) => match self.field_segment() {
                     FieldSegment::Named {
                         name,
-                        quoted,
                         name_span,
                     } => {
                         let span = join_spans(expr.span(), name_span);
@@ -784,7 +782,6 @@ impl<'a, 's> ExprParser<'a, 's> {
                             base: Box::new(expr),
                             name: name.into(),
                             name_span,
-                            quoted,
                             span,
                         };
                     }
@@ -802,7 +799,6 @@ impl<'a, 's> ExprParser<'a, 's> {
                 Some(TokenKind::QuestionDot) => match self.field_segment() {
                     FieldSegment::Named {
                         name,
-                        quoted,
                         name_span,
                     } => {
                         let span = join_spans(expr.span(), name_span);
@@ -810,7 +806,6 @@ impl<'a, 's> ExprParser<'a, 's> {
                             base: Box::new(expr),
                             name: name.into(),
                             name_span,
-                            quoted,
                             span,
                         };
                     }
@@ -847,12 +842,12 @@ impl<'a, 's> ExprParser<'a, 's> {
             return FieldSegment::Missing { gap };
         };
         let text = segment.text(self.source);
-        let (name, quoted) = match segment.kind {
-            TokenKind::Identifier => (text.to_string(), false),
+        let name = match segment.kind {
+            TokenKind::Identifier => text.to_string(),
             // `checked` is a keyword, but in field position it is the nominal-type
             // range-test member `Age.checked(n)`. The parser admits the spelling;
             // which bases have such a member is a checker rule.
-            TokenKind::Keyword(Keyword::Checked) => (text.to_string(), false),
+            TokenKind::Keyword(Keyword::Checked) => text.to_string(),
             TokenKind::String => {
                 return FieldSegment::Reported(self.error_expr(
                     join_spans(op.span, segment.span),
@@ -883,7 +878,6 @@ impl<'a, 's> ExprParser<'a, 's> {
         self.advance();
         FieldSegment::Named {
             name,
-            quoted,
             name_span: segment.span,
         }
     }

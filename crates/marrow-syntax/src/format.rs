@@ -1745,19 +1745,13 @@ fn format_expression_layout(expression: &Expression, level: usize, layout: Layou
                 .collect();
             format!("{base}[{}]", rendered.join(", "))
         }
-        Expression::Field {
-            base, name, quoted, ..
-        } => format!(
-            "{}.{}",
-            format_child_at(base, PREC_ATOM, level, layout),
-            field_segment(name, *quoted)
+        Expression::Field { base, name, .. } => format!(
+            "{}.{name}",
+            format_child_at(base, PREC_ATOM, level, layout)
         ),
-        Expression::OptionalField {
-            base, name, quoted, ..
-        } => format!(
-            "{}?.{}",
-            format_child_at(base, PREC_ATOM, level, layout),
-            field_segment(name, *quoted)
+        Expression::OptionalField { base, name, .. } => format!(
+            "{}?.{name}",
+            format_child_at(base, PREC_ATOM, level, layout)
         ),
         Expression::Unary { op, operand, .. } => {
             let operand = format_child_at(operand, PREC_UNARY, level, layout);
@@ -1854,16 +1848,6 @@ fn format_child_at(child: &Expression, min_precedence: u8, level: usize, layout:
         format!("({rendered})")
     } else {
         rendered
-    }
-}
-
-/// Render a field-access segment, quoting a name that was written quoted (a
-/// segment that is not a bare identifier, such as `"old-title"`).
-fn field_segment(name: &str, quoted: bool) -> String {
-    if quoted {
-        format!("\"{name}\"")
-    } else {
-        name.to_string()
     }
 }
 

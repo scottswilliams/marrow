@@ -188,14 +188,12 @@ fn expression_own_bytes(expression: &Expression) -> usize {
             base: _,
             name: _,
             name_span: _,
-            quoted: _,
             span: _,
         } => boxed_str_bytes(1),
         Expression::OptionalField {
             base: _,
             name: _,
             name_span: _,
-            quoted: _,
             span: _,
         } => boxed_str_bytes(1),
         Expression::Unary {
@@ -274,14 +272,12 @@ fn expression_variants() -> Vec<Expression> {
             base: leaf(),
             name: "a".into(),
             name_span: span,
-            quoted: false,
             span,
         },
         Expression::OptionalField {
             base: leaf(),
             name: "a".into(),
             name_span: span,
-            quoted: false,
             span,
         },
         Expression::Unary {

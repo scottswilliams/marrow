@@ -202,13 +202,10 @@ pub enum Expression {
         multiline: bool,
         span: SourceSpan,
     },
-    /// `name` is the field name unquoted; `quoted` records whether it was
-    /// written as a quoted segment (for data names that are not identifiers).
     Field {
         base: Box<Expression>,
         name: Box<str>,
         name_span: SourceSpan,
-        quoted: bool,
         span: SourceSpan,
     },
     /// Like `Field`, but an absent base or field short-circuits the rest of the
@@ -217,7 +214,6 @@ pub enum Expression {
         base: Box<Expression>,
         name: Box<str>,
         name_span: SourceSpan,
-        quoted: bool,
         span: SourceSpan,
     },
     Unary {

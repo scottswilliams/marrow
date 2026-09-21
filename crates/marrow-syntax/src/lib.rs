@@ -43,9 +43,8 @@ pub use format::{
 };
 pub use lexer::lex_source;
 pub use literal::{
-    BytesLiteralError, StringLiteralError, decode_bytes_escapes, decode_bytes_literal,
-    decode_interpolation_text, decode_string_escapes, decode_string_literal, encode_string_literal,
-    push_string_escapes,
+    StringLiteralError, decode_interpolation_text, decode_string_escapes, decode_string_literal,
+    encode_string_literal, push_string_escapes,
 };
 use marrow_codes::Code;
 pub use marrow_codes::kind_for_code;
