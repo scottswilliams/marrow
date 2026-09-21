@@ -565,12 +565,14 @@ const ABSENCE_SCANS: &[AbsenceScan] = &[
     },
     // A test temporary directory has one minter, `marrow_test_support::Scratch`: unique
     // per case, removed on drop, retained with its path printed when the case panics. A
-    // second minter is a second cleanup policy. The runner's staging and channel
-    // directories are production temporaries, not test fixtures.
+    // second minter is a second cleanup policy. This gate spells the needles itself; the
+    // runner's staging and channel directories are production temporaries, not test
+    // fixtures.
     AbsenceScan {
         subject: "a test minted its own temporary directory beside the one scratch owner",
         roots: &["crates/"],
         except: &[
+            "crates/marrow-codes/tests/tidy.rs",
             "crates/marrow-test-support/src/scratch.rs",
             "crates/marrow-runner/src/staging.rs",
             "crates/marrow-runner/src/channel.rs",
