@@ -16,8 +16,8 @@
 //!
 //! Run with `--nocapture` to see the recorded medians.
 
+use marrow_test_programs::program;
 use marrow_test_support::Scratch;
-use marrow_test_support::program;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

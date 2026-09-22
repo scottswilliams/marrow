@@ -1,7 +1,6 @@
 //! The one temporary-directory fixture every test binary mints its files under.
 
 use std::fs;
-use std::ops::Deref;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -19,8 +18,9 @@ pub struct Scratch {
     store: PathBuf,
 }
 
-/// The manifest a scaffolded project carries: the sole supported edition, nothing else.
-const MANIFEST: &str = "edition = \"2026\"\n";
+/// The manifest every scaffolded and captured fixture project carries: the sole supported
+/// edition, nothing else.
+pub const MANIFEST: &str = "edition = \"2026\"\n";
 
 impl Scratch {
     /// A fresh base directory tagged for the case that owns it.
@@ -68,20 +68,6 @@ impl Scratch {
     }
 }
 
-impl AsRef<Path> for Scratch {
-    fn as_ref(&self) -> &Path {
-        &self.root
-    }
-}
-
-impl Deref for Scratch {
-    type Target = Path;
-
-    fn deref(&self) -> &Path {
-        &self.root
-    }
-}
-
 impl Drop for Scratch {
     fn drop(&mut self) {
         if std::thread::panicking() {
@@ -102,4 +88,22 @@ pub fn file_uri(dir: &Path) -> String {
         }
     }
     uri
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Scratch;
+
+    #[test]
+    fn a_scratch_owns_one_fresh_directory_until_it_drops() {
+        let first = Scratch::new("owner");
+        let second = Scratch::new("owner");
+        assert_ne!(first.path(), second.path());
+        assert!(first.path().is_dir());
+        assert!(!first.store().exists());
+        assert_eq!(first.store().parent(), Some(first.path()));
+        let root = first.path().to_path_buf();
+        drop(first);
+        assert!(!root.exists());
+    }
 }

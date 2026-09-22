@@ -7,9 +7,10 @@ use crate::provision::provision_observed;
 use crate::seam::Event;
 use crate::store_dir::{AdmittedStoreDir, Body};
 use crate::test_support::{
-    SOURCE, Scratch, compile_bytes, cut, cut_parent_sync, mutate_at, populate_counter, request,
+    SOURCE, compile_bytes, cut, cut_parent_sync, mutate_at, populate_counter, request,
 };
 use crate::{LogicalHead, active_binding, prepare, provision};
+use marrow_test_support::Scratch;
 
 /// One deferred change to the store, run at the step a test arms it for.
 type Mutation = Box<dyn FnOnce(&AdmittedStoreDir) + Send>;

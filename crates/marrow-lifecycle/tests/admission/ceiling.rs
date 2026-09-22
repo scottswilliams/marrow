@@ -142,7 +142,7 @@ store ^tallies[name: string]: Tally
     );
 
     let compile_with = |source: &str| -> VerifiedImage {
-        marrow_test_support::program::compile(source, WORKSHOP_IDS)
+        marrow_test_programs::program::compile(source, WORKSHOP_IDS)
     };
 
     let scratch = Scratch::new("two-root");

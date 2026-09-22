@@ -8,10 +8,10 @@ use crate::head::ActiveBinding;
 use crate::headmap::HeadMap;
 use crate::seam::Observer;
 use crate::store_dir::Body;
-use crate::test_support::Scratch;
 use marrow_fs_journal::CustodyOp;
 use marrow_image::LedgerIdBytes;
 use marrow_kernel::durable::StoreProjection;
+use marrow_test_support::Scratch;
 
 #[test]
 fn provision_never_replaces_an_existing_empty_directory() {
@@ -226,7 +226,7 @@ fn construction_failures_remove_only_the_stage_this_invocation_created() {
 fn compiled_request() -> (marrow_verify::VerifiedImage, ProvisionRequest) {
     let source = "resource Item { required value: int }\nstore ^items[key: int]: Item\npub fn read(key: int): int { return ^items[key].value ?? 0 }\n";
     let ids = "marrow ids v0\nmachine-written by marrow; do not edit\nid application . 01010101010101010101010101010101\nid product Item 02020202020202020202020202020202\nid field Item.value 03030303030303030303030303030303\nid root items 04040404040404040404040404040404\nid key items.key 05050505050505050505050505050505\nhigh-water 0\nend\n";
-    let image = marrow_test_support::program::compile(source, ids);
+    let image = marrow_test_programs::program::compile(source, ids);
     let request = ProvisionRequest {
         envelope: StoreEnvelope {
             instance: StoreInstanceId::draw().expect("instance"),
@@ -537,7 +537,7 @@ fn preflight_classifies_absent_incomplete_complete_without_creating() {
     let scratch = Scratch::new("preflight");
     // A path under the scratch base that does not itself exist: preflight must leave
     // both it and the store directory under it alone.
-    let base = scratch.join("base");
+    let base = scratch.path().join("base");
     let dir = base.join("store");
 
     // Absent: no directory. Preflight creates nothing.

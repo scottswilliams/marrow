@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::seam::Seam;
-use crate::test_support::Scratch;
+use marrow_test_support::Scratch;
 
 #[test]
 fn preservation_refuses_collision_and_entropy_failure_without_changing_files() {

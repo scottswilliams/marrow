@@ -5,8 +5,9 @@
 
 use std::path::PathBuf;
 
-use marrow_project::{CaptureLimits, CapturedFile, Manifest, capture};
 use marrow_verify::{VerifiedImage, verify};
+
+use crate::project::captured;
 
 /// A verified program together with the image bytes a terminal ships to a runner. The bytes
 /// are the exact input `image` was verified from, so the two always name the same program.
@@ -41,7 +42,7 @@ pub fn export_id(image: &VerifiedImage, name: &str) -> [u8; 32] {
 
 /// The Workshop conformance fixture directory: the shared durable program the attach and
 /// death-boundary suites run against.
-pub fn workshop_dir() -> PathBuf {
+fn workshop_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(2)
@@ -49,21 +50,11 @@ pub fn workshop_dir() -> PathBuf {
         .join("fixtures/v01/conformance/workshop")
 }
 
-/// Capture `files` as a project under the `ids` ledger, at the production limits.
-fn captured(files: Vec<CapturedFile>, ids: &[u8]) -> marrow_project::ProjectInput {
-    let manifest = Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    capture(&manifest, files, Some(ids), &CaptureLimits::DEFAULT).expect("capture")
-}
-
 /// Capture and compile a project of several modules, returning the image bytes. Several
 /// modules, so an export's *module* — half of its declaration path identity — can be varied
 /// as well as its item name.
 pub fn compile_files(sources: &[(&str, &str)], ids: &str) -> Vec<u8> {
-    let files = sources
-        .iter()
-        .map(|(path, text)| CapturedFile::new(path.to_string(), text.as_bytes().to_vec()))
-        .collect();
-    marrow_compile::compile(&captured(files, ids.as_bytes()))
+    marrow_compile::compile(&captured(sources, Some(ids.as_bytes())))
         .expect("compile")
         .image
         .bytes
@@ -81,20 +72,15 @@ pub fn compile(source: &str, ids: &str) -> VerifiedImage {
 
 /// A verified single-module image carrying its test entries.
 pub fn compile_with_tests(source: &str, ids: &str) -> VerifiedImage {
-    let files = vec![CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let compiled =
-        marrow_compile::compile_with_tests(&captured(files, ids.as_bytes())).expect("compile");
+    let project = captured(&[("src/main.mw", source)], Some(ids.as_bytes()));
+    let compiled = marrow_compile::compile_with_tests(&project).expect("compile");
     verify(&compiled.image.bytes).expect("verify")
 }
 
 /// Capture `source` as the project's sole `src/main.mw` under the `ids` ledger, compile it,
 /// and verify the result.
 pub fn build(source: Vec<u8>, ids: &[u8]) -> Program {
-    let files = vec![CapturedFile::new("src/main.mw".to_string(), source)];
-    let bytes = marrow_compile::compile(&captured(files, ids))
+    let bytes = marrow_compile::compile(&captured(&[("src/main.mw", source)], Some(ids)))
         .expect("compile")
         .image
         .bytes;

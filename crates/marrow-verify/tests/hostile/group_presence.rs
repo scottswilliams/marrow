@@ -1,8 +1,8 @@
 //! Strict group replacement consumes a proof of its containing entry and exact keys.
 
-use super::tracer_schema::Verdict::{Refused, Verified};
+use super::Verdict::{Refused, Verified};
 use super::{
-    APPLICATION_ID, PLACEMENT_ID, PRODUCT_ID, ROOT_KEY_ID, VALUE_FIELD_ID, add_fn, admitted_plan,
+    APPLICATION_ID, FIELD_ID, KEY_ID, PLACEMENT_ID, PRODUCT_ID, add_fn, admitted_plan,
     durable_schema, field_member, finish_two_key, ok, product_members, rehash, scalar_shapes,
     sections, site, verdict_of,
 };
@@ -73,7 +73,7 @@ fn group_draft() -> (ImageDraft, GroupSites) {
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             entry_record,
             vec![
-                field_member(shapes, None, VALUE_FIELD_ID, true, Scalar::Text),
+                field_member(shapes, None, FIELD_ID, true, Scalar::Text),
                 DeclarationMemberDef {
                     parent: None,
                     shape: DeclarationMemberShape::Group {
@@ -93,7 +93,7 @@ fn group_draft() -> (ImageDraft, GroupSites) {
         .expect("the two sparse groups match their record slots");
     let mut roots = Vec::new();
     for (name, placement, key_ids) in [
-        ("books", PLACEMENT_ID, [ROOT_KEY_ID, [0x1c; 16]]),
+        ("books", PLACEMENT_ID, [KEY_ID, [0x1c; 16]]),
         ("other", [0x1b; 16], [[0x2c; 16], [0x2d; 16]]),
     ] {
         let name = ok(draft.intern_string(name));

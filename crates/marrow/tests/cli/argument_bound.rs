@@ -50,7 +50,7 @@ enum RunPath {
 fn one_text_bound_admits_and_refuses_the_same_argument_on_both_run_paths() {
     let toolchain = stage_toolchain();
     let temp = Scratch::new("argument-bound");
-    let (project, store) = project_with_store(&toolchain, &temp);
+    let (project, store) = project_with_store(toolchain.path(), &temp);
     let store_arg = store.to_str().expect("store path");
 
     for size in [TEXT_BOUND, TEXT_BOUND + 1] {
@@ -62,7 +62,7 @@ fn one_text_bound_admits_and_refuses_the_same_argument_on_both_run_paths() {
                 args.extend(["--store", store_arg]);
             }
             args.extend(["--", argument.as_str()]);
-            let outcome = staged_marrow_in(&toolchain, &project, &args);
+            let outcome = staged_marrow_in(toolchain.path(), &project, &args);
             let stdout = outcome.stdout_text().into_owned();
             let context = format!("{size} bytes, {path:?}: {stdout}{}", outcome.stderr_text());
 
@@ -86,14 +86,14 @@ fn one_text_bound_admits_and_refuses_the_same_argument_on_both_run_paths() {
 fn an_oversized_argument_is_refused_before_the_named_store_is_touched() {
     let toolchain = stage_toolchain();
     let temp = Scratch::new("argument-bound-jsonl");
-    let project = temp.join("app");
+    let project = temp.path().join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(&project.join("src/main.mw"), SOURCE);
     write(&project.join(".marrow/ids"), IDS);
     let argument = "a".repeat(TEXT_BOUND + 1);
 
     let outcome = staged_marrow_in(
-        &toolchain,
+        toolchain.path(),
         &project,
         &[
             "run",
@@ -122,12 +122,12 @@ fn an_oversized_argument_is_refused_before_the_named_store_is_touched() {
 /// A durable project at `temp/app` with its ledger, and a store beside it provisioned
 /// and populated through `marrow import`.
 fn project_with_store(toolchain: &Path, temp: &Scratch) -> (PathBuf, PathBuf) {
-    let project = temp.join("app");
+    let project = temp.path().join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(&project.join("src/main.mw"), SOURCE);
     write(&project.join(".marrow/ids"), IDS);
     write(&project.join("seed.jsonl"), "{\"id\":1,\"text\":\"one\"}\n");
-    let store = temp.join("store");
+    let store = temp.path().join("store");
     let imported = staged_marrow_in(
         toolchain,
         &project,

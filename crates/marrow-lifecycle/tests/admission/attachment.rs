@@ -93,7 +93,7 @@ test "two is two" {
 use crate::support::store::provision_approved as provision;
 use marrow_test_support::Scratch;
 
-use marrow_test_support::program::{compile, compile_with_tests};
+use marrow_test_programs::program::{compile, compile_with_tests};
 
 fn export(image: &VerifiedImage, name: &str) -> ExportId {
     image

@@ -40,6 +40,7 @@ const RETAINED_MEMBERS: &[&str] = &[
     "marrow-store",
     "marrow-syntax",
     "marrow-temporal",
+    "marrow-test-programs",
     "marrow-test-support",
     "marrow-verify",
     "marrow-vm",
@@ -347,19 +348,22 @@ fn the_byte_engine_has_one_production_consumer(packages: &[PackageEdges]) {
     }
 }
 
-/// The test scaffolding crate is reached only through `[dev-dependencies]`, so its own
-/// edges — the engine traits, the compiler, the verifier — reach no production build
-/// through it.
+/// The two test scaffolding crates are reached only through `[dev-dependencies]` (the
+/// program fixtures build on the base scaffolding as an ordinary edge), so their own edges — the engine traits, the compiler, the verifier — reach no production build
+/// through them.
 fn the_test_scaffolding_is_a_dev_edge_everywhere(packages: &[PackageEdges]) {
+    const SCAFFOLDING: &[&str] = &["marrow-test-support", "marrow-test-programs"];
     for package in packages {
-        assert!(
-            !package
-                .edges
-                .iter()
-                .any(|(dep, is_dev)| dep == "marrow-test-support" && !is_dev),
-            "{} must name marrow-test-support under [dev-dependencies] only",
-            package.name
-        );
+        if SCAFFOLDING.contains(&package.name) {
+            continue;
+        }
+        for (dep, is_dev) in &package.edges {
+            assert!(
+                !SCAFFOLDING.contains(&dep.as_str()) || *is_dev,
+                "{} must name {dep} under [dev-dependencies] only",
+                package.name
+            );
+        }
     }
 }
 
@@ -466,8 +470,8 @@ fn no_tracked_file_names_a_forbidden_family() {
 struct AbsenceScan {
     subject: &'static str,
     roots: &'static [&'static str],
-    /// The files under `roots` the scan leaves alone: the one owner of what the needles
-    /// name, and nothing else.
+    /// The files under `roots` the scan leaves alone: the owner of what the needles name,
+    /// production code the invariant does not govern, and a gate that spells the needles.
     except: &'static [&'static str],
     needles: &'static [&'static str],
 }
@@ -577,9 +581,27 @@ const ABSENCE_SCANS: &[AbsenceScan] = &[
             "crates/marrow-runner/src/staging.rs",
             "crates/marrow-runner/src/channel.rs",
         ],
-        needles: &["env::temp_dir(", "tempdir"],
+        needles: &["temp_dir(", "tempdir"],
     },
 ];
+
+/// The violations `scan` finds in the tracked file `relative` holding `contents`, or
+/// `None` when the file lies outside the scan.
+fn absence_violations(scan: &AbsenceScan, relative: &str, contents: &str) -> Option<Vec<String>> {
+    if !relative.ends_with(".rs")
+        || !scan.roots.iter().any(|root| relative.starts_with(root))
+        || scan.except.contains(&relative)
+    {
+        return None;
+    }
+    Some(
+        scan.needles
+            .iter()
+            .filter(|needle| contents.contains(**needle))
+            .map(|needle| format!("{relative}: {needle} — {}", scan.subject))
+            .collect(),
+    )
+}
 
 #[test]
 fn the_absence_scans_hold() {
@@ -587,20 +609,13 @@ fn the_absence_scans_hold() {
     for scan in ABSENCE_SCANS {
         let mut read = 0usize;
         for relative in tracked_paths() {
-            if !relative.ends_with(".rs")
-                || !scan.roots.iter().any(|root| relative.starts_with(root))
-                || scan.except.contains(&relative.as_str())
-            {
+            if absence_violations(scan, relative, "").is_none() {
                 continue;
             }
             read += 1;
             let contents = fs::read_to_string(workspace_root().join(relative))
                 .unwrap_or_else(|_| panic!("read {relative}"));
-            for needle in scan.needles {
-                if contents.contains(needle) {
-                    violations.push(format!("{relative}: {needle} — {}", scan.subject));
-                }
-            }
+            violations.extend(absence_violations(scan, relative, &contents).unwrap_or_default());
         }
         assert!(
             read > 0,
@@ -610,4 +625,20 @@ fn the_absence_scans_hold() {
     }
 
     assert!(violations.is_empty(), "{}", violations.join("\n"));
+}
+
+/// Each scan trips on a needle planted in a file it does not except, so an `except` list
+/// or root that grew to cover everything cannot pass silently.
+#[test]
+fn a_planted_needle_trips_its_absence_scan() {
+    for scan in ABSENCE_SCANS {
+        let planted = format!("{}planted_probe.rs", scan.roots[0]);
+        for needle in scan.needles {
+            let found = absence_violations(scan, &planted, needle).expect("the probe is in scope");
+            assert!(
+                !found.is_empty(),
+                "`{needle}` planted in {planted} went unseen"
+            );
+        }
+    }
 }

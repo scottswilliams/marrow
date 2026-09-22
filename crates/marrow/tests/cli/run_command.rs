@@ -103,7 +103,7 @@ fn every_subcommand_prints_its_usage_on_help() {
     let empty = Scratch::new("help");
     for command in COMMANDS {
         for flag in ["--help", "-h"] {
-            let output = marrow_in(&empty, &[command, flag]);
+            let output = marrow_in(empty.path(), &[command, flag]);
             assert_eq!(output.code(), Some(0), "{command} {flag}: {output:?}");
             assert!(output.stderr.is_empty(), "{command} {flag}: {output:?}");
             let stdout = output.stdout_text();
@@ -113,7 +113,7 @@ fn every_subcommand_prints_its_usage_on_help() {
             );
         }
     }
-    let help = marrow_in(&empty, &["client", "typescript", "--help"]);
+    let help = marrow_in(empty.path(), &["client", "typescript", "--help"]);
     assert_eq!(help.code(), Some(0), "{help:?}");
 }
 
@@ -159,7 +159,7 @@ fn usage_errors_name_the_problem_and_the_commands_help() {
         ),
     ];
     for (args, expected) in cases {
-        let output = marrow_in(&empty, args);
+        let output = marrow_in(empty.path(), args);
         assert_eq!(output.code(), Some(2), "{args:?}: {output:?}");
         assert!(output.stdout.is_empty(), "{args:?}: {output:?}");
         assert_eq!(output.stderr_text(), expected, "{args:?}");
@@ -276,15 +276,15 @@ const COUNTER_IDS: &str = "marrow ids v0\n\
 fn a_durable_top_level_err_commits_and_exits_one() {
     let toolchain = stage_toolchain();
     let temp = Scratch::new("durable-err");
-    let project = temp.join("app");
+    let project = temp.path().join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(&project.join("src/main.mw"), COUNTER_SOURCE);
     write(&project.join(".marrow/ids"), COUNTER_IDS);
     write(&project.join("seed.jsonl"), "{\"id\":1,\"value\":0}\n");
-    let store = temp.join("store");
+    let store = temp.path().join("store");
     let store = store.to_str().expect("store path");
     let imported = staged_marrow_in(
-        &toolchain,
+        toolchain.path(),
         &project,
         &[
             "import",
@@ -299,7 +299,7 @@ fn a_durable_top_level_err_commits_and_exits_one() {
         ],
     );
     assert!(imported.success(), "{}", imported.stderr_text());
-    let run = |args: &[&str]| staged_marrow_in(&toolchain, &project, args);
+    let run = |args: &[&str]| staged_marrow_in(toolchain.path(), &project, args);
 
     let err = run(&["run", "setOdd", "--store", store, "--", "1", "3"]);
     assert_eq!(err.code(), Some(1), "{err:?}");

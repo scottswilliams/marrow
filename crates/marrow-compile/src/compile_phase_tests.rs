@@ -319,9 +319,9 @@ fn signature_registry(functions: &[crate::lower::DeclaredFn<'_>]) -> FunctionReg
                 budget.clone(),
             ),
             imports: BTreeMap::new(),
-            origins: crate::source::CapturedOrigins::of(&marrow_test_support::project::project(&[
-                ("src/main.mw", "module main\n"),
-            ])),
+            origins: crate::source::CapturedOrigins::of(&marrow_test_programs::project::project(
+                &[("src/main.mw", "module main\n")],
+            )),
             budget,
         },
         &mut diagnostics,
@@ -637,7 +637,7 @@ fn a_store_refused_after_real_staging_rolls_back_to_the_unstaged_image() {
             let _ = writeln!(text, "id {anchor} {:032x}", seed as u128 + 1);
         }
         text.push_str("high-water 0\nend\n");
-        marrow_test_support::project::project_with_ids(
+        marrow_test_programs::project::project_with_ids(
             &[("src/main.mw", "")],
             Some(text.as_bytes()),
         )

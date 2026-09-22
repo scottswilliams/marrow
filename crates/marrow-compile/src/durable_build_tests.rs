@@ -662,7 +662,7 @@ mod post_staging_custody_tests {
             text.push('\n');
         }
         text.push_str("high-water 0\nend\n");
-        marrow_test_support::project::project_with_ids(
+        marrow_test_programs::project::project_with_ids(
             &[("src/main.mw", "")],
             Some(text.as_bytes()),
         )

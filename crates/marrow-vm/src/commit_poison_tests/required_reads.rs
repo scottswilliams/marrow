@@ -399,7 +399,7 @@ fn required_field_faults_abort_earlier_writes_on_native() {
     let root = marrow_test_support::Scratch::new("required-reads");
     for target in [Target::Root, Target::Branch] {
         for damage in [Damage::Healthy, Damage::Missing, Damage::Malformed] {
-            let path = root.join(format!("{target:?}-{damage:?}"));
+            let path = root.path().join(format!("{target:?}-{damage:?}"));
             std::fs::create_dir_all(&path).expect("native scratch");
             NativeEngineOwner::provision(&path).expect("provision actual native engine");
             let mut engine = NativeEngineOwner::acquire_existing(&path)
@@ -411,5 +411,5 @@ fn required_field_faults_abort_earlier_writes_on_native() {
             check_case(&mut engine, target, damage);
         }
     }
-    std::fs::remove_dir_all(root).expect("remove closed native fixtures");
+    std::fs::remove_dir_all(root.path()).expect("remove closed native fixtures");
 }

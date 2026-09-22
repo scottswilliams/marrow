@@ -1,0 +1,20 @@
+[package]
+name = "marrow-test-programs"
+description = "Compiled-program fixtures: a project captured through the production owner and built into image bytes or a verified image."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Test scaffolding, never a shipped artifact: every consumer names it as a dev edge.
+publish = false
+
+[dependencies]
+marrow-compile = { path = "../marrow-compile" }
+marrow-project = { path = "../marrow-project" }
+marrow-test-support = { path = "../marrow-test-support" }
+marrow-verify = { path = "../marrow-verify" }
+
+[lints]
+workspace = true

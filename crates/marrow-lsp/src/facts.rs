@@ -366,7 +366,7 @@ mod tests {
 
     fn temp_project(tag: &str, main: &str) -> (Scratch, SelectedRoot) {
         let base = Scratch::project(&format!("facts-{tag}"), main);
-        let root = root_for(&base);
+        let root = root_for(base.path());
         (base, root)
     }
 

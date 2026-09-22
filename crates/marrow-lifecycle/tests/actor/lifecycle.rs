@@ -8,8 +8,8 @@ use marrow_lifecycle::{
     AdmissionRefusal, AttachOutcome, ChangedFact, HEAD_FILE, LifecycleError, LogicalHead,
     PinDisagreement, active_binding, attach, head_map, prepare,
 };
+use marrow_test_programs::program::compile_files;
 use marrow_test_support::graph_corpus::*;
-use marrow_test_support::program::compile_files;
 use marrow_verify::{VerifiedImage, verify};
 
 /// The base durable program: a `counters` root of `Counter` resources (a required `value`

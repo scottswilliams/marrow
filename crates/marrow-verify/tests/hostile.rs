@@ -34,9 +34,24 @@ mod required_reads;
 #[path = "hostile/legacy_artifact.rs"]
 mod legacy_artifact;
 
+use Verdict::{Refused, Verified};
 use marrow_test_support::tracer_schema;
-use tracer_schema::Verdict::{Refused, Verified};
 use tracer_schema::*;
+
+/// The verifier's answer for one image: it verified, or the phase that owns the violated
+/// invariant refused it. Pins compare this typed verdict, not a rendered `image.*` string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verdict {
+    Verified,
+    Refused(VerifyPhase),
+}
+
+fn verdict_of(bytes: &[u8]) -> Verdict {
+    match verify(bytes) {
+        Ok(_) => Verdict::Verified,
+        Err(rejection) => Verdict::Refused(rejection.phase()),
+    }
+}
 
 /// A well-formed multi-function image: a caller exporting `main` that calls a helper,
 /// plus a couple of constants. Every hostile case derives from this.
@@ -330,7 +345,7 @@ const POKES: &[Poke] = &[
     Poke {
         what: "a mutated site-path ledger id",
         image: good_durable_image,
-        poke: |bytes| flip_last_ledger_id(bytes, VALUE_FIELD_ID),
+        poke: |bytes| flip_last_ledger_id(bytes, FIELD_ID),
         rehash: true,
         phase: VerifyPhase::Table,
         kind: RejectionKind::Site(SiteFault::Unresolved),
@@ -806,7 +821,7 @@ fn the_durable_opcode_site_determines_the_reconstructed_demand() {
             .path()
             .node_id()
             .bytes(),
-        VALUE_FIELD_ID
+        FIELD_ID
     );
     assert_eq!(
         *label_demand
@@ -1309,13 +1324,7 @@ fn a_composite_root_write_opcode_with_a_truncated_key_path_rejects() {
             &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
-            vec![field_member(
-                shapes,
-                None,
-                VALUE_FIELD_ID,
-                true,
-                Scalar::Int,
-            )],
+            vec![field_member(shapes, None, FIELD_ID, true, Scalar::Int)],
         )
         .expect("a well-formed declaration");
     let admitted = draft
@@ -1327,7 +1336,7 @@ fn a_composite_root_write_opcode_with_a_truncated_key_path_rejects() {
                 keys: vec![
                     KeyColumn {
                         scalar: Scalar::Text,
-                        id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                        id: LedgerIdBytes::from_bytes(KEY_ID),
                     },
                     KeyColumn {
                         scalar: Scalar::Int,
@@ -1545,7 +1554,7 @@ fn scalar_field_indexed_draft(scalar: Scalar) -> ImageDraft {
                 name: root,
                 keys: vec![KeyColumn {
                     scalar: Scalar::Text,
-                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                    id: LedgerIdBytes::from_bytes(KEY_ID),
                 }],
                 placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
                 indexes: vec![DurableIndexShape {
@@ -1655,7 +1664,7 @@ fn widened_field_indexed_draft() -> ImageDraft {
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
             vec![
-                field_member(shapes, None, VALUE_FIELD_ID, true, Scalar::Int),
+                field_member(shapes, None, FIELD_ID, true, Scalar::Int),
                 DeclarationMemberDef {
                     parent: None,
                     shape: DeclarationMemberShape::Field {
@@ -1675,7 +1684,7 @@ fn widened_field_indexed_draft() -> ImageDraft {
                 name: root,
                 keys: vec![KeyColumn {
                     scalar: Scalar::Text,
-                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                    id: LedgerIdBytes::from_bytes(KEY_ID),
                 }],
                 placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
                 indexes: vec![DurableIndexShape {
@@ -1806,7 +1815,7 @@ fn group_before_field_draft(record_group_first: bool) -> ImageDraft {
                     },
                 },
                 field_member(shapes, Some(0), [0x21; 16], false, Scalar::Int),
-                field_member(shapes, None, VALUE_FIELD_ID, true, Scalar::Text),
+                field_member(shapes, None, FIELD_ID, true, Scalar::Text),
             ],
         )
         .expect("a well-formed declaration");
@@ -1818,7 +1827,7 @@ fn group_before_field_draft(record_group_first: bool) -> ImageDraft {
                 name: root,
                 keys: vec![KeyColumn {
                     scalar: Scalar::Int,
-                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                    id: LedgerIdBytes::from_bytes(KEY_ID),
                 }],
                 placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
                 indexes: Vec::new().into(),
@@ -1888,7 +1897,7 @@ fn field_count_mismatch_draft(member_fields: usize, record_fields: usize) -> Ima
                 name: root,
                 keys: vec![KeyColumn {
                     scalar: Scalar::Int,
-                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                    id: LedgerIdBytes::from_bytes(KEY_ID),
                 }],
                 placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
                 indexes: Vec::new().into(),
@@ -2141,7 +2150,7 @@ fn flat_branch_draft() -> (ImageDraft, AdmittedRoot, TypeId) {
                 name: root,
                 keys: vec![KeyColumn {
                     scalar: Scalar::Int,
-                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                    id: LedgerIdBytes::from_bytes(KEY_ID),
                 }],
                 placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
                 indexes: Vec::new().into(),
@@ -3009,7 +3018,7 @@ fn declare_counters_with_notes_branch(
                 name: root,
                 keys: vec![KeyColumn {
                     scalar: Scalar::Text,
-                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                    id: LedgerIdBytes::from_bytes(KEY_ID),
                 }],
                 placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
                 indexes: Vec::new().into(),
@@ -4135,7 +4144,7 @@ fn widened_draft(members: Vec<[u8; 16]>) -> ImageDraft {
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             rec,
             vec![
-                field_member(shapes, None, VALUE_FIELD_ID, true, Scalar::Int),
+                field_member(shapes, None, FIELD_ID, true, Scalar::Int),
                 DeclarationMemberDef {
                     parent: None,
                     shape: DeclarationMemberShape::Field {
@@ -4155,7 +4164,7 @@ fn widened_draft(members: Vec<[u8; 16]>) -> ImageDraft {
                 name: root,
                 keys: vec![KeyColumn {
                     scalar: Scalar::Int,
-                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                    id: LedgerIdBytes::from_bytes(KEY_ID),
                 }],
                 placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
                 indexes: Vec::new().into(),
@@ -4270,7 +4279,7 @@ fn nested_branch_draft() -> (ImageDraft, AdmittedRoot) {
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
             vec![
-                field_member(shapes, None, VALUE_FIELD_ID, true, Scalar::Text),
+                field_member(shapes, None, FIELD_ID, true, Scalar::Text),
                 DeclarationMemberDef {
                     parent: None,
                     shape: DeclarationMemberShape::Branch {
@@ -4308,7 +4317,7 @@ fn nested_branch_draft() -> (ImageDraft, AdmittedRoot) {
                 name: root,
                 keys: vec![KeyColumn {
                     scalar: Scalar::Int,
-                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                    id: LedgerIdBytes::from_bytes(KEY_ID),
                 }],
                 placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
                 indexes: Vec::new().into(),
@@ -4430,13 +4439,7 @@ fn composite_root_draft() -> (ImageDraft, PlannedSiteRef) {
             &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
-            vec![field_member(
-                shapes,
-                None,
-                VALUE_FIELD_ID,
-                true,
-                Scalar::Int,
-            )],
+            vec![field_member(shapes, None, FIELD_ID, true, Scalar::Int)],
         )
         .expect("a well-formed declaration");
     let admitted = draft
@@ -4448,7 +4451,7 @@ fn composite_root_draft() -> (ImageDraft, PlannedSiteRef) {
                 keys: vec![
                     KeyColumn {
                         scalar: Scalar::Int,
-                        id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                        id: LedgerIdBytes::from_bytes(KEY_ID),
                     },
                     KeyColumn {
                         scalar: Scalar::Text,
@@ -4594,7 +4597,7 @@ fn forged_durable_body(members: Vec<u8>, indexes: Vec<u8>) -> Vec<u8> {
     // The tracer root's real key tuple: one `text` column.
     body.extend_from_slice(&1u16.to_be_bytes());
     body.push(Scalar::Text.tag());
-    body.extend_from_slice(&ROOT_KEY_ID);
+    body.extend_from_slice(&KEY_ID);
     body.extend_from_slice(&0u16.to_be_bytes()); // root entry record: type 0
     body.extend_from_slice(&PLACEMENT_ID);
     body.extend_from_slice(&PRODUCT_ID);
@@ -4626,7 +4629,7 @@ fn forged_field_member(n: usize) -> Vec<u8> {
 fn matching_member_run() -> Vec<u8> {
     let mut out = 2u16.to_be_bytes().to_vec();
     out.push(0x00);
-    out.extend_from_slice(&VALUE_FIELD_ID);
+    out.extend_from_slice(&FIELD_ID);
     out.push(1);
     out.push(0x00);
     out.push(Scalar::Int.tag());
@@ -4671,7 +4674,7 @@ fn forged_index_run(components: usize) -> Vec<u8> {
     out.extend_from_slice(&(components as u16).to_be_bytes());
     for _ in 0..components {
         out.push(0x02);
-        out.extend_from_slice(&VALUE_FIELD_ID);
+        out.extend_from_slice(&FIELD_ID);
     }
     out
 }

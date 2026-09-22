@@ -32,8 +32,8 @@ use marrow_compile::{
 };
 use marrow_project::{FileIdentity, ProjectInput};
 
-use marrow_test_support::ids;
-use marrow_test_support::project as common_project;
+use marrow_test_programs::ledger;
+use marrow_test_programs::project as common_project;
 
 /// The suite's fixtures generate their sources, so they are borrowed into the shared
 /// capture helper's `&str` pairs at each call.
@@ -408,7 +408,7 @@ fn over_test_entries() -> String {
 /// The durable identity ledger the `Wide` resource and its `^wide` root need:
 /// application, product, one identity per declared field, the root, and its key column.
 fn item_ids() -> Vec<u8> {
-    ids::ledger(&[
+    ledger::ledger(&[
         "application .",
         "product Wide",
         "field Wide.tag",

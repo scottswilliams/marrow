@@ -2,8 +2,8 @@
 
 use super::*;
 use crate as marrow_lifecycle;
+use marrow_test_programs::program::compile_files;
 use marrow_test_support::graph_corpus::*;
-use marrow_test_support::program::compile_files;
 
 /// The image whose one group makes a kind swap numbering-neutral: `details` is the last
 /// (only) group and there is no branch, so a projection that respells it as a keyed branch

@@ -151,7 +151,7 @@ fn handshake_and_clean_shutdown() {
         "module main\n\npub fn f(): int {\n    return 1\n}\n",
     );
     let mut conn = Connection::spawn();
-    initialize(&mut conn, &dir);
+    initialize(&mut conn, dir.path());
     conn.request(9, "shutdown", Value::Null);
     let reply = conn.recv_response(9);
     assert!(reply.get("result").is_some());
@@ -163,7 +163,7 @@ fn handshake_and_clean_shutdown() {
 fn exit_ends_the_process_while_stdin_stays_open() {
     let dir = temp_project("exit-open-stdin", "module main\n");
     let mut conn = Connection::spawn();
-    initialize(&mut conn, &dir);
+    initialize(&mut conn, dir.path());
     conn.request(9, "shutdown", Value::Null);
     conn.recv_response(9);
     conn.notify("exit", Value::Null);
@@ -180,7 +180,7 @@ fn exit_ends_the_process_while_stdin_stays_open() {
 fn immediate_exit_drains_every_admitted_response() {
     let dir = temp_project("exit-drain", "module main\n");
     let mut conn = Connection::spawn();
-    initialize(&mut conn, &dir);
+    initialize(&mut conn, dir.path());
     conn.request(9, "shutdown", Value::Null);
     let ids: Vec<i64> = (10..24).collect();
     for id in &ids {
@@ -209,7 +209,7 @@ fn immediate_exit_drains_every_admitted_response() {
 fn eof_without_exit_is_nonzero() {
     let dir = temp_project("eof", "module main\n");
     let mut conn = Connection::spawn();
-    initialize(&mut conn, &dir);
+    initialize(&mut conn, dir.path());
     // Close stdin without sending exit: the server must terminate promptly, nonzero.
     assert_eq!(conn.wait(), 1, "EOF without exit is nonzero");
 }
@@ -222,14 +222,14 @@ fn request_before_initialize_is_server_not_initialized() {
         2,
         "textDocument/formatting",
         serde_json::json!({
-            "textDocument": { "uri": document_uri(&dir) },
+            "textDocument": { "uri": document_uri(dir.path()) },
             "options": { "tabSize": 4, "insertSpaces": true },
         }),
     );
     let reply = conn.recv_response(2);
     assert_eq!(reply["error"]["code"].as_i64(), Some(-32002));
     // Now initialize and exit cleanly.
-    initialize(&mut conn, &dir);
+    initialize(&mut conn, dir.path());
     conn.request(9, "shutdown", Value::Null);
     conn.recv_response(9);
     conn.notify("exit", Value::Null);

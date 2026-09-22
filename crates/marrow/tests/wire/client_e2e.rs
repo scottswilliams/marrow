@@ -129,7 +129,7 @@ pub fn two(): int {
 /// Build the project, generate the client, compile the image to a file, and
 /// return the project directory.
 fn prepare(temp: &Scratch) -> PathBuf {
-    let project = temp.join("app");
+    let project = temp.path().join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(&project.join("src/main.mw"), FIXTURE);
 
@@ -166,7 +166,7 @@ fn prepare(temp: &Scratch) -> PathBuf {
 /// Generate and provision the native fixture whose complete entries collide in
 /// a runtime fault after a confirmed commit.
 fn prepare_durable(temp: &Scratch) -> PathBuf {
-    let project = temp.join("app");
+    let project = temp.path().join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(&project.join("src/main.mw"), DURABLE_FIXTURE);
     write(&project.join(".marrow/ids"), DURABLE_IDS);

@@ -9,8 +9,9 @@ use marrow_image::{
 };
 use marrow_verify::VerifyPhase;
 
-use super::tracer_schema::Verdict::{Refused, Verified};
+use super::Verdict::{self, Refused, Verified};
 use super::tracer_schema::*;
+use super::verdict_of;
 use marrow_test_support::{admitted_plan, site};
 
 /// The verdict of `if exists(slot 0) { <between>; strict sparse set on slot 0 }`, where
@@ -210,13 +211,7 @@ fn a_create_record_constructor_cannot_lend_its_field_slot_as_an_entry_key() {
             &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
-            vec![field_member(
-                shapes,
-                None,
-                VALUE_FIELD_ID,
-                true,
-                Scalar::Text,
-            )],
+            vec![field_member(shapes, None, FIELD_ID, true, Scalar::Text)],
         )
         .expect("the complete string record is declared");
     let root_name = ok(draft.intern_string("counters"));
@@ -228,7 +223,7 @@ fn a_create_record_constructor_cannot_lend_its_field_slot_as_an_entry_key() {
                 name: root_name,
                 keys: vec![KeyColumn {
                     scalar: Scalar::Text,
-                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                    id: LedgerIdBytes::from_bytes(KEY_ID),
                 }],
                 placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
                 indexes: Vec::new().into(),
@@ -278,7 +273,7 @@ fn a_composite_create_cannot_prove_a_key_load_bypassed_by_another_edge() {
         vec![
             KeyColumn {
                 scalar: Scalar::Text,
-                id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                id: LedgerIdBytes::from_bytes(KEY_ID),
             },
             KeyColumn {
                 scalar: Scalar::Text,

@@ -11,8 +11,8 @@
 //! Spawns a runner that binds a Unix socket, which the sandbox denies; run with the sandbox
 //! disabled (the workspace battery already runs that way).
 
+use marrow_test_programs::program;
 use marrow_test_support::Scratch;
-use marrow_test_support::program;
 
 use std::path::{Path, PathBuf};
 

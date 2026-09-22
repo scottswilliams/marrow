@@ -300,46 +300,46 @@ mod tests {
     #[test]
     fn a_matching_layout_verifies() {
         let dir = Scratch::new("companion-ok");
-        layout(&dir, "9.9.9", b"stock runner bytes");
+        layout(dir.path(), "9.9.9", b"stock runner bytes");
         assert_eq!(
-            discover_companion_in(&dir, "9.9.9"),
-            Ok(dir.join("marrow-runner")),
+            discover_companion_in(dir.path(), "9.9.9"),
+            Ok(dir.path().join("marrow-runner")),
         );
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(dir.path());
     }
 
     #[test]
     fn a_missing_manifest_is_damage() {
         let dir = Scratch::new("companion-missing");
         assert_eq!(
-            discover_companion_in(&dir, "9.9.9"),
+            discover_companion_in(dir.path(), "9.9.9"),
             Err(CompanionError::ManifestMissing),
         );
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(dir.path());
     }
 
     #[test]
     fn a_release_mismatch_is_damage() {
         let dir = Scratch::new("companion-release");
-        layout(&dir, "1.0.0", b"stock runner bytes");
+        layout(dir.path(), "1.0.0", b"stock runner bytes");
         assert_eq!(
-            discover_companion_in(&dir, "9.9.9"),
+            discover_companion_in(dir.path(), "9.9.9"),
             Err(CompanionError::ReleaseMismatch),
         );
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(dir.path());
     }
 
     #[test]
     fn an_altered_companion_is_rejected() {
         let dir = Scratch::new("companion-altered");
-        layout(&dir, "9.9.9", b"stock runner bytes");
+        layout(dir.path(), "9.9.9", b"stock runner bytes");
         // Overwrite the companion after the manifest recorded its identity.
-        std::fs::write(dir.join("marrow-runner"), b"tampered bytes").expect("tamper");
+        std::fs::write(dir.path().join("marrow-runner"), b"tampered bytes").expect("tamper");
         assert_eq!(
-            discover_companion_in(&dir, "9.9.9"),
+            discover_companion_in(dir.path(), "9.9.9"),
             Err(CompanionError::CompanionMismatch),
         );
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(dir.path());
     }
 
     /// Every installation-damage message is actionable and free of runner/wire/lifecycle
@@ -385,14 +385,14 @@ mod tests {
     fn a_traversing_runner_name_is_refused() {
         let dir = Scratch::new("companion-traverse");
         std::fs::write(
-            dir.join(MANIFEST_NAME),
+            dir.path().join(MANIFEST_NAME),
             "marrow companions v0\nrelease 9.9.9\nrunner ../evil 0000000000000000000000000000000000000000000000000000000000000000\nend\n",
         )
         .expect("manifest");
         assert_eq!(
-            discover_companion_in(&dir, "9.9.9"),
+            discover_companion_in(dir.path(), "9.9.9"),
             Err(CompanionError::ManifestMalformed),
         );
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(dir.path());
     }
 }

@@ -17,6 +17,7 @@ members = [
     "crates/marrow-project-fs",
     "crates/marrow-store",
     "crates/marrow-syntax",
+    "crates/marrow-test-programs",
     "crates/marrow-test-support",
     "crates/marrow-temporal",
 ]

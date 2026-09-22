@@ -18,7 +18,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
 use crate::provision_lifecycle_tests::open;
-use crate::test_support::Scratch;
 use crate::{
     ActiveBinding, EngineKind, HeadMap, LogicalHead, OpenError, ProvisionRequest, StoreEnvelope,
     StoreInstanceId, provision,
@@ -27,6 +26,7 @@ use marrow_codes::Code;
 use marrow_image::LedgerIdBytes;
 use marrow_kernel::codec::value::ScalarKind;
 use marrow_kernel::durable::{SiteTarget, StoreProjection, StoreSchemaBuilder};
+use marrow_test_support::Scratch;
 
 fn projection() -> StoreProjection {
     let mut builder = StoreSchemaBuilder::root("app", vec![ScalarKind::Int]);

@@ -8,13 +8,12 @@ use crate::envelope::{EnvelopeRecord, EnvelopeState};
 use crate::recovery::{RecoveryFault, recover};
 use crate::seam::Step;
 use crate::store_dir::{Artifact, Body};
-use crate::test_support::{
-    IDS, SOURCE, Scratch, compile_bytes, cut, mutate_at, populate_counter, request,
-};
+use crate::test_support::{IDS, SOURCE, compile_bytes, cut, mutate_at, populate_counter, request};
 use crate::{
     AdmissionRefusal, AuditError, LifecycleError, LogicalHead, StoreInstanceId, accepted_ceiling,
     active_binding, head_map, prepare, provision,
 };
+use marrow_test_support::Scratch;
 
 /// A head whose accepted-ceiling payload does not decode is store corruption to the
 /// compatible gate (attach) and the exact gate (apply) alike, decided before any engine call.
@@ -72,7 +71,7 @@ fn sparse_images() -> (Vec<u8>, Vec<u8>) {
     );
     let source = SOURCE.replace("required value", "extra: int\nrequired value")
         + "\npub fn readExtra(n: int): int { return ^counters[n].extra ?? -1 }\n";
-    let new = marrow_test_support::program::compile_bytes(&source, &ids);
+    let new = marrow_test_programs::program::compile_bytes(&source, &ids);
     (old, new)
 }
 
@@ -248,7 +247,7 @@ fn sparse_apply_rejects_incompatible_graphs_without_store_changes() {
             "resource Counter {{ {fields} }}\nstore ^counters[id: {key}]: Counter {suffix}\npub fn bootstrap(): int {{ return 0 }}\n"
         );
         let new =
-            marrow_verify::verify(&marrow_test_support::program::compile_bytes(&source, &ids))
+            marrow_verify::verify(&marrow_test_programs::program::compile_bytes(&source, &ids))
                 .unwrap_or_else(|error| panic!("{label}: {error:?}"));
         assert!(
             matches!(
@@ -274,7 +273,7 @@ fn sparse_apply_rejects_changed_index_meaning_without_store_changes() {
         "high-water",
         "id index counters.byValue 10101010101010101010101010101010\nhigh-water",
     );
-    let old = marrow_verify::verify(&marrow_test_support::program::compile_bytes(&source, &ids))
+    let old = marrow_verify::verify(&marrow_test_programs::program::compile_bytes(&source, &ids))
         .expect("indexed image");
     let scratch = Scratch::new("apply");
     provision(
@@ -295,9 +294,10 @@ fn sparse_apply_rejects_changed_index_meaning_without_store_changes() {
         "index byValue[value, id]",
     ] {
         let changed = source.replace("index byValue[value, id] unique", replacement);
-        let new =
-            marrow_verify::verify(&marrow_test_support::program::compile_bytes(&changed, &ids))
-                .expect("changed index");
+        let new = marrow_verify::verify(&marrow_test_programs::program::compile_bytes(
+            &changed, &ids,
+        ))
+        .expect("changed index");
         assert!(
             matches!(
                 apply(scratch.store(), prepare(old.clone()), prepare(new), None),
@@ -596,7 +596,7 @@ fn sparse_apply_refuses_logical_corruption_before_publication() {
     );
     let new_source = source.replace("required value", "extra: int\nrequired value")
         + "\npub fn readExtra(n: int): int { return ^counters[n].extra ?? -1 }\n";
-    let new = marrow_verify::verify(&marrow_test_support::program::compile_bytes(
+    let new = marrow_verify::verify(&marrow_test_programs::program::compile_bytes(
         &new_source,
         &ids,
     ))

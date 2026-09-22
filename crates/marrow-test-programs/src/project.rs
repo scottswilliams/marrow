@@ -1,35 +1,35 @@
-//! One project-capture helper: a fixture is captured through the production project
-//! owner, never hand-assembled.
+//! One project-capture path: a fixture is captured through the production project owner,
+//! never hand-assembled.
 
 use marrow_project::{
-    CaptureLimits, CapturedDependency, CapturedFile, Manifest, ProjectInput, capture_origins,
+    CaptureLimits, CapturedDependency, CapturedFile, Manifest, ProjectInput, capture,
+    capture_origins,
 };
+use marrow_test_support::MANIFEST;
 
 /// Capture `files` as a project at the default limits, under the identity ledger `ids`.
-pub fn project_with_ids(files: &[(&str, &str)], ids: Option<&[u8]>) -> ProjectInput {
-    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
-    let captured = files
+pub fn captured(files: &[(&str, impl AsRef<[u8]>)], ids: Option<&[u8]>) -> ProjectInput {
+    let manifest = Manifest::parse(MANIFEST).expect("valid manifest");
+    let files = files
         .iter()
-        .map(|(path, source)| CapturedFile::new(path.to_string(), source.as_bytes().to_vec()))
+        .map(|(path, bytes)| CapturedFile::new(path.to_string(), bytes.as_ref().to_vec()))
         .collect();
-    marrow_project::capture(&manifest, captured, ids, &CaptureLimits::DEFAULT)
-        .expect("capture project")
+    capture(&manifest, files, ids, &CaptureLimits::DEFAULT).expect("capture project")
 }
 
-/// Capture `files` as a project with no identity ledger.
+/// Capture `files` under the identity ledger `ids`.
+pub fn project_with_ids(files: &[(&str, &str)], ids: Option<&[u8]>) -> ProjectInput {
+    captured(files, ids)
+}
+
+/// Capture `files` with no identity ledger.
 pub fn project(files: &[(&str, &str)]) -> ProjectInput {
-    project_with_ids(files, None)
+    captured(files, None)
 }
 
 /// Capture `files` given as raw bytes, so a fixture can hold a file that is not UTF-8.
 pub fn project_bytes(files: &[(&str, Vec<u8>)]) -> ProjectInput {
-    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
-    let captured = files
-        .iter()
-        .map(|(path, bytes)| CapturedFile::new(path.to_string(), bytes.clone()))
-        .collect();
-    marrow_project::capture(&manifest, captured, None, &CaptureLimits::DEFAULT)
-        .expect("capture project")
+    captured(files, None)
 }
 
 /// Capture a root project and one dependency tree under `alias` as a single
@@ -52,7 +52,7 @@ pub fn dependency_project(
     dependency_ids: Option<&[u8]>,
 ) -> ProjectInput {
     let manifest = Manifest::parse(&format!(
-        "edition = \"2026\"\n\n[dependencies]\n{alias} = {{ path = \"../{alias}\" }}\n"
+        "{MANIFEST}\n[dependencies]\n{alias} = {{ path = \"../{alias}\" }}\n"
     ))
     .expect("valid manifest");
     let alias = manifest.dependencies()[0].alias().clone();

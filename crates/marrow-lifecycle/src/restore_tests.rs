@@ -3,10 +3,11 @@
 
 use super::*;
 use crate::actor::AdmissionRefusal;
-use crate::backup::tests::{Scratch, image_bytes, provision_fixture};
+use crate::backup::tests::{image_bytes, provision_fixture};
 use crate::backup_stream::{Encoder, Header};
 use crate::test_support::{cut, cut_parent_sync, mutate_at};
 use marrow_kernel::durable::{Cell, ExportSink};
+use marrow_test_support::Scratch;
 
 fn populated_transfer(scratch: &Scratch, count: i64) -> (Header, Vec<Cell>) {
     use marrow_kernel::codec::{key::KeyScalar, value::RuntimeScalar};

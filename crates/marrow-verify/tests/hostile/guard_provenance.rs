@@ -1,8 +1,8 @@
 //! A presence guard must execute every key load and its producer before its consumer.
 
-use super::tracer_schema::Verdict::{Refused, Verified};
+use super::Verdict::{Refused, Verified};
 use super::{
-    ROOT_KEY_ID, add_fn, durable_schema, durable_schema_with_keys, finish_two_key, ok, verdict_of,
+    KEY_ID, add_fn, durable_schema, durable_schema_with_keys, finish_two_key, ok, verdict_of,
 };
 use marrow_image::{
     DraftTxn, ExportId, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, Scalar,
@@ -58,7 +58,7 @@ fn presence_image(guard: Guard, composite: bool, arm: Arm) -> Vec<u8> {
             vec![
                 KeyColumn {
                     scalar: Scalar::Int,
-                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                    id: LedgerIdBytes::from_bytes(KEY_ID),
                 },
                 KeyColumn {
                     scalar: Scalar::Text,

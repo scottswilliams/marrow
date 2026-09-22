@@ -150,6 +150,7 @@ dependencies = [
  "marrow-project",
  "marrow-syntax",
  "marrow-temporal",
+ "marrow-test-programs",
  "marrow-test-support",
 ]
 
@@ -193,6 +194,7 @@ dependencies = [
  "marrow-kernel",
  "marrow-local-wire",
  "marrow-project",
+ "marrow-test-programs",
  "marrow-test-support",
  "marrow-verify",
  "marrow-vm",
@@ -248,6 +250,7 @@ dependencies = [
  "marrow-local-wire",
  "marrow-project",
  "marrow-temporal",
+ "marrow-test-programs",
  "marrow-test-support",
  "marrow-verify",
  "marrow-vm",
@@ -274,15 +277,22 @@ name = "marrow-temporal"
 version = "0.1.0"
 
 [[package]]
-name = "marrow-test-support"
+name = "marrow-test-programs"
 version = "0.1.0"
 dependencies = [
  "marrow-compile",
+ "marrow-project",
+ "marrow-test-support",
+ "marrow-verify",
+]
+
+[[package]]
+name = "marrow-test-support"
+version = "0.1.0"
+dependencies = [
  "marrow-image",
  "marrow-kernel",
- "marrow-project",
  "marrow-store",
- "marrow-verify",
 ]
 
 [[package]]

@@ -218,21 +218,17 @@ mod tests {
         SelectedRoot::from_uri(&file_uri(dir)).unwrap()
     }
 
-    fn temp_dir(tag: &str) -> Scratch {
-        Scratch::new(&format!("analysis-{tag}"))
-    }
-
     #[test]
     fn analyzes_clean_project_from_disk() {
-        let dir = temp_dir("clean");
+        let dir = Scratch::new("analysis-clean");
         write_project(
-            &dir,
+            dir.path(),
             &[(
                 "src/main.mw",
                 "module main\n\npub fn add(a: int, b: int): int {\n    return a + b\n}\n",
             )],
         );
-        let root = root_for(&dir);
+        let root = root_for(dir.path());
         let outcome = run_analysis(&root, &[], InputRevision::new(1));
         match outcome {
             AnalysisOutcome::Snapshot(snapshot) => {
@@ -248,15 +244,15 @@ mod tests {
 
     #[test]
     fn overlay_replaces_disk_body() {
-        let dir = temp_dir("overlay");
+        let dir = Scratch::new("analysis-overlay");
         write_project(
-            &dir,
+            dir.path(),
             &[(
                 "src/main.mw",
                 "module main\n\npub fn f(): int {\n    return 1\n}\n",
             )],
         );
-        let root = root_for(&dir);
+        let root = root_for(dir.path());
         // Overlay an unparseable body; diagnostics must reflect the overlay, not disk.
         let bad = b"module main\n\npub fn f(): int {\n    return \n}\n";
         let overlay = vec![OverlayInput {
@@ -277,9 +273,9 @@ mod tests {
 
     #[test]
     fn a_whole_analysis_stop_retains_the_compilers_typed_bound() {
-        let dir = temp_dir("syntax-stop");
-        write_project(&dir, &[("src/main.mw", "module main\n")]);
-        let root = root_for(&dir);
+        let dir = Scratch::new("analysis-syntax-stop");
+        write_project(dir.path(), &[("src/main.mw", "module main\n")]);
+        let root = root_for(dir.path());
         let source = "@\n".repeat(marrow_syntax::SYNTAX_DIAGNOSTIC_COUNT_LIMIT + 1);
         let revision = InputRevision::new(7);
         let overlay = [OverlayInput {
@@ -306,10 +302,10 @@ mod tests {
 
     #[test]
     fn missing_manifest_is_capture_rejection() {
-        let dir = temp_dir("nomanifest");
-        fs::create_dir_all(dir.join("src")).unwrap();
-        fs::write(dir.join("src/main.mw"), "module main\n").unwrap();
-        let root = root_for(&dir);
+        let dir = Scratch::new("analysis-nomanifest");
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/main.mw"), "module main\n").unwrap();
+        let root = root_for(dir.path());
         let outcome = run_analysis(&root, &[], InputRevision::new(1));
         match outcome {
             AnalysisOutcome::Capture(rejection) => {
@@ -323,9 +319,9 @@ mod tests {
 
     #[test]
     fn overlay_noncanonical_key_is_capture_rejection() {
-        let dir = temp_dir("badkey");
-        write_project(&dir, &[("src/main.mw", "module main\n")]);
-        let root = root_for(&dir);
+        let dir = Scratch::new("analysis-badkey");
+        write_project(dir.path(), &[("src/main.mw", "module main\n")]);
+        let root = root_for(dir.path());
         let overlay = vec![OverlayInput {
             key: "../escape.mw",
             bytes: b"module x\n",
@@ -340,12 +336,12 @@ mod tests {
     /// one that is about to be replaced.
     #[test]
     fn a_live_publication_marker_is_a_capture_rejection() {
-        let dir = temp_dir("ids-pending");
-        write_project(&dir, &[("src/main.mw", "module main\n")]);
-        fs::create_dir_all(dir.join(".marrow")).unwrap();
-        fs::write(dir.join(".marrow/ids.pending"), b"").unwrap();
+        let dir = Scratch::new("analysis-ids-pending");
+        write_project(dir.path(), &[("src/main.mw", "module main\n")]);
+        fs::create_dir_all(dir.path().join(".marrow")).unwrap();
+        fs::write(dir.path().join(".marrow/ids.pending"), b"").unwrap();
 
-        let root = root_for(&dir);
+        let root = root_for(dir.path());
         match run_analysis(&root, &[], InputRevision::new(1)) {
             AnalysisOutcome::Capture(rejection) => {
                 let evidence = rejection.evidence.expect("rendered evidence");

@@ -191,7 +191,7 @@ fn compile_image(source: &str) -> Vec<u8> {
 /// Write `source` as a project, generate the strict TypeScript client into `gen/`, and write
 /// the compiled image beside it. Returns the project directory.
 fn prepare(temp: &Scratch, dir: &str, source: &str) -> PathBuf {
-    let project = temp.join(dir);
+    let project = temp.path().join(dir);
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(&project.join("src/main.mw"), source);
     write(&project.join(".marrow/ids"), IDS);
@@ -248,24 +248,25 @@ fn native_close_preserves_child_until_controlled_release() {
     use std::os::unix::fs::PermissionsExt;
     for mode in ["ordinary", "protocol", "startup", "abort"] {
         let temp = Scratch::new("close");
-        fs::set_permissions(&*temp, fs::Permissions::from_mode(0o700)).expect("private fixture");
-        eprintln!("supervisor close fixture: {}", temp.display());
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))
+            .expect("private fixture");
+        eprintln!("supervisor close fixture: {}", temp.path().display());
         write(
-            &temp.join("marrow-supervisor.mjs"),
+            &temp.path().join("marrow-supervisor.mjs"),
             include_str!("../../src/supervisor/marrow-supervisor.mjs"),
         );
         write(
-            &temp.join("driver.mjs"),
+            &temp.path().join("driver.mjs"),
             include_str!("../fixtures/native_close/driver.mjs"),
         );
-        let child = temp.join("child.mjs");
+        let child = temp.path().join("child.mjs");
         write(&child, include_str!("../fixtures/native_close/child.mjs"));
         fs::set_permissions(&child, fs::Permissions::from_mode(0o700)).expect("executable child");
         let output = Command::new("node")
             .arg("driver.mjs")
-            .env("MARROW_CLOSE_ROOT", &*temp)
+            .env("MARROW_CLOSE_ROOT", temp.path())
             .env("MARROW_CLOSE_CASE", mode)
-            .current_dir(&*temp)
+            .current_dir(temp.path())
             .output()
             .expect("run controlled Node driver");
         assert_driver_passed(&output);
@@ -580,7 +581,7 @@ fn provision_rejects_a_completed_child_without_a_valid_receipt() {
     if !output.status.success() {
         fs::write(project.join("driver.stdout"), &output.stdout).expect("retain stdout");
         fs::write(project.join("driver.stderr"), &output.stderr).expect("retain stderr");
-        eprintln!("retained protocol fixture: {}", temp.display());
+        eprintln!("retained protocol fixture: {}", temp.path().display());
         std::mem::forget(temp);
     }
     assert_driver_passed(&output);
@@ -617,7 +618,7 @@ function finish() {
 fn workshop_journey_through_the_trusted_main() {
     let temp = Scratch::new("journey");
     let project = prepare(&temp, "app", &journey_source());
-    let store = temp.join("store");
+    let store = temp.path().join("store");
     let runner = runner_path();
 
     let driver = format!(
@@ -724,7 +725,7 @@ fn a_broadened_image_is_refused_through_the_trusted_main() {
     // The client is generated from the broadened image, so it pins that image's identity and
     // matches the runner the trusted main attaches with it.
     let broadened = prepare(&temp, "broadened", &broadened_source());
-    let store = temp.join("store");
+    let store = temp.path().join("store");
     let runner = runner_path();
 
     // Provision the store under the read-only image via the runner CLI.

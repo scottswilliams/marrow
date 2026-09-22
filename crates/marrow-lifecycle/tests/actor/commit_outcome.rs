@@ -28,7 +28,7 @@ pub fn readValue(id: int): int? {
 use marrow_test_support::Scratch;
 
 fn compile() -> PreparedImage {
-    let prepared = prepare(marrow_test_support::program::compile(SOURCE, IDS));
+    let prepared = prepare(marrow_test_programs::program::compile(SOURCE, IDS));
     assert!(prepared.projection().is_some(), "durable schema");
     prepared
 }

@@ -73,7 +73,7 @@ const DISTINCT_IDS: &str = "marrow ids v0\n\
 use marrow_test_support::Scratch;
 
 use crate::support::store::try_provision_approved as provision;
-use marrow_test_support::program::compile;
+use marrow_test_programs::program::compile;
 
 #[test]
 fn two_roots_over_one_product_are_refused_by_the_head_identity_map() {

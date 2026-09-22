@@ -21,12 +21,12 @@ impl Project {
     /// for easier debugging; it need not be unique.
     pub fn materialize(&self, label: &str) -> Workspace {
         let root = Scratch::new(label);
-        write(&root.join("marrow.toml"), &self.manifest);
+        write(&root.path().join("marrow.toml"), &self.manifest);
         if let Some(ids) = &self.ids {
-            write(&root.join(".marrow/ids"), ids);
+            write(&root.path().join(".marrow/ids"), ids);
         }
         for (path, bytes) in &self.files {
-            write(&root.join(path), bytes);
+            write(&root.path().join(path), bytes);
         }
         Workspace { root }
     }
@@ -51,23 +51,23 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn dir(&self) -> &Path {
-        &self.root
+        self.root.path()
     }
 
     pub fn path(&self, relative: &str) -> PathBuf {
-        self.root.join(relative)
+        self.root.path().join(relative)
     }
 
     /// Read a project file back (for asserting a formatter or mint write).
     pub fn read(&self, relative: &str) -> String {
-        fs::read_to_string(self.root.join(relative))
+        fs::read_to_string(self.root.path().join(relative))
             .unwrap_or_else(|error| panic!("read `{relative}`: {error}"))
     }
 
     /// Invoke the `marrow` binary in the project root with `args`, capturing the
     /// outcome.
     pub fn marrow(&self, args: &[&str]) -> CliOutcome {
-        marrow_in(&self.root, args)
+        marrow_in(self.root.path(), args)
     }
 }
 
@@ -180,12 +180,12 @@ pub fn stage_toolchain() -> Scratch {
         runner.display()
     );
     let dir = Scratch::new("toolchain");
-    fs::copy(MARROW_BIN, dir.join("marrow")).expect("copy marrow");
-    fs::copy(&runner, dir.join("marrow-runner")).expect("copy runner");
+    fs::copy(MARROW_BIN, dir.path().join("marrow")).expect("copy marrow");
+    fs::copy(&runner, dir.path().join("marrow-runner")).expect("copy runner");
     let bytes = fs::read(&runner).expect("read runner");
     let id = marrow_image::companion_release_id(&bytes).to_hex();
     fs::write(
-        dir.join("marrow-companions"),
+        dir.path().join("marrow-companions"),
         format!(
             "marrow companions v0\nrelease {}\nrunner marrow-runner {id}\nend\n",
             env!("CARGO_PKG_VERSION")

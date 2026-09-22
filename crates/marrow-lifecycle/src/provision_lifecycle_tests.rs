@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::provision::provision_observed;
-use crate::test_support::{Scratch, cut, cut_parent_sync};
+use crate::test_support::{cut, cut_parent_sync};
 use crate::{
     ActiveBinding, EngineKind, HeadMap, LogicalHead, OpenError, Preflight, ProvisionError,
     ProvisionRequest, StoreEnvelope, StoreInstanceId, preflight, provision,
@@ -17,6 +17,7 @@ use marrow_codes::Code;
 use marrow_image::LedgerIdBytes;
 use marrow_kernel::codec::value::ScalarKind;
 use marrow_kernel::durable::{SiteTarget, StoreProjection, StoreSchemaBuilder};
+use marrow_test_support::Scratch;
 
 /// Open the two-node directory fixture without image admission. These tests exercise
 /// filesystem publication and custody; their synthetic Head carries no executable image.

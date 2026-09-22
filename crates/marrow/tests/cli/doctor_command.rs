@@ -144,12 +144,12 @@ fn populated_apply_preserves_old_values_and_leaves_new_fields_absent(toolchain: 
     let temp = Scratch::new("apply");
     eprintln!(
         "apply command fixture retained on failure: {}",
-        temp.display()
+        temp.path().display()
     );
-    let project = temp.join("app");
+    let project = temp.path().join("app");
     let cx = Journey {
         toolchain,
-        temp: &temp,
+        temp: temp.path(),
         project: &project,
     };
     let source = r#"resource Counter {
@@ -171,20 +171,20 @@ pub fn note(): int { return ^counters[0].notes[1].note ?? -1 }
 "#;
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(&project.join("src/main.mw"), source);
-    write(&temp.join("old.mw"), source);
+    write(&temp.path().join("old.mw"), source);
     run_ok(cx, "old-bootstrap", &project, &["run", "main.bootstrap"]);
     let old_ids = fs::read_to_string(project.join(".marrow/ids")).expect("old identities");
-    write(&temp.join("old.ids"), &old_ids);
+    write(&temp.path().join("old.ids"), &old_ids);
     let (old_image, old_ceiling) = build_image(cx, "old-deployment");
     let old_bytes = fs::read(&old_image).expect("old image");
     let old_image_id = marrow_verify::verify(&old_bytes)
         .expect("verified old artifact")
         .image_id()
         .to_hex();
-    let store = temp.join("store");
+    let store = temp.path().join("store");
     let store_arg = store.to_str().expect("store path");
     let provision = record(
-        temp.as_ref(),
+        temp.path(),
         "provision",
         Command::new(toolchain.join("marrow-runner"))
             .args(["provision", "--image"])
@@ -235,10 +235,10 @@ pub fn extraValue(): int { return ^counters[0].extra ?? -1 }
 pub fn noteExtra(): int { return ^counters[0].notes[1].noteExtra ?? -1 }
 "#;
     write(&project.join("src/main.mw"), &new_source);
-    write(&temp.join("new.mw"), &new_source);
+    write(&temp.path().join("new.mw"), &new_source);
     run_ok(cx, "new-bootstrap", &project, &["run", "main.bootstrap"]);
     let new_ids = fs::read_to_string(project.join(".marrow/ids")).expect("new identities");
-    write(&temp.join("new.ids"), &new_ids);
+    write(&temp.path().join("new.ids"), &new_ids);
     for line in old_ids.lines().filter(|line| line.starts_with("id ")) {
         assert!(
             new_ids.lines().any(|new| new == line),
@@ -259,7 +259,7 @@ pub fn noteExtra(): int { return ^counters[0].notes[1].noteExtra ?? -1 }
     let applied = run_ok(
         cx,
         "apply",
-        &temp,
+        temp.path(),
         &[
             "apply",
             "--store",
@@ -459,9 +459,9 @@ fn backup_restores_absent_ancestor_descendants_without_a_project(toolchain: &Pat
     let temp = std::mem::ManuallyDrop::new(Scratch::new("backup"));
     eprintln!(
         "backup command fixture retained on failure: {}",
-        temp.display()
+        temp.path().display()
     );
-    let project = temp.join("app");
+    let project = temp.path().join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(&project.join("src/main.mw"), BACKUP_SOURCE);
     let run = |dir: &Path, args: &[&str]| {
@@ -483,7 +483,7 @@ fn backup_restores_absent_ancestor_descendants_without_a_project(toolchain: &Pat
         &["image", "--out", "deployment", "--accept-ceiling", ceiling],
     );
     let image = project.join("deployment/program.image");
-    let store = temp.join("source");
+    let store = temp.path().join("source");
     let provision = Command::new(toolchain.join("marrow-runner"))
         .args(["provision", "--image"])
         .arg(&image)
@@ -500,7 +500,7 @@ fn backup_restores_absent_ancestor_descendants_without_a_project(toolchain: &Pat
     let head = fs::read(store.join("head")).expect("source head");
     fs::write(store.join("lock"), b"unclean").expect("prior marker");
     let before = store_files(&store);
-    let backup = temp.join("complete.backup");
+    let backup = temp.path().join("complete.backup");
     let receipt = run(
         &project,
         &[
@@ -523,7 +523,7 @@ fn backup_restores_absent_ancestor_descendants_without_a_project(toolchain: &Pat
         &project.join("src/main.mw"),
         BACKUP_SOURCE.replace("return 0", "return 1"),
     );
-    let refused_path = temp.join("stale.backup");
+    let refused_path = temp.path().join("stale.backup");
     let refused = marrow(
         toolchain,
         &project,
@@ -547,9 +547,9 @@ fn backup_restores_absent_ancestor_descendants_without_a_project(toolchain: &Pat
     assert!(store_files(&store) == before, "store artifacts changed");
     assert_eq!(fs::read(store.join("head")).unwrap(), head);
     write(&project.join("src/main.mw"), "not valid Marrow");
-    let restored = temp.join("restored");
+    let restored = temp.path().join("restored");
     let receipt = run(
-        &temp,
+        temp.path(),
         &[
             "restore",
             "--from",
@@ -617,7 +617,7 @@ fn store_files(dir: &Path) -> std::collections::BTreeMap<std::ffi::OsString, Vec
 /// A durable project at `dir` with its ledger, and a provisioned store beside it
 /// populated with two counters through `marrow import`.
 fn project_with_store(toolchain: &Path, temp: &Scratch) -> (PathBuf, PathBuf) {
-    let project = temp.join("app");
+    let project = temp.path().join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(&project.join("src/main.mw"), SOURCE);
     write(&project.join(".marrow/ids"), IDS);
@@ -625,7 +625,7 @@ fn project_with_store(toolchain: &Path, temp: &Scratch) -> (PathBuf, PathBuf) {
         &project.join("seed.jsonl"),
         "{\"id\":1,\"value\":10,\"label\":\"ten\"}\n{\"id\":2,\"value\":20}\n",
     );
-    let store = temp.join("store");
+    let store = temp.path().join("store");
     let imported = marrow(
         toolchain,
         &project,
@@ -801,7 +801,7 @@ fn a_code_only_edit_must_be_rebound_before_it_audits(toolchain: &Path) {
 
 fn usage_and_absent_store_refusals_keep_their_codes(toolchain: &Path) {
     let temp = Scratch::new("usage");
-    let project = temp.join("app");
+    let project = temp.path().join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(&project.join("src/main.mw"), SOURCE);
     write(&project.join(".marrow/ids"), IDS);
@@ -825,7 +825,7 @@ fn usage_and_absent_store_refusals_keep_their_codes(toolchain: &Path) {
 #[test]
 fn a_compiler_resource_limit_keeps_its_typed_code_before_store_access() {
     let temp = Scratch::new("compiler-limit");
-    let project = temp.join("app");
+    let project = temp.path().join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     let mut source = String::from("module main\n\n");
     for i in 0..257 {
@@ -856,7 +856,7 @@ fn a_compiler_resource_limit_keeps_its_typed_code_before_store_access() {
 
 fn a_storeless_program_has_nothing_to_audit(toolchain: &Path) {
     let temp = Scratch::new("storeless");
-    let project = temp.join("app");
+    let project = temp.path().join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(
         &project.join("src/main.mw"),
@@ -931,7 +931,7 @@ fn an_invalid_scalar_reports_a_logical_finding(toolchain: &Path) {
 #[test]
 fn doctor_reports_and_refusals_share_one_owned_toolchain() {
     let staged = stage_toolchain();
-    let path = staged.to_path_buf();
+    let path = staged.path().to_path_buf();
     populated_apply_preserves_old_values_and_leaves_new_fields_absent(&path);
     a_clean_store_audits_with_a_stable_digest_and_exit_zero(&path);
     explicit_recovery_preserves_data_and_reports_moved_files(&path);
@@ -966,7 +966,7 @@ fn explicit_recovery_preserves_data_and_reports_moved_files(toolchain: &Path) {
         &["recover", "--store", store_arg, "--format", "jsonl"],
     );
     if !recovered.status.success() {
-        let original = temp.to_path_buf();
+        let original = temp.path().to_path_buf();
         std::mem::forget(temp);
         panic!(
             "explicit recovery failed: {}; preserve {}",
@@ -1011,7 +1011,7 @@ fn recovery_failure_reports_a_preservation_move(toolchain: &Path) {
         let (project, store) = project_with_store(toolchain, &temp);
         let envelope = fs::read(store.join("envelope")).expect("envelope");
         let head = fs::read(store.join("head")).expect("head");
-        let peer = temp.join("peer");
+        let peer = temp.path().join("peer");
         fs::write(&peer, b"peer bytes").expect("peer");
         fs::write(store.join("envelope.replacing"), b"partial envelope").expect("first slot");
         std::os::unix::fs::symlink(&peer, store.join("head.replacing"))

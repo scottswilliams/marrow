@@ -1342,14 +1342,14 @@ process.exit(failures === 0 ? 0 : 1);
 #[ignore = "spawns Node; run with the sandbox disabled"]
 fn mirror_agrees_with_authoritative_encoder_on_kat_vectors() {
     let temp = Scratch::new("wire-kat");
-    let driver = temp.join("driver.mjs");
+    let driver = temp.path().join("driver.mjs");
     fs::write(&driver, DRIVER).expect("write driver");
 
     let output = Command::new("node")
         .arg(&driver)
         .env("MARROW_SUPERVISOR", supervisor_path())
         .env("MARROW_KAT_DIR", fixtures_dir())
-        .current_dir(&*temp)
+        .current_dir(temp.path())
         .output()
         .expect("node not found: the wire KAT cross-check needs Node v23.6+ on PATH");
     assert_driver_passed(&output);

@@ -9,9 +9,9 @@ use marrow_compile::{
 };
 use marrow_project::ProjectInput;
 
-use marrow_test_support::project as project_capture;
+use marrow_test_programs::project as project_capture;
 
-use marrow_test_support::ledger;
+use marrow_test_programs::ledger;
 
 /// The diagnostics a check refused with. A source-triggered refusal stays a
 /// diagnostic failure; any other arm is a compiler-coherence fault.

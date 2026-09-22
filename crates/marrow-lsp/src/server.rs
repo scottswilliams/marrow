@@ -1688,7 +1688,7 @@ mod tests {
     fn initialize_response_delivery_gates_lifecycle_and_first_analysis() {
         let dir = temp_project("init", "module main\n");
         let mut coordinator = Coordinator::new();
-        coordinator.on_frame(initialize_body(&root_uri(&dir)).as_bytes());
+        coordinator.on_frame(initialize_body(&root_uri(dir.path())).as_bytes());
         // The response is handed off, but the lifecycle has NOT advanced and no analysis
         // job is enqueued yet.
         assert!(matches!(
@@ -1716,7 +1716,7 @@ mod tests {
             coordinator.job_out.is_some(),
             "first analysis enqueued on delivery"
         );
-        cleanup(&dir);
+        cleanup(dir.path());
     }
 
     #[test]
@@ -1724,7 +1724,7 @@ mod tests {
         let main = "module main\n\npub fn f(): int {\n    return 1\n}\n";
         let dir = temp_project("init-ingress", main);
         let mut coordinator = Coordinator::new();
-        coordinator.on_frame(initialize_body(&root_uri(&dir)).as_bytes());
+        coordinator.on_frame(initialize_body(&root_uri(dir.path())).as_bytes());
         let (ingress_tx, ingress_rx) = sync_channel(1);
 
         ingress_tx
@@ -1741,14 +1741,16 @@ mod tests {
         );
 
         ingress_tx
-            .send(ReaderEvent::Frame(open_body(&dir, 1, main).into_bytes()))
+            .send(ReaderEvent::Frame(
+                open_body(dir.path(), 1, main).into_bytes(),
+            ))
             .unwrap();
         assert!(
             !receive_ingress(&mut coordinator, &ingress_rx),
             "follow-up ingress waits for initialize delivery"
         );
         assert!(
-            coordinator.ledger.get(&main_key(&dir)).is_none(),
+            coordinator.ledger.get(&main_key(dir.path())).is_none(),
             "didOpen remains queued"
         );
 
@@ -1756,10 +1758,10 @@ mod tests {
         assert_eq!(coordinator.lifecycle.phase(), Phase::Running);
         assert!(receive_ingress(&mut coordinator, &ingress_rx));
         assert!(
-            coordinator.ledger.get(&main_key(&dir)).is_some(),
+            coordinator.ledger.get(&main_key(dir.path())).is_some(),
             "didOpen is admitted after delivery"
         );
-        cleanup(&dir);
+        cleanup(dir.path());
     }
 
     // ---- Law: a lost producer thread is terminal, never a hang ----
@@ -1779,7 +1781,7 @@ mod tests {
         let (frame_tx, frame_rx) = sync_channel(1);
         let worker = Link::new(result_tx, &wake_tx);
         let mut coordinator = Coordinator::new();
-        coordinator.on_frame(initialize_body(&root_uri(&dir)).as_bytes());
+        coordinator.on_frame(initialize_body(&root_uri(dir.path())).as_bytes());
         let server = std::thread::spawn(move || {
             drive(
                 &mut coordinator,
@@ -1811,7 +1813,7 @@ mod tests {
     #[test]
     fn the_first_terminal_transition_wins() {
         let dir = temp_project("first-wins", "module main\n");
-        let mut coordinator = running(&dir);
+        let mut coordinator = running(dir.path());
         coordinator.on_frame(br#"{"jsonrpc":"2.0","id":9,"method":"shutdown"}"#);
         coordinator.on_receipt();
         assert_eq!(coordinator.lifecycle.phase(), Phase::AwaitExit);
@@ -1848,21 +1850,21 @@ mod tests {
     fn a_queued_recompute_is_dropped_when_a_document_becomes_unavailable() {
         let main = "module main\n\npub fn f(): int {\n    return 1\n}\n";
         let dir = temp_project("pending-unavailable", main);
-        let mut coordinator = running(&dir);
+        let mut coordinator = running(dir.path());
         coordinator.outbound.outbox.clear();
         let initial = run_next_job(&mut coordinator);
         coordinator.on_worker_result(initial);
         deliver_frames(&mut coordinator);
 
         // Version 1 dispatches an analysis the worker is still running.
-        coordinator.on_frame(open_body(&dir, 1, main).as_bytes());
+        coordinator.on_frame(open_body(dir.path(), 1, main).as_bytes());
         let job = coordinator.job_out.take().expect("the open dispatches");
         // Version 2 is valid while the worker is busy: a recompute is queued.
-        coordinator.on_frame(change_body(&dir, 2, main).as_bytes());
+        coordinator.on_frame(change_body(dir.path(), 2, main).as_bytes());
         assert!(coordinator.pending_recompute);
         // Version 3 is refused: the document is unavailable at the current revision.
         let huge = "x".repeat((1 << 20) + 1);
-        coordinator.on_frame(change_body(&dir, 3, &huge).as_bytes());
+        coordinator.on_frame(change_body(dir.path(), 3, &huge).as_bytes());
         assert!(!coordinator.ledger.all_available());
 
         // The version-1 analysis completes. The queued recompute must not run: it would
@@ -1876,7 +1878,7 @@ mod tests {
         assert!(!coordinator.worker_busy);
 
         // A later valid change recovers the document and recomputes.
-        coordinator.on_frame(change_body(&dir, 4, main).as_bytes());
+        coordinator.on_frame(change_body(dir.path(), 4, main).as_bytes());
         assert!(coordinator.job_out.is_some(), "recovery dispatches");
     }
 
@@ -1948,12 +1950,12 @@ mod tests {
             "term",
             "module main\n\npub fn f(): int {\n    return 1\n}\n",
         );
-        let mut coordinator = running(&dir);
+        let mut coordinator = running(dir.path());
         // Drop the initial analysis job and its outputs; open a doc so a hover can be held.
         coordinator.job_out = None;
         coordinator.on_frame(
             open_body(
-                &dir,
+                dir.path(),
                 1,
                 "module main\n\npub fn f(): int {\n    return 1\n}\n",
             )
@@ -1961,7 +1963,7 @@ mod tests {
         );
         coordinator.job_out = None; // ignore the recompute job; no snapshot arrives
 
-        coordinator.on_frame(hover_body(&dir, 10, 3, 12).as_bytes());
+        coordinator.on_frame(hover_body(dir.path(), 10, 3, 12).as_bytes());
         coordinator.on_frame(br#"{"jsonrpc":"2.0","id":11,"method":"noSuchMethod"}"#);
 
         coordinator.on_terminal();
@@ -1976,7 +1978,7 @@ mod tests {
                 && *class == TerminalClass::DeliveryUnknown),
             "handed-off-but-unreceipted request is DeliveryUnknown"
         );
-        cleanup(&dir);
+        cleanup(dir.path());
     }
 
     // ---- Law: ContentModified for a query held across an edit ----
@@ -1986,23 +1988,23 @@ mod tests {
         let main1 = "module main\n\npub fn f(): int {\n    return 1\n}\n";
         let main2 = "module main\n\npub fn f(): int {\n    return 2\n}\n";
         let dir = temp_project("cm", main1);
-        let mut coordinator = running(&dir);
+        let mut coordinator = running(dir.path());
         coordinator.job_out = None;
-        coordinator.on_frame(open_body(&dir, 1, main1).as_bytes());
+        coordinator.on_frame(open_body(dir.path(), 1, main1).as_bytes());
         coordinator.job_out = None;
         let rev_open = coordinator.current_revision;
 
         // Hover with no snapshot yet: held at rev_open, version 1.
-        coordinator.on_frame(hover_body(&dir, 20, 3, 12).as_bytes());
+        coordinator.on_frame(hover_body(dir.path(), 20, 3, 12).as_bytes());
         assert_eq!(coordinator.held_queries.len(), 1);
 
-        coordinator.on_frame(change_body(&dir, 2, main2).as_bytes());
+        coordinator.on_frame(change_body(dir.path(), 2, main2).as_bytes());
         assert_ne!(coordinator.current_revision, rev_open);
         coordinator.job_out = None;
 
         // The snapshot lands for the new revision, so the hover held at the stale one
         // reauthorizes and fails.
-        let snapshot = snapshot_at(&dir, main2, coordinator.current_revision);
+        let snapshot = snapshot_at(dir.path(), main2, coordinator.current_revision);
         coordinator.on_worker_result(AnalysisOutcome::Snapshot(snapshot));
         assert!(
             frames(&coordinator)
@@ -2010,7 +2012,7 @@ mod tests {
                 .any(|f| f.contains(r#""id":20"#) && f.contains("-32801")),
             "the held query is answered with ContentModified"
         );
-        cleanup(&dir);
+        cleanup(dir.path());
     }
 
     #[test]
@@ -2018,23 +2020,23 @@ mod tests {
         let main1 = "module main\n\npub fn f(): int {\n    return 1\n}\n";
         let main2 = "module main\n\npub fn f(): int {\n    return 2\n}\n";
         let dir = temp_project("cm-completion", main1);
-        let mut coordinator = running(&dir);
+        let mut coordinator = running(dir.path());
         coordinator.job_out = None;
-        coordinator.on_frame(open_body(&dir, 1, main1).as_bytes());
+        coordinator.on_frame(open_body(dir.path(), 1, main1).as_bytes());
         coordinator.job_out = None;
         let rev_open = coordinator.current_revision;
 
         // Completion with no snapshot yet: held at rev_open, version 1.
-        coordinator.on_frame(completion_body(&dir, 21, 3, 12).as_bytes());
+        coordinator.on_frame(completion_body(dir.path(), 21, 3, 12).as_bytes());
         assert_eq!(coordinator.held_queries.len(), 1);
 
-        coordinator.on_frame(change_body(&dir, 2, main2).as_bytes());
+        coordinator.on_frame(change_body(dir.path(), 2, main2).as_bytes());
         assert_ne!(coordinator.current_revision, rev_open);
         coordinator.job_out = None;
 
         // The snapshot lands for the new revision, so the completion held at the stale one
         // reauthorizes and fails rather than answering with facts for the wrong text.
-        let snapshot = snapshot_at(&dir, main2, coordinator.current_revision);
+        let snapshot = snapshot_at(dir.path(), main2, coordinator.current_revision);
         coordinator.on_worker_result(AnalysisOutcome::Snapshot(snapshot));
         assert!(
             frames(&coordinator)
@@ -2042,7 +2044,7 @@ mod tests {
                 .any(|f| f.contains(r#""id":21"#) && f.contains("-32801")),
             "the held completion is answered with ContentModified"
         );
-        cleanup(&dir);
+        cleanup(dir.path());
     }
 
     // ---- Law: capture-episode latch + publication reset ----
@@ -2051,9 +2053,9 @@ mod tests {
     fn capture_failure_latches_once_and_resets_on_successful_delivery() {
         let main = "module main\n\npub fn f(): int {\n    return 1\n}\n";
         let dir = temp_project("episode", main);
-        let mut coordinator = running(&dir);
+        let mut coordinator = running(dir.path());
         coordinator.job_out = None;
-        coordinator.on_frame(open_body(&dir, 1, main).as_bytes());
+        coordinator.on_frame(open_body(dir.path(), 1, main).as_bytes());
         coordinator.job_out = None;
         let revision = coordinator.current_revision;
 
@@ -2090,7 +2092,7 @@ mod tests {
         assert_eq!(show_count2, 1, "second failure is suppressed while latched");
 
         // A successful publication set that observed the latch resets it on full delivery.
-        let snapshot = snapshot_at(&dir, main, revision);
+        let snapshot = snapshot_at(dir.path(), main, revision);
         coordinator.on_worker_result(AnalysisOutcome::Snapshot(snapshot));
         assert!(coordinator.publication.is_some(), "publication in flight");
         // Deliver every publication frame.
@@ -2102,7 +2104,7 @@ mod tests {
             CaptureEpisode::Eligible,
             "the latch resets after the observing set fully delivers"
         );
-        cleanup(&dir);
+        cleanup(dir.path());
     }
 
     // ---- Soundness: a reply retires its entry only on delivery, not at handoff ----
@@ -2111,14 +2113,14 @@ mod tests {
     fn duplicate_id_after_reply_handoff_is_rejected_not_answered_twice() {
         let main = "module main\n\npub fn f(): int {\n    return 1\n}\n";
         let dir = temp_project("dupreply", main);
-        let mut coordinator = running(&dir);
+        let mut coordinator = running(dir.path());
         coordinator.job_out = None;
-        coordinator.on_frame(open_body(&dir, 1, main).as_bytes());
+        coordinator.on_frame(open_body(dir.path(), 1, main).as_bytes());
         coordinator.job_out = None;
 
         // Hover id=5 held (no snapshot yet), then the snapshot lands and it is answered.
-        coordinator.on_frame(hover_body(&dir, 5, 3, 12).as_bytes());
-        let snapshot = snapshot_at(&dir, main, coordinator.current_revision);
+        coordinator.on_frame(hover_body(dir.path(), 5, 3, 12).as_bytes());
+        let snapshot = snapshot_at(dir.path(), main, coordinator.current_revision);
         coordinator.on_worker_result(AnalysisOutcome::Snapshot(snapshot));
         // The reply frame was handed off; its ledger entry is still live (AwaitingDelivery),
         // not retired at handoff.
@@ -2126,7 +2128,7 @@ mod tests {
 
         // A second request reusing the in-flight id is caught as a duplicate — no second
         // response for id 5 — rather than being admitted and answered again.
-        coordinator.on_frame(hover_body(&dir, 5, 3, 12).as_bytes());
+        coordinator.on_frame(hover_body(dir.path(), 5, 3, 12).as_bytes());
         let id5_results = frames(&coordinator)
             .iter()
             .filter(|f| f.contains(r#""id":5"#) && f.contains(r#""result""#))
@@ -2146,15 +2148,15 @@ mod tests {
     fn oversized_change_marks_document_unavailable_then_recovers() {
         let main = "module main\n\npub fn f(): int {\n    return 1\n}\n";
         let dir = temp_project("unavail", main);
-        let mut coordinator = running(&dir);
+        let mut coordinator = running(dir.path());
         coordinator.job_out = None;
-        coordinator.on_frame(open_body(&dir, 1, main).as_bytes());
+        coordinator.on_frame(open_body(dir.path(), 1, main).as_bytes());
         coordinator.job_out = None;
 
         // A change whose body exceeds the 1 MiB per-file overlay bound is refused: the
         // document becomes OpenUnavailable and no recompute is enqueued.
         let huge = "x".repeat((1 << 20) + 1);
-        coordinator.on_frame(change_body(&dir, 2, &huge).as_bytes());
+        coordinator.on_frame(change_body(dir.path(), 2, &huge).as_bytes());
         assert!(
             !coordinator.ledger.all_available(),
             "the oversized document is unavailable"
@@ -2165,7 +2167,7 @@ mod tests {
         );
 
         // Every semantic request is the same fixed -32803 while a document is unavailable.
-        coordinator.on_frame(hover_body(&dir, 7, 3, 12).as_bytes());
+        coordinator.on_frame(hover_body(dir.path(), 7, 3, 12).as_bytes());
         assert!(
             frames(&coordinator)
                 .iter()
@@ -2177,7 +2179,7 @@ mod tests {
         // the worker as idle (it consumed the earlier job) so recovery dispatches rather
         // than coalescing.
         coordinator.worker_busy = false;
-        coordinator.on_frame(change_body(&dir, 3, main).as_bytes());
+        coordinator.on_frame(change_body(dir.path(), 3, main).as_bytes());
         assert!(
             coordinator.ledger.all_available(),
             "a valid change recovers the document"
@@ -2186,7 +2188,7 @@ mod tests {
             coordinator.job_out.is_some(),
             "recompute re-enqueues on recovery"
         );
-        cleanup(&dir);
+        cleanup(dir.path());
     }
 
     // ---- Law: whole-analysis resource stops complete their exact revision ----
@@ -2303,10 +2305,10 @@ mod tests {
     #[test]
     fn analysis_resource_limit_fails_held_queries() {
         let dir = temp_project("reslimit-held", TYPE_ERROR);
-        let mut coordinator = diagnosed_coordinator(&dir);
-        let outcome = syntax_stop(&mut coordinator, &dir, 2);
+        let mut coordinator = diagnosed_coordinator(dir.path());
+        let outcome = syntax_stop(&mut coordinator, dir.path(), 2);
 
-        coordinator.on_frame(hover_body(&dir, 8, 0, 0).as_bytes());
+        coordinator.on_frame(hover_body(dir.path(), 8, 0, 0).as_bytes());
         assert_eq!(coordinator.held_queries.len(), 1);
 
         coordinator.on_worker_result(outcome);
@@ -2317,18 +2319,18 @@ mod tests {
                 .any(|f| f.contains(r#""id":8"#) && f.contains("-32803")),
             "a held query at a resource-limited revision is -32803"
         );
-        cleanup(&dir);
+        cleanup(dir.path());
     }
 
     #[test]
     fn analysis_resource_limit_completes_late_current_queries() {
         let dir = temp_project("reslimit-late", TYPE_ERROR);
-        let mut coordinator = diagnosed_coordinator(&dir);
-        let outcome = syntax_stop(&mut coordinator, &dir, 2);
+        let mut coordinator = diagnosed_coordinator(dir.path());
+        let outcome = syntax_stop(&mut coordinator, dir.path(), 2);
         coordinator.on_worker_result(outcome);
         deliver_frames(&mut coordinator);
 
-        coordinator.on_frame(hover_body(&dir, 9, 0, 0).as_bytes());
+        coordinator.on_frame(hover_body(dir.path(), 9, 0, 0).as_bytes());
         assert!(
             frames(&coordinator)
                 .iter()
@@ -2339,20 +2341,20 @@ mod tests {
         assert!(coordinator.requests.is_live(&RequestId::Integer(9)));
         deliver_frames(&mut coordinator);
         assert!(!coordinator.requests.is_live(&RequestId::Integer(9)));
-        cleanup(&dir);
+        cleanup(dir.path());
     }
 
     #[test]
     fn analysis_resource_limit_reauthorizes_queries_held_across_an_edit() {
         let dir = temp_project("reslimit-stale-query", TYPE_ERROR);
-        let mut coordinator = diagnosed_coordinator(&dir);
-        coordinator.on_frame(change_body(&dir, 2, TYPE_ERROR).as_bytes());
+        let mut coordinator = diagnosed_coordinator(dir.path());
+        coordinator.on_frame(change_body(dir.path(), 2, TYPE_ERROR).as_bytes());
         let old_outcome = run_next_job(&mut coordinator);
-        coordinator.on_frame(hover_body(&dir, 10, 3, 12).as_bytes());
+        coordinator.on_frame(hover_body(dir.path(), 10, 3, 12).as_bytes());
         assert_eq!(coordinator.held_queries.len(), 1);
 
         let source = "@\n".repeat(marrow_syntax::SYNTAX_DIAGNOSTIC_COUNT_LIMIT + 1);
-        coordinator.on_frame(change_body(&dir, 3, &source).as_bytes());
+        coordinator.on_frame(change_body(dir.path(), 3, &source).as_bytes());
         coordinator.on_worker_result(old_outcome);
         let outcome = run_next_job(&mut coordinator);
         assert!(matches!(outcome, AnalysisOutcome::ResourceLimit { .. }));
@@ -2363,20 +2365,20 @@ mod tests {
                 .any(|frame| frame.contains(r#""id":10,"#) && frame.contains(r#""code":-32801,"#)),
             "the older request is ContentModified, not a failure for the new revision"
         );
-        cleanup(&dir);
+        cleanup(dir.path());
     }
 
     #[test]
     fn analysis_resource_limit_retracts_exactly_the_previously_published_files() {
         let dir = temp_project("reslimit-retract", TYPE_ERROR);
         fs::write(
-            dir.join("src/other.mw"),
+            dir.path().join("src/other.mw"),
             "module other\npub fn g(): int { return false }\n",
         )
         .expect("second diagnostic file");
-        let mut coordinator = diagnosed_coordinator(&dir);
+        let mut coordinator = diagnosed_coordinator(dir.path());
         assert_eq!(coordinator.published.len(), 2);
-        let outcome = syntax_stop(&mut coordinator, &dir, 2);
+        let outcome = syntax_stop(&mut coordinator, dir.path(), 2);
         coordinator.on_worker_result(outcome);
         let delivered = deliver_frames(&mut coordinator);
         let publications = diagnostic_publications(&delivered);
@@ -2398,20 +2400,20 @@ mod tests {
         assert_eq!(
             identities,
             vec![
-                (format!("{}/src/main.mw", root_uri(&dir)), Some(2)),
-                (format!("{}/src/other.mw", root_uri(&dir)), None),
+                (format!("{}/src/main.mw", root_uri(dir.path())), Some(2)),
+                (format!("{}/src/other.mw", root_uri(dir.path())), None),
             ]
         );
         assert!(coordinator.published.is_empty());
         assert!(coordinator.publication.is_none());
-        cleanup(&dir);
+        cleanup(dir.path());
     }
 
     #[test]
     fn analysis_resource_limit_publishes_the_canonical_unlocated_explanation() {
         let dir = temp_project("reslimit-notice", TYPE_ERROR);
-        let mut coordinator = diagnosed_coordinator(&dir);
-        let outcome = syntax_stop(&mut coordinator, &dir, 2);
+        let mut coordinator = diagnosed_coordinator(dir.path());
+        let outcome = syntax_stop(&mut coordinator, dir.path(), 2);
         coordinator.on_worker_result(outcome);
         let delivered = deliver_frames(&mut coordinator);
         let notices = notifications(&delivered, "window/showMessage");
@@ -2426,15 +2428,15 @@ mod tests {
         );
         assert!(!notices[0].get().contains("\"uri\""));
         assert!(!notices[0].get().contains("\"range\""));
-        cleanup(&dir);
+        cleanup(dir.path());
     }
 
     #[test]
     fn analysis_resource_limit_exact_count_and_later_recovery_remain_complete() {
         let dir = temp_project("reslimit-boundary", TYPE_ERROR);
-        let mut coordinator = diagnosed_coordinator(&dir);
+        let mut coordinator = diagnosed_coordinator(dir.path());
         let exact = "@\n".repeat(marrow_syntax::SYNTAX_DIAGNOSTIC_COUNT_LIMIT);
-        coordinator.on_frame(change_body(&dir, 2, &exact).as_bytes());
+        coordinator.on_frame(change_body(dir.path(), 2, &exact).as_bytes());
         let outcome = run_next_job(&mut coordinator);
         let AnalysisOutcome::Snapshot(snapshot) = &outcome else {
             panic!("the exact syntax diagnostic count retains a complete snapshot");
@@ -2454,12 +2456,12 @@ mod tests {
         );
         assert!(notifications(&delivered, "window/showMessage").is_empty());
 
-        let stopped = syntax_stop(&mut coordinator, &dir, 3);
+        let stopped = syntax_stop(&mut coordinator, dir.path(), 3);
         coordinator.on_worker_result(stopped);
         deliver_frames(&mut coordinator);
         let recovered = "module main\n\npub fn f(): int {\n    const n = 1\n    return n\n}\n";
-        coordinator.on_frame(change_body(&dir, 4, recovered).as_bytes());
-        coordinator.on_frame(hover_body(&dir, 11, 4, 11).as_bytes());
+        coordinator.on_frame(change_body(dir.path(), 4, recovered).as_bytes());
+        coordinator.on_frame(hover_body(dir.path(), 11, 4, 11).as_bytes());
         assert_eq!(coordinator.held_queries.len(), 1);
         let outcome = run_next_job(&mut coordinator);
         let AnalysisOutcome::Snapshot(snapshot) = &outcome else {
@@ -2478,16 +2480,16 @@ mod tests {
         assert_eq!(publications[0].version, Some(4));
         assert!(publications[0].diagnostics.is_empty());
         assert!(coordinator.held_queries.is_empty());
-        cleanup(&dir);
+        cleanup(dir.path());
     }
 
     #[test]
     fn analysis_resource_limit_from_an_older_job_cannot_replace_recovery() {
         let dir = temp_project("reslimit-old-result", TYPE_ERROR);
-        let mut coordinator = diagnosed_coordinator(&dir);
-        let stopped = syntax_stop(&mut coordinator, &dir, 2);
+        let mut coordinator = diagnosed_coordinator(dir.path());
+        let stopped = syntax_stop(&mut coordinator, dir.path(), 2);
         let recovered = "module main\npub fn f(): int { return 1 }\n";
-        coordinator.on_frame(change_body(&dir, 3, recovered).as_bytes());
+        coordinator.on_frame(change_body(dir.path(), 3, recovered).as_bytes());
         coordinator.on_worker_result(stopped);
         assert!(
             frames(&coordinator).is_empty(),
@@ -2502,21 +2504,21 @@ mod tests {
         assert_eq!(publications.len(), 1);
         assert_eq!(publications[0].version, Some(3));
         assert!(publications[0].diagnostics.is_empty());
-        cleanup(&dir);
+        cleanup(dir.path());
     }
 
     #[test]
     fn analysis_resource_limit_waits_for_the_prior_publication_receipt() {
         let dir = temp_project("reslimit-pending", TYPE_ERROR);
-        let mut coordinator = diagnosed_coordinator(&dir);
+        let mut coordinator = diagnosed_coordinator(dir.path());
         let cleared = "module main\npub fn f(): int { return 1 }\n";
-        coordinator.on_frame(change_body(&dir, 2, cleared).as_bytes());
+        coordinator.on_frame(change_body(dir.path(), 2, cleared).as_bytes());
         let outcome = run_next_job(&mut coordinator);
         coordinator.on_worker_result(outcome);
         assert!(coordinator.publication.is_some());
         let prior_frames = frames(&coordinator);
 
-        let stopped = syntax_stop(&mut coordinator, &dir, 3);
+        let stopped = syntax_stop(&mut coordinator, dir.path(), 3);
         coordinator.on_worker_result(stopped);
         assert!(
             coordinator.pending_publication.is_some(),
@@ -2535,26 +2537,26 @@ mod tests {
         assert_eq!(notifications(&delivered, "window/showMessage").len(), 1);
         assert!(coordinator.publication.is_none());
         assert!(coordinator.pending_publication.is_none());
-        cleanup(&dir);
+        cleanup(dir.path());
     }
 
     #[test]
     fn analysis_resource_limit_pending_publication_is_dropped_after_an_edit() {
         let dir = temp_project("reslimit-pending-stale", TYPE_ERROR);
-        let mut coordinator = diagnosed_coordinator(&dir);
-        coordinator.on_frame(change_body(&dir, 2, TYPE_ERROR).as_bytes());
+        let mut coordinator = diagnosed_coordinator(dir.path());
+        coordinator.on_frame(change_body(dir.path(), 2, TYPE_ERROR).as_bytes());
         let outcome = run_next_job(&mut coordinator);
         coordinator.on_worker_result(outcome);
         assert!(coordinator.publication.is_some());
         let prior_frames = frames(&coordinator);
 
-        let stopped = syntax_stop(&mut coordinator, &dir, 3);
+        let stopped = syntax_stop(&mut coordinator, dir.path(), 3);
         coordinator.on_worker_result(stopped);
         assert!(
             coordinator.pending_publication.is_some(),
             "the stop waits for delivery"
         );
-        coordinator.on_frame(change_body(&dir, 4, TYPE_ERROR).as_bytes());
+        coordinator.on_frame(change_body(dir.path(), 4, TYPE_ERROR).as_bytes());
         let delivered = deliver_frames(&mut coordinator);
         assert_eq!(
             delivered, prior_frames,
@@ -2562,14 +2564,14 @@ mod tests {
         );
         assert!(coordinator.pending_publication.is_none());
         assert!(coordinator.publication.is_none());
-        cleanup(&dir);
+        cleanup(dir.path());
     }
 
     #[test]
     fn analysis_resource_limit_completes_all_six_semantic_request_kinds() {
         let dir = temp_project("reslimit-methods", TYPE_ERROR);
-        let mut coordinator = diagnosed_coordinator(&dir);
-        let mut stopped = Some(syntax_stop(&mut coordinator, &dir, 2));
+        let mut coordinator = diagnosed_coordinator(dir.path());
+        let mut stopped = Some(syntax_stop(&mut coordinator, dir.path(), 2));
         let position = r#", "position":{"line":0,"character":0}"#;
         let methods = [
             ("hover", position),
@@ -2587,7 +2589,7 @@ mod tests {
                 let id = 20 + batch * methods.len() + index;
                 coordinator.on_frame(format!(
                     r#"{{"jsonrpc":"2.0","id":{id},"method":"textDocument/{method}","params":{{"textDocument":{{"uri":"{}/src/main.mw"}}{extra}}}}}"#,
-                    root_uri(&dir)
+                    root_uri(dir.path())
                 ).as_bytes());
             }
             if let Some(outcome) = stopped.take() {
@@ -2603,23 +2605,23 @@ mod tests {
             }
             assert!(coordinator.held_queries.is_empty());
         }
-        cleanup(&dir);
+        cleanup(dir.path());
     }
 
     #[test]
     fn analysis_resource_limit_holds_credit_starved_replies_until_receipts() {
         let dir = temp_project("reslimit-credits", TYPE_ERROR);
-        let mut coordinator = diagnosed_coordinator(&dir);
-        let stopped = syntax_stop(&mut coordinator, &dir, 2);
+        let mut coordinator = diagnosed_coordinator(dir.path());
+        let stopped = syntax_stop(&mut coordinator, dir.path(), 2);
         for id in 100..100 + crate::capacities::OUTBOUND_CREDITS {
             coordinator.on_frame(
                 format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"noSuchMethod"}}"#).as_bytes(),
             );
         }
         assert_eq!(coordinator.outbound.capacity(), 0);
-        coordinator.on_frame(hover_body(&dir, 20, 0, 0).as_bytes());
+        coordinator.on_frame(hover_body(dir.path(), 20, 0, 0).as_bytes());
         coordinator.on_worker_result(stopped);
-        coordinator.on_frame(hover_body(&dir, 21, 0, 0).as_bytes());
+        coordinator.on_frame(hover_body(dir.path(), 21, 0, 0).as_bytes());
         assert_eq!(coordinator.held_queries.len(), 2);
         assert!(
             coordinator.outbound.pending.is_empty(),
@@ -2649,17 +2651,17 @@ mod tests {
         assert!(coordinator.outbound.pending.is_empty());
         assert!(coordinator.publication.is_none());
         assert_eq!(notifications(&delivered, "window/showMessage").len(), 1);
-        cleanup(&dir);
+        cleanup(dir.path());
     }
 
     #[test]
     fn analysis_resource_limit_coalesces_repeated_and_pending_stops() {
         let dir = temp_project("reslimit-repeat", TYPE_ERROR);
-        let mut coordinator = diagnosed_coordinator(&dir);
-        let stopped = syntax_stop(&mut coordinator, &dir, 2);
+        let mut coordinator = diagnosed_coordinator(dir.path());
+        let stopped = syntax_stop(&mut coordinator, dir.path(), 2);
         coordinator.on_worker_result(stopped);
         let source = "@\n".repeat(marrow_syntax::SYNTAX_DIAGNOSTIC_COUNT_LIMIT + 1);
-        let root = selected_root(&dir);
+        let root = selected_root(dir.path());
         let overlay = [OverlayInput {
             key: "src/main.mw",
             bytes: source.as_bytes(),
@@ -2671,7 +2673,7 @@ mod tests {
         assert!(coordinator.pending_publication.is_none());
 
         for version in [3, 4] {
-            let stopped = syntax_stop(&mut coordinator, &dir, version);
+            let stopped = syntax_stop(&mut coordinator, dir.path(), version);
             coordinator.on_worker_result(stopped);
         }
         assert_eq!(
@@ -2699,25 +2701,25 @@ mod tests {
             limit.kind(),
             marrow_compile::ResourceLimitKind::DiagnosticCount
         );
-        cleanup(&dir);
+        cleanup(dir.path());
     }
 
     #[test]
     fn analysis_resource_limit_preserves_the_capture_episode_until_success_delivers() {
         let dir = temp_project("reslimit-capture-episode", TYPE_ERROR);
-        let mut coordinator = diagnosed_coordinator(&dir);
-        fs::remove_file(dir.join("marrow.toml")).expect("remove disposable manifest");
-        coordinator.on_frame(change_body(&dir, 2, TYPE_ERROR).as_bytes());
+        let mut coordinator = diagnosed_coordinator(dir.path());
+        fs::remove_file(dir.path().join("marrow.toml")).expect("remove disposable manifest");
+        coordinator.on_frame(change_body(dir.path(), 2, TYPE_ERROR).as_bytes());
         let failure = run_next_job(&mut coordinator);
         assert!(matches!(failure, AnalysisOutcome::Capture(_)));
         coordinator.on_worker_result(failure);
         let episode = coordinator.episode;
         assert!(matches!(episode, CaptureEpisode::Latched { .. }));
         deliver_frames(&mut coordinator);
-        fs::write(dir.join("marrow.toml"), "edition = \"2026\"\n")
+        fs::write(dir.path().join("marrow.toml"), "edition = \"2026\"\n")
             .expect("restore disposable manifest");
 
-        let stopped = syntax_stop(&mut coordinator, &dir, 3);
+        let stopped = syntax_stop(&mut coordinator, dir.path(), 3);
         coordinator.on_worker_result(stopped);
         assert_eq!(
             coordinator
@@ -2732,7 +2734,7 @@ mod tests {
             coordinator.episode, episode,
             "stop delivery does not reset capture"
         );
-        coordinator.on_frame(change_body(&dir, 4, TYPE_ERROR).as_bytes());
+        coordinator.on_frame(change_body(dir.path(), 4, TYPE_ERROR).as_bytes());
         let recovered = run_next_job(&mut coordinator);
         coordinator.on_worker_result(recovered);
         assert_eq!(
@@ -2741,18 +2743,18 @@ mod tests {
         );
         deliver_frames(&mut coordinator);
         assert_eq!(coordinator.episode, CaptureEpisode::Eligible);
-        cleanup(&dir);
+        cleanup(dir.path());
     }
 
     #[test]
     fn analysis_resource_limit_active_plan_finishes_before_newer_success() {
         let dir = temp_project("reslimit-active", TYPE_ERROR);
-        let mut coordinator = diagnosed_coordinator(&dir);
-        let stopped = syntax_stop(&mut coordinator, &dir, 2);
+        let mut coordinator = diagnosed_coordinator(dir.path());
+        let stopped = syntax_stop(&mut coordinator, dir.path(), 2);
         coordinator.on_worker_result(stopped);
         let stop_frames = frames(&coordinator);
         let recovered = "module main\npub fn f(): int { return 1 }\n";
-        coordinator.on_frame(change_body(&dir, 3, recovered).as_bytes());
+        coordinator.on_frame(change_body(dir.path(), 3, recovered).as_bytes());
         let outcome = run_next_job(&mut coordinator);
         coordinator.on_worker_result(outcome);
         assert_eq!(frames(&coordinator), stop_frames);
@@ -2770,7 +2772,7 @@ mod tests {
         assert_eq!(notifications(&delivered, "window/showMessage").len(), 1);
         assert!(coordinator.publication.is_none());
         assert!(coordinator.pending_publication.is_none());
-        cleanup(&dir);
+        cleanup(dir.path());
     }
 
     #[test]
@@ -2787,15 +2789,15 @@ mod tests {
         let position = lsp_types::Position::new(member_line, "    return p.".len() as u32);
         let other = "module other\n\npub fn g(value: int): int {\n    return value\n}\n";
         let dir = temp_project("query-local-limit", &main);
-        fs::write(dir.join("src/other.mw"), other).expect("valid sibling module");
-        let mut coordinator = running(&dir);
+        fs::write(dir.path().join("src/other.mw"), other).expect("valid sibling module");
+        let mut coordinator = running(dir.path());
         coordinator.outbound.outbox.clear();
         let initial = run_next_job(&mut coordinator);
         coordinator.on_worker_result(initial);
         deliver_frames(&mut coordinator);
         for open in [
-            open_body(&dir, 1, &main),
-            open_body(&dir, 1, other).replace("/src/main.mw", "/src/other.mw"),
+            open_body(dir.path(), 1, &main),
+            open_body(dir.path(), 1, other).replace("/src/main.mw", "/src/other.mw"),
         ] {
             coordinator.on_frame(open.as_bytes());
             let outcome = run_next_job(&mut coordinator);
@@ -2827,12 +2829,12 @@ mod tests {
         // real completion refusal. Neither query changes revision-wide publications.
         for (request, id, result) in [
             (
-                completion_body(&dir, 20, position.line, position.character),
+                completion_body(dir.path(), 20, position.line, position.character),
                 20,
                 r#""code":-32803"#,
             ),
             (
-                hover_body(&dir, 21, 3, 11).replace("/src/main.mw", "/src/other.mw"),
+                hover_body(dir.path(), 21, 3, 11).replace("/src/main.mw", "/src/other.mw"),
                 21,
                 r#""value":"int""#,
             ),
@@ -2862,7 +2864,7 @@ mod tests {
             assert!(coordinator.requests.entries.is_empty());
             assert!(coordinator.job_out.is_none());
         }
-        cleanup(&dir);
+        cleanup(dir.path());
     }
 
     // ---- Law: semantic queries parse, dispatch, and encode through the coordinator ----
@@ -2880,10 +2882,10 @@ mod tests {
         // classifies the enum-path position.
         let editing = GRAPH_REPORT.replacen("return Role::isolated", "return Role::", 1);
         let dir = temp_project("completion", &editing);
-        let mut coordinator = opened(&dir, &editing);
+        let mut coordinator = opened(dir.path(), &editing);
         deliver_frames(&mut coordinator);
         let position = LineMap::new(&editing).position_at(after(&editing, "return Role::"));
-        coordinator.on_frame(position_body(&dir, 30, "completion", position).as_bytes());
+        coordinator.on_frame(position_body(dir.path(), 30, "completion", position).as_bytes());
         let delivered = deliver_frames(&mut coordinator);
         let lsp_types::CompletionResponse::Array(items) = response(&delivered, 30) else {
             panic!("an enum-path position completes to a complete candidate list");
@@ -2897,12 +2899,12 @@ mod tests {
     #[test]
     fn signature_help_inside_a_call_marks_the_active_parameter() {
         let dir = temp_project("sighelp", GRAPH_REPORT);
-        let mut coordinator = opened(&dir, GRAPH_REPORT);
+        let mut coordinator = opened(dir.path(), GRAPH_REPORT);
         deliver_frames(&mut coordinator);
         // Inside `classifyRole(o, i)` at the second argument slot.
         let position =
             LineMap::new(GRAPH_REPORT).position_at(after(GRAPH_REPORT, "classifyRole(o, "));
-        coordinator.on_frame(position_body(&dir, 31, "signatureHelp", position).as_bytes());
+        coordinator.on_frame(position_body(dir.path(), 31, "signatureHelp", position).as_bytes());
         let delivered = deliver_frames(&mut coordinator);
         let help: lsp_types::SignatureHelp = response(&delivered, 31);
         assert_eq!(help.signatures.len(), 1, "one active signature");
@@ -2920,12 +2922,12 @@ mod tests {
     #[test]
     fn document_symbols_outline_declarations_with_nested_members() {
         let dir = temp_project("symbols", GRAPH_REPORT);
-        let mut coordinator = opened(&dir, GRAPH_REPORT);
+        let mut coordinator = opened(dir.path(), GRAPH_REPORT);
         deliver_frames(&mut coordinator);
         coordinator.on_frame(
             format!(
                 r#"{{"jsonrpc":"2.0","id":32,"method":"textDocument/documentSymbol","params":{{"textDocument":{{"uri":"{}/src/main.mw"}}}}}}"#,
-                root_uri(&dir)
+                root_uri(dir.path())
             )
             .as_bytes(),
         );
@@ -2967,12 +2969,12 @@ mod tests {
     fn a_dependency_file_publishes_under_its_own_root() {
         let main = "module main\n\nuse graphtext::text\n\npub fn f(): int {\n    return 1\n}\n";
         let dir = temp_dependency_project("dependency-uri", main);
-        let mut coordinator = opened(&dir, main);
+        let mut coordinator = opened(dir.path(), main);
         let publications = diagnostic_publications(&deliver_frames(&mut coordinator));
         let library = publications
             .iter()
             .find(|params| {
-                params.uri.as_str() == format!("{}/lib/graphtext/src/text.mw", root_uri(&dir))
+                params.uri.as_str() == format!("{}/lib/graphtext/src/text.mw", root_uri(dir.path()))
             })
             .expect("the library file publishes at its own location");
         assert_eq!(
@@ -2980,7 +2982,7 @@ mod tests {
             "a dependency file names no open document, so it publishes unversioned"
         );
         assert!(publications.iter().any(|params| {
-            params.uri.as_str() == format!("{}/src/main.mw", root_uri(&dir))
+            params.uri.as_str() == format!("{}/src/main.mw", root_uri(dir.path()))
                 && params.version == Some(1)
         }));
     }
@@ -2993,10 +2995,10 @@ mod tests {
     fn opening_a_dependency_file_leaves_the_workspace_analysing() {
         let main = "module main\n\nuse graphtext::text\n\npub fn f(): int {\n    return 1\n}\n";
         let dir = temp_dependency_project("dependency-readonly", main);
-        let mut coordinator = opened(&dir, main);
+        let mut coordinator = opened(dir.path(), main);
         deliver_frames(&mut coordinator);
 
-        let library = open_body(&dir, 1, "module text\n\nthis is not Marrow source\n")
+        let library = open_body(dir.path(), 1, "module text\n\nthis is not Marrow source\n")
             .replace("/src/main.mw", "/lib/graphtext/src/text.mw");
         coordinator.on_frame(library.as_bytes());
         assert_eq!(
@@ -3011,7 +3013,7 @@ mod tests {
 
         // The project's own edit still analyses, against the library's committed bytes.
         let edited = main.replace("return 1", "return 2");
-        coordinator.on_frame(change_body(&dir, 2, &edited).as_bytes());
+        coordinator.on_frame(change_body(dir.path(), 2, &edited).as_bytes());
         let overlay: Vec<&str> = coordinator
             .job_out
             .as_ref()
@@ -3026,7 +3028,7 @@ mod tests {
         coordinator.on_worker_result(outcome);
         let publications = diagnostic_publications(&deliver_frames(&mut coordinator));
         assert!(publications.iter().any(|params| {
-            params.uri.as_str() == format!("{}/src/main.mw", root_uri(&dir))
+            params.uri.as_str() == format!("{}/src/main.mw", root_uri(dir.path()))
                 && params.version == Some(2)
                 && params.diagnostics.is_empty()
         }));
@@ -3039,11 +3041,11 @@ mod tests {
     fn definition_across_a_dependency_boundary_names_the_library_file() {
         let main = "module main\n\nuse graphtext::text\n\npub fn f(): bool {\n    return text::startsWith(\"ab\", \"a\")\n}\n";
         let dir = temp_dependency_project("dependency-definition", main);
-        let mut coordinator = opened(&dir, main);
+        let mut coordinator = opened(dir.path(), main);
         deliver_frames(&mut coordinator);
 
         let position = LineMap::new(main).position_at(after(main, "text::start"));
-        coordinator.on_frame(position_body(&dir, 40, "definition", position).as_bytes());
+        coordinator.on_frame(position_body(dir.path(), 40, "definition", position).as_bytes());
         let delivered = deliver_frames(&mut coordinator);
         let reply = delivered
             .iter()
@@ -3052,7 +3054,7 @@ mod tests {
         assert!(
             reply.contains(&format!(
                 r#""uri":"{}/lib/graphtext/src/text.mw""#,
-                root_uri(&dir)
+                root_uri(dir.path())
             )),
             "the definition names the library's own file: {reply}"
         );
@@ -3064,9 +3066,9 @@ mod tests {
     fn freed_credit_feeds_a_credit_starved_publication() {
         let main = "module main\n\npub fn f(): int {\n    return 1\n}\n";
         let dir = temp_project("starve", main);
-        let mut coordinator = running(&dir);
+        let mut coordinator = running(dir.path());
         coordinator.job_out = None;
-        coordinator.on_frame(open_body(&dir, 1, main).as_bytes());
+        coordinator.on_frame(open_body(dir.path(), 1, main).as_bytes());
         coordinator.job_out = None;
 
         // Exhaust every outbound credit with in-flight (unreceipted) error frames.
@@ -3079,7 +3081,7 @@ mod tests {
 
         // A snapshot commits its publication plan but is credit-starved: the plan is in
         // flight with every frame still pending and none handed off.
-        let snapshot = snapshot_at(&dir, main, coordinator.current_revision);
+        let snapshot = snapshot_at(dir.path(), main, coordinator.current_revision);
         coordinator.on_worker_result(AnalysisOutcome::Snapshot(snapshot));
         assert!(coordinator.publication.is_some(), "plan committed");
         let starved = coordinator
@@ -3107,7 +3109,7 @@ mod tests {
         while coordinator.publication.is_some() {
             coordinator.on_receipt();
         }
-        cleanup(&dir);
+        cleanup(dir.path());
     }
 
     // ---- Soundness: replies never flood the pending-frame queue past W ----
@@ -3116,9 +3118,9 @@ mod tests {
     fn credit_starved_replies_stay_held_not_queued() {
         let main = "module main\n\npub fn f(): int {\n    return 1\n}\n";
         let dir = temp_project("noflood", main);
-        let mut coordinator = running(&dir);
+        let mut coordinator = running(dir.path());
         coordinator.job_out = None;
-        coordinator.on_frame(open_body(&dir, 1, main).as_bytes());
+        coordinator.on_frame(open_body(dir.path(), 1, main).as_bytes());
         coordinator.job_out = None;
 
         // Exhaust every outbound credit.
@@ -3132,7 +3134,7 @@ mod tests {
 
         // A burst of semantic requests with no free credit: they are held, not materialized.
         for id in 100..140 {
-            coordinator.on_frame(hover_body(&dir, id, 3, 12).as_bytes());
+            coordinator.on_frame(hover_body(dir.path(), id, 3, 12).as_bytes());
         }
         assert!(
             coordinator.held_queries.len() >= 40,
@@ -3141,7 +3143,7 @@ mod tests {
 
         // A snapshot lands while credits are exhausted: no reply materializes, so the
         // pending-frame queue does not grow with reply frames.
-        let snapshot = snapshot_at(&dir, main, coordinator.current_revision);
+        let snapshot = snapshot_at(dir.path(), main, coordinator.current_revision);
         coordinator.on_worker_result(AnalysisOutcome::Snapshot(snapshot));
         assert_eq!(
             coordinator.outbound.pending.len(),
@@ -3152,7 +3154,7 @@ mod tests {
             !coordinator.held_queries.is_empty(),
             "unanswered replies stay held, bounded by the request ledger"
         );
-        cleanup(&dir);
+        cleanup(dir.path());
     }
 
     // ---- Soundness: initialize/shutdown ids retire on receipt, not at handoff ----
@@ -3161,7 +3163,7 @@ mod tests {
     fn initialize_id_reuse_in_delivery_window_is_rejected() {
         let dir = temp_project("initreuse", "module main\n");
         let mut coordinator = Coordinator::new();
-        coordinator.on_frame(initialize_body(&root_uri(&dir)).as_bytes());
+        coordinator.on_frame(initialize_body(&root_uri(dir.path())).as_bytes());
         // The initialize id rides AwaitingDelivery until its receipt (not retired at handoff).
         assert!(coordinator.requests.is_live(&RequestId::Integer(1)));
 
@@ -3178,7 +3180,7 @@ mod tests {
         // The receipt retires the id and advances the lifecycle.
         coordinator.on_receipt();
         assert!(!coordinator.requests.is_live(&RequestId::Integer(1)));
-        cleanup(&dir);
+        cleanup(dir.path());
     }
 
     // ---- Law: publication exclusivity across receipts ----
@@ -3188,24 +3190,24 @@ mod tests {
         let main1 = "module main\n\npub fn f(): int {\n    return 1\n}\n";
         let main2 = "module main\n\npub fn f(): int {\n    return 2\n}\n";
         let dir = temp_project("pubexcl", main1);
-        let mut coordinator = running(&dir);
+        let mut coordinator = running(dir.path());
         coordinator.job_out = None;
-        coordinator.on_frame(open_body(&dir, 1, main1).as_bytes());
+        coordinator.on_frame(open_body(dir.path(), 1, main1).as_bytes());
         coordinator.job_out = None;
         let rev1 = coordinator.current_revision;
 
         // First snapshot: publication A builds and is the one plan in flight.
-        let snapshot_a = snapshot_at(&dir, main1, rev1);
+        let snapshot_a = snapshot_at(dir.path(), main1, rev1);
         coordinator.on_worker_result(AnalysisOutcome::Snapshot(snapshot_a));
         assert!(coordinator.publication.is_some());
         let frames_after_a = coordinator.outbound.outbox.len();
 
         // Advance the revision and deliver a newer snapshot while A is still in flight: it
         // must NOT build a second plan.
-        coordinator.on_frame(change_body(&dir, 2, main2).as_bytes());
+        coordinator.on_frame(change_body(dir.path(), 2, main2).as_bytes());
         coordinator.job_out = None;
         let rev2 = coordinator.current_revision;
-        let snapshot_b = snapshot_at(&dir, main2, rev2);
+        let snapshot_b = snapshot_at(dir.path(), main2, rev2);
         coordinator.on_worker_result(AnalysisOutcome::Snapshot(snapshot_b));
         assert!(
             coordinator.pending_publication.is_some(),
@@ -3225,7 +3227,7 @@ mod tests {
             coordinator.publication.is_some(),
             "B builds after A's final receipt"
         );
-        cleanup(&dir);
+        cleanup(dir.path());
     }
 
     #[test]
@@ -3234,25 +3236,25 @@ mod tests {
         let main2 = "module main\n\npub fn f(): int {\n    return 2\n}\n";
         let main3 = "module main\n\npub fn f(): int {\n    return 3\n}\n";
         let dir = temp_project("pub-stale", main1);
-        let mut coordinator = running(&dir);
+        let mut coordinator = running(dir.path());
         coordinator.job_out = None;
-        coordinator.on_frame(open_body(&dir, 1, main1).as_bytes());
+        coordinator.on_frame(open_body(dir.path(), 1, main1).as_bytes());
         coordinator.job_out = None;
 
-        let snapshot1 = snapshot_at(&dir, main1, coordinator.current_revision);
+        let snapshot1 = snapshot_at(dir.path(), main1, coordinator.current_revision);
         coordinator.on_worker_result(AnalysisOutcome::Snapshot(snapshot1));
         assert!(coordinator.publication.is_some());
         let first_plan_frames = coordinator.outbound.outbox.len();
 
-        coordinator.on_frame(change_body(&dir, 2, main2).as_bytes());
+        coordinator.on_frame(change_body(dir.path(), 2, main2).as_bytes());
         coordinator.job_out = None;
-        let snapshot2 = snapshot_at(&dir, main2, coordinator.current_revision);
+        let snapshot2 = snapshot_at(dir.path(), main2, coordinator.current_revision);
         coordinator.on_worker_result(AnalysisOutcome::Snapshot(snapshot2));
         assert!(coordinator.pending_publication.is_some());
 
         // Version 3 advances while version 2 is waiting behind version 1. Publishing the
         // waiting snapshot now would stamp version-2 facts with the version-3 ledger value.
-        coordinator.on_frame(change_body(&dir, 3, main3).as_bytes());
+        coordinator.on_frame(change_body(dir.path(), 3, main3).as_bytes());
         coordinator.job_out = None;
         while coordinator.pending_publication.is_some() {
             coordinator.on_receipt();
@@ -3267,6 +3269,6 @@ mod tests {
             first_plan_frames,
             "no stale publication frame is encoded"
         );
-        cleanup(&dir);
+        cleanup(dir.path());
     }
 }

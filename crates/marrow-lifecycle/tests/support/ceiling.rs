@@ -52,5 +52,5 @@ pub fn source_broadened() -> String {
 
 /// A verified image of `source` under [`IDS`].
 pub fn image(source: &str) -> VerifiedImage {
-    marrow_test_support::program::compile(source, IDS)
+    marrow_test_programs::program::compile(source, IDS)
 }

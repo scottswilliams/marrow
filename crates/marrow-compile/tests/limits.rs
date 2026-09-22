@@ -6,8 +6,8 @@
 
 use marrow_project::ProjectInput;
 
-use marrow_test_support::ledger as ledger_fixture;
-use marrow_test_support::project as project_capture;
+use marrow_test_programs::ledger::ledger;
+use marrow_test_programs::project as project_capture;
 
 #[path = "limits/issuance_amplification.rs"]
 mod issuance_amplification;
@@ -20,11 +20,4 @@ mod wide_resource;
 /// project owner under the identity ledger `ids`.
 fn project(source: &str, ids: Option<&[u8]>) -> ProjectInput {
     project_capture::project_with_ids(&[("src/main.mw", source)], ids)
-}
-
-/// A durable identity ledger over an ordered anchor list. The caller lists exactly
-/// the anchors its shape declares; the format is written in one place.
-fn ledger(anchors: &[String]) -> Vec<u8> {
-    let borrowed: Vec<&str> = anchors.iter().map(String::as_str).collect();
-    ledger_fixture::ledger(&borrowed)
 }

@@ -32,7 +32,7 @@ use marrow_test_support::Scratch;
 fn scratch_projects_are_unique_within_the_test_process() {
     let first = Scratch::new("unique");
     let second = Scratch::new("unique");
-    assert_ne!(&*first, &*second);
+    assert_ne!(first.path(), second.path());
 }
 
 /// How a complete source fence establishes its project identity.
@@ -387,11 +387,11 @@ fn verify_fence(fence: &DocFence) -> Result<(), FenceFailure> {
 /// remains authoritative if minting fails.
 fn mint_and_verify(fence: &DocFence, pre_mint: Vec<FailureRecord>) -> Result<(), FenceFailure> {
     let temp = Scratch::new("fence");
-    write(&temp.join("marrow.toml"), "edition = \"2026\"\n");
-    write(&temp.join(fence.source_rel_path()), &fence.source);
+    write(&temp.path().join("marrow.toml"), "edition = \"2026\"\n");
+    write(&temp.path().join(fence.source_rel_path()), &fence.source);
 
-    let _ = marrow_in(&temp, &["run", "__doc_fence_probe__"]);
-    finish(marrow_in(&temp, &["test", "--format", "jsonl"]).output).map_err(|mut failure| {
+    let _ = marrow_in(temp.path(), &["run", "__doc_fence_probe__"]);
+    finish(marrow_in(temp.path(), &["test", "--format", "jsonl"]).output).map_err(|mut failure| {
         failure.initial_records = pre_mint;
         failure
     })

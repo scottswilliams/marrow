@@ -274,7 +274,7 @@ use marrow_test_support::Scratch;
 
 use marrow_codes::Code;
 
-use marrow_test_support::program::compile;
+use marrow_test_programs::program::compile;
 
 /// Provision a fresh store at `dir` bound to `image`.
 fn counter_target() -> ImportTarget {

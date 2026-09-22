@@ -58,10 +58,10 @@ pub(crate) fn image_bytes() -> &'static [u8] {
 const IDS: &str = "marrow ids v0\nmachine-written by marrow; do not edit\nid application . 01010101010101010101010101010101\nid product Item 02020202020202020202020202020202\nid field Item.value 03030303030303030303030303030303\nid root items 04040404040404040404040404040404\nid key items.key 05050505050505050505050505050505\nid index items.byValue 06060606060606060606060606060606\nhigh-water 0\nend\n";
 
 pub(crate) fn compile_image(source: &str) -> Vec<u8> {
-    marrow_test_support::program::compile_bytes(source, IDS)
+    marrow_test_programs::program::compile_bytes(source, IDS)
 }
 
-pub(crate) use marrow_test_support::Scratch;
+use marrow_test_support::Scratch;
 
 /// Provision a store at `scratch.store()` under the [`SOURCE`] corpus, so the backup and
 /// restore cases start from a real published store rather than a hand-built directory.

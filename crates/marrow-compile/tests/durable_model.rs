@@ -8,8 +8,9 @@
 use marrow_compile::{CompileFailure, SourceDiagnostic, compile};
 use marrow_project::ProjectInput;
 
-use marrow_test_support::ids;
-use marrow_test_support::project as project_capture;
+#[path = "common/ids.rs"]
+mod ids;
+use marrow_test_programs::project as project_capture;
 
 #[path = "durable_model/durable_identity_gaps.rs"]
 mod durable_identity_gaps;

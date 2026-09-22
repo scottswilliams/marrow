@@ -14,8 +14,8 @@
 //! (end-of-stream) rather than replying — the boundary the client maps to `OutcomeUnknown`.
 //! The client-side half is covered by the `client` unit tests.
 
+use marrow_test_programs::program;
 use marrow_test_support::Scratch;
-use marrow_test_support::program;
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;

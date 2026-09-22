@@ -455,29 +455,29 @@ fn a_cloned_and_relocated_checkout_reuses_the_committed_ids() {
     // Clone: manifest, source, and .marrow/ids — no store, as a checkout would be.
     let clone = Scratch::new("clone-dst");
     write(
-        &clone.join("marrow.toml"),
+        &clone.path().join("marrow.toml"),
         fs::read_to_string(workspace.path("marrow.toml")).unwrap(),
     );
     write(
-        &clone.join("src").join("main.mw"),
+        &clone.path().join("src").join("main.mw"),
         fs::read_to_string(workspace.path("src").join("main.mw")).unwrap(),
     );
-    fs::create_dir_all(clone.join(".marrow")).expect("create metadata dir");
-    fs::write(clone.join(".marrow/ids"), &committed).expect("clone the artifact");
+    fs::create_dir_all(clone.path().join(".marrow")).expect("create metadata dir");
+    fs::write(clone.path().join(".marrow/ids"), &committed).expect("clone the artifact");
 
     // The storeless CI path compiles and passes in the clone (identity is
     // complete from the committed artifact alone), and a durable run parks in the
     // trough — with the artifact untouched in both.
-    let test = marrow_in(&clone, &["test"]);
+    let test = marrow_in(clone.path(), &["test"]);
     assert!(test.status.success(), "{test:?}");
-    let run = marrow_in(&clone, &["run", "set", "--", "hits", "2"]);
+    let run = marrow_in(clone.path(), &["run", "set", "--", "hits", "2"]);
     assert!(
         combined(&run).contains("cli.durable_unsupported"),
         "{}",
         combined(&run)
     );
     assert_eq!(
-        fs::read(clone.join(".marrow/ids")).unwrap(),
+        fs::read(clone.path().join(".marrow/ids")).unwrap(),
         committed,
         "a relocated checkout neither re-mints nor rewrites the artifact"
     );

@@ -19,5 +19,7 @@ marrow-temporal = { path = "../marrow-temporal" }
 workspace = true
 
 [dev-dependencies]
-# The workspace test scaffolding: the one scratch directory and the shared fixture builders.
+# The workspace test scaffolding: the ledger-id fixtures, and the project capture and
+# ledger writer the compiler's own tests build over.
+marrow-test-programs = { path = "../marrow-test-programs" }
 marrow-test-support = { path = "../marrow-test-support" }

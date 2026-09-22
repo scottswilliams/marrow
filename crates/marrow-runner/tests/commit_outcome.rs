@@ -2,8 +2,8 @@
 //! is an ordinary typed `Fault` that leaves the store and the session usable, and a fault
 //! after a confirmed commit is `Incomplete` with `known_new`.
 
+use marrow_test_programs::program;
 use marrow_test_support::Scratch;
-use marrow_test_support::program;
 
 use marrow_codes::{Code, DurableCommitState};
 use marrow_local_wire::{ClientMessage, EncodedFrame, Id32, Json, ServerMessage, WireError};

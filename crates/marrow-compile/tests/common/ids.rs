@@ -1,11 +1,9 @@
-//! Durable identity fixtures resolved through compiler gaps or the shared ledger writer.
+//! Durable identity fixtures resolved through the gaps the compiler itself reports.
 
 use std::collections::BTreeMap;
 
 use marrow_compile::{CompileFailure, compile};
 use marrow_project::{IdentityAnchor, ProjectInput};
-
-pub use crate::ledger::ledger;
 
 /// The ledger a project needs, minted from the gaps the compiler itself reports.
 ///
@@ -13,18 +11,8 @@ pub use crate::ledger::ledger;
 /// shape declares; this resolves the typed gaps until the compiler reports none, so
 /// the fixture and the compiler cannot disagree about the anchor set.
 pub fn minted(capture: impl Fn(Option<&[u8]>) -> ProjectInput) -> ProjectInput {
-    let minted = converge(&capture);
-    capture(Some(serialize(&minted).as_bytes()))
-}
-
-/// The complete `(kind, path)` anchor set the compiler demands of `capture`'s
-/// project, in the ledger's own canonical order.
-///
-/// Same convergence as [`minted`], reporting the anchors rather than the ledger:
-/// the set a durable declaration mints is committed identity, so a fixture that
-/// compares it is comparing what `.marrow/ids` will hold.
-pub fn minted_anchors(capture: impl Fn(Option<&[u8]>) -> ProjectInput) -> Vec<IdentityAnchor> {
-    converge(&capture).into_keys().collect()
+    let (_, ledger) = converged(&capture);
+    capture(Some(&ledger))
 }
 
 /// One convergence, both artifacts: the complete anchor set in canonical order and

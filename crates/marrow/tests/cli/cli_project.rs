@@ -249,7 +249,7 @@ fn run_with_deadline(args: &[&str]) -> CliOutcome {
 #[test]
 fn init_creates_a_manifest_and_src_tree() {
     let temp = Scratch::new("init");
-    let project = temp.join("app");
+    let project = temp.path().join("app");
 
     let output = run(&["init", project.to_str().unwrap()]);
     assert!(output.status.success(), "{output:?}");
@@ -308,7 +308,7 @@ fn project_help_describes_captured_source_files_and_the_headerless_script() {
 #[test]
 fn a_fresh_project_is_already_formatted() {
     let temp = Scratch::new("init-fmt");
-    let project = temp.join("app");
+    let project = temp.path().join("app");
     assert!(run(&["init", project.to_str().unwrap()]).status.success());
 
     let output = run(&["fmt", "--check", project.to_str().unwrap()]);
@@ -321,7 +321,7 @@ fn a_fresh_project_is_already_formatted() {
 #[test]
 fn init_refuses_an_existing_directory() {
     let temp = Scratch::new("init-existing");
-    let project = temp.join("app");
+    let project = temp.path().join("app");
     fs::create_dir(&project).expect("pre-create");
 
     let output = run(&["init", project.to_str().unwrap()]);
@@ -346,7 +346,7 @@ fn a_failed_init_leaves_no_debris_and_a_retry_succeeds() {
         return;
     }
     let temp = Scratch::new("init-unwind");
-    let project = temp.join("app");
+    let project = temp.path().join("app");
 
     let failed = Command::new("/bin/sh")
         .arg("-c")
@@ -374,7 +374,7 @@ fn a_failed_init_leaves_no_debris_and_a_retry_succeeds() {
 #[test]
 fn fmt_project_checks_and_writes_every_captured_source_file() {
     let temp = Scratch::new("fmt-project");
-    let project = temp.join("app");
+    let project = temp.path().join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     // A deliberately misformatted source file (over-indented body the formatter normalizes
     // back to the canonical single indent).
@@ -419,7 +419,7 @@ fn fmt_project_checks_and_writes_every_captured_source_file() {
 #[test]
 fn fmt_project_reports_an_invalid_manifest() {
     let temp = Scratch::new("fmt-bad-manifest");
-    let project = temp.join("app");
+    let project = temp.path().join("app");
     write(
         &project.join("marrow.toml"),
         "edition = \"2026\"\nname = \"app\"\n",
@@ -441,7 +441,7 @@ fn fmt_project_reports_an_invalid_manifest() {
 #[test]
 fn fmt_project_reports_a_module_collision() {
     let temp = Scratch::new("fmt-collision");
-    let project = temp.join("app");
+    let project = temp.path().join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(
         &project.join("src").join("a").join("b.mw"),
@@ -474,7 +474,7 @@ fn relocation_produces_identical_formatted_bytes() {
 "#;
     let first = Scratch::new("reloc-a");
     let second = Scratch::new("reloc-b");
-    for root in [&*first, &*second] {
+    for root in [first.path(), second.path()] {
         write(&root.join("marrow.toml"), "edition = \"2026\"\n");
         write(&root.join("src").join("main.mw"), module);
         assert!(
@@ -483,8 +483,8 @@ fn relocation_produces_identical_formatted_bytes() {
                 .success()
         );
     }
-    let a = fs::read(first.join("src").join("main.mw")).unwrap();
-    let b = fs::read(second.join("src").join("main.mw")).unwrap();
+    let a = fs::read(first.path().join("src").join("main.mw")).unwrap();
+    let b = fs::read(second.path().join("src").join("main.mw")).unwrap();
     assert_eq!(a, b);
 }
 
@@ -496,12 +496,12 @@ fn a_symlinked_src_root_is_refused_and_external_files_stay_untouched() {
     // `fmt --write` rewrite external files in place. The adapter must refuse a
     // symlinked source root with a typed code and touch nothing.
     let temp = Scratch::new("symlink-root");
-    let project = temp.join("app");
+    let project = temp.path().join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
 
     // An external tree with an unformatted source file, reachable only through the
     // symlinked root.
-    let external = temp.join("external");
+    let external = temp.path().join("external");
     let stray = r#"pub fn stray() {
     return
 }
@@ -533,7 +533,7 @@ fn a_symlinked_source_file_is_refused_and_never_followed() {
     // itself: the alias is neither followed nor silently dropped, so a file
     // reached only through one can never go missing without a cause.
     let temp = Scratch::new("symlink");
-    let project = temp.join("app");
+    let project = temp.path().join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(
         &project.join("src").join("main.mw"),
@@ -544,7 +544,7 @@ fn a_symlinked_source_file_is_refused_and_never_followed() {
     );
 
     // An unformatted target the symlink points at, outside the walked tree.
-    let outside = temp.join("outside.mw");
+    let outside = temp.path().join("outside.mw");
     write(
         &outside,
         r#"pub fn stray() {
@@ -597,7 +597,7 @@ fn a_manifest_over_the_physical_byte_bound_is_refused_before_formatting() {
 #[test]
 fn a_missing_manifest_at_a_nested_root_keeps_its_exact_io_read_record() {
     let temp = Scratch::new("missing-nested-manifest");
-    let project_root = temp.join("nested/project");
+    let project_root = temp.path().join("nested/project");
     let retained = project_root.join("src/main.mw");
     write(&retained, UNFORMATTED_SOURCE);
     let manifest_path = project_root.join("marrow.toml");
@@ -656,8 +656,8 @@ fn a_located_malformed_manifest_keeps_its_exact_cli_record() {
 #[test]
 fn a_visited_entry_over_the_physical_bound_is_refused_before_retention() {
     let temp = Scratch::new("visited-bound");
-    write(&temp.join("marrow.toml"), VALID_MANIFEST);
-    let source_root = temp.join("src");
+    write(&temp.path().join("marrow.toml"), VALID_MANIFEST);
+    let source_root = temp.path().join("src");
     fs::create_dir(&source_root).expect("create source root");
     for index in 0..VISITED_ENTRY_LIMIT {
         fs::File::create(source_root.join(format!("ignored-{index:05}")))
@@ -668,17 +668,17 @@ fn a_visited_entry_over_the_physical_bound_is_refused_before_retention() {
     let retained = source_root.join("main.mw");
     write(&retained, UNFORMATTED_SOURCE);
 
-    let output = run(&["fmt", "--write", temp.to_str().unwrap()]);
+    let output = run(&["fmt", "--write", temp.path().to_str().unwrap()]);
     assert_refused_without_writing(&retained, UNFORMATTED_SOURCE, &output);
 }
 
 #[test]
 fn a_directory_beyond_the_physical_depth_bound_is_refused_before_descent() {
     let temp = Scratch::new("depth-bound");
-    write(&temp.join("marrow.toml"), VALID_MANIFEST);
-    let retained = temp.join("src/00-retained.mw");
+    write(&temp.path().join("marrow.toml"), VALID_MANIFEST);
+    let retained = temp.path().join("src/00-retained.mw");
     write(&retained, UNFORMATTED_SOURCE);
-    let mut deepest = temp.join("src");
+    let mut deepest = temp.path().join("src");
     deepest.push("deep");
     fs::create_dir(&deepest).expect("create first nested source directory");
     for _ in 1..=SOURCE_DEPTH_LIMIT {
@@ -686,7 +686,7 @@ fn a_directory_beyond_the_physical_depth_bound_is_refused_before_descent() {
         fs::create_dir(&deepest).expect("create nested source directory");
     }
 
-    let output = run(&["fmt", "--write", temp.to_str().unwrap()]);
+    let output = run(&["fmt", "--write", temp.path().to_str().unwrap()]);
     assert_refused_without_writing(&retained, UNFORMATTED_SOURCE, &output);
 }
 
@@ -696,10 +696,10 @@ fn a_symlinked_manifest_is_refused_before_formatting() {
     use std::os::unix::fs::symlink;
 
     let temp = Scratch::new("manifest-symlink");
-    let project_root = temp.join("app");
+    let project_root = temp.path().join("app");
     let source_path = project_root.join("src/main.mw");
     write(&source_path, UNFORMATTED_SOURCE);
-    let outside = temp.join("outside.toml");
+    let outside = temp.path().join("outside.toml");
     write(&outside, VALID_MANIFEST);
     symlink(&outside, project_root.join("marrow.toml")).expect("symlink manifest");
 
@@ -711,10 +711,10 @@ fn a_symlinked_manifest_is_refused_before_formatting() {
 #[test]
 fn a_hardlinked_manifest_is_refused_before_formatting() {
     let temp = Scratch::new("manifest-hardlink");
-    let project_root = temp.join("app");
+    let project_root = temp.path().join("app");
     let source_path = project_root.join("src/main.mw");
     write(&source_path, UNFORMATTED_SOURCE);
-    let outside = temp.join("outside.toml");
+    let outside = temp.path().join("outside.toml");
     write(&outside, VALID_MANIFEST);
     fs::hard_link(&outside, project_root.join("marrow.toml")).expect("hardlink manifest");
 
@@ -740,14 +740,14 @@ fn a_hardlinked_identity_ledger_is_refused_before_formatting() {
 #[test]
 fn a_hardlinked_selected_source_is_refused_before_formatting() {
     let temp = Scratch::new("source-hardlink");
-    write(&temp.join("marrow.toml"), VALID_MANIFEST);
-    let outside = temp.join("outside.mw");
+    write(&temp.path().join("marrow.toml"), VALID_MANIFEST);
+    let outside = temp.path().join("outside.mw");
     write(&outside, UNFORMATTED_SOURCE);
-    let source_path = temp.join("src/main.mw");
+    let source_path = temp.path().join("src/main.mw");
     fs::create_dir_all(source_path.parent().unwrap()).expect("create source root");
     fs::hard_link(&outside, &source_path).expect("hardlink source");
 
-    let output = run(&["fmt", "--write", temp.to_str().unwrap()]);
+    let output = run(&["fmt", "--write", temp.path().to_str().unwrap()]);
     assert_refused_without_writing(&outside, UNFORMATTED_SOURCE, &output);
     assert_eq!(
         fs::read_to_string(&source_path).expect("read selected source"),
@@ -759,14 +759,14 @@ fn a_hardlinked_selected_source_is_refused_before_formatting() {
 #[test]
 fn a_manifest_fifo_is_refused_without_waiting_for_its_body() {
     let temp = Scratch::new("manifest-fifo");
-    let retained = temp.join("src/main.mw");
+    let retained = temp.path().join("src/main.mw");
     write(&retained, UNFORMATTED_SOURCE);
-    let fifo = temp.join("marrow.toml");
+    let fifo = temp.path().join("marrow.toml");
     create_fifo(&fifo);
-    let after_open = temp.join("manifest.after-open");
+    let after_open = temp.path().join("manifest.after-open");
 
-    let output = run_with_fifo(&temp, &fifo, VALID_MANIFEST, &after_open);
-    let without_writer = run_with_deadline(&["fmt", "--write", temp.to_str().unwrap()]);
+    let output = run_with_fifo(temp.path(), &fifo, VALID_MANIFEST, &after_open);
+    let without_writer = run_with_deadline(&["fmt", "--write", temp.path().to_str().unwrap()]);
     assert!(
         !after_open.exists(),
         "refusing the manifest FIFO must not let the writer open it"
@@ -801,21 +801,21 @@ fn a_searchable_but_unreadable_root_is_refused_at_physical_admission() {
     use std::os::unix::fs::PermissionsExt;
 
     let temp = Scratch::new("search-only-root");
-    write(&temp.join("marrow.toml"), VALID_MANIFEST);
+    write(&temp.path().join("marrow.toml"), VALID_MANIFEST);
     assert!(
-        !temp.join("src").exists(),
+        !temp.path().join("src").exists(),
         "fixture must have no source role"
     );
     assert!(
-        !temp.join(".marrow/ids").exists(),
+        !temp.path().join(".marrow/ids").exists(),
         "fixture must have no identity-ledger role"
     );
-    let mut permissions = PermissionGuard::make_searchable_only(&temp);
+    let mut permissions = PermissionGuard::make_searchable_only(temp.path());
 
-    let output = run(&["fmt", "--check", temp.to_str().unwrap()]);
+    let output = run(&["fmt", "--check", temp.path().to_str().unwrap()]);
     permissions.restore();
     assert_eq!(
-        fs::metadata(&*temp)
+        fs::metadata(temp.path())
             .expect("inspect restored directory permissions")
             .permissions()
             .mode()
@@ -834,26 +834,30 @@ fn a_searchable_but_unreadable_root_is_refused_at_physical_admission() {
 #[test]
 fn a_manifest_only_project_with_no_source_root_is_a_silent_noop() {
     let temp = Scratch::new("manifest-only");
-    write(&temp.join("marrow.toml"), VALID_MANIFEST);
+    write(&temp.path().join("marrow.toml"), VALID_MANIFEST);
     assert_eq!(
-        fs::read_dir(&*temp).expect("read project root").count(),
+        fs::read_dir(temp.path())
+            .expect("read project root")
+            .count(),
         1,
         "fixture must begin with only the manifest"
     );
 
-    let output = run(&["fmt", "--check", temp.to_str().unwrap()]);
+    let output = run(&["fmt", "--check", temp.path().to_str().unwrap()]);
     assert!(
         output.status.success(),
         "a missing optional source root must succeed: {output:?}"
     );
     assert_empty_streams(&output);
     assert_eq!(
-        fs::read_dir(&*temp).expect("read project root").count(),
+        fs::read_dir(temp.path())
+            .expect("read project root")
+            .count(),
         1,
         "fmt --check must not create a source root or identity ledger"
     );
-    assert!(!temp.join("src").exists());
-    assert!(!temp.join(".marrow").exists());
+    assert!(!temp.path().join("src").exists());
+    assert!(!temp.path().join(".marrow").exists());
 }
 
 #[test]
@@ -916,13 +920,13 @@ fn a_symlinked_identity_ledger_retains_its_existing_typed_refusal() {
     use std::os::unix::fs::symlink;
 
     let temp = Scratch::new("ids-symlink");
-    write(&temp.join("marrow.toml"), VALID_MANIFEST);
-    let outside = temp.join("outside.ids");
+    write(&temp.path().join("marrow.toml"), VALID_MANIFEST);
+    let outside = temp.path().join("outside.ids");
     write(&outside, EMPTY_IDS);
-    fs::create_dir_all(temp.join(".marrow")).expect("create metadata dir");
-    symlink(&outside, temp.join(".marrow/ids")).expect("symlink identity ledger");
+    fs::create_dir_all(temp.path().join(".marrow")).expect("create metadata dir");
+    symlink(&outside, temp.path().join(".marrow/ids")).expect("symlink identity ledger");
 
-    let output = run(&["fmt", "--check", temp.to_str().unwrap()]);
+    let output = run(&["fmt", "--check", temp.path().to_str().unwrap()]);
     assert!(
         !output.status.success(),
         "linked ledger must fail: {output:?}"
@@ -931,7 +935,7 @@ fn a_symlinked_identity_ledger_retains_its_existing_typed_refusal() {
         output.stderr_text(),
         format!(
             "project.ids_corrupt: {} is a symlink; the identity artifact must be a real file inside the project\n",
-            temp.join(".marrow/ids").display()
+            temp.path().join(".marrow/ids").display()
         )
     );
 }
@@ -964,10 +968,10 @@ fn a_symlinked_project_root_alias_remains_accepted() {
     use std::os::unix::fs::symlink;
 
     let temp = Scratch::new("root-alias");
-    let project_root = temp.join("project");
+    let project_root = temp.path().join("project");
     write(&project_root.join("marrow.toml"), VALID_MANIFEST);
     write(&project_root.join("src/main.mw"), FORMATTED_SOURCE);
-    let alias = temp.join("alias");
+    let alias = temp.path().join("alias");
     symlink(&project_root, &alias).expect("symlink project root alias");
 
     let output = run(&["fmt", "--check", alias.to_str().unwrap()]);
@@ -1038,14 +1042,14 @@ fn a_non_utf8_source_path_retains_its_existing_exact_refusal() {
 #[test]
 fn existing_source_file_byte_bound_keeps_its_exact_cli_rendering() {
     let temp = Scratch::new("source-file-bound");
-    write(&temp.join("marrow.toml"), VALID_MANIFEST);
-    let path = temp.join("src/main.mw");
+    write(&temp.path().join("marrow.toml"), VALID_MANIFEST);
+    let path = temp.path().join("src/main.mw");
     fs::create_dir_all(path.parent().unwrap()).expect("create source root");
     let file = fs::File::create(&path).expect("create oversized source");
     file.set_len(SOURCE_FILE_BYTES_LIMIT + 1)
         .expect("size oversized source");
 
-    let output = run(&["fmt", "--check", temp.to_str().unwrap()]);
+    let output = run(&["fmt", "--check", temp.path().to_str().unwrap()]);
     assert!(!output.status.success(), "oversized source must fail");
     assert_eq!(
         output.stderr_text(),
@@ -1059,8 +1063,8 @@ fn existing_source_file_byte_bound_keeps_its_exact_cli_rendering() {
 #[test]
 fn existing_source_file_count_bound_keeps_its_exact_cli_rendering() {
     let temp = Scratch::new("source-file-count");
-    write(&temp.join("marrow.toml"), VALID_MANIFEST);
-    let source_root = temp.join("src");
+    write(&temp.path().join("marrow.toml"), VALID_MANIFEST);
+    let source_root = temp.path().join("src");
     fs::create_dir(&source_root).expect("create source root");
     for index in 0..=SOURCE_FILE_COUNT_LIMIT {
         fs::File::create(source_root.join(format!("{index:04}.mw")))
@@ -1068,7 +1072,7 @@ fn existing_source_file_count_bound_keeps_its_exact_cli_rendering() {
     }
     let offender = source_root.join(format!("{SOURCE_FILE_COUNT_LIMIT:04}.mw"));
 
-    let output = run(&["fmt", "--check", temp.to_str().unwrap()]);
+    let output = run(&["fmt", "--check", temp.path().to_str().unwrap()]);
     assert!(!output.status.success(), "too many sources must fail");
     assert_eq!(
         output.stderr_text(),
@@ -1083,8 +1087,8 @@ fn existing_source_file_count_bound_keeps_its_exact_cli_rendering() {
 #[test]
 fn existing_source_total_byte_bound_keeps_its_exact_cli_rendering() {
     let temp = Scratch::new("source-total-bound");
-    write(&temp.join("marrow.toml"), VALID_MANIFEST);
-    let source_root = temp.join("src");
+    write(&temp.path().join("marrow.toml"), VALID_MANIFEST);
+    let source_root = temp.path().join("src");
     fs::create_dir(&source_root).expect("create source root");
     let full_files = SOURCE_TOTAL_BYTES_LIMIT / SOURCE_FILE_BYTES_LIMIT;
     for index in 0..full_files {
@@ -1096,7 +1100,7 @@ fn existing_source_total_byte_bound_keeps_its_exact_cli_rendering() {
     let offender = source_root.join(format!("{full_files:04}.mw"));
     fs::write(&offender, [0]).expect("write limit-plus-one byte");
 
-    let output = run(&["fmt", "--check", temp.to_str().unwrap()]);
+    let output = run(&["fmt", "--check", temp.path().to_str().unwrap()]);
     assert!(
         !output.status.success(),
         "source total over bound must fail"
@@ -1123,8 +1127,8 @@ const RUN_ERROR_JSONL: &str = "{\"code\":\"io.read\",\"kind\":\"run\",\"outcome\
 #[test]
 fn client_reports_an_unlocated_capture_failure_on_styled_stderr() {
     let temp = Scratch::new("client-capture");
-    let expected = missing_manifest_io_read_message(&temp);
-    let output = marrow_in(&temp, &["client", "typescript"]);
+    let expected = missing_manifest_io_read_message(temp.path());
+    let output = marrow_in(temp.path(), &["client", "typescript"]);
     assert!(
         output.stdout.is_empty(),
         "client capture wrote stdout: {output:?}"
@@ -1136,8 +1140,8 @@ fn client_reports_an_unlocated_capture_failure_on_styled_stderr() {
 #[test]
 fn run_reports_an_unlocated_capture_failure_on_stdout_text() {
     let temp = Scratch::new("run-capture-text");
-    let expected = missing_manifest_io_read_message(&temp);
-    let output = marrow_in(&temp, &["run", "main"]);
+    let expected = missing_manifest_io_read_message(temp.path());
+    let output = marrow_in(temp.path(), &["run", "main"]);
     assert!(
         output.stderr.is_empty(),
         "run capture wrote stderr: {output:?}"
@@ -1149,7 +1153,7 @@ fn run_reports_an_unlocated_capture_failure_on_stdout_text() {
 #[test]
 fn run_reports_a_capture_failure_as_one_jsonl_record() {
     let temp = Scratch::new("run-capture-jsonl");
-    let output = marrow_in(&temp, &["run", "main", "--format", "jsonl"]);
+    let output = marrow_in(temp.path(), &["run", "main", "--format", "jsonl"]);
     assert!(
         output.stderr.is_empty(),
         "run jsonl wrote stderr: {output:?}"
@@ -1161,8 +1165,8 @@ fn run_reports_a_capture_failure_as_one_jsonl_record() {
 #[test]
 fn test_reports_an_unlocated_capture_failure_on_stdout_text() {
     let temp = Scratch::new("test-capture-text");
-    let expected = missing_manifest_io_read_message(&temp);
-    let output = marrow_in(&temp, &["test"]);
+    let expected = missing_manifest_io_read_message(temp.path());
+    let output = marrow_in(temp.path(), &["test"]);
     assert!(
         output.stderr.is_empty(),
         "test capture wrote stderr: {output:?}"
@@ -1174,7 +1178,7 @@ fn test_reports_an_unlocated_capture_failure_on_stdout_text() {
 #[test]
 fn test_reports_a_capture_failure_as_one_jsonl_record_with_run_kind() {
     let temp = Scratch::new("test-capture-jsonl");
-    let output = marrow_in(&temp, &["test", "--format", "jsonl"]);
+    let output = marrow_in(temp.path(), &["test", "--format", "jsonl"]);
     assert!(
         output.stderr.is_empty(),
         "test jsonl wrote stderr: {output:?}"
@@ -1189,9 +1193,9 @@ fn run_renders_a_located_manifest_fault_as_an_unlocated_record() {
     // `run`, `test`, and `client` render only the code and message; the manifest
     // location a located fault carries is dropped, unlike `fmt`.
     let temp = Scratch::new("run-located-manifest");
-    write(&temp.join("marrow.toml"), "edition = [\n");
+    write(&temp.path().join("marrow.toml"), "edition = [\n");
     let error = marrow_project::Manifest::parse("edition = [\n").expect_err("malformed");
-    let output = marrow_in(&temp, &["run", "main"]);
+    let output = marrow_in(temp.path(), &["run", "main"]);
     assert!(
         output.stderr.is_empty(),
         "run located manifest wrote stderr: {output:?}"
@@ -1218,7 +1222,7 @@ fn run_renders_a_located_manifest_fault_as_an_unlocated_record() {
 #[test]
 fn fmt_reports_a_captured_module_under_one_path_spelling() {
     let temp = Scratch::new("fmt-path-spelling");
-    let project = temp.join("app");
+    let project = temp.path().join("app");
     write(&project.join("marrow.toml"), VALID_MANIFEST);
     write(
         &project.join("src").join("main.mw"),
@@ -1233,7 +1237,7 @@ fn fmt_reports_a_captured_module_under_one_path_spelling() {
         "a `.` root must not print a `./`-prefixed path that `check` never prints"
     );
 
-    let outside = marrow_in(&temp, &["fmt", "--check", "app"]);
+    let outside = marrow_in(temp.path(), &["fmt", "--check", "app"]);
     assert!(!outside.status.success());
     assert_eq!(
         outside.stderr_text(),
@@ -1250,7 +1254,7 @@ fn fmt_reports_a_captured_module_under_one_path_spelling() {
         "`check` reports the module under the same project-relative spelling"
     );
 
-    let checked_outside = marrow_in(&temp, &["check", "app"]);
+    let checked_outside = marrow_in(temp.path(), &["check", "app"]);
     assert!(!checked_outside.status.success());
     assert_eq!(
         checked_outside.stderr_text(),
@@ -1259,12 +1263,12 @@ fn fmt_reports_a_captured_module_under_one_path_spelling() {
     );
 
     // The capture facade's own refusal, printed verbatim by both commands.
-    let heavy = temp.join("heavy");
+    let heavy = temp.path().join("heavy");
     write(&heavy.join("marrow.toml"), VALID_MANIFEST);
     let oversized = format!("// {}\n", "a".repeat(SOURCE_FILE_BYTES_LIMIT as usize - 3));
     write(&heavy.join("src").join("big.mw"), &oversized);
 
-    let refused_fmt = marrow_in(&temp, &["fmt", "--check", "heavy"]);
+    let refused_fmt = marrow_in(temp.path(), &["fmt", "--check", "heavy"]);
     assert!(!refused_fmt.status.success());
     let refusal = refused_fmt.stderr_text();
     assert!(
@@ -1272,7 +1276,7 @@ fn fmt_reports_a_captured_module_under_one_path_spelling() {
         "the capture refusal keeps the facade's project-relative spelling: {refusal}"
     );
 
-    let refused_check = marrow_in(&temp, &["check", "heavy"]);
+    let refused_check = marrow_in(temp.path(), &["check", "heavy"]);
     assert_eq!(
         refusal,
         refused_check.stderr_text(),

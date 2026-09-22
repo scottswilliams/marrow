@@ -26,8 +26,9 @@ use std::time::{Duration, Instant};
 use marrow_compile::{CompileFailure, ResourceLimitKind, SourceDiagnostic, compile};
 use marrow_project::ProjectInput;
 
-use super::ids::{self, ledger};
+use super::ids;
 use super::project;
+use marrow_test_programs::ledger::ledger;
 
 /// The ledger anchors a single keyed store `^a` over resource `R` with one durable
 /// field `R.f` needs, plus any extra anchors the corpus declares.

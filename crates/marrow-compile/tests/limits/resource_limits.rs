@@ -212,11 +212,11 @@ fn over_deep_durable_value_reports_resource_limit_not_a_silent_drop() {
     source.push_str("store ^deep[id: int]: Deep\n\n");
     source.push_str("pub fn noop(): int {\n    return 0\n}\n");
     let ids = ledger(&[
-        "application .".into(),
-        "product Deep".into(),
-        "field Deep.d".into(),
-        "root deep".into(),
-        "key deep.id".into(),
+        "application .",
+        "product Deep",
+        "field Deep.d",
+        "root deep",
+        "key deep.id",
     ]);
     assert_source_resource_limit(compile(&project(&source, Some(&ids))));
 }
@@ -268,11 +268,11 @@ fn cyclic_struct_chain(struct_count: usize) -> ProjectInput {
     source.push_str("store ^r[id: int]: R\n\n");
     source.push_str("pub fn noop(): int {\n    return 0\n}\n");
     let ids = ledger(&[
-        "application .".into(),
-        "product R".into(),
-        "field R.d".into(),
-        "root r".into(),
-        "key r.id".into(),
+        "application .",
+        "product R",
+        "field R.d",
+        "root r",
+        "key r.id",
     ]);
     project(&source, Some(&ids))
 }
@@ -334,11 +334,11 @@ fn acyclic_over_deep_value_reports_only_resource_limit() {
     source.push_str("store ^deep[id: int]: Deep\n\n");
     source.push_str("pub fn noop(): int {\n    return 0\n}\n");
     let ids = ledger(&[
-        "application .".into(),
-        "product Deep".into(),
-        "field Deep.d".into(),
-        "root deep".into(),
-        "key deep.id".into(),
+        "application .",
+        "product Deep",
+        "field Deep.d",
+        "root deep",
+        "key deep.id",
     ]);
     let codes = diagnostic_codes(compile(&project(&source, Some(&ids))));
     assert!(
@@ -370,11 +370,11 @@ fn struct_chain_to_leaf(struct_count: usize, leaf: &str) -> ProjectInput {
     source.push_str("store ^deep[id: int]: Deep\n\n");
     source.push_str("pub fn noop(): int {\n    return 0\n}\n");
     let ids = ledger(&[
-        "application .".into(),
-        "product Deep".into(),
-        "field Deep.d".into(),
-        "root deep".into(),
-        "key deep.id".into(),
+        "application .",
+        "product Deep",
+        "field Deep.d",
+        "root deep",
+        "key deep.id",
     ]);
     project(&source, Some(&ids))
 }
@@ -406,14 +406,14 @@ fn enum_payload_chain(struct_count: usize) -> ProjectInput {
     source.push_str("store ^deep[id: int]: Deep\n\n");
     source.push_str("pub fn noop(): int {\n    return 0\n}\n");
     let ids = ledger(&[
-        "application .".into(),
-        "product Deep".into(),
-        "field Deep.d".into(),
-        "root deep".into(),
-        "key deep.id".into(),
-        "sum Leaf".into(),
-        "member Leaf.none".into(),
-        "member Leaf.some".into(),
+        "application .",
+        "product Deep",
+        "field Deep.d",
+        "root deep",
+        "key deep.id",
+        "sum Leaf",
+        "member Leaf.none",
+        "member Leaf.some",
     ]);
     project(&source, Some(&ids))
 }

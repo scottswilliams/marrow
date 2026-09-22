@@ -2,8 +2,8 @@
 //! the launched image's store, gated by the accepted-report token. The server (runner) is one
 //! caller of the wire `Provision` DTO; the encoder here is the other. No socket is bound.
 
+use marrow_test_programs::program;
 use marrow_test_support::Scratch;
-use marrow_test_support::program;
 
 use marrow_lifecycle::ProvisionReport;
 use marrow_local_wire::{ClientMessage, ServerMessage};
@@ -48,7 +48,7 @@ fn approval_token(store: &std::path::Path) -> String {
 #[test]
 fn a_provision_request_with_a_matching_approval_provisions() {
     let base = Scratch::new("runner-provision");
-    let store = base.join("store");
+    let store = base.path().join("store");
     let mut service = Service::build(
         marrow_verify::verify(&program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes)
             .expect("verify"),
@@ -82,7 +82,7 @@ fn a_provision_request_with_a_matching_approval_provisions() {
 #[test]
 fn a_provision_request_with_a_wrong_approval_is_rejected() {
     let base = Scratch::new("runner-provision");
-    let store = base.join("store");
+    let store = base.path().join("store");
     let mut service = Service::build(
         marrow_verify::verify(&program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes)
             .expect("verify"),
@@ -115,9 +115,9 @@ fn provision_receipt_failure_preserves_the_published_store() {
 
     let base = Scratch::new("runner-provision");
     let bytes = program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes;
-    let image_path = base.join("program.image");
+    let image_path = base.path().join("program.image");
     std::fs::write(&image_path, &bytes).expect("write image");
-    let store = base.join("store");
+    let store = base.path().join("store");
     let writer = broken_output();
     let output = Command::new(env!("CARGO_BIN_EXE_marrow-runner"))
         .arg("provision")
@@ -131,8 +131,8 @@ fn provision_receipt_failure_preserves_the_published_store() {
         .stderr(Stdio::piped())
         .output()
         .expect("provision child completes");
-    eprintln!("fixture: {}; child: {output:?}", base.display());
-    std::fs::write(base.join("stderr"), &output.stderr).expect("retain child stderr");
+    eprintln!("fixture: {}; child: {output:?}", base.path().display());
+    std::fs::write(base.path().join("stderr"), &output.stderr).expect("retain child stderr");
 
     let image = marrow_verify::verify(&bytes).expect("verify image");
     let attachment = match marrow_lifecycle::attach(&store, marrow_lifecycle::prepare(image))
@@ -141,7 +141,10 @@ fn provision_receipt_failure_preserves_the_published_store() {
         marrow_lifecycle::AttachOutcome::AlreadyActive(attachment) => attachment,
         marrow_lifecycle::AttachOutcome::Rebound { .. } => panic!("image is already active"),
     };
-    eprintln!("published store verified; scratch: {}", base.display());
+    eprintln!(
+        "published store verified; scratch: {}",
+        base.path().display()
+    );
     drop(attachment);
     assert_eq!(std::fs::read(&image_path).expect("retained image"), bytes);
     assert_eq!(output.status.code(), Some(1));
@@ -150,7 +153,7 @@ fn provision_receipt_failure_preserves_the_published_store() {
             .lines()
             .any(|line| line.starts_with(marrow_codes::Code::IoWrite.as_str()))
     );
-    std::fs::remove_dir_all(base).expect("remove successful fixture");
+    std::fs::remove_dir_all(base.path()).expect("remove successful fixture");
 }
 
 enum ImportStore {
@@ -165,9 +168,9 @@ fn recovery_output_failure_keeps_completed_activation_and_preserved_bytes() {
     for format in ["text", "jsonl"] {
         let base = Scratch::new("runner-provision");
         let bytes = program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes;
-        let image_path = base.join("program.image");
+        let image_path = base.path().join("program.image");
         std::fs::write(&image_path, &bytes).expect("image");
-        let store = base.join("store");
+        let store = base.path().join("store");
         let image = marrow_verify::verify(&bytes).expect("verify");
         let prepared = marrow_lifecycle::prepare(image.clone());
         let report = ProvisionReport::new(&store, &prepared).expect("report");
@@ -189,9 +192,15 @@ fn recovery_output_failure_keeps_completed_activation_and_preserved_bytes() {
             .stderr(Stdio::piped())
             .output()
             .expect("recovery child completes");
-        eprintln!("fixture: {}; child: {output:?}", base.display());
-        std::fs::write(base.join("stderr"), &output.stderr).expect("retain child diagnostic");
-        assert_eq!(output.status.code(), Some(1), "fixture: {}", base.display());
+        eprintln!("fixture: {}; child: {output:?}", base.path().display());
+        std::fs::write(base.path().join("stderr"), &output.stderr)
+            .expect("retain child diagnostic");
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "fixture: {}",
+            base.path().display()
+        );
         assert!(
             String::from_utf8_lossy(&output.stderr)
                 .starts_with(marrow_codes::Code::IoWrite.as_str())
@@ -224,7 +233,7 @@ fn recovery_output_failure_keeps_completed_activation_and_preserved_bytes() {
         };
         assert_eq!(attachment.envelope().instance, provisioned.instance);
         drop(attachment);
-        std::fs::remove_dir_all(base).expect("remove successful fixture");
+        std::fs::remove_dir_all(base.path()).expect("remove successful fixture");
     }
 }
 
@@ -239,21 +248,24 @@ fn logical_transfer_keeps_completed_effects_when_receipt_delivery_fails() {
     for restore in [false, true] {
         for close_diagnostic in [false, true] {
             let base = Scratch::new("runner-provision");
-            eprintln!("preserved transfer output failure: {}", base.display());
+            eprintln!(
+                "preserved transfer output failure: {}",
+                base.path().display()
+            );
             let bytes = program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes;
             let image = marrow_verify::verify(&bytes).expect("image");
-            let image_path = base.join("program.image");
+            let image_path = base.path().join("program.image");
             std::fs::write(&image_path, &bytes).expect("image file");
-            let source = base.join("source");
+            let source = base.path().join("source");
             let prepared = marrow_lifecycle::prepare(image);
             let report = ProvisionReport::new(&source, &prepared).expect("report");
             let approval = marrow_lifecycle::ProvisionApproval::accept(&report);
             let provisioned =
                 marrow_lifecycle::provision_image(&source, &prepared, &approval).expect("source");
             let head = std::fs::read(source.join(marrow_lifecycle::HEAD_FILE)).expect("head");
-            let backup = base.join("backup");
+            let backup = base.path().join("backup");
             marrow_lifecycle::backup(&source, &bytes, &backup).expect("complete input");
-            let destination = base.join("destination");
+            let destination = base.path().join("destination");
             let mut command = Command::new(env!("CARGO_BIN_EXE_marrow-runner"));
             if restore {
                 command
@@ -284,7 +296,7 @@ fn logical_transfer_keeps_completed_effects_when_receipt_delivery_fails() {
                 command.stderr(Stdio::piped());
             }
             let output = command.output().expect("transfer exits");
-            eprintln!("fixture: {}; child: {output:?}", base.display());
+            eprintln!("fixture: {}; child: {output:?}", base.path().display());
             assert_eq!(output.status.code(), Some(1));
             if restore {
                 assert_eq!(
@@ -339,14 +351,17 @@ fn logical_transfer_keeps_completed_effects_when_receipt_delivery_fails() {
 fn restore_command_refuses_incomplete_input_without_a_usable_destination() {
     use std::process::Command;
     let base = Scratch::new("runner-provision");
-    eprintln!("preserved invalid transfer inputs: {}", base.display());
+    eprintln!(
+        "preserved invalid transfer inputs: {}",
+        base.path().display()
+    );
     let bytes = program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes;
-    let source = base.join("source");
+    let source = base.path().join("source");
     let prepared = marrow_lifecycle::prepare(marrow_verify::verify(&bytes).expect("image"));
     let report = ProvisionReport::new(&source, &prepared).expect("report");
     let approval = marrow_lifecycle::ProvisionApproval::accept(&report);
     marrow_lifecycle::provision_image(&source, &prepared, &approval).expect("source");
-    let backup = base.join("backup");
+    let backup = base.path().join("backup");
     marrow_lifecycle::backup(&source, &bytes, &backup).expect("backup");
     let mut truncated = std::fs::read(&backup).expect("complete backup");
     truncated.pop();
@@ -368,9 +383,9 @@ fn restore_command_refuses_incomplete_input_without_a_usable_destination() {
             true,
         ),
     ] {
-        let path = base.join(name);
+        let path = base.path().join(name);
         std::fs::write(&path, input).expect("invalid input");
-        let destination = base.join(format!("{name}-store"));
+        let destination = base.path().join(format!("{name}-store"));
         let output = Command::new(env!("CARGO_BIN_EXE_marrow-runner"))
             .arg("restore")
             .arg("--from")
@@ -413,12 +428,12 @@ fn import_with_closed_stream(destination: ImportStore, closed: ClosedStream) {
     let image = marrow_verify::verify(&bytes).expect("verify image");
     assert_eq!(image.exports().len(), 1);
     let read = Id32::from_bytes(*image.exports()[0].id().bytes());
-    let image_path = base.join("program.image");
-    let corpus_path = base.join("seed.jsonl");
+    let image_path = base.path().join("program.image");
+    let corpus_path = base.path().join("seed.jsonl");
     std::fs::write(&image_path, &bytes).expect("write image");
     let corpus = b"{\"id\":1,\"value\":7}\n";
     std::fs::write(&corpus_path, corpus).expect("write corpus");
-    let store = base.join("store");
+    let store = base.path().join("store");
     if matches!(destination, ImportStore::Existing) {
         let prepared = marrow_lifecycle::prepare(image.clone());
         let report = ProvisionReport::new(&store, &prepared).expect("report");
@@ -447,10 +462,10 @@ fn import_with_closed_stream(destination: ImportStore, closed: ClosedStream) {
         }
     }
     let output = command.output().expect("import child completes");
-    eprintln!("fixture: {}; child: {output:?}", base.display());
-    std::fs::write(base.join("stdout"), &output.stdout).expect("retain stdout");
-    std::fs::write(base.join("stderr"), &output.stderr).expect("retain stderr");
-    eprintln!("import fixture: {}", base.display());
+    eprintln!("fixture: {}; child: {output:?}", base.path().display());
+    std::fs::write(base.path().join("stdout"), &output.stdout).expect("retain stdout");
+    std::fs::write(base.path().join("stderr"), &output.stderr).expect("retain stderr");
+    eprintln!("import fixture: {}", base.path().display());
     let attachment = match marrow_lifecycle::attach(&store, marrow_lifecycle::prepare(image))
         .expect("published store admits exact image")
     {
@@ -490,7 +505,7 @@ fn import_with_closed_stream(destination: ImportStore, closed: ClosedStream) {
         }
     };
     assert_eq!(output.status.code(), Some(expected));
-    std::fs::remove_dir_all(base).expect("remove successful fixture");
+    std::fs::remove_dir_all(base.path()).expect("remove successful fixture");
 }
 
 #[test]
@@ -528,13 +543,13 @@ fn runner_usage_stderr_failure_keeps_usage_status() {
 fn provision_report_failure_precedes_publication() {
     use std::process::{Command, Stdio};
     let base = Scratch::new("runner-provision");
-    let image = base.join("program.image");
+    let image = base.path().join("program.image");
     std::fs::write(
         &image,
         program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes,
     )
     .expect("image");
-    let store = base.join("store");
+    let store = base.path().join("store");
     assert!(!store.exists(), "fresh destination: {}", store.display());
     let writer = broken_output();
     let output = Command::new(env!("CARGO_BIN_EXE_marrow-runner"))
@@ -548,22 +563,22 @@ fn provision_report_failure_precedes_publication() {
         .stderr(writer)
         .output()
         .expect("provision child completes");
-    eprintln!("fixture: {}; child: {output:?}", base.display());
+    eprintln!("fixture: {}; child: {output:?}", base.path().display());
     assert!(!store.exists());
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
-    std::fs::remove_dir_all(base).expect("remove successful fixture");
+    std::fs::remove_dir_all(base.path()).expect("remove successful fixture");
 }
 
 #[test]
 fn invalid_image_with_closed_stderr_leaves_store_absent() {
     use std::process::{Command, Stdio};
     let base = Scratch::new("runner-provision");
-    let invalid = base.join("invalid.image");
+    let invalid = base.path().join("invalid.image");
     std::fs::write(&invalid, b"not an image").expect("invalid image");
-    let store = base.join("store");
+    let store = base.path().join("store");
     assert!(!store.exists(), "fresh destination: {}", store.display());
-    for image in [invalid, base.join("missing.image")] {
+    for image in [invalid, base.path().join("missing.image")] {
         for name in ["provision", "import"] {
             let writer = broken_output();
             let mut command = Command::new(env!("CARGO_BIN_EXE_marrow-runner"));
@@ -578,7 +593,7 @@ fn invalid_image_with_closed_stderr_leaves_store_absent() {
             } else {
                 command
                     .arg("--jsonl")
-                    .arg(base.join("unused.jsonl"))
+                    .arg(base.path().join("unused.jsonl"))
                     .args(["--root", "counters", "--keys", "id"]);
             }
             let output = command
@@ -587,11 +602,11 @@ fn invalid_image_with_closed_stderr_leaves_store_absent() {
                 .stderr(writer)
                 .output()
                 .expect("refusal child completes");
-            eprintln!("fixture: {}; child: {output:?}", base.display());
+            eprintln!("fixture: {}; child: {output:?}", base.path().display());
             assert!(!store.exists());
             assert_eq!(output.status.code(), Some(1));
             assert!(output.stdout.is_empty());
         }
     }
-    std::fs::remove_dir_all(base).expect("remove successful fixture");
+    std::fs::remove_dir_all(base.path()).expect("remove successful fixture");
 }

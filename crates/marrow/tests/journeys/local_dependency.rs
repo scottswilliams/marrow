@@ -26,7 +26,7 @@ const APP: &str = "graph_report";
 fn two_trees(label: &str) -> Scratch {
     let scratch = Scratch::new(label);
     for name in [APP, LIB] {
-        copy_tree(&conformance_dir(name), &scratch.join(name));
+        copy_tree(&conformance_dir(name), &scratch.path().join(name));
     }
     scratch
 }
@@ -93,7 +93,7 @@ fn the_application_reaches_the_library_through_its_alias() {
 #[test]
 fn a_dependency_diagnostic_names_its_alias() {
     let scratch = two_trees("dependency-diagnostic");
-    let helper = scratch.join(LIB).join("src/text.mw");
+    let helper = scratch.path().join(LIB).join("src/text.mw");
     let source = fs::read_to_string(&helper).expect("read the library helper");
     fs::write(
         &helper,
@@ -101,7 +101,7 @@ fn a_dependency_diagnostic_names_its_alias() {
     )
     .expect("write the broken library helper");
 
-    let output = marrow_in(&scratch.join(APP), &["check"]);
+    let output = marrow_in(&scratch.path().join(APP), &["check"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "{stderr}");
     assert!(
@@ -119,7 +119,7 @@ fn a_dependency_diagnostic_names_its_alias() {
 #[test]
 fn fmt_reports_but_never_rewrites_a_dependency_file() {
     let scratch = two_trees("dependency-fmt");
-    let helper = scratch.join(LIB).join("src/text.mw");
+    let helper = scratch.path().join(LIB).join("src/text.mw");
     let formatted = fs::read_to_string(&helper).expect("read the library helper");
     let unformatted = formatted.replace(
         "pub fn getOr<V>(m: Map<string, V>, key: string, fallback: V): V {",
@@ -128,7 +128,7 @@ fn fmt_reports_but_never_rewrites_a_dependency_file() {
     assert_ne!(formatted, unformatted, "the edit must unformat the helper");
     fs::write(&helper, &unformatted).expect("write the unformatted helper");
 
-    let output = marrow_in(&scratch.join(APP), &["fmt", "--write", "."]);
+    let output = marrow_in(&scratch.path().join(APP), &["fmt", "--write", "."]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         !output.status.success(),
@@ -151,7 +151,7 @@ fn fmt_reports_but_never_rewrites_a_dependency_file() {
 #[test]
 fn a_dependency_owned_identity_gap_is_not_minted_from_the_application() {
     let scratch = two_trees("dependency-mint");
-    let helper = scratch.join(LIB).join("src/text.mw");
+    let helper = scratch.path().join(LIB).join("src/text.mw");
     let source = fs::read_to_string(&helper).expect("read the library helper");
     fs::write(
         &helper,
@@ -160,7 +160,7 @@ fn a_dependency_owned_identity_gap_is_not_minted_from_the_application() {
     .expect("write the durable library helper");
 
     // The report steers to the tree that owns the declaration.
-    let check = marrow_in(&scratch.join(APP), &["check"]);
+    let check = marrow_in(&scratch.path().join(APP), &["check"]);
     let reported = String::from_utf8_lossy(&check.stderr);
     assert!(!check.status.success(), "{reported}");
     assert!(
@@ -171,7 +171,7 @@ fn a_dependency_owned_identity_gap_is_not_minted_from_the_application() {
     );
 
     let run = marrow_in(
-        &scratch.join(APP),
+        &scratch.path().join(APP),
         &["run", "graph_report.report", "--", ""],
     );
     let records = String::from_utf8_lossy(&run.stdout);
@@ -181,7 +181,7 @@ fn a_dependency_owned_identity_gap_is_not_minted_from_the_application() {
         "the gap is reported, not minted: {records}"
     );
     assert!(
-        !scratch.join(LIB).join(".marrow").exists(),
+        !scratch.path().join(LIB).join(".marrow").exists(),
         "the application must not publish a ledger into a dependency tree",
     );
 }
@@ -218,7 +218,7 @@ test "the library drives its own writer" {
 fn shelf_pair(label: &str, library_source: &str, app_source: &str) -> Scratch {
     let scratch = Scratch::new(label);
     write_project(
-        &scratch.join("library"),
+        &scratch.path().join("library"),
         "edition = \"2026\"\n",
         &[("src/shelf.mw", library_source)],
         "id application . 00000000000000000000000000000000\n\
@@ -228,7 +228,7 @@ fn shelf_pair(label: &str, library_source: &str, app_source: &str) -> Scratch {
          id field Book.title 00000000000000000000000000000004\n",
     );
     write_project(
-        &scratch.join("app"),
+        &scratch.path().join("app"),
         "edition = \"2026\"\n\n[dependencies]\nlibrary = { path = \"../library\" }\n",
         &[("src/main.mw", app_source)],
         "id application . 00000000000000000000000000000005\n",
@@ -263,7 +263,7 @@ fn a_dependency_transaction_owner_is_refused_in_source_terms() {
         SHELF_LIBRARY,
         "module main\n\npub fn f(): int {\n    return 1\n}\n",
     );
-    let output = marrow_in(&scratch.join("app"), &["check"]);
+    let output = marrow_in(&scratch.path().join("app"), &["check"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "{stderr}");
     assert!(
@@ -277,7 +277,7 @@ fn a_dependency_transaction_owner_is_refused_in_source_terms() {
 
     // The library is an ordinary project in its own directory, where its writer is an
     // export and its own test drives it.
-    let library = marrow_in(&scratch.join("library"), &["check"]);
+    let library = marrow_in(&scratch.path().join("library"), &["check"]);
     assert!(
         library.status.success(),
         "the library checks standalone: {}",
@@ -331,7 +331,7 @@ pub fn put(id: int, title: string) {
 }
 "#,
     );
-    let output = marrow_in(&scratch.join("app"), &["check"]);
+    let output = marrow_in(&scratch.path().join("app"), &["check"]);
     assert!(
         output.status.success(),
         "check: {}",
@@ -346,7 +346,7 @@ pub fn put(id: int, title: string) {
         SHELF_HELPER_LIBRARY,
         "module main\n\npub fn f(): int {\n    return 1\n}\n",
     );
-    let output = marrow_in(&unused.join("app"), &["check"]);
+    let output = marrow_in(&unused.path().join("app"), &["check"]);
     assert!(
         output.status.success(),
         "check: {}",

@@ -24,24 +24,24 @@ use marrow_test_support::Scratch;
 #[test]
 fn nominal_aggregate_inputs_publish_neither_client_nor_image() {
     let temp = Scratch::new("nominal-input");
-    write(&temp.join("marrow.toml"), "edition = \"2026\"\n");
+    write(&temp.path().join("marrow.toml"), "edition = \"2026\"\n");
     write(
-        &temp.join("src/main.mw"),
+        &temp.path().join("src/main.mw"),
         "module main\ntype Age: int in 0..=150\nstruct Person { age: Age }\npub fn outside(p: Person): bool { return p.age > Age(150) }\n",
     );
     for args in [
         vec!["client", "typescript", "--out", "gen"],
         vec!["image", "--out", "program.image"],
     ] {
-        let output = marrow_in(&temp, &args);
+        let output = marrow_in(temp.path(), &args);
         assert_eq!(output.status.code(), Some(1));
         let stderr = output.stderr_text();
         assert!(
             stderr.starts_with("src/main.mw:4:19: check.unsupported:"),
             "{stderr}"
         );
-        assert!(!temp.join("gen/client.mts").exists());
-        assert!(!temp.join("program.image").exists());
+        assert!(!temp.path().join("gen/client.mts").exists());
+        assert!(!temp.path().join("program.image").exists());
     }
 }
 
@@ -114,7 +114,7 @@ pub fn lookup(m: Map<string, int>, k: string): int {
 "#;
 
 fn fixture_project(temp: &Scratch) -> PathBuf {
-    let project = temp.join("app");
+    let project = temp.path().join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(&project.join("src/main.mw"), FIXTURE);
     project
@@ -253,7 +253,7 @@ fn reconstruct_interface_id() -> String {
 #[test]
 fn a_collection_export_generates() {
     let temp = Scratch::new("list");
-    let project = temp.join("app");
+    let project = temp.path().join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(
         &project.join("src/main.mw"),

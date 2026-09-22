@@ -4,15 +4,13 @@
 //! ids a hostile mutation targets, the function builder that mints every fixture's
 //! `FunctionDef`, and the typed verdict pins compare.
 
+use crate::{admitted_plan, site};
 use marrow_image::{
     AdmittedRoot, DeclarationMember, DeclarationMemberDef, DeclarationMemberShape, DraftTxn,
     DurableIndexComponent, DurableIndexShape, ExportId, FieldDef, FuncId, FunctionDef, ImageDraft,
     ImageType, Instr, KeyColumn, LedgerIdBytes, PlannedSiteRef, RecordTypeDef, RootOccurrenceDef,
     Scalar, SemanticTarget, SpanEntry, TypeId, ValueShapeNodeId,
 };
-use marrow_verify::{VerifyPhase, verify};
-
-use crate::{admitted_plan, site};
 
 /// One within-domain draft mint, unwrapped: every fixture mint here is far inside
 /// the checked carrier domain.
@@ -22,11 +20,8 @@ pub fn ok<T>(minted: Result<T, marrow_image::DraftStateError>) -> T {
 
 /// The tracer graph's fixed ledger ids, shared by the durable-schema builders and
 /// the byte-forgery helpers so a hostile mutation can target one precisely.
-pub const APPLICATION_ID: [u8; 16] = [0x0a; 16];
-pub const PLACEMENT_ID: [u8; 16] = [0x0b; 16];
-pub const ROOT_KEY_ID: [u8; 16] = [0x0c; 16];
-pub const PRODUCT_ID: [u8; 16] = [0x0d; 16];
-pub const VALUE_FIELD_ID: [u8; 16] = [0x0e; 16];
+pub use crate::ledger_ids::{APPLICATION_ID, FIELD_ID, KEY_ID, PLACEMENT_ID, PRODUCT_ID};
+/// The tracer's sparse second field.
 pub const LABEL_FIELD_ID: [u8; 16] = [0x0f; 16];
 
 /// The direct members of the Product every fixture in this file declares, in
@@ -117,7 +112,7 @@ pub fn scalar_shapes(draft: &mut DraftTxn<'_>) -> ScalarShapes {
 /// verifier's member-tree/record cross-check passes.
 pub fn counters_members(shapes: ScalarShapes) -> Vec<DeclarationMemberDef> {
     vec![
-        field_member(shapes, None, VALUE_FIELD_ID, true, Scalar::Int),
+        field_member(shapes, None, FIELD_ID, true, Scalar::Int),
         field_member(shapes, None, LABEL_FIELD_ID, false, Scalar::Text),
     ]
 }
@@ -130,21 +125,6 @@ pub fn spans(code: &[Instr]) -> Vec<SpanEntry> {
             column: 1,
         })
         .collect()
-}
-
-/// The verifier's answer for one image: it verified, or the phase that owns the violated
-/// invariant refused it. Pins compare this typed verdict, not a rendered `image.*` string.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Verdict {
-    Verified,
-    Refused(VerifyPhase),
-}
-
-pub fn verdict_of(bytes: &[u8]) -> Verdict {
-    match verify(bytes) {
-        Ok(_) => Verdict::Verified,
-        Err(rejection) => Verdict::Refused(rejection.phase()),
-    }
 }
 
 /// Add a function to `draft`. Every fixture mints its functions here, so a `FunctionDef`
@@ -208,7 +188,7 @@ pub fn durable_schema(draft: &mut DraftTxn<'_>) -> Sites {
         draft,
         vec![KeyColumn {
             scalar: Scalar::Text,
-            id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+            id: LedgerIdBytes::from_bytes(KEY_ID),
         }],
     )
 }
@@ -339,7 +319,7 @@ pub const BY_VALUE_INDEX_ID: [u8; 16] = [0x71; 16];
 pub fn by_label_projection() -> Vec<DurableIndexComponent> {
     vec![
         DurableIndexComponent::Field(LedgerIdBytes::from_bytes(LABEL_FIELD_ID)),
-        DurableIndexComponent::Key(LedgerIdBytes::from_bytes(ROOT_KEY_ID)),
+        DurableIndexComponent::Key(LedgerIdBytes::from_bytes(KEY_ID)),
     ]
 }
 
@@ -347,7 +327,7 @@ pub fn by_label_projection() -> Vec<DurableIndexComponent> {
 /// unique index may carry without the identity suffix.
 pub fn by_value_projection() -> Vec<DurableIndexComponent> {
     vec![DurableIndexComponent::Field(LedgerIdBytes::from_bytes(
-        VALUE_FIELD_ID,
+        FIELD_ID,
     ))]
 }
 
@@ -405,7 +385,7 @@ pub fn indexed_draft_full(
                 name: root,
                 keys: vec![KeyColumn {
                     scalar: Scalar::Text,
-                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                    id: LedgerIdBytes::from_bytes(KEY_ID),
                 }],
                 placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
                 indexes: vec![
@@ -500,7 +480,7 @@ pub fn group_branch_draft_with_branch_record(
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
             vec![
-                field_member(shapes, None, VALUE_FIELD_ID, true, Scalar::Text),
+                field_member(shapes, None, FIELD_ID, true, Scalar::Text),
                 DeclarationMemberDef {
                     parent: None,
                     shape: DeclarationMemberShape::Group {
@@ -532,7 +512,7 @@ pub fn group_branch_draft_with_branch_record(
                 name: root,
                 keys: vec![KeyColumn {
                     scalar: Scalar::Int,
-                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                    id: LedgerIdBytes::from_bytes(KEY_ID),
                 }],
                 placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
                 indexes: Vec::new().into(),

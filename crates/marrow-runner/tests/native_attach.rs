@@ -9,8 +9,8 @@
 //! step. The terminal-side wire client under test is `attach_and_call`; companion discovery
 //! and release verification are covered by the terminal's own unit tests.
 
+use marrow_test_programs::program;
 use marrow_test_support::Scratch;
-use marrow_test_support::program;
 
 use std::path::{Path, PathBuf};
 
