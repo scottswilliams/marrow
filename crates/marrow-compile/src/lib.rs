@@ -74,7 +74,7 @@ pub use source::ProjectFile;
 pub(crate) fn test_input() -> &'static marrow_project::ProjectInput {
     static INPUT: std::sync::OnceLock<marrow_project::ProjectInput> = std::sync::OnceLock::new();
     INPUT.get_or_init(|| {
-        marrow_test_programs::project::project(&[
+        marrow_test_support::project::project(&[
             ("src/a.mw", ""),
             ("src/abcdefgh.mw", ""),
             ("src/first.mw", ""),

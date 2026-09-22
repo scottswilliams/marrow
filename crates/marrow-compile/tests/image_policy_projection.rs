@@ -32,8 +32,8 @@ use marrow_compile::{
 };
 use marrow_project::{FileIdentity, ProjectInput};
 
-use marrow_test_programs::ledger;
-use marrow_test_programs::project as common_project;
+use marrow_test_support::ledger;
+use marrow_test_support::project as common_project;
 
 /// The suite's fixtures generate their sources, so they are borrowed into the shared
 /// capture helper's `&str` pairs at each call.

@@ -12,7 +12,6 @@ publish = false
 
 [dependencies]
 marrow-compile = { path = "../marrow-compile" }
-marrow-project = { path = "../marrow-project" }
 marrow-test-support = { path = "../marrow-test-support" }
 marrow-verify = { path = "../marrow-verify" }
 

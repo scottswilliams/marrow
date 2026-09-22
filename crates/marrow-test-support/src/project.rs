@@ -5,7 +5,7 @@ use marrow_project::{
     CaptureLimits, CapturedDependency, CapturedFile, Manifest, ProjectInput, capture,
     capture_origins,
 };
-use marrow_test_support::MANIFEST;
+use crate::MANIFEST;
 
 /// Capture `files` as a project at the default limits, under the identity ledger `ids`.
 pub fn captured(files: &[(&str, impl AsRef<[u8]>)], ids: Option<&[u8]>) -> ProjectInput {

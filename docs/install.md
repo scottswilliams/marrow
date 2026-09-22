@@ -68,13 +68,14 @@ marrow 0.1.0
 
 ## Running against a store
 
-A source install runs every storeless command, and `marrow test` runs durable
-tests against a fresh in-memory store. A store on disk also needs a supported
-platform and the companion layout.
+On macOS and Linux on x86_64 and aarch64, a source install runs storeless commands,
+and `marrow test` runs durable tests against a fresh in-memory store. A store on
+disk also needs the companion layout.
 
-Opening a store on disk works on macOS, and on Linux on x86_64 and aarch64.
-On other Linux architectures the toolchain builds, but opening a store stops
-with a message naming the operating system and architecture.
+On other Linux architectures the toolchain builds, but opening a store or
+publishing identity files stops with a message naming the operating system and
+architecture. This also restricts source-only workflows that need to mint
+identities, including durable tests over a project with missing identities.
 
 A store on disk is opened by a companion runner. `marrow run --store` and
 `marrow import` need the `marrow-runner` binary and the `marrow-companions`

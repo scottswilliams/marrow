@@ -6,8 +6,8 @@
 
 use marrow_project::ProjectInput;
 
-use marrow_test_programs::ledger::ledger;
-use marrow_test_programs::project as project_capture;
+use marrow_test_support::ledger::ledger;
+use marrow_test_support::project as project_capture;
 
 #[path = "limits/issuance_amplification.rs"]
 mod issuance_amplification;

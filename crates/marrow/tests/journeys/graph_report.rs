@@ -286,7 +286,7 @@ fn stdin_refusal_precedes_invocation_and_a_non_string_result_is_allowed() {
 }
 
 #[test]
-fn a_closed_output_pipe_returns_failure_without_panicking() {
+fn an_unwritable_output_returns_failure_without_panicking() {
     let workspace = Project::single(NON_STRING_RESULT_SOURCE).materialize("closed-output");
     let mut child = ChildGuard(Some(
         Command::new(MARROW_BIN)
@@ -294,15 +294,13 @@ fn a_closed_output_pipe_returns_failure_without_panicking() {
             .current_dir(workspace.dir())
             .env("NO_COLOR", "1")
             .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
+            .stdout(marrow_test_support::broken_output())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("spawn marrow with an output pipe"),
+            .expect("spawn marrow with unwritable output"),
     ));
     let process = child.0.as_mut().expect("child remains owned");
     let mut input = process.stdin.take().expect("piped stdin");
-    // EOF releases the invocation only after its output pipe has no reader.
-    drop(process.stdout.take().expect("piped stdout"));
     input.write_all(b"input").expect("write bounded stdin");
     drop(input);
     let mut stderr = Vec::new();

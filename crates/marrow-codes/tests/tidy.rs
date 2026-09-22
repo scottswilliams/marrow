@@ -352,6 +352,13 @@ fn the_byte_engine_has_one_production_consumer(packages: &[PackageEdges]) {
 /// program fixtures build on the base scaffolding as an ordinary edge), so their own edges — the engine traits, the compiler, the verifier — reach no production build
 /// through them.
 fn the_test_scaffolding_is_a_dev_edge_everywhere(packages: &[PackageEdges]) {
+    assert!(
+        !find(packages, "marrow-compile")
+            .edges
+            .iter()
+            .any(|(dep, _)| dep == "marrow-test-programs"),
+        "compiler tests use input fixtures, not a helper that waits for the compiler itself"
+    );
     const SCAFFOLDING: &[&str] = &["marrow-test-support", "marrow-test-programs"];
     for package in packages {
         if SCAFFOLDING.contains(&package.name) {

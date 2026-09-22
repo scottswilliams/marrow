@@ -150,7 +150,6 @@ dependencies = [
  "marrow-project",
  "marrow-syntax",
  "marrow-temporal",
- "marrow-test-programs",
  "marrow-test-support",
 ]
 
@@ -281,7 +280,6 @@ name = "marrow-test-programs"
 version = "0.1.0"
 dependencies = [
  "marrow-compile",
- "marrow-project",
  "marrow-test-support",
  "marrow-verify",
 ]
@@ -292,6 +290,7 @@ version = "0.1.0"
 dependencies = [
  "marrow-image",
  "marrow-kernel",
+ "marrow-project",
  "marrow-store",
 ]
 

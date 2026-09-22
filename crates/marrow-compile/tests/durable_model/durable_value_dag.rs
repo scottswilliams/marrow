@@ -28,7 +28,7 @@ use marrow_project::ProjectInput;
 
 use super::ids;
 use super::project;
-use marrow_test_programs::ledger::ledger;
+use marrow_test_support::ledger::ledger;
 
 /// The ledger anchors a single keyed store `^a` over resource `R` with one durable
 /// field `R.f` needs, plus any extra anchors the corpus declares.

@@ -33,7 +33,7 @@
 //! the snapshot's independent record, which is why a recovered-broken file still
 //! classifies positions while its hover facts stay syntax-unavailable.
 
-use marrow_test_programs::owned_heap;
+use marrow_test_support::owned_heap;
 
 use std::mem::size_of;
 use std::sync::{Arc, OnceLock};

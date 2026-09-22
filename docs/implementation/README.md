@@ -17,7 +17,8 @@ formatter, the diagnostic types every other crate renders, and the position-boun
 **Compile.** `marrow-compile` resolves names, checks types and effects, and lowers
 the AST into an image draft. One drive serves three projections: `compile` encodes
 a program image, `analyze` publishes an `AnalysisSnapshot` for the language server
-and never encodes, and `check` does both over a test-inclusive image. The compiler
+and never encodes, and `check` collects the complete diagnostic union and encodes
+a test-inclusive image without publishing editor facts. The compiler
 opens no store and cannot mint a verified image.
 
 **Image.** `marrow-image` owns the container: the draft that validates as it is
@@ -79,13 +80,13 @@ process; `marrow-lsp` projects compiler snapshot facts and adds no semantics.
 | `marrow-local-wire` | The framed protocol between a runner and its client: framing, limits, the workspace's one canonical JSON writer and lexer, completed bounded frames, and the closed request, response, fault, and incomplete grammar | [TypeScript client](../tools/typescript-client.md) |
 | `marrow-runner` | The runner binary and library: the supervised Unix-domain channel, export dispatch over a verified image, and the one-shot provision, import, audit, apply, recovery, backup and restore commands over the lifecycle owners | [Operations](../operations/README.md) |
 | `marrow-lsp` | The standalone `marrow-lsp` executable: JSON-RPC over stdio, document sync, and diagnostics, formatting, hover, definition, completion, signature help, and document symbols projected from the compiler's `AnalysisSnapshot` | [Language server](../tools/lsp.md) |
-| `marrow-test-support` | The test scaffolding more than one binary builds over: the one scratch directory every test mints temporary files under, the image draft seam and forger, the ledger-id fixtures, the engine doubles, and the verifier's tracer corpus. It depends on no compiler crate. A `dev-dependencies` edge only; it ships in nothing | [Contributing](../../CONTRIBUTING.md) |
-| `marrow-test-programs` | Compiled-program fixtures: a project captured through the production owner and built into image bytes or a verified image, and the ledger writer. A `dev-dependencies` edge of only the crates whose tests need a compiled program | [Contributing](../../CONTRIBUTING.md) |
+| `marrow-test-support` | Shared scratch directories, captured project inputs, ledger fixtures, owned-heap ceiling, image draft seam and forger, engine doubles, and verifier corpus. It depends on no compiler crate. A `dev-dependencies` edge only; it ships in nothing | [Contributing](../../CONTRIBUTING.md) |
+| `marrow-test-programs` | Compiles and verifies shared source fixtures for lifecycle and runner tests. Compiler tests use the input helpers in `marrow-test-support`, avoiding a dependency cycle through their own compiler | [Contributing](../../CONTRIBUTING.md) |
 
 The language server is its own executable. The `marrow` CLI has no `lsp`
 subcommand.
 
-## Dependency direction
+## Production dependency direction
 
 Every dependency points at a lower level. A crate names only crates beneath
 it, so a change in a leaf rebuilds the leaf and its consumers and nothing else.

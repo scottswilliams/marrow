@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use marrow_verify::{VerifiedImage, verify};
 
-use crate::project::captured;
+use marrow_test_support::project::captured;
 
 /// A verified program together with the image bytes a terminal ships to a runner. The bytes
 /// are the exact input `image` was verified from, so the two always name the same program.

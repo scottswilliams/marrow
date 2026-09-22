@@ -13,6 +13,7 @@ publish = false
 [dependencies]
 marrow-image = { path = "../marrow-image" }
 marrow-kernel = { path = "../marrow-kernel" }
+marrow-project = { path = "../marrow-project" }
 # The byte-engine traits the engine doubles implement; the path kernel stays the
 # engine's only production consumer.
 marrow-store = { path = "../marrow-store" }

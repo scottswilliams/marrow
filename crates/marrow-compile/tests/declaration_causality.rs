@@ -30,7 +30,7 @@ use std::collections::BTreeSet;
 mod ids;
 #[path = "declaration_causality/name_conflicts.rs"]
 mod name_conflicts;
-use marrow_test_programs::project as project_capture;
+use marrow_test_support::project as project_capture;
 #[path = "declaration_causality/refused_names.rs"]
 mod refused_names;
 

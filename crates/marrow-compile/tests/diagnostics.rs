@@ -4,7 +4,7 @@
 
 #[path = "common/ids.rs"]
 mod ids;
-use marrow_test_programs::project as project_capture;
+use marrow_test_support::project as project_capture;
 
 #[path = "diagnostics/collector.rs"]
 mod collector;
