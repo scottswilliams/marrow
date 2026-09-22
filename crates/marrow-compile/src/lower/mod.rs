@@ -444,7 +444,7 @@ pub(crate) use self::registry::{
     DeclaredFn, FunctionRegistry, GenericRegistry, GenericTemplate, ModuleBinding, ModuleLedger,
     ModuleScope, SignatureOutcome, dotted_module_path,
 };
-pub(crate) use self::types::parse_int;
+pub(crate) use self::types::{parse_int, scalar_order};
 
 impl<'a, 'd> FnLowerer<'a, 'd> {
     /// Run one checked draft mint. A carrier-domain refusal is unreachable under the

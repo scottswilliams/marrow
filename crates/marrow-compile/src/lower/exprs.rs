@@ -415,7 +415,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             ));
             return Err(LoweringFailure::Recoverable);
         };
-        use ScalarType::{Bool, Bytes, Date, Duration, Instant, Int, Text};
+        if left == right_scalar
+            && let Some(instr) = scalar_order(op, left)
+        {
+            self.push(instr, span)?;
+            return Ok(LTy::bare_scalar(ScalarType::Bool));
+        }
+        use ScalarType::{Bool, Duration, Instant, Int, Text};
         let (instr, result): (Instr, ScalarType) = match (op, left, right_scalar) {
             (BinaryOp::Add, Int, Int) => (Instr::IntAdd, Int),
             (BinaryOp::Add, Text, Text) => (Instr::TextConcat, Text),
@@ -423,45 +429,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             (BinaryOp::Multiply, Int, Int) => (Instr::IntMul, Int),
             (BinaryOp::Remainder, Int, Int) => (Instr::IntRem, Int),
             (BinaryOp::Divide, Int, Int) => (Instr::IntDiv, Int),
-            #[expect(
-                clippy::expect_used,
-                reason = "match-arm narrowing: the arm guard already tested `int_comparison(op).is_some()`, so the same call in the body yields `Some`"
-            )]
-            (op, Int, Int) if int_comparison(op).is_some() => {
-                (int_comparison(op).expect("guard matched"), Bool)
-            }
-            (BinaryOp::Less, Text, Text) => (Instr::TextLt, Bool),
-            (BinaryOp::LessEqual, Text, Text) => (Instr::TextLe, Bool),
-            (BinaryOp::Greater, Text, Text) => (Instr::TextGt, Bool),
-            (BinaryOp::GreaterEqual, Text, Text) => (Instr::TextGe, Bool),
-            (BinaryOp::Less, Bytes, Bytes) => (Instr::BytesLt, Bool),
-            (BinaryOp::LessEqual, Bytes, Bytes) => (Instr::BytesLe, Bool),
-            (BinaryOp::Greater, Bytes, Bytes) => (Instr::BytesGt, Bool),
-            (BinaryOp::GreaterEqual, Bytes, Bytes) => (Instr::BytesGe, Bool),
-            // Temporal order (same-type only). The closed arithmetic floor: a duration
-            // sums/differences with a duration, and a duration shifts an instant; there is
-            // no `date +/- int` (use `addDays`), no `duration * int`, no month arithmetic.
-            #[expect(
-                clippy::expect_used,
-                reason = "match-arm narrowing: the arm guard tested `temporal_comparison(op).is_some()`, which holds exactly when `date_comparison(op)` is `Some`"
-            )]
-            (op, Date, Date) if temporal_comparison(op).is_some() => {
-                (date_comparison(op).expect("guard matched"), Bool)
-            }
-            #[expect(
-                clippy::expect_used,
-                reason = "match-arm narrowing: the arm guard tested `temporal_comparison(op).is_some()`, which holds exactly when `instant_comparison(op)` is `Some`"
-            )]
-            (op, Instant, Instant) if temporal_comparison(op).is_some() => {
-                (instant_comparison(op).expect("guard matched"), Bool)
-            }
-            #[expect(
-                clippy::expect_used,
-                reason = "match-arm narrowing: the arm guard tested `temporal_comparison(op).is_some()`, which holds exactly when `duration_comparison(op)` is `Some`"
-            )]
-            (op, Duration, Duration) if temporal_comparison(op).is_some() => {
-                (duration_comparison(op).expect("guard matched"), Bool)
-            }
+            // The closed temporal arithmetic floor: a duration sums/differences with a
+            // duration, and a duration shifts an instant; there is no `date +/- int`
+            // (use `addDays`), no `duration * int`, no month arithmetic.
             (BinaryOp::Add, Duration, Duration) => (Instr::DurationAdd, Duration),
             (BinaryOp::Subtract, Duration, Duration) => (Instr::DurationSub, Duration),
             (BinaryOp::Add, Instant, Duration) => (Instr::InstantAddDuration, Instant),
@@ -510,7 +480,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let int_ty = LTy::bare_scalar(ScalarType::Int);
         let same_nominal = left_ty.bare_nominal().is_some() && left_ty == right_ty;
         if same_nominal {
-            if let Some(instr) = int_comparison(op) {
+            if let Some(instr) = scalar_order(op, ScalarType::Int) {
                 self.push(instr, span)?;
                 return Ok(bool_ty);
             }

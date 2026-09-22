@@ -643,55 +643,41 @@ fn named_type(
     resolved.map(|ty| ty.map(|ty| if optional { ty.to_optional() } else { ty }))
 }
 
-/// The instruction an int ordering comparison lowers to, shared by the bare-int
-/// operator table and the same-nominal comparison path. Equality stays with
-/// [`eq_instr`].
-pub(super) fn int_comparison(op: BinaryOp) -> Option<Instr> {
+/// The ordering instruction `op` lowers to over two values of `scalar`, or `None`
+/// when `op` is not an order comparison or `scalar` has no order (`bool`). The one
+/// order table: the operator lowering selects from it, a nominal int compares through
+/// its `int` row, and a `supports order` bound admits exactly the scalars it orders.
+/// Equality stays with [`eq_instr`], which every scalar has.
+pub(crate) fn scalar_order(op: BinaryOp, scalar: ScalarType) -> Option<Instr> {
+    let [lt, le, gt, ge] = match scalar {
+        ScalarType::Int => [Instr::IntLt, Instr::IntLe, Instr::IntGt, Instr::IntGe],
+        ScalarType::Text => [Instr::TextLt, Instr::TextLe, Instr::TextGt, Instr::TextGe],
+        ScalarType::Bytes => [
+            Instr::BytesLt,
+            Instr::BytesLe,
+            Instr::BytesGt,
+            Instr::BytesGe,
+        ],
+        ScalarType::Date => [Instr::DateLt, Instr::DateLe, Instr::DateGt, Instr::DateGe],
+        ScalarType::Instant => [
+            Instr::InstantLt,
+            Instr::InstantLe,
+            Instr::InstantGt,
+            Instr::InstantGe,
+        ],
+        ScalarType::Duration => [
+            Instr::DurationLt,
+            Instr::DurationLe,
+            Instr::DurationGt,
+            Instr::DurationGe,
+        ],
+        ScalarType::Bool => return None,
+    };
     Some(match op {
-        BinaryOp::Less => Instr::IntLt,
-        BinaryOp::LessEqual => Instr::IntLe,
-        BinaryOp::Greater => Instr::IntGt,
-        BinaryOp::GreaterEqual => Instr::IntGe,
-        _ => return None,
-    })
-}
-
-/// Whether `op` is one of the four order comparisons, the guard the temporal
-/// operator arms share before selecting the per-type instruction.
-pub(super) fn temporal_comparison(op: BinaryOp) -> Option<()> {
-    matches!(
-        op,
-        BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual
-    )
-    .then_some(())
-}
-
-pub(super) fn date_comparison(op: BinaryOp) -> Option<Instr> {
-    Some(match op {
-        BinaryOp::Less => Instr::DateLt,
-        BinaryOp::LessEqual => Instr::DateLe,
-        BinaryOp::Greater => Instr::DateGt,
-        BinaryOp::GreaterEqual => Instr::DateGe,
-        _ => return None,
-    })
-}
-
-pub(super) fn instant_comparison(op: BinaryOp) -> Option<Instr> {
-    Some(match op {
-        BinaryOp::Less => Instr::InstantLt,
-        BinaryOp::LessEqual => Instr::InstantLe,
-        BinaryOp::Greater => Instr::InstantGt,
-        BinaryOp::GreaterEqual => Instr::InstantGe,
-        _ => return None,
-    })
-}
-
-pub(super) fn duration_comparison(op: BinaryOp) -> Option<Instr> {
-    Some(match op {
-        BinaryOp::Less => Instr::DurationLt,
-        BinaryOp::LessEqual => Instr::DurationLe,
-        BinaryOp::Greater => Instr::DurationGt,
-        BinaryOp::GreaterEqual => Instr::DurationGe,
+        BinaryOp::Less => lt,
+        BinaryOp::LessEqual => le,
+        BinaryOp::Greater => gt,
+        BinaryOp::GreaterEqual => ge,
         _ => return None,
     })
 }

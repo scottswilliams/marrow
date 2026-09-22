@@ -165,6 +165,9 @@ parameter names the operators the body may use:
 | `supports equality` | `==`, `!=` | `int`, `bool`, `string`, `bytes`, `date`, `instant`, `duration`, nominal ints, enums |
 | `supports order` | `<`, `<=`, `>`, `>=`, and equality | `int`, `string`, `bytes`, `date`, `instant`, `duration`, nominal ints |
 
+A type satisfies a constraint exactly when it has those operators outside a
+generic body. A struct, `List`, or `Map` has no `==` and satisfies neither.
+
 ```mw
 module docs::modules::constrained
 

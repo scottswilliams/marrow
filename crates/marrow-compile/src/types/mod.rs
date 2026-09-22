@@ -189,28 +189,21 @@ impl GArg {
     }
 
     /// Whether a concrete argument supports the given generic constraint, checked
-    /// at every application of a constrained generic. The equality domain is every
-    /// type the `==`/`!=` operator admits (scalar, nominal, enum); the order domain
-    /// is every type the `<`/`>` operators admit (`int`/`text`/`bytes`/`date`/
-    /// `instant`/`duration` and nominal int). A struct or collection supports
-    /// neither; `bool` and an enum support equality but not order. `Param` never
-    /// reaches a concrete revalidation.
+    /// at every application of a constrained generic. The admission is the operator
+    /// table's: every scalar, nominal int, and enum has `==`, and order holds for the
+    /// scalars [`scalar_order`](crate::lower::scalar_order) orders and for a nominal
+    /// int through its `int` row. A struct or collection supports neither. `Param`
+    /// never reaches a concrete revalidation.
     pub(crate) fn satisfies(self, constraint: TypeConstraint) -> bool {
-        match constraint {
-            TypeConstraint::Equality => {
-                matches!(self, GArg::Scalar(_) | GArg::Nominal(_) | GArg::Enum(_))
+        match (self, constraint) {
+            (GArg::Scalar(_) | GArg::Nominal(_) | GArg::Enum(_), TypeConstraint::Equality) => true,
+            (GArg::Scalar(scalar), TypeConstraint::Order) => {
+                crate::lower::scalar_order(marrow_syntax::BinaryOp::Less, scalar).is_some()
             }
-            TypeConstraint::Order => matches!(
-                self,
-                GArg::Scalar(
-                    ScalarType::Int
-                        | ScalarType::Text
-                        | ScalarType::Bytes
-                        | ScalarType::Date
-                        | ScalarType::Instant
-                        | ScalarType::Duration
-                ) | GArg::Nominal(_)
-            ),
+            (GArg::Nominal(_), TypeConstraint::Order) => {
+                GArg::Scalar(ScalarType::Int).satisfies(constraint)
+            }
+            _ => false,
         }
     }
 }
