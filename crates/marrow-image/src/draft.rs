@@ -176,8 +176,13 @@ impl TypeId {
     /// The `u16` ordinal this reference is spelled with in an image operand and in the
     /// kernel's value domain. Total over every id a verified image holds (each widened from
     /// a `u16` read) and every id of a policy-clean draft (`bounds` asserts each table
-    /// maximum within `u16`); an over-policy draft id is refused at the encode fence
-    /// before it can be spelled.
+    /// maximum within `u16`).
+    ///
+    /// # Panics
+    ///
+    /// On a draft id minted past `u16::MAX`: a draft mints wide ordinals before its encode
+    /// fence refuses an over-policy table, so call this only on a verified or policy-clean
+    /// id.
     pub fn wire_index(self) -> u16 {
         crate::measure::wire_ordinal(self.0)
     }
@@ -199,8 +204,8 @@ impl EnumId {
         self.0
     }
 
-    /// The `u16` ordinal this reference is spelled with; total on the same bound as
-    /// [`TypeId::wire_index`].
+    /// The `u16` ordinal this reference is spelled with; total, and panicking, on the same
+    /// terms as [`TypeId::wire_index`].
     pub fn wire_index(self) -> u16 {
         crate::measure::wire_ordinal(self.0)
     }
@@ -224,8 +229,8 @@ impl CollTypeId {
         self.0
     }
 
-    /// The `u16` ordinal this reference is spelled with; total on the same bound as
-    /// [`TypeId::wire_index`].
+    /// The `u16` ordinal this reference is spelled with; total, and panicking, on the same
+    /// terms as [`TypeId::wire_index`].
     pub fn wire_index(self) -> u16 {
         crate::measure::wire_ordinal(self.0)
     }
@@ -248,8 +253,8 @@ impl RootId {
         self.0
     }
 
-    /// The `u16` ordinal this reference is spelled with; total on the same bound as
-    /// [`TypeId::wire_index`].
+    /// The `u16` ordinal this reference is spelled with; total, and panicking, on the same
+    /// terms as [`TypeId::wire_index`].
     pub fn wire_index(self) -> u16 {
         crate::measure::wire_ordinal(self.0)
     }

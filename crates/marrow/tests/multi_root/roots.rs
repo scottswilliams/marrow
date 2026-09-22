@@ -1234,3 +1234,121 @@ fn a_product_whose_second_store_is_refused_produces_no_image() {
         refused.all()
     );
 }
+
+/// The ledger for the sealed-entry-facts project: a grouped `Book` root with a two-level
+/// branch, and a second `Shelf` root carrying a unique index.
+const ENTRY_FACTS_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Book 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field Book.title 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id group Book.details 20202020202020202020202020202020\n\
+     id field Book.details.pages 21212121212121212121212121212121\n\
+     id field Book.details.language 22222222222222222222222222222222\n\
+     id root Book.notes 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a\n\
+     id key Book.notes.noteId 2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b\n\
+     id field Book.notes.text 2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c\n\
+     id root Book.notes.tags 3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a\n\
+     id key Book.notes.tags.tagId 3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b\n\
+     id field Book.notes.tags.weight 3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c\n\
+     id root books 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id key books.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     id product Shelf 4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d\n\
+     id field Shelf.label 4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e\n\
+     id field Shelf.code 4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f\n\
+     id root shelves 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b\n\
+     id key shelves.id 1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c\n\
+     id index shelves.byCode 70707070707070707070707070707070\n\
+     high-water 0\n\
+     end\n";
+
+const ENTRY_FACTS_SOURCE: &str = r#"resource Book {
+    required title: string
+
+    details {
+        pages: int
+        language: string
+    }
+
+    notes[noteId: int] {
+        required text: string
+        tags[tagId: int] {
+            required weight: int
+        }
+    }
+}
+
+resource Shelf {
+    required label: string
+    code: string
+}
+
+store ^books[id: int]: Book
+store ^shelves[id: int]: Shelf {
+    index byCode[code] unique
+}
+
+pub fn book(id: int): Book? {
+    return ^books[id]
+}
+
+pub fn pages(id: int): int {
+    if const d = ^books[id].details {
+        return d.pages ?? 0
+    }
+    return 0
+}
+
+pub fn tagWeight(id: int, n: int, g: int): int {
+    if const t = ^books[id].notes[n].tags[g] {
+        return t.weight
+    }
+    return 0
+}
+
+pub fn weight(id: int, n: int, g: int): int? {
+    return ^books[id].notes[n].tags[g].weight
+}
+
+pub fn shelfByCode(code: string): bool {
+    return exists(^shelves.byCode[code])
+}
+"#;
+
+/// Every executable site seals the record of the whole entry it materializes and that
+/// record's trailing group-slot count, which the VM reads instead of walking the roots.
+#[test]
+fn a_flat_site_seals_its_entry_record_and_group_count() {
+    let image = verify(ENTRY_FACTS_SOURCE, ENTRY_FACTS_IDS);
+    let field_names = |entry| -> Vec<String> {
+        image
+            .record_type(entry)
+            .fields()
+            .iter()
+            .map(|field| field.name().to_string())
+            .collect()
+    };
+    let facts: Vec<(String, Vec<String>, usize)> = image
+        .sites()
+        .iter()
+        .filter_map(|site| match site {
+            SealedSite::Flat {
+                target,
+                entry,
+                groups,
+                ..
+            } => Some((format!("{target:?}"), field_names(*entry), *groups)),
+            SealedSite::Parked { .. } => None,
+        })
+        .collect();
+    let names = |names: &[&str]| names.iter().map(|name| name.to_string()).collect();
+    let expect = |target: &str, fields: &[&str], groups: usize| {
+        let fact = (target.to_string(), names(fields), groups);
+        assert!(facts.contains(&fact), "{fact:?} not among {facts:?}");
+    };
+    expect("WholePayload", &["title", "details"], 1);
+    expect("GroupEntry(0)", &["pages", "language"], 0);
+    expect("BranchEntry([0, 0])", &["weight"], 0);
+    expect("BranchField { branch: [0, 0], field: 0 }", &["weight"], 0);
+    expect("IndexLookup(0)", &["label", "code"], 0);
+}
