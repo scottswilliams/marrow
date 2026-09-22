@@ -411,6 +411,16 @@ pub fn widths(trim: string, lines: int): int {
 pub fn outside(text: string): string {
     return trim(text)
 }
+
+pub fn afterBlock(c: bool, s: string): string {
+    if c {
+        const trim = 1
+        if trim == 2 {
+            return "never"
+        }
+    }
+    return trim(s)
+}
 "#,
     )
     .session();
@@ -421,6 +431,13 @@ pub fn outside(text: string): string {
     assert_eq!(
         session.call("outside", vec![Value::Text(" a ".into())]),
         Some(Value::Text("a".into()))
+    );
+    assert_eq!(
+        session.call(
+            "afterBlock",
+            vec![Value::Bool(true), Value::Text(" b ".into())]
+        ),
+        Some(Value::Text("b".into()))
     );
     let diagnostics = Project::single(
         r#"pub fn f(trim: string): string {
@@ -436,5 +453,31 @@ pub fn outside(text: string): string {
         (2, 12),
         "{:?}",
         diagnostics.all()
+    );
+}
+
+/// `try` in a test body still needs a `Result` operand: any other type is a
+/// `check.type` at the operand.
+#[test]
+fn try_on_a_non_result_in_a_test_is_a_type_error() {
+    let output = Project::single(
+        r#"fn count(): int {
+    return 1
+}
+
+test "tries an int" {
+    const n = try count()
+    assert n == 1
+}
+"#,
+    )
+    .run_cli("try-non-result", &["test", "--format", "jsonl"]);
+    assert!(!output.success(), "{}", output.stdout_text());
+    let rows = output.jsonl_lines();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(rows[0].contains(r#""code":"check.type""#), "{rows:?}");
+    assert!(
+        rows[0].contains(r#""span":{"column":19,"line":6}"#),
+        "{rows:?}"
     );
 }

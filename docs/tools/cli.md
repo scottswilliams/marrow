@@ -308,7 +308,8 @@ minting: run `marrow run` or `marrow test` in the library directory and commit t
 declaration in the project and reports each outcome. [Tests](tests.md) covers
 selection, the text and JSONL reports, and the four outcomes. Before the tests
 run, `test` mints the durable identities the project lacks into `.marrow/ids`
-exactly as a storeless `marrow run` does.
+exactly as a storeless `marrow run` does, so a CI job that must enforce a
+committed ledger runs `marrow check`, which fails on a missing identity.
 
 Write or final-flush failure exits `1`, with `io.write` on standard error when
 that channel remains writable. Output may be partial; tests are not rerun.

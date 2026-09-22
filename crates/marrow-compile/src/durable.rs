@@ -34,7 +34,7 @@ use crate::decl::{
     refuse_covered, refuse_row,
 };
 use crate::demand::{DurableNaming, PathSigil};
-use crate::diag::{DiagnosticCollector, IdentityGap, SourceDiagnostic, unsupported};
+use crate::diag::{DiagnosticCollector, IdentityGap, IdentityGaps, SourceDiagnostic, unsupported};
 use crate::scalar::ScalarType;
 use crate::types::{
     BuildError, GArg, GenericInvariant, NominalBoundaryKind, NominalBoundaryRoot,
@@ -2939,7 +2939,7 @@ fn identity_gap(file: &ProjectFile, span: SourceSpan, gap: &IdentityGap) -> Sour
         file,
         span,
         message,
-        vec![gap.clone()],
+        IdentityGaps::new(gap.clone(), []),
     )
 }
 
@@ -2947,10 +2947,14 @@ fn identity_gap(file: &ProjectFile, span: SourceSpan, gap: &IdentityGap) -> Sour
 /// store root declares share its span and tree, and they report as one row naming
 /// every anchor and the mint command. A retired anchor is never mintable and keeps
 /// its own row, as does every other diagnostic; order is the first row's position.
+/// A root with one mintable gap keeps that gap's per-declaration row.
+///
+/// Only `check` projects this way. The editor analysis (`analyze`) keeps one row per
+/// anchor, so a declaration's own missing identity stays attached to it there.
 pub(crate) fn one_identity_row_per_root(rows: Vec<SourceDiagnostic>) -> Vec<SourceDiagnostic> {
     let mut out: Vec<SourceDiagnostic> = Vec::with_capacity(rows.len());
     // `(position in out, gaps)` for each root site seen so far.
-    let mut sites: Vec<(usize, Vec<IdentityGap>)> = Vec::new();
+    let mut sites: Vec<(usize, IdentityGaps)> = Vec::new();
     for row in rows {
         let gap = match row.identity_gaps() {
             [gap] if !gap.retired => gap.clone(),
@@ -2966,13 +2970,13 @@ pub(crate) fn one_identity_row_per_root(rows: Vec<SourceDiagnostic>) -> Vec<Sour
         match site {
             Some((_, gaps)) => gaps.push(gap),
             None => {
-                sites.push((out.len(), vec![gap]));
+                sites.push((out.len(), IdentityGaps::new(gap, [])));
                 out.push(row);
             }
         }
     }
     for (at, gaps) in sites {
-        if gaps.len() > 1 {
+        if gaps.as_slice().len() > 1 {
             let first = &out[at];
             out[at] = identity_gaps(first.project_file(), first.span(), gaps);
         }
@@ -2981,13 +2985,14 @@ pub(crate) fn one_identity_row_per_root(rows: Vec<SourceDiagnostic>) -> Vec<Sour
 }
 
 /// One row for the several mintable gaps one store root declares.
-fn identity_gaps(file: &ProjectFile, span: SourceSpan, gaps: Vec<IdentityGap>) -> SourceDiagnostic {
+fn identity_gaps(file: &ProjectFile, span: SourceSpan, gaps: IdentityGaps) -> SourceDiagnostic {
     let anchors = gaps
+        .as_slice()
         .iter()
         .map(|gap| format!("{} `{}`", gap.kind.keyword(), gap.path))
         .collect::<Vec<_>>()
         .join(", ");
-    let count = gaps.len();
+    let count = gaps.as_slice().len();
     let message = match file.origin().alias() {
         None => format!(
             "{count} durable identities of this store root are missing from .marrow/ids \
@@ -3064,6 +3069,58 @@ fn over_deep_value_message() -> String {
         "a durable field value nests structs or enums deeper than the fixed limit of {} levels",
         bounds::MAX_DURABLE_VALUE_DEPTH
     )
+}
+
+#[cfg(test)]
+mod identity_row_tests {
+    use super::*;
+
+    fn gap(kind: IdentityKind, path: &str, retired: bool) -> IdentityGap {
+        IdentityGap {
+            kind,
+            path: path.to_string(),
+            retired,
+            origin: SourceOrigin::Root,
+        }
+    }
+
+    fn row(at: u32, gap: &IdentityGap) -> SourceDiagnostic {
+        let span = SourceSpan {
+            start_byte: at as usize,
+            end_byte: at as usize + 1,
+            line: at,
+            column: 7,
+        };
+        identity_gap(crate::test_file("src/main.mw"), span, gap)
+    }
+
+    /// A retired anchor keeps its own row beside the merged mintable ones, and a
+    /// root with a single mintable gap keeps the per-declaration row.
+    #[test]
+    fn retired_gaps_stay_apart_and_single_gaps_keep_their_row() {
+        let retired = gap(IdentityKind::Field, "Counter.old", true);
+        let rows = vec![
+            row(6, &gap(IdentityKind::Root, "counters", false)),
+            row(6, &retired),
+            row(6, &gap(IdentityKind::Field, "Counter.value", false)),
+            row(12, &gap(IdentityKind::Field, "Book.title", false)),
+        ];
+        let single = rows[3].clone();
+        let retired_row = rows[1].clone();
+        let out = one_identity_row_per_root(rows);
+        assert_eq!(out.len(), 3);
+        assert_eq!(
+            out[0]
+                .identity_gaps()
+                .iter()
+                .map(IdentityGap::path)
+                .collect::<Vec<_>>(),
+            vec!["counters", "Counter.value"],
+        );
+        assert!(out[0].message().starts_with("2 durable identities"));
+        assert_eq!(out[1], retired_row);
+        assert_eq!(out[2], single);
+    }
 }
 
 #[cfg(test)]

@@ -16,11 +16,11 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use marrow_codes::Code;
-use marrow_compile::{CompileFailure, compile_with_tests};
+use marrow_compile::compile_with_tests;
 use marrow_project::ProjectInput;
 
 use crate::Command;
-use crate::cmd_run::{MintOutcome, mint_missing_identities};
+use crate::cmd_run::compile_or_mint;
 use crate::command_output::{Flags, OutputFormat, unknown_option, usage};
 use crate::outcome::{Record, TestOutcome, TestRecord, TestSummary};
 use crate::project::capture_project;
@@ -56,7 +56,15 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
     if let Err(failure) = crate::project::recover_identity_publication(Path::new(".")) {
         return emit_records(args.format, &[Record::capture(failure)], ExitCode::FAILURE);
     }
-    let (project, compiled) = match compile_or_mint(capture_project(Path::new("."))) {
+    let project = match capture_project(Path::new(".")) {
+        Ok(project) => project,
+        Err(failure) => {
+            return emit_records(args.format, &[Record::capture(failure)], ExitCode::FAILURE);
+        }
+    };
+    // Family 1: source diagnostics, including a malformed test and an `assert` outside
+    // a test. Missing identities are minted as storeless `marrow run` mints them.
+    let (project, compiled) = match compile_or_mint(project, compile_with_tests) {
         Ok(compiled) => compiled,
         Err(records) => return emit_records(args.format, &records, ExitCode::FAILURE),
     };
@@ -134,32 +142,6 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
         ExitCode::SUCCESS
     };
     emit_tests(args.format, &records, &summary, exit)
-}
-
-/// Family 1: source diagnostics, including a malformed test and an `assert` outside a
-/// test. When the failure is only missing identities, the tests mint them into
-/// `.marrow/ids` exactly as storeless `marrow run` does and compile the recaptured
-/// project, which the run then reports against.
-fn compile_or_mint(
-    captured: Result<ProjectInput, crate::project::CaptureFailure>,
-) -> Result<(ProjectInput, marrow_compile::CompiledTests), Vec<Record>> {
-    let project = captured.map_err(|failure| vec![Record::capture(failure)])?;
-    let diagnostics = match compile_with_tests(&project) {
-        Ok(compiled) => return Ok((project, compiled)),
-        Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics,
-        Err(failure) => return Err(Record::compile_failure(&failure)),
-    };
-    match mint_missing_identities(&project, diagnostics.as_slice()) {
-        MintOutcome::Minted => {
-            let recaptured = capture_project(Path::new("."))
-                .map_err(|failure| vec![Record::capture(failure)])?;
-            compile_with_tests(&recaptured)
-                .map(|compiled| (recaptured, compiled))
-                .map_err(|failure| Record::compile_failure(&failure))
-        }
-        MintOutcome::NotApplicable => Err(Record::diagnostics(diagnostics.as_slice())),
-        MintOutcome::Failed(code, detail) => Err(vec![Record::OperationalError { code, detail }]),
-    }
 }
 
 /// Map a durable VM run into a test outcome. A run classifies by its result; a

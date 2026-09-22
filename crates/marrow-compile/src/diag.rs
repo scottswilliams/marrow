@@ -78,13 +78,13 @@ enum CompilerDiagnostic {
         span: SourceSpan,
         message: String,
     },
-    /// A `check.durable_identity` finding carrying its typed gaps (at least one),
-    /// which the CLI's mint action consumes instead of the rendered message.
+    /// A `check.durable_identity` finding carrying its typed gaps, which the CLI's
+    /// mint action consumes instead of the rendered message.
     IdentityGap {
         code: Code,
         span: SourceSpan,
         message: String,
-        gaps: Vec<IdentityGap>,
+        gaps: IdentityGaps,
     },
     /// A steer from a use site to the declaration this project wrote and the
     /// compiler refused, carrying the typed facts that tell it apart from a row
@@ -169,6 +169,28 @@ impl IdentityGap {
     /// The tree whose ledger must gain the row.
     pub fn origin(&self) -> &SourceOrigin {
         &self.origin
+    }
+}
+
+/// The gaps one identity diagnostic carries: never empty, because the only
+/// constructors take a first gap.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct IdentityGaps(Vec<IdentityGap>);
+
+impl IdentityGaps {
+    /// The gaps `first` and then `rest`, in that order.
+    pub(crate) fn new(first: IdentityGap, rest: impl IntoIterator<Item = IdentityGap>) -> Self {
+        let mut gaps = vec![first];
+        gaps.extend(rest);
+        Self(gaps)
+    }
+
+    pub(crate) fn push(&mut self, gap: IdentityGap) {
+        self.0.push(gap);
+    }
+
+    pub(crate) fn as_slice(&self) -> &[IdentityGap] {
+        &self.0
     }
 }
 
@@ -472,9 +494,8 @@ impl SourceDiagnostic {
         file: &ProjectFile,
         span: SourceSpan,
         message: String,
-        gaps: Vec<IdentityGap>,
+        gaps: IdentityGaps,
     ) -> Self {
-        debug_assert!(!gaps.is_empty(), "an identity row names at least one gap");
         Self {
             file: file.clone(),
             payload: SourceDiagnosticPayload::Compiler(CompilerDiagnostic::IdentityGap {
@@ -664,7 +685,9 @@ impl SourceDiagnostic {
     /// stays in the compiler.
     pub fn identity_gaps(&self) -> &[IdentityGap] {
         match &self.payload {
-            SourceDiagnosticPayload::Compiler(CompilerDiagnostic::IdentityGap { gaps, .. }) => gaps,
+            SourceDiagnosticPayload::Compiler(CompilerDiagnostic::IdentityGap { gaps, .. }) => {
+                gaps.as_slice()
+            }
             _ => &[],
         }
     }
@@ -804,6 +827,7 @@ impl SourceDiagnostic {
             }) => {
                 file + message.len()
                     + gaps
+                        .as_slice()
                         .iter()
                         .map(|gap| {
                             gap.path.len()
@@ -1128,12 +1152,15 @@ mod tests {
             file(),
             SourceSpan::default(),
             "y".repeat(7),
-            vec![IdentityGap {
-                kind: IdentityKind::Root,
-                path: "^books".to_string(),
-                retired: false,
-                origin: SourceOrigin::Root,
-            }],
+            IdentityGaps::new(
+                IdentityGap {
+                    kind: IdentityKind::Root,
+                    path: "^books".to_string(),
+                    retired: false,
+                    origin: SourceOrigin::Root,
+                },
+                [],
+            ),
         );
         assert_eq!(gap.retained_owned_bytes(), file_len + 7 + "^books".len());
 

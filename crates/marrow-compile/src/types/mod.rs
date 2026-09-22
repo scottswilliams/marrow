@@ -4253,3 +4253,43 @@ mod owner_txn_tests;
 
 #[cfg(test)]
 mod value_cycle_coords_tests;
+
+#[cfg(test)]
+mod constraint_table_tests {
+    use super::{GArg, TypeConstraint};
+    use crate::scalar::ScalarType;
+    use marrow_syntax::BinaryOp;
+
+    /// Every scalar satisfies `supports order` exactly when the operator table orders
+    /// it, and every scalar satisfies `supports equality`. The match keeps the list
+    /// exhaustive: a new scalar fails to compile here until it is listed.
+    #[test]
+    fn order_constraint_agrees_with_the_operator_table_for_every_scalar() {
+        const SCALARS: [ScalarType; 7] = [
+            ScalarType::Int,
+            ScalarType::Bool,
+            ScalarType::Text,
+            ScalarType::Bytes,
+            ScalarType::Date,
+            ScalarType::Instant,
+            ScalarType::Duration,
+        ];
+        for scalar in SCALARS {
+            match scalar {
+                ScalarType::Int
+                | ScalarType::Bool
+                | ScalarType::Text
+                | ScalarType::Bytes
+                | ScalarType::Date
+                | ScalarType::Instant
+                | ScalarType::Duration => {}
+            }
+            assert_eq!(
+                GArg::Scalar(scalar).satisfies(TypeConstraint::Order),
+                crate::lower::scalar_order(BinaryOp::Less, scalar).is_some(),
+                "{scalar:?}",
+            );
+            assert!(GArg::Scalar(scalar).satisfies(TypeConstraint::Equality));
+        }
+    }
+}

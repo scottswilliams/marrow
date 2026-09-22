@@ -153,7 +153,13 @@ fn run_inner(args: &RunArgs, image_slot: &mut Option<VerifiedImage>) -> Result<O
     let project = capture_project(Path::new("."))
         .map_err(|failure| Outcome::failed(vec![Record::capture(failure)]))?;
 
-    let compiled = compile_or_mint(&project, args.store.is_some())?;
+    let compiled = if args.store.is_some() {
+        compile(&project).map_err(|failure| Outcome::failed(Record::compile_failure(&failure)))?
+    } else {
+        compile_or_mint(project, compile)
+            .map_err(Outcome::failed)?
+            .1
+    };
 
     // Resolve the caller-supplied name to a stable id through the compiler's export
     // directory, before verification, so no source string reaches the image. The VM
@@ -215,36 +221,35 @@ fn run_inner(args: &RunArgs, image_slot: &mut Option<VerifiedImage>) -> Result<O
     .settled(image.enums()))
 }
 
-/// Compile the captured project. Family 1 is source diagnostics; when compilation
-/// fails *only* because fresh durable declarations lack ledger identities, storeless
-/// `run` mints them into `.marrow/ids` and compiles again. `--store` closes that
-/// window; see [`mint_missing_identities`].
-fn compile_or_mint(
-    project: &ProjectInput,
-    has_store: bool,
-) -> Result<marrow_compile::Compiled, Outcome> {
-    match compile(project) {
-        Ok(compiled) => Ok(compiled),
-        Err(CompileFailure::Diagnostics(diagnostics)) if !has_store => {
-            match mint_missing_identities(project, diagnostics.as_slice()) {
-                MintOutcome::Minted => {
-                    let recaptured = capture_project(Path::new("."))
-                        .map_err(|failure| Outcome::failed(vec![Record::capture(failure)]))?;
-                    compile(&recaptured)
-                        .map_err(|failure| Outcome::failed(Record::compile_failure(&failure)))
-                }
-                MintOutcome::NotApplicable => {
-                    Err(Outcome::failed(Record::diagnostics(diagnostics.as_slice())))
-                }
-                MintOutcome::Failed(code, detail) => Err(Outcome::operational(code, detail)),
-            }
+/// Compile the captured project with `compile`. Family 1 is source diagnostics; when
+/// compilation fails *only* because fresh durable declarations lack ledger identities,
+/// the storeless `run` and `test` paths mint them into `.marrow/ids` and compile the
+/// recaptured project, which the caller then runs against. `--store` closes that
+/// window by compiling directly; see [`mint_missing_identities`].
+pub(crate) fn compile_or_mint<T>(
+    project: ProjectInput,
+    compile: impl Fn(&ProjectInput) -> Result<T, CompileFailure>,
+) -> Result<(ProjectInput, T), Vec<Record>> {
+    let diagnostics = match compile(&project) {
+        Ok(compiled) => return Ok((project, compiled)),
+        Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics,
+        Err(failure) => return Err(Record::compile_failure(&failure)),
+    };
+    match mint_missing_identities(&project, diagnostics.as_slice()) {
+        MintOutcome::Minted => {
+            let recaptured = capture_project(Path::new("."))
+                .map_err(|failure| vec![Record::capture(failure)])?;
+            compile(&recaptured)
+                .map(|compiled| (recaptured, compiled))
+                .map_err(|failure| Record::compile_failure(&failure))
         }
-        Err(failure) => Err(Outcome::failed(Record::compile_failure(&failure))),
+        MintOutcome::NotApplicable => Err(Record::diagnostics(diagnostics.as_slice())),
+        MintOutcome::Failed(code, detail) => Err(vec![Record::OperationalError { code, detail }]),
     }
 }
 
 /// What the mint pre-pass did with a compile failure.
-pub(crate) enum MintOutcome {
+enum MintOutcome {
     /// Every diagnostic was a mintable identity gap; fresh identities were
     /// drawn and `.marrow/ids` was published atomically.
     Minted,
@@ -272,7 +277,7 @@ pub(crate) enum MintOutcome {
 /// tree, so a gap a dependency declares is left to its own `check.durable_identity`
 /// report, which steers the developer to run `marrow run` in the library and commit the
 /// ledger it publishes there. Only the root path ever reaches the publication guard.
-pub(crate) fn mint_missing_identities(
+fn mint_missing_identities(
     project: &ProjectInput,
     diagnostics: &[SourceDiagnostic],
 ) -> MintOutcome {
