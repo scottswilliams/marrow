@@ -182,7 +182,7 @@ mod generic_enum_shape_tests {
             .expect("a complete terminal");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].code(), Code::CheckUnsupported);
-        assert!(rows[0].identity_gap().is_none());
+        assert!(rows[0].identity_gaps().is_empty());
     }
 
     #[test]

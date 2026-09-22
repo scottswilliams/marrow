@@ -369,7 +369,7 @@ impl Diagnostics {
     pub fn names_identity_gap(&self, kind: IdentityKind, path: &str, retired: bool) -> bool {
         self.diagnostics
             .iter()
-            .filter_map(|d| d.identity_gap())
+            .flat_map(|d| d.identity_gaps())
             .any(|gap| gap.kind() == kind && gap.path() == path && gap.retired() == retired)
     }
 }

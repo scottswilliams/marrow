@@ -151,9 +151,7 @@ The run writes `.marrow/ids` and then stops with `cli.durable_unsupported`:
 `add` needs a store and none was given.
 
 A project whose durable declarations are used only by tests has no export to
-run. `marrow run` mints the ids before it looks the export up, so any name
-works: `marrow run mint` writes `.marrow/ids` and then reports that no such
-export exists.
+run; its first `marrow test` writes `.marrow/ids` before it runs the tests.
 
 `marrow check .` is now clean and names every place each export reads and
 writes:

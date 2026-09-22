@@ -243,8 +243,8 @@ fn compile_or_mint(
     }
 }
 
-/// What the `run` mint pre-pass did with a compile failure.
-enum MintOutcome {
+/// What the mint pre-pass did with a compile failure.
+pub(crate) enum MintOutcome {
     /// Every diagnostic was a mintable identity gap; fresh identities were
     /// drawn and `.marrow/ids` was published atomically.
     Minted,
@@ -254,14 +254,14 @@ enum MintOutcome {
     Failed(Code, Option<String>),
 }
 
-/// The `marrow run` mint: when a compile failed *only* because fresh durable
+/// The storeless mint: when a compile failed *only* because fresh durable
 /// declarations have no ledger row, draw one id per missing anchor from OS entropy
 /// and hand the admitted successor to the adapter's publication owner, which compares
 /// it against the filesystem and installs it or refuses. The artifact is untouched on
 /// any refusal.
 ///
-/// Storeless `run` is the only path that mints: `marrow check`, `marrow test` and
-/// every other command report `check.durable_identity` precisely, so a build never
+/// Storeless `run` and `marrow test` are the paths that mint: `marrow check` and
+/// every other command report `check.durable_identity` precisely, so a check never
 /// mutates the tree. Once a store is bindable an additive auto-mint could readopt an
 /// orphaned id or diverge from the store's committed ledger, so `--store` closes the
 /// window too. The compiler stays a read-only ledger consumer: its typed
@@ -272,7 +272,7 @@ enum MintOutcome {
 /// tree, so a gap a dependency declares is left to its own `check.durable_identity`
 /// report, which steers the developer to run `marrow run` in the library and commit the
 /// ledger it publishes there. Only the root path ever reaches the publication guard.
-fn mint_missing_identities(
+pub(crate) fn mint_missing_identities(
     project: &ProjectInput,
     diagnostics: &[SourceDiagnostic],
 ) -> MintOutcome {
@@ -281,13 +281,14 @@ fn mint_missing_identities(
     // so the recompile reports whatever genuinely remains. A retired anchor is never
     // re-mintable, so its failure stays precise and unminted.
     let mut anchors: Vec<IdentityAnchor> = Vec::new();
-    for diagnostic in diagnostics {
-        match diagnostic.identity_gap() {
-            Some(gap) if *gap.origin() != SourceOrigin::Root => {}
-            Some(gap) if gap.retired() => return MintOutcome::NotApplicable,
-            Some(gap) => anchors.push(gap.anchor()),
-            None => {}
+    for gap in diagnostics.iter().flat_map(SourceDiagnostic::identity_gaps) {
+        if *gap.origin() != SourceOrigin::Root {
+            continue;
         }
+        if gap.retired() {
+            return MintOutcome::NotApplicable;
+        }
+        anchors.push(gap.anchor());
     }
     let mut anchors = anchors.into_iter();
     let Some(first) = anchors.next() else {

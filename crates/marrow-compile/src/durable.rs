@@ -2920,13 +2920,14 @@ fn identity_gap(file: &ProjectFile, span: SourceSpan, gap: &IdentityGap) -> Sour
         match gap.origin.alias() {
             None => format!(
                 "durable identity for {} `{}` is missing from .marrow/ids; \
-                 `marrow run` mints missing identities (commit the updated .marrow/ids)",
+                 `marrow run` or `marrow test` mints missing identities (commit the updated \
+                 .marrow/ids)",
                 gap.kind.keyword(),
                 gap.path
             ),
             Some(alias) => format!(
-                "durable identity for {} `{}` is missing from {owner}; run `marrow run` in \
-                 the `{}` directory and commit its updated .marrow/ids",
+                "durable identity for {} `{}` is missing from {owner}; run `marrow run` or \
+                 `marrow test` in the `{}` directory and commit its updated .marrow/ids",
                 gap.kind.keyword(),
                 gap.path,
                 alias.as_str()
@@ -2938,8 +2939,69 @@ fn identity_gap(file: &ProjectFile, span: SourceSpan, gap: &IdentityGap) -> Sour
         file,
         span,
         message,
-        gap.clone(),
+        vec![gap.clone()],
     )
+}
+
+/// `marrow check`'s projection of the missing-identity rows: the mintable gaps one
+/// store root declares share its span and tree, and they report as one row naming
+/// every anchor and the mint command. A retired anchor is never mintable and keeps
+/// its own row, as does every other diagnostic; order is the first row's position.
+pub(crate) fn one_identity_row_per_root(rows: Vec<SourceDiagnostic>) -> Vec<SourceDiagnostic> {
+    let mut out: Vec<SourceDiagnostic> = Vec::with_capacity(rows.len());
+    // `(position in out, gaps)` for each root site seen so far.
+    let mut sites: Vec<(usize, Vec<IdentityGap>)> = Vec::new();
+    for row in rows {
+        let gap = match row.identity_gaps() {
+            [gap] if !gap.retired => gap.clone(),
+            _ => {
+                out.push(row);
+                continue;
+            }
+        };
+        let site = sites.iter_mut().find(|(at, _)| {
+            let first = &out[*at];
+            first.project_file() == row.project_file() && first.span() == row.span()
+        });
+        match site {
+            Some((_, gaps)) => gaps.push(gap),
+            None => {
+                sites.push((out.len(), vec![gap]));
+                out.push(row);
+            }
+        }
+    }
+    for (at, gaps) in sites {
+        if gaps.len() > 1 {
+            let first = &out[at];
+            out[at] = identity_gaps(first.project_file(), first.span(), gaps);
+        }
+    }
+    out
+}
+
+/// One row for the several mintable gaps one store root declares.
+fn identity_gaps(file: &ProjectFile, span: SourceSpan, gaps: Vec<IdentityGap>) -> SourceDiagnostic {
+    let anchors = gaps
+        .iter()
+        .map(|gap| format!("{} `{}`", gap.kind.keyword(), gap.path))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let count = gaps.len();
+    let message = match file.origin().alias() {
+        None => format!(
+            "{count} durable identities of this store root are missing from .marrow/ids \
+             ({anchors}); `marrow run` or `marrow test` mints them (commit the updated \
+             .marrow/ids)"
+        ),
+        Some(alias) => format!(
+            "{count} durable identities of this store root are missing from the `{0}` \
+             dependency's .marrow/ids ({anchors}); run `marrow run` or `marrow test` in the \
+             `{0}` directory and commit its updated .marrow/ids",
+            alias.as_str()
+        ),
+    };
+    SourceDiagnostic::with_identity_gap(Code::CheckDurableIdentity, file, span, message, gaps)
 }
 
 /// A `check.resource_limit`: one durable construct crosses a fixed compiler-owned

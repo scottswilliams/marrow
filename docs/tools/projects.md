@@ -179,13 +179,14 @@ against the dependency's ledger, so a library-declared resource keeps the ids
 the library committed and the consuming project inherits them unchanged. A
 dependency's `application` line is ignored.
 
-The first storeless [`marrow run`](cli.md) of an export mints every missing id
-and writes the ledger. Until then, `marrow check` and `marrow test` report
-`check.durable_identity` for each missing declaration:
+The first storeless [`marrow run`](cli.md) of an export, or the first `marrow
+test`, mints every missing id and writes the ledger. Until then, `marrow check`
+reports one `check.durable_identity` diagnostic per store root, naming each missing
+declaration:
 
 ```text
 $ marrow check .
-src/docs/projects/books.mw:7:7: check.durable_identity: durable identity for application `.` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)
+src/docs/projects/books.mw:7:7: check.durable_identity: 5 durable identities of this store root are missing from .marrow/ids (application `.`, root `books`, product `Book`, key `books.id`, field `Book.title`); `marrow run` or `marrow test` mints them (commit the updated .marrow/ids)
 $ marrow run docs.projects.books.add -- 1 x
 cli.durable_unsupported
 $ marrow check .
@@ -198,8 +199,8 @@ run --store` runs it against one and never mints
 lacks `.marrow/ids`, the mint prints a one-line reminder to commit it.
 
 The mint covers the project's own declarations. A missing id for a declaration
-a dependency makes is reported, not minted: run `marrow run` in the library
-directory and commit the ledger it writes there.
+a dependency makes is reported, not minted: run `marrow run` or `marrow test` in
+the library directory and commit the ledger it writes there.
 
 The mint is additive. It adds a line for each missing declaration and keeps
 every existing line. Renaming a field mints a new id for the new name, and the

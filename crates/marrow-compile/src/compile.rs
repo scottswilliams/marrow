@@ -635,10 +635,21 @@ pub fn compile_with_tests(project: &ProjectInput) -> Result<CompiledTests, Compi
 /// drive, so a bound only the test entries cross refuses here while the production
 /// [`compile`] still fits. The editor-fact retention bound is not consulted: no editor
 /// fact is published.
+///
+/// A store root's missing identities report as one row, because `check` never mints
+/// and the row names the command that does.
 pub fn check(project: &ProjectInput) -> Result<CompiledTests, CompileFailure> {
     drive(project, TestMode::Include)
         .map_err(CompileFailure::ResourceLimit)?
         .build(StageJoin::Union)
+        .map_err(|failure| match failure {
+            CompileFailure::Diagnostics(rows) => {
+                CompileFailure::Diagnostics(NonEmptySourceDiagnostics(
+                    crate::durable::one_identity_row_per_root(rows.into_vec()),
+                ))
+            }
+            other => other,
+        })
 }
 
 /// The staged outcome of one analysis/lowering pass over a project. Diagnostics are

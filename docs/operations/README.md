@@ -65,7 +65,7 @@ bounded batches, so a corpus larger than memory imports the same way.
 
 Within the `marrow` project CLI, `import` is the only command that creates a store.
 It mints no identity: the ledger `.marrow/ids` comes from one storeless
-`marrow run` before the import
+`marrow run` or `marrow test` before the import
 ([identity ledger](../tools/projects.md#identity-ledger)).
 
 The generated TypeScript supervisor also provides

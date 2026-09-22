@@ -35,7 +35,7 @@ pub fn readSecond(id: int): int? {
     let diagnostics = refused(&project(source, None));
     let gaps: Vec<IdentityAnchor> = diagnostics
         .iter()
-        .filter_map(|diagnostic| diagnostic.identity_gap())
+        .flat_map(|diagnostic| diagnostic.identity_gaps())
         .map(|gap| {
             assert!(!gap.retired(), "the fixture has no retired anchors");
             gap.anchor()

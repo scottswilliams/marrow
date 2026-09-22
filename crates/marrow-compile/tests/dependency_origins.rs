@@ -263,8 +263,8 @@ fn a_dependency_owns_the_identities_it_declares() {
     );
     let gaps: Vec<(&'static str, String, bool)> = diagnostics(&project)
         .iter()
-        .filter_map(|row| {
-            row.identity_gap().map(|gap| {
+        .flat_map(|row| {
+            row.identity_gaps().iter().map(|gap| {
                 (
                     row.code().as_str(),
                     format!(
@@ -358,7 +358,7 @@ fn each_origin_resolves_against_its_own_ledger() {
     assert_eq!(
         diagnostics(&all_in_root)
             .iter()
-            .filter_map(|row| row.identity_gap())
+            .flat_map(|row| row.identity_gaps())
             .map(IdentityGap::path)
             .collect::<Vec<_>>(),
         vec!["notes", "Note", "notes.id", "Note.body"],

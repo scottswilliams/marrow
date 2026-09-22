@@ -49,16 +49,16 @@ fn main() {\n\
 /// The complete ordered artifact the projection corpus must report: the cycle report
 /// keeps its coordinates, the durable build keeps its anchor demand, and the index and
 /// key rows keep their admission rows. Not a byte of it may move.
-const PROJECTION_ARTIFACT: &str = "src/main.mw:11:7 check.durable_identity durable identity for application `.` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-     src/main.mw:11:7 check.durable_identity durable identity for root `books` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-     src/main.mw:11:7 check.durable_identity durable identity for product `Book` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-     src/main.mw:11:7 check.durable_identity durable identity for key `books.id` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-     src/main.mw:11:7 check.durable_identity durable identity for field `Book.title` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-     src/main.mw:11:7 check.durable_identity durable identity for field `Book.shelf` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-     src/main.mw:11:7 check.durable_identity durable identity for root `Book.notes` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-     src/main.mw:11:7 check.durable_identity durable identity for key `Book.notes.noteId` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-     src/main.mw:11:7 check.durable_identity durable identity for field `Book.notes.text` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-     src/main.mw:11:7 check.durable_identity durable identity for index `books.byShelf` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+const PROJECTION_ARTIFACT: &str = "src/main.mw:11:7 check.durable_identity durable identity for application `.` is missing from .marrow/ids; `marrow run` or `marrow test` mints missing identities (commit the updated .marrow/ids)\n\
+     src/main.mw:11:7 check.durable_identity durable identity for root `books` is missing from .marrow/ids; `marrow run` or `marrow test` mints missing identities (commit the updated .marrow/ids)\n\
+     src/main.mw:11:7 check.durable_identity durable identity for product `Book` is missing from .marrow/ids; `marrow run` or `marrow test` mints missing identities (commit the updated .marrow/ids)\n\
+     src/main.mw:11:7 check.durable_identity durable identity for key `books.id` is missing from .marrow/ids; `marrow run` or `marrow test` mints missing identities (commit the updated .marrow/ids)\n\
+     src/main.mw:11:7 check.durable_identity durable identity for field `Book.title` is missing from .marrow/ids; `marrow run` or `marrow test` mints missing identities (commit the updated .marrow/ids)\n\
+     src/main.mw:11:7 check.durable_identity durable identity for field `Book.shelf` is missing from .marrow/ids; `marrow run` or `marrow test` mints missing identities (commit the updated .marrow/ids)\n\
+     src/main.mw:11:7 check.durable_identity durable identity for root `Book.notes` is missing from .marrow/ids; `marrow run` or `marrow test` mints missing identities (commit the updated .marrow/ids)\n\
+     src/main.mw:11:7 check.durable_identity durable identity for key `Book.notes.noteId` is missing from .marrow/ids; `marrow run` or `marrow test` mints missing identities (commit the updated .marrow/ids)\n\
+     src/main.mw:11:7 check.durable_identity durable identity for field `Book.notes.text` is missing from .marrow/ids; `marrow run` or `marrow test` mints missing identities (commit the updated .marrow/ids)\n\
+     src/main.mw:11:7 check.durable_identity durable identity for index `books.byShelf` is missing from .marrow/ids; `marrow run` or `marrow test` mints missing identities (commit the updated .marrow/ids)\n\
      src/main.mw:14:1 check.type `Missing` is not a resource in this project\n\
      src/main.mw:1:8 check.recursion value type `Knot` contains itself through the cycle Knot -> Knot";
 

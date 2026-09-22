@@ -34,8 +34,12 @@ fn converge(capture: &impl Fn(Option<&[u8]>) -> ProjectInput) -> BTreeMap<Identi
         let gaps: Vec<IdentityAnchor> = match compile(&project) {
             Ok(_) => Vec::new(),
             Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics
-                .into_iter()
-                .filter_map(|row| row.identity_gap().map(marrow_compile::IdentityGap::anchor))
+                .iter()
+                .flat_map(|row| {
+                    row.identity_gaps()
+                        .iter()
+                        .map(marrow_compile::IdentityGap::anchor)
+                })
                 .collect(),
             Err(other) => panic!("expected diagnostics while minting, got {other:?}"),
         };

@@ -78,13 +78,13 @@ enum CompilerDiagnostic {
         span: SourceSpan,
         message: String,
     },
-    /// A `check.durable_identity` finding carrying its typed gap, which the
-    /// CLI's mint action consumes instead of the rendered message.
+    /// A `check.durable_identity` finding carrying its typed gaps (at least one),
+    /// which the CLI's mint action consumes instead of the rendered message.
     IdentityGap {
         code: Code,
         span: SourceSpan,
         message: String,
-        gap: IdentityGap,
+        gaps: Vec<IdentityGap>,
     },
     /// A steer from a use site to the declaration this project wrote and the
     /// compiler refused, carrying the typed facts that tell it apart from a row
@@ -472,15 +472,16 @@ impl SourceDiagnostic {
         file: &ProjectFile,
         span: SourceSpan,
         message: String,
-        gap: IdentityGap,
+        gaps: Vec<IdentityGap>,
     ) -> Self {
+        debug_assert!(!gaps.is_empty(), "an identity row names at least one gap");
         Self {
             file: file.clone(),
             payload: SourceDiagnosticPayload::Compiler(CompilerDiagnostic::IdentityGap {
                 code,
                 span,
                 message,
-                gap,
+                gaps,
             }),
         }
     }
@@ -656,16 +657,15 @@ impl SourceDiagnostic {
         }
     }
 
-    /// The typed durable-identity gap behind a `check.durable_identity`
-    /// diagnostic, `None` for every other payload. The CLI's `marrow run` mint
-    /// action consumes this — never the rendered message — to learn which
-    /// anchors to mint, so the classifier stays in the compiler.
-    pub fn identity_gap(&self) -> Option<&IdentityGap> {
+    /// The typed durable-identity gaps behind a `check.durable_identity`
+    /// diagnostic, empty for every other payload: one per row, or every gap of one
+    /// store root in `check`'s collapsed row. The CLI's mint consumes these — never
+    /// the rendered message — to learn which anchors to mint, so the classifier
+    /// stays in the compiler.
+    pub fn identity_gaps(&self) -> &[IdentityGap] {
         match &self.payload {
-            SourceDiagnosticPayload::Compiler(CompilerDiagnostic::IdentityGap { gap, .. }) => {
-                Some(gap)
-            }
-            _ => None,
+            SourceDiagnosticPayload::Compiler(CompilerDiagnostic::IdentityGap { gaps, .. }) => gaps,
+            _ => &[],
         }
     }
 
@@ -743,6 +743,11 @@ impl SourceDiagnostic {
         self.file.identity()
     }
 
+    /// The captured file itself, for a row the compiler rebuilds at the same site.
+    pub(crate) fn project_file(&self) -> &ProjectFile {
+        &self.file
+    }
+
     /// The tree this diagnostic's file was captured from: the root project, or the
     /// dependency the root declares under an alias.
     pub fn origin(&self) -> &SourceOrigin {
@@ -794,12 +799,17 @@ impl SourceDiagnostic {
             }
             SourceDiagnosticPayload::Compiler(CompilerDiagnostic::IdentityGap {
                 message,
-                gap,
+                gaps,
                 ..
             }) => {
                 file + message.len()
-                    + gap.path.len()
-                    + gap.origin.alias().map_or(0, |alias| alias.as_str().len())
+                    + gaps
+                        .iter()
+                        .map(|gap| {
+                            gap.path.len()
+                                + gap.origin.alias().map_or(0, |alias| alias.as_str().len())
+                        })
+                        .sum::<usize>()
             }
             SourceDiagnosticPayload::Compiler(CompilerDiagnostic::RefusedDeclaration {
                 message,
@@ -1118,12 +1128,12 @@ mod tests {
             file(),
             SourceSpan::default(),
             "y".repeat(7),
-            IdentityGap {
+            vec![IdentityGap {
                 kind: IdentityKind::Root,
                 path: "^books".to_string(),
                 retired: false,
                 origin: SourceOrigin::Root,
-            },
+            }],
         );
         assert_eq!(gap.retained_owned_bytes(), file_len + 7 + "^books".len());
 

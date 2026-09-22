@@ -646,12 +646,13 @@ grants nothing ([`marrow check`](../tools/cli.md)).
 
 Every durable declaration, from the root down to each field, has an identity: a
 128-bit id minted once and recorded in `.marrow/ids`. The first storeless
-`marrow run <export>` mints the ids a project lacks, and the file is committed
-with the source so every checkout reuses them. `marrow check` and `marrow test`
-on an unminted project report `check.durable_identity`:
+`marrow run <export>` or `marrow test` mints the ids a project lacks, and the
+file is committed with the source so every checkout reuses them. `marrow check`
+writes nothing; on an unminted project it reports one `check.durable_identity`
+diagnostic per store root, naming every missing declaration:
 
 ```text
-src/docs/durable/shelf.mw:8:7: check.durable_identity: durable identity for root `books` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)
+src/docs/durable/shelf.mw:8:7: check.durable_identity: 6 durable identities of this store root are missing from .marrow/ids (application `.`, root `books`, product `Book`, key `books.id`, field `Book.title`, field `Book.subtitle`); `marrow run` or `marrow test` mints them (commit the updated .marrow/ids)
 ```
 
 Identity follows the id. A declaration keeps its identity through reordering and

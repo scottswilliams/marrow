@@ -165,7 +165,8 @@ fn a_dependency_owned_identity_gap_is_not_minted_from_the_application() {
     assert!(!check.status.success(), "{reported}");
     assert!(
         reported.contains(
-            "run `marrow run` in the `graphtext` directory and commit its updated .marrow/ids"
+            "run `marrow run` or `marrow test` in the `graphtext` directory and commit its \
+             updated .marrow/ids"
         ),
         "the gap steers to the library: {reported}"
     );

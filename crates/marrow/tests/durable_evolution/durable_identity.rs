@@ -3,9 +3,9 @@
 //! `.marrow/ids` is the optional machine-written identity artifact. The compiler
 //! is the fail-precisely owner: a durable declaration without a complete ledger
 //! identity is a typed `check.durable_identity` diagnostic, and the compiler
-//! never writes the artifact. The one convenience mint action is scoped to
-//! `marrow run`, which mints missing identities from OS entropy and publishes
-//! them atomically; `marrow test` (the CI path) never mutates the tree.
+//! never writes the artifact. Storeless `marrow run` and `marrow test` mint
+//! missing identities from OS entropy and publish them atomically; `marrow
+//! check` never mutates the tree.
 
 use std::fs;
 use std::path::Path;
@@ -159,24 +159,52 @@ fn contract_of(source: &str, ids: &str) -> marrow_verify::DurableContractId {
 // --- The failing production-path check: identity completeness is a compile
 // fact, enforced on every storeless path. ---
 
-/// Declaring a durable shape without complete identity fails precisely on the
-/// CI path: `marrow test` reports the typed `check.durable_identity` diagnostic
-/// and writes nothing into the tree.
+/// `marrow check` is write-free: an unminted project reports one
+/// `check.durable_identity` row per store root, at the root, naming the mint
+/// command, and writes nothing into the tree.
 #[test]
-fn a_durable_declaration_without_ledger_identity_fails_the_ci_path() {
-    let workspace = Project::single(COUNTER_SOURCE).materialize("no-ledger-test");
+fn check_reports_one_identity_row_per_root_and_writes_nothing() {
+    let source = format!(
+        "{COUNTER_SOURCE}\nresource Book {{\n    required title: string\n}}\n\n\
+         store ^books[id: int]: Book\n"
+    );
+    let workspace = Project::single(&source).materialize("no-ledger-check");
 
-    let output = workspace.marrow(&["test"]);
+    let output = workspace.marrow(&["check"]);
     assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let rows: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.contains(": check.durable_identity: "))
+        .collect();
+    assert_eq!(rows.len(), 2, "{stderr}");
+    assert!(rows[0].starts_with("src/main.mw:6:7: "), "{stderr}");
+    assert!(rows[1].starts_with("src/main.mw:26:7: "), "{stderr}");
     assert!(
-        combined(&output).contains("check.durable_identity"),
-        "expected the typed missing-identity diagnostic, got: {}",
-        combined(&output)
+        rows.iter().all(|row| row.contains("`marrow test`")),
+        "{stderr}"
     );
     assert!(
         !workspace.path(".marrow/ids").exists(),
-        "`marrow test` must never write .marrow/ids (CI never mutates the tree)"
+        "`marrow check` never writes .marrow/ids"
     );
+}
+
+/// Storeless `marrow test` mints missing identities exactly as `marrow run` does,
+/// then runs the tests; a second run reuses the ledger byte-for-byte.
+#[test]
+fn test_mints_missing_identities_once_and_reuses_them() {
+    let workspace = Project::single(COUNTER_SOURCE).materialize("test-mints");
+
+    let output = workspace.marrow(&["test"]);
+    assert!(output.status.success(), "{}", combined(&output));
+    let minted = fs::read(workspace.path(".marrow/ids")).expect("test published the ledger");
+
+    let again = workspace.marrow(&["test"]);
+    assert!(again.status.success(), "{}", combined(&again));
+    assert_eq!(fs::read(workspace.path(".marrow/ids")).unwrap(), minted);
+    let check = workspace.marrow(&["check"]);
+    assert!(check.status.success(), "{}", combined(&check));
 }
 
 // --- The `marrow run` convenience mint (the one interim mint action; deleted

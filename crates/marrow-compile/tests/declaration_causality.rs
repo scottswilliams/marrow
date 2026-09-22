@@ -759,7 +759,7 @@ fn a_refused_member_does_not_narrow_the_identity_gap_set() {
         let diagnostics = diagnostics(&source);
         diagnostics
             .iter()
-            .filter_map(|row| row.identity_gap().map(|gap| gap.anchor()))
+            .flat_map(|row| row.identity_gaps().iter().map(|gap| gap.anchor()))
             .collect::<Vec<_>>()
     };
 

@@ -234,7 +234,7 @@ mod bounds {
         assert_eq!(utf8.severity(), marrow_syntax::Severity::Error);
         assert!(utf8.help().is_none());
         assert!(utf8.reason().is_none());
-        assert!(utf8.identity_gap().is_none());
+        assert!(utf8.identity_gaps().is_empty());
 
         let syntax = &rows[1];
         assert_eq!(syntax.file().as_str(), "src/a.mw");

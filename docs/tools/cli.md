@@ -180,9 +180,11 @@ listing and `marrow run` does not name it; a library's exports are run where the
 library is.
 
 The two places `lookup` reads are the index and one field. Demand describes
-the access a program requires; it grants nothing. A fresh durable project
-reports `check.durable_identity` until one `marrow run` writes `.marrow/ids`
-([identity ledger](projects.md#identity-ledger)).
+the access a program requires; it grants nothing. `check` writes nothing: a
+fresh durable project reports one `check.durable_identity` diagnostic per store root,
+naming each missing declaration, until one `marrow run` or `marrow test` writes
+`.marrow/ids` ([identity ledger](projects.md#identity-ledger)). A retired
+declaration keeps its own diagnostic.
 
 ## marrow run
 
@@ -297,14 +299,16 @@ writes `.marrow/ids`; commit that file. `marrow run --store` leaves it as it is.
 
 The mint is the project's own. A durable declaration a dependency makes belongs to
 that dependency's ledger, so `run` reports its `check.durable_identity` instead of
-minting: run `marrow run` in the library directory and commit the `.marrow/ids` it
-writes there. No command run in a consuming project writes into a dependency's tree.
+minting: run `marrow run` or `marrow test` in the library directory and commit the
+`.marrow/ids` it writes there. No command run in a consuming project writes into a dependency's tree.
 
 ## marrow test
 
 `marrow test [--format text | jsonl] [--filter <substring>]` runs every `test`
 declaration in the project and reports each outcome. [Tests](tests.md) covers
-selection, the text and JSONL reports, and the four outcomes.
+selection, the text and JSONL reports, and the four outcomes. Before the tests
+run, `test` mints the durable identities the project lacks into `.marrow/ids`
+exactly as a storeless `marrow run` does.
 
 Write or final-flush failure exits `1`, with `io.write` on standard error when
 that channel remains writable. Output may be partial; tests are not rerun.
