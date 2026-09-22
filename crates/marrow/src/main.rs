@@ -33,7 +33,7 @@ Usage:
   marrow doctor --store <dir> [--format text|jsonl]
   marrow apply --store <dir> --old-image <image> --new-image <image> [--accept-ceiling <id>] [--format text|jsonl]
   marrow recover --store <dir> [--image <path>] [--format text|jsonl]
-  marrow backup --store <dir> --out <backup> [--format text|jsonl]
+  marrow backup --store <dir> --out <backup> [--image <path>] [--format text|jsonl]
   marrow restore --from <backup> --store <dir> [--format text|jsonl]
   marrow test [--format text|jsonl] [--filter <substring>]
   marrow client typescript [--out <dir>]
