@@ -9,10 +9,9 @@
 //! this file alone; `cli.rs` adds the spawn path over the same [`Project`].
 //!
 //! Every durable fixture ships a complete fixed-hex `.marrow/ids` with `high-water 0`,
-//! covering every declaration that mints a row; omitting one fails the build. Only
-//! `marrow run` mints, and it draws from OS entropy and rewrites the ledger, which
-//! would make a fixture nondeterministic — every other path reports
-//! `check.durable_identity` instead.
+//! covering every declaration that mints a row; omitting one fails the build. `marrow run`
+//! and `marrow test` mint from OS entropy and rewrite the ledger, which would make a
+//! fixture nondeterministic; the library path reports `check.durable_identity` instead.
 
 use std::fs;
 use std::path::{Path, PathBuf};

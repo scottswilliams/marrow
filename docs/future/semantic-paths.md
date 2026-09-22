@@ -23,8 +23,8 @@ the compiler keeps them apart even when they name the same logical location.
 
 A project's durable identities are the `.marrow/ids` ledger and the
 durable-contract identity the verifier recomputes
-([projects](../tools/projects.md)). `marrow run` mints identities into the
-ledger; nothing else does. A removed identity keeps its ledger entry and is not
+([projects](../tools/projects.md)). `marrow run` and `marrow test` mint
+identities into the ledger; nothing else does. A removed identity keeps its ledger entry and is not
 reused.
 
 The current language's `Id(^root)` value fits this taxonomy as a typed key
