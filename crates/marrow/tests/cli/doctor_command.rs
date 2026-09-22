@@ -453,6 +453,108 @@ fn the_applied_store_backs_up_restores_and_recovers(
     }
 }
 
+fn backup_from_image_preserves_bytes_and_refuses_invalid_inputs(
+    cx: Journey<'_>,
+    store: &Path,
+    image: &Path,
+    backup: &Path,
+    backed: &serde_json::Value,
+) -> PathBuf {
+    let before = store_files(store);
+    let (edited_image, _) = build_image(cx, "edited-deployment");
+    let invalid_image = cx.temp.join("invalid.image");
+    fs::write(&invalid_image, b"not a program image").expect("invalid image");
+    for (name, selected, expected) in [
+        ("edited", &edited_image, "store.image_not_active"),
+        ("invalid", &invalid_image, "image.envelope"),
+    ] {
+        let output = cx.temp.join(format!("{name}.backup"));
+        let refusal = marrow(
+            cx.toolchain,
+            cx.temp,
+            &[
+                "backup",
+                "--store",
+                store.to_str().expect("store path"),
+                "--image",
+                selected.to_str().expect("image path"),
+                "--out",
+                output.to_str().expect("backup path"),
+                "--format",
+                "jsonl",
+            ],
+        );
+        assert_eq!(refusal.status.code(), Some(1));
+        let refusal: serde_json::Value =
+            serde_json::from_slice(&refusal.stdout).expect("image refusal");
+        assert_eq!(refusal["code"], expected);
+        assert!(!output.exists());
+        assert!(store_files(store) == before, "store artifacts changed");
+    }
+    write(&cx.project.join("src/main.mw"), "not valid Marrow");
+    let image_backup = cx.temp.join("image.backup");
+    let image_receipt = run_ok(
+        cx,
+        "backup-explicit-image",
+        cx.temp,
+        &[
+            "backup",
+            "--store",
+            store.to_str().expect("store path"),
+            "--image",
+            image.to_str().expect("image path"),
+            "--out",
+            image_backup.to_str().expect("backup path"),
+            "--format",
+            "jsonl",
+        ],
+    );
+    let image_receipt: serde_json::Value =
+        serde_json::from_slice(&image_receipt.stdout).expect("image backup receipt");
+    for field in ["image", "instance", "content_digest", "backup_digest"] {
+        assert_eq!(image_receipt[field], backed[field], "{field}");
+    }
+    assert_eq!(image_receipt["outcome"], "complete");
+    assert_eq!(
+        fs::read(backup).expect("source backup"),
+        fs::read(&image_backup).expect("image backup")
+    );
+    assert!(store_files(store) == before, "store artifacts changed");
+    let missing_parent = cx.temp.join("missing-parent");
+    let missing_destination = missing_parent.join("destination");
+    for args in [
+        vec![
+            "backup",
+            "--store",
+            store.to_str().expect("store path"),
+            "--image",
+            image.to_str().expect("image path"),
+            "--out",
+        ],
+        vec![
+            "restore",
+            "--from",
+            image_backup.to_str().expect("backup path"),
+            "--store",
+        ],
+    ] {
+        let mut args = args;
+        args.extend([
+            missing_destination.to_str().expect("destination"),
+            "--format",
+            "jsonl",
+        ]);
+        let refusal = marrow(cx.toolchain, cx.temp, &args);
+        assert_eq!(refusal.status.code(), Some(1));
+        let refusal: serde_json::Value =
+            serde_json::from_slice(&refusal.stdout).expect("parent refusal");
+        assert_eq!(refusal["code"], "store.io");
+        assert!(!missing_parent.exists());
+        assert!(store_files(store) == before, "store artifacts changed");
+    }
+    image_backup
+}
+
 // This process-level control earns its cost by crossing compiler, companion,
 // native publication and restore without the original project being available.
 fn backup_restores_absent_ancestor_descendants_without_a_project(toolchain: &Path) {
@@ -546,105 +648,17 @@ fn backup_restores_absent_ancestor_descendants_without_a_project(toolchain: &Pat
     assert!(!refused_path.exists());
     assert!(store_files(&store) == before, "store artifacts changed");
     assert_eq!(fs::read(store.join("head")).unwrap(), head);
-    run(
-        &project,
-        &[
-            "image",
-            "--out",
-            "edited-deployment",
-            "--accept-ceiling",
-            ceiling,
-        ],
-    );
-    let edited_image = project.join("edited-deployment/program.image");
-    let invalid_image = temp.path().join("invalid.image");
-    fs::write(&invalid_image, b"not a program image").expect("invalid image");
-    for (name, selected, expected) in [
-        ("edited", &edited_image, "store.image_not_active"),
-        ("invalid", &invalid_image, "image.envelope"),
-    ] {
-        let output = temp.path().join(format!("{name}.backup"));
-        let refusal = marrow(
+    let image_backup = backup_from_image_preserves_bytes_and_refuses_invalid_inputs(
+        Journey {
             toolchain,
-            temp.path(),
-            &[
-                "backup",
-                "--store",
-                store.to_str().expect("store path"),
-                "--image",
-                selected.to_str().expect("image path"),
-                "--out",
-                output.to_str().expect("backup path"),
-                "--format",
-                "jsonl",
-            ],
-        );
-        assert_eq!(refusal.status.code(), Some(1));
-        let refusal: serde_json::Value =
-            serde_json::from_slice(&refusal.stdout).expect("image refusal");
-        assert_eq!(refusal["code"], expected);
-        assert!(!output.exists());
-        assert!(store_files(&store) == before, "store artifacts changed");
-    }
-    write(&project.join("src/main.mw"), "not valid Marrow");
-    let image_backup = temp.path().join("image.backup");
-    let image_receipt = run(
-        temp.path(),
-        &[
-            "backup",
-            "--store",
-            store.to_str().expect("store path"),
-            "--image",
-            image.to_str().expect("image path"),
-            "--out",
-            image_backup.to_str().expect("backup path"),
-            "--format",
-            "jsonl",
-        ],
+            temp: temp.path(),
+            project: &project,
+        },
+        &store,
+        &image,
+        &backup,
+        &backed,
     );
-    let image_receipt: serde_json::Value =
-        serde_json::from_slice(&image_receipt.stdout).expect("image backup receipt");
-    for field in ["image", "instance", "content_digest", "backup_digest"] {
-        assert_eq!(image_receipt[field], backed[field], "{field}");
-    }
-    assert_eq!(image_receipt["outcome"], "complete");
-    assert_eq!(
-        fs::read(&backup).expect("source backup"),
-        fs::read(&image_backup).expect("image backup")
-    );
-    assert!(store_files(&store) == before, "store artifacts changed");
-    let missing_parent = temp.path().join("missing-parent");
-    let missing_destination = missing_parent.join("destination");
-    for args in [
-        vec![
-            "backup",
-            "--store",
-            store.to_str().expect("store path"),
-            "--image",
-            image.to_str().expect("image path"),
-            "--out",
-        ],
-        vec![
-            "restore",
-            "--from",
-            image_backup.to_str().expect("backup path"),
-            "--store",
-        ],
-    ] {
-        let mut args = args;
-        args.extend([
-            missing_destination.to_str().expect("destination"),
-            "--format",
-            "jsonl",
-        ]);
-        let refusal = marrow(toolchain, temp.path(), &args);
-        assert_eq!(refusal.status.code(), Some(1));
-        let refusal: serde_json::Value =
-            serde_json::from_slice(&refusal.stdout).expect("parent refusal");
-        assert_eq!(refusal["code"], "store.io");
-        assert!(!missing_parent.exists());
-        assert!(store_files(&store) == before, "store artifacts changed");
-    }
     let restored = temp.path().join("restored");
     let receipt = run(
         temp.path(),
