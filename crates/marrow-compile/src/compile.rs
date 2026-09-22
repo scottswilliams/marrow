@@ -1681,16 +1681,16 @@ fn validate_lowered(
     // transaction effect: it is callable only inside a `transaction` block or from
     // another function carrying the effect.
     reject_unproven_uses(lowered, &acyclic, diagnostics);
-    let transactions_closed = reject_missing_transaction(lowered, &acyclic, diagnostics);
+    let unwrapped = reject_missing_transaction(lowered, &acyclic, diagnostics);
+    let transactions_closed = !unwrapped.contains(&true);
 
     // The remaining transaction-ownership laws — exactly one region per mutating export,
     // committed on every normal exit after begin, with no durable operation after
     // commit; a `transaction` marker only in the export that owns it; and no call to a
     // transaction owner — are reconstructed from the lowered tape and reported at the
-    // offending source construct.
-    if transactions_closed {
-        reject_transaction_ownership(&bodies, &acyclic, diagnostics);
-    }
+    // offending source construct, in the same round, for every function the
+    // requires-ambient-transaction pass did not already report.
+    reject_transaction_ownership(&bodies, &acyclic, &unwrapped, diagnostics);
 
     // Tests reach durable data through ordinary invocations. Report direct operations
     // in complete components here.
@@ -2366,12 +2366,13 @@ fn reject_recursion(
 /// therefore reported where a caller cannot satisfy it: an export entry or a test
 /// invoking the helper. Direct test operations have their own refusal.
 /// `acyclic` owns the callee-before-caller order: every function and relevant edge is
-/// examined once, with no convergence sweep.
+/// examined once, with no convergence sweep. Returns, by function index, whether
+/// that function was reported.
 fn reject_missing_transaction(
     lowered: &LoweredFunctionSet,
     acyclic: &AcyclicCallOrder,
     diagnostics: &mut DiagnosticCollector,
-) -> bool {
+) -> Vec<bool> {
     let by_index = lowered.functions();
     let count = by_index.len();
 
@@ -2398,8 +2399,9 @@ fn reject_missing_transaction(
     // Deduplicate by source position so a single write
     // that lowers to several instructions (an upsert's replace and create arms share
     // one span) yields one diagnostic.
-    let mut reported = false;
+    let mut reported = vec![false; count];
     for function in lowered.eligible(acyclic) {
+        let index = usize::from(function.func.index());
         if function.role == BodyRole::Helper {
             continue;
         }
@@ -2418,7 +2420,7 @@ fn reject_missing_transaction(
                      in a `transaction { … }` block."
                         .to_string(),
                 ));
-                reported = true;
+                reported[index] = true;
             }
         }
         for (callee, span) in &function.unwrapped_calls {
@@ -2447,11 +2449,11 @@ fn reject_missing_transaction(
                         )
                     },
                 ));
-                reported = true;
+                reported[index] = true;
             }
         }
     }
-    !reported
+    reported
 }
 
 /// The three-state ownership lattice a mutating export's region walks.
@@ -2466,11 +2468,13 @@ enum TxnState {
 /// their source spans: a mutating export owns exactly one region, begun once, committed
 /// on every normal exit, with no durable operation after the commit and no empty region;
 /// an owner is not called by another function; and a `transaction` marker sits only in
-/// the export that owns it. Runs only once the requires-ambient-transaction pass has
-/// reported nothing, so one unwrapped mutation does not cascade into a second report.
+/// the export that owns it. A function the requires-ambient-transaction pass reported
+/// (`unwrapped`, by index) is skipped, so one unwrapped mutation does not cascade into a
+/// second report at the same construct.
 fn reject_transaction_ownership(
     lowered: &[Option<LoweredBody<'_>>],
     acyclic: &AcyclicCallOrder,
+    unwrapped: &[bool],
     diagnostics: &mut DiagnosticCollector,
 ) {
     let count = lowered.len();
@@ -2527,7 +2531,7 @@ fn reject_transaction_ownership(
     for body in lowered.iter().flatten() {
         let function = body.function;
         let i = usize::from(function.func.index());
-        if !acyclic.contains(i) {
+        if !acyclic.contains(i) || unwrapped.get(i).copied().unwrap_or(false) {
             continue;
         }
 

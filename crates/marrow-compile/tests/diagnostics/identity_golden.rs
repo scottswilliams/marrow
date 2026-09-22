@@ -211,6 +211,61 @@ fn the_transaction_heavy_corpus_reports_its_exact_ordered_artifact() {
     );
 }
 
+/// One violation of each post-typing transaction family in a type-clean program: a
+/// call needing an ambient transaction, a reopened owner region, and a test body's
+/// direct durable read.
+const TRANSACTION_FAMILIES: &str = r#"module main
+
+resource Counter {
+    required value: int
+}
+
+store ^counters[id: int]: Counter
+
+fn bump(id: int) {
+    ^counters[id] = Counter(value: 1)
+}
+
+pub fn unwrapped(id: int) {
+    bump(id)
+}
+
+pub fn twice(id: int) {
+    transaction {
+        ^counters[id] = Counter(value: 1)
+    }
+    transaction {
+        ^counters[id] = Counter(value: 2)
+    }
+}
+
+test "reads directly" {
+    assert not exists(^counters[1])
+}
+"#;
+
+/// `check` reports every post-typing transaction family in one round: the ownership
+/// lattice does not wait for a requires-transaction finding in another function.
+#[test]
+fn check_reports_every_transaction_family_in_one_round() {
+    let project = ids::minted(|ledger| {
+        project_capture::project_with_ids(&[("src/main.mw", TRANSACTION_FAMILIES)], ledger)
+    });
+    let diagnostics = match marrow_compile::check(&project) {
+        Ok(_) => panic!("the corpus is built to be refused; it checked clean"),
+        Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
+        Err(other) => panic!("source-triggered failures must remain diagnostics: {other:?}"),
+    };
+
+    assert_eq!(
+        artifact(&diagnostics),
+        "src/main.mw:14:5 check.requires_transaction\n\
+         src/main.mw:21:17 check.transaction_reopened\n\
+         src/main.mw:26:6 check.test_durable_operation",
+        "every family reports in the same check",
+    );
+}
+
 /// The value-cycle report names a declaration, so its artifact is a *coordinate*
 /// artifact: the module the type was written in and the exact name span.
 ///
