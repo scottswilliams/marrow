@@ -1021,14 +1021,15 @@ fn a_non_utf8_source_path_retains_its_existing_exact_refusal() {
     use std::os::unix::ffi::OsStringExt;
 
     let temp = Scratch::new("non-utf8-source");
-    write(&temp.join("marrow.toml"), VALID_MANIFEST);
+    write(&temp.path().join("marrow.toml"), VALID_MANIFEST);
     let path = temp
+        .path()
         .join("src")
         .join(OsString::from_vec(b"bad\xff.mw".to_vec()));
     fs::create_dir_all(path.parent().unwrap()).expect("create source root");
     fs::write(&path, FORMATTED_SOURCE).expect("write non-UTF-8 source path");
 
-    let output = run(&["fmt", "--check", temp.to_str().unwrap()]);
+    let output = run(&["fmt", "--check", temp.path().to_str().unwrap()]);
     assert!(!output.status.success(), "non-UTF-8 source path must fail");
     assert_eq!(
         output.stderr_text(),
