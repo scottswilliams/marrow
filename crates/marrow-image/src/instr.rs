@@ -8,7 +8,7 @@
 //! layout is known — so the compiler never computes byte offsets by hand.
 
 use crate::demand::OperationClass;
-use crate::draft::{CollTypeId, ConstId, EnumId, RootId, TypeId};
+use crate::draft::{CollTypeId, ConstId, EnumId, RootId, SiteId, TypeId};
 use crate::site_plan::PlannedSiteRef;
 use crate::ty::ImageType;
 
@@ -236,7 +236,7 @@ impl Operands for Sealed {
     type Enum = u16;
     type Coll = u16;
     type Root = u16;
-    type Site = u16;
+    type Site = SiteId;
 
     fn index_of(jump: &usize) -> usize {
         *jump

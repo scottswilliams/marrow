@@ -9,7 +9,7 @@ use crate::reader::Reader;
 use crate::reject::{
     Bound, Duplicate, Region, RejectionKind as Kind, SiteFault, Tag, VerifyPhase, VerifyRejection,
 };
-use crate::sealed::{SealedSite, SealedSiteTarget};
+use crate::sealed::{SealedRoot, SealedSite, SealedSiteTarget};
 use marrow_image::{
     LedgerIdBytes, RootId, SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep,
     SemanticStepKind, SemanticTarget,
@@ -22,10 +22,11 @@ pub(super) fn decode_sites(
     reader: &mut Reader<'_>,
     nodes: &[SemanticNode],
     roots: &[DecodedRoot],
+    sealed_roots: &[SealedRoot],
 ) -> Result<(Vec<SealedSite>, Vec<SemanticPath>), VerifyRejection> {
     // Project the node set once into its keyed form: each node's executable coordinates,
     // keyed by its path. A site then resolves in one lookup.
-    let projection = project_graph(nodes, roots);
+    let projection = project_graph(nodes, roots, sealed_roots);
     let site_count = reader
         .u16()
         .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?
@@ -167,10 +168,7 @@ fn resolve_site(
             SemanticTarget::IndexLookup => SealedSiteTarget::IndexLookup(global),
             _ => unreachable!("only an index node admits an index read target"),
         };
-        return Ok(SealedSite::Flat {
-            root: node.root,
-            target: sealed_target,
-        });
+        return Ok(graph.flat(node.root, sealed_target));
     }
     // A flat-executable keyed root — keyed, with every member a field or a simple keyed
     // branch (no group at any level) — is kernel-executable: a whole-payload or
@@ -186,36 +184,62 @@ fn resolve_site(
     if !graph.flat_roots[node.root.index() as usize] {
         return Ok(parked());
     }
-    let sealed = match &node.coordinates {
-        NodeCoordinates::Root => SealedSite::Flat {
-            root: node.root,
-            target: SealedSiteTarget::WholePayload,
+    let target = match &node.coordinates {
+        NodeCoordinates::Root => SealedSiteTarget::WholePayload,
+        NodeCoordinates::Branch(branch) => SealedSiteTarget::BranchEntry(branch.clone()),
+        NodeCoordinates::Field { branch, field } if branch.is_empty() => {
+            SealedSiteTarget::FieldLeaf(*field)
+        }
+        NodeCoordinates::Field { branch, field } => SealedSiteTarget::BranchField {
+            branch: branch.clone(),
+            field: *field,
         },
-        NodeCoordinates::Branch(branch) => SealedSite::Flat {
-            root: node.root,
-            target: SealedSiteTarget::BranchEntry(branch.clone()),
-        },
-        NodeCoordinates::Field { branch, field } if branch.is_empty() => SealedSite::Flat {
-            root: node.root,
-            target: SealedSiteTarget::FieldLeaf(*field),
-        },
-        NodeCoordinates::Field { branch, field } => SealedSite::Flat {
-            root: node.root,
-            target: SealedSiteTarget::BranchField {
-                branch: branch.clone(),
-                field: *field,
-            },
-        },
-        NodeCoordinates::Group(group) => SealedSite::Flat {
-            root: node.root,
-            target: SealedSiteTarget::GroupEntry(*group),
-        },
-        NodeCoordinates::Unaddressable => parked(),
+        NodeCoordinates::Group(group) => SealedSiteTarget::GroupEntry(*group),
+        NodeCoordinates::Unaddressable => return Ok(parked()),
         NodeCoordinates::Index { .. } => {
             unreachable!("an index node sealed and returned before this point")
         }
     };
-    Ok(sealed)
+    Ok(graph.flat(node.root, target))
+}
+
+impl GraphProjection<'_> {
+    /// Seal an executable site over `root`, reading the whole-entry record and group count
+    /// the VM materializes from the sealed root: the deepest branch's record along a branch
+    /// path, a group's own record, and the root's record otherwise (an index read's source
+    /// entry, or a field site's containing root entry). The branch path and group ordinal
+    /// were projected from this root's own member tree, so every position is in range.
+    fn flat(&self, root: RootId, target: SealedSiteTarget) -> SealedSite {
+        let sealed = &self.roots[root.index() as usize];
+        let entry = match &target {
+            SealedSiteTarget::BranchEntry(path)
+            | SealedSiteTarget::BranchField { branch: path, .. } => {
+                let mut branches = sealed.branches();
+                let mut record = sealed.record();
+                for &hop in path.as_ref() {
+                    let branch = &branches[usize::from(hop)];
+                    record = branch.record();
+                    branches = branch.branches();
+                }
+                record
+            }
+            SealedSiteTarget::GroupEntry(group) => sealed.groups()[usize::from(*group)].record(),
+            SealedSiteTarget::WholePayload
+            | SealedSiteTarget::FieldLeaf(_)
+            | SealedSiteTarget::IndexScan(_)
+            | SealedSiteTarget::IndexLookup(_) => sealed.record(),
+        };
+        let groups = match target {
+            SealedSiteTarget::WholePayload => sealed.groups().len(),
+            _ => 0,
+        };
+        SealedSite::Flat {
+            root,
+            target,
+            entry,
+            groups,
+        }
+    }
 }
 
 /// The keyed projection of one durable table's reconstructed graph: every node's kind,
@@ -227,6 +251,8 @@ fn resolve_site(
 /// costs its site count plus its graph size rather than their product.
 struct GraphProjection<'a> {
     nodes: HashMap<&'a [SemanticStep], ProjectedNode>,
+    /// The sealed roots by table position, which a flat site reads its entry facts from.
+    roots: &'a [SealedRoot],
     /// Whether the root occurrence at each DURABLE-table position is the flat keyed root
     /// the kernel executes, by table position.
     flat_roots: Vec<bool>,
@@ -298,7 +324,11 @@ const _: () = assert!(
 /// The node set is in pre-order — a node precedes its descendants — so each node's
 /// coordinates are its parent's extended by its own ordinal among its same-kind siblings,
 /// and both are already known when it is reached. Nothing is re-derived per site.
-fn project_graph<'a>(nodes: &'a [SemanticNode], roots: &[DecodedRoot]) -> GraphProjection<'a> {
+fn project_graph<'a>(
+    nodes: &'a [SemanticNode],
+    roots: &[DecodedRoot],
+    sealed_roots: &'a [SealedRoot],
+) -> GraphProjection<'a> {
     let mut root_positions: HashMap<LedgerIdBytes, RootId> = HashMap::with_capacity(roots.len());
     for (position, root) in roots.iter().enumerate() {
         root_positions.insert(root.placement, RootId::from_index(position as u16));
@@ -387,6 +417,7 @@ fn project_graph<'a>(nodes: &'a [SemanticNode], roots: &[DecodedRoot]) -> GraphP
 
     GraphProjection {
         nodes: projected,
+        roots: sealed_roots,
         flat_roots: roots.iter().map(is_flat_executable_root).collect(),
     }
 }

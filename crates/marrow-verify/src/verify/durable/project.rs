@@ -7,11 +7,11 @@ use super::super::model::DecodedRoot;
 use super::super::reject;
 use crate::reject::{Projection, RejectionKind as Kind, VerifyPhase, VerifyRejection};
 use crate::sealed::{
-    SealedBranch, SealedGroup, SealedIndex, SealedIndexComponent, SealedRecordType,
+    SealedBranch, SealedGroup, SealedIndex, SealedIndexComponent, SealedRecordType, SealedRoot,
 };
 use marrow_image::{
     DurableIndexComponent, DurableMemberView, DurableMemberViewKind, DurableMemberViews,
-    DurableProductGraph, ImageType, LedgerIdBytes, RootId,
+    DurableProductGraph, ImageType, LedgerIdBytes, RootId, TypeId,
 };
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -75,6 +75,37 @@ pub(crate) fn member_flat_at_root(member: DurableMemberView<'_>) -> bool {
             .all(|inner| matches!(inner.kind(), DurableMemberViewKind::Field(_))),
         DurableMemberViewKind::Branch(_) => is_simple_branch(member),
     }
+}
+
+/// A flat-executable root carries its branch tree and groups; a non-flat root parks every
+/// branch and group site, so it needs neither list.
+pub(crate) fn seal_roots(
+    roots: &[DecodedRoot],
+    strings: &[Rc<str>],
+    types: &[SealedRecordType],
+) -> Vec<SealedRoot> {
+    roots
+        .iter()
+        .map(|root| {
+            let flat = is_flat_executable_root(root);
+            SealedRoot {
+                name: strings[root.name as usize].clone(),
+                keys: root.keys.iter().map(|(scalar, _)| *scalar).collect(),
+                record: TypeId::from_index(root.record),
+                has_extras: !root.members.iter().all(member_flat_at_root),
+                branches: if flat {
+                    seal_branches(&root.members, strings)
+                } else {
+                    Vec::new()
+                },
+                groups: if flat {
+                    seal_groups(root, types)
+                } else {
+                    Vec::new()
+                },
+            }
+        })
+        .collect()
 }
 
 /// Seal a member tree's keyed branches into the recursive [`SealedBranch`] tree, in

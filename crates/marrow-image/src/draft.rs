@@ -172,6 +172,15 @@ impl TypeId {
     pub const fn index(self) -> u32 {
         self.0
     }
+
+    /// The `u16` ordinal this reference is spelled with in an image operand and in the
+    /// kernel's value domain. Total over every id a verified image holds (each widened from
+    /// a `u16` read) and every id of a policy-clean draft (`bounds` asserts each table
+    /// maximum within `u16`); an over-policy draft id is refused at the encode fence
+    /// before it can be spelled.
+    pub fn wire_index(self) -> u16 {
+        crate::measure::wire_ordinal(self.0)
+    }
 }
 
 /// An enum-type index (also the final container index; enums keep insertion order).
@@ -188,6 +197,12 @@ impl EnumId {
     /// in an `ImageType::Enum`. Never a wire value.
     pub const fn index(self) -> u32 {
         self.0
+    }
+
+    /// The `u16` ordinal this reference is spelled with; total on the same bound as
+    /// [`TypeId::wire_index`].
+    pub fn wire_index(self) -> u16 {
+        crate::measure::wire_ordinal(self.0)
     }
 }
 
@@ -208,6 +223,12 @@ impl CollTypeId {
     pub const fn index(self) -> u32 {
         self.0
     }
+
+    /// The `u16` ordinal this reference is spelled with; total on the same bound as
+    /// [`TypeId::wire_index`].
+    pub fn wire_index(self) -> u16 {
+        crate::measure::wire_ordinal(self.0)
+    }
 }
 
 /// A durable root reference: the wide logical ordinal of one row in the flat
@@ -225,6 +246,12 @@ impl RootId {
     /// The wide logical occurrence ordinal. Never a wire value.
     pub const fn index(self) -> u32 {
         self.0
+    }
+
+    /// The `u16` ordinal this reference is spelled with; total on the same bound as
+    /// [`TypeId::wire_index`].
+    pub fn wire_index(self) -> u16 {
+        crate::measure::wire_ordinal(self.0)
     }
 }
 
@@ -244,21 +271,21 @@ impl FuncId {
 
 /// A durable operation-site index (also the final container index).
 ///
-/// It is crate-private: outside this crate a site is named by the opaque
-/// [`PlannedSiteRef`] the plan mints, never by a number a caller can write.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SiteId(u16);
+/// A draft never takes one: a draft instruction names its site by the opaque
+/// [`PlannedSiteRef`] the plan mints, so no caller-written number reaches the site table.
+/// A verified instruction carries the id its operand decoded to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SiteId(u16);
 
 impl SiteId {
-    /// The id of the site row at `ordinal`. Minted only by the site demand plan, which
-    /// checks vacant capacity first, so every value that reaches here is inside the site
-    /// table's capacity.
-    pub(crate) fn from_ordinal(ordinal: u16) -> Self {
-        Self(ordinal)
+    /// The site row at `index` — a received `u16` operand, or a row the site demand plan
+    /// minted after checking vacant capacity.
+    pub const fn from_index(index: u16) -> Self {
+        Self(index)
     }
 
     /// The raw site index, as carried in a `Dur*` operand.
-    pub(crate) fn index(self) -> u16 {
+    pub const fn index(self) -> u16 {
         self.0
     }
 }

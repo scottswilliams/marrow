@@ -1169,8 +1169,7 @@ fn apply_durable(
         return Ok(Control::Fallthrough);
     };
     let site = ctx
-        .sites
-        .get(site_index as usize)
+        .site(site_index)
         .ok_or(reject(VerifyPhase::Function, Kind::OutOfRange(Ref::Site)))?;
     // A durable opcode may reference only a kernel-executable flat site. A parked
     // site (a nested placement, a group-scoped field, or a site on a singleton or
@@ -1178,7 +1177,7 @@ fn apply_durable(
     // operation; an opcode over one is a forged or not-yet-executable image and is
     // refused here, independently of the compiler. A widened field site is executable.
     let (site_root, site_target) = match site {
-        SealedSite::Flat { root, target } => (*root, target),
+        SealedSite::Flat { root, target, .. } => (*root, target),
         SealedSite::Parked { .. } => {
             return Err(reject(VerifyPhase::Function, Kind::ParkedSite));
         }

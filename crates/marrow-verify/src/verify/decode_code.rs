@@ -28,7 +28,7 @@ use marrow_image::{
     OP_MAP_LEN, OP_MAP_NEW, OP_MAP_REMOVE, OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW,
     OP_RETURN, OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT,
     OP_TEXT_IS_EMPTY, OP_TEXT_JOIN, OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT,
-    OP_TEXT_TRIM, OP_TODO, OP_TXN_BEGIN, OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD,
+    OP_TEXT_TRIM, OP_TODO, OP_TXN_BEGIN, OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD, SiteId,
 };
 
 /// A decoded instruction with resolved operands and its byte offset. Jump targets
@@ -209,14 +209,14 @@ fn decode_durable(
     reader: &mut Reader<'_>,
 ) -> Result<Option<SealedInstr>, VerifyRejection> {
     Ok(Some(match opcode {
-        OP_DUR_EXISTS => SealedInstr::DurExists(operand_u16(reader)?),
-        OP_DUR_FAMILY_EXISTS => SealedInstr::DurFamilyExists(operand_u16(reader)?),
-        OP_DUR_READ_FIELD => SealedInstr::DurReadField(operand_u16(reader)?),
+        OP_DUR_EXISTS => SealedInstr::DurExists(operand_site(reader)?),
+        OP_DUR_FAMILY_EXISTS => SealedInstr::DurFamilyExists(operand_site(reader)?),
+        OP_DUR_READ_FIELD => SealedInstr::DurReadField(operand_site(reader)?),
         OP_DUR_READ_FIELD_PRESENT => {
             let (site, key_slots) = operand_site_key_slots(reader)?;
             SealedInstr::DurReadFieldPresent { site, key_slots }
         }
-        OP_DUR_READ_ENTRY => SealedInstr::DurReadEntry(operand_u16(reader)?),
+        OP_DUR_READ_ENTRY => SealedInstr::DurReadEntry(operand_site(reader)?),
         OP_DUR_SET_FIELD => {
             let (site, key_slots) = operand_site_key_slots(reader)?;
             SealedInstr::DurSetField { site, key_slots }
@@ -225,30 +225,30 @@ fn decode_durable(
             let (site, key_slots) = operand_site_key_slots(reader)?;
             SealedInstr::DurReadGroupPresent { site, key_slots }
         }
-        OP_DUR_CREATE_ENTRY => SealedInstr::DurCreateEntry(operand_u16(reader)?),
-        OP_DUR_REPLACE_ENTRY => SealedInstr::DurReplaceEntry(operand_u16(reader)?),
-        OP_DUR_ERASE_FIELD => SealedInstr::DurEraseField(operand_u16(reader)?),
-        OP_DUR_ERASE_ENTRY => SealedInstr::DurEraseEntry(operand_u16(reader)?),
-        OP_DUR_READ_GROUP => SealedInstr::DurReadGroup(operand_u16(reader)?),
+        OP_DUR_CREATE_ENTRY => SealedInstr::DurCreateEntry(operand_site(reader)?),
+        OP_DUR_REPLACE_ENTRY => SealedInstr::DurReplaceEntry(operand_site(reader)?),
+        OP_DUR_ERASE_FIELD => SealedInstr::DurEraseField(operand_site(reader)?),
+        OP_DUR_ERASE_ENTRY => SealedInstr::DurEraseEntry(operand_site(reader)?),
+        OP_DUR_READ_GROUP => SealedInstr::DurReadGroup(operand_site(reader)?),
         OP_DUR_REPLACE_GROUP => {
             let (site, key_slots) = operand_site_key_slots(reader)?;
             SealedInstr::DurReplaceGroup { site, key_slots }
         }
-        OP_DUR_ERASE_GROUP => SealedInstr::DurEraseGroup(operand_u16(reader)?),
+        OP_DUR_ERASE_GROUP => SealedInstr::DurEraseGroup(operand_site(reader)?),
         OP_DUR_ITERATE_BOUNDED => SealedInstr::DurIterateBounded {
-            site: operand_u16(reader)?,
+            site: operand_site(reader)?,
             limit: operand_u32(reader)?,
             from: operand_bool(reader)?,
             list_ty: operand_u16(reader)?,
         },
         OP_DUR_INDEX_SCAN => SealedInstr::DurIndexScan {
-            site: operand_u16(reader)?,
+            site: operand_site(reader)?,
             limit: operand_u32(reader)?,
             from: operand_bool(reader)?,
             list_ty: operand_u16(reader)?,
         },
-        OP_DUR_INDEX_LOOKUP => SealedInstr::DurIndexLookup(operand_u16(reader)?),
-        OP_DUR_INDEX_EXISTS => SealedInstr::DurIndexExists(operand_u16(reader)?),
+        OP_DUR_INDEX_LOOKUP => SealedInstr::DurIndexLookup(operand_site(reader)?),
+        OP_DUR_INDEX_EXISTS => SealedInstr::DurIndexExists(operand_site(reader)?),
         OP_TXN_BEGIN => SealedInstr::TxnBegin,
         OP_TXN_COMMIT => SealedInstr::TxnCommit,
         _ => return Ok(None),
@@ -283,13 +283,17 @@ fn operand_u16(reader: &mut Reader) -> Result<u16, VerifyRejection> {
         .ok_or(reject(VerifyPhase::Function, Kind::Truncated(Region::Code)))
 }
 
+fn operand_site(reader: &mut Reader) -> Result<SiteId, VerifyRejection> {
+    operand_u16(reader).map(SiteId::from_index)
+}
+
 /// The `site ‖ len ‖ slot…` operand of a present-entry op that reads its containing
 /// entry's key-path from local slots. The key-path length is bounded before allocation:
 /// the deepest executable key-path is one column set per node from the root down, capped
 /// by the per-node column and site-path caps. The exact arity is rechecked against the
 /// site's reconstructed key-path in phase 3.
-fn operand_site_key_slots(reader: &mut Reader) -> Result<(u16, Vec<u16>), VerifyRejection> {
-    let site = operand_u16(reader)?;
+fn operand_site_key_slots(reader: &mut Reader) -> Result<(SiteId, Vec<u16>), VerifyRejection> {
+    let site = operand_site(reader)?;
     let len = operand_u16(reader)? as usize;
     if len == 0
         || len > marrow_image::bounds::MAX_KEY_COLUMNS * marrow_image::bounds::MAX_SITE_PATH_STEPS
@@ -524,46 +528,46 @@ mod opcode_bijection {
     /// The durable read, write, traversal and index opcodes with their transaction markers.
     fn durable_samples() -> Vec<SealedInstr> {
         vec![
-            SealedInstr::DurExists(0),
-            SealedInstr::DurFamilyExists(0),
-            SealedInstr::DurReadField(0),
+            SealedInstr::DurExists(SiteId::from_index(0)),
+            SealedInstr::DurFamilyExists(SiteId::from_index(0)),
+            SealedInstr::DurReadField(SiteId::from_index(0)),
             SealedInstr::DurReadFieldPresent {
-                site: 0,
+                site: SiteId::from_index(0),
                 key_slots: vec![0],
             },
-            SealedInstr::DurReadEntry(0),
+            SealedInstr::DurReadEntry(SiteId::from_index(0)),
             SealedInstr::DurSetField {
-                site: 0,
+                site: SiteId::from_index(0),
                 key_slots: vec![0],
             },
             SealedInstr::DurReadGroupPresent {
-                site: 0,
+                site: SiteId::from_index(0),
                 key_slots: vec![0],
             },
-            SealedInstr::DurCreateEntry(0),
-            SealedInstr::DurReplaceEntry(0),
-            SealedInstr::DurEraseField(0),
-            SealedInstr::DurEraseEntry(0),
-            SealedInstr::DurReadGroup(0),
+            SealedInstr::DurCreateEntry(SiteId::from_index(0)),
+            SealedInstr::DurReplaceEntry(SiteId::from_index(0)),
+            SealedInstr::DurEraseField(SiteId::from_index(0)),
+            SealedInstr::DurEraseEntry(SiteId::from_index(0)),
+            SealedInstr::DurReadGroup(SiteId::from_index(0)),
             SealedInstr::DurReplaceGroup {
-                site: 0,
+                site: SiteId::from_index(0),
                 key_slots: vec![0],
             },
-            SealedInstr::DurEraseGroup(0),
+            SealedInstr::DurEraseGroup(SiteId::from_index(0)),
             SealedInstr::DurIterateBounded {
-                site: 0,
+                site: SiteId::from_index(0),
                 limit: 0,
                 from: false,
                 list_ty: 0,
             },
             SealedInstr::DurIndexScan {
-                site: 0,
+                site: SiteId::from_index(0),
                 limit: 0,
                 from: false,
                 list_ty: 0,
             },
-            SealedInstr::DurIndexLookup(0),
-            SealedInstr::DurIndexExists(0),
+            SealedInstr::DurIndexLookup(SiteId::from_index(0)),
+            SealedInstr::DurIndexExists(SiteId::from_index(0)),
             SealedInstr::TxnBegin,
             SealedInstr::TxnCommit,
         ]
@@ -668,28 +672,28 @@ mod opcode_bijection {
             (
                 0xB9,
                 SealedInstr::DurSetField {
-                    site: 0x1234,
+                    site: SiteId::from_index(0x1234),
                     key_slots: vec![7, 165, 254],
                 },
             ),
             (
                 0xBA,
                 SealedInstr::DurReadGroupPresent {
-                    site: 0x1234,
+                    site: SiteId::from_index(0x1234),
                     key_slots: vec![7, 165, 254],
                 },
             ),
             (
                 0xBB,
                 SealedInstr::DurReplaceGroup {
-                    site: 0x1234,
+                    site: SiteId::from_index(0x1234),
                     key_slots: vec![7, 165, 254],
                 },
             ),
             (
                 0xBC,
                 SealedInstr::DurReadFieldPresent {
-                    site: 0x1234,
+                    site: SiteId::from_index(0x1234),
                     key_slots: vec![7, 165, 254],
                 },
             ),
@@ -752,7 +756,7 @@ mod opcode_bijection {
                         }
                         other => panic!("unexpected strict-place variant: {other:?}"),
                     };
-                    assert_eq!(site, 0x1234);
+                    assert_eq!(site, SiteId::from_index(0x1234));
                     assert_eq!(key_slots.as_slice(), vec![0; limit]);
                 } else {
                     let rejection = result

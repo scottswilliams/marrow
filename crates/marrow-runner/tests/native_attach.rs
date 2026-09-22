@@ -361,7 +361,7 @@ pub fn setMovesRequired(v: int): Result<int, string> {
         else {
             panic!("{name} returns a non-optional Result");
         };
-        let idx = u16::try_from(idx.index()).expect("a verified enum index");
+        let idx = idx.wire_index();
         let variants = terminal.image.enums()[usize::from(idx)].variants();
         for (value, member, payload) in [
             (200, "err", Value::Text("value is large".into())),

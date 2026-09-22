@@ -17,8 +17,8 @@ use marrow_kernel::durable::{
 };
 use marrow_kernel::equality::ValueDomain;
 use marrow_verify::{
-    FunctionIndex, RootId, SealedConst, SealedFunction, SealedGroup, SealedInstr, SealedSite,
-    SealedSiteTarget, TypeId, VerifiedFunction, VerifiedImage,
+    FunctionIndex, ImageType, RootId, SealedConst, SealedFunction, SealedInstr, SealedSite, SiteId,
+    TypeId, VerifiedFunction, VerifiedImage,
 };
 
 use crate::fault::{DurableExecutionFault, RuntimeFault};
@@ -824,7 +824,8 @@ impl<'i> Frame<'i> {
     }
 
     fn record_new(&mut self, ty: u16) {
-        let fields = self.image.record_type(TypeId::from_index(ty)).fields();
+        let ty = TypeId::from_index(ty);
+        let fields = self.image.record_type(ty).fields();
         // f0 was pushed first, so the popped values fill slots in reverse.
         let mut slots: Vec<Option<Value>> = vec![None; fields.len()];
         for (index, field) in fields.iter().enumerate().rev() {
@@ -843,8 +844,7 @@ impl<'i> Frame<'i> {
         let image = self.image;
         let (ty, slots) = as_record(pop(&mut self.stack));
         let cell = slots[field as usize].clone();
-        let required =
-            image.record_type(TypeId::from_index(ty)).fields()[field as usize].required();
+        let required = image.record_type(ty).fields()[field as usize].required();
         if required {
             self.stack
                 .push(cell.expect("verifier proved a required field is present"));
@@ -922,7 +922,10 @@ impl<'i> Frame<'i> {
         for slot in keys.iter_mut().rev() {
             *slot = value_to_key(pop(&mut self.stack));
         }
-        self.stack.push(Value::Id(root, Rc::from(keys.as_slice())));
+        self.stack.push(Value::Id(
+            RootId::from_index(root),
+            Rc::from(keys.as_slice()),
+        ));
         self.pc += 1;
     }
 
@@ -1064,9 +1067,9 @@ impl<'i> Frame<'i> {
     fn dur_exists(
         &mut self,
         durable: &mut dyn Durable,
-        site: u16,
+        site: SiteId,
     ) -> Result<(), DurableExecutionFault> {
-        let authorized = durable.site(site);
+        let authorized = durable.site(site.index());
         let keys = pop_key_path(&mut self.stack, authorized.key_arity());
         let present = durable
             .presence(&authorized, &keys)
@@ -1079,9 +1082,9 @@ impl<'i> Frame<'i> {
     fn dur_family_exists(
         &mut self,
         durable: &mut dyn Durable,
-        site: u16,
+        site: SiteId,
     ) -> Result<(), DurableExecutionFault> {
-        let authorized = durable.site(site);
+        let authorized = durable.site(site.index());
         // The probe supplies only the ancestor key-path — one fewer than the whole-entry
         // key arity, since it names the family rather than one immediate child.
         let ancestor_keys = pop_key_path(&mut self.stack, authorized.key_arity() - 1);
@@ -1096,9 +1099,9 @@ impl<'i> Frame<'i> {
     fn dur_read_field(
         &mut self,
         durable: &mut dyn Durable,
-        site: u16,
+        site: SiteId,
     ) -> Result<(), DurableExecutionFault> {
-        let authorized = durable.site(site);
+        let authorized = durable.site(site.index());
         let keys = pop_key_path(&mut self.stack, authorized.key_arity());
         let value = durable
             .read_field(&authorized, &keys)
@@ -1112,10 +1115,10 @@ impl<'i> Frame<'i> {
     fn dur_read_field_present(
         &mut self,
         durable: &mut dyn Durable,
-        site: u16,
+        site: SiteId,
         key_slots: &[u16],
     ) -> Result<(), DurableExecutionFault> {
-        let authorized = durable.site(site);
+        let authorized = durable.site(site.index());
         let keys = self.place_key_path(key_slots);
         let value = durable
             .read_field(&authorized, &keys)
@@ -1129,18 +1132,17 @@ impl<'i> Frame<'i> {
     fn dur_read_entry(
         &mut self,
         durable: &mut dyn Durable,
-        site: u16,
+        site: SiteId,
     ) -> Result<(), DurableExecutionFault> {
         let image = self.image;
-        let authorized = durable.site(site);
+        let authorized = durable.site(site.index());
         let keys = pop_key_path(&mut self.stack, authorized.key_arity());
         let entry = durable
             .read_entry(&authorized, &keys)
             .map_err(|kf| self.kernel_fault(&kf))?;
-        let ty = entry_record_type(image, site);
-        let groups = site_groups(image, site);
+        let (_, ty, _) = flat_site(image, site);
         self.stack.push(Value::Optional(
-            entry.map(|entry| Box::new(entry_to_record(ty, entry, groups))),
+            entry.map(|entry| Box::new(entry_to_record(image, ty, entry))),
         ));
         self.pc += 1;
         Ok(())
@@ -1165,10 +1167,10 @@ impl<'i> Frame<'i> {
     fn dur_set_field(
         &mut self,
         durable: &mut dyn Durable,
-        site: u16,
+        site: SiteId,
         key_slots: &[u16],
     ) -> Result<(), DurableExecutionFault> {
-        let authorized = durable.site(site);
+        let authorized = durable.site(site.index());
         let value = value_to_domain(pop(&mut self.stack));
         let keys = self.place_key_path(key_slots);
         durable
@@ -1181,11 +1183,12 @@ impl<'i> Frame<'i> {
     fn dur_create_entry(
         &mut self,
         durable: &mut dyn Durable,
-        site: u16,
+        site: SiteId,
     ) -> Result<(), DurableExecutionFault> {
         let image = self.image;
-        let authorized = durable.site(site);
-        let entry = record_to_entry(pop(&mut self.stack), site_groups(image, site).len());
+        let authorized = durable.site(site.index());
+        let (_, _, groups) = flat_site(image, site);
+        let entry = record_to_entry(pop(&mut self.stack), groups);
         let keys = pop_key_path(&mut self.stack, authorized.key_arity());
         durable
             .create_entry(&authorized, &keys, entry)
@@ -1197,11 +1200,12 @@ impl<'i> Frame<'i> {
     fn dur_replace_entry(
         &mut self,
         durable: &mut dyn Durable,
-        site: u16,
+        site: SiteId,
     ) -> Result<(), DurableExecutionFault> {
         let image = self.image;
-        let authorized = durable.site(site);
-        let entry = record_to_entry(pop(&mut self.stack), site_groups(image, site).len());
+        let authorized = durable.site(site.index());
+        let (_, _, groups) = flat_site(image, site);
+        let entry = record_to_entry(pop(&mut self.stack), groups);
         let keys = pop_key_path(&mut self.stack, authorized.key_arity());
         durable
             .replace_entry(&authorized, &keys, entry)
@@ -1215,10 +1219,10 @@ impl<'i> Frame<'i> {
     fn dur_key_op<T>(
         &mut self,
         durable: &mut dyn Durable,
-        site: u16,
+        site: SiteId,
         op: impl FnOnce(&mut dyn Durable, &AuthorizedSite, &[KeyScalar]) -> Result<T, KernelFault>,
     ) -> Result<(), DurableExecutionFault> {
-        let authorized = durable.site(site);
+        let authorized = durable.site(site.index());
         let keys = pop_key_path(&mut self.stack, authorized.key_arity());
         op(durable, &authorized, &keys).map_err(|kf| self.kernel_fault(&kf))?;
         self.pc += 1;
@@ -1228,19 +1232,19 @@ impl<'i> Frame<'i> {
     fn dur_read_group(
         &mut self,
         durable: &mut dyn Durable,
-        site: u16,
+        site: SiteId,
     ) -> Result<(), DurableExecutionFault> {
         let image = self.image;
-        let authorized = durable.site(site);
+        let authorized = durable.site(site.index());
         let keys = pop_key_path(&mut self.stack, authorized.key_arity());
         let group = durable
             .read_group(&authorized, &keys)
             .map_err(|kf| self.kernel_fault(&kf))?;
         // A group value is a plain record of its own leaves (nested groups park), so it
         // joins with no further group sub-records.
-        let ty = entry_record_type(image, site);
+        let (_, ty, _) = flat_site(image, site);
         self.stack.push(Value::Optional(
-            group.map(|group| Box::new(entry_to_record(ty, group, &[]))),
+            group.map(|group| Box::new(entry_to_record(image, ty, group))),
         ));
         self.pc += 1;
         Ok(())
@@ -1249,17 +1253,17 @@ impl<'i> Frame<'i> {
     fn dur_read_group_present(
         &mut self,
         durable: &mut dyn Durable,
-        site: u16,
+        site: SiteId,
         key_slots: &[u16],
     ) -> Result<(), DurableExecutionFault> {
         let image = self.image;
-        let authorized = durable.site(site);
+        let authorized = durable.site(site.index());
         let keys = self.place_key_path(key_slots);
         let group = durable
             .read_group_present(&authorized, &keys)
             .map_err(|kf| self.kernel_fault(&kf))?;
-        let ty = entry_record_type(image, site);
-        self.stack.push(entry_to_record(ty, group, &[]));
+        let (_, ty, _) = flat_site(image, site);
+        self.stack.push(entry_to_record(image, ty, group));
         self.pc += 1;
         Ok(())
     }
@@ -1267,10 +1271,10 @@ impl<'i> Frame<'i> {
     fn dur_replace_group(
         &mut self,
         durable: &mut dyn Durable,
-        site: u16,
+        site: SiteId,
         key_slots: &[u16],
     ) -> Result<(), DurableExecutionFault> {
-        let authorized = durable.site(site);
+        let authorized = durable.site(site.index());
         let group = record_to_entry(pop(&mut self.stack), 0);
         let keys = self.place_key_path(key_slots);
         durable
@@ -1464,12 +1468,12 @@ impl<'i> Frame<'i> {
     fn dur_iterate_bounded(
         &mut self,
         durable: &mut dyn Durable,
-        site: u16,
+        site: SiteId,
         limit: u32,
         from: bool,
         list_ty: u16,
     ) -> Result<(), DurableExecutionFault> {
-        let authorized = durable.site(site);
+        let authorized = durable.site(site.index());
         // The stack holds the ancestor key-path (root-first) with the inclusive `from`
         // key on top when present. Pop `from` first, then the ancestor key-path — one
         // fewer than the whole-entry key arity, since the traversed key is what
@@ -1495,12 +1499,12 @@ impl<'i> Frame<'i> {
     fn dur_index_scan(
         &mut self,
         durable: &mut dyn Durable,
-        site: u16,
+        site: SiteId,
         limit: u32,
         from: bool,
         list_ty: u16,
     ) -> Result<(), DurableExecutionFault> {
-        let authorized = durable.site(site);
+        let authorized = durable.site(site.index());
         // The stack holds the held prefix (the index's leading field components,
         // root-first) with the inclusive `from` key of the scanned component on top when
         // present. The prefix is one fewer than the whole projection — the trailing
@@ -1530,10 +1534,10 @@ impl<'i> Frame<'i> {
     fn dur_index_lookup(
         &mut self,
         durable: &mut dyn Durable,
-        site: u16,
+        site: SiteId,
     ) -> Result<(), DurableExecutionFault> {
         let image = self.image;
-        let authorized = durable.site(site);
+        let authorized = durable.site(site.index());
         let arity = authorized
             .index_projection_len()
             .expect("verifier proved an index lookup site");
@@ -1546,7 +1550,7 @@ impl<'i> Frame<'i> {
         // vacant. An entry identity is root-local and its root tag takes part in
         // equality, so the root comes from the site the lookup ran over, never from a
         // fixed position.
-        let root = site_root(image, site);
+        let (root, _, _) = flat_site(image, site);
         let value = found.map(|keys| Box::new(Value::Id(root, Rc::from(keys.as_slice()))));
         self.stack.push(Value::Optional(value));
         self.pc += 1;
@@ -1556,9 +1560,9 @@ impl<'i> Frame<'i> {
     fn dur_index_exists(
         &mut self,
         durable: &mut dyn Durable,
-        site: u16,
+        site: SiteId,
     ) -> Result<(), DurableExecutionFault> {
-        let authorized = durable.site(site);
+        let authorized = durable.site(site.index());
         let arity = authorized
             .index_projection_len()
             .expect("verifier proved an index lookup site");
@@ -1664,7 +1668,7 @@ fn as_optional(value: Value) -> Option<Value> {
     }
 }
 
-fn as_record(value: Value) -> (u16, Box<[Option<Value>]>) {
+fn as_record(value: Value) -> (TypeId, Box<[Option<Value>]>) {
     match value {
         Value::Record(ty, slots) => (ty, slots),
         _ => unreachable!("verifier proved a record operand"),
@@ -1678,7 +1682,7 @@ fn as_enum(value: Value) -> (u16, u16, Box<[Value]>) {
     }
 }
 
-fn as_identity(value: Value) -> (u16, Rc<[KeyScalar]>) {
+fn as_identity(value: Value) -> (RootId, Rc<[KeyScalar]>) {
     match value {
         Value::Id(root, keys) => (root, keys),
         _ => unreachable!("verifier proved an entry-identity operand"),
@@ -1811,7 +1815,7 @@ fn scalar_to_value(scalar: RuntimeScalar) -> Value {
 fn value_to_domain(value: Value) -> ValueDomain {
     match value {
         Value::Record(ty, slots) => ValueDomain::Product {
-            ty,
+            ty: ty.wire_index(),
             fields: slots
                 .into_vec()
                 .into_iter()
@@ -1843,7 +1847,7 @@ fn domain_to_value(domain: ValueDomain) -> Value {
     match domain {
         ValueDomain::Scalar(scalar) => scalar_to_value(scalar),
         ValueDomain::Product { ty, fields } => Value::Record(
-            ty,
+            TypeId::from_index(ty),
             fields
                 .into_iter()
                 .map(|slot| slot.map(domain_to_value))
@@ -1899,108 +1903,46 @@ fn record_to_entry(value: Value, group_count: usize) -> EntryValue {
 }
 
 /// Convert a whole-entry value into a record value of type `ty`, joining its group
-/// sub-records back as the record's trailing slots. `group_records` names each group's
-/// materialized record type, in declaration order; it is empty for a group-less entry (or
-/// a branch entry, whose executable shape carries no group). The kernel builds
-/// `entry.groups` from the store schema, so its count matches `groups`.
-fn entry_to_record(ty: u16, entry: EntryValue, groups: &[SealedGroup]) -> Value {
+/// sub-records back as the record's trailing slots. The record type names each trailing
+/// group slot's own materialized record (the verifier's record↔member tie), and the kernel
+/// builds one group value per schema group, so every slot has a value. A group or branch
+/// entry carries no groups, so it joins its fields alone.
+fn entry_to_record(image: &VerifiedImage, ty: TypeId, entry: EntryValue) -> Value {
+    let record = image.record_type(ty).fields();
     let mut slots: Vec<Option<Value>> = entry
         .fields
         .into_iter()
         .map(|slot| slot.map(domain_to_value))
         .collect();
     assert_eq!(
-        entry.groups.len(),
-        groups.len(),
-        "the kernel builds one group value per schema group"
+        slots.len() + entry.groups.len(),
+        record.len(),
+        "the kernel builds one value per record slot"
     );
-    for (group, schema) in entry.groups.into_iter().zip(groups) {
-        slots.push(Some(entry_to_record(
-            record_ordinal(schema.record()),
-            group,
-            &[],
-        )));
+    for group in entry.groups {
+        let ImageType::Record { idx, .. } = record[slots.len()].ty() else {
+            unreachable!("the record↔member tie places a Record slot per group")
+        };
+        slots.push(Some(entry_to_record(image, idx, group)));
     }
     Value::Record(ty, slots.into_boxed_slice())
 }
 
-/// The root-level groups of a root-entry site, in declaration order — the sealed groups a
-/// whole-entry [`entry_to_record`] joins and [`record_to_entry`] counts. A branch-entry site
-/// (or any non-root-entry target) has no group on this line, so this is empty.
-fn site_groups(image: &VerifiedImage, site: u16) -> &[SealedGroup] {
-    let SealedSite::Flat { root, target } = &image.sites()[site as usize] else {
-        unreachable!("the verifier admits a durable opcode only over a flat site")
-    };
-    match target {
-        SealedSiteTarget::WholePayload => image.roots()[root.index() as usize].groups(),
-        _ => &[],
-    }
-}
-
-/// The root occurrence a site addresses. The verifier admits a durable opcode only over
-/// a flat executable site, so the referenced site is `Flat`.
-fn site_root(image: &VerifiedImage, site: u16) -> u16 {
-    match &image.sites()[site as usize] {
-        SealedSite::Flat { root, .. } => root_ordinal(*root),
+/// The sealed facts of the flat site a durable opcode names: its root, the record of the
+/// whole entry it materializes, and that record's trailing group-slot count. The verifier
+/// admits a durable opcode only over a flat site.
+fn flat_site(image: &VerifiedImage, site: SiteId) -> (RootId, TypeId, usize) {
+    match image.site(site) {
+        SealedSite::Flat {
+            root,
+            entry,
+            groups,
+            ..
+        } => (*root, *entry, *groups),
         SealedSite::Parked { .. } => {
             unreachable!("the verifier admits a durable opcode only over a flat site")
         }
     }
-}
-
-/// The record type index of the entry a site addresses: the branch's record for a
-/// branch entry site, the root's otherwise. The verifier admits a durable opcode only
-/// over a flat executable site, so the referenced site is `Flat`.
-/// The `u16` a [`Value::Record`] carries for a sealed record type; every sealed reference
-/// was decoded from a `u16` wire read, so the narrowing is total.
-fn root_ordinal(root: RootId) -> u16 {
-    u16::try_from(root.index())
-        .expect("a verified table reference was decoded from a u16 wire read")
-}
-
-fn record_ordinal(record: TypeId) -> u16 {
-    u16::try_from(record.index())
-        .expect("a verified table reference was decoded from a u16 wire read")
-}
-
-fn entry_record_type(image: &VerifiedImage, site: u16) -> u16 {
-    let (root, target) = match &image.sites()[site as usize] {
-        SealedSite::Flat { root, target } => (*root, target),
-        SealedSite::Parked { .. } => {
-            unreachable!("the verifier admits a durable opcode only over a flat site")
-        }
-    };
-    let root = &image.roots()[root.index() as usize];
-    let record = match target {
-        SealedSiteTarget::BranchEntry(path) => {
-            // Walk the branch path level by level through the recursive sealed branch tree;
-            // the deepest branch's own record is the whole-entry record. The verifier
-            // resolved this path against the same tree, so every index is in range.
-            let mut branches = root.branches();
-            let mut record = root.record();
-            for &hop in path.as_ref() {
-                let branch = &branches[hop as usize];
-                record = branch.record();
-                branches = branch.branches();
-            }
-            record
-        }
-        // A field-leaf site (top-level or branch) never reaches a whole-entry read
-        // (the verifier rejects `DurReadEntry` over a field site), so this arm is
-        // never observed; it keeps the match total.
-        SealedSiteTarget::WholePayload
-        | SealedSiteTarget::FieldLeaf(_)
-        | SealedSiteTarget::BranchField { .. } => root.record(),
-        // A whole-group op reads or writes the group's own materialized record, named by
-        // the group's index into the root's declaration-ordered groups.
-        SealedSiteTarget::GroupEntry(group) => root.groups()[*group as usize].record(),
-        // An index-read site names no source entry record; a whole-entry read never
-        // resolves to one.
-        SealedSiteTarget::IndexScan(_) | SealedSiteTarget::IndexLookup(_) => {
-            unreachable!("a whole-entry read never targets an index site")
-        }
-    };
-    record_ordinal(record)
 }
 
 /// Pop a durable operation's key-path: `arity` key operands assembled root-first. The

@@ -8,7 +8,7 @@ use crate::sealed::{
     SealedCollectionType, SealedEnumType, SealedFunction, SealedIndex, SealedInstr,
     SealedRecordType, SealedRoot, SealedSite,
 };
-use marrow_image::{DemandAtom, ExportDemand, ImageType, SemanticPath};
+use marrow_image::{DemandAtom, ExportDemand, ImageType, SemanticPath, SiteId};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(test)]
@@ -24,6 +24,13 @@ pub(super) struct Ctx<'a> {
     pub(super) sites: &'a [SealedSite],
     pub(super) indexes: &'a [SealedIndex],
     pub(super) signatures: &'a [FnSig],
+}
+
+impl Ctx<'_> {
+    /// The sealed site an operand names, or `None` when it is out of range.
+    pub(super) fn site(&self, site: SiteId) -> Option<&SealedSite> {
+        self.sites.get(usize::from(site.index()))
+    }
 }
 
 /// A function's entry role, decided once from the export and test-entry tables. The
@@ -137,7 +144,7 @@ pub(super) struct Effects {
     /// Per function: the durable-access atoms it or a transitive callee performs.
     pub(super) demands: FunctionDemands,
     /// Per function: the image-local site indices it or a transitive callee reaches.
-    pub(super) sites_closure: Vec<BTreeSet<u16>>,
+    pub(super) sites_closure: Vec<BTreeSet<SiteId>>,
     /// Per function: whether its atom closure mutates (write/erase). Projected from
     /// the atom set; consumed by the transaction-flow lattice and the export effect
     /// class.
@@ -175,7 +182,7 @@ impl Effects {
                         let next = lookup.len();
                         let ordinal = *lookup
                             .entry(DemandAtom::new(
-                                site_paths[usize::from(site)].clone(),
+                                site_paths[usize::from(site.index())].clone(),
                                 class,
                             ))
                             .or_insert(next);
@@ -239,7 +246,7 @@ impl Effects {
     }
 
     /// The image-local operation sites the entry at `func` can reach, ascending.
-    pub(super) fn reachable_sites(&self, func: u16) -> Vec<u16> {
+    pub(super) fn reachable_sites(&self, func: u16) -> Vec<SiteId> {
         self.sites_closure[func as usize].iter().copied().collect()
     }
 

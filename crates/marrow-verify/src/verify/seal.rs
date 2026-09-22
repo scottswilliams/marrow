@@ -1,18 +1,15 @@
 //! Phases 3 to 5 over the decoded image, sealing it into a `VerifiedImage`.
 
 use super::context::{CallGraph, Ctx, Effects, EntryKind, FnSig};
-use super::durable::{
-    is_flat_executable_root, member_flat_at_root, seal_branches, seal_groups, seal_root_indexes,
-};
-use super::model::{DecodedImage, DecodedRoot};
+use super::durable::seal_root_indexes;
+use super::model::DecodedImage;
 use super::presence::{EntryFamilies, check_presence_flow, verify_function};
 use super::reject;
 use crate::reject::{Duplicate, RejectionKind as Kind, VerifyPhase, VerifyRejection};
 use crate::sealed::{
-    SealedExport, SealedFunction, SealedIndex, SealedInstr, SealedRecordType, SealedRoot,
-    SealedTestEntry, VerifiedImage,
+    SealedExport, SealedFunction, SealedIndex, SealedInstr, SealedTestEntry, VerifiedImage,
 };
-use marrow_image::{ImageType, TypeId};
+use marrow_image::ImageType;
 use std::rc::Rc;
 
 pub(super) fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
@@ -24,6 +21,7 @@ pub(super) fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejecti
         enums,
         collections,
         roots: decoded_roots,
+        sealed_roots: roots,
         sites,
         site_paths,
         durable_contract,
@@ -33,7 +31,6 @@ pub(super) fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejecti
         exports: decoded_exports,
         test_entries: decoded_test_entries,
     } = decoded;
-    let roots = seal_roots(&decoded_roots, &strings, &types);
     // Each index seals against the one root that declared it, so its projection resolves
     // to that occurrence's record and key positions and no other's.
     let mut indexes: Vec<SealedIndex> = Vec::new();
@@ -214,35 +211,4 @@ fn check_test_entries(
             func: *func,
         })
         .collect())
-}
-
-/// A flat-executable root carries its branch tree and groups; a non-flat root parks every
-/// branch and group site, so it needs neither list.
-fn seal_roots(
-    roots: &[DecodedRoot],
-    strings: &[Rc<str>],
-    types: &[SealedRecordType],
-) -> Vec<SealedRoot> {
-    roots
-        .iter()
-        .map(|root| {
-            let flat = is_flat_executable_root(root);
-            SealedRoot {
-                name: strings[root.name as usize].clone(),
-                keys: root.keys.iter().map(|(scalar, _)| *scalar).collect(),
-                record: TypeId::from_index(root.record),
-                has_extras: !root.members.iter().all(member_flat_at_root),
-                branches: if flat {
-                    seal_branches(&root.members, strings)
-                } else {
-                    Vec::new()
-                },
-                groups: if flat {
-                    seal_groups(root, types)
-                } else {
-                    Vec::new()
-                },
-            }
-        })
-        .collect()
 }

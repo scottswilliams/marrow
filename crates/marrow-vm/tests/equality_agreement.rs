@@ -13,6 +13,7 @@ use std::rc::Rc;
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::RuntimeScalar;
 use marrow_kernel::equality::{RootId, ValueDomain, value_equality};
+use marrow_verify::TypeId;
 use marrow_vm::Value;
 
 /// Project a runtime value into the kernel equality domain. A nominal value is an
@@ -28,7 +29,7 @@ fn to_domain(value: &Value) -> ValueDomain {
         Value::Instant(v) => ValueDomain::Scalar(RuntimeScalar::Instant(*v)),
         Value::Duration(v) => ValueDomain::Scalar(RuntimeScalar::Duration(*v)),
         Value::Record(ty, slots) => ValueDomain::Product {
-            ty: *ty,
+            ty: ty.wire_index(),
             fields: slots
                 .iter()
                 .map(|slot| slot.as_ref().map(to_domain))
@@ -61,7 +62,7 @@ fn to_domain(value: &Value) -> ValueDomain {
         // store boundary), but it participates in `==`, so the specification must cover
         // it, and this projection is the contract the runtime `Value::Id` equality meets.
         Value::Id(root, keys) => ValueDomain::Identity {
-            root: RootId(*root),
+            root: RootId(root.wire_index()),
             keys: keys.to_vec(),
         },
     }
@@ -89,11 +90,20 @@ fn corpus() -> Vec<Value> {
         Value::Duration(-1),
         Value::Duration(90_000_000_000),
         // Products: same type, differing by a field and by sparse presence.
-        Value::Record(0, Box::new([Some(Value::Int(1)), Some(text("a"))])),
-        Value::Record(0, Box::new([Some(Value::Int(2)), Some(text("a"))])),
-        Value::Record(0, Box::new([Some(Value::Int(1)), None])),
+        Value::Record(
+            TypeId::from_index(0),
+            Box::new([Some(Value::Int(1)), Some(text("a"))]),
+        ),
+        Value::Record(
+            TypeId::from_index(0),
+            Box::new([Some(Value::Int(2)), Some(text("a"))]),
+        ),
+        Value::Record(TypeId::from_index(0), Box::new([Some(Value::Int(1)), None])),
         // A different product type with otherwise-equal fields.
-        Value::Record(1, Box::new([Some(Value::Int(1)), Some(text("a"))])),
+        Value::Record(
+            TypeId::from_index(1),
+            Box::new([Some(Value::Int(1)), Some(text("a"))]),
+        ),
         // Sums: Option[int]-shaped none/some, and a distinct sum type.
         Value::Enum(3, 0, Box::new([])),
         Value::Enum(3, 1, Box::new([Value::Int(1)])),
@@ -114,7 +124,7 @@ fn corpus() -> Vec<Value> {
             6,
             1,
             Box::new([Value::Record(
-                2,
+                TypeId::from_index(2),
                 Box::new([
                     Some(Value::Enum(3, 1, Box::new([Value::Int(9)]))),
                     Some(Value::Bytes(Rc::from([0x01u8, 0x02].as_slice()))),
@@ -126,7 +136,7 @@ fn corpus() -> Vec<Value> {
             6,
             1,
             Box::new([Value::Record(
-                2,
+                TypeId::from_index(2),
                 Box::new([
                     Some(Value::Enum(3, 0, Box::new([]))),
                     Some(Value::Bytes(Rc::from([0x01u8, 0x02].as_slice()))),
@@ -149,14 +159,14 @@ fn corpus() -> Vec<Value> {
         Value::list(
             9,
             Rc::new(vec![Value::Record(
-                2,
+                TypeId::from_index(2),
                 Box::new([Some(Value::Enum(3, 1, Box::new([Value::Int(5)])))]),
             )]),
         ),
         Value::list(
             9,
             Rc::new(vec![Value::Record(
-                2,
+                TypeId::from_index(2),
                 Box::new([Some(Value::Enum(3, 0, Box::new([])))]),
             )]),
         ),
@@ -192,14 +202,23 @@ fn corpus() -> Vec<Value> {
         // a single-field record whose type index and field value would ALIAS an identity
         // if identities reused the product domain — the all-pairs sweep asserts they stay
         // unequal under both relations, the injectivity probe for the RootId newtype.
-        Value::Id(0, Rc::from([KeyScalar::Int(1)].as_slice())),
-        Value::Id(0, Rc::from([KeyScalar::Int(2)].as_slice())),
         Value::Id(
-            0,
+            marrow_verify::RootId::from_index(0),
+            Rc::from([KeyScalar::Int(1)].as_slice()),
+        ),
+        Value::Id(
+            marrow_verify::RootId::from_index(0),
+            Rc::from([KeyScalar::Int(2)].as_slice()),
+        ),
+        Value::Id(
+            marrow_verify::RootId::from_index(0),
             Rc::from([KeyScalar::Int(1), KeyScalar::Str("a".into())].as_slice()),
         ),
-        Value::Id(1, Rc::from([KeyScalar::Int(1)].as_slice())),
-        Value::Record(0, Box::new([Some(Value::Int(1))])),
+        Value::Id(
+            marrow_verify::RootId::from_index(1),
+            Rc::from([KeyScalar::Int(1)].as_slice()),
+        ),
+        Value::Record(TypeId::from_index(0), Box::new([Some(Value::Int(1))])),
     ]
 }
 

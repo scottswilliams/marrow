@@ -100,6 +100,7 @@ pub(super) fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejec
     let DecodedDurable {
         graph: durable_graph,
         roots,
+        sealed_roots,
         sites,
         site_paths,
         contract: durable_contract,
@@ -126,6 +127,7 @@ pub(super) fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejec
         enums,
         collections,
         roots,
+        sealed_roots,
         sites,
         site_paths,
         durable_contract,

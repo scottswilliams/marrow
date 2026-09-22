@@ -1006,6 +1006,7 @@ pub fn readA(id: int): int? {
                 SealedSite::Flat {
                     root,
                     target: SealedSiteTarget::FieldLeaf(0),
+                    ..
                 } => Some((site_id, root.index() as u16)),
                 _ => None,
             })
@@ -1137,9 +1138,9 @@ fn a_repeated_product_mints_its_member_sites_on_demand() {
             .sites()
             .iter()
             .filter_map(|site| match site {
-                SealedSite::Flat { root: at, target } if at.index() == u32::from(root) => {
-                    Some(format!("{target:?}"))
-                }
+                SealedSite::Flat {
+                    root: at, target, ..
+                } if at.index() == u32::from(root) => Some(format!("{target:?}")),
                 _ => None,
             })
             .collect()

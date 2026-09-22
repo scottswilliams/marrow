@@ -553,7 +553,7 @@ fn result_value(image: &VerifiedImage, name: &str, variant: &str, payload: Value
     else {
         panic!("{name} returns a non-optional Result");
     };
-    let idx = u16::try_from(idx.index()).expect("a verified enum index");
+    let idx = idx.wire_index();
     let variant = u16::try_from(
         image.enums()[usize::from(idx)]
             .variants()

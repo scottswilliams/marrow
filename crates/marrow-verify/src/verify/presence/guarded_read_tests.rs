@@ -1,4 +1,4 @@
-use crate::{SealedConst, SealedInstr, SealedSite, SealedSiteTarget, VerifyPhase};
+use crate::{SealedConst, SealedInstr, SealedSite, SealedSiteTarget, SiteId, TypeId, VerifyPhase};
 use marrow_codes::Code;
 use marrow_image::{
     DeclarationMemberDef, DeclarationMemberShape, ExportId, FieldDef, FunctionDef, ImageDraft,
@@ -261,10 +261,14 @@ fn the_guarded_function_shape_is_sealed(verified: &crate::VerifiedImage) {
             SealedSite::Flat {
                 root: RootId::from_index(0),
                 target: SealedSiteTarget::WholePayload,
+                entry: TypeId::from_index(0),
+                groups: 0,
             },
             SealedSite::Flat {
                 root: RootId::from_index(0),
                 target: SealedSiteTarget::FieldLeaf(0),
+                entry: TypeId::from_index(0),
+                groups: 0,
             },
         ],
     );
@@ -284,7 +288,10 @@ fn the_guarded_diamond_tape_is_sealed(function: &crate::SealedFunction) {
         let start = 1 + 7 * index;
         assert_eq!(code[start], SealedInstr::LocalGet(first));
         assert_eq!(code[start + 1], SealedInstr::LocalGet(second));
-        assert_eq!(code[start + 2], SealedInstr::DurExists(0));
+        assert_eq!(
+            code[start + 2],
+            SealedInstr::DurExists(SiteId::from_index(0))
+        );
         assert_eq!(code[start + 3], SealedInstr::JumpIfFalse(32));
         assert_eq!(code[start + 4], SealedInstr::ConstLoad(1));
         assert_eq!(code[start + 5], SealedInstr::JumpIfFalse(start + 7));
@@ -295,7 +302,7 @@ fn the_guarded_diamond_tape_is_sealed(function: &crate::SealedFunction) {
         &[
             SealedInstr::Pop,
             SealedInstr::DurReadFieldPresent {
-                site: 1,
+                site: SiteId::from_index(1),
                 key_slots: vec![0, 0],
             },
             SealedInstr::Return,
@@ -324,7 +331,10 @@ fn a_guarded_key_pair_verifies_and_an_unguarded_one_is_refused() {
     assert_eq!(export.id(), ExportId::of_local("", "inspect"));
     assert_eq!(export.function().index(), 0);
     assert!(!export.is_mutating());
-    assert_eq!(export.reachable_sites(), &[0, 1]);
+    assert_eq!(
+        export.reachable_sites(),
+        &[SiteId::from_index(0), SiteId::from_index(1)]
+    );
     the_guarded_function_shape_is_sealed(&verified);
     the_guarded_diamond_tape_is_sealed(&verified.functions()[0]);
 

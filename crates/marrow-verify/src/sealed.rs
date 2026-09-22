@@ -16,7 +16,7 @@ use marrow_image::{
     CollTypeId, DemandSetId, DemandView, DurableContractGraph, DurableContractId,
     DurableContractView, DurableIndexComponent, ExportDemand, ExportId, ImageId, ImageType,
     LedgerIdBytes, OperationClass, RootId, Scalar, SemanticNode, SemanticPath, SemanticTarget,
-    TypeId,
+    SiteId, TypeId,
 };
 
 /// A relative position in a [`VerifiedImage`]'s function table, distinct from local,
@@ -117,11 +117,16 @@ pub enum SealedSiteTarget {
 /// reference to a `Parked` site is refused in phase 3.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SealedSite {
-    /// Executable on the flat keyed root: the root index it resolved to
-    /// and the whole-payload or resolved-field-index target.
+    /// Executable on the flat keyed root: the root index it resolved to, the resolved
+    /// target, the record of the whole entry the site materializes (the deepest branch's
+    /// record for a branch site, the group's record for a group site, the root's record
+    /// otherwise), and the number of trailing group slots that record carries (non-zero
+    /// only for a whole-payload site).
     Flat {
         root: RootId,
         target: SealedSiteTarget,
+        entry: TypeId,
+        groups: usize,
     },
     /// A sealed but not-yet-executable site over the wider durable graph. It carries the
     /// resolved node path and target so a widened kernel can derive its physical
@@ -466,7 +471,7 @@ pub struct SealedExport {
     /// The image-local indices of the operation sites the export's call closure can
     /// reach, ascending. Meaningful only within this image's [`ImageId`] — site
     /// indices are not a stable boundary identity and never enter the `DemandSetId`.
-    pub(crate) reachable_sites: Vec<u16>,
+    pub(crate) reachable_sites: Vec<SiteId>,
 }
 
 impl SealedExport {
@@ -490,7 +495,7 @@ impl SealedExport {
     /// The image-local operation sites this export's call closure can reach, in
     /// ascending index order. This is not stable demand — it is bound to this exact
     /// image and is never part of any identity.
-    pub fn reachable_sites(&self) -> &[u16] {
+    pub fn reachable_sites(&self) -> &[SiteId] {
         &self.reachable_sites
     }
 }
@@ -580,6 +585,11 @@ impl VerifiedImage {
         &self.roots
     }
 
+    /// The verified root a typed reference names. Every verified reference indexes this table.
+    pub fn root(&self, root: RootId) -> &SealedRoot {
+        &self.roots[root.index() as usize]
+    }
+
     /// The durable-contract identity of this image's durable graph, independently
     /// recomputed by the verifier and proven to match the bytes the image carried.
     /// A later store-admission phase binds an activated store to this id.
@@ -606,6 +616,11 @@ impl VerifiedImage {
     /// The durable operation sites, indexed by image site index.
     pub fn sites(&self) -> &[SealedSite] {
         &self.sites
+    }
+
+    /// The verified site an operand names. Every verified operand indexes this table.
+    pub fn site(&self, site: SiteId) -> &SealedSite {
+        &self.sites[usize::from(site.index())]
     }
 
     /// The verified managed indexes, in image declaration order. Each is a narrow

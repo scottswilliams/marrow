@@ -5,9 +5,7 @@ mod members;
 mod project;
 mod sites;
 
-pub(crate) use project::{
-    is_flat_executable_root, member_flat_at_root, seal_branches, seal_groups, seal_root_indexes,
-};
+pub(crate) use project::seal_root_indexes;
 
 use super::model::DecodedRoot;
 use super::reject;
@@ -15,7 +13,7 @@ use crate::reader::Reader;
 use crate::reject::{
     Bound, Duplicate, Ref, Region, RejectionKind as Kind, VerifyPhase, VerifyRejection,
 };
-use crate::sealed::{SealedEnumType, SealedRecordType, SealedSite};
+use crate::sealed::{SealedEnumType, SealedRecordType, SealedRoot, SealedSite};
 use marrow_image::{
     AdmittedGraphInputPlan, DurableContractGraph, DurableContractId, DurableGraphInputRefusal,
     DurableIndexShape, KeyColumn, RootOccurrenceDef, SemanticNode, SemanticPath, StrId, TypeId,
@@ -36,6 +34,8 @@ use std::rc::Rc;
 pub(super) struct DecodedDurable {
     pub(super) graph: Rc<DurableContractGraph>,
     pub(super) roots: Vec<DecodedRoot>,
+    /// The roots' sealed branch trees and groups, which each flat site's entry facts read.
+    pub(super) sealed_roots: Vec<SealedRoot>,
     pub(super) sites: Vec<SealedSite>,
     /// Each site's resolved graph-node path, parallel to `sites` by index.
     pub(super) site_paths: Vec<SemanticPath>,
@@ -127,11 +127,13 @@ pub(super) fn decode_durable(
     // computed over, so every operation site resolves against this verifier's own
     // derivation of the graph rather than a compiler-side summary.
     let nodes = graph.contract_view().semantic_nodes();
-    let (sites, site_paths) = decode_sites(&mut reader, &nodes, &roots)?;
+    let sealed_roots = project::seal_roots(&roots, strings, types);
+    let (sites, site_paths) = decode_sites(&mut reader, &nodes, &roots, &sealed_roots)?;
     let contract = close_contract(&mut reader, &graph)?;
     Ok(DecodedDurable {
         graph: Rc::new(graph),
         roots,
+        sealed_roots,
         sites,
         site_paths,
         contract,

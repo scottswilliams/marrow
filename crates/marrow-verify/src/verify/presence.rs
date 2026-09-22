@@ -9,7 +9,7 @@ use super::reject;
 use super::spans::map_spans;
 use crate::reject::{RejectionKind as Kind, VerifyPhase, VerifyRejection};
 use crate::sealed::{SealedConst, SealedFunction, SealedInstr, SealedSite, SealedSiteTarget};
-use marrow_image::{OperationClass, RootId, SemanticPath};
+use marrow_image::{OperationClass, RootId, SemanticPath, SiteId};
 use std::collections::BTreeSet;
 use std::rc::Rc;
 
@@ -254,7 +254,7 @@ fn presence_edges(
             // not reason about key equality. Facts of other families survive: an erase
             // touches only the entry's own payload, so a child family's entry outlives
             // its parent's erase.
-            if let Some((root, branch)) = ctx.sites.get(*site as usize).and_then(entry_family) {
+            if let Some((root, branch)) = ctx.site(*site).and_then(entry_family) {
                 present.retain(|fact| {
                     let (fact_root, fact_branch, _) = facts.get(*fact);
                     (*fact_root, fact_branch.as_slice()) != (root, branch)
@@ -298,7 +298,7 @@ fn presence_edges(
 
 /// Exact entry identity; field, group and index sites are not entry families.
 fn entry_family(site: &SealedSite) -> Option<(RootId, &[u16])> {
-    let SealedSite::Flat { root, target } = site else {
+    let SealedSite::Flat { root, target, .. } = site else {
         return None;
     };
     match target {
@@ -312,8 +312,8 @@ fn entry_family(site: &SealedSite) -> Option<(RootId, &[u16])> {
 /// root index it lives under, its branch path (empty for the root), and its whole
 /// key-path column arity. `None` for a non-entry site (a field leaf or index), which
 /// names no entry to prove present.
-fn entry_site(ctx: &Ctx, site: u16) -> Option<(RootId, Vec<u16>, usize)> {
-    let (root_index, branch) = entry_family(ctx.sites.get(site as usize)?)?;
+fn entry_site(ctx: &Ctx, site: SiteId) -> Option<(RootId, Vec<u16>, usize)> {
+    let (root_index, branch) = entry_family(ctx.site(site)?)?;
     let root = ctx.roots.get(root_index.index() as usize)?;
     let extra = branch_key_columns(root, branch).ok()?;
     Some((root_index, branch.to_vec(), root.keys.len() + extra.len()))
@@ -323,8 +323,8 @@ fn entry_site(ctx: &Ctx, site: u16) -> Option<(RootId, Vec<u16>, usize)> {
 /// branch path of a field leaf (empty for a root field, the branch placement path for a
 /// branch field), or the root and an empty path for a root-level group. `None` for a
 /// site that is not a field or group.
-fn payload_site_family(ctx: &Ctx, site: u16) -> Option<(RootId, Vec<u16>)> {
-    let SealedSite::Flat { root, target } = ctx.sites.get(site as usize)? else {
+fn payload_site_family(ctx: &Ctx, site: SiteId) -> Option<(RootId, Vec<u16>)> {
+    let SealedSite::Flat { root, target, .. } = ctx.site(site)? else {
         return None;
     };
     match target {
@@ -400,7 +400,8 @@ fn read_entry_guard_fact(
             let SealedSite::Flat {
                 root,
                 target: SealedSiteTarget::GroupEntry(_),
-            } = ctx.sites.get(usize::from(*site))?
+                ..
+            } = ctx.site(*site)?
             else {
                 return None;
             };
@@ -479,7 +480,7 @@ mod presence_root_discrimination {
     use std::collections::BTreeSet;
     use std::rc::Rc;
 
-    use marrow_image::{RootId, Scalar, TypeId};
+    use marrow_image::{RootId, Scalar, SiteId, TypeId};
 
     use super::super::context::{CallGraph, Ctx, Effects};
     use super::{EntryFamilies, PresenceFacts, presence_edges};
@@ -503,10 +504,14 @@ mod presence_root_discrimination {
             SealedSite::Flat {
                 root: RootId::from_index(0),
                 target: SealedSiteTarget::WholePayload,
+                entry: TypeId::from_index(0),
+                groups: 0,
             },
             SealedSite::Flat {
                 root: RootId::from_index(1),
                 target: SealedSiteTarget::WholePayload,
+                entry: TypeId::from_index(0),
+                groups: 0,
             },
         ];
         let ctx = Ctx {
@@ -523,10 +528,10 @@ mod presence_root_discrimination {
         let code = [
             SealedInstr::LocalGet(7),
             SealedInstr::LocalGet(3),
-            SealedInstr::DurCreateEntry(0),
+            SealedInstr::DurCreateEntry(SiteId::from_index(0)),
             SealedInstr::LocalGet(7),
             SealedInstr::LocalGet(3),
-            SealedInstr::DurCreateEntry(1),
+            SealedInstr::DurCreateEntry(SiteId::from_index(1)),
         ];
         let entries = [false; 6];
         let facts = PresenceFacts::new(&code, &ctx, &entries);

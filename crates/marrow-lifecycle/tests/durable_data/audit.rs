@@ -216,7 +216,7 @@ fn add_person(dir: &Path, image: &VerifiedImage, id: i64, name: &str, email: Opt
         .position(|site| {
             matches!(
                 site,
-                marrow_verify::SealedSite::Flat { root, target: marrow_verify::SealedSiteTarget::WholePayload } if *root == marrow_verify::RootId::from_index(0)
+                marrow_verify::SealedSite::Flat { root, target: marrow_verify::SealedSiteTarget::WholePayload, .. } if *root == marrow_verify::RootId::from_index(0)
             )
         })
         .expect("the program writes a whole entry") as u16;

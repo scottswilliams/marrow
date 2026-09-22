@@ -93,7 +93,9 @@ pub fn walk<S: ValueSink>(
             sink.enum_close(payload.len())
         }
         Value::Record(idx, slots) => {
-            let fields = types.get(*idx as usize).map(SealedRecordType::fields);
+            let fields = types
+                .get(idx.index() as usize)
+                .map(SealedRecordType::fields);
             let name = |position: usize| -> Option<&str> {
                 fields
                     .and_then(|fields| fields.get(position))
@@ -444,7 +446,10 @@ mod tests {
                 "[1: a]",
             ),
             (
-                Value::Record(0, vec![Some(Value::Int(7)), None].into_boxed_slice()),
+                Value::Record(
+                    marrow_verify::TypeId::from_index(0),
+                    vec![Some(Value::Int(7)), None].into_boxed_slice(),
+                ),
                 "{7, absent}",
             ),
             (Value::Optional(Some(Box::new(Value::Bool(true)))), "true"),

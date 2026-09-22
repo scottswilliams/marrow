@@ -270,7 +270,7 @@ impl SiteDemandPlan {
         if self.rows.len() >= MAX_SITES {
             return self.saturate(draft, demand, stamp);
         }
-        let Ok(ordinal) = u16::try_from(self.rows.len()).map(SiteId::from_ordinal) else {
+        let Ok(ordinal) = u16::try_from(self.rows.len()).map(SiteId::from_index) else {
             return self.saturate(draft, demand, stamp);
         };
         self.rows.push(SiteRow { key, stamp });

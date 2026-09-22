@@ -3,6 +3,7 @@
 use std::rc::Rc;
 
 use marrow_kernel::codec::key::KeyScalar;
+use marrow_verify::{RootId, TypeId};
 
 pub(crate) const MAX_COLLECTION_LEN: usize = 65_536;
 const MAX_AGGREGATE_BYTES: usize = 1 << 20;
@@ -15,7 +16,7 @@ pub fn collection_within_limits(len: usize, aggregate_bytes: usize) -> bool {
 
 /// A runtime value.
 ///
-/// A record carries its type index and one slot per field in declared order; a
+/// A record carries its record type and one slot per field in declared order; a
 /// required field's slot is always present, a sparse field's slot may be vacant.
 /// An optional's vacant state is `Optional(None)` — there is no separate absent
 /// variant.
@@ -52,16 +53,16 @@ pub enum Value {
     Instant(i128),
     /// A `duration`, held as a signed count of nanoseconds.
     Duration(i128),
-    Record(u16, Box<[Option<Value>]>),
+    Record(TypeId, Box<[Option<Value>]>),
     Optional(Option<Box<Value>>),
     Enum(u16, u16, Box<[Value]>),
     List(u16, usize, Rc<Vec<Value>>),
     Map(u16, usize, Rc<Vec<(KeyScalar, Value)>>),
-    /// An entry identity `Id(^root)`: its ROOTS-table root index and the key tuple
+    /// An entry identity `Id(^root)`: its ROOTS-table root and the key tuple
     /// (one [`KeyScalar`] per key column, in declaration order) that addresses one
     /// entry. Equality is root plus key-tuple equality — the runtime half of the
     /// kernel's `ValueDomain::Identity` specification. Not a durable cell value here.
-    Id(u16, Rc<[KeyScalar]>),
+    Id(RootId, Rc<[KeyScalar]>),
 }
 
 impl PartialEq for Value {

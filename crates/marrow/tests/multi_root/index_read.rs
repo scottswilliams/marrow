@@ -332,7 +332,10 @@ end\n";
 
 fn key_only_lifetime(source: &str, ids: &str) {
     let mut session = open(source, ids);
-    let identity = Value::Optional(Some(Box::new(Value::Id(0, [KeyScalar::Int(7)].into()))));
+    let identity = Value::Optional(Some(Box::new(Value::Id(
+        RootId::from_index(0),
+        [KeyScalar::Int(7)].into(),
+    ))));
     let absent = (
         Some(Value::Bool(false)),
         Some(Value::Optional(None)),
@@ -428,7 +431,8 @@ fn key_only_scan(source: &str, ids: &str) {
     let SealedSite::Flat {
         root,
         target: SealedSiteTarget::IndexScan(index),
-    } = &image.sites()[usize::from(site)]
+        ..
+    } = image.site(site)
     else {
         panic!("the executed scan must name an executable index site");
     };
@@ -724,7 +728,7 @@ fn key_only_unique_subset_collision_rolls_back_the_complete_transaction() {
     assert_eq!(
         session.call("findItem", vec![Value::Int(7)]),
         Some(Value::Optional(Some(Box::new(Value::Id(
-            0,
+            RootId::from_index(0),
             [KeyScalar::Int(7)].into()
         )))))
     );

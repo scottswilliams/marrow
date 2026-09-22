@@ -1,11 +1,11 @@
 use super::{EntryFamilies, entry_family};
 use crate::sealed::{SealedSite, SealedSiteTarget};
-use marrow_image::RootId;
 use marrow_image::{
     DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId, FieldDef, FuncId,
     FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
     RootOccurrenceDef, Scalar, SemanticPath, SemanticTarget, SpanEntry,
 };
+use marrow_image::{RootId, TypeId};
 use marrow_test_support::{admitted_plan, site};
 
 fn id(kind: u8, index: usize) -> LedgerIdBytes {
@@ -29,6 +29,8 @@ fn entry_lookup_finds_every_family_from_reverse_ordered_sites() {
             .map(|index| SealedSite::Flat {
                 root: RootId::from_index(index as u16),
                 target: SealedSiteTarget::BranchEntry(vec![3, 7].into_boxed_slice()),
+                entry: TypeId::from_index(0),
+                groups: 0,
             })
             .collect();
         let paths: Vec<_> = (0..entries).rev().map(path).collect();
@@ -48,22 +50,32 @@ fn entry_lookup_borrows_branch_storage_and_excludes_non_entries() {
         SealedSite::Flat {
             root: RootId::from_index(0),
             target: SealedSiteTarget::WholePayload,
+            entry: TypeId::from_index(0),
+            groups: 0,
         },
         SealedSite::Flat {
             root: RootId::from_index(3),
             target: SealedSiteTarget::BranchEntry(vec![2, 7].into_boxed_slice()),
+            entry: TypeId::from_index(0),
+            groups: 0,
         },
         SealedSite::Flat {
             root: RootId::from_index(4),
             target: SealedSiteTarget::BranchEntry(vec![2, 7].into_boxed_slice()),
+            entry: TypeId::from_index(0),
+            groups: 0,
         },
         SealedSite::Flat {
             root: RootId::from_index(3),
             target: SealedSiteTarget::BranchEntry(vec![2, 8].into_boxed_slice()),
+            entry: TypeId::from_index(0),
+            groups: 0,
         },
         SealedSite::Flat {
             root: RootId::from_index(0),
             target: SealedSiteTarget::FieldLeaf(0),
+            entry: TypeId::from_index(0),
+            groups: 0,
         },
         SealedSite::Flat {
             root: RootId::from_index(3),
@@ -71,18 +83,26 @@ fn entry_lookup_borrows_branch_storage_and_excludes_non_entries() {
                 branch: vec![2, 7].into_boxed_slice(),
                 field: 0,
             },
+            entry: TypeId::from_index(0),
+            groups: 0,
         },
         SealedSite::Flat {
             root: RootId::from_index(0),
             target: SealedSiteTarget::GroupEntry(0),
+            entry: TypeId::from_index(0),
+            groups: 0,
         },
         SealedSite::Flat {
             root: RootId::from_index(0),
             target: SealedSiteTarget::IndexScan(0),
+            entry: TypeId::from_index(0),
+            groups: 0,
         },
         SealedSite::Flat {
             root: RootId::from_index(0),
             target: SealedSiteTarget::IndexLookup(0),
+            entry: TypeId::from_index(0),
+            groups: 0,
         },
         SealedSite::Parked {
             path: path(9),
@@ -104,6 +124,7 @@ fn entry_lookup_borrows_branch_storage_and_excludes_non_entries() {
         let SealedSite::Flat {
             root,
             target: SealedSiteTarget::BranchEntry(original),
+            ..
         } = &sites[index]
         else {
             panic!("branch fixture");

@@ -260,7 +260,11 @@ fn reachable_sites_are_image_local_and_not_in_the_demand_id() {
     for export in [read, bump] {
         let sites = export.reachable_sites();
         assert!(sites.windows(2).all(|w| w[0] < w[1]));
-        assert!(sites.iter().all(|&s| (s as usize) < image.sites().len()));
+        assert!(
+            sites
+                .iter()
+                .all(|&s| usize::from(s.index()) < image.sites().len())
+        );
     }
     // `bump` reaches at least a read and a write site; `readValue` reaches at least
     // one. The bitset is image-local — it is never fed into the stable demand id,

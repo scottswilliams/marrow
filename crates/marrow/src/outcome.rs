@@ -994,7 +994,10 @@ mod tests {
             // Missing metadata keeps the existing empty-name fallbacks and stable
             // field order when those names compare equal.
             (
-                Value::Record(0, vec![Some(Value::Int(7)), None].into_boxed_slice()),
+                Value::Record(
+                    marrow_verify::TypeId::from_index(0),
+                    vec![Some(Value::Int(7)), None].into_boxed_slice(),
+                ),
                 r#"{"":7,"":null}"#,
             ),
             (
@@ -1011,7 +1014,7 @@ mod tests {
             ),
             (
                 Value::Id(
-                    0,
+                    marrow_verify::RootId::from_index(0),
                     vec![KeyScalar::Str("é\n".to_string()), KeyScalar::Int(-2)].into(),
                 ),
                 r#""Id(é\n, -2)""#,
@@ -1056,7 +1059,7 @@ mod tests {
                 )]),
             );
             let id = Value::Id(
-                0,
+                marrow_verify::RootId::from_index(0),
                 vec![KeyScalar::Str("a".repeat(MAX_DATA_BYTES - 6 + extra))].into(),
             );
             for value in [list, id] {

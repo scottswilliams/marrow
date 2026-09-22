@@ -15,7 +15,7 @@ pub use marrow_image::{
     CeilingDescriptor, CeilingId, CollTypeId, DemandAtom, DemandSetId, DemandView,
     DurableContractId, DurableGraphInputRefusal, DurableIndexComponent, ExportDemand, ExportId,
     ImageId, ImageType, LedgerIdBytes, OperationClass, RootId, Scalar, SealedInstr, SemanticNode,
-    SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget, TypeId,
+    SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget, SiteId, TypeId,
 };
 pub use reject::{
     Bound, Duplicate, Flag, Operand, Projection, Ref, Region, RejectionKind, SiteFault, SiteKind,

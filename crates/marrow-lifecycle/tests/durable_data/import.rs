@@ -205,7 +205,7 @@ end\n";
             .position(|site| {
                 matches!(
                     site,
-                    SealedSite::Flat { root, target: SealedSiteTarget::IndexLookup(_) } if *root == marrow_verify::RootId::from_index(0)
+                    SealedSite::Flat { root, target: SealedSiteTarget::IndexLookup(_), .. } if *root == marrow_verify::RootId::from_index(0)
                 )
             })
             .expect("source lookup site") as u16;
@@ -215,7 +215,7 @@ end\n";
             .position(|site| {
                 matches!(
                     site,
-                    SealedSite::Flat { root, target: SealedSiteTarget::IndexScan(_) } if *root == marrow_verify::RootId::from_index(0)
+                    SealedSite::Flat { root, target: SealedSiteTarget::IndexScan(_), .. } if *root == marrow_verify::RootId::from_index(0)
                 )
             })
             .expect("source scan site") as u16;
@@ -262,7 +262,7 @@ fn whole_entry_site(image: &VerifiedImage) -> u16 {
         .position(|site| {
             matches!(
                 site,
-                SealedSite::Flat { root, target: SealedSiteTarget::WholePayload } if *root == marrow_verify::RootId::from_index(0)
+                SealedSite::Flat { root, target: SealedSiteTarget::WholePayload, .. } if *root == marrow_verify::RootId::from_index(0)
             )
         })
         .map(|index| index as u16)

@@ -709,7 +709,7 @@ fn place_composed_and_inline_branch_writes_seal_the_same_site() {
             .iter()
             .filter_map(|instr| match instr {
                 SealedInstr::DurCreateEntry(site) | SealedInstr::DurReplaceEntry(site) => {
-                    Some(*site)
+                    Some(site.index())
                 }
                 _ => None,
             })

@@ -695,7 +695,7 @@ fn emit_site(
     index_offsets: &[u16],
 ) -> Option<()> {
     let (root, target) = match site {
-        SealedSite::Flat { root, target } => (root_ordinal(*root), target),
+        SealedSite::Flat { root, target, .. } => (root.wire_index(), target),
         SealedSite::Parked { .. } => {
             projection.parked_site();
             return Some(());
@@ -727,13 +727,6 @@ fn emit_site(
 /// root-local position the kernel's site targets carry. `None` when the position sits below
 /// its root's first index or the root is unknown — either way the image's shape and the
 /// derived projection disagree, and the caller parks.
-/// The `u16` the kernel projection names a root by; every sealed root reference was decoded
-/// from a `u16` wire read, so the narrowing is total.
-fn root_ordinal(root: RootId) -> u16 {
-    u16::try_from(root.index())
-        .expect("a verified table reference was decoded from a u16 wire read")
-}
-
 fn root_local_index(index: u16, root: u16, index_offsets: &[u16]) -> Option<u16> {
     index.checked_sub(*index_offsets.get(root as usize)?)
 }
@@ -756,12 +749,6 @@ fn value_shape(image: &VerifiedImage, ty: ImageType) -> Option<ValueShape> {
         Close,
     }
 
-    /// The sealed wire-domain `u16` of a verified typed table reference. Every value here
-    /// was decoded from a `u16` wire read, so the narrowing is total.
-    fn sealed_ordinal(index: u32) -> u16 {
-        u16::try_from(index).expect("a verified table reference was decoded from a u16 wire read")
-    }
-
     let mut builder = ValueShapeBuilder::new();
     let mut pending = vec![ShapeStep::Ty(ty)];
     while let Some(step) = pending.pop() {
@@ -770,7 +757,7 @@ fn value_shape(image: &VerifiedImage, ty: ImageType) -> Option<ValueShape> {
                 builder.scalar(scalar_kind(scalar));
             }
             ShapeStep::Ty(ImageType::Record { idx, .. }) => {
-                builder.open_product(sealed_ordinal(idx.index()));
+                builder.open_product(idx.wire_index());
                 pending.push(ShapeStep::Close);
                 pending.extend(
                     image
@@ -783,11 +770,11 @@ fn value_shape(image: &VerifiedImage, ty: ImageType) -> Option<ValueShape> {
             }
             ShapeStep::Ty(ImageType::Enum { idx, .. }) => {
                 let sealed = image.enums().get(idx.index() as usize)?;
-                builder.open_sum(sealed_ordinal(idx.index()));
+                builder.open_sum(idx.wire_index());
                 pending.push(ShapeStep::Close);
                 pending.extend((0..sealed.variants().len()).rev().map(|variant| {
                     ShapeStep::Variant {
-                        enum_idx: sealed_ordinal(idx.index()),
+                        enum_idx: idx.wire_index(),
                         variant,
                     }
                 }));

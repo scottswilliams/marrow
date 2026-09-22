@@ -218,14 +218,14 @@ fn fixture(target: Target) -> Fixture {
     let earlier_site = tape
         .iter()
         .find_map(|instr| match instr {
-            SealedInstr::DurReplaceEntry(site) => Some(*site),
+            SealedInstr::DurReplaceEntry(site) => Some(site.index()),
             _ => None,
         })
         .expect("earlier replacement");
     let target_site = tape
         .iter()
         .find_map(|instr| match instr {
-            SealedInstr::DurExists(site) => Some(*site),
+            SealedInstr::DurExists(site) => Some(site.index()),
             _ => None,
         })
         .expect("target marker guard");

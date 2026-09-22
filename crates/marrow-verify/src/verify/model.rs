@@ -1,7 +1,7 @@
 //! The decoded intermediate model: the plain records phase 1/2 build before sealing.
 
 use crate::sealed::{
-    SealedCollectionType, SealedConst, SealedEnumType, SealedRecordType, SealedSite,
+    SealedCollectionType, SealedConst, SealedEnumType, SealedRecordType, SealedRoot, SealedSite,
 };
 use marrow_image::{
     DurableContractGraph, DurableContractId, DurableIndexShape, DurableProductGraph, ExportId,
@@ -51,6 +51,7 @@ pub(super) struct DecodedImage {
     pub(super) enums: Vec<SealedEnumType>,
     pub(super) collections: Vec<SealedCollectionType>,
     pub(super) roots: Vec<DecodedRoot>,
+    pub(super) sealed_roots: Vec<SealedRoot>,
     pub(super) sites: Vec<SealedSite>,
     /// Each site's resolved graph-node path, parallel to `sites` by index.
     pub(super) site_paths: Vec<SemanticPath>,

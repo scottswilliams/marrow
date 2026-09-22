@@ -1,4 +1,4 @@
-use crate::{FunctionIndex, RejectionKind, SealedInstr, VerifiedImage, VerifyPhase};
+use crate::{FunctionIndex, RejectionKind, SealedInstr, SiteId, VerifiedImage, VerifyPhase};
 use marrow_image::{
     ConstId, DeclarationMemberDef, DeclarationMemberShape, DemandAtom, ExportDemand, ExportId,
     FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, OP_CALL,
@@ -210,10 +210,10 @@ fn the_diamond_tapes_survive_verification(verified: &VerifiedImage, roles: [u16;
         verified.functions()[usize::from(leaf)].instrs(),
         [
             SealedInstr::ConstLoad(0),
-            SealedInstr::DurExists(0),
+            SealedInstr::DurExists(site),
             SealedInstr::Pop,
             SealedInstr::Return
-        ]
+        ] if *site == SiteId::from_index(0)
     ));
     assert!(matches!(
         verified.functions()[usize::from(root)].instrs(),
@@ -245,7 +245,7 @@ fn the_diamond_export_carries_the_closure(
         expected.as_view()
     );
     assert_eq!(export.demand_id(), expected.demand_set_id());
-    assert_eq!(export.reachable_sites(), &[0]);
+    assert_eq!(export.reachable_sites(), &[SiteId::from_index(0)]);
     assert!(!export.is_mutating());
 }
 
@@ -304,7 +304,7 @@ fn function_and_selected_demands_preserve_driver_semantics() {
         expected.as_view()
     );
     assert_eq!(export.demand_id(), expected_id);
-    assert_eq!(export.reachable_sites(), &[0]);
+    assert_eq!(export.reachable_sites(), &[SiteId::from_index(0)]);
     assert!(!export.is_mutating());
     let test = &verified.test_entries()[0];
     assert_eq!(test.func(), FunctionIndex::new(4));
@@ -415,7 +415,7 @@ fn the_two_root_tapes_survive_verification(verified: &VerifiedImage) {
                 SealedInstr::DurExists(actual),
                 SealedInstr::Pop,
                 SealedInstr::Return
-            ] if *actual == site
+            ] if *actual == SiteId::from_index(site)
         ));
     }
     assert!(matches!(
@@ -442,7 +442,7 @@ fn the_two_root_entry_points_carry_their_own_demands(
         a.as_view()
     );
     assert_eq!(export.demand_id(), a.demand_set_id());
-    assert_eq!(export.reachable_sites(), &[0]);
+    assert_eq!(export.reachable_sites(), &[SiteId::from_index(0)]);
     assert!(!export.is_mutating());
     let test = &verified.test_entries()[0];
     assert_eq!(test.func(), FunctionIndex::new(0));
@@ -607,7 +607,10 @@ fn a_transitive_presence_read_must_precede_commit() {
                 assert_eq!(function.demand(), presence_demand().as_view());
                 assert!(!function.body().is_mutating());
             }
-            assert_eq!(verified.exports()[0].reachable_sites(), &[0]);
+            assert_eq!(
+                verified.exports()[0].reachable_sites(),
+                &[SiteId::from_index(0)]
+            );
         }
     }
 }

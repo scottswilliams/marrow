@@ -12,7 +12,7 @@
 //! (the array of its key-column scalars). The graph is closed over every
 //! `ImageType`, so a served signature always has a codec.
 
-use marrow_image::{CollTypeId, ImageType, Scalar, TypeId};
+use marrow_image::{CollTypeId, ImageType, RootId, Scalar, TypeId};
 use marrow_local_wire::{Json, ValueWriter, WireError};
 use marrow_verify::{SealedCollectionType, VerifiedImage};
 use marrow_vm::{KeyScalar, Value, collection_within_limits, key_bytes};
@@ -27,18 +27,18 @@ pub(crate) fn decode_arg(image: &VerifiedImage, ty: &ImageType, json: &Json) -> 
         ImageType::Scalar { scalar, optional } => {
             wrap_optional(*optional, json, |j| decode_scalar(*scalar, j))
         }
-        ImageType::Record { idx, optional } => wrap_optional(*optional, json, |j| {
-            decode_record(image, sealed_ordinal(idx.index()), j)
-        }),
-        ImageType::Enum { idx, optional } => wrap_optional(*optional, json, |j| {
-            decode_enum(image, sealed_ordinal(idx.index()), j)
-        }),
+        ImageType::Record { idx, optional } => {
+            wrap_optional(*optional, json, |j| decode_record(image, *idx, j))
+        }
+        ImageType::Enum { idx, optional } => {
+            wrap_optional(*optional, json, |j| decode_enum(image, idx.wire_index(), j))
+        }
         ImageType::Collection { idx, optional } => wrap_optional(*optional, json, |j| {
-            decode_collection(image, sealed_ordinal(idx.index()), j)
+            decode_collection(image, idx.wire_index(), j)
         }),
-        ImageType::Identity { root, optional } => wrap_optional(*optional, json, |j| {
-            decode_identity(image, sealed_ordinal(root.index()), j)
-        }),
+        ImageType::Identity { root, optional } => {
+            wrap_optional(*optional, json, |j| decode_identity(image, *root, j))
+        }
     }
 }
 
@@ -75,18 +75,11 @@ fn decode_scalar(scalar: Scalar, json: &Json) -> Option<Value> {
     }
 }
 
-/// The sealed wire-domain `u16` of a verified typed table reference: every value here
-/// was decoded from a `u16` wire read, so the narrowing is total; it is spelled checked
-/// so the wire domain is stated.
-fn sealed_ordinal(index: u32) -> u16 {
-    u16::try_from(index).expect("a verified table reference was decoded from a u16 wire read")
-}
-
-fn decode_record(image: &VerifiedImage, idx: u16, json: &Json) -> Option<Value> {
+fn decode_record(image: &VerifiedImage, idx: TypeId, json: &Json) -> Option<Value> {
     let Json::Object(pairs) = json else {
         return None;
     };
-    let record = image.record_type(TypeId::from_index(idx));
+    let record = image.record_type(idx);
     let mut slots: Vec<Option<Value>> = Vec::with_capacity(record.fields().len());
     for field in record.fields() {
         match pairs
@@ -200,11 +193,11 @@ fn decode_collection(image: &VerifiedImage, idx: u16, json: &Json) -> Option<Val
 /// Decode an entry identity `Id(^root)` argument: a JSON array of the root's
 /// key-column scalars, one per declared column and in declaration order. A wrong
 /// arity, or a key that does not match its declared column scalar, is a mismatch.
-fn decode_identity(image: &VerifiedImage, root: u16, json: &Json) -> Option<Value> {
+fn decode_identity(image: &VerifiedImage, root: RootId, json: &Json) -> Option<Value> {
     let Json::Array(items) = json else {
         return None;
     };
-    let columns = image.roots()[root as usize].keys();
+    let columns = image.root(root).keys();
     if items.len() != columns.len() {
         return None;
     }
@@ -263,7 +256,7 @@ pub(crate) fn encode_value(
         Value::Optional(None) => slot.null(),
         Value::Optional(Some(inner)) => encode_value(image, inner, slot),
         Value::Record(idx, slots) => {
-            let record = image.record_type(TypeId::from_index(*idx));
+            let record = image.record_type(*idx);
             let mut fields: Vec<(&str, &Value)> = record
                 .fields()
                 .iter()
