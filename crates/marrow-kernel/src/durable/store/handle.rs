@@ -57,6 +57,13 @@ pub struct DurableStore<E: ByteEngine> {
 /// use marrow_store::MemoryEngine;
 /// fn inspect(mut store: DurableStore<MemoryEngine>) {
 ///     let _ = store.audit();
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use marrow_kernel::durable::DurableStore;
+/// use marrow_store::MemoryEngine;
+/// fn inspect(store: DurableStore<MemoryEngine>) {
 ///     let _ = store.has_unresolved_recovery();
 /// }
 /// ```

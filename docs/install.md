@@ -6,9 +6,9 @@ documentation you are reading.
 
 ## Requirements
 
-Rust 1.89 and Git, on Linux or macOS. A build for another target runs the
-storeless commands; [Running against a store](#running-against-a-store) states
-what a store on disk needs.
+Rust 1.89 and Git, on Linux or macOS. Other operating systems are rejected at
+build time. [Running against a store](#running-against-a-store) states the
+additional requirements for a store on disk.
 
 ## Install
 
@@ -72,10 +72,9 @@ A source install runs every storeless command, and `marrow test` runs durable
 tests against a fresh in-memory store. A store on disk also needs a supported
 platform and the companion layout.
 
-Opening a store on disk works on macOS, and on Linux on x86_64 and aarch64. A
-build for another target runs storeless commands and `marrow test`; an attempt
-to open a store stops with a message naming the operating system and
-architecture.
+Opening a store on disk works on macOS, and on Linux on x86_64 and aarch64.
+On other Linux architectures the toolchain builds, but opening a store stops
+with a message naming the operating system and architecture.
 
 A store on disk is opened by a companion runner. `marrow run --store` and
 `marrow import` need the `marrow-runner` binary and the `marrow-companions`

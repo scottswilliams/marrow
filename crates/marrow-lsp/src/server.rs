@@ -1678,10 +1678,6 @@ mod tests {
         coordinator
     }
 
-    fn cleanup(dir: &Path) {
-        fs::remove_dir_all(dir).ok();
-    }
-
     // ---- Law: receipt-gated initialize delivery ----
 
     #[test]
@@ -1716,7 +1712,6 @@ mod tests {
             coordinator.job_out.is_some(),
             "first analysis enqueued on delivery"
         );
-        cleanup(dir.path());
     }
 
     #[test]
@@ -1761,7 +1756,6 @@ mod tests {
             coordinator.ledger.get(&main_key(dir.path())).is_some(),
             "didOpen is admitted after delivery"
         );
-        cleanup(dir.path());
     }
 
     // ---- Law: a lost producer thread is terminal, never a hang ----
@@ -1978,7 +1972,6 @@ mod tests {
                 && *class == TerminalClass::DeliveryUnknown),
             "handed-off-but-unreceipted request is DeliveryUnknown"
         );
-        cleanup(dir.path());
     }
 
     // ---- Law: ContentModified for a query held across an edit ----
@@ -2012,7 +2005,6 @@ mod tests {
                 .any(|f| f.contains(r#""id":20"#) && f.contains("-32801")),
             "the held query is answered with ContentModified"
         );
-        cleanup(dir.path());
     }
 
     #[test]
@@ -2044,7 +2036,6 @@ mod tests {
                 .any(|f| f.contains(r#""id":21"#) && f.contains("-32801")),
             "the held completion is answered with ContentModified"
         );
-        cleanup(dir.path());
     }
 
     // ---- Law: capture-episode latch + publication reset ----
@@ -2104,7 +2095,6 @@ mod tests {
             CaptureEpisode::Eligible,
             "the latch resets after the observing set fully delivers"
         );
-        cleanup(dir.path());
     }
 
     // ---- Soundness: a reply retires its entry only on delivery, not at handoff ----
@@ -2188,7 +2178,6 @@ mod tests {
             coordinator.job_out.is_some(),
             "recompute re-enqueues on recovery"
         );
-        cleanup(dir.path());
     }
 
     // ---- Law: whole-analysis resource stops complete their exact revision ----
@@ -2319,7 +2308,6 @@ mod tests {
                 .any(|f| f.contains(r#""id":8"#) && f.contains("-32803")),
             "a held query at a resource-limited revision is -32803"
         );
-        cleanup(dir.path());
     }
 
     #[test]
@@ -2341,7 +2329,6 @@ mod tests {
         assert!(coordinator.requests.is_live(&RequestId::Integer(9)));
         deliver_frames(&mut coordinator);
         assert!(!coordinator.requests.is_live(&RequestId::Integer(9)));
-        cleanup(dir.path());
     }
 
     #[test]
@@ -2365,7 +2352,6 @@ mod tests {
                 .any(|frame| frame.contains(r#""id":10,"#) && frame.contains(r#""code":-32801,"#)),
             "the older request is ContentModified, not a failure for the new revision"
         );
-        cleanup(dir.path());
     }
 
     #[test]
@@ -2406,7 +2392,6 @@ mod tests {
         );
         assert!(coordinator.published.is_empty());
         assert!(coordinator.publication.is_none());
-        cleanup(dir.path());
     }
 
     #[test]
@@ -2428,7 +2413,6 @@ mod tests {
         );
         assert!(!notices[0].get().contains("\"uri\""));
         assert!(!notices[0].get().contains("\"range\""));
-        cleanup(dir.path());
     }
 
     #[test]
@@ -2480,7 +2464,6 @@ mod tests {
         assert_eq!(publications[0].version, Some(4));
         assert!(publications[0].diagnostics.is_empty());
         assert!(coordinator.held_queries.is_empty());
-        cleanup(dir.path());
     }
 
     #[test]
@@ -2504,7 +2487,6 @@ mod tests {
         assert_eq!(publications.len(), 1);
         assert_eq!(publications[0].version, Some(3));
         assert!(publications[0].diagnostics.is_empty());
-        cleanup(dir.path());
     }
 
     #[test]
@@ -2537,7 +2519,6 @@ mod tests {
         assert_eq!(notifications(&delivered, "window/showMessage").len(), 1);
         assert!(coordinator.publication.is_none());
         assert!(coordinator.pending_publication.is_none());
-        cleanup(dir.path());
     }
 
     #[test]
@@ -2564,7 +2545,6 @@ mod tests {
         );
         assert!(coordinator.pending_publication.is_none());
         assert!(coordinator.publication.is_none());
-        cleanup(dir.path());
     }
 
     #[test]
@@ -2605,7 +2585,6 @@ mod tests {
             }
             assert!(coordinator.held_queries.is_empty());
         }
-        cleanup(dir.path());
     }
 
     #[test]
@@ -2651,7 +2630,6 @@ mod tests {
         assert!(coordinator.outbound.pending.is_empty());
         assert!(coordinator.publication.is_none());
         assert_eq!(notifications(&delivered, "window/showMessage").len(), 1);
-        cleanup(dir.path());
     }
 
     #[test]
@@ -2701,7 +2679,6 @@ mod tests {
             limit.kind(),
             marrow_compile::ResourceLimitKind::DiagnosticCount
         );
-        cleanup(dir.path());
     }
 
     #[test]
@@ -2743,7 +2720,6 @@ mod tests {
         );
         deliver_frames(&mut coordinator);
         assert_eq!(coordinator.episode, CaptureEpisode::Eligible);
-        cleanup(dir.path());
     }
 
     #[test]
@@ -2772,7 +2748,6 @@ mod tests {
         assert_eq!(notifications(&delivered, "window/showMessage").len(), 1);
         assert!(coordinator.publication.is_none());
         assert!(coordinator.pending_publication.is_none());
-        cleanup(dir.path());
     }
 
     #[test]
@@ -2864,7 +2839,6 @@ mod tests {
             assert!(coordinator.requests.entries.is_empty());
             assert!(coordinator.job_out.is_none());
         }
-        cleanup(dir.path());
     }
 
     // ---- Law: semantic queries parse, dispatch, and encode through the coordinator ----
@@ -3109,7 +3083,6 @@ mod tests {
         while coordinator.publication.is_some() {
             coordinator.on_receipt();
         }
-        cleanup(dir.path());
     }
 
     // ---- Soundness: replies never flood the pending-frame queue past W ----
@@ -3154,7 +3127,6 @@ mod tests {
             !coordinator.held_queries.is_empty(),
             "unanswered replies stay held, bounded by the request ledger"
         );
-        cleanup(dir.path());
     }
 
     // ---- Soundness: initialize/shutdown ids retire on receipt, not at handoff ----
@@ -3180,7 +3152,6 @@ mod tests {
         // The receipt retires the id and advances the lifecycle.
         coordinator.on_receipt();
         assert!(!coordinator.requests.is_live(&RequestId::Integer(1)));
-        cleanup(dir.path());
     }
 
     // ---- Law: publication exclusivity across receipts ----
@@ -3227,7 +3198,6 @@ mod tests {
             coordinator.publication.is_some(),
             "B builds after A's final receipt"
         );
-        cleanup(dir.path());
     }
 
     #[test]
@@ -3269,6 +3239,5 @@ mod tests {
             first_plan_frames,
             "no stale publication frame is encoded"
         );
-        cleanup(dir.path());
     }
 }

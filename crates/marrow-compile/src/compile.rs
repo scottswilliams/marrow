@@ -1426,7 +1426,7 @@ fn build_signature_table<'source>(
     };
     let signatures = {
         let (records, txn) = batch.parts();
-        match FunctionRegistry::build(
+        FunctionRegistry::build(
             records,
             txn,
             durable,
@@ -1434,10 +1434,7 @@ fn build_signature_table<'source>(
             scope,
             diagnostics,
             boundary_roots,
-        ) {
-            Ok(signatures) => signatures,
-            Err(error) => return Err(error.into()),
-        }
+        )?
     };
     batch.commit();
     Ok(signatures)

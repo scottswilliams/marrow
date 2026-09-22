@@ -421,9 +421,11 @@ fn an_oversized_post_dispatch_response_closes_without_a_reply_or_second_dispatch
             .expect("finish request stream");
 
         let mut reply_bytes = Vec::new();
-        stream
-            .read_to_end(&mut reply_bytes)
-            .expect("read silent close to EOF");
+        // Closing with the second request unread can reset the socket. Any bytes
+        // received before EOF or reset still violate the silent-close contract.
+        if let Err(error) = stream.read_to_end(&mut reply_bytes) {
+            assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
+        }
         reply_bytes
     });
 

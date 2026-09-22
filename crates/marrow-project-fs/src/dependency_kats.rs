@@ -218,7 +218,7 @@ fn a_dependency_path_that_names_no_usable_project_refuses() {
                 PhysicalRefusal::Dependency { reason: actual } if *actual == reason
             ),
             "{label}: got {:?}",
-            &physical.refusal
+            physical.refusal
         );
         assert!(
             message(&root, &failure)

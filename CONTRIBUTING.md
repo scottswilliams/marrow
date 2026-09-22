@@ -46,12 +46,16 @@ convention, not repository policy.
 ```sh
 CARGO_TARGET_DIR=/absolute/path/to/marrow-target cargo build --workspace --all-targets --all-features --locked
 CARGO_TARGET_DIR=/absolute/path/to/marrow-target cargo test --workspace --all-targets --all-features --locked
+CARGO_TARGET_DIR=/absolute/path/to/marrow-target cargo test --workspace --doc --all-features --locked
 CARGO_TARGET_DIR=/absolute/path/to/marrow-target cargo fmt --all -- --check
 CARGO_TARGET_DIR=/absolute/path/to/marrow-target cargo clippy --workspace --all-targets --all-features --locked -- \
   -D warnings -F unsafe-code
 ```
 
 That clippy line is the one CI runs.
+
+The separate `--doc` command runs documentation examples and compile-fail public
+boundary checks; `--all-targets` does not include them.
 
 Run focused suites first, then the broad ones. Documentation changes check
 inventory, links, anchors and terminology, generated diagnostic drift, and

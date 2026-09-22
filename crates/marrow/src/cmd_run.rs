@@ -221,9 +221,9 @@ fn run_inner(args: &RunArgs, image_slot: &mut Option<VerifiedImage>) -> Result<O
     .settled(image.enums()))
 }
 
-/// Compile the captured project with `compile`. Family 1 is source diagnostics; when
-/// compilation fails *only* because fresh durable declarations lack ledger identities,
-/// the storeless `run` and `test` paths mint them into `.marrow/ids` and compile the
+/// Compile the captured project with `compile`. When diagnostics contain eligible
+/// missing identities for the root project and no retired root identities, the
+/// storeless `run` and `test` paths mint them into `.marrow/ids` and compile the
 /// recaptured project, which the caller then runs against. `--store` closes that
 /// window by compiling directly; see [`mint_missing_identities`].
 pub(crate) fn compile_or_mint<T>(
@@ -250,17 +250,16 @@ pub(crate) fn compile_or_mint<T>(
 
 /// What the mint pre-pass did with a compile failure.
 enum MintOutcome {
-    /// Every diagnostic was a mintable identity gap; fresh identities were
-    /// drawn and `.marrow/ids` was published atomically.
+    /// Eligible root identities were drawn and `.marrow/ids` was published atomically.
     Minted,
-    /// The failure is not (only) missing mintable identity; report it as-is.
+    /// No eligible root gap, or a retired root identity; report diagnostics as-is.
     NotApplicable,
     /// Minting itself failed; `.marrow/ids` is unchanged.
     Failed(Code, Option<String>),
 }
 
-/// The storeless mint: when a compile failed *only* because fresh durable
-/// declarations have no ledger row, draw one id per missing anchor from OS entropy
+/// The storeless mint: when diagnostics include eligible fresh root declarations
+/// without ledger rows, draw one id per missing anchor from OS entropy
 /// and hand the admitted successor to the adapter's publication owner, which compares
 /// it against the filesystem and installs it or refuses. The artifact is untouched on
 /// any refusal.

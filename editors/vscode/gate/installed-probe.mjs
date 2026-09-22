@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 // Installed-journey probe for the Marrow VS Code artifact.
 //
-// This script exercises the automatable portion of the H00b installed gate: it proves
+// This script exercises the packaged extension's automatable checks: it verifies
 // the packaged artifacts exist, that the bundled server binary is the pinned canonical
 // build, that the thin host imports nothing outside its allowlist, and that the bundled
 // `marrow-lsp` child honors the client-observable server contract the extension depends
 // on (single-root initialize, diagnostics publication, stale suppression, delivered-empty
-// retirement, capture-unavailable `-32803`, multi-root `-32602` pre-initialize refusal,
+// retirement, capture-failure notification, multi-root `-32602` pre-initialize refusal,
 // clean shutdown with no orphan child).
 //
-// Real VS Code host behavior is owned by real-host.mjs. This probe keeps the direct
-// installed-server protocol checks separate rather than simulating editor UI behavior.
+// Actual VS Code activation, providers and restart need manual installed-host
+// observations; these direct server checks do not establish editor UI behavior.
 //
 // Usage: node gate/installed-probe.mjs --expected-server-sha256 <64hex>
 // Exits nonzero on any failed assertion (and before the extension is built).
@@ -26,7 +26,6 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const EXT_ROOT = join(HERE, "..");
 const SERVER = join(EXT_ROOT, "server", "marrow-lsp");
 const BUNDLE = join(EXT_ROOT, "out", "extension.js");
-const REAL_HOST = join(HERE, "real-host.mjs");
 
 const BANNED_IMPORTS = ["fs", "net", "http", "https", "dns", "child_process", "node:fs", "node:net", "node:http", "node:https", "node:dns", "node:child_process"];
 
@@ -50,7 +49,6 @@ function staticGates(expectedServerSha256) {
   console.log("[static] artifact presence and thin-host absence");
   check("out/extension.js present", existsSync(BUNDLE), `${BUNDLE} missing`);
   check("server/marrow-lsp present", existsSync(SERVER), `${SERVER} missing`);
-  check("real-host gate present", existsSync(REAL_HOST), `${REAL_HOST} missing`);
   if (existsSync(SERVER)) {
     check(
       "server/marrow-lsp is the pinned canonical binary",
@@ -58,15 +56,15 @@ function staticGates(expectedServerSha256) {
       sha256File(SERVER),
     );
   }
-  const src = join(EXT_ROOT, "src", "extension.ts");
-  if (existsSync(src)) {
-    const text = readFileSync(src, "utf8");
+  if (existsSync(BUNDLE)) {
+    const text = readFileSync(BUNDLE, "utf8");
     const imported = [...text.matchAll(/(?:import[^;]*from|require\()\s*["']([^"']+)["']/g)].map(
       (m) => m[1],
     );
     const bad = imported.filter((m) => BANNED_IMPORTS.includes(m));
-    check("source imports only vscode + vscode-languageclient/node", bad.length === 0, bad.join(","));
-    const allowed = imported.every(
+    check("bundle has no banned imports", bad.length === 0, bad.join(","));
+    const allowed = imported.includes("vscode") &&
+      imported.includes("vscode-languageclient/node") && imported.every(
       (m) => m === "vscode" || m === "vscode-languageclient/node",
     );
     check("no import outside the two-module allowlist", allowed, imported.join(","));
@@ -83,10 +81,15 @@ class LspSession {
     this.messages = [];
     this.stderr = "";
     this.exitCode = undefined;
+    this.failure = undefined;
     this.spawnArgs = args;
     this.proc.stdout.on("data", (d) => this._onData(d));
     this.proc.stderr.on("data", (d) => (this.stderr += d.toString()));
     this.proc.on("exit", (code) => (this.exitCode = code));
+    this.proc.on("error", (error) => (this.failure = error));
+    for (const pipe of [this.proc.stdin, this.proc.stdout, this.proc.stderr]) {
+      pipe.on("error", (error) => (this.failure = error));
+    }
   }
   _onData(d) {
     this.buf = Buffer.concat([this.buf, d]);
@@ -109,19 +112,19 @@ class LspSession {
     }
   }
   send(obj) {
+    if (this.failure) throw this.failure;
     const b = Buffer.from(JSON.stringify(obj), "utf8");
     this.proc.stdin.write(`Content-Length: ${b.length}\r\n\r\n`);
     this.proc.stdin.write(b);
   }
-  // The reader thread idles on a blocking stdin read; the server's process join
-  // completes only once stdin reaches EOF (the stdin-EOF fail-safe). The real client
-  // closes the child's stdin on stop, so the probe does the same after `exit`.
+  // Close the client's input after the exit notification as part of shutdown.
   endInput() {
     this.proc.stdin.end();
   }
   async wait(pred, ms = 4000) {
     const deadline = Date.now() + ms;
     for (;;) {
+      if (this.failure) throw this.failure;
       const found = this.messages.find(pred);
       if (found) return found;
       if (Date.now() > deadline) return undefined;
@@ -135,12 +138,17 @@ class LspSession {
     }
     return this.exitCode;
   }
-  kill() {
-    try {
-      this.proc.kill("SIGKILL");
-    } catch {
-      /* already gone */
+  async stop() {
+    if (this.proc.pid === undefined) {
+      check("server process spawned", false, this.failure?.message ?? "no child pid");
+      return true;
     }
+    if (this.exitCode === undefined) {
+      this.proc.kill("SIGKILL");
+    }
+    const exited = (await this.exited()) !== undefined;
+    check("child exit observed before fixture cleanup", exited);
+    return exited;
   }
 }
 
@@ -158,7 +166,7 @@ async function journeyGates() {
   // Resolve the temp path: the capture adapter deliberately refuses symlinked path
   // components (e.g. macOS `/tmp` -> `/private/tmp`). Real editors pass resolved
   // folder paths, so the probe resolves its throwaway root to match.
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "marrow-h00b-probe-")));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "marrow-installed-probe-")));
   mkdirSync(join(root, "src"), { recursive: true });
   writeFileSync(join(root, "marrow.toml"), 'edition = "2026"\n');
   // A file at `src/main.mw` must declare `module main` (the module header matches its
@@ -170,95 +178,100 @@ async function journeyGates() {
   const mainUri = `${rootUri}/src/main.mw`;
 
   const s = new LspSession(SERVER, []);
-  check("child spawned with fixed empty args", s.spawnArgs.length === 0);
+  try {
+    check("child spawned with fixed empty args", s.spawnArgs.length === 0);
 
-  s.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { processId: null, rootUri, capabilities: {} } });
-  const initResp = await s.wait((m) => m.id === 1);
-  check("single-root initialize returns capabilities", !!(initResp && initResp.result && initResp.result.capabilities));
-  s.send({ jsonrpc: "2.0", method: "initialized", params: {} });
+    s.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { processId: null, rootUri, capabilities: {} } });
+    const initResp = await s.wait((m) => m.id === 1);
+    check("single-root initialize returns capabilities", !!(initResp && initResp.result && initResp.result.capabilities));
+    s.send({ jsonrpc: "2.0", method: "initialized", params: {} });
 
-  // Diagnostics publication for an erroring open.
-  s.send({ jsonrpc: "2.0", method: "textDocument/didOpen", params: { textDocument: { uri: mainUri, languageId: "marrow", version: 1, text: ERR } } });
-  const errPub = await s.wait((m) => m.method === "textDocument/publishDiagnostics" && m.params.uri === mainUri && m.params.diagnostics.length > 0);
-  check("erroring open publishes at least one diagnostic", !!errPub, s.stderr.slice(0, 200));
+    // Diagnostics publication for an erroring open.
+    s.send({ jsonrpc: "2.0", method: "textDocument/didOpen", params: { textDocument: { uri: mainUri, languageId: "marrow", version: 1, text: ERR } } });
+    const errPub = await s.wait((m) => m.method === "textDocument/publishDiagnostics" && m.params.uri === mainUri && m.params.diagnostics.length > 0);
+    check("erroring open publishes at least one diagnostic", !!errPub, s.stderr.slice(0, 200));
 
-  // Delivered-empty retirement: fixing all errors clears via an empty publication.
-  s.messages.length = 0;
-  s.send({ jsonrpc: "2.0", method: "textDocument/didChange", params: { textDocument: { uri: mainUri, version: 2 }, contentChanges: [{ text: OK }] } });
-  const emptyPub = await s.wait((m) => m.method === "textDocument/publishDiagnostics" && m.params.uri === mainUri && m.params.diagnostics.length === 0);
-  check("fixing all errors delivers an empty publication (retirement)", !!emptyPub);
+    // Delivered-empty retirement: fixing all errors clears via an empty publication.
+    s.messages.length = 0;
+    s.send({ jsonrpc: "2.0", method: "textDocument/didChange", params: { textDocument: { uri: mainUri, version: 2 }, contentChanges: [{ text: OK }] } });
+    const emptyPub = await s.wait((m) => m.method === "textDocument/publishDiagnostics" && m.params.uri === mainUri && m.params.diagnostics.length === 0);
+    check("fixing all errors delivers an empty publication (retirement)", !!emptyPub);
 
-  // Stale suppression: a rapid err->ok burst must settle on the current text only.
-  s.messages.length = 0;
-  s.send({ jsonrpc: "2.0", method: "textDocument/didChange", params: { textDocument: { uri: mainUri, version: 3 }, contentChanges: [{ text: ERR }] } });
-  s.send({ jsonrpc: "2.0", method: "textDocument/didChange", params: { textDocument: { uri: mainUri, version: 4 }, contentChanges: [{ text: OK }] } });
-  await new Promise((r) => setTimeout(r, 600));
-  const pubs = s.messages.filter((m) => m.method === "textDocument/publishDiagnostics" && m.params.uri === mainUri);
-  const last = pubs[pubs.length - 1];
-  check("rapid edits settle on current-text diagnostics (empty)", !!last && last.params.diagnostics.length === 0);
+    // Stale suppression: a rapid err->ok burst must settle on the current text only.
+    s.messages.length = 0;
+    s.send({ jsonrpc: "2.0", method: "textDocument/didChange", params: { textDocument: { uri: mainUri, version: 3 }, contentChanges: [{ text: ERR }] } });
+    s.send({ jsonrpc: "2.0", method: "textDocument/didChange", params: { textDocument: { uri: mainUri, version: 4 }, contentChanges: [{ text: OK }] } });
+    await new Promise((r) => setTimeout(r, 600));
+    const pubs = s.messages.filter((m) => m.method === "textDocument/publishDiagnostics" && m.params.uri === mainUri);
+    const last = pubs[pubs.length - 1];
+    check("rapid edits settle on current-text diagnostics (empty)", !!last && last.params.diagnostics.length === 0);
 
-  // Server-side selective-query timing (supporting evidence; not the §7 installed clock).
-  s.messages.length = 0;
-  const t0 = process.hrtime.bigint();
-  s.send({ jsonrpc: "2.0", id: 10, method: "textDocument/hover", params: { textDocument: { uri: mainUri }, position: { line: 2, character: 7 } } });
-  const hoverResp = await s.wait((m) => m.id === 10);
-  const hoverMs = Number(process.hrtime.bigint() - t0) / 1e6;
-  check("hover request answered (result or null)", !!hoverResp && "result" in hoverResp);
-  console.log(`  INFO  server-side hover round-trip: ${hoverMs.toFixed(2)} ms (not the §7 installed clock)`);
+    // This round trip includes the probe's polling interval, not editor UI latency.
+    s.messages.length = 0;
+    const t0 = process.hrtime.bigint();
+    s.send({ jsonrpc: "2.0", id: 10, method: "textDocument/hover", params: { textDocument: { uri: mainUri }, position: { line: 2, character: 7 } } });
+    const hoverResp = await s.wait((m) => m.id === 10);
+    const hoverMs = Number(process.hrtime.bigint() - t0) / 1e6;
+    check("hover request answered (result or null)", !!hoverResp && "result" in hoverResp);
+    console.log(`  INFO  server-side hover round-trip: ${hoverMs.toFixed(2)} ms (includes probe polling)`);
 
-  // Capture-unavailable: a malformed manifest surfaces the failure once as an error
-  // message (the server owns the episode latching; the extension adds no filter). The
-  // per-request -32803 path is keyed to overlay/resource-limit unavailability and is
-  // owned and tested in-crate by H00a, not by this extension.
-  s.messages.length = 0;
-  writeFileSync(join(root, "marrow.toml"), "this is not = valid = toml [[[\n");
-  s.send({ jsonrpc: "2.0", method: "textDocument/didChange", params: { textDocument: { uri: mainUri, version: 5 }, contentChanges: [{ text: ERR }] } });
-  await new Promise((r) => setTimeout(r, 500));
-  const errMsgs = s.messages.filter((m) => m.method === "window/showMessage" && m.params.type === 1);
-  check("malformed manifest surfaces the capture failure once as an error message", errMsgs.length === 1, `count=${errMsgs.length}`);
-  // Repair and re-analyze: the server recovers (a later clean publication is possible).
-  writeFileSync(join(root, "marrow.toml"), 'edition = "2026"\n');
+    // Capture-unavailable: a malformed manifest surfaces the failure once as an error
+    // message (the server owns the episode latching; the extension adds no filter). The
+    // per-request -32803 path is keyed to overlay/resource-limit unavailability and is
+    // owned and tested in the server crate.
+    s.messages.length = 0;
+    writeFileSync(join(root, "marrow.toml"), "this is not = valid = toml [[[\n");
+    s.send({ jsonrpc: "2.0", method: "textDocument/didChange", params: { textDocument: { uri: mainUri, version: 5 }, contentChanges: [{ text: ERR }] } });
+    await new Promise((r) => setTimeout(r, 500));
+    const errMsgs = s.messages.filter((m) => m.method === "window/showMessage" && m.params.type === 1);
+    check("malformed manifest surfaces the capture failure once as an error message", errMsgs.length === 1, `count=${errMsgs.length}`);
+    // Repair and re-analyze: the server recovers (a later clean publication is possible).
+    writeFileSync(join(root, "marrow.toml"), 'edition = "2026"\n');
 
-  // Clean shutdown -> exit 0, no orphan child.
-  s.send({ jsonrpc: "2.0", id: 999, method: "shutdown", params: null });
-  await s.wait((m) => m.id === 999);
-  s.send({ jsonrpc: "2.0", method: "exit", params: null });
-  s.endInput();
-  const code = await s.exited();
-  check("shutdown+exit terminates the child with code 0", code === 0, `exit=${code}`);
-
-  s.kill();
-  rmSync(root, { recursive: true, force: true });
+    // Clean shutdown -> exit 0, no orphan child.
+    s.send({ jsonrpc: "2.0", id: 999, method: "shutdown", params: null });
+    await s.wait((m) => m.id === 999);
+    s.send({ jsonrpc: "2.0", method: "exit", params: null });
+    s.endInput();
+    const code = await s.exited();
+    check("shutdown+exit terminates the child with code 0", code === 0, `exit=${code}`);
+  } finally {
+    if (await s.stop()) rmSync(root, { recursive: true, force: true });
+    else console.error(`Retained fixture: ${root}`);
+  }
 
   // Multi-root refusal is proved on the SERVER side that the extension's pre-spawn guard
   // mirrors: two workspaceFolders are -32602 without initializing.
-  const root2a = realpathSync(mkdtempSync(join(tmpdir(), "marrow-h00b-mr-a-")));
-  const root2b = realpathSync(mkdtempSync(join(tmpdir(), "marrow-h00b-mr-b-")));
+  const root2a = realpathSync(mkdtempSync(join(tmpdir(), "marrow-installed-mr-a-")));
+  const root2b = realpathSync(mkdtempSync(join(tmpdir(), "marrow-installed-mr-b-")));
   const s2 = new LspSession(SERVER, []);
-  s2.send({
-    jsonrpc: "2.0",
-    id: 1,
-    method: "initialize",
-    params: {
-      processId: null,
-      workspaceFolders: [
-        { uri: fileUri(root2a), name: "a" },
-        { uri: fileUri(root2b), name: "b" },
-      ],
-      capabilities: {},
-    },
-  });
-  const mrResp = await s2.wait((m) => m.id === 1);
-  check("two workspace folders are rejected with -32602", !!mrResp && mrResp.error && mrResp.error.code === -32602, mrResp ? JSON.stringify(mrResp.error) : "no response");
-  s2.kill();
-  rmSync(root2a, { recursive: true, force: true });
-  rmSync(root2b, { recursive: true, force: true });
+  try {
+    s2.send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        processId: null,
+        workspaceFolders: [
+          { uri: fileUri(root2a), name: "a" },
+          { uri: fileUri(root2b), name: "b" },
+        ],
+        capabilities: {},
+      },
+    });
+    const mrResp = await s2.wait((m) => m.id === 1);
+    check("two workspace folders are rejected with -32602", !!mrResp && mrResp.error && mrResp.error.code === -32602, mrResp ? JSON.stringify(mrResp.error) : "no response");
+  } finally {
+    if (await s2.stop()) {
+      rmSync(root2a, { recursive: true, force: true });
+      rmSync(root2b, { recursive: true, force: true });
+    } else console.error(`Retained fixtures: ${root2a}, ${root2b}`);
+  }
 }
 
 function realHostBoundary() {
-  console.log("\n[installed-host] delegated boundary");
-  console.log("  INFO  real-host.mjs owns installed activation/providers, workspace negatives/recovery, restart/known-child teardown, and practical timings");
-  console.log("  INFO  physical punctuation typing and the built-in token inspector remain explicit pending-interactive evidence; this probe does not simulate them");
+  console.log("\n[installed-host] manual observations pending");
+  console.log("  PENDING  install the VSIX in VS Code and observe diagnostics, format, hover, definition and restart");
 }
 
 async function main() {
@@ -274,7 +287,7 @@ async function main() {
     process.exit(2);
     return;
   }
-  console.log("=== Marrow H00b installed-journey probe ===");
+  console.log("=== Marrow packaged-extension probe ===");
   staticGates(args[1]);
   await journeyGates();
   realHostBoundary();
@@ -282,4 +295,7 @@ async function main() {
   process.exit(failures === 0 ? 0 : 1);
 }
 
-main();
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

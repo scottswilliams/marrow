@@ -63,10 +63,11 @@ one change. If it faults, none of them apply, and the report names the
 [durable outcome](language/errors-and-transactions.md#interrupted-invocations).
 
 A code change meets stored data. A change to a function body reopens an existing
-store and keeps every value in it. A change to a durable declaration or to the
-exported interface is refused, and the
-[prior program stays usable](operations/README.md#changing-the-program).
-Evolving stored data under new declarations is described under
+store and keeps every value in it. Ordinary attachment refuses a changed durable
+contract or exported interface. Explicit `marrow apply` can add sparse scalar
+fields to populated data while preserving existing values and representations
+([changing the program](operations/README.md#changing-the-program)). Broader
+evolution of stored data is described under
 [durable programming](future/durable-programming.md).
 
 Running code needs authority. `marrow check` lists the durable places each

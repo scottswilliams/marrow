@@ -247,8 +247,9 @@ impl GraphProjection<'_> {
 ///
 /// It is derived in one pass from the same [`SemanticNode`] set the contract id is
 /// computed over — this verifier's own reconstruction — so it introduces no second graph,
-/// path, or identity owner. Resolving a site is then one keyed lookup, so sealing a table
-/// costs its site count plus its graph size rather than their product.
+/// path, or identity owner. Resolving a site uses a keyed lookup; sealing a branch site
+/// also walks its bounded branch path to obtain the containing record. No site rescans
+/// the full graph.
 struct GraphProjection<'a> {
     nodes: HashMap<&'a [SemanticStep], ProjectedNode>,
     /// The sealed roots by table position, which a flat site reads its entry facts from.

@@ -110,7 +110,7 @@ pub mod public_type_pins {
     //! that minted them.
     //!
     //! ```compile_fail
-    //! fn build(file: marrow_project::FileIdentity) -> marrow_compile::SourceDiagnostic {
+    //! fn build(file: marrow_compile::ProjectFile) -> marrow_compile::SourceDiagnostic {
     //!     marrow_compile::SourceDiagnostic::at(
     //!         marrow_codes::Code::CheckType,
     //!         &file,
@@ -123,7 +123,7 @@ pub mod public_type_pins {
     //! ```compile_fail
     //! use marrow_compile::CompileInvariant;
     //!
-    //! let _ = CompileInvariant(());
+    //! let _ = CompileInvariant(loop {});
     //! ```
     //!
     //! ```compile_fail
