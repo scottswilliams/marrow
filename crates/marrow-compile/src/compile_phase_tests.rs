@@ -319,9 +319,9 @@ fn signature_registry(functions: &[crate::lower::DeclaredFn<'_>]) -> FunctionReg
                 budget.clone(),
             ),
             imports: BTreeMap::new(),
-            origins: crate::source::CapturedOrigins::of(&marrow_test_support::project::project(
-                &[("src/main.mw", "module main\n")],
-            )),
+            origins: crate::source::CapturedOrigins::of(&marrow_test_support::project::project(&[
+                ("src/main.mw", "module main\n"),
+            ])),
             budget,
         },
         &mut diagnostics,
