@@ -10,6 +10,10 @@ Native opening, recovery and fresh restore retain the accepted Head's physical
 addresses. Explicit apply preserves those addresses while adding sparse scalar
 fields; it does not implement general schema evolution.
 
+`marrow backup --image` uses a retained active image without compiling current
+source; the default backup path still compiles the project. Both paths require
+the exact active binding ([backup and restore](tools/cli.md#marrow-backup-and-restore)).
+
 Full application-lifetime qualification still requires work. Broader future
 features are not prerequisites.
 

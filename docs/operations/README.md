@@ -11,14 +11,19 @@ execution and schema evolution beyond explicit sparse-field apply are future wor
 ## Logical backup and fresh restore
 
 `marrow backup` writes a complete logical backup under the source store's retained
-owner. It compiles the current project, which must match the store's exact active
-image; it does not rebind a code edit. Restore uses the backup's embedded image
+owner. By default it compiles the current project; `--image` instead selects a
+retained image artifact without compiling source. Either image must match the
+store's exact active binding; backup does not rebind a code edit. Restore uses the backup's embedded image
 and needs neither the original project nor current-source compilation.
 
 ```sh
 marrow backup --store ./store --out ./complete.backup
 marrow restore --from ./complete.backup --store ./restored
 ```
+
+Both destination parent directories must already exist. Backup and restore
+create their destination, but do not create missing parents or replace an
+existing destination.
 
 The artifact carries the exact executable image, accepted head and ceiling, and
 all canonical entry and managed-index cells, including descendants beneath
@@ -201,6 +206,25 @@ It retains the existing ceiling or requires explicit acceptance of its exact
 union with NEW demand. Unsupported changes preserve the prior binding;
 publication failure may leave an interrupted or uncertain transition.
 Broader evolution remains [future work](../future/admission-and-activation.md).
+
+Before applying a supported update, retain both image artifacts, the source and
+identity ledger for each, and the matching toolchain. Stop the application's
+store owner, back up with the active image, and rehearse on a fresh restored copy:
+
+```sh
+marrow backup --store ./store --image ./old/program.image --out ./before.backup
+marrow restore --from ./before.backup --store ./rehearsal
+marrow apply --store ./rehearsal --old-image ./old/program.image --new-image ./new/program.image
+```
+
+If apply reports an authority expansion, review the named effects and repeat
+that command with `--accept-ceiling` and the exact ID returned by that store's
+refusal. The ID is the union with the stored standing ceiling, which can differ
+from the new image's deployment ceiling. Check retained values and exercise the
+updated application on the restored copy before applying to the original store.
+Apply to the original with the same OLD and NEW artifacts, reviewing its own
+ceiling refusal if present. The new sparse fields begin absent; these operations
+neither backfill them nor permit general structural migration.
 
 The accepted Head defines each durable identity's physical address. Opening,
 recovery and fresh restore retain those addresses, including valid gaps below

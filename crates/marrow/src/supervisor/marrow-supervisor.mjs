@@ -343,6 +343,7 @@ class Parser {
   parseString() {
     this.pos += 1; // consume '"'
     let out = "";
+    let bytes = 0;
     for (;;) {
       const ch = this.peek();
       if (ch === undefined) {
@@ -352,20 +353,22 @@ class Parser {
         this.pos += 1;
         return out;
       }
+      let glyph;
       if (ch === "\\") {
         this.pos += 1;
-        out += this.parseEscape();
+        glyph = this.parseEscape();
       } else if (ch.codePointAt(0) < 0x20) {
         throw new WireFormatError("wire.malformed", "raw control character");
       } else {
         const cp = this.text.codePointAt(this.pos);
-        const glyph = String.fromCodePoint(cp);
-        out += glyph;
+        glyph = String.fromCodePoint(cp);
         this.pos += glyph.length;
       }
-      if (Buffer.byteLength(out, "utf8") > MAX_STRING_BYTES) {
+      bytes += Buffer.byteLength(glyph, "utf8");
+      if (bytes > MAX_STRING_BYTES) {
         throw new WireFormatError("wire.string_limit");
       }
+      out += glyph;
     }
   }
 

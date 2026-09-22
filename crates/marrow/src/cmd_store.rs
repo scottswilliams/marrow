@@ -1,5 +1,5 @@
 //! Terminal store operations delegate once to the release-verified companion.
-//! Image-based operations compile without opening the store or minting identities.
+//! Operations without an explicit image compile without opening the store or minting identities.
 //! Restore uses its backup's image and needs no project capture or compilation.
 
 use std::ffi::OsStr;
@@ -47,11 +47,12 @@ export.
 
 pub(crate) const BACKUP_HELP: &str = "\
 Usage:
-  marrow backup --store <dir> --out <backup> [--format text|jsonl]
+  marrow backup --store <dir> --out <backup> [--image <path>] [--format text|jsonl]
 
-Compile the project at the working directory, which must be the store's active
-program, and export the store's exact contents with that image into <backup>
-through the companion runner. The destination must not exist.
+Export the store's exact contents with its active image into <backup> through the
+companion runner. Use the selected image artifact, or compile the project at the
+working directory when none is given. The image must match the store's active
+program. The destination must not exist; its parent directory must already exist.
 ";
 
 pub(crate) const RESTORE_HELP: &str = "\
@@ -59,7 +60,8 @@ Usage:
   marrow restore --from <backup> --store <dir> [--format text|jsonl]
 
 Construct a fresh store at <dir> from the backup's embedded verified image through
-the companion runner. No project is compiled. The destination must not exist.
+the companion runner. No project is compiled. The destination must not exist;
+its parent directory must already exist.
 ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,6 +103,10 @@ struct Args {
 enum Action {
     Inspect,
     Backup(PathBuf),
+    BackupImage {
+        output: PathBuf,
+        image: PathBuf,
+    },
     Restore(PathBuf),
     Apply {
         old: PathBuf,
@@ -119,6 +125,12 @@ impl Action {
             Self::Inspect | Self::Backup(_) => None,
             Self::Restore(input) => Some(vec![OsStr::new("--from"), input.as_os_str()]),
             Self::RecoverImage(image) => Some(vec![OsStr::new("--image"), image.as_os_str()]),
+            Self::BackupImage { output, image } => Some(vec![
+                OsStr::new("--image"),
+                image.as_os_str(),
+                OsStr::new("--out"),
+                output.as_os_str(),
+            ]),
             Self::Apply { old, new, ceiling } => {
                 let mut flags = vec![
                     OsStr::new("--old-image"),
@@ -207,7 +219,7 @@ fn parse_args(operation: Operation, rest: &[String]) -> Result<Args, ExitCode> {
             "--accept-ceiling" if operation == Operation::Apply => {
                 flags.read(&mut ceiling, "--accept-ceiling", str::to_string)?
             }
-            "--image" if operation == Operation::Recover => {
+            "--image" if matches!(operation, Operation::Recover | Operation::Backup) => {
                 flags.read(&mut selected_image, "--image", PathBuf::from)?
             }
             "--store" => flags.read(&mut store, "--store", PathBuf::from)?,
@@ -232,9 +244,14 @@ fn parse_args(operation: Operation, rest: &[String]) -> Result<Args, ExitCode> {
                 .ok_or_else(|| usage(command, "`--new-image` must name the selected artifact"))?,
             ceiling,
         },
-        Operation::Backup => Action::Backup(
-            transfer.ok_or_else(|| usage(command, "`--out` must name the backup file"))?,
-        ),
+        Operation::Backup => {
+            let output =
+                transfer.ok_or_else(|| usage(command, "`--out` must name the backup file"))?;
+            match selected_image {
+                Some(image) => Action::BackupImage { output, image },
+                None => Action::Backup(output),
+            }
+        }
         Operation::Restore => Action::Restore(
             transfer.ok_or_else(|| usage(command, "`--from` must name the backup file"))?,
         ),

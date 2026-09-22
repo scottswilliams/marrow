@@ -13,7 +13,7 @@
 //! and run explicitly with the sandbox disabled:
 //!
 //! ```text
-//! cargo test -p marrow --test wire_kat -- --ignored
+//! cargo test -p marrow --test wire wire_kat -- --ignored
 //! ```
 //!
 //! Requires `node` (v23.6+) on PATH.
@@ -274,6 +274,74 @@ for (const line of lines("noncanonical_kat.tsv")) {
       String(error),
     );
   }
+}
+
+// Count traversed input rather than wall time: a repeated decoded-prefix scan
+// violates the budget independently of the machine running this test.
+{
+  const value = "a".repeat(4096);
+  const input = Buffer.from(`"${value}"`);
+  const byteLength = Buffer.byteLength;
+  let scanned = 0;
+  let decoded;
+  try {
+    Buffer.byteLength = function (text, ...args) {
+      if (typeof text === "string") scanned += text.length;
+      return byteLength(text, ...args);
+    };
+    decoded = M.parseCanonical(input);
+  } finally {
+    Buffer.byteLength = byteLength;
+  }
+  ok("string-linear-byte-accounting", decoded === value && scanned <= 4 * input.length,
+    `scanned=${scanned} input=${input.length}`);
+}
+
+function stringResult(label, input, expected, value) {
+  try {
+    const decoded = M.parseCanonical(Buffer.from(input));
+    ok(label, expected === "accepted" && decoded === value, "accepted");
+  } catch (error) {
+    ok(label, error instanceof M.WireFormatError && error.code === `wire.${expected}`,
+      String(error));
+  }
+}
+
+// The limit counts decoded UTF-8 bytes, including escaped scalars, and resets
+// for each value and object key. Canonical spelling is checked after decoding.
+for (const [label, spelling, glyph, canonical] of [
+  ["ascii", "a", "a", true],
+  ["two-byte", "é", "é", true],
+  ["three-byte", "€", "€", true],
+  ["four-byte", "😀", "😀", true],
+  ["short-escape", "\\n", "\n", true],
+  ["hex-control", "\\u0000", "\0", true],
+  ["hex-bmp", "\\u20ac", "€", false],
+  ["surrogate-pair", "\\ud83d\\ude00", "😀", false],
+]) {
+  const width = Buffer.byteLength(glyph);
+  for (const delta of [-1, 0, 1]) {
+    const prefix = "a".repeat(M.MAX_STRING_BYTES - width + delta);
+    stringResult(`string-limit-${label}-${delta}`, `"${prefix}${spelling}"`,
+      delta > 0 ? "string_limit" : canonical ? "accepted" : "noncanonical",
+      prefix + glyph);
+  }
+}
+{
+  const value = "x".repeat(M.MAX_STRING_BYTES);
+  const decoded = M.parseCanonical(Buffer.from(`{"${value}":"${value}"}`));
+  ok("string-limit-key-and-value-reset", decoded[value] === value);
+  stringResult("string-limit-key-over", `{"${value}x":0}`, "string_limit");
+  for (const [label, tail] of [
+    ["high-surrogate", "\\ud800"], ["low-surrogate", "\\udc00"],
+    ["bad-pair", "\\ud800\\u0041"], ["short-hex", "\\u00"],
+    ["unknown-escape", "\\q"], ["raw-control", "\n"],
+  ]) {
+    stringResult(`string-malformed-${label}`, `"${value}${tail}"`, "malformed");
+    stringResult(`string-over-before-${label}`, `"${value}x${tail}"`, "string_limit");
+  }
+  stringResult("string-unterminated-at-limit", `"${value}`, "malformed");
+  stringResult("string-unterminated-over-limit", `"${value}x`, "string_limit");
 }
 
 function driveReply(messages, options = {}) {

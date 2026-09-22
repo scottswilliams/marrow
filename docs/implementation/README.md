@@ -144,7 +144,8 @@ obligation undischarged ([storage](storage.md#auditing-a-store)). This report
 grants no recovery or admission permit.
 
 `marrow backup` shares project capture and image staging with doctor through
-`cmd_store`. The runner's `store_transfer` command module reads bounded image
+`cmd_store` unless `--image` selects an explicit artifact, bypassing capture and
+compilation. The runner's `store_transfer` command module reads bounded image
 bytes and delegates their single verification and exact active-store admission
 to lifecycle backup. `marrow restore` bypasses project capture and compilation;
 the runner streams the file to lifecycle restore, which owns embedded-image

@@ -20,7 +20,7 @@ marrow import --store <dir> --jsonl <path> --root <name> [--keys <key,...>]
 marrow doctor --store <dir> [--format text | jsonl]
 marrow apply --store <dir> --old-image <old-image> --new-image <new-image> [--accept-ceiling <id>] [--format text | jsonl]
 marrow recover --store <dir> [--image <image>] [--format text | jsonl]
-marrow backup --store <dir> --out <backup> [--format text | jsonl]
+marrow backup --store <dir> --out <backup> [--image <image>] [--format text | jsonl]
 marrow restore --from <backup> --store <dir> [--format text | jsonl]
 marrow image --out <dir> --accept-ceiling <id>
 marrow client typescript [--out <dir>]
@@ -383,8 +383,12 @@ failures retain `cli.compiler_resource_limit` and `cli.compiler_invariant`.
 `marrow backup --store <dir> --out <backup>` compiles the current project and
 exports its exact active store through the release-verified runner. A code-only
 edit refuses with `store.image_not_active`; backup does not rebind it.
+With `--image <image>`, backup uses that verified artifact without capturing or
+compiling a project. It must match the store's exact active image. This permits
+backup after editing source, using the retained installed image.
 `marrow restore --from <backup> --store <dir>` uses the embedded verified image
-and works outside a project. Both require an unoccupied destination and accept
+and works outside a project. Both require an unoccupied destination whose parent
+directory already exists; neither creates missing parents. Both accept
 `--format text | jsonl`, defaulting to text.
 
 JSON receipts contain `kind` (`backup` or `restore`), `store`, `backup`, and
