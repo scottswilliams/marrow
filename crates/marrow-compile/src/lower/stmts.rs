@@ -359,7 +359,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         value: &Expression,
         mutability: Mutability,
     ) -> ConstructResult<()> {
-        if let Some(row) = refused_binding_name(self.file, name_span, name) {
+        if let Some(row) = refused_binding_name(self.file, name_span, name, BindingScope::Local) {
             self.fail(row);
             return Ok(());
         }
@@ -1068,7 +1068,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     ) -> ConstructResult<Vec<usize>> {
         let mut fail_jumps: Vec<usize> = Vec::new();
         for (name, name_span, annotation, value) in bindings.iter().copied() {
-            if let Some(row) = refused_binding_name(self.file, name_span, name) {
+            if let Some(row) = refused_binding_name(self.file, name_span, name, BindingScope::Local)
+            {
                 self.fail(row);
                 return Err(LoweringFailure::Recoverable);
             }
@@ -1338,7 +1339,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             if is_placeholder(&binding.name) {
                 continue;
             }
-            if let Some(row) = refused_binding_name(self.file, binding.span, &binding.name) {
+            if let Some(row) =
+                refused_binding_name(self.file, binding.span, &binding.name, BindingScope::Local)
+            {
                 self.fail(row);
                 continue;
             }
@@ -1530,7 +1533,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             span,
         } = statement;
         for name in &binding.names {
-            if let Some(row) = refused_binding_name(self.file, name.span, &name.name) {
+            if let Some(row) =
+                refused_binding_name(self.file, name.span, &name.name, BindingScope::Local)
+            {
                 self.fail(row);
                 return Ok(Flow::Fallthrough);
             }
@@ -2726,7 +2731,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         | CheckedBind::Var {
             name, name_span, ..
         } = bind
-            && let Some(row) = refused_binding_name(self.file, *name_span, name)
+            && let Some(row) =
+                refused_binding_name(self.file, *name_span, name, BindingScope::Local)
         {
             self.fail(row);
             return Ok(Flow::Fallthrough);

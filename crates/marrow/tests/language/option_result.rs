@@ -6,6 +6,8 @@
 //! diagnostics. Option/Result ride the same ENUMS section and enum opcodes as a
 //! user `enum`, so no new image section or opcode is introduced by this vertical.
 
+use marrow_vm::Value;
+
 use crate::common::{Project, conformance_dir, marrow_in};
 
 /// The Option/Result conformance fixture passes end to end: construction and
@@ -226,15 +228,15 @@ fn an_uninferable_bare_constructor_is_reported() {
 
 /// Every value-level built-in the compiler intercepts before user resolution —
 /// the `Option`/`Result` constructors (`none`/`some`/`ok`/`err`), the presence
-/// test (`exists`), the divergence markers (`unreachable`/`todo`), and the pure text
-/// floor (`isEmpty`/`contains`/`trim`) — is reserved at every value-binding
-/// declaration site. A `fn`, module `const`, parameter, local `const`/`var`, or
-/// `if const` binding that reuses one is a `check.name_conflict` at the
-/// declaration, not a declaration that is admitted and then silently shadowed at
-/// its use site (surfacing later as a confusing `check.type`).
+/// test (`exists`), the divergence markers (`unreachable`/`todo`), the temporal
+/// floor, and the integer bounds — is reserved at every value-binding declaration
+/// site. A `fn`, module `const`, parameter, local `const`/`var`, or `if const`
+/// binding that reuses one is a `check.name_conflict` at the declaration. The text
+/// floor is reserved only at module scope; a parameter or local may shadow it.
 #[test]
 fn redeclaring_a_reserved_builtin_value_name_is_reported() {
-    const NAMES: [&str; 12] = [
+    const MODULE_ONLY: [&str; 6] = ["isEmpty", "contains", "trim", "split", "lines", "join"];
+    const NAMES: [&str; 11] = [
         "none",
         "some",
         "ok",
@@ -242,20 +244,33 @@ fn redeclaring_a_reserved_builtin_value_name_is_reported() {
         "exists",
         "unreachable",
         "todo",
-        "isEmpty",
         "addDays",
         "daysBetween",
-        "contains",
-        "trim",
+        "maxInt",
+        "minInt",
     ];
-    for name in NAMES {
-        let sources = [
+    for name in NAMES.into_iter().chain(MODULE_ONLY) {
+        let module_sources = [
             // module function
             format!(
                 "pub fn {name}(): int {{\n    return 0\n}}\n\npub fn f(): int {{\n    return 0\n}}\n"
             ),
             // module constant
             format!("const {name}: int = 1\n\npub fn f(): int {{\n    return 0\n}}\n"),
+        ];
+        for source in module_sources {
+            let workspace = Project::single(&source).materialize("reserved-module");
+            let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(!output.status.success(), "{source}\n{stdout}");
+            assert!(
+                stdout.contains(r#""code":"check.name_conflict""#),
+                "{source}\n{stdout}"
+            );
+        }
+    }
+    for name in NAMES {
+        let sources = [
             // parameter
             format!(
                 "pub fn g({name}: int): int {{\n    return 0\n}}\n\npub fn f(): int {{\n    return 0\n}}\n"
@@ -367,5 +382,59 @@ test "err fails at the try" {
         text.stdout_text().contains("    const n = try parse(-1)"),
         "{}",
         text.stdout_text()
+    );
+}
+
+/// A parameter or local may shadow a text-floor built-in for its scope: the name
+/// reads the local, and a call form on it is a `check.type` at the call rather
+/// than the built-in.
+#[test]
+fn a_local_shadows_a_text_floor_builtin_for_its_scope() {
+    let mut session = Project::single(
+        r#"fn maybe(): int? {
+    return 3
+}
+
+pub fn widths(trim: string, lines: int): int {
+    const split = 2
+    var join = trim
+    join = join + "!"
+    if const contains = maybe() {
+        if isEmpty(join) {
+            return 0
+        }
+        return lines + split + contains
+    }
+    return 0
+}
+
+pub fn outside(text: string): string {
+    return trim(text)
+}
+"#,
+    )
+    .session();
+    assert_eq!(
+        session.call("widths", vec![Value::Text("ab".into()), Value::Int(1)]),
+        Some(Value::Int(6))
+    );
+    assert_eq!(
+        session.call("outside", vec![Value::Text(" a ".into())]),
+        Some(Value::Text("a".into()))
+    );
+    let diagnostics = Project::single(
+        r#"pub fn f(trim: string): string {
+    return trim(trim)
+}
+"#,
+    )
+    .try_image()
+    .expect_err("a call on a shadowing local is not the built-in");
+    let row = diagnostics.only("check.type");
+    assert_eq!(
+        (row.line(), row.column()),
+        (2, 12),
+        "{:?}",
+        diagnostics.all()
     );
 }

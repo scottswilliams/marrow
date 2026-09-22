@@ -28,10 +28,16 @@ There are few of them, and each does one thing.
 
 Every name in the table except `append` and `length` is reserved. `Id`,
 `string`, `bytes`, `date`, `instant`, and `duration` are keywords, so a
-declaration that reuses one is a `parse.syntax` error; a function, constant,
-parameter, or local named after any other reserved name is a
-`check.name_conflict` error. A module may declare its own `append` or
-`length`, and that function is used throughout the module.
+declaration that reuses one is a `parse.syntax` error; a function or constant
+named after any other reserved name is a `check.name_conflict` error. A module
+may declare its own `append` or `length`, and that function is used throughout
+the module.
+
+A parameter or local may take the name of a text built-in (`isEmpty`,
+`contains`, `trim`, `split`, `lines`, or `join`) and
+[shadows](modules-and-functions.md#scope-and-names) it for its scope. Every
+other reserved name is a `check.name_conflict` error as a parameter or local
+as well.
 
 ## Collections
 

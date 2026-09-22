@@ -1121,6 +1121,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // the shared classifier keeps interception and declaration rejection reading the
         // same fact.
         if let Some(builtin) = Builtin::from_name(name) {
+            if builtin.is_shadowable() && self.shadows_builtin(name, span) {
+                return Err(LoweringFailure::Recoverable);
+            }
             return match builtin {
                 Builtin::Exists => self.lower_exists(args, span).map(CallResult::Value),
                 Builtin::Unreachable => self.lower_unreachable(args, span),
@@ -1282,6 +1285,26 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             suggestion.as_deref(),
         ));
         Err(LoweringFailure::Recoverable)
+    }
+
+    /// Whether a parameter or local named `name` is in scope and shadows the built-in
+    /// of that name. A local is a value, not a function, so the call is refused as a
+    /// call on that value's type.
+    fn shadows_builtin(&mut self, name: &str, span: SourceSpan) -> bool {
+        let held = if let Some(local) = self.lookup(name) {
+            local.ty.spelling(self.records)
+        } else if self.lookup_place(name).is_some() {
+            "a durable place".to_string()
+        } else {
+            return false;
+        };
+        self.fail(SourceDiagnostic::at(
+            Code::CheckType,
+            self.file,
+            span,
+            format!("`{name}` is a local holding {held} here, not a function"),
+        ));
+        true
     }
 
     /// Resolve `append`/`length` as collection operations, or `None` when `name` is not

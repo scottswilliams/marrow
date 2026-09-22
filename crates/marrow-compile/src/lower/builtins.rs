@@ -83,8 +83,9 @@ impl CtorKind {
 ///
 /// This enum is the single owner of that name set. Call interception dispatches on
 /// `from_name`, and declaration rejection consults the same classifier through
-/// [`is_reserved_builtin_name`], so a name intercepted at a use site can never be
-/// silently shadowed by a colliding value declaration.
+/// [`is_reserved_builtin_name`], so a name intercepted at a use site is either
+/// refused as a declaration or, for a local shadowing the text floor, never
+/// intercepted while that local is in scope.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Builtin {
     None,
@@ -190,6 +191,20 @@ impl Builtin {
             .find(|builtin| builtin.spelling() == name)
     }
 
+    /// Whether a parameter or local may shadow this built-in: the text floor, whose
+    /// names are common words. The constructors, bounds, and markers stay reserved.
+    pub(super) fn is_shadowable(self) -> bool {
+        matches!(
+            self,
+            Builtin::IsEmpty
+                | Builtin::Contains
+                | Builtin::Trim
+                | Builtin::Split
+                | Builtin::Lines
+                | Builtin::Join
+        )
+    }
+
     /// The `i64` an argument-free integer-bound built-in denotes, or `None` for a
     /// built-in that is a call or constructor rather than a value bound.
     pub(super) fn const_int_value(self) -> Option<i64> {
@@ -201,15 +216,26 @@ impl Builtin {
     }
 }
 
-/// Whether `name` is a reserved value-level built-in that a `fn`, `const`, parameter,
-/// or local binding may not redeclare. A colliding declaration would be admitted and
-/// then silently shadowed at every use site the compiler intercepts (`some(v)`, bare
-/// `none`, `trim(s)`, ...), surfacing later as a confusing type error.
+/// Where a value declaration binds its name, which decides the built-ins it may reuse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BindingScope {
+    /// A module `fn` or `const`, visible across the module.
+    Module,
+    /// A parameter or local binding, visible to the end of its block.
+    Local,
+}
+
+/// Whether a declaration in `scope` may not take `name` because the compiler
+/// intercepts it as a built-in. A module declaration may reuse none; a parameter or
+/// local may shadow the text floor ([`Builtin::is_shadowable`]) for its scope, and
+/// the call interception consults the same classifier, so a shadowing local is read
+/// wherever it is in scope.
 ///
 /// Struct fields and enum variants are excluded: both are reached only through member
 /// syntax (`r.none`, `Color::err`), never a bare or unqualified-call use.
-fn is_reserved_builtin_name(name: &str) -> bool {
-    Builtin::from_name(name).is_some()
+fn is_reserved_builtin_name(name: &str, scope: BindingScope) -> bool {
+    Builtin::from_name(name)
+        .is_some_and(|builtin| scope == BindingScope::Module || !builtin.is_shadowable())
 }
 
 /// The value-level built-in spellings, in declaration order, for the editor completion
@@ -239,16 +265,17 @@ fn reserved_builtin_name(file: &ProjectFile, span: SourceSpan, name: &str) -> So
     )
 }
 
-/// The row refusing a name a value declaration may not take: the `_` placeholder,
-/// which binds nothing, or a reserved built-in the compiler's own intercept would
-/// shadow.
+/// The row refusing a name a value declaration in `scope` may not take: the `_`
+/// placeholder, which binds nothing, or a built-in reserved in that scope.
 pub(crate) fn refused_binding_name(
     file: &ProjectFile,
     span: SourceSpan,
     name: &str,
+    scope: BindingScope,
 ) -> Option<SourceDiagnostic> {
-    placeholder_declared(file, span, name)
-        .or_else(|| is_reserved_builtin_name(name).then(|| reserved_builtin_name(file, span, name)))
+    placeholder_declared(file, span, name).or_else(|| {
+        is_reserved_builtin_name(name, scope).then(|| reserved_builtin_name(file, span, name))
+    })
 }
 
 /// The row refusing `_` read as a value.
@@ -800,7 +827,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Builtin, builtin_const_int, builtin_value_names};
+    use super::{BindingScope, Builtin, builtin_const_int, builtin_value_names};
     use crate::{CompileFailure, compile};
     use marrow_codes::Code;
     use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
@@ -874,7 +901,8 @@ mod tests {
     /// The sweep is driven by [`Builtin::ALL`] rather than a hand-listed sample, so a
     /// built-in added to the registry without its reservation fails here rather than
     /// shipping shadowable — admitted as a declaration and then silently shadowed at
-    /// every use the compiler intercepts.
+    /// every use the compiler intercepts. A shadowable built-in is admitted exactly at
+    /// the local positions.
     #[test]
     fn every_builtin_is_refused_in_every_value_declaration_position() {
         for builtin in Builtin::ALL {
@@ -882,6 +910,7 @@ mod tests {
             let positions = [
                 (
                     "a function",
+                    BindingScope::Module,
                     format!(
                         "module main\n\nfn {name}(a: int): int {{\n    return a\n}}\n\n\
                          pub fn go(): int {{\n    return 1\n}}\n"
@@ -889,6 +918,7 @@ mod tests {
                 ),
                 (
                     "a constant",
+                    BindingScope::Module,
                     format!(
                         "module main\n\nconst {name} = 5\n\n\
                          pub fn go(): int {{\n    return 1\n}}\n"
@@ -896,18 +926,27 @@ mod tests {
                 ),
                 (
                     "a parameter",
+                    BindingScope::Local,
                     format!("module main\n\npub fn go({name}: int): int {{\n    return 1\n}}\n"),
                 ),
                 (
                     "a local binding",
+                    BindingScope::Local,
                     format!(
                         "module main\n\npub fn go(): int {{\n    const {name} = 5\n    \
                          return 1\n}}\n"
                     ),
                 ),
             ];
-            for (position, source) in positions {
+            for (position, scope, source) in positions {
                 let rows = refusals(&source);
+                if scope == BindingScope::Local && builtin.is_shadowable() {
+                    assert!(
+                        rows.is_empty(),
+                        "{position} named `{name}` shadows: {rows:?}"
+                    );
+                    continue;
+                }
                 assert!(
                     !rows.is_empty(),
                     "{position} named `{name}` compiled clean: the built-in is silently \

@@ -34,9 +34,9 @@ use crate::diag::{
 use crate::durable::{DurableRegistry, OriginLedgers};
 use crate::konst::ConstRegistry;
 use crate::lower::{
-    BodyOutcome, BodyRole, DeclaredFn, FnLowerer, FunctionRegistry, GenericRegistry, LoweredFn,
-    ModuleBinding, ModuleLedger, ModuleScope, Resolution, SignatureOutcome, dotted_module_path,
-    is_durable_place_op, is_mutation_instr, refused_binding_name,
+    BindingScope, BodyOutcome, BodyRole, DeclaredFn, FnLowerer, FunctionRegistry, GenericRegistry,
+    LoweredFn, ModuleBinding, ModuleLedger, ModuleScope, Resolution, SignatureOutcome,
+    dotted_module_path, is_durable_place_op, is_mutation_instr, refused_binding_name,
 };
 use crate::types::BuildError;
 use crate::types::{
@@ -2287,9 +2287,12 @@ fn reject_duplicate_functions(parsed: &[Module], diagnostics: &mut DiagnosticCol
             let Declaration::Function(function) = declaration else {
                 continue;
             };
-            if let Some(row) =
-                refused_binding_name(&module.file, function.name_span, &function.name)
-            {
+            if let Some(row) = refused_binding_name(
+                &module.file,
+                function.name_span,
+                &function.name,
+                BindingScope::Module,
+            ) {
                 diagnostics.push(row);
                 continue;
             }

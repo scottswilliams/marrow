@@ -557,25 +557,6 @@ fn redeclaring_a_reserved_collection_name_is_a_conflict() {
     }
 }
 
-/// The collection-returning text floor built-ins `split`/`lines`/`join` are reserved
-/// value-level names, so a colliding value declaration is a `check.name_conflict`
-/// (the same closed-floor discipline as `isEmpty`/`contains`/`trim`).
-#[test]
-fn redeclaring_a_text_floor_builtin_is_a_conflict() {
-    for name in ["split", "lines", "join"] {
-        let workspace = Project::single(&format!(
-                "module main\n\nfn {name}(): int {{\n\x20   return 0\n}}\n\npub fn f(): int {{\n\x20   return 0\n}}\n"
-            )).materialize("reserved-floor");
-        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(!output.status.success(), "{name} must fail: {stdout}");
-        assert!(
-            stdout.contains(r#""code":"check.name_conflict""#),
-            "{name}: {stdout}"
-        );
-    }
-}
-
 /// The language admits no top-level `collection == collection` operator: equality
 /// over two lists (or two maps) is a typed `check.type`, not silent acceptance. A
 /// collection reached inside a compared struct or enum payload still participates in

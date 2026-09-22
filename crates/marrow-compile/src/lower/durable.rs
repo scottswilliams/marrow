@@ -824,7 +824,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         name_span: SourceSpan,
         place_expr: &Expression,
     ) -> ConstructResult<()> {
-        if let Some(row) = refused_binding_name(self.file, name_span, name) {
+        if let Some(row) = refused_binding_name(self.file, name_span, name, BindingScope::Local) {
             self.fail(row);
             return Ok(());
         }

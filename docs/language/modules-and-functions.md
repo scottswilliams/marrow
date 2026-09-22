@@ -338,3 +338,27 @@ same name. A module cannot declare a [reserved built-in](builtins.md) such as
 `exists`, `List`, or `trim` (`check.name_conflict`). `append` and `length` are
 ordinary names; a module that declares one shadows the built-in throughout that
 module.
+
+A parameter or local named `isEmpty`, `contains`, `trim`, `split`, `lines`, or
+`join` shadows that built-in to the end of its block. Inside that scope the
+name reads the local, and a call such as `trim(x)` is a call on the local's
+value, a `check.type` error. The other reserved built-ins, including `List`,
+`Map`, `maxInt`, `minInt`, `some`, `none`, `ok`, and `err`, cannot be a
+parameter or local name.
+
+```mw
+module docs::modules::shadowing
+
+pub fn label(lines: int, text: string): string {
+    const trim = text + "!"
+    if lines == 1 {
+        return trim
+    }
+    return $"{lines} lines"
+}
+
+test "a local shadows a text built-in" {
+    assert label(1, "one") == "one!"
+    assert trim(" x ") == "x"
+}
+```
