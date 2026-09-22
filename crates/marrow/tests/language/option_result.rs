@@ -318,3 +318,54 @@ pub fn f(): int {
     assert!(stdout.contains(r#""data":7"#), "{stdout}");
     assert!(!stdout.contains("name_conflict"), "{stdout}");
 }
+
+/// `try` in a test body fails the test at the `try` on an `err` and yields the payload
+/// on an `ok`: the failure takes the false-`assert` path, so the record is `failed`
+/// with `run.assert` at the `try`, and the text report prints its source line.
+#[test]
+fn try_in_a_test_fails_the_test_at_the_try() {
+    let workspace = Project::single(
+        r#"fn parse(n: int): Result<int, string> {
+    if n < 0 {
+        return err("negative")
+    }
+    return ok(n)
+}
+
+test "ok yields the payload" {
+    const n = try parse(4)
+    assert n == 4
+}
+
+test "err fails at the try" {
+    const n = try parse(-1)
+    assert n == 0
+}
+"#,
+    )
+    .materialize("try-in-test");
+    let output = workspace.marrow(&["test", "--format", "jsonl"]);
+    assert!(!output.success(), "{}", output.stdout_text());
+    let lines = output.jsonl_lines();
+    let passed = lines
+        .iter()
+        .find(|line| line.contains(r#""name":"ok yields the payload""#))
+        .expect("the ok test is reported");
+    assert!(passed.contains(r#""outcome":"passed""#), "{passed}");
+    let failed = lines
+        .iter()
+        .find(|line| line.contains(r#""name":"err fails at the try""#))
+        .expect("the err test is reported");
+    assert!(failed.contains(r#""outcome":"failed""#), "{failed}");
+    assert!(failed.contains(r#""code":"run.assert""#), "{failed}");
+    assert!(
+        failed.contains(r#""span":{"column":15,"line":14}"#),
+        "{failed}"
+    );
+    let text = workspace.marrow(&["test"]);
+    assert!(
+        text.stdout_text().contains("    const n = try parse(-1)"),
+        "{}",
+        text.stdout_text()
+    );
+}

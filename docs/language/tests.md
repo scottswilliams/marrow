@@ -32,6 +32,26 @@ the report names the assertion's source position. A test passes when its body
 runs to the end with every condition true. Any other runtime fault, such as an
 overflow, errors it.
 
+A [prefix `try`](control-flow.md#prefix-try) in a test body unwraps an `ok`
+payload. An `err` fails the test at the `try` the way a false `assert` does,
+with `run.assert` and the `try`'s source position:
+
+```mw
+module docs::tests::tried
+
+fn shelfOf(code: string): Result<int, string> {
+    if code == "A" {
+        return ok(1)
+    }
+    return err("unknown shelf")
+}
+
+test "shelf A is the first shelf" {
+    const shelf = try shelfOf("A")
+    assert shelf == 1
+}
+```
+
 `assert` belongs only in a `test` body; in a function it is
 `check.assert_outside_test`. Program code states an invariant with
 `unreachable("...")` instead.

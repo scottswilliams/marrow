@@ -2978,6 +2978,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             ));
             return Err(LoweringFailure::Recoverable);
         };
+        if self.role() == BodyRole::Test {
+            return self.lower_test_try(inner, inner_ty, src_id, span);
+        }
         let ret_id = match self.ret {
             RetType::Value(ty) => ty.bare_enum(),
             RetType::Unit => None,
@@ -3060,6 +3063,59 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         self.emit_region_return(span)?;
         let ok_here = self.here();
         self.patch(to_ok, ok_here);
+        self.push(Instr::LocalGet(slot), span)?;
+        self.push(
+            Instr::EnumPayloadGet {
+                variant: RESULT_OK,
+                field: 0,
+            },
+            span,
+        )?;
+        Ok(garg_to_lty(t_arg))
+    }
+
+    /// `try` in a test body: an `err` fails the test at the `try` through the same
+    /// `Assert` a false `assert` takes, and an `ok` yields its payload. A test returns
+    /// nothing, so no error type has to agree.
+    fn lower_test_try(
+        &mut self,
+        inner: &Expression,
+        inner_ty: LTy,
+        src_id: EnumId,
+        span: SourceSpan,
+    ) -> ConstructResult<LTy> {
+        let classified = self
+            .records
+            .with_metadata_session(|session| session.reserved_instantiation(src_id));
+        let source = self
+            .accept_resolution(
+                classified.map_err(ResolveError::Invariant),
+                inner.span(),
+                "this try operand",
+            )
+            .ok_or(LoweringFailure::Recoverable)?;
+        let Some(ReservedEnumArgs::Result(t_arg, _)) = source else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType,
+                self.file,
+                inner.span(),
+                format!(
+                    "`try` needs a Result value, found {}",
+                    inner_ty.spelling(self.records)
+                ),
+            ));
+            return Err(LoweringFailure::Recoverable);
+        };
+        let slot = self.alloc_slot(span).ok_or(LoweringFailure::Recoverable)?;
+        self.push(Instr::LocalSet(slot), span)?;
+        self.push(Instr::LocalGet(slot), span)?;
+        self.push(Instr::EnumTag, span)?;
+        let ok_tag = self
+            .checked_mint(|draft| draft.intern_int(i64::from(RESULT_OK)))
+            .ok_or(LoweringFailure::Recoverable)?;
+        self.push(Instr::ConstLoad(ok_tag), span)?;
+        self.push(Instr::EqInt, span)?;
+        self.push(Instr::Assert, span)?;
         self.push(Instr::LocalGet(slot), span)?;
         self.push(
             Instr::EnumPayloadGet {

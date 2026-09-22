@@ -398,7 +398,8 @@ Before the block it has no staged writes; after commit it does not commit again.
 of a statement: `const x = try f()`, `var x = try f()`, `return try f()`, or a
 bare `try f()`. An `ok(v)` yields `v`; an `err(e)` returns `err(e)` from the
 enclosing function at once. The enclosing function returns `Result<U, E>` with
-the same error type `E`.
+the same error type `E`. In a [test](tests.md#tests-and-assert) body an `err(e)`
+fails the test at the `try` instead.
 
 ```mw
 module docs::control::propagation

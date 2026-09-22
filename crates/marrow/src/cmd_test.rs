@@ -6,8 +6,8 @@
 //! selects from the prepared image. A storeless test (empty reconstructed demand)
 //! runs with no session and no store; a durable test runs against its own fresh
 //! in-memory store bounded by the test-image demand union, so tests never observe
-//! one another's writes. A passing test reports `passed`; a false `assert` (`run.assert`) reports
-//! `failed`; any other runtime fault reports `errored`. Output is a typed
+//! one another's writes. A passing test reports `passed`; a false `assert` or an `err` at a
+//! `try` (`run.assert`) reports `failed`; any other runtime fault reports `errored`. Output is a typed
 //! `kind: "test"` JSONL stream ending in a summary, or human text. The command
 //! exits nonzero when any test fails or errors.
 
@@ -30,8 +30,8 @@ Usage:
   marrow test [--format text|jsonl] [--filter <substring>]
 
 Run every `test` declaration in the project at the working directory and report each
-outcome: `passed`, `failed` for a false `assert`, `errored` for any other runtime
-fault, or `incomplete` for a durable fault that interrupts a commit. A test that
+outcome: `passed`, `failed` for a false `assert` or an `err` reaching a `try`,
+`errored` for any other runtime fault, or `incomplete` for a durable fault that interrupts a commit. A test that
 touches no durable place runs with no store; one that does runs against its own
 fresh in-memory store. --filter selects the tests whose title contains the substring
 and refuses a substring no test matches. The command exits 0 when every selected
