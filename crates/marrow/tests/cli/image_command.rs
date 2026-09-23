@@ -21,8 +21,7 @@ store ^tallies[name: string]: Tally\n\
 \n\
 pub fn bump(name: string) {\n\
 \x20   transaction {\n\
-\x20       place c = ^tallies[name]\n\
-\x20       c = Tally(count: (c.count ?? 0) + 1)\n\
+\x20       ^tallies[name] = Tally(count: (^tallies[name].count ?? 0) + 1)\n\
 \x20   }\n\
 }\n\
 \n\
@@ -60,7 +59,7 @@ fn image_requires_the_owner_to_accept_the_ceiling() {
         stderr.contains("cli.ceiling_unaccepted"),
         "typed code on stderr: {stderr}"
     );
-    // The rendered demand names the durable places the ceiling would admit.
+    // The rendered demand names the durable paths the ceiling would admit.
     assert!(
         stderr.contains("writes ^tallies") && stderr.contains("reads ^tallies"),
         "demand is rendered for review: {stderr}"

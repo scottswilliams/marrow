@@ -178,10 +178,10 @@ struct Journey<'a> {
 const APPLIED_OPERATIONS: &str = r#"
 pub fn writeExtra() {
     transaction {
-        place counter = ^counters[0]
-        if exists(counter) { counter.extra = 77 }
-        place note = ^counters[0].notes[1]
-        if exists(note) { note.noteExtra = 99 }
+        ref counter = ^counters[0] else { return }
+        counter.extra = 77
+        ref note = ^counters[0].notes[1] else { return }
+        note.noteExtra = 99
     }
 }
 struct Snapshot {
@@ -1035,7 +1035,7 @@ fn an_invalid_scalar_reports_a_logical_finding(toolchain: &Path) {
     bytes[at] = 0xff;
     fs::write(&engine, &bytes).expect("write malformed UTF-8");
     let code = marrow_codes::Code::StoreAuditUndecodable;
-    let place = "^counters[1].label";
+    let path = "^counters[1].label";
     for format in ["text", "jsonl"] {
         let output = marrow(
             toolchain,
@@ -1052,7 +1052,7 @@ fn an_invalid_scalar_reports_a_logical_finding(toolchain: &Path) {
         let out = text(&output.stdout);
         if format == "text" {
             assert!(
-                out.contains(&format!("  {} at {place}\n", code.as_str())),
+                out.contains(&format!("  {} at {path}\n", code.as_str())),
                 "{out}"
             );
             assert!(
@@ -1071,7 +1071,7 @@ fn an_invalid_scalar_reports_a_logical_finding(toolchain: &Path) {
             assert_eq!(
                 lines[1],
                 format!(
-                    "{{\"code\":\"{}\",\"kind\":\"finding\",\"place\":\"{place}\"}}",
+                    "{{\"code\":\"{}\",\"kind\":\"finding\",\"path\":\"{path}\"}}",
                     code.as_str()
                 )
             );

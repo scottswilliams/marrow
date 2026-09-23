@@ -35,7 +35,7 @@ use crate::store_dir;
 #[derive(Debug)]
 pub enum AdmissionRefusal {
     /// The image's demand exceeds the accepted ceiling — a typed authority refusal naming
-    /// the exceeding export, effect, and place. The owner must consciously expand the
+    /// the exceeding export, effect, and path. The owner must consciously expand the
     /// accepted ceiling.
     Exceeds(DemandExceedsCeiling),
     /// The persisted accepted-ceiling payload did not decode — store corruption.

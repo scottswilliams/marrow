@@ -57,13 +57,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Err(LoweringFailure::Recoverable)
     }
 
-    /// Lower `expr` when it reads through a managed index or a durable place, returning
+    /// Lower `expr` when it reads through a managed index or a durable address, returning
     /// `None` when it is neither and the ordinary expression walk should continue.
     ///
     /// A unique index is an exact complete-key lookup yielding the optional `Id(^root)`;
     /// a nonunique index is read by scanning it with a `for` head, so naming one in value
-    /// position is rejected. Inline addresses and composed reads off a named place or pin
-    /// use the same durable resolver. A bare place name is a durable designation, not a
+    /// position is rejected. Inline addresses and composed reads off an entry reference
+    /// use the same durable resolver. A bare address name is a durable designation, not a
     /// value, and falls through to its own diagnostic in the walk.
     fn lower_index_or_durable(&mut self, expr: &Expression) -> ConstructResult<Option<LTy>> {
         let index_read = match self.resolve_index_read(expr) {
@@ -108,10 +108,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         if durable_here.is_some()
             || (!matches!(expr, Expression::Name { .. }) && durable_composed.is_some())
         {
-            let place = self
+            let address = self
                 .resolve_durable(expr)
                 .ok_or(LoweringFailure::Recoverable)?;
-            return self.lower_durable_read(place).map(Some);
+            return self.lower_durable_read(address).map(Some);
         }
         Ok(None)
     }
@@ -167,15 +167,15 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             self.push(Instr::LocalGet(slot), span)?;
             return Ok(ty);
         }
-        // A place is a durable designation, not a first-class value:
+        // An address is a durable designation, not a first-class value:
         // its bare name cannot be read, passed, or returned.
-        if self.lookup_place(name).is_some() {
+        if self.lookup_entry_ref(name).is_some() {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType,
                 self.file,
                 span,
                 format!(
-                    "`{name}` is a durable place, not a value; read a field with \
+                    "`{name}` is a durable address, not a value; read a field with \
                      `{name}.field`, guard the entry with `if const x = {name}`, \
                      or test it with `exists({name})`"
                 ),
@@ -1263,8 +1263,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     fn shadows_builtin(&mut self, name: &str, span: SourceSpan) -> bool {
         let held = if let Some(local) = self.lookup(name) {
             local.ty.spelling(self.records)
-        } else if self.lookup_place(name).is_some() {
-            "a durable place".to_string()
+        } else if self.lookup_entry_ref(name).is_some() {
+            "a durable address".to_string()
         } else {
             return false;
         };
@@ -1955,7 +1955,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         args: &[Argument],
         span: SourceSpan,
     ) -> ConstructResult<LTy> {
-        if self.lookup(resource).is_some() || self.lookup_place(resource).is_some() {
+        if self.lookup(resource).is_some() || self.lookup_entry_ref(resource).is_some() {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType,
                 self.file,
@@ -2043,7 +2043,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         args: &[Argument],
         span: SourceSpan,
     ) -> ConstructResult<LTy> {
-        if self.lookup(resource).is_some() || self.lookup_place(resource).is_some() {
+        if self.lookup(resource).is_some() || self.lookup_entry_ref(resource).is_some() {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType,
                 self.file,

@@ -1,6 +1,6 @@
 //! Lowering for the built-in `List`/`Map` collection floor: construction, the bracket
 //! read/write/unset forms over a local collection, and the length/append/emptiness
-//! builtins. None of it names a `^` place.
+//! builtins. None of it names a `^` address.
 
 use super::*;
 

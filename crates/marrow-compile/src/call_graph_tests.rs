@@ -85,11 +85,9 @@ resource R {
 store ^r[id: int]: R
 pub fn write(id: int) {
     transaction {
-        place p = ^r[id]
-        if exists(p) {
-            const queued = identity(1)
-            p.value = queued
-        }
+        ref p = ^r[id] else { return }
+        const queued = identity(1)
+        p.value = queued
     }
 }
 fn erase(id: int) { delete ^r[id] }
@@ -103,7 +101,7 @@ test "same" {}
     let (code, file, span) = &observed[0];
     assert_eq!(*code, Code::CheckNameConflict);
     assert_eq!(file, "src/main.mw");
-    assert_eq!((span.line, span.column), (18, 6));
+    assert_eq!((span.line, span.column), (16, 6));
     assert_eq!(diagnostic_rows(check(&input)), observed);
     compile(&input).expect("excluding the duplicate tests permits the generic drain");
 }
@@ -118,12 +116,12 @@ fn resource_source(roots: &[String]) -> String {
 
 fn push_guarded_writes(source: &mut String, roots: &[String]) {
     for (index, root) in roots.iter().enumerate() {
-        writeln!(source, "        place p{index} = ^{root}[id]").expect("write");
         writeln!(
             source,
-            "        if exists(p{index}) {{ p{index}.value = noop(id) }}"
+            "        ref p{index} = ^{root}[id] else {{ return }}"
         )
         .expect("write");
+        writeln!(source, "        p{index}.value = noop(id)").expect("write");
     }
 }
 
@@ -166,8 +164,8 @@ fn presence_summaries_cover_functions_beyond_final_image_policy() {
          fn erase(id: int) { delete ^r[id] }\n\
          pub fn write(id: int) {\n\
              transaction {\n\
-                 place p = ^r[id]\n\
-                 if exists(p) { p.value = noop(id) }\n\
+                 ref p = ^r[id] else { return }\n\
+                 p.value = noop(id)\n\
              }\n\
          }\n",
     );
@@ -212,13 +210,16 @@ fn dense_presence_source(repetitions: usize, protected_root: &str) -> (ProjectIn
     );
     push_guarded_writes(&mut source, &roots);
     source.push_str("    }\n}\npub fn repeat(id: int) {\n    transaction {\n");
-    writeln!(source, "        place p = ^{protected_root}[id]").expect("write");
-    source.push_str("        if exists(p) {\n");
+    writeln!(
+        source,
+        "        ref p = ^{protected_root}[id] else {{ return }}"
+    )
+    .expect("write");
     for _ in 0..repetitions {
         source.push_str("            erase_many(id)\n");
     }
     let write_line = source.lines().count() as u32 + 1;
-    source.push_str("            p.value = 1\n        }\n    }\n}\n");
+    source.push_str("            p.value = 1\n    }\n}\n");
     (durable_project(&source, &roots), write_line)
 }
 

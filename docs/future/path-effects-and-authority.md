@@ -7,7 +7,7 @@ nothing.
 
 Each export's demand includes durable operations through its acyclic call graph,
 including managed-index maintenance
-([access demand](../language/durable-places.md#access-demand)).
+([access demand](../language/durable-data.md#access-demand)).
 The image carries a deployment ceiling accepted by the owner, and the store
 initially retains that ceiling. Explicit apply can expand the store's standing
 ceiling by accepting its exact union with NEW demand. An invocation demanding

@@ -4,7 +4,7 @@
 //! Two renderings project from the same demand facts. [`demand_report`] and
 //! [`write_demand_report`] are the `marrow check` report: exports grouped by module,
 //! adjacent exports with one demand set identity listed once, each group naming every
-//! durable place it reads and writes, and storeless exports collapsed to one note per
+//! durable address it reads and writes, and storeless exports collapsed to one note per
 //! module. [`demand_lines`] is the per-export `module.item <sentence>` form `marrow
 //! image` prints on standard error while the owner reviews the authority a deployment
 //! ceiling accepts. Neither rendering reclassifies demand — both join the compiler's
@@ -13,12 +13,12 @@
 
 use std::io::{self, Write};
 
-use marrow_compile::{DemandPlaces, DurableNaming, ExportEntry};
+use marrow_compile::{DemandPaths, DurableNaming, ExportEntry};
 use marrow_image::DemandSetId;
 use marrow_verify::VerifiedImage;
 
-/// The widest line the report writes before a place list continues on the next line.
-/// A line holds at most this many bytes, or one place alone when that place is longer.
+/// The widest line the report writes before an address list continues on the next line.
+/// A line holds at most this many bytes, or one address alone when that address is longer.
 pub(crate) const ROW_WIDTH: usize = 96;
 
 /// A coherence failure building the demand lines: the compiler's export directory
@@ -29,8 +29,8 @@ pub(crate) const ROW_WIDTH: usize = 96;
 pub(crate) enum DemandNamingError {
     /// The export directory names an id the verified image does not carry.
     DirectoryImageDisagree,
-    /// An admitted export demands a durable place with no source spelling.
-    UnnameablePlace,
+    /// An admitted export demands a durable address with no source spelling.
+    UnnameablePath,
 }
 
 impl DemandNamingError {
@@ -41,8 +41,8 @@ impl DemandNamingError {
             DemandNamingError::DirectoryImageDisagree => {
                 "internal error: export directory and image disagree"
             }
-            DemandNamingError::UnnameablePlace => {
-                "internal error: an export demands an unnameable durable place"
+            DemandNamingError::UnnameablePath => {
+                "internal error: an export demands an unnameable durable address"
             }
         }
     }
@@ -60,7 +60,7 @@ pub(crate) fn demand_lines(
         let (_, demand) = demand_of(entry, image)?;
         let sentence = naming
             .demand_sentence(demand)
-            .ok_or(DemandNamingError::UnnameablePlace)?;
+            .ok_or(DemandNamingError::UnnameablePath)?;
         lines.push(format!("{}.{} {sentence}", entry.module, entry.item));
     }
     Ok(lines)
@@ -79,13 +79,13 @@ pub(crate) struct ModuleReport<'a> {
 struct Group<'a> {
     id: DemandSetId,
     items: Vec<&'a str>,
-    places: DemandPlaces,
+    paths: DemandPaths,
 }
 
 /// Resolve the `marrow check` report. Exports are grouped by their typed demand set
-/// identity before any place is spelled, so a demand is spelled once per group;
+/// identity before any address is spelled, so a demand is spelled once per group;
 /// grouping joins only adjacent exports, so the `module.item` order of the report is
-/// the order of the directory. Byte-stable across runs: modules, exports, and places
+/// the order of the directory. Byte-stable across runs: modules, exports, and paths
 /// are ordered by spelling and grouping is a pure function of the demand facts.
 pub(crate) fn demand_report<'a>(
     exports: &'a [ExportEntry],
@@ -113,13 +113,13 @@ pub(crate) fn demand_report<'a>(
         } else if let Some(group) = module.groups.last_mut().filter(|group| group.id == id) {
             group.items.push(&entry.item);
         } else {
-            let places = naming
-                .demand_places(demand)
-                .ok_or(DemandNamingError::UnnameablePlace)?;
+            let paths = naming
+                .demand_paths(demand)
+                .ok_or(DemandNamingError::UnnameablePath)?;
             module.groups.push(Group {
                 id,
                 items: vec![&entry.item],
-                places,
+                paths,
             });
         }
     }
@@ -127,12 +127,12 @@ pub(crate) fn demand_report<'a>(
 }
 
 /// Write the report: a header, then per module a header, one entry per group naming
-/// every place it reads and writes, and a trailing note for the storeless exports. A
+/// every address it reads and writes, and a trailing note for the storeless exports. A
 /// module whose exports are all storeless folds to its header line alone.
 ///
-/// The output is linear in the demand facts: a place list line holds at most
-/// [`ROW_WIDTH`] bytes (or one place alone when that place is longer) and continues on
-/// an indented line, so the whole report is at most three times the bytes of its place
+/// The output is linear in the demand facts: an address list line holds at most
+/// [`ROW_WIDTH`] bytes (or one address alone when that address is longer) and continues on
+/// an indented line, so the whole report is at most three times the bytes of its address
 /// spellings, each spelled once per group, plus 128 bytes for each export, module, and
 /// header line.
 pub(crate) fn write_demand_report(
@@ -179,8 +179,8 @@ fn write_module(writer: &mut impl Write, module: &ModuleReport<'_>) -> io::Resul
                 count(group.items.len(), "export"),
             )?;
         }
-        write_places(writer, "reads", &group.places.reads)?;
-        write_places(writer, "writes", &group.places.writes)?;
+        write_paths(writer, "reads", &group.paths.reads)?;
+        write_paths(writer, "writes", &group.paths.writes)?;
     }
     if !module.storeless.is_empty() {
         writeln!(writer, "  storeless: {}", module.storeless.join(", "))?;
@@ -188,21 +188,21 @@ fn write_module(writer: &mut impl Write, module: &ModuleReport<'_>) -> io::Resul
     Ok(())
 }
 
-/// One `reads`/`writes` list, continued on an indented line whenever the next place,
+/// One `reads`/`writes` list, continued on an indented line whenever the next address,
 /// with its separator and the comma a continued line ends in, would carry the line
 /// past [`ROW_WIDTH`]. An empty list writes nothing.
-fn write_places(writer: &mut impl Write, label: &str, places: &[String]) -> io::Result<()> {
-    let Some((first, rest)) = places.split_first() else {
+fn write_paths(writer: &mut impl Write, label: &str, paths: &[String]) -> io::Result<()> {
+    let Some((first, rest)) = paths.split_first() else {
         return Ok(());
     };
     let mut line = format!("    {label} {first}");
-    for place in rest {
-        if line.len() + ", ".len() + place.len() + ",".len() > ROW_WIDTH {
+    for address in rest {
+        if line.len() + ", ".len() + address.len() + ",".len() > ROW_WIDTH {
             writeln!(writer, "{line},")?;
-            line = format!("      {place}");
+            line = format!("      {address}");
         } else {
             line.push_str(", ");
-            line.push_str(place);
+            line.push_str(address);
         }
     }
     writeln!(writer, "{line}")

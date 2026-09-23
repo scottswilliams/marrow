@@ -170,7 +170,7 @@ fn a_missing_group_field_identity_fails_precisely() {
 }
 
 #[test]
-fn a_missing_branch_placement_identity_fails_precisely() {
+fn a_missing_branch_referencement_identity_fails_precisely() {
     let without_branch =
         LIBRARY_IDS.replace("id root Book.notes 30303030303030303030303030303030\n", "");
     let diagnostics = rejection(LIBRARY_SOURCE, &without_branch, "incomplete identity");
@@ -267,7 +267,7 @@ fn renaming_a_group_with_a_moved_anchor_preserves_the_identity() {
 }
 
 #[test]
-fn re_minting_a_branch_placement_changes_the_identity() {
+fn re_minting_a_branch_referencement_changes_the_identity() {
     let base = contract_of(LIBRARY_SOURCE, LIBRARY_IDS);
     let re_minted = LIBRARY_IDS.replace(
         "id root Book.notes 30303030303030303030303030303030",

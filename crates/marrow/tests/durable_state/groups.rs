@@ -4,7 +4,7 @@
 //! presence is the entry's presence, and it is addressed by the root's own key-path. A
 //! whole entry read joins the group's leaves; a group is read and erased whole through
 //! `^root(key).group` and a group leaf is read through `^root(key).group.leaf`. A whole-group
-//! write and a group-leaf write go through a `place` the compiler has proved present; a
+//! write and a group-leaf write go through a `reference` the compiler has proved present; a
 //! group-leaf write rewrites one leaf, so a sibling leaf survives. Whole-entry and
 //! whole-group replacement are exact — they rewrite the payload's own fields and drop
 //! omitted sparse leaves — while leaving the entry's keyed `branch` descendants in place.
@@ -82,10 +82,8 @@ pub fn readLanguage(shelf: int, id: int): string? {
 
 pub fn setPages(shelf: int, id: int, p: int) {
     transaction {
-        place b = ^books[shelf, id]
-        if exists(b) {
-            b.details.pages = p
-        }
+        ref b = ^books[shelf, id] else { return }
+        b.details.pages = p
     }
 }
 
@@ -97,10 +95,8 @@ pub fn clearPages(shelf: int, id: int) {
 
 pub fn replaceDetails(shelf: int, id: int, p: int) {
     transaction {
-        place b = ^books[shelf, id]
-        if exists(b) {
-            b.details = Book.details(pages: p)
-        }
+        ref b = ^books[shelf, id] else { return }
+        b.details = Book.details(pages: p)
     }
 }
 
@@ -206,7 +202,7 @@ fn a_group_bearing_entry_stores_and_reads_whole_and_by_leaf() {
     assert_eq!(as_int(session.call("readPages", vec![i(2), i(7)])), None);
 }
 
-/// A group-leaf assignment through a place proved present updates the addressed leaf and
+/// A group-leaf assignment through a reference proved present updates the addressed leaf and
 /// preserves the sibling leaf.
 #[test]
 fn a_group_leaf_assignment_preserves_the_sibling_leaf() {
@@ -486,15 +482,15 @@ fn a_missing_group_leaf_still_reports_its_group_diagnostic() {
     );
 }
 
-// --- Complete entries: a group leaf is written through a place proved present. ---
+// --- Complete entries: a group leaf is written through a reference proved present. ---
 
 /// A group is present exactly when its entry is present, so a group-leaf write needs the
 /// same presence fact a field write does: the inline `^books[shelf, id].details.pages = p`
-/// with no fact is refused at check time, and the same write through a place inside
+/// with no fact is refused at check time, and the same write through a reference inside
 /// `if exists(b)` updates the leaf, keeps the sibling leaf, and compiles without an
 /// absent-entry branch.
 #[test]
-fn a_group_leaf_write_through_a_place_proven_present_updates_the_leaf() {
+fn a_group_leaf_write_through_a_reference_proven_present_updates_the_leaf() {
     assert_eq!(
         compile_codes(
             "pub fn setPagesInline(shelf: int, id: int, p: int) {\n    transaction {\n        \
@@ -508,12 +504,9 @@ fn a_group_leaf_write_through_a_place_proven_present_updates_the_leaf() {
         "{SOURCE}\n{}",
         r#"pub fn setPagesProven(shelf: int, id: int, p: int): bool {
     transaction {
-        place b = ^books[shelf, id]
-        if exists(b) {
-            b.details.pages = p
-            return true
-        }
-        return false
+        ref b = ^books[shelf, id] else { return false }
+        b.details.pages = p
+        return true
     }
 }
 "#
@@ -585,8 +578,8 @@ fn proved_required_root_group_and_branch_reads_return_bare_values() {
         r#"
 pub fn put(shelf: int, id: int): string {
     transaction {
-        place b = ^books[shelf, id]
-        b = Book(title: "Small Gods", details: Book.details(pages: 381))
+        ^books[shelf, id] = Book(title: "Small Gods", details: Book.details(pages: 381))
+        ref b = ^books[shelf, id] else { unreachable("created entry missing") }
         const title: string = b.title
         ^books[shelf, id].notes["review"] = Book.notes(text: "read")
         return title
@@ -594,8 +587,7 @@ pub fn put(shelf: int, id: int): string {
 }
 
 pub fn pages(shelf: int, id: int): int {
-    place b = ^books[shelf, id]
-    if not exists(b) { return -1 }
+    ref b = ^books[shelf, id] else { return -1 }
     const pages: int = b.details.pages
     const language: string? = b.details.language
     if (language ?? "") == "en" { return pages + 1 }
@@ -603,12 +595,9 @@ pub fn pages(shelf: int, id: int): int {
 }
 
 pub fn note(shelf: int, id: int): string {
-    place n = ^books[shelf, id].notes["review"]
-    if exists(n) {
-        const text: string = n.text
-        return text
-    }
-    return "missing"
+    ref n = ^books[shelf, id].notes["review"] else { return "missing" }
+    const text: string = n.text
+    return text
 }
 "#,
     );
@@ -660,7 +649,7 @@ fn an_erase_of_a_group_with_a_required_leaf_is_refused_at_check() {
         "{REQUIRED_LEAF_SCHEMA}
 pub fn dropDetails(shelf: int, id: int) {{
     transaction {{
-        place b = ^books[shelf, id]
+        ref b = ^books[shelf, id] else {{ return }}
         if exists(b) {{
             delete b.details
         }}

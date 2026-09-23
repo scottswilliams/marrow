@@ -4,7 +4,9 @@
 //! either a braced block or a single inline statement.
 
 use super::head::arm_pattern;
-use super::statement_lines::{parse_for_header, parse_if_const_head, parse_simple_statement};
+use super::statement_lines::{
+    parse_entry_head, parse_for_header, parse_if_const_head, parse_simple_statement,
+};
 use super::tokens::{
     comment_from_token, expr_of, expr_of_after, find_top_level_equal, first_line_end,
     is_line_comment, line_end, line_span_or, parse_type, push_parse_error,
@@ -330,6 +332,10 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         // `on` arms live on following lines that `take_line` does not see.
         if self.at_checked_form() {
             return Some(self.checked_stmt());
+        }
+
+        if self.tokens[self.pos].kind == TokenKind::Keyword(Keyword::Ref) {
+            return Some(self.entry_binding_stmt());
         }
 
         if self.at_let_else() {
@@ -816,6 +822,36 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         }
     }
 
+    fn entry_binding_stmt(&mut self) -> Statement {
+        let start = self.tokens[self.pos].span;
+        let line_end = self.find_line_end();
+        let Some(offset) = find_top_level_else(&self.tokens[self.pos..line_end]) else {
+            let line = self.take_line();
+            let span = line_span_or(line, start);
+            self.error_span_reason(
+                span,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::Statement),
+                "an entry reference requires `ref name = address else { ... }`",
+            );
+            return Statement::Error { span };
+        };
+        let binding_end = self.pos + offset;
+        let head = parse_entry_head(self.source, &self.tokens[self.pos..binding_end], self.sink);
+        self.pos = binding_end + 1;
+        let else_block = self.parse_clause_body();
+        let span = join_spans(start, else_block.span);
+        let Some((name, name_span, address)) = head else {
+            return Statement::Error { span };
+        };
+        Statement::EntryBinding {
+            name,
+            name_span,
+            address,
+            else_block,
+            span,
+        }
+    }
+
     /// Whether the current line is a let-else: a `const`/`var` binding whose header line
     /// carries a top-level `else` diverging tail. Inspects the line without consuming it.
     fn at_let_else(&self) -> bool {
@@ -829,7 +865,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
 
     /// Parse a let-else: `const`/`var name [: ty] = value else <diverging>`. The binding
     /// before `else` is parsed by the simple-statement parser; the tail is a braced or
-    /// inline diverging body. Parse-only; the checker rejects it.
+    /// inline diverging body.
     fn let_else_stmt(&mut self) -> Statement {
         let start = self.tokens[self.pos].span;
         let line_end = self.find_line_end();
@@ -1254,13 +1290,26 @@ impl<'a, 'c> StmtParser<'a, 'c> {
     /// as a one-statement block (the inline diverging form of `else`, `on more`, a
     /// checked arm, or a match arm), which the formatter writes as a block.
     fn parse_clause_body(&mut self) -> Block {
-        // The body may cuddle the clause keyword or sit on the next line.
-        self.skip_newlines();
-        if matches!(self.peek(), Some(TokenKind::LeftBrace)) {
+        // Comments between a clause keyword and its body belong to that body,
+        // regardless of whether the opening brace cuddles the keyword.
+        let mut leading = Vec::new();
+        loop {
+            self.skip_newlines();
+            if !self.peek().is_some_and(is_line_comment) {
+                break;
+            }
+            let token = self.advance();
+            if let Some(comment) = self.classify_line_comment(token, CommentPlacement::OwnLine) {
+                leading.push(comment);
+            }
+        }
+        let mut block = if matches!(self.peek(), Some(TokenKind::LeftBrace)) {
             self.parse_braced_block()
         } else {
             self.inline_statement_block()
-        }
+        };
+        block.comments.splice(0..0, leading);
+        block
     }
 
     /// Parse one inline statement as a one-statement block. A clause with neither a

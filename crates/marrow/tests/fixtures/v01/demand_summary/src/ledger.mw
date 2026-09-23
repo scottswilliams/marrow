@@ -13,26 +13,28 @@ store ^events[id: int]: Event
 
 pub fn alpha(id: int) {
     transaction {
-        place account = ^accounts[id]
-        const bal = account.balance ?? 0
-        const nm = account.name ?? ""
-        if exists(account) {
-            account.balance = bal + 1
-            account.name = nm
+        const bal = ^accounts[id].balance ?? 0
+        const nm = ^accounts[id].name ?? ""
+        ref account = ^accounts[id] else {
+            ^events[id] = Event(kind: bal)
+            return
         }
+        account.balance = bal + 1
+        account.name = nm
         ^events[id] = Event(kind: bal)
     }
 }
 
 pub fn beta(id: int) {
     transaction {
-        place account = ^accounts[id]
-        const bal = account.balance ?? 0
-        const nm = account.name ?? ""
-        if exists(account) {
-            account.balance = bal + 1
-            account.name = nm
+        const bal = ^accounts[id].balance ?? 0
+        const nm = ^accounts[id].name ?? ""
+        ref account = ^accounts[id] else {
+            ^events[id] = Event(kind: bal)
+            return
         }
+        account.balance = bal + 1
+        account.name = nm
         ^events[id] = Event(kind: bal)
     }
 }

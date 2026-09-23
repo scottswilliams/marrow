@@ -10,7 +10,7 @@ marrow test [--format text | jsonl] [--filter <substring>]
 
 `--filter` runs the tests whose title contains the substring. `--format` chooses the text report, the default, or JSONL.
 
-Tests run in ascending title order. A test that touches no durable place runs with no store. A test that reads or writes a durable place runs against its own ephemeral attachment: a fresh in-memory store that is discarded when the test ends.
+Tests run in ascending title order. A test that touches no durable address runs with no store. A test that reads or writes a durable address runs against its own ephemeral attachment: a fresh in-memory store that is discarded when the test ends.
 
 The command exits `0` when every selected test passes, `1` when any test fails or errors, and `2` on a usage error. A filter that matches no test is a usage error:
 

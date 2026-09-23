@@ -1,6 +1,6 @@
-# Durable places
+# Durable data
 
-A durable place is a location whose value outlives the program. It is written
+A durable address is a location whose value outlives the program. It is written
 with `^` and read, assigned, and deleted like a local value.
 
 ## Declaring a store
@@ -75,15 +75,15 @@ write address ([entry identity](types-and-values.md#entry-identity)).
 ## What a field holds
 
 A field holds a scalar, a `struct`, an `enum`, an `Option`, or a `Result`. It
-holds no list, map, resource, place, or function; many values under one entry
+holds no list, map, resource, reference, or function; many values under one entry
 go in a [keyed branch](#keyed-branches). A stored value nests at most 32 levels
 ([limits](execution-limits.md#limits)).
 
 ## Reading
 
-An untested durable read yields `T?`, because the entry or field may be absent
+A direct durable read yields `T?`, because the entry or field may be absent
 ([optionals](types-and-values.md#optionals)). A required field or required group
-leaf read through a [proved named place](#named-places) has its declared type;
+leaf read through a [checked entry reference](#entry-references) has its declared type;
 sparse reads remain optional:
 
 ```mw
@@ -129,9 +129,9 @@ test "an absent entry reads absent" {
 `^books[1].subtitle` is absent: the entry is present and the field is not.
 `titleOrNone` binds the whole entry with `if const`. Inside the block
 `book.title` is a plain `string`, because a present entry has every required
-field. `exists` answers presence with a `bool`. An explicit guard over a named
-place establishes a presence proof; a guard over an inline path does not change
-the types of later reads.
+field. `exists` answers presence with a `bool`. A checked entry reference
+establishes presence for reads and writes through its name; a guard over an
+inline path does not change the types of later reads.
 
 `exists(^books)` is true when `^books` has a present immediate entry, including
 an entry whose fields are all sparse and unset. `exists(^books[id].notes)` asks
@@ -149,7 +149,7 @@ block's writes commit together when it ends, and a `return` inside the block
 commits them ([transactions](errors-and-transactions.md#transactions)).
 
 An entry is written whole, and one field of a present entry is written through
-a proved place:
+a checked entry reference:
 
 ```mw
 module docs::durable::fields
@@ -169,10 +169,10 @@ pub fn create(id: int, title: string) {
 
 pub fn retitle(id: int, title: string): string? {
     transaction {
-        place m = ^books[id]
-        if exists(m) {
-            m.title = title
+        ref m = ^books[id] else {
+            return absent
         }
+        m.title = title
         return m.title
     }
 }
@@ -192,13 +192,12 @@ test "a field write updates a present entry" {
 
 `create` assigns a whole entry. The constructor names every required field, so
 the entry is complete from its first commit, and a present entry is always
-complete. `retitle` binds `place m = ^books[id]`, proves the entry present
-with `exists(m)`, and writes one field through `m` inside that block. A field
-write updates a present entry and never creates one: `retitle(2, "Pyramids")`
-writes nothing, and `present(2)` stays false. The read of `m.title` after the
-write sees the write staged before it and is `string?` because the guard's block
-has ended
-([named places](#named-places)).
+complete. `retitle` binds `ref m = ^books[id] else { return absent }` and
+writes one field through `m`. A field write updates a present entry and never
+creates one: `retitle(2, "Pyramids")` writes nothing, and `present(2)` stays
+false. The required read `m.title` has type `string`, observes the staged
+write, and lifts to the function's optional return type
+([entry references](#entry-references)).
 
 A sparse field may stay unset, and `delete` clears it ([deleting](#deleting)).
 A required field is present whenever its entry is.
@@ -268,12 +267,13 @@ assignment touches only the entry's own fields. A constructor that omits a
 required field is a `check.type` error. The last three lines belong to
 [deleting](#deleting).
 
-## Named places
+## Entry references
 
-`place` binds an entry address to a name:
+`ref` captures an entry address and checks its presence. Its `else` block
+handles absence and must leave the current path:
 
 ```mw
-module docs::durable::named
+module docs::durable::references
 
 resource Book {
     required title: string
@@ -284,8 +284,7 @@ store ^books[id: int]: Book
 
 pub fn setSubtitle(id: int, subtitle: string): bool {
     transaction {
-        place book = ^books[id]
-        if not exists(book) {
+        ref book = ^books[id] else {
             return false
         }
         book.subtitle = subtitle
@@ -300,18 +299,17 @@ pub fn put(id: int, title: string) {
 }
 
 pub fn subtitleOf(id: int): string? {
-    place book = ^books[id]
-    return book.subtitle
+    return ^books[id].subtitle
 }
 
 pub fn titleOf(id: int): Result<string, string> {
-    place book = ^books[id]
-    require exists(book) else "missing book"
-    const title: string = book.title
-    return ok(title)
+    ref book = ^books[id] else {
+        return err("missing book")
+    }
+    return ok(book.title)
 }
 
-test "a place writes one field" {
+test "a reference writes one field" {
     put(1, "Small Gods")
     assert setSubtitle(1, "A novel")
     assert not setSubtitle(2, "A novel")
@@ -323,75 +321,59 @@ test "a place writes one field" {
 }
 ```
 
-The right-hand side is a whole entry address, `^root[key]`. The key is evaluated
-once, at the binding, and every later use of the name goes to that one address.
-`exists(book)` proves presence, and the guard returns before any write when the
-entry is absent. `book.subtitle = subtitle` then writes one field and reads
-nothing else.
+The right-hand side is a whole root or branch entry address, such as
+`^books[id]` or `^books[id].notes[pos]`. All keys are evaluated once, from
+left to right, before the presence check. Every later use of the name
+addresses that captured entry. The binding reads presence, without copying
+the entry's fields. It establishes no fact about ancestor entries: a present
+note can be bound beneath an absent book.
 
-A field write, a whole-group write, or a group-leaf write goes through a place,
-or a [traversal pin](traversal-and-indexes.md#bounded-durable-traversal), that
-a presence proof covers. The proof forms are:
+The `else` block is mandatory. Every path through it must return, break,
+continue, or reach `unreachable`. The new name is in scope after the binding,
+not inside its own `else` block. A field or group address, or another
+reference, is not a valid right-hand side.
 
-- the block of `if exists(p)`;
-- the block of `if const x = p`;
-- the rest of the block after `const x = p else { … }`;
-- the rest of the block after `if not exists(p) { … }` when that block returns
-  or throws, as in `setSubtitle`;
-- the rest of the block after `require exists(p) else value`, as in `titleOf`;
-- the rest of the block after a whole-entry assignment `p = Book(…)`.
+Field, whole-group, and group-leaf writes require a checked entry reference
+and a transaction. Inline field writes such as `^books[id].subtitle = subtitle`
+are `check.requires_presence` errors. Whole-entry assignment to a direct path
+creates or replaces an entry; it needs no reference. Optional reads use direct
+paths as in `subtitleOf`. To capture a key for several direct operations,
+bind that key with `const`.
 
-A negative guard whose block falls through proves nothing. A write with no
-proof, including every inline `^books[id].subtitle = subtitle`, is
-`check.requires_presence` at the write. A function binds one place per entry
-and proves and writes through that name.
+Required fields and required group leaves read through a live reference have
+their declared types. Sparse fields remain optional. Whole-entry and
+whole-group value reads remain optional; `const copy = book else { … }`
+copies a present entry value. Copied values are detached from durable state.
+Read a struct field into a local value before projecting its members.
 
-Within the proof's scope, a required field or required group leaf read through
-that name has its declared type. This includes a required struct, enum,
-`Option`, or `Result` field where that field shape is supported. Read a struct
-field into a local value before projecting its members. Sparse fields remain
-optional. Whole-entry and whole-group value reads remain optional.
+An entry reference is a local address binding, not a value that can be passed,
+returned, or stored. Whole-entry assignment through its name replaces the
+payload at the captured address; it does not retarget the reference. Branches
+beneath the entry can be addressed or traversed through the name.
 
-An untested place supports optional reads. If a required read's proof is
-invalidated within its lexical scope, the read is `check.requires_presence`,
-even where an optional value would fit. It needs a fresh guard or whole-entry
-assignment. After an inner proof block ends, an outer untested place supports
-optional reads again. Values already copied from a place remain ordinary values.
+Presence lasts until the block ends or an entry in the same family is erased,
+directly or through a call. A family is one root and one branch path, so an
+erase through another key or reference in that family also ends the proof.
+Parent and child families are independent. Complete replacement, field and
+group updates, and deletion of sparse leaves preserve entry presence. Presence
+does not establish a stable field value or the presence of a sparse field.
 
-A proof lasts until its block ends or an entry in the same family is erased,
-directly or through a call. A family is one root and one branch path, so the
-erase may use any binding or key: `delete book`, `delete other` over the same
-root, or `delete ^books[k]`. Parent and child entry families are independent.
-Complete replacement, field and group updates, and deletion of sparse leaves
-preserve entry presence. The proof establishes no stable field value or sparse
-field presence.
+A required read or field write after an invalidating erase is
+`check.requires_presence`, even if an optional value would fit. Check presence
+again with a new `ref` binding or an explicit guard on the existing reference.
+A completed whole-entry assignment through the reference also establishes a
+new proof. A write evaluates its right-hand side before consuming its proof;
+a helper that erases the family invalidates it even if the helper recreates
+the entry or returns an ordinary error value. Such a return does not roll back
+the transaction.
 
-A write evaluates its right-hand side before consuming the proof. A helper
-that erases the family invalidates the proof even when it recreates the entry
-or returns an ordinary error value; such a return does not roll back the
-transaction. A completed whole-entry assignment through a named place
-establishes a new proof after its right-hand side has been evaluated.
-
-A protected read or write inside a `while` or `for` body entered after the proof was established
-also requires that proof to survive the repeating region, including nested
-bodies and a `while` condition. An entry erase in that region, directly or
-through a call, can precede the use on the next iteration and invalidates
-the proof. A proof established inside the body, such as `if exists(pin)` on
-each iteration, starts a new lifetime. One-time loop inputs follow ordinary
-evaluation order. After an erasing loop, an earlier proof cannot be reused.
-A traversal pin requires an explicit guard on each iteration to read required
-fields bare; traversal and index results establish no automatic presence proof.
-
-A branch beneath the entry is addressed through the name, so `book.notes[pos]`
-reads and writes the branch entry that `^books[id].notes[pos]` names. A place
-over a branch entry, `place n = ^books[id].notes[pos]`, is proved and written
-by the same forms, and its whole-entry assignment proves it for the rest of
-the block.
-
-A place is a constant, and its bare name is not a value: read a field through
-it, bind the whole entry with `if const`, or test it with `exists`. A field
-address or another place on the right-hand side is a `check.type` error.
-`reads` and `writes` are reserved words and do not name a place.
+A protected read or write inside a loop entered after its proof was
+established also requires that proof to survive the repeating region,
+including nested bodies and a `while` condition. An erase in that region can
+precede the use on the next iteration. Bind a reference inside the body when
+each iteration needs its own presence check. Traversal freezes keys, and
+neither traversal nor an index result proves entry presence. After an erasing
+loop, an earlier proof cannot be reused.
 
 ## Groups
 
@@ -424,8 +406,10 @@ struct DetailChanges {
 
 pub fn changeDetails(): DetailChanges {
     transaction {
-        place b = ^books[1]
-        b = Book(title: "Small Gods", details: Book.details(pages: 381, language: "en"))
+        ^books[1] = Book(title: "Small Gods", details: Book.details(pages: 381, language: "en"))
+        ref b = ^books[1] else {
+            unreachable("the entry was just created")
+        }
         b.details.pages = 400
         const language = b.details.language ?? ""
         b.details = Book.details(language: "de")
@@ -452,9 +436,8 @@ test "a group is one value of the entry" {
 
 `details` is part of the entry: it is present exactly when the entry is, and it
 is addressed by the entry's key. `^books[id].details.pages` reads one leaf and
-yields `int?`. `changeDetails` binds `place b = ^books[1]`, and the whole-entry
-assignment through `b` proves it for the rest of the block, so the group writes
-that follow need no further guard. The function writes one leaf and keeps
+yields `int?`. `changeDetails` creates the entry and binds a checked reference
+`b`, so the group writes that follow need no further guard. The function writes one leaf and keeps
 `language`, then assigns the whole group exactly, so the omitted `pages` is
 dropped. `title` is untouched either way, and `delete b.details.language`
 clears one sparse leaf. The returned value captures each intermediate observation
@@ -541,7 +524,7 @@ proof. `delete ^books[id].subtitle` clears a sparse field, `delete
 ^books[id].details.language` a sparse group leaf, `delete ^books[id].details`
 a group whose leaves are all sparse, and `delete ^books[id]` the entry's own
 payload, after which `exists(^books[id])` is false. Each form is also written
-through a place, `delete book.subtitle`. Clearing a field that is already
+through an entry reference, `delete book.subtitle`. Clearing a field that is already
 absent does nothing. A note under the entry stays, because a branch entry is
 its own node.
 
@@ -584,11 +567,11 @@ pub fn seed(id: int) {
 
 pub fn removePresentEntries(id: int) {
     transaction {
-        for pos, note in ^books[id].notes at most 1000 {
-            for tag, entry in note.tags at most 1000 {
-                delete entry
+        for pos in ^books[id].notes at most 1000 {
+            for tag in ^books[id].notes[pos].tags at most 1000 {
+                delete ^books[id].notes[pos].tags[tag]
             } on more {}
-            delete note
+            delete ^books[id].notes[pos]
         } on more {}
         delete ^books[id]
     }
@@ -626,7 +609,7 @@ has no whole-subtree delete or traversal that enumerates absent ancestors
 
 ## Access demand
 
-Every export has a demand: the durable places it reads and writes, through every
+Every export has a demand: the durable paths it reads and writes, through every
 function it calls. `marrow check .` prints it for the first example:
 
 ```text

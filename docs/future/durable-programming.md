@@ -6,21 +6,22 @@ resource value.
 
 ## Today
 
-[Resources](../language/resources.md), [durable places](../language/durable-places.md),
+[Resources](../language/resources.md), [durable paths](../language/durable-data.md),
 [transactions](../language/errors-and-transactions.md) and
 [bounded traversal](../language/traversal-and-indexes.md) define implemented
 behavior. Explicit presence proofs permit required field and group-leaf reads
-with their declared types. Sparse and untested reads remain optional. A parent
+with their declared types. Sparse and direct reads remain optional. A parent
 entry's erasure leaves its keyed descendants in place.
 
 ## Selected beta rules
 
-Keep explicit places and presence guards. Capture keys once; erasing an entry
+Keep one checked entry binding that captures keys once and handles absence.
+Erasing an entry
 family invalidates its presence facts conservatively, including through helpers.
 A copied resource value is detached from its entry. Whole-entry assignment
 creates or replaces a complete payload. `delete` remains the single clearing
 form. Automatic traversal and index-hit proofs and bare whole-value reads are
-deferred; they require no speculative provenance solver or new reference syntax.
+deferred. Traversal binds keys, and each iteration checks presence when needed.
 
 Ordinary enum and product payloads should compose without declaration-order or
 generic-substitution exceptions. Widen only the value combinations a maintained
@@ -47,7 +48,7 @@ Complete backup and restore must visit every declared entry family, including
 children beneath absent ancestors. Walking only present parents cannot do that.
 General application subtree enumeration/removal, automatic cascading deletion,
 composite-key traversal and operations over currently unsupported singleton or
-nested-group places are deferred. Exact deletion must keep its current meaning;
+nested-group addresses are deferred. Exact deletion must keep its current meaning;
 the acceptance applications must maintain their own references and lifetime rules.
 
 ## Evidence

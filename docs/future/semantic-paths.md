@@ -32,8 +32,8 @@ value: it names one entry within one root and instantiates a semantic path
 into a concrete address. It is not a declaration identity, a store identity, or
 a physical key.
 
-A place names a location; it is not a value. The compiler distinguishes an
-exact finite-value place from a keyed child branch. The compiler emits no
+A durable address names a location; it is distinct from the value stored there.
+The compiler distinguishes an exact finite-value address from a keyed child branch. The compiler emits no
 physical key, and the engine interprets no Marrow source meaning.
 
 ## Direction

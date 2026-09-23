@@ -101,7 +101,7 @@ Keys are declared with the same brackets that read them:
 `store ^books[id: int]: Book` declares the root and `^books[id]` reads one entry.
 A store with no index is written on its header line alone. A root without
 `key_params` declares a singleton; it checks, but operating on one is future work
-([durable places](durable-places.md#access-demand)). A group
+([durable paths](durable-data.md#access-demand)). A group
 holds fields; a branch holds fields, groups, and further branches under its own
 keys ([members](resources.md#members)). Index rules are under
 [index declarations](traversal-and-indexes.md#index-declarations).
@@ -177,7 +177,7 @@ statement       = const_stmt
                 | var_stmt
                 | assignment_stmt
                 | compound_assignment_stmt
-                | place_stmt
+                | ref_stmt
                 | delete_stmt
                 | unset_stmt
                 | if_stmt
@@ -205,7 +205,7 @@ assignment_stmt = assignable, "=", expression ;
 compound_assignment_stmt =
                   assignable, ("+=" | "-=" | "*=" | "/=" | "%="), expression ;
 
-place_stmt      = "place", identifier, "=", expression ;
+ref_stmt        = "ref", identifier, "=", expression, "else", clause_body ;
 delete_stmt     = "delete", path_expr ;
 unset_stmt      = "unset", path_expr ;
 
@@ -226,9 +226,13 @@ bound value is absent ([let-else bindings](control-flow.md#let-else-bindings)).
 A `clause_body` written as one statement parses; the formatter writes it as a
 block. `require` takes a condition and a bare failure value
 ([require guards](control-flow.md#require-guards)). `assert` is legal inside a
-`test` body. `delete` clears a durable place and `unset` a local field:
+`test` body. `delete` clears a durable address and `unset` a local field:
 `unset ^books[id].isbn` reports `check.type`, and `delete` on a local field
 reports `check.unsupported`.
+
+`ref` binds a whole durable entry address, checks presence, and requires a
+diverging `else` clause. The binding is in scope only after that clause
+([entry references](durable-data.md#entry-references)).
 
 ### Conditionals and loops
 
@@ -255,7 +259,8 @@ and may end with a condition. `by` steps a range. `at most`, `from`, and
 `on more` belong to a bounded durable traversal
 ([bounded durable traversal](traversal-and-indexes.md#bounded-durable-traversal));
 the words `by`, `at`, `most`, `from`, `on`, and `more` are contextual and stay
-ordinary names elsewhere.
+ordinary names elsewhere. A durable traversal binds one key name; the second
+binding is available only for local list or map iteration.
 
 ### Match and checked arithmetic
 

@@ -37,7 +37,7 @@ use crate::provision::{AdmitError, OpenError, open_admitted};
 use crate::seam::Seam;
 
 /// One finding: its stable code and the kernel's typed position, so a caller can name the
-/// exact node, field, index cell, or raw cell the walk faulted on. [`StoreAudit::place`]
+/// exact node, field, index cell, or raw cell the walk faulted on. [`StoreAudit::path`]
 /// spells the site in source vocabulary for a human reader.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Finding {
@@ -86,8 +86,8 @@ impl StoreAudit {
 
     /// `site` in source vocabulary — `^root[k].branch[k].field`, `^root.index(id)[k]`, or a
     /// raw cell key in hex. For presentation only; a test asserts the site itself.
-    pub fn place(&self, site: &AuditSite) -> String {
-        self.names.place(site)
+    pub fn path(&self, site: &AuditSite) -> String {
+        self.names.path(site)
     }
 }
 
@@ -125,10 +125,7 @@ impl std::fmt::Display for AuditError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AuditError::NotExecutable => {
-                write!(
-                    f,
-                    "the program declares no durable place the store executes"
-                )
+                write!(f, "the program declares no durable path the store executes")
             }
             AuditError::Open(error) => write!(f, "{error}"),
             AuditError::Refused(refusal) => write!(f, "{refusal}"),
@@ -262,7 +259,7 @@ impl Names {
         }
     }
 
-    fn place(&self, site: &AuditSite) -> String {
+    fn path(&self, site: &AuditSite) -> String {
         match site {
             AuditSite::Node { root, branch, keys } => self.node(*root, branch, keys),
             AuditSite::Field {

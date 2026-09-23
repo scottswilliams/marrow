@@ -402,16 +402,16 @@ fn a_root_refused_for_its_resource_is_not_out_of_scope_at_a_write() {
     );
 }
 
-/// the same root through a `place` binding. The sibling lookup, not only
+/// the same root through a `ref` binding. The sibling lookup, not only
 /// `resolve_root`'s write path, must reuse the declaring cause.
 #[test]
-fn a_root_refused_for_its_resource_is_not_out_of_scope_at_a_place() {
+fn a_root_refused_for_its_resource_is_not_out_of_scope_at_a_reference() {
     let diagnostics = diagnostics(
         "module main\n\n\
          store ^items[id: int]: Widget\n\n\
          pub fn write() {\n\
          \x20   transaction {\n\
-         \x20       place p = ^items[1]\n\
+         \x20       ref p = ^items[1] else { return }\n\
          \x20       p.name = \"a\"\n\
          \x20   }\n\
          }\n",

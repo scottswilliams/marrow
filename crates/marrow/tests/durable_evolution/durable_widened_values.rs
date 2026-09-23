@@ -141,8 +141,7 @@ fn a_proved_place_reads_required_structs_and_enums_as_values() {
         "{SOURCE}{}",
         r#"
 pub fn describe(id: int): string {
-    place a = ^accounts[id]
-    if not exists(a) { return "missing" }
+    ref a = ^accounts[id] else { return "missing" }
     const owner: Name = a.owner
     const kind: Access = a.kind
     const note: Option<string>? = a.note

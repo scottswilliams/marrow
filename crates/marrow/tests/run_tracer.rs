@@ -617,7 +617,7 @@ pub fn run(): int {
     assert!(!standard.contains("error constructors"));
     assert!(!source.contains("resource and `Error` constructors"));
     assert!(!functions.contains("catch bindings"));
-    assert!(!functions.contains("may read or write durable places, throw"));
+    assert!(!functions.contains("may read or write durable paths, throw"));
     assert!(!types.contains("and `Error` values have no"));
     assert!(!types.contains("## Error Values"));
     assert!(!types.contains("constructed by `Error(...)`"));
@@ -1649,10 +1649,10 @@ pub fn get(name: string): int? {
 }
 "#;
 
-/// A named `place` binding names one durable entry address whose key tuple is
-/// evaluated once. A durable export using places travels the whole pipeline and
+/// A checked entry reference captures one durable entry address.
+/// A durable export using references travels the whole pipeline and
 /// parks in the trough exactly like the inline address forms.
-const PLACE_SOURCE: &str = r#"resource Counter {
+const REFERENCE_SOURCE: &str = r#"resource Counter {
     required value: int
     label: string
 }
@@ -1661,15 +1661,14 @@ store ^counters[name: string]: Counter
 
 pub fn bump(name: string, v: int) {
     transaction {
-        place p = ^counters[name]
-        p = Counter(value: v)
+        ^counters[name] = Counter(value: v)
+        ref p = ^counters[name] else { unreachable("created entry missing") }
         p.label = "tag"
     }
 }
 
 pub fn get(name: string): int? {
-    place p = ^counters[name]
-    return p.value
+    return ^counters[name].value
 }
 "#;
 
@@ -1679,7 +1678,7 @@ pub fn get(name: string): int? {
 fn a_durable_export_parks_in_the_trough() {
     for (label, source) in [
         ("counter-trough", COUNTER_SOURCE),
-        ("place-trough", PLACE_SOURCE),
+        ("reference-trough", REFERENCE_SOURCE),
     ] {
         let workspace = Project::single(source).materialize(label);
 
@@ -1731,11 +1730,11 @@ fn the_store_flag_is_recognized_and_closes_the_run_mint_window() {
     );
 }
 
-/// The checked-in tracer and place fixtures each ship a complete `.marrow/ids`, so
+/// The checked-in tracer and reference fixtures each ship a complete `.marrow/ids`, so
 /// a durable export travels the full pipeline and parks in the trough.
 #[test]
 fn the_checked_in_durable_fixtures_compile_verify_and_park() {
-    for name in ["tracer_counter", "place_counter"] {
+    for name in ["tracer_counter", "reference_counter"] {
         let outcome = marrow_in(
             &conformance_dir(name),
             &["run", "get", "--format", "jsonl", "--", "hits"],

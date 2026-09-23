@@ -252,7 +252,7 @@ fn following_binding(statement: &Statement) -> Option<Binding<'_>> {
             name: name.clone(),
             ty: ty.as_deref(),
         }),
-        Statement::PlaceBinding { name, .. } => Some(Binding {
+        Statement::EntryBinding { name, .. } => Some(Binding {
             name: name.clone(),
             ty: None,
         }),
@@ -309,8 +309,7 @@ fn locate_statement<'a>(
             condition, value, ..
         } => locate_expression(condition, offset).or_else(|| locate_expression(value, offset)),
         Statement::Delete { path: value, .. }
-        | Statement::PlaceBinding { place: value, .. }
-        | Statement::Unset { place: value, .. }
+        | Statement::Unset { target: value, .. }
         | Statement::Assert { value, .. }
         | Statement::Expr { value, .. } => locate_expression(value, offset),
         Statement::Return { value, .. } => value
@@ -414,6 +413,11 @@ fn locate_statement<'a>(
             else_block,
             ..
         } => locate_let_else(ty.as_deref(), value, else_block, offset, scope),
+        Statement::EntryBinding {
+            address,
+            else_block,
+            ..
+        } => locate_let_else(None, address, else_block, offset, scope),
         Statement::Break { .. } | Statement::Continue { .. } | Statement::Error { .. } => None,
     }
 }

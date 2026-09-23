@@ -1,17 +1,6 @@
-//! A named `place` or a per-iteration pin is a durable traversal base.
-//!
-//! `for k[, p] in <place>.branch at most N on more` traverses the keyed branch family
-//! beneath the entry a `place`/pin already addresses, exactly as an inline
-//! `^root[key].branch` base does. The place's key-path — evaluated once at its binding —
-//! is the traversal's ancestor key-path; the branch adds its own immediate key. These
-//! tests drive the whole production path (capture -> compile -> verify -> attach -> VM)
-//! over one persistent ephemeral attachment: a simple root place, a per-iteration pin used
-//! as an inner base, a two-binding traversal that deletes through the pin, the `on more`
-//! overflow arm through a place base, and a composite-root place whose whole two-column
-//! key-path locates the branch. A base bound through an entry identity — a `place b =
-//! ^books[Id(…)]`, an inline `^books[Id(…)].notes`, and its two-binding pin form — is a
-//! branch traversal base too: the identity spreads into the root's key columns and the
-//! traversal ancestor pop re-proves that typed identity column, so those round trips run.
+//! Entry references supply ancestor keys for bounded child traversal.
+//! Runtime tests cover root and per-iteration references, deletion, overflow, and
+//! composite identity operands against equivalent inline durable addresses.
 
 use crate::common::{Project, Session};
 use marrow_vm::Value;
@@ -39,7 +28,7 @@ const IDS: &str = "marrow ids v0\n\
 
 /// A `Book { title }` root with a single-level `notes(pos: int)` branch and a composite
 /// `^grades[student, course]` root whose `Enroll` carries a `marks(slot: int)` branch.
-/// The `sum*ViaPlace` exports bind a `place`/pin over an entry and traverse a branch
+/// The `sum*ViaReference` exports bind a entry reference over an entry and traverse a branch
 /// beneath it, folding the visited keys and adding 1000 in `on more`, so one returned
 /// int witnesses which keys were frozen and whether `on more` ran.
 const SOURCE: &str = r#"resource Book {
@@ -86,9 +75,9 @@ pub fn putMark(s: string, c: string, slot: int, v: int) {
     }
 }
 
-pub fn sumNotesViaPlace(id: int): int {
+pub fn sumNotesViaReference(id: int): int {
     var total = 0
-    place b = ^books[id]
+    ref b = ^books[id] else { return 0 }
     for pos in b.notes at most 100 {
         total += pos
     } on more {
@@ -97,9 +86,9 @@ pub fn sumNotesViaPlace(id: int): int {
     return total
 }
 
-pub fn sumNotesViaPlaceFirst2(id: int): int {
+pub fn sumNotesViaReferenceFirst2(id: int): int {
     var total = 0
-    place b = ^books[id]
+    ref b = ^books[id] else { return 0 }
     for pos in b.notes at most 2 {
         total += pos
     } on more {
@@ -108,11 +97,12 @@ pub fn sumNotesViaPlaceFirst2(id: int): int {
     return total
 }
 
-pub fn clearNotesViaPlace(id: int): int {
+pub fn clearNotesViaReference(id: int): int {
     var total = 0
     transaction {
-        place b = ^books[id]
-        for pos, note in b.notes at most 100 {
+        ref b = ^books[id] else { return 0 }
+        for pos in b.notes at most 100 {
+            ref note = ^books[id].notes[pos] else { continue }
             total += pos
             delete note
         } on more {
@@ -122,9 +112,10 @@ pub fn clearNotesViaPlace(id: int): int {
     return total
 }
 
-pub fn sumAllNotesViaPin(): int {
+pub fn sumAllNotesViaReference(): int {
     var total = 0
-    for id, book in ^books at most 100 {
+    for id in ^books at most 100 {
+        ref book = ^books[id] else { continue }
         for pos in book.notes at most 100 {
             total += pos
         } on more {
@@ -136,9 +127,9 @@ pub fn sumAllNotesViaPin(): int {
     return total
 }
 
-pub fn sumMarksViaPlace(s: string, c: string): int {
+pub fn sumMarksViaReference(s: string, c: string): int {
     var total = 0
-    place g = ^grades[s, c]
+    ref g = ^grades[s, c] else { return 0 }
     for slot in g.marks at most 100 {
         total += slot
     } on more {
@@ -147,9 +138,9 @@ pub fn sumMarksViaPlace(s: string, c: string): int {
     return total
 }
 
-pub fn sumNotesViaIdPlace(id: int): int {
+pub fn sumNotesViaIdReference(id: int): int {
     var total = 0
-    place b = ^books[Id(^books, id)]
+    ref b = ^books[Id(^books, id)] else { return 0 }
     for pos in b.notes at most 100 {
         total += pos
     } on more {
@@ -171,7 +162,8 @@ pub fn sumNotesViaInlineId(id: int): int {
 pub fn clearNotesViaInlineId(id: int): int {
     var total = 0
     transaction {
-        for pos, note in ^books[Id(^books, id)].notes at most 100 {
+        for pos in ^books[Id(^books, id)].notes at most 100 {
+            ref note = ^books[Id(^books, id)].notes[pos] else { continue }
             total += pos
             delete note
         } on more {
@@ -195,25 +187,25 @@ fn seed_notes(session: &mut Session) {
 }
 
 #[test]
-fn a_root_place_is_a_branch_traversal_base() {
+fn a_root_reference_is_a_branch_traversal_base() {
     let mut session = Project::single(SOURCE).ids(IDS).session();
     seed_notes(&mut session);
 
-    // `place b = ^books[1]; for pos in b.notes` folds book 1's notes {10,20} = 30; the
+    // `ref b = ^books[1] else { return 0 }; for pos in b.notes` folds book 1's notes {10,20} = 30; the
     // layer is exhausted, so `on more` does not run.
     assert_eq!(
-        session.call("sumNotesViaPlace", vec![Value::Int(1)]),
+        session.call("sumNotesViaReference", vec![Value::Int(1)]),
         Some(Value::Int(30))
     );
-    // Book 2 has no notes: the branch under the place is empty.
+    // Book 2 has no notes: the branch under the reference is empty.
     assert_eq!(
-        session.call("sumNotesViaPlace", vec![Value::Int(2)]),
+        session.call("sumNotesViaReference", vec![Value::Int(2)]),
         Some(Value::Int(0))
     );
 }
 
 #[test]
-fn a_place_base_carries_the_on_more_overflow_arm() {
+fn a_reference_base_carries_the_on_more_overflow_arm() {
     let mut session = Project::single(SOURCE).ids(IDS).session();
     session.call("putBook", vec![Value::Int(1), Value::Text("t".into())]);
     for pos in [10i64, 20, 30] {
@@ -224,16 +216,16 @@ fn a_place_base_carries_the_on_more_overflow_arm() {
     }
 
     // `at most 2` over three notes freezes {10,20} = 30, and a third key existed so the
-    // `on more` arm through the place base adds 1000.
+    // `on more` arm through the reference base adds 1000.
     assert_eq!(
-        session.call("sumNotesViaPlaceFirst2", vec![Value::Int(1)]),
+        session.call("sumNotesViaReferenceFirst2", vec![Value::Int(1)]),
         Some(Value::Int(1030))
     );
 }
 
 #[test]
-fn an_identity_keyed_place_base_is_a_branch_traversal_base() {
-    // `place b = ^books[Id(^books, id)]` binds the root through an entry identity, spread
+fn an_identity_keyed_reference_base_is_a_branch_traversal_base() {
+    // `ref b = ^books[Id(^books, id)] else { return 0 }` binds the root through an entry identity, spread
     // into the root's key columns at the binding; `for pos in b.notes` then traverses the
     // branch beneath it. The captured slot carries its root as a typed identity column that
     // the traversal ancestor pop re-proves, so the round trip runs end to end.
@@ -242,12 +234,12 @@ fn an_identity_keyed_place_base_is_a_branch_traversal_base() {
 
     // Book 1's notes {10, 20} = 30; the layer is exhausted, so `on more` does not run.
     assert_eq!(
-        session.call("sumNotesViaIdPlace", vec![Value::Int(1)]),
+        session.call("sumNotesViaIdReference", vec![Value::Int(1)]),
         Some(Value::Int(30))
     );
-    // Book 2 has no notes: the branch under the identity-keyed place is empty.
+    // Book 2 has no notes: the branch under the identity-keyed reference is empty.
     assert_eq!(
-        session.call("sumNotesViaIdPlace", vec![Value::Int(2)]),
+        session.call("sumNotesViaIdReference", vec![Value::Int(2)]),
         Some(Value::Int(0))
     );
 }
@@ -267,10 +259,9 @@ fn an_inline_identity_parent_is_a_branch_traversal_base() {
 }
 
 #[test]
-fn an_inline_identity_parent_two_binding_deletes_through_the_pin() {
-    // The two-binding inline form: `for pos, note in ^books[Id(^books, id)].notes` captures
-    // the identity ancestor into the root's key slots, then the per-iteration pin `note`
-    // reuses those identity-carrying slots plus the frozen key to delete each note.
+fn an_inline_identity_parent_key_only_deletes_through_the_reference() {
+    // Both the traversal and each checked reference project the identity operand
+    // into the ancestor key columns before deleting the selected note.
     let mut session = Project::single(SOURCE).ids(IDS).session();
     seed_notes(&mut session);
 
@@ -286,7 +277,7 @@ fn an_inline_identity_parent_two_binding_deletes_through_the_pin() {
 }
 
 #[test]
-fn a_per_iteration_pin_is_an_inner_traversal_base() {
+fn a_per_iteration_reference_is_an_inner_traversal_base() {
     let mut session = Project::single(SOURCE).ids(IDS).session();
     seed_notes(&mut session);
     for pos in [40i64, 50] {
@@ -296,41 +287,40 @@ fn a_per_iteration_pin_is_an_inner_traversal_base() {
         );
     }
 
-    // `for id, book in ^books { for pos in book.notes … }`: the outer pin `book` is the
+    // A checked `book` reference inside the outer key traversal is the
     // inner traversal base. Book 1 notes {10,20}=30, book 2 notes {40,50}=90, book 3 none;
     // total 120, no inner or outer `on more`.
     assert_eq!(
-        session.call("sumAllNotesViaPin", vec![]),
+        session.call("sumAllNotesViaReference", vec![]),
         Some(Value::Int(120))
     );
 }
 
 #[test]
-fn a_two_binding_place_base_deletes_through_the_pin() {
+fn a_key_only_reference_base_deletes_through_the_reference() {
     let mut session = Project::single(SOURCE).ids(IDS).session();
     seed_notes(&mut session);
 
-    // `place b = ^books[1]; for pos, note in b.notes { delete note }`: the pin's key-path
-    // is the place's captured root slot followed by each frozen note key. It visits both
-    // notes (sum 30) and erases them; `at most 100`, so no `on more`.
+    // Each note reference combines the parent's captured key with the frozen note key.
+    // Both notes contribute to the sum before erasure; the bound is not exceeded.
     assert_eq!(
-        session.call("clearNotesViaPlace", vec![Value::Int(1)]),
+        session.call("clearNotesViaReference", vec![Value::Int(1)]),
         Some(Value::Int(30))
     );
     // The deletes committed: a re-run visits nothing.
     assert_eq!(
-        session.call("clearNotesViaPlace", vec![Value::Int(1)]),
+        session.call("clearNotesViaReference", vec![Value::Int(1)]),
         Some(Value::Int(0))
     );
-    // The reading place traversal agrees the notes are gone.
+    // The reading reference traversal agrees the notes are gone.
     assert_eq!(
-        session.call("sumNotesViaPlace", vec![Value::Int(1)]),
+        session.call("sumNotesViaReference", vec![Value::Int(1)]),
         Some(Value::Int(0))
     );
 }
 
 #[test]
-fn a_composite_root_place_locates_a_branch_by_its_whole_key_path() {
+fn a_composite_root_reference_locates_a_branch_by_its_whole_key_path() {
     let mut session = Project::single(SOURCE).ids(IDS).session();
     session.call(
         "putGrade",
@@ -370,19 +360,19 @@ fn a_composite_root_place_locates_a_branch_by_its_whole_key_path() {
         ],
     );
 
-    // `place g = ^grades[amy, cs]; for slot in g.marks`: both composite key columns are
+    // the reference over `^grades[amy, cs]`: both composite key columns are
     // captured at the binding and locate the branch under amy/cs — marks {3,4}=7, scoped to
     // that parent, never bob's slot 9.
     assert_eq!(
         session.call(
-            "sumMarksViaPlace",
+            "sumMarksViaReference",
             vec![Value::Text("amy".into()), Value::Text("cs".into())]
         ),
         Some(Value::Int(7))
     );
     assert_eq!(
         session.call(
-            "sumMarksViaPlace",
+            "sumMarksViaReference",
             vec![Value::Text("bob".into()), Value::Text("cs".into())]
         ),
         Some(Value::Int(9))

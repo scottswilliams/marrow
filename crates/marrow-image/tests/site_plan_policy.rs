@@ -283,12 +283,12 @@ fn every_target_draft() -> (ImageDraft, AdmittedRoot, Vec<DeclarationMember>) {
     (draft_owner, root, members)
 }
 
-/// The six distinct places that draft names, each paired with the one target its node
+/// The six distinct paths that draft names, each paired with the one target its node
 /// admits.
-fn every_place(
+fn every_path(
     root: &AdmittedRoot,
     members: &[DeclarationMember],
-) -> [(CanonicalDeclarationPathSelector, SemanticTarget); PLACE_COUNT] {
+) -> [(CanonicalDeclarationPathSelector, SemanticTarget); PATH_COUNT] {
     [
         (root.placement_path().clone(), SemanticTarget::WholePayload),
         (members[0].path().clone(), SemanticTarget::FieldLeaf),
@@ -299,18 +299,18 @@ fn every_place(
     ]
 }
 
-/// One place per admitted operation target, plus the branch's own whole-payload place.
-const PLACE_COUNT: usize = 6;
+/// One path per admitted operation target, plus the branch's own whole-payload path.
+const PATH_COUNT: usize = 6;
 
 /// An eagerly minted row followed by a demand-lazy request on the same
 /// `(occurrence, node, target)` is **one** row, and the second request reuses the first
-/// row's id — for every operation target a place can admit.
+/// row's id — for every operation target a path can admit.
 ///
 /// The eager per-node sites a durable graph emits when it is built and the field-leaf
 /// sites the lowerer allocates on first reference were two mint paths: the eager one
 /// appended a row the demand map never saw, so a later request on the same demand
 /// appended a second row for one node, and the two rows were separate operands for one
-/// place. Both now enter the one plan, which answers a retained demand with the id it
+/// path. Both now enter the one plan, which answers a retained demand with the id it
 /// already minted.
 ///
 /// The two paths are disjoint on every production graph — an eager demand's node is a
@@ -319,11 +319,11 @@ const PLACE_COUNT: usize = 6;
 /// rather than the disjointness, which a future graph shape could narrow.
 #[test]
 fn one_demand_minted_eagerly_then_lazily_is_one_row_with_one_id() {
-    for index in 0..PLACE_COUNT {
+    for index in 0..PATH_COUNT {
         let (mut draft_owner, root, members) = every_target_draft();
         let mut draft = draft_owner.begin_transaction();
-        let places = every_place(&root, &members);
-        let (path, target) = &places[index];
+        let paths = every_path(&root, &members);
+        let (path, target) = &paths[index];
         let eager = site(&mut draft, root.occurrence(), path, *target);
         let lazy = site(&mut draft, root.occurrence(), path, *target);
 
@@ -332,7 +332,7 @@ fn one_demand_minted_eagerly_then_lazily_is_one_row_with_one_id() {
             "a repeated demand reuses the row already minted for it",
         );
 
-        let (other_path, other_target) = &places[(index + 1) % PLACE_COUNT];
+        let (other_path, other_target) = &paths[(index + 1) % PATH_COUNT];
         assert_ne!(
             site(&mut draft, root.occurrence(), other_path, *other_target),
             eager,
@@ -342,14 +342,14 @@ fn one_demand_minted_eagerly_then_lazily_is_one_row_with_one_id() {
 }
 
 /// Every operation target a graph admits is reached by a distinct node, and each is its
-/// own site row: no two of the six places one root names collapse onto a single operand.
+/// own site row: no two of the six paths one root names collapse onto a single operand.
 #[test]
 fn each_admitted_target_is_its_own_row() {
     let (mut draft_owner, root, members) = every_target_draft();
     let mut draft = draft_owner.begin_transaction();
-    let places = every_place(&root, &members);
+    let paths = every_path(&root, &members);
 
-    let operands: Vec<PlannedSiteRef> = places
+    let operands: Vec<PlannedSiteRef> = paths
         .iter()
         .map(|(path, target)| site(&mut draft, root.occurrence(), path, *target))
         .collect();
@@ -358,7 +358,7 @@ fn each_admitted_target_is_its_own_row() {
         for second in &operands[left + 1..] {
             assert_ne!(
                 first, second,
-                "two distinct places are two site rows, never one shared operand",
+                "two distinct paths are two site rows, never one shared operand",
             );
         }
     }

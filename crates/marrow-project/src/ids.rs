@@ -249,7 +249,7 @@ fn hex_digit(byte: u8) -> Option<u8> {
     }
 }
 
-/// A `(kind, path)` anchor: the source-place identity a ledger row keys on. A
+/// A `(kind, path)` anchor: the source-path identity a ledger row keys on. A
 /// rename moves the anchor while the id stays; delete-then-re-add cannot reuse
 /// the retired id or anchor.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]

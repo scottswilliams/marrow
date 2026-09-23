@@ -33,7 +33,7 @@ Usage:
 Run every `test` declaration in the project at the working directory and report each
 outcome: `passed`, `failed` for a false `assert` or an `err` reaching a `try`,
 `errored` for any other runtime fault, or `incomplete` for a durable fault that interrupts a commit. A test that
-touches no durable place runs with no store; one that does runs against its own
+touches no durable path runs with no store; one that does runs against its own
 fresh in-memory store. Missing durable identities are minted into `.marrow/ids`
 first, as `marrow run` mints them. --filter selects the tests whose title contains the substring
 and refuses a substring no test matches. The command exits 0 when every selected

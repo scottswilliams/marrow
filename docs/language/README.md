@@ -1,7 +1,7 @@
 # The Marrow language
 
 Marrow is a statically typed language in which durable data is ordinary program
-state. A place written with `^` outlives the program and is read and written
+state. Data addressed with `^` outlives the program and is read and written
 the way a local value is.
 
 ## A first look
@@ -49,7 +49,7 @@ both functions against a fresh in-memory store.
 
 ## Two kinds of state
 
-A local value and a durable place hold the same shape. The `^` is the
+A local value and a durable address hold the same shape. The `^` is the
 difference:
 
 ```text
@@ -114,8 +114,7 @@ store ^tallies[name: string]: Tally
 pub fn add(id: int, title: string) {
     transaction {
         ^books[id] = Book(title: title)
-        place tally = ^tallies["books"]
-        tally = Tally(count: (tally.count ?? 0) + 1)
+        ^tallies["books"] = Tally(count: (^tallies["books"].count ?? 0) + 1)
     }
 }
 
@@ -131,7 +130,7 @@ test "each add advances the tally" {
 ```
 
 `add` writes to two roots, and either both writes become durable or neither
-does. The tally is written as a whole entry through a place, so the first call
+does. The tally is written as a whole entry at its path, so the first call
 creates it and each later call replaces it. A fault before the block ends rolls back every write in it. A `return`
 inside the block commits what was written before it, so `add` in the first look
 leaves a duplicate key untouched. A durable write in an export body outside a
@@ -190,7 +189,7 @@ ok    this test starts empty
 
 ## Marks
 
-A mark means consequence. `^` is the one spelling of a durable place,
+A mark means consequence. `^` is the one spelling of a durable address,
 `transaction {` of a commit, `at most` of a bound, and `delete` of removal.
 Grep `\^` and you have every point where durable data enters the code; grep
 `transaction {` and you have every commit. [Marks](idioms.md#marks) lists the
@@ -198,17 +197,15 @@ whole set.
 
 ## Core terms
 
-A place is a location a program reads by naming it: a variable, a field of a
-local value, a collection element, or a durable path. The keyword `place`
-binds a name to one durable entry address
-([named places](durable-places.md#named-places)). A list element is
-read-only; every other place is also assigned by naming it. A resource is a
-declared value shape whose fields are sparse unless marked `required`. A durable
-place is a path that begins with a declared store root. An entry identity,
-`Id(^books)`, names one entry of one root and belongs to that root alone.
-Presence is whether a value exists at a place; `T?` carries a present `T` or
-`absent`. A transaction is a block whose durable changes commit together or roll
-back together.
+A resource is a declared value shape whose fields are sparse unless marked
+`required`. A durable path begins with a declared store root and addresses an
+entry, field, group, or branch. `ref name = ^root[key] else { … }` binds a
+checked entry reference after handling absence
+([entry references](durable-data.md#entry-references)). References retain
+addresses; ordinary local bindings hold values. An entry identity, `Id(^books)`,
+names one entry of one root and belongs to that root alone. Presence is whether
+an addressed value exists; `T?` carries a present `T` or `absent`. A transaction
+is a block whose durable changes commit together or roll back together.
 
 ## Known gaps
 
@@ -227,7 +224,7 @@ table is the one place to see them together.
 | A resource as a type argument, `Option<Book>` or `List<Book>` | `check.unsupported` | [Resources](resources.md) |
 | An optional parameter, `book: Book?` | `check.unsupported` | [Resources](resources.md) |
 | A public aggregate parameter containing a nominal int | `check.unsupported` | [Types and values](types-and-values.md#aliases-and-nominal-ints) |
-| A resource containing a nominal value bound to a store | `check.unsupported` | [Durable places](durable-places.md) |
+| A resource containing a nominal value bound to a store | `check.unsupported` | [Durable data](durable-data.md) |
 | A nominal type as a store-root key, branch key, or module constant | `check.unsupported` | [Types and values](types-and-values.md#aliases-and-nominal-ints) |
 | A call pairing two scalar names, `int("1")` or `bool(1)`, other than `int(a)` and `string(a)` over a nominal value | `check.unsupported` | [Types and values](types-and-values.md) |
 | A type annotation of more than two segments, `graphtext::text::Pair` | `check.unsupported`; a type name is one or two segments | [Modules and functions](modules-and-functions.md#dependencies) |
@@ -235,8 +232,8 @@ table is the one place to see them together.
 | An expression, call, `bytes`, or temporal value in a module `const` | `check.unsupported` | [Modules and functions](modules-and-functions.md) |
 | `delete` on a local field | `check.unsupported`; `unset` clears one | [Grammar](grammar.md) |
 | `for` over a composite-keyed root or branch | `check.unsupported`; walk a single-key branch | [Traversal and indexes](traversal-and-indexes.md) |
-| An index walk taking `from` or a pin | `check.unsupported` | [Traversal and indexes](traversal-and-indexes.md) |
-| A singleton root, `store ^settings: Settings`, and a group inside a group or branch | Declares and checks; operations are future work | [Durable places](durable-places.md), [status](../status.md#not-yet-available) |
+| An index walk taking `from` | `check.unsupported` | [Traversal and indexes](traversal-and-indexes.md) |
+| A singleton root, `store ^settings: Settings`, and a group inside a group or branch | Declares and checks; operations are future work | [Durable data](durable-data.md), [status](../status.md#not-yet-available) |
 
 ## Reading order
 
@@ -252,8 +249,8 @@ The chapters build on one another:
   checked arithmetic, `require`, and `try` for `Result` propagation.
 - [Resources](resources.md): fields, groups and branches, and local resource
   values.
-- [Durable places](durable-places.md): store roots, keys, reads, writes, named
-  places, deletion, and access demand.
+- [Durable data](durable-data.md): store roots, keys, reads, writes, entry
+  references, deletion, and access demand.
 - [Errors and transactions](errors-and-transactions.md): transaction blocks,
   guards inside a block, rollback, and the four failure kinds.
 - [Traversal and indexes](traversal-and-indexes.md): bounded traversal, ranges,

@@ -671,7 +671,7 @@ impl VerifiedImage {
     /// The reverse index of export demand: one row per durable graph node any export
     /// demands, in ascending path order, listing which exports touch it and with
     /// which operation class. This is the verifier's derivation of durable
-    /// classification from the call closure — which places are read, written, erased,
+    /// classification from the call closure — which paths are read, written, erased,
     /// probed, or traversed, and by whom. Nothing here is serialized in the image;
     /// it is rebuilt from the exports' reconstructed demand.
     pub fn demand_incidence(&self) -> impl Iterator<Item = NodeIncidence> {

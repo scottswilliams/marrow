@@ -296,7 +296,7 @@ impl ExportDemand {
     /// `self ⊆ ceiling`. This is the atom-granular admission check a deployment ceiling
     /// performs: an export whose reconstructed demand yields a nonempty result demands
     /// access beyond the accepted ceiling and is refused, and every returned atom names
-    /// a durable place and operation class the ceiling must be consciously expanded to
+    /// a durable path and operation class the ceiling must be consciously expanded to
     /// admit. Demand never grants; this only checks.
     pub fn not_admitted_by(&self, ceiling: &ExportDemand) -> Vec<DemandAtom> {
         let admitted: std::collections::BTreeSet<Vec<u8>> =

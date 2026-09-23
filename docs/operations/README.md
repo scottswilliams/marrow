@@ -189,7 +189,7 @@ result with that binding:
   The refusal preserves the owner marker as well as the binding and engine.
 - A program whose durable demand exceeds the current standing ceiling is
   `store.demand_exceeds_ceiling`. The refusal names the export,
-  the place, and the access. The store is untouched.
+  the path, and the access. The store is untouched.
 
 An interrupted rebind may leave either recorded head in place. Ordinary access
 refuses a pending transition. Recovery requires the program matching the head
@@ -288,7 +288,7 @@ ownership marker unchanged, including marker absence:
 marrow doctor --store ./store
 ```
 
-A finding names a stable code and the place it concerns: an invalid key or
+A finding names a stable code and the path it concerns: an invalid key or
 value, a cell outside the program's shape, missing required data, a malformed
 presence marker, or a mismatch between an index and its source entry. Data
 beneath absent parents is inspected too. An entry with only sparse fields may

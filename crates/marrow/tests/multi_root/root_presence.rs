@@ -69,7 +69,7 @@ pub fn bbbNote(k: int): string? {
 
 pub fn setAaaNoteIfPresent(k: int, n: string) {
     transaction {
-        place a = ^aaa[k]
+        ref a = ^aaa[k] else { return }
         if const found = a {
             a.note = n
         }
@@ -119,7 +119,7 @@ fn a_present_guarded_write_addresses_its_own_root_only() {
 }
 
 /// A presence guard proving `^aaa[k]` present does not phantom-mark `^bbb[k]` present: a
-/// write through a `^bbb` place inside the `^aaa` guard has no proof and is refused at
+/// write through a `^bbb` reference inside the `^aaa` guard has no proof and is refused at
 /// check time, so no write to the sibling root can rest on the wrong root's guard.
 #[test]
 fn a_cross_root_guarded_write_does_not_phantom_the_sibling_root() {
@@ -127,10 +127,9 @@ fn a_cross_root_guarded_write_does_not_phantom_the_sibling_root() {
         "{TWO_ROOT_SCHEMA}
 pub fn setBbbNoteUnderAaaGuard(k: int, n: string) {{
     transaction {{
-        place a = ^aaa[k]
-        place b = ^bbb[k]
+        ref a = ^aaa[k] else {{ return }}
         if exists(a) {{
-            b.note = n
+            ^bbb[k].note = n
         }}
     }}
 }}
@@ -180,7 +179,7 @@ fn touchBbb(k: int) {{
 
 pub fn setAaaNote(k: int, n: string) {{
     transaction {{
-        place a = ^aaa[k]
+        ref a = ^aaa[k] else {{ return }}
         if exists(a) {{
             touchBbb(k)
             a.note = n
@@ -209,7 +208,7 @@ fn touchAaa(k: int) {{
 
 pub fn setAaaNote(k: int, n: string) {{
     transaction {{
-        place a = ^aaa[k]
+        ref a = ^aaa[k] else {{ return }}
         if exists(a) {{
             touchAaa(k)
             a.note = n

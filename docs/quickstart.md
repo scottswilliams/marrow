@@ -1,7 +1,7 @@
 # Quickstart
 
 Two programs, run from the terminal: one without a store, then one that keeps
-books in a durable place. [Install](install.md) `marrow` first; `marrow
+books in a durable address. [Install](install.md) `marrow` first; `marrow
 --version` prints `marrow 0.1.0`.
 
 ## Create a project
@@ -50,7 +50,7 @@ main: 1 export, all storeless
 ```
 
 `marrow check` type-checks the project and reports, per module, which durable
-places its exported functions read and write. `greet` touches none.
+paths its exported functions read and write. `greet` touches none.
 
 ```sh
 marrow run greet -- world
@@ -98,8 +98,7 @@ pub fn add(id: int, title: string): bool {
 
 pub fn finish(id: int): bool {
     transaction {
-        place book = ^books[id]
-        if not exists(book) {
+        ref book = ^books[id] else {
             return false
         }
         book.read = true
@@ -124,10 +123,8 @@ by an `int`; `^books[id]` is one entry. Every durable write sits inside a
 `transaction` block, and `exists(^books[id])` inside the block tests presence
 before `add` writes. `^books[id] = Book(title: title)` creates the entry as a
 whole: the constructor names every required field, so a present entry is
-complete from its first commit. `place book = ^books[id]` in `finish` names the
-entry once; the guard on `exists(book)` returns when it is absent, which proves
-it present for the rest of the block, and `book.read = true` updates one
-field of the present entry. A field write never creates an entry.
+complete from its first commit. The `ref` binding in `finish` captures the entry address once and returns
+when it is absent. `book.read = true` updates one field of the present entry. A field write never creates an entry.
 `titleOf` returns `string?` because the entry may be absent, and `??` supplies a
 default. The test drives the exports and checks the round trip against a fresh
 in-memory store.
@@ -153,7 +150,7 @@ The run writes `.marrow/ids` and then stops with `cli.durable_unsupported`:
 A project whose durable declarations are used only by tests has no export to
 run; its first `marrow test` writes `.marrow/ids` before it runs the tests.
 
-`marrow check .` is now clean and names every place each export reads and
+`marrow check .` is now clean and names every path each export reads and
 writes:
 
 ```sh

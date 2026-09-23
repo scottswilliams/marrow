@@ -3,14 +3,14 @@
 //! A project travels the real production path through the built binary — capture, one
 //! compiler drive with tests included, then encode and verify. On a clean check the output
 //! reports each export's verifier-reconstructed durable demand grouped by module: every
-//! place the export reads and writes, in source spelling; exports that share an identical
+//! path the export reads and writes, in source spelling; exports that share an identical
 //! demand are listed once; storeless exports collapse to one note per module. This is the
 //! surface downstream consumers and the acceptance suite read, so it is frozen here.
 
 use crate::common::Project;
 
 /// The report for the bookstore fixture: the header, the module, one entry per export
-/// naming every place it reads and writes. The read-only `lookup` reads the entry and
+/// naming every path it reads and writes. The read-only `lookup` reads the entry and
 /// its index; `put` reads and writes the whole entry.
 const BOOKSTORE_REPORT: &str = "2 exports across 1 module\n\
      \n\
@@ -23,7 +23,7 @@ const BOOKSTORE_REPORT: &str = "2 exports across 1 module\n\
 
 /// The report for the `demand_summary` fixture, which exercises every grouping: an
 /// all-storeless module folds to its header line, two exports that share a demand are
-/// listed once, every child place is named under its root, and a storeless export in a
+/// listed once, every child path is named under its root, and a storeless export in a
 /// durable module collapses to one note.
 const DEMAND_REPORT: &str = "6 exports across 2 modules\n\
      \n\
@@ -59,11 +59,11 @@ fn check_accepts_an_explicit_project_directory() {
 }
 
 /// The report folds an all-storeless module, lists a shared demand once, names every
-/// child place, and collapses a storeless export, all on one fixture. The frozen snapshot
+/// child path, and collapses a storeless export, all on one fixture. The frozen snapshot
 /// pairs with typed assertions on each grouping so the contract, not only the bytes, is
 /// enforced.
 #[test]
-fn check_report_folds_shares_and_names_every_place() {
+fn check_report_folds_shares_and_names_every_path() {
     let output = Project::from_fixture("demand_summary").run_cli("demand-report", &["check"]);
     assert!(output.success(), "{}", output.stderr_text());
     let report = output.stdout_text();
@@ -83,7 +83,7 @@ fn check_report_folds_shares_and_names_every_place() {
     );
     assert!(!report.contains("\n  beta\n"), "not listed alone: {report}");
 
-    // Every place is named: the presence probe on `^accounts` that proves the entry,
+    // Every path is named: the presence probe on `^accounts` that proves the entry,
     // then each field, with no count standing in for them. A bare field read names
     // only the field.
     assert!(report.contains("^accounts, ^accounts.balance, ^accounts.name"));
@@ -119,9 +119,9 @@ fn check_describes_a_storeless_project_as_an_all_storeless_module() {
 }
 
 /// The report is linear in the demand facts and never a wall. Sixteen roots of 64 fields
-/// with one export each reading every field: every place is spelled exactly once, no line
+/// with one export each reading every field: every path is spelled exactly once, no line
 /// runs past the row width, and the whole report stays under three times the bytes of
-/// its place spellings plus 128 bytes for each export, module, and header line — the
+/// its path spellings plus 128 bytes for each export, module, and header line — the
 /// law the renderer states.
 #[test]
 fn check_report_of_a_wide_demand_is_complete_and_bounded() {
@@ -155,18 +155,18 @@ fn check_report_of_a_wide_demand_is_complete_and_bounded() {
     );
 
     let tokens: Vec<&str> = report.split([' ', ',', '\n']).collect();
-    let mut place_bytes = 0;
+    let mut path_bytes = 0;
     let mut longest = 0;
     for root in 0..ROOTS {
         for field in 0..FIELDS {
-            let place = format!("^r{root}.f{field}");
+            let path = format!("^r{root}.f{field}");
             assert_eq!(
-                tokens.iter().filter(|token| **token == place).count(),
+                tokens.iter().filter(|token| **token == path).count(),
                 1,
-                "{place} is spelled once: {report}"
+                "{path} is spelled once: {report}"
             );
-            place_bytes += place.len();
-            longest = longest.max(place.len());
+            path_bytes += path.len();
+            longest = longest.max(path.len());
         }
     }
     for line in report.lines() {
@@ -177,8 +177,8 @@ fn check_report_of_a_wide_demand_is_complete_and_bounded() {
         );
     }
     assert!(
-        report.len() <= 3 * place_bytes + 128 * (ROOTS + 2),
-        "{} bytes for {place_bytes} bytes of places",
+        report.len() <= 3 * path_bytes + 128 * (ROOTS + 2),
+        "{} bytes for {path_bytes} bytes of paths",
         report.len()
     );
 }

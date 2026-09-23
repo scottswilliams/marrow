@@ -38,9 +38,8 @@ store ^assets[assetId: int]: Asset
 
 pub fn registerMember(name: string, joined: date): int {
     transaction {
-        place seq = ^idseq["member"]
-        const next = (seq.value ?? 0) + 1
-        seq = Counter(value: next)
+        const next = (^idseq["member"].value ?? 0) + 1
+        ^idseq["member"] = Counter(value: next)
         ^members[next] = Member(name: name, joined: joined, standing: Standing::active)
         return next
     }
@@ -48,19 +47,19 @@ pub fn registerMember(name: string, joined: date): int {
 
 pub fn suspendMember(memberId: int) {
     transaction {
-        place member = ^members[memberId]
-        if exists(member) {
-            member.standing = Standing::suspended
+        ref member = ^members[memberId] else {
+            return
         }
+        member.standing = Standing::suspended
     }
 }
 
 pub fn reinstateMember(memberId: int) {
     transaction {
-        place member = ^members[memberId]
-        if exists(member) {
-            member.standing = Standing::active
+        ref member = ^members[memberId] else {
+            return
         }
+        member.standing = Standing::active
     }
 }
 

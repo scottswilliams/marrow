@@ -6,7 +6,6 @@ use marrow_image::{
     RecordTypeDef, RootOccurrenceDef, Scalar,
 };
 use marrow_syntax::SourceSpan;
-use std::ops::Range;
 
 #[cfg(test)]
 fn family() -> Family {
@@ -45,12 +44,12 @@ fn family() -> Family {
     }
 }
 
-fn obligations(ranges: &[Range<usize>]) -> Vec<PresenceObligation> {
+fn obligations(paths: &[(Option<usize>, usize)]) -> Vec<PresenceObligation> {
     let family = family();
-    ranges
+    paths
         .iter()
         .enumerate()
-        .map(|(index, calls)| PresenceObligation {
+        .map(|(index, &(start, end))| PresenceObligation {
             family: family.clone(),
             span: SourceSpan {
                 start_byte: index,
@@ -58,13 +57,14 @@ fn obligations(ranges: &[Range<usize>]) -> Vec<PresenceObligation> {
                 line: 1,
                 column: 1,
             },
-            calls: calls.clone(),
+            start,
+            end,
         })
         .collect()
 }
 
 fn queries(obligations: &[PresenceObligation]) -> Vec<Query<'_>> {
-    obligations
+    let mut queries: Vec<_> = obligations
         .iter()
         .enumerate()
         .map(|(original, obligation)| Query {
@@ -73,47 +73,75 @@ fn queries(obligations: &[PresenceObligation]) -> Vec<Query<'_>> {
             original,
             obligation,
         })
+        .collect();
+    queries.sort_by_key(|query| query.obligation.end);
+    queries
+}
+
+fn chain(count: usize) -> Vec<PresenceCallNode> {
+    (0..count)
+        .map(|call| PresenceCallNode {
+            parent: call.checked_sub(1),
+            calls: call..call + 1,
+        })
         .collect()
 }
 
 #[test]
-fn a_drain_distinguishes_expired_live_empty_and_future_intervals() {
-    let obligations = obligations(&[0..1, 1..1, 1..2, 2..4]);
-    let queries = queries(&obligations);
-    let mut next = Vec::new();
-    for _ in 0..2 {
-        let mut failures = Vec::new();
-        settle(
-            &[0, 1, 0, 1],
-            &[0, 1],
-            &queries,
-            0,
-            &mut next,
-            &mut failures,
-        );
-        assert_eq!(
-            failures
-                .iter()
-                .map(|f| (f.query, f.call))
-                .collect::<Vec<_>>(),
-            [(2, 1), (3, 3)]
-        );
-    }
-}
-
-#[test]
-fn an_unavailable_callee_does_not_discard_a_pending_query() {
-    let obligations = obligations(std::slice::from_ref(&(0..2)));
+fn forks_exclude_skipped_arms_and_joins_restore_their_effects() {
+    let nodes = [
+        PresenceCallNode {
+            parent: None,
+            calls: 0..1,
+        },
+        PresenceCallNode {
+            parent: Some(0),
+            calls: 1..2,
+        },
+        PresenceCallNode {
+            parent: Some(0),
+            calls: 2..3,
+        },
+        PresenceCallNode {
+            parent: Some(1),
+            calls: 3..4,
+        },
+        PresenceCallNode {
+            parent: Some(2),
+            calls: 1..4,
+        },
+        PresenceCallNode {
+            parent: None,
+            calls: 4..5,
+        },
+    ];
+    let obligations = obligations(&[(None, 2), (Some(1), 3), (None, 3), (Some(0), 4), (None, 5)]);
     let queries = queries(&obligations);
     let mut failures = Vec::new();
     settle(
-        &[u16::MAX, 0],
-        &[1],
+        &[0, 1, 0, 0, 0],
+        &nodes,
+        &[0, 1],
         &queries,
-        7,
-        &mut Vec::new(),
+        0,
         &mut failures,
     );
+    failures.sort_by_key(|failure| failure.query);
+    assert_eq!(
+        failures
+            .iter()
+            .map(|f| (f.query, f.call))
+            .collect::<Vec<_>>(),
+        [(2, 1), (3, 1)]
+    );
+}
+
+#[test]
+fn an_unavailable_callee_does_not_hide_a_later_actual_eraser() {
+    let obligations = obligations(&[(None, 1)]);
+    let queries = queries(&obligations);
+    let mut failures = Vec::new();
+    settle(&[u16::MAX, 0], &chain(2), &[1], &queries, 7, &mut failures);
     assert_eq!(
         failures
             .iter()
@@ -123,30 +151,120 @@ fn an_unavailable_callee_does_not_discard_a_pending_query() {
     );
 }
 
+/// The oracle walks each requested ancestor path directly. Production must answer
+/// the same queries while sharing the path walk across all uses of an endpoint.
+fn brute_force(
+    nodes: &[PresenceCallNode],
+    calls: &[u16],
+    summary: &[u64],
+    query: &Query<'_>,
+) -> Option<usize> {
+    let mut current = Some(query.obligation.end);
+    while current != query.obligation.start {
+        let node = current.expect("the start is an ancestor");
+        for call in nodes[node].calls.clone() {
+            if summary[usize::from(calls[call])] & (1 << (query.family % 64)) != 0 {
+                return Some(call);
+            }
+        }
+        current = nodes[node].parent;
+    }
+    None
+}
+
 #[test]
-fn pending_links_are_reusable_for_a_different_family_and_shorter_group() {
-    let obligations = obligations(&[0..2, 0..2, 0..2]);
-    let mut queries = queries(&obligations);
-    let mut next = Vec::new();
+fn shared_path_queries_match_ancestor_walks_across_branches_and_union_nodes() {
+    let calls: Vec<u16> = (0..24).map(|index| index % 4).collect();
+    let summary = [0, 1, 1 << 63, 1 | (1 << 63)];
+    for seed in 0..16usize {
+        let nodes: Vec<_> = (0..24)
+            .map(|node| PresenceCallNode {
+                parent: (node != 0).then(|| (node + seed) % node),
+                calls: if node % 5 == 0 {
+                    0..node + 1
+                } else {
+                    node..node + 1
+                },
+            })
+            .collect();
+        let mut paths = Vec::new();
+        for end in 0..nodes.len() {
+            paths.push((None, end));
+            let mut ancestor = Some(end);
+            while let Some(start) = ancestor {
+                paths.push((Some(start), end));
+                ancestor = nodes[start].parent;
+            }
+        }
+        let obligations = obligations(&paths);
+        for family in [0, 63, 64, 127] {
+            let mut queries = queries(&obligations);
+            for query in &mut queries {
+                query.family = family;
+            }
+            let expected: Vec<_> = queries
+                .iter()
+                .enumerate()
+                .filter_map(|(index, query)| {
+                    brute_force(&nodes, &calls, &summary, query).map(|call| (index, call))
+                })
+                .collect();
+            let mut failures = Vec::new();
+            settle(&calls, &nodes, &summary, &queries, 0, &mut failures);
+            failures.sort_by_key(|failure| failure.query);
+            assert_eq!(
+                failures
+                    .iter()
+                    .map(|f| (f.query, f.call))
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+    }
+}
+
+#[test]
+fn many_uses_share_one_path_and_each_has_one_failure_witness() {
+    let nodes = chain(256);
+    let obligations = obligations(&vec![(Some(0), 255); 2048]);
+    let queries = queries(&obligations);
     let mut failures = Vec::new();
-    settle(&[0, 0], &[1], &queries, 0, &mut next, &mut failures);
-    assert_eq!(failures.len(), 3);
-    failures.clear();
-    queries[0].family = 63;
-    settle(
-        &[0, 1],
-        &[1, 1 << 63],
-        &queries[..1],
-        5,
-        &mut next,
-        &mut failures,
-    );
-    assert_eq!(
-        failures
-            .iter()
-            .map(|f| (f.query, f.call))
-            .collect::<Vec<_>>(),
-        [(5, 1)]
+    settle(&vec![0; 256], &nodes, &[1], &queries, 0, &mut failures);
+    assert_eq!(failures.len(), queries.len());
+    assert!(failures.iter().all(|failure| failure.call == 255));
+}
+
+#[test]
+fn many_uses_of_a_forked_history_keep_one_query_each() {
+    const FORKS: usize = 128;
+    const USES: usize = 2048;
+    let mut nodes = chain(1);
+    let mut calls = vec![0];
+    let mut head = 0;
+    for _ in 0..FORKS {
+        let arm = calls.len();
+        calls.push(1);
+        nodes.push(PresenceCallNode {
+            parent: Some(head),
+            calls: arm..arm + 1,
+        });
+        let continuing = calls.len();
+        calls.push(0);
+        nodes.push(PresenceCallNode {
+            parent: Some(head),
+            calls: continuing..continuing + 1,
+        });
+        head = nodes.len() - 1;
+    }
+    let obligations = obligations(&vec![(Some(0), head); USES]);
+    let queries = queries(&obligations);
+    assert_eq!(nodes.len(), 1 + 2 * FORKS);
+    assert_eq!(queries.len(), USES);
+    let mut failures = Vec::new();
+    settle(&calls, &nodes, &[0, 1], &queries, 0, &mut failures);
+    assert!(
+        failures.is_empty(),
+        "erasers on skipped arms cannot leak into uses"
     );
 }
 
@@ -184,6 +302,7 @@ fn named_functions(names: &[&str]) -> Vec<Option<LoweredFn>> {
                 unwrapped_mutations: Vec::new(),
                 unwrapped_calls: Vec::new(),
                 erased_families: Vec::new(),
+                presence_calls: Vec::new(),
                 presence_obligations: Vec::new(),
                 has_direct_durable_op: false,
                 code_spans: Vec::new(),
@@ -194,8 +313,8 @@ fn named_functions(names: &[&str]) -> Vec<Option<LoweredFn>> {
 
 #[test]
 fn reporting_coalesces_only_the_exact_use_and_selects_its_earliest_call() {
-    let mut obligations = obligations(&[0..2, 1..2, 0..2, 0..2, 0..2]);
-    // The first two are the ordinary/loop intervals for one concrete source use.
+    let mut obligations = obligations(&[(None, 1), (Some(0), 1), (None, 1), (None, 1), (None, 1)]);
+    // The first two are the ordinary/loop paths for one concrete source use.
     // The other three differ by family, concrete function, and full source span.
     let span = obligations[0].span;
     for obligation in &mut obligations[1..4] {
@@ -268,8 +387,10 @@ fn sparse_presence_reports_only_callee_closed_available_functions() {
                 start_byte: use_span.start_byte + index - 2,
                 ..use_span
             },
-            calls: 0..callees.len(),
+            start: None,
+            end: callees.len() - 1,
         });
+        function.presence_calls = chain(callees.len());
         function.callees = callees;
     }
     let lowered = LoweredFunctionSet(functions);

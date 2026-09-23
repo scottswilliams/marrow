@@ -53,7 +53,7 @@ const RESOURCE: &str = "resource Book {\n\
 }\n\n";
 
 /// Two keyed roots over one `Book`, each with its own export writing a field of its own
-/// root's nested branch through a place its `exists` guard proves.
+/// root's nested branch through a checked reference.
 fn shared() -> Project {
     Project::single(&format!(
         "{RESOURCE}\
@@ -61,7 +61,7 @@ fn shared() -> Project {
          store ^b[id: int]: Book\n\n\
          pub fn addA(id: int, t: string) {{\n\
          \x20   transaction {{\n\
-         \x20       place n = ^a[id].notes[1]\n\
+         \x20       ref n = ^a[id].notes[1] else {{ return }}\n\
          \x20       if exists(n) {{\n\
          \x20           n.text = t\n\
          \x20       }}\n\
@@ -69,7 +69,7 @@ fn shared() -> Project {
          }}\n\n\
          pub fn addB(id: int, t: string) {{\n\
          \x20   transaction {{\n\
-         \x20       place n = ^b[id].notes[1]\n\
+         \x20       ref n = ^b[id].notes[1] else {{ return }}\n\
          \x20       if exists(n) {{\n\
          \x20           n.text = t\n\
          \x20       }}\n\
@@ -86,7 +86,7 @@ fn single() -> Project {
          store ^a[id: int]: Book\n\n\
          pub fn addA(id: int, t: string) {{\n\
          \x20   transaction {{\n\
-         \x20       place n = ^a[id].notes[1]\n\
+         \x20       ref n = ^a[id].notes[1] else {{ return }}\n\
          \x20       if exists(n) {{\n\
          \x20           n.text = t\n\
          \x20       }}\n\
@@ -106,8 +106,8 @@ fn single() -> Project {
 /// same Product-scoped declaration nodes — `Book.notes` (the guard's presence probe) and
 /// `Book.notes.text` (the field write) carry one ledger identity between them — so a
 /// demand keyed on the declaration rather than the occurrence would render one entry for
-/// both roots, or the same root twice. The places must name `^a` and `^b`, and the child
-/// places each reaches must be spelled identically from either root.
+/// both roots, or the same root twice. The paths must name `^a` and `^b`, and the child
+/// paths each reaches must be spelled identically from either root.
 #[test]
 fn check_reports_each_root_of_a_shared_resource_under_its_own_name() {
     let output = shared().run_cli("shared-check", &["check"]);
@@ -180,7 +180,7 @@ fn image_reaches_its_ceiling_review_for_two_roots_over_one_resource() {
     assert!(named.starts_with(|c: char| c.is_ascii_hexdigit()));
 
     // The review the owner is sent to renders both occurrences' demand, each named by its
-    // own root: one declaration under two roots is still two sets of durable places.
+    // own root: one declaration under two roots is still two sets of durable paths.
     let unaccepted = workspace.marrow(&["image", "--out", "review"]);
     let review = unaccepted.stderr_text();
     assert!(

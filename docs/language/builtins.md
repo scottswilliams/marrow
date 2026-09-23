@@ -18,7 +18,7 @@ There are few of them, and each does one thing.
 | Dates and times | `date("…")`, `instant("…")`, `duration("…")` | A temporal value from its canonical text |
 | | `addDays(d, n): date` | The date `n` days after `d` |
 | | `daysBetween(a, b): int` | The signed number of days from `a` to `b` |
-| Presence and identity | `exists(place): bool`, `exists(value): bool` | Whether a durable place, or a `T?` value, is present |
+| Presence and identity | `exists(address): bool`, `exists(value): bool` | Whether a durable address, or a `T?` value, is present |
 | | `Id(^root, key): Id(^root)` | The identity of an entry under `^root` |
 | Conversion and output | `string(value): string` | The canonical text of a scalar, nominal value, enum value, or identity |
 | | `int(a): int` | The underlying `int` of a nominal value `a` |
@@ -151,8 +151,8 @@ is no clock built-in: the current day or instant is passed in as an argument.
 
 ## Presence and identity
 
-`exists(place)` reports whether a durable place is present and yields a
-`bool`. Its argument is a named place, a traversal pin, or a `^` path: a store
+`exists(address)` reports whether a durable address is present and yields a
+`bool`. Its argument is an entry reference or a `^` path: a store
 root, an entry, a field, a keyed branch family, or a complete key of a `unique`
 index. `exists(value)` accepts any `T?` expression and reports whether it is
 present. It answers the question only: the value is not narrowed, so a later
@@ -197,10 +197,11 @@ test "presence" {
 absent until `add` commits. `exists(^books[id].subtitle)` asks about one
 sparse field, and `subtitled` asks the same of the `string?` that field read
 into a local. `exists(^books.byIsbn[isbn])` asks a unique index whether some
-entry carries that key. An explicit guard over a named place or traversal pin
-proves its entry present; required field reads through that binding then have
-their declared types ([named places](durable-places.md#named-places)). Inline
-path guards do not change later read types. Identity as a type is described under
+entry carries that key. A `ref … else` binding checks presence and binds an
+entry reference; required field reads through that binding have their declared
+types ([entry references](durable-data.md#entry-references)). An explicit guard
+on an existing reference can re-establish presence after erasure. Inline path
+guards do not change later read types. Identity as a type is described under
 [entry identity](types-and-values.md#entry-identity) and index reads under
 [reading an index](traversal-and-indexes.md#reading-an-index). An application
 that needs a fresh key keeps its own durable counter

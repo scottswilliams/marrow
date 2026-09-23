@@ -7,7 +7,7 @@
 //! own `^root.member` spelling, so a demand set can be *described* in source spelling
 //! without the verifier owning any name.
 //!
-//! The description never grants: rendering which durable places an export reads and
+//! The description never grants: rendering which durable paths an export reads and
 //! writes states access the compiler already reconstructed. Whether an invocation may
 //! exercise that demand is a separate authority concern this owner does not touch.
 
@@ -70,35 +70,35 @@ impl DurableNaming {
         (!out.is_empty()).then_some(out)
     }
 
-    /// The per-export demand sentence: which durable places the export reads and which it
+    /// The per-export demand sentence: which durable paths the export reads and which it
     /// writes, each named by its durable path in source spelling, as prose:
-    /// `reads ^a and ^a.b; writes ^a.b`. The places are those of
-    /// [`Self::demand_places`], so the sentence and the place lists never disagree.
+    /// `reads ^a and ^a.b; writes ^a.b`. The paths are those of
+    /// [`Self::demand_paths`], so the sentence and the address lists never disagree.
     pub fn demand_sentence(&self, demand: DemandView<'_>) -> Option<String> {
         if demand.is_empty() {
             return Some("reads or writes no durable data".to_string());
         }
-        let places = self.demand_places(demand)?;
+        let paths = self.demand_paths(demand)?;
         let mut clauses: Vec<String> = Vec::new();
-        if let Some(list) = joined(&places.reads) {
+        if let Some(list) = joined(&paths.reads) {
             clauses.push(format!("reads {list}"));
         }
-        if let Some(list) = joined(&places.writes) {
+        if let Some(list) = joined(&paths.writes) {
             clauses.push(format!("writes {list}"));
         }
         Some(clauses.join("; "))
     }
 
-    /// The per-export demand as exact places in source spelling, split by coverage.
+    /// The per-export demand as exact paths in source spelling, split by coverage.
     ///
     /// Access is grouped by read/write coverage — a presence probe, a field or entry
     /// read, and an ordered index or family traversal are all *reads*; a write and an
-    /// erase are *writes* — the same projection the store ceiling checks. A place a
+    /// erase are *writes* — the same projection the store ceiling checks. An address a
     /// read-modify-write export both reads and writes appears in both lists. Each list is
-    /// ordered by spelling with each place once, so the result is a stable function of the
+    /// ordered by spelling with each address once, so the result is a stable function of the
     /// demand set. `None` only if a demanded node is unspellable, which cannot happen for
     /// a demand reconstructed from an admitted graph.
-    pub fn demand_places(&self, demand: DemandView<'_>) -> Option<DemandPlaces> {
+    pub fn demand_paths(&self, demand: DemandView<'_>) -> Option<DemandPaths> {
         let mut reads = BTreeSet::new();
         let mut writes = BTreeSet::new();
         for atom in demand.atoms() {
@@ -109,26 +109,26 @@ impl DurableNaming {
                 reads.insert(spelled);
             }
         }
-        Some(DemandPlaces {
+        Some(DemandPaths {
             reads: reads.into_iter().collect(),
             writes: writes.into_iter().collect(),
         })
     }
 }
 
-/// An export's durable demand as exact places, split by read/write coverage: the same
+/// An export's durable demand as exact paths, split by read/write coverage: the same
 /// facts [`DurableNaming::demand_sentence`] renders as prose, exposed as typed lists so
 /// a renderer never re-derives spelling or coverage.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DemandPlaces {
-    /// The places this export reads, in spelling order, each once.
+pub struct DemandPaths {
+    /// The paths this export reads, in spelling order, each once.
     pub reads: Vec<String>,
-    /// The places this export writes, in spelling order, each once.
+    /// The paths this export writes, in spelling order, each once.
     pub writes: Vec<String>,
 }
 
-/// Join one clause's places in the steady reference register: `A`, `A and B`, or
-/// `A, B, and C`. `None` for an empty clause, so a clause with no places is dropped
+/// Join one clause's paths in the steady reference register: `A`, `A and B`, or
+/// `A, B, and C`. `None` for an empty clause, so a clause with no paths is dropped
 /// rather than rendered empty.
 fn joined(paths: &[String]) -> Option<String> {
     match paths {
@@ -141,7 +141,7 @@ fn joined(paths: &[String]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DemandPlaces, DurableNaming, PathSigil};
+    use super::{DemandPaths, DurableNaming, PathSigil};
     use marrow_image::{
         DemandAtom, ExportDemand, OperationClass, SemanticPath, SemanticStep, SemanticStepKind,
     };
@@ -210,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn a_read_modify_write_names_the_place_in_both_clauses() {
+    fn a_read_modify_write_names_the_address_in_both_clauses() {
         assert_eq!(
             sentence(vec![
                 DemandAtom::new(field_path(TITLE), OperationClass::Read),
@@ -259,11 +259,11 @@ mod tests {
     }
 
     #[test]
-    fn demand_places_split_coverage_and_name_every_place_once() {
+    fn demand_paths_split_coverage_and_name_every_address_once() {
         // The same field read and written appears in both lists; a whole-entry read, a
-        // field, and an index are each one place; a repeated atom is listed once.
-        let places = naming()
-            .demand_places(
+        // field, and an index are each one address; a repeated atom is listed once.
+        let paths = naming()
+            .demand_paths(
                 ExportDemand::from_atoms(vec![
                     DemandAtom::new(root_path(), OperationClass::Read),
                     DemandAtom::new(field_path(TITLE), OperationClass::Read),
@@ -276,8 +276,8 @@ mod tests {
             )
             .expect("every demanded node is nameable");
         assert_eq!(
-            places,
-            DemandPlaces {
+            paths,
+            DemandPaths {
                 reads: vec![
                     "^books".to_string(),
                     "^books.byIsbn".to_string(),
@@ -291,10 +291,10 @@ mod tests {
     #[test]
     fn a_demand_over_an_unknown_node_is_unspellable() {
         // The whole result is `None` rather than a partial or invented spelling, for
-        // the place lists and the sentence alike.
+        // the address lists and the sentence alike.
         let unknown = SemanticPath::root(id(APP), id(0x77));
         let demand = ExportDemand::from_atoms([DemandAtom::new(unknown, OperationClass::Read)]);
-        assert!(naming().demand_places(demand.as_view()).is_none());
+        assert!(naming().demand_paths(demand.as_view()).is_none());
         assert!(naming().demand_sentence(demand.as_view()).is_none());
     }
 
@@ -308,12 +308,12 @@ mod tests {
         let selected = owner.selected(&known_row).expect("known selection");
         let expected = ExportDemand::from_atoms([known]);
         assert_eq!(
-            naming().demand_places(selected),
-            naming().demand_places(expected.as_view())
+            naming().demand_paths(selected),
+            naming().demand_paths(expected.as_view())
         );
         let selected = owner
             .selected(&unknown_row)
             .expect("unknown selection is canonical");
-        assert!(naming().demand_places(selected).is_none());
+        assert!(naming().demand_paths(selected).is_none());
     }
 }

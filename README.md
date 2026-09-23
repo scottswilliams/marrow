@@ -10,7 +10,7 @@ book = Book(title: title, read: true)
 
 The first assignment changes a local value. The second changes durable state.
 The `^` is the whole difference: both lines build the same `Book`, and a
-durable place is read and assigned like a local one.
+durable address is read and assigned like a local one.
 
 ## Example
 
@@ -35,8 +35,7 @@ pub fn add(id: Id(^books), title: string): Id(^books) {
 
 pub fn finish(id: Id(^books)): bool {
     transaction {
-        place book = ^books[id]
-        if not exists(book) {
+        ref book = ^books[id] else {
             return false
         }
         book.read = true
@@ -49,8 +48,8 @@ pub fn finish(id: Id(^books)): bool {
 gives it a durable root keyed by an `int`. `^books[id]` is one entry and
 `^books[id].title` is one field of it. Every durable write sits inside a
 `transaction`; when the block ends, its writes commit together. `add` writes
-the entry whole, so it is complete from its first commit. `place book =
-^books[id]` names the entry once, and `exists(book)` proves it present, so
+the entry whole, so it is complete from its first commit. `ref book = ^books[id] else { return false }` captures the entry address
+and checks its presence, so
 `finish` returns `false` for an absent entry and updates `read` only on a
 present one. The caller passes the entry identity as an `Id(^books)`, the
 identity type of that root; `Id(^books, 7)` builds one from a key, so a caller
@@ -70,7 +69,7 @@ states its bound with `at most N` and its overflow behavior with `on more`.
 Related writes belong together, so they share one `transaction` block and
 commit as one. A new program meets data the previous program wrote, so a store
 checks the program's durable shape before it opens. Running code needs authority
-over the places it touches, so `marrow check` reports the durable places each
+over the paths it touches, so `marrow check` reports the durable paths each
 export reads and writes.
 
 Data is navigated, not queried. A program reads or changes one durable element

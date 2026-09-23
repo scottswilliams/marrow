@@ -187,14 +187,14 @@ fn function_instrs<'a>(image: &'a VerifiedImage, name: &str) -> &'a [SealedInstr
         .instrs()
 }
 
-/// A field set through a two-key branch `place` dominated by an `exists(p)` guard
-/// lowers to the present-entry form (`DurSetField`) carrying the place's whole
+/// A field set through a two-key branch `reference` dominated by an `exists(p)` guard
+/// lowers to the present-entry form (`DurSetField`) carrying the reference's whole
 /// `[root, branch]` key-path, so the guard is enforced at the kernel marker rather
 /// than silently widened.
 #[test]
-fn a_guarded_branch_place_sparse_set_lowers_strict_over_the_whole_key_path() {
+fn a_guarded_branch_reference_sparse_set_lowers_strict_over_the_whole_key_path() {
     let image = Project::single(FIELD_SOURCE).ids(IDS).image();
-    let instrs = function_instrs(&image, "setPinnedViaPlace");
+    let instrs = function_instrs(&image, "setPinnedViaReference");
     let strict: Vec<&[u16]> = instrs
         .iter()
         .filter_map(|instr| match instr {
@@ -205,7 +205,7 @@ fn a_guarded_branch_place_sparse_set_lowers_strict_over_the_whole_key_path() {
     assert_eq!(
         strict.len(),
         1,
-        "the guarded branch-place set lowers to the present-entry form"
+        "the guarded branch-reference set lowers to the present-entry form"
     );
     assert_eq!(
         strict[0].len(),
@@ -569,10 +569,8 @@ pub fn addNote(id: int, nid: string, body: string) {
 
 pub fn setPinned(id: int, nid: string, flag: bool) {
     transaction {
-        place note = ^books[id].notes[nid]
-        if exists(note) {
-            note.pinned = flag
-        }
+        ref note = ^books[id].notes[nid] else { return }
+        note.pinned = flag
     }
 }
 
@@ -584,10 +582,8 @@ pub fn clearPinned(id: int, nid: string) {
 
 pub fn setText(id: int, nid: string, body: string) {
     transaction {
-        place note = ^books[id].notes[nid]
-        if exists(note) {
-            note.text = body
-        }
+        ref note = ^books[id].notes[nid] else { return }
+        note.text = body
     }
 }
 
@@ -606,18 +602,15 @@ pub fn noteText(id: int, nid: string): string? {
     return absent
 }
 
-pub fn setPinnedViaPlace(id: int, nid: string, flag: bool) {
+pub fn setPinnedViaReference(id: int, nid: string, flag: bool) {
     transaction {
-        place note = ^books[id].notes[nid]
-        if exists(note) {
-            note.pinned = flag
-        }
+        ref note = ^books[id].notes[nid] else { return }
+        note.pinned = flag
     }
 }
 
-pub fn notePinnedViaPlace(id: int, nid: string): bool? {
-    place note = ^books[id].notes[nid]
-    return note.pinned
+pub fn notePinnedViaReference(id: int, nid: string): bool? {
+    return ^books[id].notes[nid].pinned
 }
 
 pub fn rootPresent(id: int): bool {
@@ -708,12 +701,12 @@ fn a_field_exact_set_is_scoped_to_its_branch_entry() {
     );
 }
 
-/// Field-exact operations thread through a two-key branch `place`: a field read and a
-/// guarded (`if exists`) sparse set address the branch entry through the place's
+/// Field-exact operations thread through a two-key branch `reference`: a field read and a
+/// guarded (`if exists`) sparse set address the branch entry through the reference's
 /// pre-evaluated `[root, branch]` key-path, and the guarded set preserves the branch's
 /// required field.
 #[test]
-fn branch_place_field_operations_read_and_guarded_set_through_the_two_key_place() {
+fn branch_reference_field_operations_read_and_guarded_set_through_the_two_key_reference() {
     let mut session = Project::single(FIELD_SOURCE).ids(IDS).session();
     let key = || vec![Value::Int(10), Value::Text("a".into())];
 
@@ -725,21 +718,21 @@ fn branch_place_field_operations_read_and_guarded_set_through_the_two_key_place(
             Value::Text("hi".into()),
         ],
     );
-    assert_eq!(session.call("notePinnedViaPlace", key()), absent());
+    assert_eq!(session.call("notePinnedViaReference", key()), absent());
 
     session.call(
-        "setPinnedViaPlace",
+        "setPinnedViaReference",
         vec![Value::Int(10), Value::Text("a".into()), Value::Bool(true)],
     );
     assert_eq!(
-        session.call("notePinnedViaPlace", key()),
+        session.call("notePinnedViaReference", key()),
         some_bool(true),
-        "a branch-place field read and guarded set thread through the two-key place",
+        "a branch-reference field read and guarded set thread through the two-key reference",
     );
     assert_eq!(
         session.call("noteText", key()),
         some_text("hi"),
-        "the guarded branch-place set preserved the required field",
+        "the guarded branch-reference set preserved the required field",
     );
 }
 
@@ -803,17 +796,16 @@ fn strict_key_paths(image: &VerifiedImage, name: &str) -> Vec<Vec<u16>> {
         .collect()
 }
 
-/// Whole-entry assignment through a branch place proves the branch entry present for
-/// the rest of the block, exactly as it does through a root place: the sparse set after
-/// `note = Book.notes(...)` is strict over the whole `[root, branch]` key-path.
+/// Direct branch creation followed by a checked reference permits a sparse field
+/// update over the whole `[root, branch]` key path.
 #[test]
-fn an_upsert_through_a_branch_place_proves_the_branch_entry_present() {
+fn a_branch_creation_followed_by_binding_proves_the_entry_present() {
     let source = format!(
         "{FIELD_SOURCE}
 pub fn addPinnedNote(id: int, nid: string, body: string) {{
     transaction {{
-        place note = ^books[id].notes[nid]
-        note = Book.notes(text: body)
+        ^books[id].notes[nid] = Book.notes(text: body)
+        ref note = ^books[id].notes[nid] else {{ return }}
         note.pinned = true
     }}
 }}
@@ -824,7 +816,7 @@ pub fn addPinnedNote(id: int, nid: string, body: string) {{
     assert_eq!(
         strict.len(),
         1,
-        "one strict set follows the branch-place upsert"
+        "one strict set follows the branch-reference upsert"
     );
     assert_eq!(
         strict[0].len(),
@@ -833,7 +825,7 @@ pub fn addPinnedNote(id: int, nid: string, body: string) {{
     );
 }
 
-// The root gains a sparse `subtitle` so a root-place set has a sparse target.
+// The root gains a sparse `subtitle` so a root-reference set has a sparse target.
 const IDS_SUBTITLE: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
      id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
@@ -872,7 +864,7 @@ fn a_sibling_family_erase_keeps_the_fact_while_a_same_family_erase_ends_it() {
         "{SUBTITLE_SCHEMA}
 pub fn dropNoteThenRetitle(id: int, nid: string, sub: string) {{
     transaction {{
-        place b = ^books[id]
+        ref b = ^books[id] else {{ return }}
         if exists(b) {{
             delete b.notes[nid]
             b.subtitle = sub
@@ -893,7 +885,7 @@ pub fn dropNoteThenRetitle(id: int, nid: string, sub: string) {{
         "{SUBTITLE_SCHEMA}
 pub fn dropThenRetitle(id: int, sub: string) {{
     transaction {{
-        place b = ^books[id]
+        ref b = ^books[id] else {{ return }}
         if exists(b) {{
             delete b
             b.subtitle = sub

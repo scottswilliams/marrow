@@ -37,7 +37,7 @@ fn an_invalidated_required_read_refuses_an_optional_context() {
         r#"
 pub fn readAfterErase(n: int): int? {
     transaction {
-        place p = ^counters[n]
+        ref p = ^counters[n] else { unreachable("missing") }
         if exists(p) {
             delete p
             return p.value
@@ -59,24 +59,23 @@ store ^other[id: int]: Counter
 
 pub fn put(n: int) {
     transaction {
-        place outer = ^counters[n]
-        place inner = ^other[n]
+        ref outer = ^counters[n] else { return }
         if exists(outer) {
             if n > 0 {
                 delete outer
-                inner = Counter(value: 1)
+                ^other[n] = Counter(value: 1)
             }
-            inner.label = "outside the inner scope"
+            ^other[n].label = "outside the inner scope"
         }
     }
 }
 "#
     );
-    assert_presence_diagnostic(&source, &two_family_ids(), "inner.label =");
+    assert_presence_diagnostic(&source, &two_family_ids(), "^other[n].label =");
 }
 
 #[test]
-fn a_let_else_lifts_a_fresh_fact_after_an_outer_family_erase() {
+fn a_entry_binding_lifts_a_fresh_fact_after_an_outer_family_erase() {
     let source = format!(
         "{HEADER}{}",
         r#"
@@ -84,11 +83,10 @@ store ^other[id: int]: Counter
 
 pub fn put(n: int) {
     transaction {
-        place outer = ^counters[n]
-        place lifted = ^other[n]
+        ref outer = ^counters[n] else { return }
         if exists(outer) {
             delete outer
-            const value = lifted else {
+            ref lifted = ^other[n] else {
                 return
             }
             lifted.label = "fresh proof"
@@ -111,10 +109,9 @@ store ^other[id: int]: Counter
 
 pub fn put(n: int) {
     transaction {
-        place outer = ^counters[n]
-        place lifted = ^other[n]
+        ref outer = ^counters[n] else { return }
         if exists(outer) {
-            const value = lifted else {
+            ref lifted = ^other[n] else {
                 delete outer
                 return
             }
@@ -130,7 +127,7 @@ pub fn put(n: int) {
 }
 
 #[test]
-fn an_erase_call_in_the_skipped_let_else_arm_keeps_the_lifted_fact() {
+fn an_erase_call_in_the_skipped_entry_binding_arm_keeps_the_lifted_fact() {
     let source = format!(
         "{HEADER}{}",
         r#"
@@ -140,8 +137,7 @@ fn wipe(n: int) {
 
 pub fn put(n: int) {
     transaction {
-        place p = ^counters[n]
-        const value = p else {
+        ref p = ^counters[n] else {
             wipe(n)
             return
         }
@@ -184,7 +180,7 @@ fn assignment_with_rhs(rhs: &str) -> String {
         "{HEADER}{ERASE_HELPERS}
 pub fn put(n: int) {{
     transaction {{
-        place p = ^counters[n]
+        ref p = ^counters[n] else {{ return }}
         if exists(p) {{
             p.label = {rhs}
         }}
@@ -247,7 +243,7 @@ fn erasure_invalidates_hidden_outer_facts_after_a_fresh_inner_guard_ends() {
         r#"
 pub fn inspect(n: int): int? {
     transaction {
-        place p = ^counters[n]
+        ref p = ^counters[n] else { unreachable("missing") }
         if exists(p) {
             if exists(p) { delete p }
             if exists(p) { const fresh: int = p.value }
@@ -272,15 +268,14 @@ pub fn inspect(n: int): int? {
 #[test]
 fn leaving_an_inner_proof_scope_restores_an_untested_optional_read() {
     for inner in [
-        "if exists(p) { const proved: int = p.value }",
-        "if exists(p) { delete p }",
+        "if exists(^counters[n]) { ref p = ^counters[n] else { return absent }\nconst proved: int = p.value }",
+        "if exists(^counters[n]) { ref p = ^counters[n] else { return absent }\ndelete p }",
     ] {
         let source = format!(
             "{HEADER}\npub fn inspect(n: int): int? {{
     transaction {{
-        place p = ^counters[n]
         {inner}
-        const untested: int? = p.value
+        const untested: int? = ^counters[n].value
         return untested
     }}
 }}\n"
@@ -303,7 +298,7 @@ fn copied_values_and_sparse_reads_survive_entry_erasure() {
         r#"
 pub fn inspect(n: int): int? {
     transaction {
-        place p = ^counters[n]
+        ref p = ^counters[n] else { unreachable("missing") }
         if exists(p) {
             const before: int = p.value
             delete p
@@ -343,7 +338,7 @@ fn replace(n: int) {
 
 pub fn put(n: int) {
     transaction {
-        place p = ^counters[n]
+        ref p = ^counters[n] else { unreachable("missing") }
         if exists(p) {
             replace(n)
             p.label = "after replacement"
@@ -370,7 +365,7 @@ fn eraseAndError(n: int): Result<int, string> {
 
 pub fn put(n: int) {
     transaction {
-        place p = ^counters[n]
+        ref p = ^counters[n] else { unreachable("missing") }
         if exists(p) {
             const outcome = eraseAndError(n)
             match outcome {
@@ -398,10 +393,10 @@ store ^other[id: int]: Counter
 
 pub fn put(n: int) {
     transaction {
-        place erased = ^counters[n]
-        place kept = ^other[n]
+        ref erased = ^counters[n] else { unreachable("missing") }
         if exists(erased) {
-            kept = Counter(value: 3)
+            ^other[n] = Counter(value: 3)
+            ref kept = ^other[n] else { return }
             delete erased
             kept.label = "other family"
             const proved: int = kept.value

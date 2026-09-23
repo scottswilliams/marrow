@@ -29,10 +29,10 @@ pub fn add(id: int, title: string) {
 
 pub fn bump(id: int) {
     transaction {
-        place m = ^books[id]
-        if exists(m) {
-            m.loans = (m.loans ?? 0) + 1
+        ref m = ^books[id] else {
+            return
         }
+        m.loans = (m.loans ?? 0) + 1
     }
 }
 
@@ -48,10 +48,10 @@ test "each call commits one increment" {
 }
 ```
 
-`add` and `bump` each own one block. In `bump`, `exists(m)` proves the entry
-present, and the read and the write of `loans` through the place sit in the
+`add` and `bump` each own one block. In `bump`, the `ref` binding checks entry
+presence, and the read and the write of `loans` through the reference sit in the
 same block, so the two calls in the test commit one after the other
-([named places](durable-places.md#named-places)). `loans` only reads and needs no block. The test drives the exports,
+([entry references](durable-data.md#entry-references)). `loans` only reads and needs no block. The test drives the exports,
 and each call is its own invocation.
 
 A durable write sits inside a `transaction` block, or inside a helper the block
@@ -67,7 +67,7 @@ function exit inside it, including `return`, `try` failure and `require` failure
 An exit inside the block evaluates its
 value, then commits, then returns, so `return ^books[id].loans` returns the
 staged value. An export opens its block once (`check.transaction_reopened`), the
-block touches at least one durable place (`check.transaction_empty`), and no
+block touches at least one durable address (`check.transaction_empty`), and no
 durable read or write follows the commit (`check.durable_after_commit`).
 
 ## Guards inside a block

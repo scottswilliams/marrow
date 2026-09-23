@@ -68,13 +68,12 @@ pub(super) fn parse_simple_statement(
             })
         }
         TokenKind::Keyword(Keyword::Unset) => {
-            let place = expr_of_after(source, &line[1..], first.span, sink)?;
+            let target = expr_of_after(source, &line[1..], first.span, sink)?;
             Some(Statement::Unset {
-                span: join_spans(first.span, place.span()),
-                place,
+                span: join_spans(first.span, target.span()),
+                target,
             })
         }
-        TokenKind::Keyword(Keyword::Place) => parse_place(source, line, sink),
         TokenKind::Keyword(Keyword::Merge) => {
             sink.push(SyntaxError::new(
                 DiagnosticReason::Parser(ParseDiagnosticReason::Reserved(
@@ -249,13 +248,15 @@ fn parse_var_keys(
     Ok((keys, close + 1))
 }
 
-/// Parse `place name = <durable address>`: a fresh identifier binding name, a required
-/// `=`, and the entry-address expression. The address itself is a checker concern; the
-/// parser only structures the binding.
-fn parse_place(source: &str, line: &[Token], sink: &mut SyntaxSink<'_>) -> Option<Statement> {
-    let keyword = line[0];
+/// Parse the head of an entry reference. The block parser owns its mandatory `else`.
+pub(super) fn parse_entry_head(
+    source: &str,
+    line: &[Token],
+    sink: &mut SyntaxSink<'_>,
+) -> Option<(String, SourceSpan, Expression)> {
     let Some(name_token) = line.get(1) else {
-        return expected_statement(line, sink);
+        expected_statement(line, sink);
+        return None;
     };
     if name_token.kind != TokenKind::Identifier {
         if matches!(name_token.kind, TokenKind::Keyword(_)) {
@@ -263,7 +264,7 @@ fn parse_place(source: &str, line: &[Token], sink: &mut SyntaxSink<'_>) -> Optio
             sink.push(SyntaxError::new(
                 DiagnosticReason::Parser(reason),
                 format!(
-                    "expected place name; `{}` is a keyword",
+                    "expected reference name; `{}` is a keyword",
                     name_token.text(source)
                 ),
                 Some("choose an identifier that is not reserved".to_string()),
@@ -271,21 +272,18 @@ fn parse_place(source: &str, line: &[Token], sink: &mut SyntaxSink<'_>) -> Optio
             ));
             return None;
         }
-        return expected_statement(line, sink);
+        expected_statement(line, sink);
+        return None;
     }
     let name = name_token.text(source).to_string();
     let name_span = name_token.span;
     if line.get(2).map(|token| token.kind) != Some(TokenKind::Equal) {
-        return expected_statement(line, sink);
+        expected_statement(line, sink);
+        return None;
     }
     let equal = line[2];
-    let place = expr_of_after(source, &line[3..], equal.span, sink)?;
-    Some(Statement::PlaceBinding {
-        span: join_spans(keyword.span, place.span()),
-        name,
-        name_span,
-        place,
-    })
+    let address = expr_of_after(source, &line[3..], equal.span, sink)?;
+    Some((name, name_span, address))
 }
 
 fn parse_return(source: &str, line: &[Token], sink: &mut SyntaxSink<'_>) -> Option<Statement> {
@@ -418,8 +416,8 @@ fn is_split_compound_operator(kind: TokenKind) -> bool {
     )
 }
 
-/// Parse an `if const name [: type] = place` head, starting at the `const` keyword, into
-/// the bound name, optional annotation, and place expression. Returns `None` when the
+/// Parse an `if const name [: type] = value` head, starting at the `const` keyword, into
+/// the bound name, optional annotation, and value expression. Returns `None` when the
 /// head is not a binding, so the caller falls back to reading the line as an ordinary
 /// condition expression.
 pub(super) fn parse_if_const_head(
@@ -490,7 +488,7 @@ pub(super) fn parse_if_const_head(
 }
 
 /// Parse a `for` header `binding in [reversed] iterable [by step]` or the bounded
-/// durable-traversal head `binding in place at most N [from f]` into the loop binding,
+/// durable-traversal head `binding in path at most N [from f]` into the loop binding,
 /// traversal order, iterable, optional range step, and optional bound clause
 /// `(limit, from?)`. An identifier spelling `reversed` immediately after `in` is always
 /// the order keyword, never the iterable; `by`, `at most`, and `from` are contextual and
@@ -514,7 +512,7 @@ pub(super) fn parse_for_header(
         Some(token) if is_reversed_keyword(source, token) => (LoopOrder::Reversed, &after_in[1..]),
         _ => (LoopOrder::Forward, after_in),
     };
-    // A bounded durable traversal `<place> at most N [from f]` splits at the `at most`
+    // A bounded durable traversal `<path> at most N [from f]` splits at the `at most`
     // marker; a `from` after it separates the limit from the inclusive lower bound. The
     // marker is always present, so it anchors an empty operand on either side.
     if let Some(at_index) = find_top_level_at_most(source, rest) {

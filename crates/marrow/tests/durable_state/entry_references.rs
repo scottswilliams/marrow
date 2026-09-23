@@ -1,22 +1,15 @@
-//! Source-local named `place` bindings and their operand timing.
-//!
-//! A `place p = ^root(key)` binding names one concrete durable entry address. Its
-//! key tuple is evaluated exactly once at the binding; every operation through the
-//! place (`p.field`, `p.field = v`, `p = Record(...)`, `exists(p)`, `delete p`,
-//! `if const x = p`) reuses that pre-evaluated address rather than re-running the
-//! key operand. The binding lowers to no new image structure — a `LocalSet` of the
-//! key plus the ordinary per-operation effect sites — so these properties are
-//! observed at the image level, through the full production path: capture ->
-//! compile -> verify.
+//! Checked entry references capture key operands once and carry presence facts.
+//! The production compile/verify path checks operand order, field access, and
+//! invalidation by entry erasure, including calls and loop back edges.
 
 use crate::common::Project;
 use marrow_verify::{SealedInstr, VerifiedImage};
 
-#[path = "places/presence_lifetime.rs"]
+#[path = "entry_references/presence_lifetime.rs"]
 mod presence_lifetime;
 
-#[path = "places/require_presence.rs"]
-mod require_presence;
+#[path = "entry_references/binding_presence.rs"]
+mod binding_presence;
 
 const IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
@@ -77,25 +70,21 @@ fn has_function(image: &VerifiedImage, name: &str) -> bool {
 
 // --- Operand timing. ---
 
-/// The key operand of a `place` is lowered exactly once, at the binding, no matter
-/// how many operations flow through the place. Here the key is a call `keyOf(n)`,
-/// and the place is used three times (`exists`, and two field reads); the compiled
+/// The key operand of a `ref` is lowered exactly once, at the binding, no matter
+/// how many operations flow through the reference. Here the key is a call `keyOf(n)`,
+/// and the reference is used three times (`exists`, and two field reads); the compiled
 /// `use3` export therefore holds exactly one `Call` (the one key evaluation) while
 /// carrying three durable effect sites.
 #[test]
-fn a_place_key_operand_is_lowered_exactly_once() {
+fn a_reference_key_operand_is_lowered_exactly_once() {
     let source = format!(
         "{HEADER}{}",
         r#"
 pub fn use3(n: int): int {
-    place p = ^counters[keyOf(n)]
-    const present = exists(p)
-    const a = p.value ?? 0
-    const b = p.value ?? 0
-    if present {
-        return a + b
-    }
-    return 0
+    ref p = ^counters[keyOf(n)] else { return 0 }
+    const a = p.value
+    const b = p.value
+    return a + b
 }
 "#
     );
@@ -108,10 +97,10 @@ pub fn use3(n: int): int {
         .count();
     assert_eq!(
         calls, 1,
-        "the place key call `keyOf(n)` is evaluated once at the binding, not per use"
+        "the reference key call `keyOf(n)` is evaluated once at the binding, not per use"
     );
 
-    // Three operations flow through the place: one presence test and two field
+    // Three operations flow through the reference: one presence test and two field
     // reads. Each is its own effect site (compact sites, no cloned summaries).
     let exists = instrs
         .iter()
@@ -119,24 +108,23 @@ pub fn use3(n: int): int {
         .count();
     let reads = instrs
         .iter()
-        .filter(|instr| matches!(instr, SealedInstr::DurReadField(_)))
+        .filter(|instr| matches!(instr, SealedInstr::DurReadFieldPresent { .. }))
         .count();
     assert_eq!(exists, 1, "one presence effect site");
     assert_eq!(reads, 2, "two field-read effect sites");
 }
 
-/// The binding itself emits no durable effect site: it evaluates the key operand
-/// and stores it, so the key evaluation strictly precedes every effect site. An
+/// The binding evaluates and stores its key before testing presence. An
 /// operand that faults at the binding therefore faults before any durable
 /// operation is recorded — the effect sites are unreachable past the fault.
 #[test]
-fn a_place_binding_emits_no_effect_site_before_its_uses() {
+fn an_entry_binding_evaluates_its_key_before_the_presence_test() {
     let source = format!(
         "{HEADER}{}",
         r#"
 pub fn readIt(n: int): int {
-    place p = ^counters[keyOf(n)]
-    return p.value ?? 0
+    ref p = ^counters[keyOf(n)] else { return 0 }
+    return p.value
 }
 "#
     );
@@ -171,17 +159,18 @@ pub fn readIt(n: int): int {
 }
 
 /// The whole-entry write form `p = Record(...)` and the field/erase forms all flow
-/// through the place's one pre-evaluated key: the mutating export reads the key
+/// through the reference's one pre-evaluated key: the mutating export reads the key
 /// slot for each operation and never re-calls `keyOf`.
 #[test]
-fn a_place_reused_across_writes_evaluates_its_key_once() {
+fn a_reference_reused_across_writes_evaluates_its_key_once() {
     let source = format!(
         "{HEADER}{}",
         r#"
 pub fn writeIt(n: int, v: int) {
     transaction {
-        place p = ^counters[keyOf(n)]
-        p = Counter(value: v)
+        const key = keyOf(n)
+        ^counters[key] = Counter(value: v)
+        ref p = ^counters[key] else { unreachable("created entry missing") }
         p.label = "tag"
         delete p.label
         const proved: int = p.value
@@ -230,8 +219,8 @@ fn count_strict(instrs: &[SealedInstr]) -> usize {
         .count()
 }
 
-/// A field set through a `place` dominated by an `exists(p)` guard lowers to the
-/// present-entry form (`DurSetField`), which reads the key from the place's slot and
+/// A field set through a `ref` dominated by an `exists(p)` guard lowers to the
+/// present-entry form (`DurSetField`), which reads the key from the reference's slot and
 /// asserts the entry present; the same set with no dominating guard is refused at
 /// check time, since a write never creates an entry.
 #[test]
@@ -241,7 +230,7 @@ fn an_exists_guarded_sparse_set_is_strict() {
         r#"
 pub fn tag(n: int) {
     transaction {
-        place p = ^counters[n]
+        ref p = ^counters[n] else { unreachable("missing") }
         if exists(p) {
             p.label = "x"
         }
@@ -258,8 +247,7 @@ pub fn tag(n: int) {
         r#"
 pub fn tag(n: int) {
     transaction {
-        place p = ^counters[n]
-        p.label = "x"
+        ^counters[n].label = "x"
     }
 }
 "#
@@ -272,7 +260,7 @@ pub fn tag(n: int) {
 }
 
 /// An `if const c = p` entry read proves the entry present in its then-block, so a
-/// sparse set through the same place there is strict.
+/// sparse set through the same reference there is strict.
 #[test]
 fn an_if_const_guarded_sparse_set_is_strict() {
     let source = format!(
@@ -280,7 +268,7 @@ fn an_if_const_guarded_sparse_set_is_strict() {
         r#"
 pub fn tag(n: int) {
     transaction {
-        place p = ^counters[n]
+        ref p = ^counters[n] else { unreachable("missing") }
         if const c = p {
             p.label = "x"
         }
@@ -293,17 +281,16 @@ pub fn tag(n: int) {
     assert_eq!(count_strict(instrs), 1);
 }
 
-/// A whole-entry upsert (`p = Record(...)`) leaves the entry present, so a following
-/// sparse set through the place is strict.
+/// Creation followed by a checked binding permits a sparse field update.
 #[test]
-fn a_sparse_set_after_an_upsert_is_strict() {
+fn a_sparse_set_after_creation_and_binding_is_strict() {
     let source = format!(
         "{HEADER}{}",
         r#"
 pub fn tag(n: int, v: int) {
     transaction {
-        place p = ^counters[n]
-        p = Counter(value: v)
+        ^counters[n] = Counter(value: v)
+        ref p = ^counters[n] else { unreachable("created entry missing") }
         p.label = "x"
     }
 }
@@ -314,7 +301,7 @@ pub fn tag(n: int, v: int) {
     assert_eq!(count_strict(instrs), 1, "the post-upsert set is strict");
 }
 
-/// Presence facts attach to a lexical `place` binding only: an inline `^root(k)`
+/// Presence facts attach to a lexical `ref` binding only: an inline `^root(k)`
 /// address never carries one, so an inline field set is refused even under a guard.
 #[test]
 fn an_inline_sparse_set_is_never_proven() {
@@ -346,7 +333,7 @@ fn a_sparse_set_after_delete_is_refused() {
         r#"
 pub fn tag(n: int) {
     transaction {
-        place p = ^counters[n]
+        ref p = ^counters[n] else { unreachable("missing") }
         if exists(p) {
             delete p
             p.label = "x"
@@ -371,11 +358,11 @@ fn the_presence_fact_does_not_outlive_its_block() {
         r#"
 pub fn tag(n: int) {
     transaction {
-        place p = ^counters[n]
-        if exists(p) {
+        if exists(^counters[n]) {
+            ref p = ^counters[n] else { return }
             p.label = "in"
         }
-        p.label = "out"
+        ^counters[n].label = "out"
     }
 }
 "#
@@ -387,20 +374,20 @@ pub fn tag(n: int) {
     );
 }
 
-/// Two places over distinct entries, each guarded and set in its own block,
-/// interleaved: the presence fact is keyed to the place it was proven for, so inside
+/// Two references over distinct entries, each guarded and set in its own block,
+/// interleaved: the presence fact is keyed to the reference it was proven for, so inside
 /// `if exists(p)` only a set through `p` is admitted — a set through the co-resident,
 /// unguarded `q` is refused — and the mirror holds inside `if exists(q)`. The two
-/// facts never merge across places, and neither survives past its own block.
+/// facts never merge across references, and neither survives past its own block.
 #[test]
-fn interleaved_guarded_places_keep_independent_presence_facts() {
+fn interleaved_guarded_references_keep_independent_presence_facts() {
     let own = format!(
         "{HEADER}{}",
         r#"
 pub fn tag(a: int, b: int) {
     transaction {
-        place p = ^counters[a]
-        place q = ^counters[b]
+        ref p = ^counters[a] else { unreachable("missing") }
+        ref q = ^counters[b] else { unreachable("missing") }
         if exists(p) {
             p.label = "p-strict"
         }
@@ -415,7 +402,7 @@ pub fn tag(a: int, b: int) {
     assert_eq!(
         count_strict(export_instrs(&image, "tag")),
         2,
-        "each place is written inside its own guard"
+        "each reference is written inside its own guard"
     );
 
     let crossed = format!(
@@ -423,14 +410,10 @@ pub fn tag(a: int, b: int) {
         r#"
 pub fn tag(a: int, b: int) {
     transaction {
-        place p = ^counters[a]
-        place q = ^counters[b]
-        if exists(p) {
-            q.label = "q-unproven"
-        }
-        if exists(q) {
-            p.label = "p-unproven"
-        }
+        ref p = ^counters[a] else { return }
+        ^counters[b].label = "q-unproven"
+        ref q = ^counters[b] else { return }
+        ^counters[a].label = "p-unproven"
     }
 }
 "#
@@ -441,87 +424,86 @@ pub fn tag(a: int, b: int) {
             "check.requires_presence".to_string(),
             "check.requires_presence".to_string()
         ],
-        "one place's fact never covers another"
+        "one reference's fact never covers another"
     );
 }
 
 // --- Scope and type rules. ---
 
-/// A `place` must name a whole durable entry address. A non-durable value, a
-/// field-projected address, another place, and a re-binding of an existing name are
+/// A `ref` must name a whole durable entry address. A non-durable value, a
+/// field-projected address, another reference, and a re-binding of an existing name are
 /// each a typed `check.type` diagnostic.
 #[test]
-fn a_place_must_name_a_whole_durable_entry() {
+fn a_reference_must_name_a_whole_durable_entry() {
     let non_durable = format!(
         "{HEADER}{}",
-        "pub fn f(): int {\n    place p = 5\n    return 0\n}\n"
+        "pub fn f(): int {\n    ref p = 5 else { unreachable(\"missing\") }\n    return 0\n}\n"
     );
     assert!(compile_error_codes(&non_durable).contains(&"check.type".to_string()));
 
     let field = format!(
         "{HEADER}{}",
-        "pub fn f(n: int): int {\n    place p = ^counters[n].value\n    return 0\n}\n"
+        "pub fn f(n: int): int {\n    ref p = ^counters[n].value else { unreachable(\"missing\") }\n    return 0\n}\n"
     );
     assert!(compile_error_codes(&field).contains(&"check.type".to_string()));
 
-    let another_place = format!(
+    let another_reference = format!(
         "{HEADER}{}",
-        "pub fn f(n: int): int {\n    place p = ^counters[n]\n    place q = p\n    return 0\n}\n"
+        "pub fn f(n: int): int {\n    ref p = ^counters[n] else { unreachable(\"missing\") }\n    ref q = p else { unreachable(\"missing\") }\n    return 0\n}\n"
     );
-    assert!(compile_error_codes(&another_place).contains(&"check.type".to_string()));
+    assert!(compile_error_codes(&another_reference).contains(&"check.type".to_string()));
 
     let rebind = format!(
         "{HEADER}{}",
-        "pub fn f(n: int): int {\n    place p = ^counters[n]\n    place p = ^counters[n]\n    return 0\n}\n"
+        "pub fn f(n: int): int {\n    ref p = ^counters[n] else { unreachable(\"missing\") }\n    ref p = ^counters[n] else { unreachable(\"missing\") }\n    return 0\n}\n"
     );
     assert!(compile_error_codes(&rebind).contains(&"check.type".to_string()));
 }
 
-/// A place is a durable designation, not a first-class value: using its bare name in
+/// A reference is a durable designation, not a first-class value: using its bare name in
 /// value position (passing it, returning it) is a typed `check.type` diagnostic,
 /// while `p.field`, `if const`, and `exists` are the read forms.
 #[test]
-fn a_bare_place_name_is_not_a_value() {
+fn a_bare_reference_name_is_not_a_value() {
     let returned = format!(
         "{HEADER}{}",
-        "pub fn f(n: int): int {\n    place p = ^counters[n]\n    return p\n}\n"
+        "pub fn f(n: int): int {\n    ref p = ^counters[n] else { unreachable(\"missing\") }\n    return p\n}\n"
     );
     assert!(compile_error_codes(&returned).contains(&"check.type".to_string()));
 
     let passed = format!(
         "{HEADER}{}",
-        "pub fn f(n: int): int {\n    place p = ^counters[n]\n    return keyOf(p)\n}\n"
+        "pub fn f(n: int): int {\n    ref p = ^counters[n] else { unreachable(\"missing\") }\n    return keyOf(p)\n}\n"
     );
     assert!(compile_error_codes(&passed).contains(&"check.type".to_string()));
 }
 
-/// A place name and a value binding stay distinct: declaring a `const`/`var` that
-/// reuses an in-scope place name is a typed `check.type` diagnostic, so a name
-/// resolves to exactly one of a place or a value.
+/// A reference name and a value binding stay distinct: declaring a `const`/`var` that
+/// reuses an in-scope reference name is a typed `check.type` diagnostic, so a name
+/// resolves to exactly one of a reference or a value.
 #[test]
-fn a_value_binding_cannot_reuse_a_place_name() {
+fn a_value_binding_cannot_reuse_a_reference_name() {
     let shadowed = format!(
         "{HEADER}{}",
-        "pub fn f(n: int): int {\n    place p = ^counters[n]\n    const p = 1\n    return p\n}\n"
+        "pub fn f(n: int): int {\n    ref p = ^counters[n] else { unreachable(\"missing\") }\n    const p = 1\n    return p\n}\n"
     );
     assert!(compile_error_codes(&shadowed).contains(&"check.type".to_string()));
 }
 
-/// Every place operation form compiles and verifies over the executable flat scalar
+/// Every reference operation form compiles and verifies over the executable flat scalar
 /// root, so the image is well-formed and identity-complete (execution is parked in
-/// the trough). One export exercises the whole algebra through a place.
+/// the trough). One export exercises the whole algebra through a reference.
 #[test]
-fn every_place_operation_form_compiles_and_verifies() {
+fn every_reference_operation_form_compiles_and_verifies() {
     let source = format!(
         "{HEADER}{}",
         r#"
 pub fn present(n: int): bool {
-    place p = ^counters[n]
-    return exists(p)
+    return exists(^counters[n])
 }
 
 pub fn titleOrZero(n: int): int {
-    place p = ^counters[n]
+    ref p = ^counters[n] else { unreachable("missing") }
     if const c = p {
         return c.value
     }
@@ -530,8 +512,8 @@ pub fn titleOrZero(n: int): int {
 
 pub fn edit(n: int, v: int) {
     transaction {
-        place p = ^counters[n]
-        p = Counter(value: v)
+        ^counters[n] = Counter(value: v)
+        ref p = ^counters[n] else { unreachable("created entry missing") }
         p.label = "x"
         delete p
     }
@@ -549,7 +531,7 @@ pub fn edit(n: int, v: int) {
 
 // --- Complete entries: a field write updates an entry the compiler has proved present. ---
 //
-// A field write through a place needs a presence fact that no entry erase in the
+// A field write through a reference needs a presence fact that no entry erase in the
 // family — direct, through another binding, or inside a called helper — has ended.
 
 /// `(code, line, column)` of every diagnostic a source that fails to compile carries.
@@ -593,7 +575,7 @@ fn wipe(n: int) {
 
 pub fn provedThenHelperErase(n: int): bool {
     transaction {
-        place p = ^counters[n]
+        ref p = ^counters[n] else { unreachable("missing") }
         if exists(p) {
             wipe(n)
             p.label = "after helper erase"
@@ -616,14 +598,14 @@ pub fn provedThenHelperErase(n: int): bool {
 /// binding spells it: `delete b` erases the entry `a` was proven for, so the sparse set
 /// through `a` is refused at check time.
 #[test]
-fn a_sparse_set_after_an_erase_through_another_place_is_refused_at_check() {
+fn a_sparse_set_after_an_erase_through_another_reference_is_refused_at_check() {
     let source = format!(
         "{HEADER}{}",
         r#"
 pub fn provedThenAliasErase(n: int): bool {
     transaction {
-        place a = ^counters[n]
-        place b = ^counters[n]
+        ref a = ^counters[n] else { unreachable("missing") }
+        ref b = ^counters[n] else { unreachable("missing") }
         if exists(a) {
             delete b
             a.label = "after alias erase"
@@ -667,12 +649,12 @@ pub fn create(n: int, v: int) {
 /// `p.value` reads as `int` inside
 /// `if exists(p)`, while `p.label` stays `string?`.
 #[test]
-fn a_required_field_reads_bare_through_a_place_proven_present() {
+fn a_required_field_reads_bare_through_a_reference_proven_present() {
     let source = format!(
         "{HEADER}{}",
         r#"
 pub fn valueOf(n: int): int {
-    place p = ^counters[n]
+    ref p = ^counters[n] else { unreachable("missing") }
     if exists(p) {
         const v: int = p.value
         const l: string? = p.label
@@ -686,7 +668,7 @@ pub fn valueOf(n: int): int {
     assert_eq!(
         compile_diagnostics(&source),
         Vec::<(String, u32, u32)>::new(),
-        "a required read through a proven place has its declared type"
+        "a required read through a proven reference has its declared type"
     );
     let image = compile_verify(&source);
     assert!(has_function(&image, "valueOf"));
@@ -703,7 +685,7 @@ fn a_field_write_inside_a_loop_that_erases_the_family_is_refused_at_check() {
         r#"
 pub fn writeThenEraseInLoop(n: int): bool {
     transaction {
-        place p = ^counters[n]
+        ref p = ^counters[n] else { unreachable("missing") }
         if exists(p) {
             for k in ^counters at most 10 {
                 p.label = "in loop"
@@ -737,7 +719,7 @@ fn wipe(n: int) {
 
 pub fn writeThenHelperInLoop(n: int): bool {
     transaction {
-        place p = ^counters[n]
+        ref p = ^counters[n] else { unreachable("missing") }
         if exists(p) {
             for k in ^counters at most 10 {
                 p.label = "in loop"
@@ -772,7 +754,7 @@ fn an_inline_erase_of_another_key_in_the_family_is_refused_at_check() {
         r#"
 pub fn eraseNeighbourThenSet(n: int): bool {
     transaction {
-        place p = ^counters[n]
+        ref p = ^counters[n] else { unreachable("missing") }
         if exists(p) {
             delete ^counters[n + 1]
             p.label = "after neighbour erase"
@@ -802,8 +784,7 @@ fn a_negative_diverging_guard_carries_the_fact_into_the_continuation() {
         r#"
 pub fn setLabelIfPresent(n: int): bool {
     transaction {
-        place p = ^counters[n]
-        if not exists(p) {
+        ref p = ^counters[n] else {
             return false
         }
         p.label = "after the guard"
@@ -835,7 +816,7 @@ fn a_durable_field_assigned_absent_is_refused_naming_delete() {
         r#"
 pub fn clearLabel(n: int) {
     transaction {
-        place p = ^counters[n]
+        ref p = ^counters[n] else { unreachable("missing") }
         if exists(p) {
             p.label = absent
         }
@@ -865,7 +846,7 @@ fn peek(n: int): int? {
 
 pub fn peekThenSet(n: int): int {
     transaction {
-        place p = ^counters[n]
+        ref p = ^counters[n] else { unreachable("missing") }
         if exists(p) {
             const seen = peek(n) ?? 0
             p.label = "after peek"
@@ -896,7 +877,7 @@ fn wipe(n: int) {
 
 pub fn wipeThenSet(n: int): int {
     transaction {
-        place p = ^counters[n]
+        ref p = ^counters[n] else { unreachable("missing") }
         if exists(p) {
             wipe(n)
             p.label = "after wipe"
@@ -924,7 +905,7 @@ fn a_field_write_inside_a_while_loop_that_erases_the_family_is_refused_at_check(
         r#"
 pub fn whileErase(n: int): bool {
     transaction {
-        place p = ^counters[n]
+        ref p = ^counters[n] else { unreachable("missing") }
         if exists(p) {
             var i = 0
             while i < 2 {
@@ -961,7 +942,7 @@ fn a_field_write_inside_nested_loops_that_erase_the_family_is_refused_at_check()
         r#"
 pub fn nestedErase(n: int): bool {
     transaction {
-        place p = ^counters[n]
+        ref p = ^counters[n] else { unreachable("missing") }
         if exists(p) {
             for k in ^counters at most 10 {
                 for j in 0..2 {
@@ -998,7 +979,7 @@ fn a_field_write_after_a_loop_that_erases_the_family_is_refused_at_check() {
         r#"
 pub fn eraseAllThenSet(n: int): bool {
     transaction {
-        place p = ^counters[n]
+        ref p = ^counters[n] else { unreachable("missing") }
         if exists(p) {
             for k in ^counters at most 10 {
                 delete ^counters[k]
@@ -1033,18 +1014,17 @@ fn a_non_diverging_negative_guard_does_not_prove_the_continuation() {
         r#"
 pub fn noteThenSet(n: int): int {
     transaction {
-        place p = ^counters[n]
         var missing = 0
-        if not exists(p) {
+        if not exists(^counters[n]) {
             missing = 1
         }
-        p.label = "unproven"
+        ^counters[n].label = "unproven"
         return missing
     }
 }
 "#
     );
-    let (line, column) = position_of(&source, "p.label = \"unproven\"");
+    let (line, column) = position_of(&source, "^counters[n].label = \"unproven\"");
     assert_eq!(
         compile_diagnostics(&source),
         vec![(REQUIRES_PRESENCE.to_string(), line, column)],
@@ -1061,7 +1041,7 @@ fn a_durable_field_assigned_an_optional_value_is_refused_naming_delete() {
         r#"
 pub fn setMaybe(n: int, flag: bool) {
     transaction {
-        place p = ^counters[n]
+        ref p = ^counters[n] else { unreachable("missing") }
         if exists(p) {
             var maybe: string? = absent
             if flag {
@@ -1091,7 +1071,7 @@ fn a_field_write_inside_a_loop_with_no_erase_stays_accepted() {
         r#"
 pub fn relabelInLoop(n: int): bool {
     transaction {
-        place p = ^counters[n]
+        ref p = ^counters[n] else { unreachable("missing") }
         if exists(p) {
             for k in ^counters at most 10 {
                 p.label = "each visit"
@@ -1113,25 +1093,24 @@ pub fn relabelInLoop(n: int): bool {
     assert_eq!(count_strict(export_instrs(&image, "relabelInLoop")), 1);
 }
 
-/// A fact established inside the loop body — `if exists(pin)` on each iteration — is
+/// A reference bound inside the loop body on each iteration is
 /// never refused by the loop rule, even when the same body erases the family after the
 /// write: the fact was established after the loop was entered, so the back edge cannot
 /// place the erase before the proof.
 #[test]
-fn a_per_iteration_pin_proof_stays_accepted() {
+fn a_per_iteration_reference_proof_stays_accepted() {
     let source = format!(
         "{HEADER}{}",
         r#"
 pub fn relabelThenErase(): int {
     transaction {
         var visited = 0
-        for k, pin in ^counters at most 10 {
-            if exists(pin) {
-                pin.label = "visited"
-                const proved: int = pin.value
-            }
-            const untested: int? = pin.value
-            delete pin
+        for k in ^counters at most 10 {
+            ref entry = ^counters[k] else { continue }
+            entry.label = "visited"
+            const proved: int = entry.value
+            const untested: int? = ^counters[k].value
+            delete entry
             visited += 1
         } on more {
         }

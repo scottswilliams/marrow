@@ -185,9 +185,9 @@ struct Graph {
 
 // Harvest the whole durable graph into a local working set with a nested bounded
 // traversal: the outer walk visits every node in ascending name order, and the inner
-// walk visits each node's out-edges. Presence-typed reads through the per-iteration
-// pins (`node.label`, `node.color`, `edge.weight`) resolve with `??`/`if const`. The
-// `on more` arms record whether either layer held more keys than the bound froze.
+// walk visits each node's out-edges. Optional reads use the current key and
+// resolve with `??`/`if const`. The `on more` arms record whether either layer
+// held more keys than the bound froze.
 fn harvest(): Graph {
     var nodes: Map<string, bool> = Map()
     var labels: Map<string, string> = Map()
@@ -197,15 +197,15 @@ fn harvest(): Graph {
     var edges: List<Edge> = List()
     var overflow: bool = false
 
-    for name, node in ^nodes at most 1000 {
+    for name in ^nodes at most 1000 {
         nodes[name] = true
-        labels[name] = node.label ?? name
-        if const c = node.color {
+        labels[name] = ^nodes[name].label ?? name
+        if const c = ^nodes[name].color {
             colors[name] = c
         }
-        for dst, edge in node.edges at most 1000 {
+        for dst in ^nodes[name].edges at most 1000 {
             nodes[dst] = true
-            const weight = edge.weight ?? 0
+            const weight = ^nodes[name].edges[dst].weight ?? 0
             edges = append(edges, Edge(src: name, dst: dst, weight: weight))
             outDeg[name] = getOr(outDeg, name, 0) + 1
             inDeg[dst] = getOr(inDeg, dst, 0) + 1
@@ -359,24 +359,23 @@ pub fn removeEdge(src: string, dst: string) {
     }
 }
 
-// Set a node's color through a guarded place: the color lands only when the node
-// already exists, and the write is statically known to update a present entry.
+// Set a node's color through a checked entry reference: the color lands only when
+// the node already exists, and the write updates a present entry.
 pub fn setColor(name: string, color: string) {
     transaction {
-        place n = ^nodes[name]
-        if exists(n) {
-            n.color = color
+        ref n = ^nodes[name] else {
+            return
         }
+        n.color = color
     }
 }
 
-// Set a node's color behind a diverging guard: the negative presence test returns
+// Set a node's color behind a checked reference: the absence branch returns
 // before any write, so an absent node is left absent and a present node takes the
 // color exactly as `setColor` lands it.
 pub fn tint(name: string, color: string) {
     transaction {
-        place n = ^nodes[name]
-        if not exists(n) {
+        ref n = ^nodes[name] else {
             return
         }
         n.color = color

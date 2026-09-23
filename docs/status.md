@@ -24,7 +24,7 @@ features are not prerequisites.
 | Language core | Modules, functions, generics, `const` and `var`, `if` and `if const`, `match`, `while`, bounded `for`, let-else, `require`, prefix `try`, checked arithmetic, and `test` blocks. Braces delimit blocks. | [Source and syntax](language/source-and-syntax.md), [Control flow](language/control-flow.md) |
 | Values and types | Scalars, `date`, `instant`, `duration`, optionals `T?`, structs, enums whose member payload fields carry a scalar, a nominal int, a struct, another enum, or a generic application of one of those, `Option` and `Result`, lists and maps, global name/optional-name aliases and nominal ints, generic types. Every value copies by value. | [Types and values](language/types-and-values.md) |
 | Resources | Required and sparse fields, groups, keyed branches nested to 16 levels, and local resource values. | [Resources](language/resources.md) |
-| Durable places | Keyed store roots with one or several key components, and several roots per project. Whole-entry creation and replacement, so a present entry is complete; field and group writes through a `place` or pin that a presence proof covers (`check.requires_presence` otherwise), including a successful `require exists(p)` guard, with proofs ended by an erase of the family or a call that erases it; required field and group-leaf reads through a proved place have their declared types; sparse and untested reads are optional; `delete` as the one clearing form; `exists`; entry identity `Id(^root)`; and each export's access demand from `marrow check`. | [Durable places](language/durable-places.md) |
+| Durable data | Keyed store roots with one or several key components, and several roots per project. Whole-entry creation and replacement, so a present entry is complete. Checked entry references, `ref name = ^root[key] else { … }`, capture keys once and handle absence before field or group access; required fields and group leaves read with their declared types, and sparse reads stay optional. Erasing the family, directly or through a call, ends its presence proofs (`check.requires_presence` on a later protected access). Direct paths support optional reads and whole-entry writes. `delete`; `exists`; entry identity `Id(^root)`; key-only bounded durable traversal; and each export's access demand from `marrow check`. | [Durable data](language/durable-data.md) |
 | Transactions | One `transaction` block per mutating export. Every normal function exit inside it commits, including `try` and `require` failure; a fault before commit rolls the block back. | [Errors and transactions](language/errors-and-transactions.md) |
 | Traversal and indexes | `for ... at most N { } on more { }` over a root, a branch, or an index; root and branch key acquisition uses at most `N + 1` bounded scans, independent of child populations; up to 8 indexes per root; a `unique` index lookup yields `Id(^root)?`. | [Traversal and indexes](language/traversal-and-indexes.md) |
 | Tests | `marrow test` runs `test` blocks through ordinary function calls. Each durable test has a fresh in-memory store; transaction-owning calls commit setup, and private readers can observe it. Direct durable operations and calls to mutating non-owner helpers are refused in test bodies. | [Tests](language/tests.md) |
@@ -93,7 +93,7 @@ missing or cyclic bodies and their callers; an unfilled function slot cannot enc
   compilation reports `check.unsupported`. Guarded bare nominal inputs and local
   composition remain supported ([nominal ints](language/types-and-values.md#aliases-and-nominal-ints)).
 - Operations over a singleton root and over a group inside a branch; each declares and checks
-  today ([durable places](language/durable-places.md)). A group inside another
+  today ([durable paths](language/durable-data.md)). A group inside another
   group is `check.unsupported` at its declaration
   ([resources](language/resources.md)).
 - A keyed scalar leaf such as `tags[pos: int]: string`; a branch holds scalar
@@ -106,15 +106,14 @@ missing or cyclic bodies and their callers; an unfilled function slot cannot enc
   accepts sparse scalar fields with separately accepted authority expansion
   ([admission and activation](future/admission-and-activation.md)).
 - Complete subtree enumeration and removal when absent ancestors' keys are
-  unknown ([deleting](language/durable-places.md#deleting)).
+  unknown ([deleting](language/durable-data.md#deleting)).
 - Read-only physical-checksum verification by `marrow doctor`. Explicit recovery
   uses a read-write physical integrity check and exact-image logical validation;
   a logical audit alone does not establish those properties
   ([auditing a store](operations/README.md#auditing-a-store)).
-- Bare whole-entry/group reads through a proved place and automatic traversal-pin
-  presence facts carried by region. Today required fields and group leaves read bare
-  through an explicit proof, and a pin is proved inside its own iteration
-  ([durable programming](future/durable-programming.md)).
+- Bare whole-entry/group reads through a checked entry reference. Required
+  fields and group leaves already read with their declared types; whole values
+  remain optional ([durable programming](future/durable-programming.md)).
 - Local reader/writer overlap and served execution with several terminals and
   public paths. The selected one-store model keeps mutating invocations serial
   ([served execution](future/served-execution.md)).

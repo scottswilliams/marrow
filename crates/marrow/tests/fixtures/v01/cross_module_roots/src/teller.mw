@@ -5,9 +5,8 @@ module teller
 /// test: `teller` both reads and writes a root it does not declare.
 pub fn deposit(id: int, amount: int): int {
     transaction {
-        place account = ^accounts[id]
-        const updated = (account.balance ?? 0) + amount
-        account = Account(balance: updated)
+        const updated = (^accounts[id].balance ?? 0) + amount
+        ^accounts[id] = Account(balance: updated)
         return updated
     }
 }

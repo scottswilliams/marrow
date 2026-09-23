@@ -1,11 +1,11 @@
-//! A named `place`/pin composes as a base for group-leaf and branch-entry operations
+//! An entry reference composes as a base for group-leaf and branch-entry operations
 //! wherever the equivalent inline `^root…` path is admitted.
 //!
 //! These tests drive the whole production path
 //! (capture -> compile -> verify -> attach -> VM) and prove parity with the inline form by
-//! cross-reading: a write performed through a place is observed through the inline address
-//! and the reverse, so the place-composed operation seals the *same* durable node — the
-//! same operation site — the inline address does. A place bound over a branch entry is
+//! cross-reading: a write performed through a reference is observed through the inline address
+//! and the reverse, so the reference-composed operation seals the *same* durable node — the
+//! same operation site — the inline address does. A reference bound over a branch entry is
 //! itself a base for a deeper branch.
 
 use marrow_verify::{SealedExport, SealedInstr, VerifiedImage};
@@ -61,11 +61,11 @@ pub fn putBook(id: int, t: string) {
     }
 }
 
-// --- branch entry: whole-entry write through a place, read inline ---
+// --- branch entry: whole-entry write through a reference, read inline ---
 
-pub fn addNoteViaPlace(id: int, nid: string, t: string) {
+pub fn addNoteViaReference(id: int, nid: string, t: string) {
     transaction {
-        place b = ^books[id]
+        ref b = ^books[id] else { return }
         b.notes[nid] = Book.notes(text: t)
     }
 }
@@ -74,7 +74,7 @@ pub fn noteTextInline(id: int, nid: string): string? {
     return ^books[id].notes[nid].text
 }
 
-// --- branch entry: whole-entry write inline, read through a place ---
+// --- branch entry: whole-entry write inline, read through a reference ---
 
 pub fn addNoteInline(id: int, nid: string, t: string) {
     transaction {
@@ -82,17 +82,16 @@ pub fn addNoteInline(id: int, nid: string, t: string) {
     }
 }
 
-pub fn noteTextViaPlace(id: int, nid: string): string? {
-    place b = ^books[id]
+pub fn noteTextViaReference(id: int, nid: string): string? {
+    ref b = ^books[id] else { return absent }
     return b.notes[nid].text
 }
 
-// --- branch field set through a branch place proven by `const … else`, read inline ---
+// --- branch field set through a branch reference proven by `const … else`, read inline ---
 
-pub fn setPinnedViaPlace(id: int, nid: string, v: bool) {
+pub fn setPinnedViaReference(id: int, nid: string, v: bool) {
     transaction {
-        place n = ^books[id].notes[nid]
-        const note = n else {
+        ref n = ^books[id].notes[nid] else {
             return
         }
         n.pinned = v
@@ -103,30 +102,30 @@ pub fn pinnedInline(id: int, nid: string): bool? {
     return ^books[id].notes[nid].pinned
 }
 
-// --- whole branch entry read through a place with `if const` ---
+// --- whole branch entry read through a reference with `if const` ---
 
-pub fn noteTextGuardedViaPlace(id: int, nid: string): string {
-    place b = ^books[id]
+pub fn noteTextGuardedViaReference(id: int, nid: string): string {
+    ref b = ^books[id] else { return "none" }
     if const note = b.notes[nid] {
         return note.text
     }
     return "none"
 }
 
-// --- branch entry deleted through a place ---
+// --- branch entry deleted through a reference ---
 
-pub fn deleteNoteViaPlace(id: int, nid: string) {
+pub fn deleteNoteViaReference(id: int, nid: string) {
     transaction {
-        place b = ^books[id]
+        ref b = ^books[id] else { return }
         delete b.notes[nid]
     }
 }
 
-// --- a place over a branch entry is a base for a deeper branch ---
+// --- a reference over a branch entry is a base for a deeper branch ---
 
-pub fn addTagViaBranchPlace(id: int, nid: string, tid: int, w: int) {
+pub fn addTagViaBranchReference(id: int, nid: string, tid: int, w: int) {
     transaction {
-        place note = ^books[id].notes[nid]
+        ref note = ^books[id].notes[nid] else { return }
         note.tags[tid] = Book.notes.tags(weight: w)
     }
 }
@@ -135,11 +134,11 @@ pub fn tagWeightInline(id: int, nid: string, tid: int): int? {
     return ^books[id].notes[nid].tags[tid].weight
 }
 
-// --- group leaf: set through a place proven by `exists`, read inline ---
+// --- group leaf: set through a reference proven by `exists`, read inline ---
 
-pub fn setPagesViaPlace(id: int, p: int) {
+pub fn setPagesViaReference(id: int, p: int) {
     transaction {
-        place b = ^books[id]
+        ref b = ^books[id] else { return }
         if exists(b) {
             b.details.pages = p
         }
@@ -150,27 +149,26 @@ pub fn pagesInline(id: int): int? {
     return ^books[id].details.pages
 }
 
-// --- group leaf: set after a diverging `if not exists` guard, read through a place ---
+// --- group leaf: set after a diverging `if not exists` guard, read through a reference ---
 
 pub fn setPagesGuardedByReturn(id: int, p: int) {
     transaction {
-        place b = ^books[id]
-        if not exists(b) {
+        ref b = ^books[id] else {
             return
         }
         b.details.pages = p
     }
 }
 
-pub fn pagesViaPlace(id: int): int? {
-    place b = ^books[id]
+pub fn pagesViaReference(id: int): int? {
+    ref b = ^books[id] else { return absent }
     return b.details.pages
 }
 
-// --- whole group read through a place with `if const` ---
+// --- whole group read through a reference with `if const` ---
 
-pub fn pagesGuardedViaPlace(id: int): int {
-    place b = ^books[id]
+pub fn pagesGuardedViaReference(id: int): int {
+    ref b = ^books[id] else { return 0 }
     if const d = b.details {
         if const p = d.pages {
             return p
@@ -179,30 +177,30 @@ pub fn pagesGuardedViaPlace(id: int): int {
     return -1
 }
 
-// --- group leaf cleared through a place ---
+// --- group leaf cleared through a reference ---
 
-pub fn clearPagesViaPlace(id: int) {
+pub fn clearPagesViaReference(id: int) {
     transaction {
-        place b = ^books[id]
+        ref b = ^books[id] else { return }
         delete b.details.pages
     }
 }
 
-// --- whole group replaced through a place ---
+// --- whole group replaced through a reference ---
 
-pub fn replaceDetailsViaPlace(id: int, p: int) {
+pub fn replaceDetailsViaReference(id: int, p: int) {
     transaction {
-        place b = ^books[id]
+        ref b = ^books[id] else { return }
         if exists(b) {
             b.details = Book.details(pages: p)
         }
     }
 }
 
-// --- exists over a branch family named through a place ---
+// --- exists over a branch family named through a reference ---
 
-pub fn hasNotesViaPlace(id: int): bool {
-    place b = ^books[id]
+pub fn hasNotesViaReference(id: int): bool {
+    ref b = ^books[id] else { return false }
     return exists(b.notes)
 }
 
@@ -210,11 +208,12 @@ pub fn hasNotesInline(id: int): bool {
     return exists(^books[id].notes)
 }
 
-// --- a per-iteration pin's presence participates in the presence lattice ---
+// --- a per-iteration reference's presence participates in the presence lattice ---
 
-pub fn touchNotesPinExists(id: int) {
+pub fn touchNotesReferenceExists(id: int) {
     transaction {
-        for nid, p in ^books[id].notes at most 10 {
+        for nid in ^books[id].notes at most 10 {
+            ref p = ^books[id].notes[nid] else { continue }
             if exists(p) {
                 p.pinned = true
             }
@@ -222,9 +221,10 @@ pub fn touchNotesPinExists(id: int) {
     }
 }
 
-pub fn touchNotesPinConst(id: int) {
+pub fn touchNotesReferenceConst(id: int) {
     transaction {
-        for nid, p in ^books[id].notes at most 10 {
+        for nid in ^books[id].notes at most 10 {
+            ref p = ^books[id].notes[nid] else { continue }
             if const note = p {
                 p.pinned = true
             }
@@ -232,9 +232,9 @@ pub fn touchNotesPinConst(id: int) {
     }
 }
 
-pub fn setPinnedGuardedViaPlace(id: int, nid: string, v: bool) {
+pub fn setPinnedGuardedViaReference(id: int, nid: string, v: bool) {
     transaction {
-        place b = ^books[id].notes[nid]
+        ref b = ^books[id].notes[nid] else { return }
         if exists(b) {
             b.pinned = v
         }
@@ -309,15 +309,15 @@ fn absent() -> Option<Value> {
 /// A composed access to a name that is neither a field nor a branch is refused with the
 /// same real diagnostic the inline form gives — the branch/field is named, not misreported
 /// as "not in scope" or "not yet supported". This is the "misnames the failure" fix: the
-/// place form and the inline form now share one resolution owner and one message.
+/// reference form and the inline form now share one resolution owner and one message.
 #[test]
-fn a_bad_place_composition_reports_the_inline_diagnostic() {
+fn a_bad_reference_composition_reports_the_inline_diagnostic() {
     let program = |access: &str| -> String {
         format!(
-            "{SOURCE}\npub fn probe(id: int, nid: string): int? {{\n    place b = ^books[id]\n    return {access}\n}}\n"
+            "{SOURCE}\npub fn probe(id: int, nid: string): int? {{\n    ref b = ^books[id] else {{ return absent }}\n    return {access}\n}}\n"
         )
     };
-    // An unknown branch beneath a place names the real situation (a missing keyed branch),
+    // An unknown branch beneath a reference names the real situation (a missing keyed branch),
     // the same message the inline `^books[id].bogus[nid]` form produces.
     let diags = crate::common::Project::new()
         .source("src/main.mw", &program("b.bogus[nid].weight"))
@@ -327,7 +327,7 @@ fn a_bad_place_composition_reports_the_inline_diagnostic() {
     let message = diags.only("check.type").message().to_owned();
     assert!(
         message.contains("bogus") && message.contains("keyed branch"),
-        "the place-composed refusal names the missing branch: {message:?}",
+        "the reference-composed refusal names the missing branch: {message:?}",
     );
 
     // The inline sibling produces the identical message, proving one shared owner.
@@ -344,15 +344,15 @@ fn a_bad_place_composition_reports_the_inline_diagnostic() {
     assert_eq!(
         inline.only("check.type").message(),
         message,
-        "the place and inline forms share one branch-resolution message",
+        "the reference and inline forms share one branch-resolution message",
     );
 }
 
-/// A whole branch entry written through a place is addressed exactly where the inline
-/// form addresses it: an inline read observes the place-written note, and a place read
+/// A whole branch entry written through a reference is addressed exactly where the inline
+/// form addresses it: an inline read observes the reference-written note, and a reference read
 /// observes the inline-written note.
 #[test]
-fn branch_entry_write_through_a_place_addresses_the_inline_node() {
+fn branch_entry_write_through_a_reference_addresses_the_inline_node() {
     let image = compile_verify();
     let mut a = attach(&image);
     run(
@@ -365,7 +365,7 @@ fn branch_entry_write_through_a_place_addresses_the_inline_node() {
     run(
         &image,
         &mut a,
-        "addNoteViaPlace",
+        "addNoteViaReference",
         vec![
             Value::Int(1),
             Value::Text("n1".into()),
@@ -396,17 +396,17 @@ fn branch_entry_write_through_a_place_addresses_the_inline_node() {
         run(
             &image,
             &mut a,
-            "noteTextViaPlace",
+            "noteTextViaReference",
             vec![Value::Int(1), Value::Text("n2".into())]
         ),
         some_text("world"),
     );
 }
 
-/// A branch-field set through a branch place proven by `const note = n else { return }` and
-/// a guarded whole-entry read through a place hit the inline node.
+/// A branch-field set through a checked branch reference and
+/// a guarded whole-entry read through a reference hit the inline node.
 #[test]
-fn branch_field_and_guarded_read_through_a_place_match_inline() {
+fn branch_field_and_guarded_read_through_a_reference_match_inline() {
     let image = compile_verify();
     let mut a = attach(&image);
     run(
@@ -429,7 +429,7 @@ fn branch_field_and_guarded_read_through_a_place_match_inline() {
     run(
         &image,
         &mut a,
-        "setPinnedViaPlace",
+        "setPinnedViaReference",
         vec![Value::Int(1), Value::Text("n1".into()), Value::Bool(true)],
     );
     assert_eq!(
@@ -445,7 +445,7 @@ fn branch_field_and_guarded_read_through_a_place_match_inline() {
         run(
             &image,
             &mut a,
-            "noteTextGuardedViaPlace",
+            "noteTextGuardedViaReference",
             vec![Value::Int(1), Value::Text("n1".into())]
         ),
         Some(Value::Text("hi".into())),
@@ -454,17 +454,17 @@ fn branch_field_and_guarded_read_through_a_place_match_inline() {
         run(
             &image,
             &mut a,
-            "noteTextGuardedViaPlace",
+            "noteTextGuardedViaReference",
             vec![Value::Int(1), Value::Text("absent".into())]
         ),
         Some(Value::Text("none".into())),
     );
 }
 
-/// A place bound over a branch entry composes a deeper branch: the tag written through
-/// the branch place is read at the inline four-level address.
+/// A reference bound over a branch entry composes a deeper branch: the tag written through
+/// the branch reference is read at the inline four-level address.
 #[test]
-fn a_branch_place_composes_a_deeper_branch() {
+fn a_branch_reference_composes_a_deeper_branch() {
     let image = compile_verify();
     let mut a = attach(&image);
     run(
@@ -486,7 +486,7 @@ fn a_branch_place_composes_a_deeper_branch() {
     run(
         &image,
         &mut a,
-        "addTagViaBranchPlace",
+        "addTagViaBranchReference",
         vec![
             Value::Int(1),
             Value::Text("n1".into()),
@@ -505,9 +505,9 @@ fn a_branch_place_composes_a_deeper_branch() {
     );
 }
 
-/// A branch entry deleted through a place is gone at its inline address.
+/// A branch entry deleted through a reference is gone at its inline address.
 #[test]
-fn a_branch_entry_deleted_through_a_place_is_gone_inline() {
+fn a_branch_entry_deleted_through_a_reference_is_gone_inline() {
     let image = compile_verify();
     let mut a = attach(&image);
     run(
@@ -529,7 +529,7 @@ fn a_branch_entry_deleted_through_a_place_is_gone_inline() {
     run(
         &image,
         &mut a,
-        "deleteNoteViaPlace",
+        "deleteNoteViaReference",
         vec![Value::Int(1), Value::Text("n1".into())],
     );
     assert_eq!(
@@ -543,11 +543,11 @@ fn a_branch_entry_deleted_through_a_place_is_gone_inline() {
     );
 }
 
-/// A group leaf set, read, cleared, and whole-group replaced through a place all address
+/// A group leaf set, read, cleared, and whole-group replaced through a reference all address
 /// the same group cells the inline read form does. The sets are proven by `exists(b)` and
 /// by a diverging `if not exists(b) { return }` guard.
 #[test]
-fn group_leaf_operations_through_a_place_match_inline() {
+fn group_leaf_operations_through_a_reference_match_inline() {
     let image = compile_verify();
     let mut a = attach(&image);
     run(
@@ -560,7 +560,7 @@ fn group_leaf_operations_through_a_place_match_inline() {
     run(
         &image,
         &mut a,
-        "setPagesViaPlace",
+        "setPagesViaReference",
         vec![Value::Int(1), Value::Int(42)],
     );
     assert_eq!(
@@ -575,15 +575,25 @@ fn group_leaf_operations_through_a_place_match_inline() {
         vec![Value::Int(1), Value::Int(7)],
     );
     assert_eq!(
-        run(&image, &mut a, "pagesViaPlace", vec![Value::Int(1)]),
+        run(&image, &mut a, "pagesViaReference", vec![Value::Int(1)]),
         some_int(7)
     );
     assert_eq!(
-        run(&image, &mut a, "pagesGuardedViaPlace", vec![Value::Int(1)]),
+        run(
+            &image,
+            &mut a,
+            "pagesGuardedViaReference",
+            vec![Value::Int(1)]
+        ),
         Some(Value::Int(7))
     );
 
-    run(&image, &mut a, "clearPagesViaPlace", vec![Value::Int(1)]);
+    run(
+        &image,
+        &mut a,
+        "clearPagesViaReference",
+        vec![Value::Int(1)],
+    );
     assert_eq!(
         run(&image, &mut a, "pagesInline", vec![Value::Int(1)]),
         absent()
@@ -592,7 +602,7 @@ fn group_leaf_operations_through_a_place_match_inline() {
     run(
         &image,
         &mut a,
-        "replaceDetailsViaPlace",
+        "replaceDetailsViaReference",
         vec![Value::Int(1), Value::Int(9)],
     );
     assert_eq!(
@@ -601,11 +611,11 @@ fn group_leaf_operations_through_a_place_match_inline() {
     );
 }
 
-/// `exists(place.branch)` is the family-populated probe, not a missing-field error: it
-/// answers whether the branch family beneath the place-addressed entry has any child,
+/// `exists(reference.branch)` is the family-populated probe, not a missing-field error: it
+/// answers whether the branch family beneath the reference-addressed entry has any child,
 /// matching the inline `exists(^root[key].branch)` form and its `DurFamilyExists` site.
 #[test]
-fn exists_over_a_branch_family_named_through_a_place_matches_inline() {
+fn exists_over_a_branch_family_named_through_a_reference_matches_inline() {
     let image = compile_verify();
     let mut a = attach(&image);
     run(
@@ -616,7 +626,7 @@ fn exists_over_a_branch_family_named_through_a_place_matches_inline() {
     );
 
     assert_eq!(
-        run(&image, &mut a, "hasNotesViaPlace", vec![Value::Int(1)]),
+        run(&image, &mut a, "hasNotesViaReference", vec![Value::Int(1)]),
         Some(Value::Bool(false))
     );
     assert_eq!(
@@ -635,7 +645,7 @@ fn exists_over_a_branch_family_named_through_a_place_matches_inline() {
         ],
     );
     assert_eq!(
-        run(&image, &mut a, "hasNotesViaPlace", vec![Value::Int(1)]),
+        run(&image, &mut a, "hasNotesViaReference", vec![Value::Int(1)]),
         Some(Value::Bool(true))
     );
     assert_eq!(
@@ -655,19 +665,19 @@ fn exists_over_a_branch_family_named_through_a_place_matches_inline() {
             .count()
     };
     assert_eq!(
-        family_sites("hasNotesViaPlace"),
+        family_sites("hasNotesViaReference"),
         1,
-        "the place-base exists lowers to the family-populated probe, not a cell probe",
+        "the reference-base exists lowers to the family-populated probe, not a cell probe",
     );
     assert_eq!(family_sites("hasNotesInline"), 1);
 }
 
-/// A per-iteration pin's presence participates in the presence lattice exactly where the
-/// equivalent branch `place` binding's does: a field set guarded by `exists(p)` or by an
-/// `if const` binding of the pin lowers to the present-entry form (`DurSetField`). This
-/// pins that parity, so a regression is conspicuous.
+/// A per-iteration reference's presence participates in the presence lattice exactly where the
+/// equivalent branch `reference` binding's does: a field set guarded by `exists(p)` or by an
+/// `if const` binding of the reference lowers to the present-entry form (`DurSetField`). This
+/// binds that parity, so a regression is conspicuous.
 #[test]
-fn a_pin_guarded_sparse_set_lowers_strict_at_parity_with_a_place() {
+fn a_reference_guarded_sparse_set_lowers_strict_at_parity_with_a_reference() {
     let image = compile_verify();
     let strict = |name: &str| -> usize {
         image
@@ -681,9 +691,9 @@ fn a_pin_guarded_sparse_set_lowers_strict_at_parity_with_a_place() {
             .count()
     };
     for name in [
-        "touchNotesPinExists",
-        "touchNotesPinConst",
-        "setPinnedGuardedViaPlace",
+        "touchNotesReferenceExists",
+        "touchNotesReferenceConst",
+        "setPinnedGuardedViaReference",
     ] {
         assert_eq!(
             strict(name),
@@ -693,11 +703,11 @@ fn a_pin_guarded_sparse_set_lowers_strict_at_parity_with_a_place() {
     }
 }
 
-/// The place-composed and inline forms of one operation seal the identical durable site:
+/// The reference-composed and inline forms of one operation seal the identical durable site:
 /// the whole-entry branch write lowers to the same `DurCreateEntry`/`DurReplaceEntry`
-/// site set whether the parent is a place or an inline address.
+/// site set whether the parent is a reference or an inline address.
 #[test]
-fn place_composed_and_inline_branch_writes_seal_the_same_site() {
+fn reference_composed_and_inline_branch_writes_seal_the_same_site() {
     let image = compile_verify();
     let sites = |name: &str| -> Vec<u16> {
         image
@@ -715,14 +725,14 @@ fn place_composed_and_inline_branch_writes_seal_the_same_site() {
             })
             .collect()
     };
-    let via_place = sites("addNoteViaPlace");
+    let via_reference = sites("addNoteViaReference");
     let inline = sites("addNoteInline");
     assert!(
         !inline.is_empty(),
         "the inline branch write emits entry sites"
     );
     assert_eq!(
-        via_place, inline,
-        "the place-composed branch write seals the same durable node site as the inline form",
+        via_reference, inline,
+        "the reference-composed branch write seals the same durable node site as the inline form",
     );
 }

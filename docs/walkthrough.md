@@ -33,8 +33,7 @@ pub fn add(id: int, title: string, shelf: string, at: instant): bool {
         if exists(^books[id]) {
             return false
         }
-        place catalogued = ^tallies["catalogued"]
-        catalogued = Tally(count: (catalogued.count ?? 0) + 1)
+        ^tallies["catalogued"] = Tally(count: (^tallies["catalogued"].count ?? 0) + 1)
         ^books[id] = Book(title: title, shelf: shelf)
         ^books[id].notes[1] = Book.notes(text: "catalogued", at: at)
     }
@@ -47,15 +46,16 @@ pub fn catalogued(): int {
 
 pub fn noteCount(): int {
     var total = 0
-    for id, book in ^books at most 4096 {
-        if exists(book) {
-            for seq, entry in ^books[id].notes at most 4096 {
-                if const note = entry {
-                    total += 1
-                }
-            } on more {
-                return -1
+    for id in ^books at most 4096 {
+        ref book = ^books[id] else {
+            continue
+        }
+        for seq in book.notes at most 4096 {
+            if exists(^books[id].notes[seq]) {
+                total += 1
             }
+        } on more {
+            return -1
         }
     } on more {
         return -1
@@ -98,7 +98,7 @@ defines the commit and return rules.
 outer and inner loops each state an independent bound and handle `on more`; this
 example returns `-1` when either walk has more entries. [Bounded durable
 traversal](language/traversal-and-indexes.md#bounded-durable-traversal) defines
-the ordering, pins, bounds, and continuation form.
+the ordering, entry references, bounds, and continuation form.
 
 `countOnShelf` walks the `byShelf` index instead of the whole root. Each result
 is a root-local book identity, which addresses the corresponding `^books`
@@ -107,7 +107,7 @@ defines index lookup and traversal.
 
 ## Reference rules
 
-- [Durable places](language/durable-places.md) defines roots, reads, presence
+- [Durable data](language/durable-data.md) defines roots, reads, presence
   proofs, writes, replacement, and deletion.
 - [Traversal and indexes](language/traversal-and-indexes.md) defines bounded
   root, branch, and index walks.

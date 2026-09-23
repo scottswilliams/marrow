@@ -249,7 +249,8 @@ pub fn noteState(id: int): string {
 
 pub fn shelveAll(s: string) {
     transaction {
-        for vid, visit in ^books at most 100 {
+        for vid in ^books at most 100 {
+            ref visit = ^books[vid] else { continue }
             if const book = visit {
                 visit.shelf = s
             }
@@ -259,7 +260,8 @@ pub fn shelveAll(s: string) {
 
 pub fn shelveIfPresent(s: string) {
     transaction {
-        for vid, visit in ^books at most 100 {
+        for vid in ^books at most 100 {
+            ref visit = ^books[vid] else { continue }
             if exists(visit) {
                 visit.shelf = s
             }
@@ -413,7 +415,7 @@ fn family_populated_exists_answers_whether_a_family_has_a_child() {
 }
 
 #[test]
-fn a_two_binding_traversal_pins_each_entry_as_a_writable_address() {
+fn a_key_only_traversal_binds_each_entry_as_a_checked_reference() {
     let mut session = Project::single(SOURCE).ids(IDS).session();
     seed_books(&mut session);
 
@@ -423,23 +425,22 @@ fn a_two_binding_traversal_pins_each_entry_as_a_writable_address() {
         Some(Value::Text("unshelved".into()))
     );
 
-    // `for vid, visit in ^books { if const book = visit { visit.shelf = s } }`: the second
-    // binding pins each frozen entry as a place; the per-iteration `if const` proves the pin
-    // present, and the write lands on that entry's field.
+    // Each frozen key is bound to a checked reference inside the loop body;
+    // the write lands on that entry's field.
     session.call("shelveAll", vec![Value::Text("A".into())]);
     for id in [1i64, 2, 3] {
         assert_eq!(
             session.call("shelfOf", vec![Value::Int(id)]),
             Some(Value::Text("A".into())),
-            "book {id} was shelved through its per-iteration address pin",
+            "book {id} was shelved through its per-iteration address reference",
         );
     }
 }
 
 #[test]
-fn an_exists_guarded_write_through_the_pin_is_admitted_and_scoped() {
+fn an_exists_guarded_write_through_the_reference_is_admitted_and_scoped() {
     // `if exists(visit) { visit.shelf = s }`: the guard proves the pinned entry present,
-    // dominating a strict present-entry set through the place. The guard is scoped to the
+    // dominating a strict present-entry set through the reference. The guard is scoped to the
     // iteration — the key rebind at the next iteration kills the fact — so the loop
     // compiles, verifies, and runs.
     let mut session = Project::single(SOURCE).ids(IDS).session();

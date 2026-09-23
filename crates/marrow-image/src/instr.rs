@@ -422,7 +422,7 @@ pub enum Instruction<R: Operands> {
     /// no immediate child key: it is the family-populated probe, not a keyed presence.
     DurFamilyExists(R::Site),
     DurReadField(R::Site),
-    /// `→ T`: read a required field through captured place slots. The verifier
+    /// `→ T`: read a required field through captured captured address slots. The verifier
     /// proves its containing entry present; a missing value faults as corruption.
     DurReadFieldPresent {
         site: R::Site,
@@ -433,8 +433,8 @@ pub enum Instruction<R: Operands> {
     /// the containing entry's key-path from local slots `key_slots` (root-first, one
     /// slot per key column of every node from the root down to the field's containing
     /// entry) and asserting that entry is present. The one field-set form: emitted only
-    /// for a set through a `place` binding a presence fact dominates, so the key-path is
-    /// the place's pre-evaluated slots rather than a stack operand. The compiler proves
+    /// for a set through a reference binding a presence fact dominates, so the key-path is
+    /// the reference's pre-evaluated slots rather than a stack operand. The compiler proves
     /// the entry present; the runtime faults `run.corruption` if the marker is absent
     /// (defense in depth over the trust boundary). A field is cleared only by
     /// [`Instr::DurEraseField`].
@@ -453,7 +453,7 @@ pub enum Instruction<R: Operands> {
     /// `→ Rec`: read the whole materialized value of the unkeyed `group` the
     /// `GroupEntry` site names, as a bare record, reading the containing entry's
     /// key-path from local slots `key_slots` (root-first) and asserting that entry is
-    /// present. The read half of a group-leaf rewrite through a proven place; the
+    /// present. The read half of a group-leaf rewrite through a checked reference; the
     /// runtime faults `run.corruption` if the marker is absent.
     DurReadGroupPresent {
         site: R::Site,
@@ -563,13 +563,13 @@ pub enum Instruction<R: Operands> {
 /// check both read it, so neither can classify an opcode differently from the other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpClass {
-    /// Stages a durable mutation over a `^` place: a field write, an entry or group
+    /// Stages a durable mutation over a `^` path: a field write, an entry or group
     /// create, replace, or erase.
     DurableMutation,
-    /// Reads a `^` place without changing it: a value read, a presence probe, a bounded
+    /// Reads a `^` path without changing it: a value read, a presence probe, a bounded
     /// traversal, or a managed-index access.
     DurableRead,
-    /// Names no `^` place. Transaction markers and `Duration*` arithmetic are here.
+    /// Names no `^` path. Transaction markers and `Duration*` arithmetic are here.
     Pure,
 }
 
@@ -601,7 +601,7 @@ const fn durable(opcode: u8, operand_len: usize, class: OperationClass) -> OpSpe
 impl<R: Operands> Instruction<R> {
     /// The one per-opcode table: the opcode byte, the immediate-operand width, and the
     /// durable authority atom the instruction stages — `None` for an instruction naming
-    /// no `^` place, the transaction markers included.
+    /// no `^` path, the transaction markers included.
     ///
     /// The durable arms are the closed projection of the durable operation algebra onto
     /// authority atoms: `create`, `replace` and the field set are writes; the erases are
@@ -759,7 +759,7 @@ impl<R: Operands> Instruction<R> {
     }
 
     /// The durable authority atom this instruction stages, or `None` when it names no
-    /// `^` place.
+    /// `^` path.
     pub fn operation_class(&self) -> Option<OperationClass> {
         self.spec().class
     }

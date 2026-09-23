@@ -15,7 +15,7 @@ fn condition(flag: bool): bool { return flag }
 fn noop(value: int): int { return value }
 pub fn write(id: int, flag: bool) {
     transaction {
-        place p = ^r[id]
+        ref p = ^r[id] else { return }
         if exists(p) {
             erase(id)
             while condition(flag) {

@@ -77,7 +77,7 @@ pub(crate) fn file_ceiling(prefix: &[u8; ARTIFACT_PREFIX_BYTES]) -> Result<u64, 
 /// standing maximum recorded once at provision ([`LogicalHead::accepted_ceiling`]) and
 /// enforced atom-granularly at attach: an image whose demand fits within the accepted
 /// ceiling is admitted (even when its demand is narrower than a prior image's), and an image
-/// whose demand exceeds it is refused naming the exceeding place and effect. So a demand
+/// whose demand exceeds it is refused naming the exceeding path and effect. So a demand
 /// change within the ceiling is not a contract change, and a demand change beyond it is a
 /// distinct, more actionable refusal than "the binding differs".
 ///

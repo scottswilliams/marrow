@@ -524,7 +524,7 @@ enum ImageDigest {
         /// `(title, module, file, line, column)`.
         tests: Vec<(String, String, String, u32, u32)>,
         /// The compiler-owned ledger-id-to-spelling join. Its typed surface is
-        /// `DemandPlaces`; the sentence rendered from those places is what this field
+        /// `DemandPaths`; the sentence rendered from those paths is what this field
         /// pins, and the only golden a derive can churn.
         naming: String,
     },

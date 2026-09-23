@@ -258,8 +258,8 @@ fn the_placeholder_declares_nothing_in_any_declaration_kind() {
         ("a store key", "src/main.mw", format!("{BOOK}store ^books[@: int]: Book\n")),
         ("an index", "src/main.mw", format!("{BOOK}store ^books[id: int]: Book {{\n    index @[id]\n}}\n")),
         ("an index component", "src/main.mw", format!("{BOOK_X}store ^books[id: int]: Book {{\n    index byX[@, id]\n}}\n")),
-        ("a place", "src/main.mw", durable("pub fn f(): int {\n    place @ = ^books[1]\n    return 0\n}\n")),
-        ("a traversal pin", "src/main.mw", durable("pub fn f(): int {\n    for id, @ in ^books at most 1 {\n    } on more {\n    }\n    return 0\n}\n")),
+        ("an entry reference", "src/main.mw", durable("pub fn f(): int {\n    ref @ = ^books[1] else { return 0 }\n    return 0\n}\n")),
+        ("a durable traversal key", "src/main.mw", durable("pub fn f(): int {\n    for @ in ^books at most 1 {\n    } on more {\n    }\n    return 0\n}\n")),
     ];
     for (label, path, template) in cases {
         let at = template.find('@').expect("the placeholder is written once");

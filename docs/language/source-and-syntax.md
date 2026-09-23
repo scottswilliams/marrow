@@ -1,7 +1,7 @@
 # Source and syntax
 
 A Marrow program is UTF-8 text in `.mw` files. Braces delimit blocks, a line
-break ends a statement, and `^` marks a durable place.
+break ends a statement, and `^` marks a durable address.
 
 ## Files and modules
 
@@ -155,9 +155,9 @@ binding. A top-level `const` holds one scalar literal. A local `const` is
 evaluated when control reaches it. Reassigning a `const` is a `check.type`
 error.
 
-Assignment is a statement. The forms are `place = expression` and the compound
+Assignment is a statement. The forms are `target = expression` and the compound
 `+=`, `-=`, `*=`, `/=`, and `%=`. Equality uses `==`; `=` is never equality.
-Only a `var` binding or an assignable member, collection, or durable place
+Only a `var` binding or an assignable member, collection, or durable address
 appears on the left.
 
 ## Expressions and operators
@@ -217,7 +217,7 @@ shelves["fantasy"].count
 ```
 
 Keys are positional: `^grid[a, b]`. An `Id(^books)` may stand directly in
-`^books[id]`. [Durable places](durable-places.md) defines what a durable path
+`^books[id]`. [Durable data](durable-data.md) defines what a durable path
 reads and writes.
 
 ## Declarations and statements
@@ -226,17 +226,18 @@ A file declares `module`, `use`, `const`, `fn` and `pub fn`, `alias`, `type`,
 `struct`, `enum`, `resource`, `store` with its indexes, and `test`. Each form
 is defined by [modules and functions](modules-and-functions.md),
 [types and values](types-and-values.md), [resources](resources.md),
-[durable places](durable-places.md),
+[durable paths](durable-data.md),
 [traversal and indexes](traversal-and-indexes.md), or [tests](tests.md).
 
 A statement is a `const` or `var` binding, an assignment, an expression, `if`
 and `if const`, `while`, `for`, `match`, `break`, `continue`, `return`,
-`require`, prefix `try`, `place`, `transaction`, `delete`, `unset`, and
-`assert`. A binding may take a let-else tail or a `checked` arithmetic form.
+`require`, prefix `try`, `ref`, `transaction`, `delete`, `unset`, and
+`assert`. A `const` or `var` binding may take a let-else tail or a `checked`
+arithmetic form. A `ref` binding always takes a diverging `else` clause.
 The control statements are defined in [control flow](control-flow.md),
 `transaction` and `try` in
-[errors and transactions](errors-and-transactions.md), and `place` and `delete`
-in [durable places](durable-places.md#named-places).
+[errors and transactions](errors-and-transactions.md), and `ref` and `delete`
+in [durable paths](durable-data.md#entry-references).
 
 ## Diagnostics
 

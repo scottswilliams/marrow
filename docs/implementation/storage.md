@@ -188,7 +188,7 @@ and metadata. The walk reports malformed markers, undecodable values, cells
 outside the schema, and orphaned leaves. A missing required field is reported
 when its node closes. A marker with no populated leaves is valid when all the
 entry's fields are sparse. Findings therefore follow deterministic scan and
-node-closure order, rather than sorted place order. Every finding is counted;
+node-closure order, rather than sorted path order. Every finding is counted;
 only the first 256 in that order are retained.
 
 Index correspondence is checked in both directions. Each index cell's source

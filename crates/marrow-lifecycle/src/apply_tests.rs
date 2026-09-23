@@ -147,7 +147,7 @@ fn sparse_apply_refusals_preserve_populated_store_bytes() {
         assert!(
             added
                 .iter()
-                .any(|effect| effect.place.as_deref() == Some("^counters.extra"))
+                .any(|effect| effect.path.as_deref() == Some("^counters.extra"))
         );
         assert_eq!(store_bytes(scratch.store()), before);
     }

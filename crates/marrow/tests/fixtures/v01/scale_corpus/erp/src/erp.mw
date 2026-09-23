@@ -53,10 +53,10 @@ pub fn addItem(sku: string, name: string, category: string, priceCents: int) {
 
 pub fn setBarcode(sku: string, barcode: string) {
     transaction {
-        place item = ^items[sku]
-        if exists(item) {
-            item.barcode = barcode
+        ref item = ^items[sku] else {
+            return
         }
+        item.barcode = barcode
     }
 }
 
@@ -114,9 +114,8 @@ pub fn placeOrder(customer: string, at: instant): Result<int, string> {
         if customer == "" {
             return err("missing customer")
         }
-        place seq = ^idseq["order"]
-        const next = (seq.value ?? 0) + 1
-        seq = Counter(value: next)
+        const next = (^idseq["order"].value ?? 0) + 1
+        ^idseq["order"] = Counter(value: next)
         ^orders[next] = Order(customer: customer, placedAt: at)
         return ok(next)
     }
@@ -140,9 +139,8 @@ pub fn addLine(orderId: int, lineNo: int, sku: string, qty: int): Result<int, st
 // add directly.
 pub fn orderTotalCents(orderId: int): int {
     var total = 0
-    place order = ^orders[orderId]
-    for lineNo, line in order.lines at most 1000 {
-        if const got = line {
+    for lineNo in ^orders[orderId].lines at most 1000 {
+        if const got = ^orders[orderId].lines[lineNo] {
             const qty = got.qty
             const unit = got.unitPriceCents ?? 0
             total += unit * qty

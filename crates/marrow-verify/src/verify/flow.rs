@@ -1144,10 +1144,10 @@ pub(super) fn is_mutation(instr: &SealedInstr) -> bool {
     instr.op_class() == OpClass::DurableMutation
 }
 
-/// One durable opcode's resolved place: the flat site's root, its target, the record a
+/// One durable opcode's resolved address: the flat site's root, its target, the record a
 /// whole-entry operation reads or writes, the addressed layer's own key arity, and the
 /// whole key-path in stack-pop order (deepest last column first).
-struct DurablePlace<'a> {
+struct DurableAddress<'a> {
     root_index: RootId,
     root: &'a SealedRoot,
     target: &'a SealedSiteTarget,
@@ -1157,7 +1157,7 @@ struct DurablePlace<'a> {
 }
 
 /// Phase-3 type check for durable opcodes and transaction markers: resolve the site to
-/// an executable place, then dispatch by operation class. The transaction markers leave
+/// an executable address, then dispatch by operation class. The transaction markers leave
 /// the stack unchanged; phase 5 checks their flow.
 fn apply_durable(
     ctx: &Ctx,
@@ -1258,7 +1258,7 @@ fn apply_durable(
     // top of the stack, popped first).
     let mut key_path = columns;
     key_path.reverse();
-    let place = DurablePlace {
+    let address = DurableAddress {
         root_index: site_root,
         root,
         target: site_target,
@@ -1267,8 +1267,8 @@ fn apply_durable(
         key_path,
     };
     match instr.op_class() {
-        OpClass::DurableMutation => durable_mutation(ctx, instr, frame, &place)?,
-        OpClass::DurableRead => durable_read(ctx, instr, frame, &place)?,
+        OpClass::DurableMutation => durable_mutation(ctx, instr, frame, &address)?,
+        OpClass::DurableRead => durable_read(ctx, instr, frame, &address)?,
         OpClass::Pure => unreachable!("a site-bearing opcode is never pure"),
     }
     Ok(Control::Fallthrough)
@@ -1280,12 +1280,12 @@ fn durable_read(
     ctx: &Ctx,
     instr: &SealedInstr,
     frame: &mut Frame,
-    place: &DurablePlace<'_>,
+    address: &DurableAddress<'_>,
 ) -> Result<(), VerifyRejection> {
     let stack = &mut frame.stack;
     match instr {
         SealedInstr::DurExists(_) => {
-            pop_key_path(stack, &place.key_path, place.root_index)?;
+            pop_key_path(stack, &address.key_path, address.root_index)?;
             stack.push(VType::bare_scalar(Scalar::Bool));
         }
         SealedInstr::DurFamilyExists(_) => {
@@ -1294,15 +1294,15 @@ fn durable_read(
             // immediate children. Like bounded traversal it iterates a single-column
             // family — the current language spells no composite-key family probe — so a
             // composite-keyed family parks with a typed rejection.
-            require_entry(place.target)?;
-            if place.traversed_arity != 1 {
+            require_entry(address.target)?;
+            if address.traversed_arity != 1 {
                 return Err(reject(VerifyPhase::Function, Kind::CompositeKeyTraversal));
             }
             // The probe supplies no immediate child key: only the ancestor key-path
             // locating the family's parent entry sits on the stack (none for a root
             // family, the parent columns for a branch family). Drop the traversed
             // column — never pushed — and pop the ancestor path.
-            let (_traversed_key, ancestor_path) = place
+            let (_traversed_key, ancestor_path) = address
                 .key_path
                 .split_first()
                 .expect("an entry site has a non-empty key-path");
@@ -1310,51 +1310,51 @@ fn durable_read(
             // entry-identity parent column carries its root, re-proven exactly as the
             // whole key-path pop does.
             for ty in ancestor_path {
-                pop_key_column(stack, *ty, place.root_index)?;
+                pop_key_column(stack, *ty, address.root_index)?;
             }
             stack.push(VType::bare_scalar(Scalar::Bool));
         }
         SealedInstr::DurReadField(_) => {
-            let field = field_of(ctx, place.target, place.root)?;
+            let field = field_of(ctx, address.target, address.root)?;
             let value = durable_field_vtype(field).to_optional();
-            pop_key_path(stack, &place.key_path, place.root_index)?;
+            pop_key_path(stack, &address.key_path, address.root_index)?;
             stack.push(value);
         }
         SealedInstr::DurReadFieldPresent { key_slots, .. } => {
-            let field = field_of(ctx, place.target, place.root)?;
+            let field = field_of(ctx, address.target, address.root)?;
             if !field.required {
                 return Err(reject(
                     VerifyPhase::Function,
                     Kind::PresentReadOfSparseField,
                 ));
             }
-            require_key_slots(frame, key_slots, &place.key_path, place.root_index)?;
+            require_key_slots(frame, key_slots, &address.key_path, address.root_index)?;
             frame.stack.push(durable_field_vtype(field));
         }
         SealedInstr::DurReadEntry(_) => {
-            require_entry(place.target)?;
-            pop_key_path(stack, &place.key_path, place.root_index)?;
-            stack.push(VType::bare_record(place.entry_record).to_optional());
+            require_entry(address.target)?;
+            pop_key_path(stack, &address.key_path, address.root_index)?;
+            stack.push(VType::bare_record(address.entry_record).to_optional());
         }
         SealedInstr::DurReadGroup(_) => {
-            require_group(place.target)?;
-            pop_key_path(stack, &place.key_path, place.root_index)?;
-            stack.push(VType::bare_record(place.entry_record).to_optional());
+            require_group(address.target)?;
+            pop_key_path(stack, &address.key_path, address.root_index)?;
+            stack.push(VType::bare_record(address.entry_record).to_optional());
         }
         SealedInstr::DurReadGroupPresent { key_slots, .. } => {
-            // The present-entry group read keys off the place's pre-evaluated slots and
+            // The present-entry group read keys off the address's pre-evaluated slots and
             // pushes the bare group record: the presence lattice proves the containing
             // entry present here, so the read cannot be absent.
-            require_group(place.target)?;
-            require_key_slots(frame, key_slots, &place.key_path, place.root_index)?;
-            frame.stack.push(VType::bare_record(place.entry_record));
+            require_group(address.target)?;
+            require_key_slots(frame, key_slots, &address.key_path, address.root_index)?;
+            frame.stack.push(VType::bare_record(address.entry_record));
         }
         SealedInstr::DurIterateBounded {
             limit,
             from,
             list_ty,
             ..
-        } => return bounded_traversal(ctx, frame, place, *limit, *from, *list_ty),
+        } => return bounded_traversal(ctx, frame, address, *limit, *from, *list_ty),
         _ => unreachable!("op_class classified this opcode as a durable read"),
     }
     Ok(())
@@ -1365,36 +1365,36 @@ fn durable_mutation(
     ctx: &Ctx,
     instr: &SealedInstr,
     frame: &mut Frame,
-    place: &DurablePlace<'_>,
+    address: &DurableAddress<'_>,
 ) -> Result<(), VerifyRejection> {
     let stack = &mut frame.stack;
     match instr {
         SealedInstr::DurReplaceGroup { key_slots, .. } => {
-            require_group(place.target)?;
-            expect(pop(stack)?, VType::bare_record(place.entry_record))?;
-            require_key_slots(frame, key_slots, &place.key_path, place.root_index)?;
+            require_group(address.target)?;
+            expect(pop(stack)?, VType::bare_record(address.entry_record))?;
+            require_key_slots(frame, key_slots, &address.key_path, address.root_index)?;
         }
         SealedInstr::DurEraseGroup(_) => {
             // A group holding a required leaf is part of every present entry and is
             // erased only with its entry.
-            require_group(place.target)?;
+            require_group(address.target)?;
             let holds_required = ctx
                 .types
-                .get(place.entry_record.index() as usize)
+                .get(address.entry_record.index() as usize)
                 .is_some_and(|record| record.fields.iter().any(|field| field.required));
             if holds_required {
                 return Err(reject(VerifyPhase::Function, Kind::EraseRequiredGroup));
             }
-            pop_key_path(stack, &place.key_path, place.root_index)?;
+            pop_key_path(stack, &address.key_path, address.root_index)?;
         }
         SealedInstr::DurSetField { key_slots, .. } => {
-            // The field set reads its containing entry's whole key-path from place slots
+            // The field set reads its containing entry's whole key-path from address slots
             // rather than the stack and takes a definite (bare) value for a required or a
             // sparse field alike. It addresses a stored field leaf — a root field
             // (`FieldLeaf`) or a branch field (`BranchField`); a whole-payload,
             // branch-entry, or index site is not a field set and is refused.
             if !matches!(
-                place.target,
+                address.target,
                 SealedSiteTarget::FieldLeaf(_) | SealedSiteTarget::BranchField { .. }
             ) {
                 return Err(reject(
@@ -1402,25 +1402,25 @@ fn durable_mutation(
                     Kind::RequiresSite(SiteKind::Field),
                 ));
             }
-            let field = field_of(ctx, place.target, place.root)?;
+            let field = field_of(ctx, address.target, address.root)?;
             expect(pop(&mut frame.stack)?, durable_field_vtype(field))?;
-            require_key_slots(frame, key_slots, &place.key_path, place.root_index)?;
+            require_key_slots(frame, key_slots, &address.key_path, address.root_index)?;
         }
         SealedInstr::DurCreateEntry(_) | SealedInstr::DurReplaceEntry(_) => {
-            require_entry(place.target)?;
-            expect(pop(stack)?, VType::bare_record(place.entry_record))?;
-            pop_key_path(stack, &place.key_path, place.root_index)?;
+            require_entry(address.target)?;
+            expect(pop(stack)?, VType::bare_record(address.entry_record))?;
+            pop_key_path(stack, &address.key_path, address.root_index)?;
         }
         SealedInstr::DurEraseField(_) => {
-            let field = field_of(ctx, place.target, place.root)?;
+            let field = field_of(ctx, address.target, address.root)?;
             if field.required {
                 return Err(reject(VerifyPhase::Function, Kind::EraseRequiredField));
             }
-            pop_key_path(stack, &place.key_path, place.root_index)?;
+            pop_key_path(stack, &address.key_path, address.root_index)?;
         }
         SealedInstr::DurEraseEntry(_) => {
-            require_entry(place.target)?;
-            pop_key_path(stack, &place.key_path, place.root_index)?;
+            require_entry(address.target)?;
+            pop_key_path(stack, &address.key_path, address.root_index)?;
         }
         _ => unreachable!("op_class classified this opcode as a durable mutation"),
     }
@@ -1432,7 +1432,7 @@ fn durable_mutation(
 fn bounded_traversal(
     ctx: &Ctx,
     frame: &mut Frame,
-    place: &DurablePlace<'_>,
+    address: &DurableAddress<'_>,
     limit: u32,
     from: bool,
     list_ty: u16,
@@ -1442,7 +1442,7 @@ fn bounded_traversal(
     // root site (WholePayload) the root's entry family, a branch site
     // (BranchEntry) that branch's children under a fixed root key. A field site
     // names no traversable layer.
-    require_entry(place.target)?;
+    require_entry(address.target)?;
     // The `at most N` bound is a positive compile-time constant no larger than
     // the frozen-list ceiling.
     if limit == 0 || limit > marrow_image::bounds::MAX_TRAVERSAL_BOUND {
@@ -1452,14 +1452,14 @@ fn bounded_traversal(
     // key and takes one inclusive `from`. A composite-keyed traversed layer has no
     // spelled single-column iteration in the current language, so it parks with a
     // typed rejection rather than inventing a last-column-under-prefix semantics.
-    if place.traversed_arity != 1 {
+    if address.traversed_arity != 1 {
         return Err(reject(VerifyPhase::Function, Kind::CompositeKeyTraversal));
     }
     // The traversed key is what iteration enumerates — the first element of the
     // site's whole-entry key-path (the single traversed column); the remainder is
     // the ancestor key-path locating the traversed layer's parent entry (empty for
     // a root site, the parent columns for a branch site).
-    let (traversed_key, ancestor_path) = place
+    let (traversed_key, ancestor_path) = address
         .key_path
         .split_first()
         .expect("an entry site has a non-empty key-path");
@@ -1478,10 +1478,10 @@ fn bounded_traversal(
     }
     // The ancestor key-path locates the traversed layer's fixed parent entry. A
     // column spread from an entry-identity parent (`^root[Id(…)].branch`, or an
-    // identity-keyed place base) carries its root, re-proven here exactly as a
+    // identity-keyed address base) carries its root, re-proven here exactly as a
     // whole key-path pop does.
     for ty in ancestor_path {
-        pop_key_column(stack, *ty, place.root_index)?;
+        pop_key_column(stack, *ty, address.root_index)?;
     }
     // `list_ty` must name exactly `List[K]`: the frozen keys materialize into
     // this one list value, so a hostile image naming a wider or wrong-element

@@ -1,6 +1,6 @@
 //! The admitted-subset agreement gate: a program the checker accepts must also
 //! verify, and, when it carries a driving `test`, run without an artifact rejection.
-//! The gate pins each composition's whole-pipeline verdict (capture -> compile ->
+//! The gate binds each composition's whole-pipeline verdict (capture -> compile ->
 //! verify -> run) over a bounded matrix of durable op forms by context. A composition
 //! whose round trip is not yet whole carries its exact current code, so a fix that
 //! lands without moving its row to [`Expect::RoundTrips`] fails on the changed verdict.
@@ -14,7 +14,7 @@ use crate::common::{CallOutcome, Project};
 /// The shared durable graph every composition is written against: a flat keyed
 /// root with a required and a sparse field, a root-level group, a keyed branch,
 /// a unique index (identity lookup), a nonunique index (bounded scan), and a
-/// composite-key root (two key operands). The identity ledger below pins one id
+/// composite-key root (two key operands). The identity ledger below binds one id
 /// per anchor, so the schema is identity complete on its own and each
 /// composition only appends operations.
 const SCHEMA: &str = r#"resource Book {
@@ -193,8 +193,8 @@ fn matrix() -> Vec<Row> {
     rows.extend(resource_value_rows());
     rows.extend(owned_region_rows());
     rows.extend(entry_identity_rows());
-    rows.extend(place_base_rows());
-    rows.extend(place_composition_rows());
+    rows.extend(reference_base_rows());
+    rows.extend(reference_composition_rows());
     rows.extend(identity_parent_rows());
     rows.extend(shared_enum_rows());
     rows
@@ -210,7 +210,7 @@ fn admitted_subset_rows() -> Vec<Row> {
         },
         Row {
             label: "whole-entry read / inside a mutating region (read-modify-write)",
-            ops: "pub fn weReadTxn(id: int) {\n    transaction {\n        place m = ^books[id]\n        if const b = m {\n            m.subtitle = b.title\n        }\n    }\n}",
+            ops: "pub fn weReadTxn(id: int) {\n    transaction {\n        ref m = ^books[id] else { return }\n        if const b = m {\n            m.subtitle = b.title\n        }\n    }\n}",
             expect: Expect::RoundTrips { run: false },
         },
         Row {
@@ -225,12 +225,12 @@ fn admitted_subset_rows() -> Vec<Row> {
         },
         Row {
             label: "field write / inside a mutating region",
-            ops: "pub fn fieldWrite(id: int) {\n    transaction {\n        place m = ^books[id]\n        if exists(m) {\n            m.subtitle = \"x\"\n        }\n    }\n}",
+            ops: "pub fn fieldWrite(id: int) {\n    transaction {\n        ref m = ^books[id] else { return }\n        if exists(m) {\n            m.subtitle = \"x\"\n        }\n    }\n}",
             expect: Expect::RoundTrips { run: false },
         },
         Row {
             label: "group-leaf write / inside a mutating region",
-            ops: "pub fn groupWrite(id: int) {\n    transaction {\n        place m = ^books[id]\n        if exists(m) {\n            m.details.pages = 3\n        }\n    }\n}",
+            ops: "pub fn groupWrite(id: int) {\n    transaction {\n        ref m = ^books[id] else { return }\n        if exists(m) {\n            m.details.pages = 3\n        }\n    }\n}",
             expect: Expect::RoundTrips { run: false },
         },
         Row {
@@ -250,7 +250,7 @@ fn admitted_subset_rows() -> Vec<Row> {
         },
         Row {
             label: "identity field write / inside a mutating region",
-            ops: "pub fn identityFieldWrite(isbn: string) {\n    transaction {\n        if const found = ^books.byIsbn[isbn] {\n            place m = ^books[found]\n            if exists(m) {\n                m.subtitle = \"x\"\n            }\n        }\n    }\n}",
+            ops: "pub fn identityFieldWrite(isbn: string) {\n    transaction {\n        if const found = ^books.byIsbn[isbn] {\n            ref m = ^books[found] else { return }\n            if exists(m) {\n                m.subtitle = \"x\"\n            }\n        }\n    }\n}",
             expect: Expect::RoundTrips { run: false },
         },
         Row {
@@ -260,7 +260,7 @@ fn admitted_subset_rows() -> Vec<Row> {
         },
         Row {
             label: "field write + read-back / through seed and private observer calls",
-            ops: "pub fn seedSubtitle() {\n    transaction {\n        place m = ^books[1]\n        m = Book(title: \"t\", isbn: \"i\")\n        m.subtitle = \"x\"\n    }\n}\n\nfn subtitle(): string? {\n    return ^books[1].subtitle\n}\n\ntest \"direct field round trip\" {\n    seedSubtitle()\n    assert subtitle() ?? \"n\" == \"x\"\n}",
+            ops: "pub fn seedSubtitle() {\n    transaction {\n        ^books[1] = Book(title: \"t\", isbn: \"i\")\n        ref m = ^books[1] else { return }\n        m.subtitle = \"x\"\n    }\n}\n\nfn subtitle(): string? {\n    return ^books[1].subtitle\n}\n\ntest \"direct field round trip\" {\n    seedSubtitle()\n    assert subtitle() ?? \"n\" == \"x\"\n}",
             expect: Expect::RoundTrips { run: true },
         },
         Row {
@@ -268,20 +268,20 @@ fn admitted_subset_rows() -> Vec<Row> {
             ops: "pub fn seedBook() {\n    transaction {\n        ^books[1] = Book(title: \"dune\", isbn: \"i1\")\n    }\n}\n\nfn book(): Book? {\n    return ^books[1]\n}\n\ntest \"direct whole-entry round trip\" {\n    seedBook()\n    if const b = book() {\n        assert b.title == \"dune\"\n    } else {\n        assert false\n    }\n}",
             expect: Expect::RoundTrips { run: true },
         },
-        // A composite-key root place carries several key slots but is still a root, so
+        // A composite-key root reference carries several key slots but is still a root, so
         // field reads and writes through it resolve the root's field, not a branch record:
         // the node kind is recorded at the binding from the canonical resolved durable
         // node, independent of key-operand count.
         Row {
-            label: "composite-root place field read + write / read outside, write inside a region",
-            ops: "pub fn crPlaceRead(student: string, course: string): int? {\n    place g = ^grades[student, course]\n    return g.score\n}\n\npub fn crPlaceWrite(student: string, course: string, score: int) {\n    transaction {\n        place g = ^grades[student, course]\n        if exists(g) {\n            g.score = score\n        }\n    }\n}",
+            label: "composite-root reference field read + write / read outside, write inside a region",
+            ops: "pub fn crDirectRead(student: string, course: string): int? {\n    return ^grades[student, course].score\n}\n\npub fn crReferenceWrite(student: string, course: string, score: int) {\n    transaction {\n        ref g = ^grades[student, course] else { return }\n        if exists(g) {\n            g.score = score\n        }\n    }\n}",
             expect: Expect::RoundTrips { run: false },
         },
         // Each export call is its own invocation boundary, so the write and the read-back
-        // resolve the root field through their own place binding.
+        // resolve the root field through their own reference binding.
         Row {
-            label: "composite-root place field write round trip / driver test",
-            ops: "pub fn crSeed(student: string, course: string, score: int) {\n    transaction {\n        ^grades[student, course] = Grade(score: score)\n    }\n}\n\npub fn crWriteVia(student: string, course: string, score: int) {\n    transaction {\n        place g = ^grades[student, course]\n        if exists(g) {\n            g.score = score\n        }\n    }\n}\n\npub fn crReadVia(student: string, course: string): int? {\n    place g = ^grades[student, course]\n    return g.score\n}\n\ntest \"composite-root place writes then reads a score back\" {\n    crSeed(\"amy\", \"cs\", 90)\n    crWriteVia(\"amy\", \"cs\", 75)\n    assert crReadVia(\"amy\", \"cs\") ?? 0 == 75\n}",
+            label: "composite-root reference field write round trip / driver test",
+            ops: "pub fn crSeed(student: string, course: string, score: int) {\n    transaction {\n        ^grades[student, course] = Grade(score: score)\n    }\n}\n\npub fn crWriteVia(student: string, course: string, score: int) {\n    transaction {\n        ref g = ^grades[student, course] else { return }\n        if exists(g) {\n            g.score = score\n        }\n    }\n}\n\npub fn crReadVia(student: string, course: string): int? {\n    return ^grades[student, course].score\n}\n\ntest \"composite-root reference writes then reads a score back\" {\n    crSeed(\"amy\", \"cs\", 90)\n    crWriteVia(\"amy\", \"cs\", 75)\n    assert crReadVia(\"amy\", \"cs\") ?? 0 == 75\n}",
             expect: Expect::RoundTrips { run: true },
         },
     ]
@@ -399,12 +399,12 @@ fn owned_region_rows() -> Vec<Row> {
 fn entry_identity_rows() -> Vec<Row> {
     vec![
         // An identity operand spreads into the addressed root's key columns at the one
-        // capture point a read-modify-write, an upsert, or a `place` binding evaluates its
+        // capture point a read-modify-write, an upsert, or a `reference` binding evaluates its
         // key-path into slots — the same `IdentityKeyPath` spread the single-emit forms
         // (field read/write, whole-entry read, delete, exists) use.
         Row {
-            label: "place bound to an identity operand writes then reads back / driver test",
-            ops: "pub fn plWrite(id: int, title: string) {\n    transaction {\n        place p = ^books[Id(^books, id)]\n        p = Book(title: title, isbn: \"i\")\n    }\n}\n\npub fn plTitle(id: int): string? {\n    return ^books[id].title\n}\n\ntest \"place over an identity operand round trips\" {\n    plWrite(20, \"dune\")\n    assert plTitle(20) ?? \"none\" == \"dune\"\n}",
+            label: "reference bound to an identity operand writes then reads back / driver test",
+            ops: "pub fn plWrite(id: int, title: string) {\n    transaction {\n        ^books[Id(^books, id)] = Book(title: title, isbn: \"i\")\n        ref p = ^books[Id(^books, id)] else { return }\n    }\n}\n\npub fn plTitle(id: int): string? {\n    return ^books[id].title\n}\n\ntest \"reference over an identity operand round trips\" {\n    plWrite(20, \"dune\")\n    assert plTitle(20) ?? \"none\" == \"dune\"\n}",
             expect: Expect::RoundTrips { run: true },
         },
         // A branch whole-entry write through an identity root-parent: the key-path is
@@ -419,74 +419,74 @@ fn entry_identity_rows() -> Vec<Row> {
         // read, rewrite the leaf, write back, all off the same captured key slots.
         Row {
             label: "group-leaf write through an identity key / driver test",
-            ops: "pub fn glWrite(id: int, pages: int) {\n    transaction {\n        place m = ^books[Id(^books, id)]\n        m = Book(title: \"t\", isbn: \"i\")\n        m.details.pages = pages\n    }\n}\n\npub fn glPages(id: int): int? {\n    return ^books[id].details.pages\n}\n\ntest \"group-leaf write through an identity key round trips\" {\n    glWrite(22, 7)\n    assert glPages(22) ?? 0 == 7\n}",
+            ops: "pub fn glWrite(id: int, pages: int) {\n    transaction {\n        ^books[Id(^books, id)] = Book(title: \"t\", isbn: \"i\")\n        ref m = ^books[Id(^books, id)] else { return }\n        m.details.pages = pages\n    }\n}\n\npub fn glPages(id: int): int? {\n    return ^books[id].details.pages\n}\n\ntest \"group-leaf write through an identity key round trips\" {\n    glWrite(22, 7)\n    assert glPages(22) ?? 0 == 7\n}",
             expect: Expect::RoundTrips { run: true },
         },
         Row {
             label: "group-leaf delete through an identity key / driver test",
-            ops: "pub fn gdSet(id: int, pages: int) {\n    transaction {\n        place m = ^books[id]\n        m = Book(title: \"t\", isbn: \"i\")\n        m.details.pages = pages\n    }\n}\n\npub fn gdClear(id: int) {\n    transaction {\n        delete ^books[Id(^books, id)].details.pages\n    }\n}\n\npub fn gdPages(id: int): int? {\n    return ^books[id].details.pages\n}\n\ntest \"group-leaf delete through an identity key round trips\" {\n    gdSet(23, 7)\n    gdClear(23)\n    assert gdPages(23) ?? 0 == 0\n}",
+            ops: "pub fn gdSet(id: int, pages: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n        ref m = ^books[id] else { return }\n        m.details.pages = pages\n    }\n}\n\npub fn gdClear(id: int) {\n    transaction {\n        delete ^books[Id(^books, id)].details.pages\n    }\n}\n\npub fn gdPages(id: int): int? {\n    return ^books[id].details.pages\n}\n\ntest \"group-leaf delete through an identity key round trips\" {\n    gdSet(23, 7)\n    gdClear(23)\n    assert gdPages(23) ?? 0 == 0\n}",
             expect: Expect::RoundTrips { run: true },
         },
         // One identity operand spreads into a composite root's several key columns at the
-        // binding, so field reads and writes through the place resolve the root's field
+        // binding, so field reads and writes through the reference resolve the root's field
         // off the pre-evaluated address.
         Row {
-            label: "composite-root place bound to a single identity operand / driver test",
-            ops: "pub fn crIdSeed(s: string, c: string, score: int) {\n    transaction {\n        ^grades[s, c] = Grade(score: score)\n    }\n}\n\npub fn crIdPlaceWrite(s: string, c: string, score: int) {\n    transaction {\n        place g = ^grades[Id(^grades, s, c)]\n        if exists(g) {\n            g.score = score\n        }\n    }\n}\n\npub fn crIdRead(s: string, c: string): int? {\n    return ^grades[s, c].score\n}\n\ntest \"composite-root place over a single identity operand round trips\" {\n    crIdSeed(\"amy\", \"cs\", 90)\n    crIdPlaceWrite(\"amy\", \"cs\", 75)\n    assert crIdRead(\"amy\", \"cs\") ?? 0 == 75\n}",
+            label: "composite-root reference bound to a single identity operand / driver test",
+            ops: "pub fn crIdSeed(s: string, c: string, score: int) {\n    transaction {\n        ^grades[s, c] = Grade(score: score)\n    }\n}\n\npub fn crIdReferenceWrite(s: string, c: string, score: int) {\n    transaction {\n        ref g = ^grades[Id(^grades, s, c)] else { return }\n        if exists(g) {\n            g.score = score\n        }\n    }\n}\n\npub fn crIdRead(s: string, c: string): int? {\n    return ^grades[s, c].score\n}\n\ntest \"composite-root reference over a single identity operand round trips\" {\n    crIdSeed(\"amy\", \"cs\", 90)\n    crIdReferenceWrite(\"amy\", \"cs\", 75)\n    assert crIdRead(\"amy\", \"cs\") ?? 0 == 75\n}",
             expect: Expect::RoundTrips { run: true },
         },
     ]
 }
 
-/// A named place or per-iteration pin as a bounded-traversal base.
-fn place_base_rows() -> Vec<Row> {
+/// A named reference or per-iteration reference as a bounded-traversal base.
+fn reference_base_rows() -> Vec<Row> {
     vec![
-        // A place already addresses an entry; `for k in <place>.branch` traverses the branch
-        // family beneath it, feeding the place's captured key slots as the traversal's
+        // A reference already addresses an entry; `for k in <reference>.branch` traverses the branch
+        // family beneath it, feeding the reference's captured key slots as the traversal's
         // ancestor key-path.
         Row {
-            label: "root place branch traversal / driver test",
-            ops: "pub fn aAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn aAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn aCountViaPlace(id: int): int {\n    var c = 0\n    place b = ^books[id]\n    for noteId in b.notes at most 100 {\n        c += 1\n    } on more {\n        c = -1\n    }\n    return c\n}\n\ntest \"root place is a branch traversal base\" {\n    aAddBook(50)\n    aAddNote(50, \"a\")\n    aAddNote(50, \"b\")\n    assert aCountViaPlace(50) == 2\n}",
+            label: "root reference branch traversal / driver test",
+            ops: "pub fn aAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn aAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn aCountViaReference(id: int): int {\n    var c = 0\n    ref b = ^books[id] else { return 0 }\n    for noteId in b.notes at most 100 {\n        c += 1\n    } on more {\n        c = -1\n    }\n    return c\n}\n\ntest \"root reference is a branch traversal base\" {\n    aAddBook(50)\n    aAddNote(50, \"a\")\n    aAddNote(50, \"b\")\n    assert aCountViaReference(50) == 2\n}",
             expect: Expect::RoundTrips { run: true },
         },
-        // A two-binding place base: the pin's key-path is the place's captured root slot
+        // Each checked child reference combines the parent's captured root slot
         // followed by each frozen branch key, exercising ancestor-slot capture over a
-        // `PlaceKey::Bound` column.
+        // `AddressKey::Bound` column.
         Row {
-            label: "two-binding place base deletes through the pin / driver test",
-            ops: "pub fn bAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn bAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn bClearViaPlace(id: int): int {\n    var c = 0\n    transaction {\n        place b = ^books[id]\n        for noteId, note in b.notes at most 100 {\n            c += 1\n            delete note\n        } on more {\n            c = -1\n        }\n    }\n    return c\n}\n\npub fn bCountViaPlace(id: int): int {\n    var c = 0\n    place b = ^books[id]\n    for noteId in b.notes at most 100 {\n        c += 1\n    } on more {\n        c = -1\n    }\n    return c\n}\n\ntest \"two-binding place base deletes through the pin\" {\n    bAddBook(60)\n    bAddNote(60, \"a\")\n    bAddNote(60, \"b\")\n    assert bClearViaPlace(60) == 2\n    assert bCountViaPlace(60) == 0\n}",
+            label: "key-only traversal deletes through a checked reference / driver test",
+            ops: "pub fn bAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn bAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn bClearViaReference(id: int): int {\n    var c = 0\n    transaction {\n        ref b = ^books[id] else { return 0 }\n        for noteId in b.notes at most 100 {\n            ref note = ^books[id].notes[noteId] else { continue }\n            c += 1\n            delete note\n        } on more {\n            c = -1\n        }\n    }\n    return c\n}\n\npub fn bCountViaReference(id: int): int {\n    var c = 0\n    ref b = ^books[id] else { return 0 }\n    for noteId in b.notes at most 100 {\n        c += 1\n    } on more {\n        c = -1\n    }\n    return c\n}\n\ntest \"key-only traversal deletes through a checked reference\" {\n    bAddBook(60)\n    bAddNote(60, \"a\")\n    bAddNote(60, \"b\")\n    assert bClearViaReference(60) == 2\n    assert bCountViaReference(60) == 0\n}",
             expect: Expect::RoundTrips { run: true },
         },
-        // A per-iteration pin is an inner traversal base: it addresses each frozen entry,
+        // A per-iteration reference is an inner traversal base: it addresses each frozen entry,
         // and the inner `for` traverses the branch beneath it.
         Row {
-            label: "per-iteration pin as an inner traversal base / driver test",
-            ops: "pub fn cAddBook(id: int, isbn: string) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: isbn)\n    }\n}\n\npub fn cAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn cCountViaPin(): int {\n    var c = 0\n    for id, book in ^books at most 100 {\n        for noteId in book.notes at most 100 {\n            c += 1\n        } on more {\n            c = -1\n        }\n    } on more {\n        c = -1\n    }\n    return c\n}\n\ntest \"a per-iteration pin is an inner traversal base\" {\n    cAddBook(70, \"i70\")\n    cAddNote(70, \"a\")\n    cAddBook(71, \"i71\")\n    cAddNote(71, \"b\")\n    assert cCountViaPin() == 2\n}",
+            label: "per-iteration reference as an inner traversal base / driver test",
+            ops: "pub fn cAddBook(id: int, isbn: string) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: isbn)\n    }\n}\n\npub fn cAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn cCountViaReference(): int {\n    var c = 0\n    for id in ^books at most 100 {\n        ref book = ^books[id] else { continue }\n        for noteId in book.notes at most 100 {\n            c += 1\n        } on more {\n            c = -1\n        }\n    } on more {\n        c = -1\n    }\n    return c\n}\n\ntest \"a per-iteration reference is an inner traversal base\" {\n    cAddBook(70, \"i70\")\n    cAddNote(70, \"a\")\n    cAddBook(71, \"i71\")\n    cAddNote(71, \"b\")\n    assert cCountViaReference() == 2\n}",
             expect: Expect::RoundTrips { run: true },
         },
     ]
 }
 
-/// A named place composing as a base for branch-entry and group-leaf ops.
-fn place_composition_rows() -> Vec<Row> {
+/// A named reference composing as a base for branch-entry and group-leaf ops.
+fn reference_composition_rows() -> Vec<Row> {
     vec![
-        // Extending a bound place with `.branch[bk]` or `.group.leaf` composes the same
+        // Extending a bound reference with `.branch[bk]` or `.group.leaf` composes the same
         // operation the inline `^root(k).branch(bk)` / `^root(k).group.leaf` form does,
-        // keying off the place's pre-evaluated slots.
+        // keying off the reference's pre-evaluated slots.
         Row {
-            label: "root place composes a branch-entry write + branch-field read / driver test",
-            ops: "pub fn dAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn dAddNoteVia(id: int, n: string, t: string) {\n    transaction {\n        place b = ^books[id]\n        b.notes[n] = Book.notes(text: t)\n    }\n}\n\npub fn dNoteVia(id: int, n: string): string? {\n    place b = ^books[id]\n    return b.notes[n].text\n}\n\ntest \"root place composes a branch write then reads it back\" {\n    dAddBook(100)\n    dAddNoteVia(100, \"a\", \"hello\")\n    assert dNoteVia(100, \"a\") ?? \"none\" == \"hello\"\n}",
+            label: "root reference composes a branch-entry write + branch-field read / driver test",
+            ops: "pub fn dAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn dAddNoteVia(id: int, n: string, t: string) {\n    transaction {\n        ref b = ^books[id] else { return }\n        b.notes[n] = Book.notes(text: t)\n    }\n}\n\npub fn dNoteVia(id: int, n: string): string? {\n    return ^books[id].notes[n].text\n}\n\ntest \"root reference composes a branch write then reads it back\" {\n    dAddBook(100)\n    dAddNoteVia(100, \"a\", \"hello\")\n    assert dNoteVia(100, \"a\") ?? \"none\" == \"hello\"\n}",
             expect: Expect::RoundTrips { run: true },
         },
         Row {
-            label: "root place composes a group-leaf write + read / driver test",
-            ops: "pub fn eAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn eSetPagesVia(id: int, p: int) {\n    transaction {\n        place b = ^books[id]\n        if exists(b) {\n            b.details.pages = p\n        }\n    }\n}\n\npub fn ePagesVia(id: int): int? {\n    place b = ^books[id]\n    return b.details.pages\n}\n\ntest \"root place composes a group-leaf write then reads it back\" {\n    eAddBook(101)\n    eSetPagesVia(101, 7)\n    assert ePagesVia(101) ?? 0 == 7\n}",
+            label: "root reference composes a group-leaf write + read / driver test",
+            ops: "pub fn eAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn eSetPagesVia(id: int, p: int) {\n    transaction {\n        ref b = ^books[id] else { return }\n        if exists(b) {\n            b.details.pages = p\n        }\n    }\n}\n\npub fn ePagesVia(id: int): int? {\n    return ^books[id].details.pages\n}\n\ntest \"root reference composes a group-leaf write then reads it back\" {\n    eAddBook(101)\n    eSetPagesVia(101, 7)\n    assert ePagesVia(101) ?? 0 == 7\n}",
             expect: Expect::RoundTrips { run: true },
         },
-        // `exists(place.branch)` is the family-populated probe, not a missing-field error.
+        // `exists(reference.branch)` is the family-populated probe, not a missing-field error.
         Row {
-            label: "exists over a branch family named through a place / driver test",
-            ops: "pub fn fAddBook(id: int, isbn: string) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: isbn)\n    }\n}\n\npub fn fAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn fHasNotesVia(id: int): bool {\n    place b = ^books[id]\n    return exists(b.notes)\n}\n\ntest \"exists over a branch family named through a place\" {\n    fAddBook(102, \"i102\")\n    fAddBook(103, \"i103\")\n    fAddNote(102, \"a\")\n    assert fHasNotesVia(102)\n    assert not fHasNotesVia(103)\n}",
+            label: "exists over a branch family named through a reference / driver test",
+            ops: "pub fn fAddBook(id: int, isbn: string) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: isbn)\n    }\n}\n\npub fn fAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn fHasNotesVia(id: int): bool {\n    ref b = ^books[id] else { return false }\n    return exists(b.notes)\n}\n\ntest \"exists over a branch family named through a reference\" {\n    fAddBook(102, \"i102\")\n    fAddBook(103, \"i103\")\n    fAddNote(102, \"a\")\n    assert fHasNotesVia(102)\n    assert not fHasNotesVia(103)\n}",
             expect: Expect::RoundTrips { run: true },
         },
     ]
@@ -500,8 +500,8 @@ fn identity_parent_rows() -> Vec<Row> {
         // ancestor pop re-proves that column's root and scalar exactly as every other
         // key-path pop does.
         Row {
-            label: "identity-keyed place base branch traversal / driver test",
-            ops: "pub fn iAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn iAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn iCountViaIdPlace(id: int): int {\n    var c = 0\n    place b = ^books[Id(^books, id)]\n    for noteId in b.notes at most 100 {\n        c += 1\n    } on more {\n        c = -1\n    }\n    return c\n}\n\ntest \"identity-keyed place base is a branch traversal base\" {\n    iAddBook(80)\n    iAddNote(80, \"a\")\n    iAddNote(80, \"b\")\n    assert iCountViaIdPlace(80) == 2\n}",
+            label: "identity-keyed reference base branch traversal / driver test",
+            ops: "pub fn iAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn iAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn iCountViaIdReference(id: int): int {\n    var c = 0\n    ref b = ^books[Id(^books, id)] else { return 0 }\n    for noteId in b.notes at most 100 {\n        c += 1\n    } on more {\n        c = -1\n    }\n    return c\n}\n\ntest \"identity-keyed reference base is a branch traversal base\" {\n    iAddBook(80)\n    iAddNote(80, \"a\")\n    iAddNote(80, \"b\")\n    assert iCountViaIdReference(80) == 2\n}",
             expect: Expect::RoundTrips { run: true },
         },
         Row {
@@ -509,11 +509,11 @@ fn identity_parent_rows() -> Vec<Row> {
             ops: "pub fn jAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn jAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn jCountViaInlineId(id: int): int {\n    var c = 0\n    for noteId in ^books[Id(^books, id)].notes at most 100 {\n        c += 1\n    } on more {\n        c = -1\n    }\n    return c\n}\n\ntest \"inline identity parent is a branch traversal base\" {\n    jAddBook(81)\n    jAddNote(81, \"a\")\n    jAddNote(81, \"b\")\n    assert jCountViaInlineId(81) == 2\n}",
             expect: Expect::RoundTrips { run: true },
         },
-        // The two-binding inline form: the per-iteration pin reuses the identity ancestor
-        // slots plus the frozen key to delete through the pin.
+        // The key-only inline form: the per-iteration reference reuses the identity ancestor
+        // slots plus the frozen key to delete through the reference.
         Row {
-            label: "inline identity-parent two-binding delete through the pin / driver test",
-            ops: "pub fn kAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn kAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn kClearViaInlineId(id: int): int {\n    var c = 0\n    transaction {\n        for noteId, note in ^books[Id(^books, id)].notes at most 100 {\n            c += 1\n            delete note\n        } on more {\n            c = -1\n        }\n    }\n    return c\n}\n\npub fn kCountViaInlineId(id: int): int {\n    var c = 0\n    for noteId in ^books[Id(^books, id)].notes at most 100 {\n        c += 1\n    } on more {\n        c = -1\n    }\n    return c\n}\n\ntest \"inline identity parent two-binding deletes through the pin\" {\n    kAddBook(82)\n    kAddNote(82, \"a\")\n    kAddNote(82, \"b\")\n    assert kClearViaInlineId(82) == 2\n    assert kCountViaInlineId(82) == 0\n}",
+            label: "inline identity-parent key-only delete through the reference / driver test",
+            ops: "pub fn kAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn kAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn kClearViaInlineId(id: int): int {\n    var c = 0\n    transaction {\n        for noteId in ^books[Id(^books, id)].notes at most 100 {\n            ref note = ^books[Id(^books, id)].notes[noteId] else { continue }\n            c += 1\n            delete note\n        } on more {\n            c = -1\n        }\n    }\n    return c\n}\n\npub fn kCountViaInlineId(id: int): int {\n    var c = 0\n    for noteId in ^books[Id(^books, id)].notes at most 100 {\n        c += 1\n    } on more {\n        c = -1\n    }\n    return c\n}\n\ntest \"inline identity parent key-only deletes through the reference\" {\n    kAddBook(82)\n    kAddNote(82, \"a\")\n    kAddNote(82, \"b\")\n    assert kClearViaInlineId(82) == 2\n    assert kCountViaInlineId(82) == 0\n}",
             expect: Expect::RoundTrips { run: true },
         },
         // The family probe emits only the identity ancestor key-path before
@@ -524,12 +524,12 @@ fn identity_parent_rows() -> Vec<Row> {
             ops: "pub fn mAddBook(id: int, isbn: string) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: isbn)\n    }\n}\n\npub fn mAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn mHasNotes(id: int): bool {\n    return exists(^books[Id(^books, id)].notes)\n}\n\ntest \"family probe under an identity parent sees present and empty\" {\n    mAddBook(83, \"i83\")\n    mAddBook(84, \"i84\")\n    mAddNote(83, \"a\")\n    assert mHasNotes(83)\n    assert not mHasNotes(84)\n}",
             expect: Expect::RoundTrips { run: true },
         },
-        // A presence-dominated sparse field set through an identity-keyed place reads its
-        // key-path from the place's pre-evaluated slots, which carry the identity column;
+        // A presence-dominated sparse field set through an identity-keyed reference reads its
+        // key-path from the reference's pre-evaluated slots, which carry the identity column;
         // the set-sparse-present slot-type check re-proves it as the stack key-path pop does.
         Row {
-            label: "strict present sparse set through an identity-keyed place / driver test",
-            ops: "pub fn spSeed(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn spSetVia(id: int, s: string): bool {\n    transaction {\n        place b = ^books[Id(^books, id)]\n        if exists(b) {\n            b.subtitle = s\n            return true\n        }\n    }\n    return false\n}\n\npub fn spSubtitle(id: int): string? {\n    return ^books[id].subtitle\n}\n\ntest \"strict present sparse set through an identity place round trips\" {\n    spSeed(90)\n    assert spSetVia(90, \"x\")\n    assert spSubtitle(90) ?? \"none\" == \"x\"\n}",
+            label: "strict present sparse set through an identity-keyed reference / driver test",
+            ops: "pub fn spSeed(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn spSetVia(id: int, s: string): bool {\n    transaction {\n        ref b = ^books[Id(^books, id)] else { return false }\n        if exists(b) {\n            b.subtitle = s\n            return true\n        }\n    }\n    return false\n}\n\npub fn spSubtitle(id: int): string? {\n    return ^books[id].subtitle\n}\n\ntest \"strict present sparse set through an identity reference round trips\" {\n    spSeed(90)\n    assert spSetVia(90, \"x\")\n    assert spSubtitle(90) ?? \"none\" == \"x\"\n}",
             expect: Expect::RoundTrips { run: true },
         },
     ]
@@ -705,7 +705,7 @@ fn a_faulting_export_invocation_rolls_back_without_disturbing_a_prior_commit() {
     let ops = "pub fn shelve(id: int, title: string, isbn: string) {\n    \
              transaction {\n        ^books[id] = Book(title: title, isbn: isbn)\n    }\n}\n\n\
          pub fn badUpdate(id: int, divisor: int) {\n    transaction {\n        \
-             place m = ^books[id]\n        if exists(m) {\n            \
+             ref m = ^books[id] else { return }\n        if exists(m) {\n            \
              m.title = \"changed\"\n            \
              m.details.pages = 100 / divisor\n        }\n    }\n}\n\n\
          pub fn titleOf(id: int): string? {\n    return ^books[id].title\n}";

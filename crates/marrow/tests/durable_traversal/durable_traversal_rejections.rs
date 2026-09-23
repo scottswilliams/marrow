@@ -152,9 +152,8 @@ fn a_reversed_durable_traversal_is_rejected() {
 }
 
 #[test]
-fn a_durable_for_with_more_than_a_key_and_an_address_is_rejected() {
-    // A durable traversal binds the immediate key and, optionally, a per-iteration address
-    // pin; a third binding has no durable meaning.
+fn a_durable_for_with_three_bindings_is_rejected() {
+    // Durable traversal binds one immediate key.
     assert_rejected(
         r#"pub fn f(): int {
     var t = 0
@@ -256,13 +255,13 @@ fn an_unknown_traversed_branch_is_rejected() {
 }
 
 #[test]
-fn a_bare_place_name_is_not_a_traversal_family() {
-    // A `place` names one durable entry, not a family. Iterating the bare place name is
+fn a_bare_reference_name_is_not_a_traversal_family() {
+    // A `reference` names one durable entry, not a family. Iterating the bare reference name is
     // refused with a steering `check.type` — the branch beneath it (`b.notes`) is the family.
     assert_rejected(
         r#"pub fn f(n: int): int {
     var t = 0
-    place b = ^books[n]
+    ref b = ^books[n] else { return 0 }
     for k in b at most 5 {
         t += k
     } on more {
@@ -276,13 +275,13 @@ fn a_bare_place_name_is_not_a_traversal_family() {
 }
 
 #[test]
-fn an_unknown_branch_beneath_a_place_is_rejected() {
-    // A branch selection on a place resolves against the place's node; an unknown branch
+fn an_unknown_branch_beneath_a_reference_is_rejected() {
+    // A branch selection on a reference resolves against the reference's node; an unknown branch
     // name is a precise `check.type` at the traversed name.
     assert_rejected(
         r#"pub fn f(n: int): int {
     var t = 0
-    place b = ^books[n]
+    ref b = ^books[n] else { return 0 }
     for p in b.unknownBranch at most 5 {
         t += p
     } on more {

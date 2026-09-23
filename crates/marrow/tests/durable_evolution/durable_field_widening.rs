@@ -188,7 +188,7 @@ fn nominal_durable_positions_and_reference_agree() {
     let types = normalize(include_str!(
         "../../../../docs/language/types-and-values.md"
     ));
-    let durable = normalize(include_str!("../../../../docs/language/durable-places.md"));
+    let durable = normalize(include_str!("../../../../docs/language/durable-data.md"));
 
     assert!(types.contains("A nominal int type is admitted as a local resource field."));
     assert!(types.contains(
@@ -225,7 +225,7 @@ fn nominal_durable_positions_and_reference_agree() {
     ];
     for (name, text) in [
         ("types and values", types.as_str()),
-        ("durable places", durable.as_str()),
+        ("durable paths", durable.as_str()),
     ] {
         let found = text
             .split(|ch: char| !ch.is_ascii_alphabetic())
@@ -578,9 +578,8 @@ fn a_nested_multi_arg_generic_enum_field_pins_its_bracket_anchors() {
         "{OUTCOME_SOURCE}{}",
         r#"
 pub fn resultOf(id: int): Result<Option<int>, string> {
-    place p = ^outcomes[id]
-    if exists(p) { return p.result }
-    return err("missing")
+    ref p = ^outcomes[id] else { return err("missing") }
+    return p.result
 }
 "#
     );

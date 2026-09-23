@@ -10,14 +10,14 @@ marks, and nothing else is:
 
 | Mark | Meaning | Search pattern |
 |---|---|---|
-| `^` | a [durable place](durable-places.md) | `\^` |
-| `place` | a name bound to one entry address ([named places](durable-places.md#named-places)) | `\bplace ` |
+| `^` | a [durable address](durable-data.md) | `\^` |
+| `ref … else` | a checked entry reference and its absence exit ([entry references](durable-data.md#entry-references)) | `\bref ` |
 | `transaction {` | a block whose writes commit together ([transactions](errors-and-transactions.md#transactions)) | `transaction {` |
 | `at most` / `on more` | a [bounded durable traversal](traversal-and-indexes.md#bounded-durable-traversal) and its overflow block | `at most` |
 | `checked` / `on` | [checked arithmetic](control-flow.md#checked-arithmetic) and its fault arms | `\bchecked ` |
 | `try` | propagation of a `Result` failure ([prefix `try`](control-flow.md#prefix-try)) | `\btry ` |
 | `require` | origination of a `Result` failure ([require guards](control-flow.md#require-guards)) | `\brequire ` |
-| `delete` | removal of a durable field or entry ([deleting](durable-places.md#deleting)) | `\bdelete\b` |
+| `delete` | removal of a durable field or entry ([deleting](durable-data.md#deleting)) | `\bdelete\b` |
 | `$"` | an interpolated string ([literals](source-and-syntax.md)) | `\$"` |
 | `while` | the one loop with no bound of its own ([while](control-flow.md)) | `\bwhile\b` |
 | `unreachable(` | an invariant the program declares ([divergence](control-flow.md#divergence)) | `unreachable\(` |
@@ -32,7 +32,7 @@ durable walk and `\bwhile\b` every loop without one. `\brequire ` and
 pattern may also hit a comment or a string, so a search can over-report; it
 never under-reports.
 
-Two marks rest on rules other pages state. A read or write through a `place`
+Two marks rest on rules other pages state. A read or write through a `ref` binding
 carries no `^` on its own line, but the name was bound from a `^` address on
 the binding line. `delete` is durable only: a local sparse field is cleared
 with `unset` ([local values](resources.md#local-values)), so every `delete`
@@ -40,7 +40,7 @@ that compiles removes durable data.
 
 There is no mark for the absence of consequence. An export whose call graph
 never touches `^` is storeless, and `marrow check` lists it as such
-([access demand](durable-places.md#access-demand)). A construct added to the
+([access demand](durable-data.md#access-demand)). A construct added to the
 language keeps one spelling and keeps this list complete
 ([general-purpose language](../future/general-purpose-language.md)).
 
@@ -58,8 +58,7 @@ store ^books[id: int]: Book
 
 pub fn shelve(id: int, shelf: string): Result<string, string> {
     transaction {
-        place book = ^books[id]
-        if not exists(book) {
+        ref book = ^books[id] else {
             return err($"no book {id}")
         }
         book.shelf = shelf
@@ -80,11 +79,11 @@ pub fn onShelf(shelf: string): int {
 }
 ```
 
-`shelve` has one `transaction {` and one `place`; the write `book.shelf = shelf`
+`shelve` has one `transaction {` and one `ref`; the write `book.shelf = shelf`
 carries no `^` because `book` was bound from `^books[id]` at the top of the
 block. `onShelf` has one `at most` and one `on more`. Searching this file for
 `\^` finds every point where durable data enters the code: the store
-declaration, the `place` binding, and the two reads in `onShelf`. The write
+declaration, the `ref` binding, and the two reads in `onShelf`. The write
 through `book` is reached from its binding line.
 
 ## File skeleton
@@ -103,7 +102,7 @@ resource Book {
     loans: int
 }
 
-// places
+// roots
 
 store ^books[id: int]: Book
 
@@ -111,10 +110,10 @@ store ^books[id: int]: Book
 
 pub fn recordLoan(id: Id(^books)) {
     transaction {
-        place book = ^books[id]
-        if exists(book) {
-            book.loans = (book.loans ?? 0) + 1
+        ref book = ^books[id] else {
+            return
         }
+        book.loans = (book.loans ?? 0) + 1
     }
 }
 
@@ -134,8 +133,9 @@ makes the two one unit to read and to move.
 ## Guard prelude
 
 A `pub fn` opens with its preconditions, one per line, before the happy path.
-A boolean precondition is a `require`. A presence check is a `const` with a
-diverging `else`. Inside the function's own `transaction` block, a failed
+A boolean precondition is a `require`. Use `ref` with a diverging `else` to
+check and bind a durable entry, and `const` with a diverging `else` to unwrap
+an optional value. Inside the function's own `transaction` block, a failed
 `require` commits staged writes just as an explicit `return err(...)` does.
 Place a guard before mutation when rejection intends no change.
 
@@ -150,11 +150,11 @@ resource Book {
 store ^books[id: int]: Book
 
 pub fn shelfOf(id: Id(^books), shelves: Map<string, string>): Result<string, string> {
-    require exists(^books[id]) else "unknown book"
-    const title = ^books[id].title else {
-        return err("book has no title")
+    ref book = ^books[id] else {
+        return err("unknown book")
     }
-    const code = ^books[id].shelfCode else {
+    const title = book.title
+    const code = book.shelfCode else {
         return err($"{title} has no shelf")
     }
     const shelf = shelves[code] ?? "(unassigned)"
@@ -162,10 +162,9 @@ pub fn shelfOf(id: Id(^books), shelves: Map<string, string>): Result<string, str
 }
 ```
 
-Local and durable presence take the same shape. A sparse durable read and a
-local optional both take a diverging `else` that binds the present value past
-the guard; a map lookup falls back with `??`. Past each guard the value is in
-scope and present.
+Both bindings handle absence before continuing. `ref` retains the durable
+address; `const` binds a copied value. A sparse field read remains optional
+even through a reference. The map lookup falls back with `??`.
 
 A mutating export puts its guards at the top of its block and its writes
 below them, as `shelve` does above. Each guard returns before the first write,
@@ -246,9 +245,8 @@ store ^books[id: int]: Book
 
 pub fn createBook(title: string): Id(^books) {
     transaction {
-        place seq = ^idseq["book"]
-        const next = (seq.value ?? 0) + 1
-        seq = Counter(value: next)
+        const next = (^idseq["book"].value ?? 0) + 1
+        ^idseq["book"] = Counter(value: next)
         const bid = Id(^books, next)
         ^books[bid] = Book(title: title)
         return bid
@@ -267,8 +265,8 @@ test "example: createBook" {
 }
 ```
 
-`seq.value ?? 0` supplies the first value when the counter entry is absent, so
-no separate initialization is needed, and `seq = Counter(value: next)` writes
+`^idseq["book"].value ?? 0` supplies the first value when the counter entry is absent, so
+no separate initialization is needed, and `^idseq["book"] = Counter(value: next)` writes
 the counter whole: the first call creates it and each later call replaces it.
 The increment and the create share one block, so they commit or roll back
 together: a key is never advanced without its entry. `Id(^books, next)` constructs the [entry identity](types-and-values.md#entry-identity)

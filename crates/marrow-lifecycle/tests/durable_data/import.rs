@@ -43,7 +43,7 @@ pub fn readLabel(n: int): string {
 }
 "#;
 
-/// The same declarations with an export that touches no durable place: its accepted ceiling
+/// The same declarations with an export that touches no durable path: its accepted ceiling
 /// admits no durable demand, so a head carrying it refuses [`SOURCE`]'s reads.
 const STORELESS_EXPORT_SOURCE: &str = r#"resource Counter {
     required value: int

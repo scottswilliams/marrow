@@ -58,12 +58,12 @@ entry with the two required fields and no subtitle. `describe` reads the whole e
 A required field is present in every valid value. A constructor names each
 required field, and a missing one is a `check.type` error. A required field of
 a durable entry is present whenever the entry is
-([Writing](durable-places.md#writing)). A sparse field may be absent, and reading one yields `T?`. A sparse field already models absence, so
+([Writing](durable-data.md#writing)). A sparse field may be absent, and reading one yields `T?`. A sparse field already models absence, so
 declare a field `Option<T>` only when a stored `none` must differ from an unset
 field ([Option and Result](types-and-values.md#option-and-result)).
 
 The types a field holds are listed in
-[what a field holds](durable-places.md#what-a-field-holds). A `///` comment may
+[what a field holds](durable-data.md#what-a-field-holds). A `///` comment may
 precede the resource and each member; it carries no meaning to the compiler.
 
 ## Members
@@ -83,15 +83,15 @@ A required field inside a branch applies to each entry of the branch, and
 declaring the branch creates no entry. A branch may take several key
 components, `loans[borrower: string, day: date]`, and is then addressed by the
 whole tuple in order. A key is an `int`, `string`, `bool`, `bytes`, `date`, or
-`instant` ([Keys](durable-places.md#keys)). Within one layer, key names and
+`instant` ([Keys](durable-data.md#keys)). Within one layer, key names and
 field names share one namespace: a branch's key components together with its
 fields and nested branches form one layer, and the resource's own fields,
 groups, and branches form another. A name is declared once per layer; a repeat
 is a `check.name_conflict` at the repeated name. A store root's key names are
-the store's own ([Keys](durable-places.md#keys)).
+the store's own ([Keys](durable-data.md#keys)).
 
 A branch holds scalar fields and may hold further branches
-([Keyed branches](durable-places.md#keyed-branches)). Today, a group sits
+([Keyed branches](durable-data.md#keyed-branches)). Today, a group sits
 directly under the resource, and its leaves are scalars when the resource backs
 a store. A group inside a group or a branch, and a keyed scalar leaf such
 as `tags[pos: int]: string`, are future work ([status](../status.md)).
@@ -226,5 +226,5 @@ is no whole-family read, replace, or delete.
 Whole assignment stores exactly the fields the value carries. Assigning a `Book`
 to `^books[id]` rewrites the entry's fields, drops every sparse field and group
 leaf the value omits, and leaves the `notes` entries in place. To change one
-field of a present entry, write it through a proved place
-([Writing](durable-places.md#writing)).
+field of a present entry, write it through a checked entry reference
+([Writing](durable-data.md#writing)).

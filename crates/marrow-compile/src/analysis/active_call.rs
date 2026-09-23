@@ -214,9 +214,7 @@ fn collect_statement_calls<'a>(statement: &'a Statement, sink: &mut Vec<CallSite
             collect_expression_calls(value, sink);
         }
         Statement::Delete { path, .. } => collect_expression_calls(path, sink),
-        Statement::PlaceBinding { place, .. } | Statement::Unset { place, .. } => {
-            collect_expression_calls(place, sink)
-        }
+        Statement::Unset { target, .. } => collect_expression_calls(target, sink),
         Statement::Return { value, .. } => {
             if let Some(value) = value {
                 collect_expression_calls(value, sink);
@@ -290,6 +288,11 @@ fn collect_statement_calls<'a>(statement: &'a Statement, sink: &mut Vec<CallSite
         }
         Statement::LetElse {
             value, else_block, ..
+        }
+        | Statement::EntryBinding {
+            address: value,
+            else_block,
+            ..
         } => {
             collect_expression_calls(value, sink);
             collect_block_calls(else_block, sink);

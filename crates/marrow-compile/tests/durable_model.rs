@@ -18,6 +18,8 @@ mod durable_identity_gaps;
 mod durable_identity_stability;
 #[path = "durable_model/durable_value_dag.rs"]
 mod durable_value_dag;
+#[path = "durable_model/entry_references.rs"]
+mod entry_references;
 #[path = "durable_model/member_namespaces.rs"]
 mod member_namespaces;
 #[path = "durable_model/multi_resource.rs"]

@@ -131,7 +131,7 @@ define_keywords! {
     Required => { spelling: "required", class: Modifier },
     Const => { spelling: "const", class: Declaration },
     Var => { spelling: "var", class: Declaration },
-    Place => { spelling: "place", class: Declaration },
+    Ref => { spelling: "ref", class: Declaration },
     Checked => { spelling: "checked", class: Modifier },
     If => { spelling: "if", class: ControlFlow },
     Else => { spelling: "else", class: ControlFlow },

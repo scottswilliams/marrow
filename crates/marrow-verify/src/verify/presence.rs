@@ -51,8 +51,8 @@ impl<'a> EntryFamilies<'a> {
     }
 }
 
-/// Phase 5 (presence): the place-slot presence lattice. A present-form
-/// instruction — field set, group read or replacement through place slots — asserts
+/// Phase 5 (presence): the address-slot presence lattice. A present-form
+/// instruction — field set, group read or replacement through captured address slots — asserts
 /// its containing entry is present; this recheck proves that independently of the
 /// compiler, so a forged or mis-lowered present-form op whose graph cannot imply its
 /// payload is refused.
@@ -64,7 +64,7 @@ impl<'a> EntryFamilies<'a> {
 /// present edge — or by a whole-entry `DurCreateEntry` keyed by those slots. It is *killed*
 /// by any entry erase of the fact's family whatever key the erase names, by a call whose
 /// demand closure erases an entry of the family, and by any `LocalSet` of a slot the fact
-/// reads (a `place` key slot is bind-once, so a rebind never fires on compiler output; it
+/// reads (a reference key slot is bind-once, so a rebind never fires on compiler output; it
 /// hardens the recheck against a mutated tape). Facts join by intersection at merges.
 pub(super) fn check_presence_flow(
     function: &SealedFunction,

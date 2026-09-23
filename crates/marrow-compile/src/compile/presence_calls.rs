@@ -1,14 +1,16 @@
-//! Erase closures and presence-use intervals over the existing ordered call logs.
+//! Erase closures and presence queries over shared, parent-linked call paths.
 //!
 //! One word per minted function is reused for stripes of 64 queried families.
-//! Pending interval chains are drained only by a matching eraser; each query is
-//! queued and drained at most once, including queries that have already expired.
+//! Each path node and query is visited once per relevant stripe. A loop join also
+//! visits its original call range: nested joins repeat a call at most once per
+//! enclosing loop, bounded by the syntax nesting limit. Paths are never expanded
+//! into a separate interval list for each protected use.
 
 use std::collections::{HashMap, HashSet};
 
 use super::{AcyclicCallOrder, DiagnosticCollector, LoweredFn, LoweredFunctionSet};
 use crate::durable::Family;
-use crate::lower::{PresenceObligation, requires_presence};
+use crate::lower::{PresenceCallNode, PresenceObligation, requires_presence};
 struct Query<'a> {
     function: usize,
     family: usize,
@@ -45,7 +47,7 @@ struct Failure {
     call: usize,
 }
 
-/// Reject protected uses whose ordinary or crossed-loop interval contains an
+/// Reject protected uses whose ordinary or crossed-loop path contains an
 /// entry-erasing call. No function body or graph analysis is repeated here.
 pub(super) fn reject_unproven_uses(
     lowered: &LoweredFunctionSet,
@@ -53,12 +55,10 @@ pub(super) fn reject_unproven_uses(
     diagnostics: &mut DiagnosticCollector,
 ) {
     let functions = lowered.functions();
-    if !lowered.eligible(acyclic).any(|function| {
-        function
-            .presence_obligations
-            .iter()
-            .any(|obligation| !obligation.calls.is_empty())
-    }) {
+    if !lowered
+        .eligible(acyclic)
+        .any(|function| !function.presence_obligations.is_empty())
+    {
         return;
     }
     let erased: HashSet<&Family> = lowered
@@ -71,7 +71,6 @@ pub(super) fn reject_unproven_uses(
     }
     let erases = collect_erases(functions, acyclic, &families);
     let mut summary = vec![0u64; functions.len()];
-    let mut next = Vec::new();
     let mut failures = Vec::new();
     let mut erase_cursor = 0;
     let mut query_cursor = 0;
@@ -98,16 +97,15 @@ pub(super) fn reject_unproven_uses(
                 clippy::expect_used,
                 reason = "collect_queries retains only bodies in the closed eligible component"
             )]
-            let calls = &functions[function]
+            let body = functions[function]
                 .as_ref()
-                .expect("queries retain eligible functions")
-                .callees;
+                .expect("queries retain eligible functions");
             settle(
-                calls,
+                &body.callees,
+                &body.presence_calls,
                 &summary,
                 &queries[query_cursor..end],
                 query_cursor,
-                &mut next,
                 &mut failures,
             );
             query_cursor = end;
@@ -128,7 +126,7 @@ fn collect_queries<'a>(
             continue;
         };
         for (original, obligation) in lowered.presence_obligations.iter().enumerate() {
-            if obligation.calls.is_empty() {
+            if obligation.start == Some(obligation.end) {
                 continue;
             }
             if !erased.contains(&obligation.family) {
@@ -148,8 +146,7 @@ fn collect_queries<'a>(
         (
             query.stripe(),
             query.function,
-            query.obligation.calls.start,
-            query.obligation.calls.end,
+            query.obligation.end,
             query.original,
         )
     });
@@ -199,55 +196,111 @@ fn propagate(functions: &[Option<LoweredFn>], acyclic: &AcyclicCallOrder, summar
     }
 }
 
+/// Flat adjacency for the immutable paths. The extra parent slot is the forest's
+/// synthetic root; depth zero precedes every recorded call.
+struct PathIndex {
+    first_child: Vec<Option<usize>>,
+    next_sibling: Vec<Option<usize>>,
+    depth: Vec<usize>,
+}
+
+impl PathIndex {
+    fn new(nodes: &[PresenceCallNode]) -> Self {
+        let mut index = Self {
+            first_child: vec![None; nodes.len() + 1],
+            next_sibling: vec![None; nodes.len()],
+            depth: vec![0; nodes.len()],
+        };
+        for (node, path) in nodes.iter().enumerate() {
+            debug_assert!(path.parent.is_none_or(|parent| parent < node));
+            index.depth[node] = path.parent.map_or(1, |parent| index.depth[parent] + 1);
+            let parent = path.parent.unwrap_or(nodes.len());
+            index.next_sibling[node] = index.first_child[parent];
+            index.first_child[parent] = Some(node);
+        }
+        index
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Witness {
+    depth: usize,
+    call: usize,
+}
+
+enum Visit {
+    Enter(usize),
+    Restore(usize),
+}
+
 fn settle(
     calls: &[u16],
+    nodes: &[PresenceCallNode],
     summary: &[u64],
     queries: &[Query<'_>],
     offset: usize,
-    next: &mut Vec<Option<usize>>,
     failures: &mut Vec<Failure>,
 ) {
-    let mut head = [None; 64];
-    let mut pending = 0u64;
-    let mut cursor = 0;
-    next.resize(queries.len(), None);
-    let end = queries
-        .iter()
-        .map(|query| query.obligation.calls.end)
-        .max()
-        .unwrap_or(0);
-    for (position, &callee) in calls[..end].iter().enumerate() {
-        while let Some(query) = queries
-            .get(cursor)
-            .filter(|query| query.obligation.calls.start <= position)
-        {
-            if position < query.obligation.calls.end {
-                let bit = query.family % 64;
-                next[cursor] = head[bit];
-                head[bit] = Some(cursor);
-                pending |= 1 << bit;
+    let tree = PathIndex::new(nodes);
+    let mut first_query = vec![None; nodes.len()];
+    for (index, query) in queries.iter().enumerate() {
+        first_query[query.obligation.end].get_or_insert(index);
+    }
+    let mut visits = Vec::new();
+    push_children(&tree, nodes.len(), &mut visits);
+    let mut last = [None; 64];
+    let mut undo = Vec::new();
+    while let Some(visit) = visits.pop() {
+        let node = match visit {
+            Visit::Enter(node) => node,
+            Visit::Restore(mark) => {
+                for (bit, previous) in undo.drain(mark..).rev() {
+                    last[bit] = previous;
+                }
+                continue;
             }
-            cursor += 1;
+        };
+        let mark = undo.len();
+        let mut seen = 0u64;
+        for call in nodes[node].calls.clone() {
+            let mut hits = summary.get(usize::from(calls[call])).copied().unwrap_or(0) & !seen;
+            seen |= hits;
+            while hits != 0 {
+                let bit = hits.trailing_zeros() as usize;
+                hits &= hits - 1;
+                undo.push((bit, last[bit]));
+                last[bit] = Some(Witness {
+                    depth: tree.depth[node],
+                    call,
+                });
+            }
         }
-        if pending == 0 {
-            continue;
-        }
-        let mut hits = pending & summary.get(usize::from(callee)).copied().unwrap_or(0);
-        pending &= !hits;
-        while hits != 0 {
-            let bit = hits.trailing_zeros() as usize;
-            hits &= hits - 1;
-            let mut chain = head[bit].take();
-            while let Some(index) = chain {
-                if position < queries[index].obligation.calls.end {
+        if let Some(start) = first_query[node] {
+            for (index, query) in queries.iter().enumerate().skip(start) {
+                if query.obligation.end != node {
+                    break;
+                }
+                let depth = query.obligation.start.map_or(0, |start| tree.depth[start]);
+                if let Some(witness) = last[query.family % 64]
+                    && witness.depth > depth
+                {
                     failures.push(Failure {
                         query: offset + index,
-                        call: position,
+                        call: witness.call,
                     });
                 }
-                chain = next[index];
             }
         }
+        visits.push(Visit::Restore(mark));
+        push_children(&tree, node, &mut visits);
+    }
+}
+
+fn push_children(tree: &PathIndex, parent: usize, visits: &mut Vec<Visit>) {
+    let mut child = tree.first_child[parent];
+    while let Some(node) = child {
+        visits.push(Visit::Enter(node));
+        child = tree.next_sibling[node];
     }
 }
 

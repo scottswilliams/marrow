@@ -62,10 +62,8 @@ pub fn set(id: int, v: int) {
 
 pub fn setLabel(id: int, text: string) {
     transaction {
-        place c = ^counters[id]
-        if exists(c) {
-            c.label = text
-        }
+        ref c = ^counters[id] else { return }
+        c.label = text
     }
 }
 
@@ -77,8 +75,8 @@ pub fn eraseEntry(id: int) {
 
 pub fn setThenOverflow(id: int, big: int) {
     transaction {
-        place c = ^counters[id]
-        c = Counter(value: 1)
+        ^counters[id] = Counter(value: 1)
+        ref c = ^counters[id] else { unreachable("created entry missing") }
         c.value = big + big
     }
 }
@@ -586,7 +584,7 @@ fn a_committed_transaction_is_observable_by_a_later_read() {
     );
 }
 
-/// A sparse field written through a proven place and committed in its own transaction
+/// A sparse field written through a proven reference and committed in its own transaction
 /// reads back; a second transaction replacing the whole entry drops the earlier sparse
 /// leaf (exact replacement).
 #[test]

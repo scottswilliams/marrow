@@ -98,7 +98,7 @@ pub fn f(): int {
     assert!(stdout.contains(r#""code":"check.type""#), "{stdout}");
 }
 
-/// `unset` on a durable place is rejected: durable erasure uses `delete`.
+/// `unset` on a durable path is rejected: durable erasure uses `delete`.
 #[test]
 fn unsetting_a_durable_place_is_a_check_type_diagnostic() {
     let workspace = Project::single(

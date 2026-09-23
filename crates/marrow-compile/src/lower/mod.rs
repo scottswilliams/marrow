@@ -168,7 +168,7 @@ pub(crate) struct LoweredFn {
     pub(crate) unwrapped_mutations: Vec<SourceSpan>,
     /// Calls this body performs outside any `transaction` block, with their spans.
     pub(crate) unwrapped_calls: Vec<(u16, SourceSpan)>,
-    /// Whether this body performs a durable-place operation directly rather than only
+    /// Whether this body performs a durable-address operation directly rather than only
     /// through calls. Consumed by the test-body direct-operation refusal.
     pub(crate) has_direct_durable_op: bool,
     /// Entry families directly erased by this body. Calls inherit only these
@@ -176,6 +176,7 @@ pub(crate) struct LoweredFn {
     pub(crate) erased_families: Vec<Family>,
     /// Present-form writes whose proofs a call may have ended.
     pub(crate) presence_obligations: Vec<PresenceObligation>,
+    pub(crate) presence_calls: Vec<PresenceCallNode>,
     /// Full source spans parallel to the instructions owned by `func` in the draft.
     /// Transaction-ownership validation borrows that code after body settlement.
     pub(crate) code_spans: Vec<SourceSpan>,
@@ -230,11 +231,11 @@ struct Local {
     slot: u16,
 }
 
-/// A resolved nested place path rooted at a local. `indices` are the field slots
+/// A resolved nested address path rooted at a local. `indices` are the field slots
 /// descended from the local (empty for the bare local); `ty` is the value type at the
 /// end of that descent. Every descended field is a present composite, so the path
 /// supports a read-modify-write without a presence test.
-struct PlaceChain {
+struct AccessChain {
     slot: u16,
     mutable: bool,
     root_span: SourceSpan,
@@ -245,7 +246,7 @@ struct PlaceChain {
 
 /// The refusal a handle addresses, from the namespace ledger that minted it.
 ///
-/// The one place a `Copy` refusal handle becomes a renderable cause, so no consumer picks
+/// The one address a `Copy` refusal handle becomes a renderable cause, so no consumer picks
 /// a ledger by guesswork. The ledger checks the tag itself: a handle presented to the
 /// wrong owner is drift, not a neighbouring summary.
 pub(super) fn refusal_summary<'r>(
@@ -391,12 +392,17 @@ pub(crate) struct FnLowerer<'a, 'd> {
     /// `Local` was bound. Suppressing a later reference keeps one bad initializer from
     /// spawning an `is not in scope` report at every later use.
     poisoned_bindings: BTreeSet<String>,
-    /// In-scope source-local named `place` bindings, scoped like `locals`.
-    places: Vec<PlaceLocal<'a>>,
+    /// In-scope source-local named `ref` bindings, scoped like `locals`.
+    entry_refs: Vec<EntryReference<'a>>,
     /// Lexically scoped presence proofs, including invalidated ones, newest last. A
     /// fact established in a guarded block or after an upsert does not outlive its
     /// block. The verifier rechecks each present-form operation independently.
-    present_places: Vec<PresenceFact<'a>>,
+    present_entries: Vec<PresenceFact<'a>>,
+    /// Direct invalidations to restore when each nested absence arm finishes.
+    presence_undo: Vec<Vec<(usize, PresenceState)>>,
+    /// Immutable call-history nodes shared by all presence facts and uses.
+    presence_calls: Vec<PresenceCallNode>,
+    presence_call_head: Option<usize>,
     loops: Vec<LoopCtx<'a>>,
     /// The entry families this body erases directly.
     erased_families: Vec<&'a Family>,
@@ -438,8 +444,8 @@ pub(crate) use self::builtins::{
     BindingScope, builtin_const_int, builtin_value_names, refused_binding_name,
 };
 pub(crate) use self::diagnostics::requires_presence;
-pub(crate) use self::durable::{is_durable_place_op, is_mutation_instr};
-pub(crate) use self::presence::PresenceObligation;
+pub(crate) use self::durable::{is_durable_address_op, is_mutation_instr};
+pub(crate) use self::presence::{PresenceCallNode, PresenceObligation};
 pub(crate) use self::registry::{
     DeclaredFn, FunctionRegistry, GenericRegistry, GenericTemplate, ModuleBinding, ModuleLedger,
     ModuleScope, SignatureOutcome, dotted_module_path,
@@ -510,8 +516,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             unwrapped_calls: Vec::new(),
             locals: Vec::new(),
             poisoned_bindings: BTreeSet::new(),
-            places: Vec::new(),
-            present_places: Vec::new(),
+            entry_refs: Vec::new(),
+            present_entries: Vec::new(),
+            presence_undo: Vec::new(),
+            presence_calls: Vec::new(),
+            presence_call_head: None,
             erased_families: Vec::new(),
             presence_obligations: Vec::new(),
             loops: Vec::new(),
@@ -907,7 +916,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let code = std::mem::take(&mut self.code);
         let spans = std::mem::take(&mut self.spans);
         let code_spans = std::mem::take(&mut self.full_spans);
-        let has_direct_durable_op = code.iter().any(is_durable_place_op);
+        let has_direct_durable_op = code.iter().any(is_durable_address_op);
         self.draft.fill_function(
             func_id,
             FunctionDef {
@@ -931,6 +940,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             unwrapped_calls: std::mem::take(&mut self.unwrapped_calls),
             erased_families: self.erased_families.drain(..).cloned().collect(),
             presence_obligations: std::mem::take(&mut self.presence_obligations),
+            presence_calls: std::mem::take(&mut self.presence_calls),
             has_direct_durable_op,
             code_spans,
         })))
@@ -973,7 +983,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
         }
         if let Instr::Call(target) = &instr {
+            let start = self.calls.len();
             self.calls.push(*target);
+            // Calls before any live lexical fact cannot invalidate a later proof.
+            // Pure bodies retain only the ordinary call graph.
+            if !self.present_entries.is_empty() {
+                self.append_presence_calls(start..self.calls.len());
+            }
         }
         let index = self.code.len() as u32;
         self.code_bytes = next_code_bytes;
@@ -1238,7 +1254,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         self.failed = true;
     }
 
-    /// Bind one durable place — a root occurrence, the canonical declaration path of the
+    /// Bind one durable address — a root occurrence, the canonical declaration path of the
     /// node it addresses, and the operation target over it — into a site handle.
     ///
     /// The draft published both selectors and admits exactly one target per node, so a

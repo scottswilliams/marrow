@@ -236,7 +236,7 @@ fn mutated_indexed_durable_images_never_panic_the_verifier() {
 /// A good durable image whose mutating export carries a strict present-entry sparse
 /// set guarded by `if exists(p)`. Mutating it reaches the DurSetField decode
 /// (a `u16` site, a `u16` key-path length, then one `u16` per key-path slot) and the
-/// place-slot presence lattice, which a bare-set image never exercises.
+/// address-slot presence lattice, which a bare-set image never exercises.
 fn a_strict_durable_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
     let mut draft = draft_owner.begin_transaction();

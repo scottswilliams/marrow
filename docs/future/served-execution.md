@@ -20,7 +20,7 @@ exports and carry no language semantics or physical keys.
 Authentication and path authorization are separate. Application data cannot
 mint credentials or grants, and restoring old application data must not revive
 revoked authority. Public routes project from semantic facts: publication
-grants nothing, a private place is not automatically public, and physical keys
+grants nothing, a private path is not automatically public, and physical keys
 never become public addresses.
 
 Reader overlap, cancellation, draining on activation and transport backpressure

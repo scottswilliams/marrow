@@ -86,7 +86,7 @@ test "put then lookup" {
 }
 ```
 
-`greet` and `half` touch no durable place. `put` and `lookup` are durable exports.
+`greet` and `half` touch no durable address. `put` and `lookup` are durable exports.
 
 ## marrow init
 
@@ -150,9 +150,9 @@ project of one export and 257 `test` declarations reports
 test entry table is full` from `check` and runs its export. The editor's
 snapshot fact retention bound is not consulted by `check`.
 
-A project that checks clean prints its access demand: the durable places each
+A project that checks clean prints its access demand: the durable paths each
 export reads and writes ([access
-demand](../language/durable-places.md#access-demand)), grouped by module:
+demand](../language/durable-data.md#access-demand)), grouped by module:
 
 ```text
 $ marrow check .
@@ -167,11 +167,11 @@ docs.cli.shelf: 4 exports
   storeless: greet, half
 ```
 
-Each export names every place it reads and every place it writes, in source
+Each export names every path it reads and every path it writes, in source
 spelling and ordered by spelling; a `reads` or `writes` line continues on an
 indented line rather than run past 96 columns. Adjacent exports of one module
 that share an identical demand are listed once, as `alpha, beta (2 exports, one
-shared demand)`, and the exports that touch no durable place collapse to one
+shared demand)`, and the exports that touch no durable address collapse to one
 `storeless:` note; a module with only such exports folds to its header line.
 
 Every export listed is the project's own. A dependency's `pub fn` is callable from
@@ -179,7 +179,7 @@ source across the boundary but takes no export slot here, so it appears in no de
 listing and `marrow run` does not name it; a library's exports are run where the
 library is.
 
-The two places `lookup` reads are the index and one field. Demand describes
+The two paths `lookup` reads are the index and one field. Demand describes
 the access a program requires; it grants nothing. `check` writes nothing: a
 fresh durable project reports one `check.durable_identity` diagnostic per store root,
 naming each missing declaration, until one `marrow run` or `marrow test` writes
@@ -359,7 +359,7 @@ open ([compatibility](../compatibility.md#versioning)).
 [Auditing a store](../operations/README.md#auditing-a-store) states what the
 walk covers, what a finding means, and what the digest does and does not
 establish. The report lists at most 256 findings, each with a stable `store.*`
-code and a place ([error codes](../error-codes.md)); an index is named by its
+code and a path ([error codes](../error-codes.md)); an index is named by its
 identity from `.marrow/ids`, because the compiled program carries no index name.
 `entries` counts concrete entry markers at every level, `index cells` counts
 managed-index cells, and `cells` counts stored cells once each.
@@ -373,7 +373,7 @@ listed finding. A completed walk reports `scope: "logical"`,
 `physical_integrity: "not_checked"`, and `outcome: "clean"` or `"findings"`,
 together with its counts, instance, image, and digest. `findings` counts all
 findings and `listed` counts the records that follow; each finding carries
-`code` and `place`. A lifecycle refusal or engine read failure reports
+`code` and `path`. A lifecycle refusal or engine read failure reports
 `outcome: "error"` and its `code`. Project compilation and companion-installation
 failures go to standard error in either format; compiler resource and invariant
 failures retain `cli.compiler_resource_limit` and `cli.compiler_invariant`.
@@ -440,7 +440,7 @@ JSONL output has `kind: "apply"`. Success has `outcome: "applied"`, `instance`,
 `old_image`, `new_image`, `old_ceiling` and `ceiling`. Failure has `code` and an
 `outcome` of `refused`, `metadata_failed` or `activation_uncertain`. Ceiling
 refusal adds `old_ceiling`, proposed `ceiling` and `added_effects` containing
-`export`, `effect` and nullable `place`. Activation uncertainty retains `instance`.
+`export`, `effect` and nullable `path`. Activation uncertainty retains `instance`.
 Default text output displays these same fields.
 
 Success exits `0`; companion or output-delivery failure exits `1`. Arguments

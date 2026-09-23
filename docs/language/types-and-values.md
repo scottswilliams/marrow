@@ -3,10 +3,10 @@
 Every Marrow value is copied when it is passed, returned, or assigned, and
 absence has one model, `T?`. A scalar,
 a struct, an enum, a list, a map, and a resource all copy on assignment, on a
-call, and on return. A sparse field, a bracket lookup, and an unproved durable
+call, and on return. A sparse field, a bracket lookup, and a direct durable
 read yield `T?`, and one set of forms consumes it. A required field read through
-a proved durable place has its declared type
-([named places](durable-places.md#named-places)).
+a checked entry reference has its declared type
+([entry references](durable-data.md#entry-references)).
 
 Two values and two absences:
 
@@ -123,18 +123,18 @@ outside the type's range faults `run.temporal_overflow`.
 parse error, and a struct field holds a bare type. `List<T>?` is an optional
 whose value is a whole list.
 
-A sparse field read, a bracket lookup, an untested durable read, and a function returning
-`T?` produce an optional. Four forms consume one. `value ?? fallback` selects the
+A sparse field read, a bracket lookup, a direct durable read, and a function
+returning `T?` produce an optional. Four forms consume one. `value ?? fallback` selects the
 present value or the fallback. `if const name = value` enters its block with
 `name` bound to the present value. A [let-else](control-flow.md#let-else-bindings)
 binding diverges when the value is absent. `value?.field` reads a field through
 an optional struct or resource and yields an optional.
 
-`exists` is not one of them: it inspects and yields a `bool`. `exists(place)`
-tests a durable place; `exists(value)` tests any `T?` expression. Neither unwraps
-the optional nor narrows it: after `if exists(v)`, `v` is still a `T?`. An
-explicit guard over a named place proves its entry present and gives required
-field reads their declared types ([named places](durable-places.md#named-places));
+`exists` is not one of them: it inspects and yields a `bool`. `exists(address)`
+tests a durable address; `exists(value)` tests any `T?` expression. Neither unwraps
+the optional nor narrows it: after `if exists(v)`, `v` is still a `T?`. A
+checked entry reference gives required field reads their declared types
+([entry references](durable-data.md#entry-references));
 it does not unwrap a local optional or make a sparse field required.
 
 ```mw
@@ -179,10 +179,10 @@ test "optionals" {
 absent `origin(false)` yields an absent `int?` without faulting. The
 optional-producing call runs once in each form.
 
-An untested durable read is optional even when the field is `required`, because
+A direct durable read is optional even when the field is `required`, because
 the entry itself may be absent. `^books[id].title` is a `string?`, and
 `if const book = ^books[id]` binds a whole `Book` whose required fields are
-bare. Reading is described under [durable places](durable-places.md#reading).
+bare. Reading is described under [durable paths](durable-data.md#reading).
 
 ## Structs
 
@@ -337,8 +337,8 @@ The test annotates `expected` so that `ok("hello ada")` has a type to take.
 distinct: `none`, `some(none)`, and `some(some(v))` are three values of
 `Option<Option<int>>`.
 
-`T?` and `Option<T>` answer different questions. Use `T?` for the presence of a
-place, and `Option<T>` when absence is a value the program passes around or
+`T?` and `Option<T>` answer different questions. Use `T?` for a read or result
+that may be absent, and `Option<T>` when absence is a value the program passes around or
 stores in a structure. A sparse field already models absence: an unset field
 reads `absent`. Declare a field `Option<T>` only when a stored `none` must be
 distinguishable from the field being unset. Such a field reads as
@@ -455,7 +455,7 @@ each key with its value, as `keysJoined` shows.
 A collection holds at most 65,536 elements and 1 MiB. An `append` or map insert
 beyond either bound faults `run.collection_limit`. A collection is a local
 value: a resource field and a store key hold no `List` or `Map`, and a keyed
-[branch](durable-places.md#keyed-branches) is the durable shape for many
+[branch](durable-data.md#keyed-branches) is the durable shape for many
 children.
 
 ## Generic types
@@ -731,7 +731,7 @@ value from a literal and convert nothing at run time.
 
 ## Key types
 
-A key names one element of a collection or a durable place. Local `Map<K, V>`
+A key names one element of a collection or a durable address. Local `Map<K, V>`
 keys use `int`, `bool`, `string`, `bytes`, `date`, `instant`, and `duration`, or
 a nominal int type. A nominal Map key retains its source type and uses its base
 scalar for representation and ordering.
@@ -739,7 +739,7 @@ scalar for representation and ordering.
 Durable key positions use `int`, `bool`, `string`, `bytes`, `date`, or `instant`;
 `duration` and nominal source types are not durable keys. A root or branch may
 take several key components, up to 8, and every component is one of those
-scalars, as described under [durable places](durable-places.md#keys).
+scalars, as described under [durable paths](durable-data.md#keys).
 
 Managed-index key positions use `int`, `bool`, `string`, `bytes`, `date`, or
 `instant`, drawn from a root's identity keys or its top-level scalar fields. Index declarations are
@@ -791,8 +791,8 @@ test "an identity addresses an entry" {
 `Id(^books, 7)` wraps a key as an identity. It reads nothing and proves nothing:
 `Id(^books, 8)` names an entry that is absent. An identity stands in for a
 root's whole key: `^books[id]`, `^books[id].title`, `^books[id].notes[pos]`, and
-`place p = ^books[id]` all take one. An identity of another root in that
-position is a `check.type`. Two identities of one root compare with `==`, and
+the address in `ref p = ^books[id] else { … }` all take one. An identity of
+another root in that position is a `check.type`. Two identities of one root compare with `==`, and
 `string(id)` renders `Id(7)`. A [unique index](traversal-and-indexes.md#reading-an-index)
 yields an identity, and a stored identity keeps addressing its entry after the
 entry is deleted.

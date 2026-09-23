@@ -2,9 +2,9 @@
 //!
 //! Marrow has no `nextId` built-in: an application that needs a fresh, monotonically
 //! increasing key mints one from a durable counter it owns. This pins the documented
-//! journey ([Counter allocation](../../../docs/language/idioms.md)) green: a single
-//! `name`-keyed `^idseq` counter root, a `place seq` bind, the `seq.value ?? 0`
-//! read-with-default, the write-back, and the payload create all share the export's one
+//! journey ([Counter allocation](../../../../docs/language/idioms.md)): a single
+//! `name`-keyed `^idseq` counter root, an optional read with a zero default,
+//! the write-back, and the payload create all share the export's one
 //! `transaction`, so the increment and the create commit as a unit. The test drives the
 //! whole production path — capture -> compile -> verify -> attach -> VM — against one
 //! persistent ephemeral attachment, so a later read observes an earlier allocation.

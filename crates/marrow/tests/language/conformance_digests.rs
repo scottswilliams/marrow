@@ -58,8 +58,8 @@ const DIGESTS: &[(&str, &str)] = &[
         "2912c8b8003238223af3e1f069e05805bc7cec5e11a9d92a577a28807f3867ff",
     ),
     (
-        "place_counter",
-        "37376560708489f5803eed2f6a3b2dc9a83972c61635b3c657a048274d51ffcd",
+        "reference_counter",
+        "67006d37857bff4e9d2706224ce885cdc2524088eef084d75deebe986696e094",
     ),
     (
         "resource_values",
@@ -75,7 +75,7 @@ const DIGESTS: &[(&str, &str)] = &[
     ),
     (
         "tracer_counter",
-        "add1d49f20272ed3833c3ba9976d68ae7daa79c1ec55793aae0994cd9f0c5a78",
+        "88f6accab434938b3133027048394f818910b67934af4387f868ac49d6f00c21",
     ),
     (
         "value_equality",
@@ -83,7 +83,7 @@ const DIGESTS: &[(&str, &str)] = &[
     ),
     (
         "workshop",
-        "ae11fc4bbbf76cdd7d059edc4766783c4ff9f42541f0af3f6a18e21f9ed17580",
+        "49b7bb957a2d4d5e6153786d466b4529e53b9b023207bac8cd82a313efed797e",
     ),
 ];
 

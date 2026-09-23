@@ -1,11 +1,11 @@
-//! The durable-place model and the lowering of durable reads, writes, presence,
+//! The durable-address model and the lowering of durable reads, writes, presence,
 //! traversal, and managed-index access.
 
 use super::*;
 
 mod mutation_emit;
 
-/// The structural durable shape of a place expression.
+/// The structural durable shape of an address expression.
 pub(super) enum DurShape {
     Entry,
     Field,
@@ -13,12 +13,12 @@ pub(super) enum DurShape {
 
 /// How one key column of a durable operation's key-path reaches the stack.
 #[derive(Clone, Copy)]
-pub(super) enum PlaceKey<'e> {
+pub(super) enum AddressKey<'e> {
     /// A key operand expression, lowered — and therefore evaluated — at the
     /// operation site (the inline `^root(key)` form).
     Expr(&'e Expression),
-    /// A key already evaluated once into a local slot (a named `place`); each use reads
-    /// the slot, so the operand runs exactly once however many operations use the place.
+    /// A key already evaluated once into a local slot (an entry reference); each use reads
+    /// the slot, so the operand runs exactly once however many operations use the address.
     Bound(u16),
     /// The whole root key-path supplied by one entry-identity operand (`^root[id]`):
     /// `IdentityKeyPath` spreads it into the root's `cols` key columns. One `Identity`
@@ -38,14 +38,14 @@ pub(super) enum PlaceKey<'e> {
 /// owned by [`FnLowerer::emit_key_path`].
 #[derive(Clone, Copy)]
 pub(super) struct DurKey<'e> {
-    pub(super) key: PlaceKey<'e>,
+    pub(super) key: AddressKey<'e>,
     pub(super) key_ty: ScalarType,
 }
 
-/// A resolved durable place: the key-path that addresses its node and its target. The
-/// path columns are inline operand expressions or a source-local `place`'s
+/// A resolved durable address: the key-path that addresses its node and its target. The
+/// path columns are inline operand expressions or a source-local `ref`'s
 /// pre-evaluated slots; the target is the whole entry or one field.
-pub(super) struct DurablePlace<'a, 'e> {
+pub(super) struct DurableAddress<'a, 'e> {
     keys: Vec<DurKey<'e>>,
     target: DurTarget<'a>,
     /// The family of the entry the operation addresses: the node's own for a whole
@@ -54,31 +54,31 @@ pub(super) struct DurablePlace<'a, 'e> {
     span: SourceSpan,
 }
 
-impl DurablePlace<'_, '_> {
-    /// This place's whole key-path as pre-evaluated slots (root-first) when *every*
-    /// column is a `Bound` slot — the shape a present-form operation and a place-entry
+impl DurableAddress<'_, '_> {
+    /// This address's whole key-path as pre-evaluated slots (root-first) when *every*
+    /// column is a `Bound` slot — the shape a present-form operation and a entry-reference
     /// presence guard require. `None` if any column is an inline key expression.
     pub(super) fn bound_key_path(&self) -> Option<Vec<u16>> {
         self.keys
             .iter()
             .map(|column| match column.key {
-                PlaceKey::Bound(slot) => Some(slot),
-                PlaceKey::Expr(_) | PlaceKey::Identity { .. } => None,
+                AddressKey::Bound(slot) => Some(slot),
+                AddressKey::Expr(_) | AddressKey::Identity { .. } => None,
             })
             .collect()
     }
 }
 
-/// A source-local named `place`: a durable entry designation whose key columns were
+/// A source-local entry reference: a durable entry designation whose key columns were
 /// evaluated exactly once into `key_slots` at the binding. Whole-entry and field
-/// operations through the place read those slots rather than re-evaluating the key
+/// operations through the address read those slots rather than re-evaluating the key
 /// operands.
 ///
-/// The place retains the exact durable node it was bound against, so every later
+/// The address retains the exact durable node it was bound against, so every later
 /// operation through it addresses that occurrence directly. A branch entry record and a
 /// resource spelling are Product *declaration* facts that several roots may project, so
 /// recovering the node from one of them would answer with whichever root came first.
-pub(super) struct PlaceLocal<'a> {
+pub(super) struct EntryReference<'a> {
     pub(super) name: String,
     pub(super) key_slots: Vec<(u16, ScalarType)>,
     pub(super) node: DurNode<'a>,
@@ -94,8 +94,8 @@ pub(super) struct IndexRead<'a, 'e> {
     pub(super) keys: &'e [Expression],
 }
 
-impl<'a> PlaceLocal<'a> {
-    /// The entry this place addresses as a presence fact's key: its family and its whole
+impl<'a> EntryReference<'a> {
+    /// The entry this reference addresses as a presence fact's key: its family and its whole
     /// key-path as pre-evaluated slots (root-first).
     pub(super) fn fact_key(&self) -> (&'a Family, Vec<u16>) {
         (
@@ -104,13 +104,13 @@ impl<'a> PlaceLocal<'a> {
         )
     }
 
-    /// This place's key-path as resolved [`DurKey`] columns reading the pre-evaluated
+    /// This address's key-path as resolved [`DurKey`] columns reading the pre-evaluated
     /// slots, root column first.
     pub(super) fn bound_keys(&self) -> Vec<DurKey<'static>> {
         self.key_slots
             .iter()
             .map(|(slot, ty)| DurKey {
-                key: PlaceKey::Bound(*slot),
+                key: AddressKey::Bound(*slot),
                 key_ty: *ty,
             })
             .collect()
@@ -121,7 +121,7 @@ impl<'a> PlaceLocal<'a> {
 /// one group leaf.
 ///
 /// Each site-bearing variant carries the **handle** its site was bound to, not a minted
-/// operand: the binding happens once, where the member or place is resolved, and the
+/// operand: the binding happens once, where the member or address is resolved, and the
 /// operand is minted at the instruction that names it.
 #[derive(Clone)]
 enum DurTarget<'a> {
@@ -272,26 +272,23 @@ impl<'a> DurNode<'a> {
     }
 }
 
-/// A resolved durable traversal place: the traversed layer's whole-entry site, the
+/// A resolved durable traversal address: the traversed layer's whole-entry site, the
 /// immediate key type it enumerates, and the ancestor key-path locating its parent entry
 /// (empty for a root family, `[root_key]` for a single-level branch family). The bounded
 /// traversal opcode pushes the ancestor path root-first, then the optional inclusive
 /// `from` key, and freezes the traversed layer's immediate keys.
 pub(super) struct TraversalTarget<'a, 'e> {
     /// The exact durable node of the traversed layer — a store root or a keyed branch.
-    /// It carries the layer's whole-entry site and the materialized record a two-binding
-    /// traversal's per-iteration address pin (`for k, p in …`) binds `p` over, and it is
-    /// the node that pin retains.
     pub(super) node: DurNode<'a>,
     pub(super) key_ty: ScalarType,
     pub(super) ancestor_keys: Vec<DurKey<'e>>,
     pub(super) span: SourceSpan,
 }
 
-/// Whether an instruction is a direct durable-place operation — a read, write, presence
-/// probe, erase, or managed-index access over a `^` place. Tests must reach these
+/// Whether an instruction is a direct durable-address operation — a read, write, presence
+/// probe, erase, or managed-index access over a `^` address. Tests must reach these
 /// through calls.
-pub(crate) fn is_durable_place_op(instr: &Instr) -> bool {
+pub(crate) fn is_durable_address_op(instr: &Instr) -> bool {
     matches!(
         instr.op_class(),
         OpClass::DurableMutation | OpClass::DurableRead
@@ -307,21 +304,21 @@ pub(crate) fn is_mutation_instr(instr: &Instr) -> bool {
 /// Where a durable address is rooted.
 ///
 /// The two spellings differ only at the base: an inline address names its store at the
-/// `^name` leaf, a place-rooted one starts at an in-scope `place`/pin binding whose key
+/// `^name` leaf, an address-rooted one starts at an in-scope entry reference binding whose key
 /// columns were evaluated once. Every selector below the base resolves the same way, so
 /// this is the only thing the shared resolvers branch on.
 #[derive(Clone, Copy)]
 pub(super) enum EntryBase<'a> {
     Inline(&'a crate::durable::DurableRoot),
-    Place,
+    Reference,
 }
 
 impl<'a, 'd> FnLowerer<'a, 'd> {
-    // --- Durable places ---
+    // --- Durable entry_refs ---
 
-    /// Detect the inline durable shape of a place expression: a whole-entry address
+    /// Detect the inline durable shape of an address expression: a whole-entry address
     /// `^root(key)….b(bkey)` at any depth, or a field-exact address
-    /// `<entry-address>.field`. No diagnostics, and it does not see source-local `place`
+    /// `<entry-address>.field`. No diagnostics, and it does not see source-local `ref`
     /// bindings; use [`Self::durable_access`] for the full detection.
     pub(super) fn durable_shape(expr: &Expression) -> Option<DurShape> {
         if is_entry_address(expr) {
@@ -358,8 +355,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// The durable node an entry address reaches, without emitting.
     ///
     /// One walker for both spellings: an inline `^root[k].b[bk]…` chain resolved against
-    /// the named store root, and a place-rooted `p.b[bk]…` chain resolved against the node
-    /// the `place`/pin binding already addresses. `None` when `expr` is not a resolvable
+    /// the named store root, and an address-rooted `p.b[bk]…` chain resolved against the node
+    /// the entry reference binding already addresses. `None` when `expr` is not a resolvable
     /// entry address. The emitting resolvers own the diagnostics; this only classifies.
     ///
     /// Borrows the registry (`'a`), not `&self`.
@@ -368,9 +365,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         expr: &Expression,
     ) -> Result<Option<DurNode<'a>>, DeclarationIndexDrift> {
         match expr {
-            // A bare `place`/pin name.
+            // A bare entry reference name.
             Expression::Name { segments, .. } => Ok(match &segments[..] {
-                [name] => self.lookup_place(name.text()).map(|place| place.node),
+                [name] => self
+                    .lookup_entry_ref(name.text())
+                    .map(|address| address.node),
                 _ => None,
             }),
             Expression::Keyed { base, .. } => match &**base {
@@ -405,17 +404,20 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         )
     }
 
-    /// The most recent in-scope `place` binding named `name`, if any.
-    pub(super) fn lookup_place(&self, name: &str) -> Option<&PlaceLocal<'a>> {
-        self.places.iter().rev().find(|place| place.name == name)
+    /// The most recent in-scope `ref` binding named `name`, if any.
+    pub(super) fn lookup_entry_ref(&self, name: &str) -> Option<&EntryReference<'a>> {
+        self.entry_refs
+            .iter()
+            .rev()
+            .find(|address| address.name == name)
     }
 
-    /// Whether `name` names an in-scope `place`.
-    pub(super) fn is_place_name(&self, expr: &Expression) -> bool {
+    /// Whether `name` names an in-scope `ref`.
+    pub(super) fn is_address_name(&self, expr: &Expression) -> bool {
         matches!(
             expr,
             Expression::Name { segments, .. }
-                if matches!(&segments[..], [name] if self.lookup_place(name.text()).is_some())
+                if matches!(&segments[..], [name] if self.lookup_entry_ref(name.text()).is_some())
         )
     }
 
@@ -536,36 +538,36 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         if let Some(shape) = self.durable_shape_here(expr)? {
             return Ok(Some(shape));
         }
-        // A place-rooted composed address extends a named `place`/pin with the same field,
+        // An address-rooted composed address extends a named entry reference with the same field,
         // group, and branch selectors an inline `^root` address takes, and classifies the
         // same way: a whole entry, or a field cell. A projection on a durable field
         // *value* (`p.field.sub`) is not a durable cell and falls through to ordinary
         // projection, exactly as the inline form does.
         Ok(match expr {
-            Expression::Name { .. } => self.is_place_name(expr).then_some(DurShape::Entry),
-            // A place-rooted keyed selection `<place>(.branch[bk])+` is a branch entry.
-            Expression::Keyed { .. } => self.is_place_rooted(expr).then_some(DurShape::Entry),
-            // A field cell off a place: a stored field, a whole root-level group, or a
+            Expression::Name { .. } => self.is_address_name(expr).then_some(DurShape::Entry),
+            // An address-rooted keyed selection `<address>(.branch[bk])+` is a branch entry.
+            Expression::Keyed { .. } => self.is_reference_rooted(expr).then_some(DurShape::Entry),
+            // A field cell off an address: a stored field, a whole root-level group, or a
             // group leaf. The entry base is classified syntactically, not by resolving it,
             // so an unknown branch there reaches the resolver and reports "no keyed
             // branch" rather than a confusing projection error. A group leaf is confirmed
             // against the model so `p.field.sub` still falls through.
             Expression::Field { base, .. } => (self.names_a_group(base)?
                 || (matches!(&**base, Expression::Name { .. } | Expression::Keyed { .. })
-                    && self.is_place_rooted(base)))
+                    && self.is_reference_rooted(base)))
             .then_some(DurShape::Field),
             _ => None,
         })
     }
 
     /// Whether the leftmost base of a durable path expression is an in-scope named
-    /// `place`/pin — a bare place name, or a place extended by `.field`, `.group[.leaf]`,
+    /// entry reference — a bare address name, or an address extended by `.field`, `.group[.leaf]`,
     /// or `.branch[bk]` hops.
-    fn is_place_rooted(&self, expr: &Expression) -> bool {
+    fn is_reference_rooted(&self, expr: &Expression) -> bool {
         match expr {
-            Expression::Name { .. } => self.is_place_name(expr),
+            Expression::Name { .. } => self.is_address_name(expr),
             Expression::Field { base, .. } | Expression::Keyed { base, .. } => {
-                self.is_place_rooted(base)
+                self.is_reference_rooted(base)
             }
             _ => false,
         }
@@ -575,7 +577,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// refusal when the group declared it and the compiler refused it.
     ///
     /// The group's anchor `Resource.group` is the leaf ledger's owner. Both the inline
-    /// `^root(k).group.leaf` address and its place-rooted twin land here.
+    /// `^root(k).group.leaf` address and its address-rooted twin land here.
     fn report_missing_group_leaf(
         &mut self,
         root: &crate::durable::DurableRoot,
@@ -680,22 +682,22 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Emit one key column of a durable operation: lower the inline key expression
-    /// (evaluating it here) or read the `place`'s pre-evaluated key slot.
+    /// (evaluating it here) or read the `ref`'s pre-evaluated key slot.
     fn emit_key(
         &mut self,
-        key: PlaceKey,
+        key: AddressKey,
         key_ty: ScalarType,
         span: SourceSpan,
     ) -> ConstructResult<()> {
         match key {
-            PlaceKey::Expr(expr) => self.lower_as(expr, LTy::bare_scalar(key_ty)),
-            PlaceKey::Bound(slot) => {
+            AddressKey::Expr(expr) => self.lower_as(expr, LTy::bare_scalar(key_ty)),
+            AddressKey::Bound(slot) => {
                 self.push(Instr::LocalGet(slot), span)?;
                 Ok(())
             }
             // The one `Identity` key supplies the whole root key-path, so this pushes
             // every root key column, matching the entry site's key arity.
-            PlaceKey::Identity { expr, root, cols } => {
+            AddressKey::Identity { expr, root, cols } => {
                 self.lower_as(
                     expr,
                     LTy::Identity {
@@ -759,7 +761,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// Capture an entry identity into one pre-evaluated `(slot, scalar)` column per root
     /// key column (root-first). The single owner for recording an identity operand as a
-    /// place/traversal key-path, so a place binding and a traversal ancestor spread it
+    /// address/traversal key-path, so a reference binding and a traversal ancestor spread it
     /// identically.
     pub(super) fn capture_identity_key_columns(
         &mut self,
@@ -786,7 +788,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// Materialize a durable operation's whole key-path into one pre-evaluated slot per
     /// physical key column (root-first) — the capture a read-modify-write or an upsert
-    /// needs so its several ops key off one evaluation. A `Bound` column reuses the place
+    /// needs so its several ops key off one evaluation. A `Bound` column reuses the address
     /// slot it already holds; an `Expr` column is evaluated once into a fresh slot; an
     /// entry-identity column spreads into one slot per root key column.
     fn capture_key_slots(
@@ -797,8 +799,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let mut slots = Vec::with_capacity(keys.len());
         for column in keys {
             match column.key {
-                PlaceKey::Bound(slot) => slots.push(slot),
-                PlaceKey::Expr(expr) => {
+                AddressKey::Bound(slot) => slots.push(slot),
+                AddressKey::Expr(expr) => {
                     let slot = self
                         .alloc_slot(expr.span())
                         .ok_or(LoweringFailure::Recoverable)?;
@@ -806,7 +808,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     self.push(Instr::LocalSet(slot), span)?;
                     slots.push(slot);
                 }
-                PlaceKey::Identity { expr, root, cols } => {
+                AddressKey::Identity { expr, root, cols } => {
                     slots.extend(self.capture_identity_key_slots(expr, root, cols, span)?);
                 }
             }
@@ -814,48 +816,77 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Ok(slots)
     }
 
-    /// Lower `place name = ^root(key)`: evaluate the entry address's key tuple exactly
-    /// once into a fresh local slot and record the binding. The binding is immutable and
-    /// does not shadow an existing name; the target must be a whole durable entry address
-    /// (not a field, another place, or a non-durable value).
-    pub(super) fn lower_place_binding(
+    /// Capture an address once, then test only its entry marker. The reference enters
+    /// scope on the present edge; the absent edge must leave the continuation.
+    pub(super) fn lower_entry_binding(
         &mut self,
         name: &str,
         name_span: SourceSpan,
-        place_expr: &Expression,
-    ) -> ConstructResult<()> {
+        address_expr: &Expression,
+        else_block: &Block,
+    ) -> ConstructResult<Flow> {
         if let Some(row) = refused_binding_name(self.file, name_span, name, BindingScope::Local) {
             self.fail(row);
-            return Ok(());
+            return Ok(Flow::Rejected);
         }
-        if self.lookup(name).is_some() || self.lookup_place(name).is_some() {
+        if self.lookup(name).is_some() || self.lookup_entry_ref(name).is_some() {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType,
                 self.file,
                 name_span,
                 format!("`{name}` is already bound in this scope"),
             ));
-            return Ok(());
+            return Ok(Flow::Rejected);
         }
-        match self.bind_place_address(name, place_expr) {
-            Ok(()) => {}
+        let entry = match self.capture_entry_address(name, address_expr) {
+            Ok(entry) => entry,
             Err(LoweringFailure::Recoverable) => {
                 // The address's own diagnostic already fired; poison the name so its later
-                // uses do not each re-report an unbound place on top of that cause.
+                // uses do not each re-report an unbound address on top of that cause.
                 self.poisoned_bindings.insert(name.to_string());
+                return Err(LoweringFailure::Recoverable);
             }
             Err(LoweringFailure::CodeLimitReached) => {
                 return Err(LoweringFailure::CodeLimitReached);
             }
+        };
+        let span = address_expr.span();
+        let site = self
+            .entry_site_operand(entry.node)
+            .ok_or(LoweringFailure::Recoverable)?;
+        for (slot, _) in &entry.key_slots {
+            self.push(Instr::LocalGet(*slot), span)?;
         }
-        Ok(())
+        self.push(Instr::DurExists(site), span)?;
+        let absent = self.push_jif(span)?;
+        let present = self.push_jump(span)?;
+        self.patch(absent, self.here());
+        let flow = self.lower_absence_block(else_block)?;
+        if flow == Flow::Rejected {
+            return Ok(Flow::Rejected);
+        }
+        if flow != Flow::Terminates {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType, self.file, else_block.span,
+                "the `else` of an entry reference must diverge, for example with `return` or `unreachable`".to_string(),
+            ));
+            return Ok(Flow::Rejected);
+        }
+        self.patch(present, self.here());
+        let (family, slots) = entry.fact_key();
+        self.mark_present(family, slots);
+        self.entry_refs.push(entry);
+        Ok(Flow::Fallthrough)
     }
 
-    /// Bind a validated `place` name to its durable entry address, pushing the
-    /// [`PlaceLocal`] on success. An unresolved address is a recoverable failure the
-    /// resolver has already reported, so the caller can poison the name.
-    fn bind_place_address(&mut self, name: &str, place_expr: &Expression) -> ConstructResult<()> {
-        let access = match self.durable_access(place_expr) {
+    /// Capture an entry's key columns without bringing its reference into scope.
+    /// The caller establishes presence before publishing this binding.
+    fn capture_entry_address(
+        &mut self,
+        name: &str,
+        address_expr: &Expression,
+    ) -> ConstructResult<EntryReference<'a>> {
+        let access = match self.durable_access(address_expr) {
             Ok(shape) => shape,
             Err(drift) => {
                 self.ledger_drift::<()>(drift);
@@ -866,32 +897,32 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType,
                 self.file,
-                place_expr.span(),
-                "a `place` names a whole durable entry address such as `^root(key)`".to_string(),
+                address_expr.span(),
+                "a `ref` names a whole durable entry address such as `^root[key]`".to_string(),
             ));
             return Err(LoweringFailure::Recoverable);
         }
-        let place = self
-            .resolve_durable(place_expr)
+        let address = self
+            .resolve_durable(address_expr)
             .ok_or(LoweringFailure::Recoverable)?;
-        let span = place.span;
-        let DurTarget::Entry { node, .. } = place.target else {
+        let span = address.span;
+        let DurTarget::Entry { node, .. } = address.target else {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType,
                 self.file,
-                place_expr.span(),
-                "a `place` names a whole durable entry address such as `^root(key)`, not a field"
+                address_expr.span(),
+                "a `ref` names a whole durable entry address such as `^root[key]`, not a field"
                     .to_string(),
             ));
             return Err(LoweringFailure::Recoverable);
         };
         // Evaluate each key column of the address exactly once into a fresh slot, root
-        // column first, so every later operation through the place reads the slots rather
-        // than re-running the key operands. A branch place binds its whole key-path.
-        let mut key_slots = Vec::with_capacity(place.keys.len());
-        for column in place.keys {
+        // column first, so every later operation through the address reads the slots rather
+        // than re-running the key operands. A branch reference binds its whole key-path.
+        let mut key_slots = Vec::with_capacity(address.keys.len());
+        for column in address.keys {
             match column.key {
-                PlaceKey::Expr(key_expr) => {
+                AddressKey::Expr(key_expr) => {
                     let key_slot = self
                         .alloc_slot(key_expr.span())
                         .ok_or(LoweringFailure::Recoverable)?;
@@ -899,55 +930,54 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     self.push(Instr::LocalSet(key_slot), span)?;
                     key_slots.push((key_slot, column.key_ty));
                 }
-                PlaceKey::Identity { expr, root, cols } => {
+                AddressKey::Identity { expr, root, cols } => {
                     // The identity spreads into the addressed root's ordered key columns, so
-                    // the place records its whole physical key-path.
+                    // the address records its whole physical key-path.
                     let columns = self.capture_identity_key_columns(expr, root, cols, span)?;
                     key_slots.extend(columns);
                 }
-                PlaceKey::Bound(_) => {
+                AddressKey::Bound(_) => {
                     self.fail(SourceDiagnostic::at(
                         Code::CheckType,
                         self.file,
-                        place_expr.span(),
-                        "a `place` names a store address `^root(key)`, not another place"
+                        address_expr.span(),
+                        "a `ref` names a store address `^root[key]`, not another reference"
                             .to_string(),
                     ));
                     return Err(LoweringFailure::Recoverable);
                 }
             }
         }
-        self.places.push(PlaceLocal {
+        Ok(EntryReference {
             name: name.to_string(),
             key_slots,
             node,
-        });
-        Ok(())
+        })
     }
 
-    /// Resolve a durable place, reporting a diagnostic on a bad root name, key arity, or
-    /// field name. The returned place holds no borrow of the registry.
+    /// Resolve a durable address, reporting a diagnostic on a bad root name, key arity, or
+    /// field name. The returned address holds no borrow of the registry.
     ///
     /// One resolver for both spellings, so a composed operation seals the identical
     /// operation site an inline one does.
     pub(super) fn resolve_durable<'e>(
         &mut self,
         expr: &'e Expression,
-    ) -> Option<DurablePlace<'a, 'e>> {
+    ) -> Option<DurableAddress<'a, 'e>> {
         // A durable access names its store at the `^name` leaf; resolving it here reports
         // a bad name or a parked shape precisely, and a non-address expression is `None`.
-        let base = if self.is_place_rooted(expr) {
-            EntryBase::Place
+        let base = if self.is_reference_rooted(expr) {
+            EntryBase::Reference
         } else {
             EntryBase::Inline(self.resolve_root(saved_root_name(expr)?, expr.span())?)
         };
         match expr {
-            // A whole-entry address: a bare place, or `^root[key].b1[k1]….bn[kn]` /
-            // `<place>.b1[k1]…` at any depth.
+            // A whole-entry address: a bare address, or `^root[key].b1[k1]….bn[kn]` /
+            // `<address>.b1[k1]…` at any depth.
             Expression::Name { span, .. } | Expression::Keyed { span, .. } => {
                 let (keys, node) = self.resolve_entry_node(base, expr)?;
                 let handle = self.bind_entry_site(node)?;
-                Some(DurablePlace {
+                Some(DurableAddress {
                     keys,
                     target: DurTarget::Entry { node, handle },
                     family: node.family(),
@@ -971,7 +1001,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         return None;
                     };
                     let handle = self.bind_group_site(root, group)?;
-                    return Some(DurablePlace {
+                    return Some(DurableAddress {
                         keys,
                         target: DurTarget::GroupLeaf {
                             handle,
@@ -986,7 +1016,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 let (keys, node) = self.resolve_entry_node(base, entry)?;
                 if let Some(field) = node.field(field_name) {
                     let handle = self.bind_field_site(node, &field.path)?;
-                    return Some(DurablePlace {
+                    return Some(DurableAddress {
                         keys,
                         target: DurTarget::Field {
                             handle,
@@ -1003,7 +1033,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     && let Some(group) = root.group(field_name)
                 {
                     let handle = self.bind_group_site(root, group)?;
-                    return Some(DurablePlace {
+                    return Some(DurableAddress {
                         keys,
                         target: DurTarget::Group {
                             handle,
@@ -1056,7 +1086,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// `None` on a shape that is not an entry address, and reports a diagnostic then
     /// `None` on a bad root or branch name.
     ///
-    /// The place base stands in for the `^root` leaf, so a branch beneath a place
+    /// The address base stands in for the `^root` leaf, so a branch beneath an address
     /// addresses the same node — and seals the same operation site — an inline
     /// `^root[k].branch[bk]` does.
     pub(super) fn resolve_entry_node<'e>(
@@ -1065,17 +1095,17 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         expr: &'e Expression,
     ) -> Option<(Vec<DurKey<'e>>, DurNode<'a>)> {
         match expr {
-            // The place base case: an in-scope `place`/pin binding whose key columns were
+            // The address base case: an in-scope entry reference binding whose key columns were
             // evaluated once, when the binding was taken.
             Expression::Name { segments, .. } => {
-                let EntryBase::Place = base else {
+                let EntryBase::Reference = base else {
                     return None;
                 };
                 let [name] = &segments[..] else {
                     return None;
                 };
-                let place = self.lookup_place(name.text())?;
-                Some((place.bound_keys(), place.node))
+                let address = self.lookup_entry_ref(name.text())?;
+                Some((address.bound_keys(), address.node))
             }
             Expression::Keyed {
                 base: head,
@@ -1106,7 +1136,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                             // scalar, so `key_ty` is unused here (emit and capture recover
                             // the per-column scalars from the spread); it carries the first
                             // key column only to satisfy the shared `DurKey` shape.
-                            key: PlaceKey::Identity {
+                            key: AddressKey::Identity {
                                 expr: only,
                                 root: root.root_id,
                                 cols: root.key.len() as u16,
@@ -1171,7 +1201,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
         for (key, &key_ty) in keys.iter().zip(key_columns) {
             columns.push(DurKey {
-                key: PlaceKey::Expr(key),
+                key: AddressKey::Expr(key),
                 key_ty,
             });
         }
@@ -1220,28 +1250,28 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Lower a durable read (`^r(k)` entry, `^r(k).branch(bk)` branch entry, `^r(k).f`
-    /// field, or the place forms).
+    /// field, or the address forms).
     pub(super) fn lower_durable_read(
         &mut self,
-        place: DurablePlace<'a, '_>,
+        address: DurableAddress<'a, '_>,
     ) -> ConstructResult<LTy> {
         let checked_slots = if matches!(
-            &place.target,
+            &address.target,
             DurTarget::Field { required: true, .. } | DurTarget::GroupLeaf { required: true, .. }
         ) {
-            self.checked_key_slots(place.family, place.bound_key_path(), place.span)?
+            self.checked_key_slots(address.family, address.bound_key_path(), address.span)?
         } else {
             None
         };
         if checked_slots.is_none() {
-            self.emit_key_path(&place.keys, place.span)?;
+            self.emit_key_path(&address.keys, address.span)?;
         }
-        Ok(match place.target {
+        Ok(match address.target {
             DurTarget::Entry { node, handle } => {
                 let site = self
                     .site_operand(&handle)
                     .ok_or(LoweringFailure::Recoverable)?;
-                self.push(Instr::DurReadEntry(site), place.span)?;
+                self.push(Instr::DurReadEntry(site), address.span)?;
                 LTy::Record {
                     ty: node.record(),
                     optional: true,
@@ -1252,10 +1282,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     .site_operand(&handle)
                     .ok_or(LoweringFailure::Recoverable)?;
                 if let Some(key_slots) = checked_slots {
-                    self.push(Instr::DurReadFieldPresent { site, key_slots }, place.span)?;
+                    self.push(Instr::DurReadFieldPresent { site, key_slots }, address.span)?;
                     garg_to_lty(ty)
                 } else {
-                    self.push(Instr::DurReadField(site), place.span)?;
+                    self.push(Instr::DurReadField(site), address.span)?;
                     garg_to_lty(ty).to_optional()
                 }
             }
@@ -1265,7 +1295,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 let site = self
                     .site_operand(&handle)
                     .ok_or(LoweringFailure::Recoverable)?;
-                self.push(Instr::DurReadGroup(site), place.span)?;
+                self.push(Instr::DurReadGroup(site), address.span)?;
                 LTy::Record {
                     ty: record,
                     optional: true,
@@ -1285,21 +1315,21 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     .site_operand(&handle)
                     .ok_or(LoweringFailure::Recoverable)?;
                 if let Some(key_slots) = checked_slots {
-                    self.push(Instr::DurReadGroupPresent { site, key_slots }, place.span)?;
-                    self.push(Instr::FieldGet(slot), place.span)?;
+                    self.push(Instr::DurReadGroupPresent { site, key_slots }, address.span)?;
+                    self.push(Instr::FieldGet(slot), address.span)?;
                     return Ok(garg_to_lty(ty));
                 }
-                self.push(Instr::DurReadGroup(site), place.span)?;
+                self.push(Instr::DurReadGroup(site), address.span)?;
                 let result = garg_to_lty(ty).to_optional();
-                let to_absent = self.push_branch_present(place.span)?;
-                self.push(Instr::FieldGet(slot), place.span)?;
+                let to_absent = self.push_branch_present(address.span)?;
+                self.push(Instr::FieldGet(slot), address.span)?;
                 if required {
-                    self.push(Instr::SomeWrap, place.span)?;
+                    self.push(Instr::SomeWrap, address.span)?;
                 }
-                let to_end = self.push_jump(place.span)?;
+                let to_end = self.push_jump(address.span)?;
                 let absent = self.here();
                 self.patch(to_absent, absent);
-                self.push(Instr::VacantLoad(result.image()), place.span)?;
+                self.push(Instr::VacantLoad(result.image()), address.span)?;
                 let end = self.here();
                 self.patch(to_end, end);
                 result
@@ -1307,8 +1337,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         })
     }
 
-    /// Lower `exists(place)` or `exists(value)`. A specific entry or field address
-    /// (`^root(key)`, `^root(key).field`, a named `place`) is a keyed presence probe; a
+    /// Lower `exists(address)` or `exists(value)`. A specific entry or field address
+    /// (`^root(key)`, `^root(key).field`, an entry reference) is a keyed presence probe; a
     /// store root (`^root`) or a keyed branch family (`^root(key).notes`) instead asks
     /// whether that family has at least one payload-bearing child; any other `T?` value
     /// answers whether it is present, establishing no narrowing.
@@ -1322,7 +1352,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 Code::CheckType,
                 self.file,
                 span,
-                "`exists` takes one store place or optional value".to_string(),
+                "`exists` takes one store address or optional value".to_string(),
             ));
             return Err(LoweringFailure::Recoverable);
         };
@@ -1351,7 +1381,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             ));
             return Err(LoweringFailure::Recoverable);
         }
-        // A family argument names no immediate child key, so it reuses the traversal place
+        // A family argument names no immediate child key, so it reuses the traversal address
         // resolver and emits only the ancestor key-path. A scalar-field tail is not a
         // family and falls through to the keyed cell probe.
         let is_family = match self.arg_is_family(&arg.value) {
@@ -1363,7 +1393,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         if is_family {
             let target = self
-                .resolve_traversal_place(&arg.value)
+                .resolve_traversal_path(&arg.value)
                 .ok_or(LoweringFailure::Recoverable)?;
             let site = self
                 .entry_site_operand(target.node)
@@ -1381,11 +1411,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
         };
         if access.is_some() {
-            let place = self
+            let address = self
                 .resolve_durable(&arg.value)
                 .ok_or(LoweringFailure::Recoverable)?;
-            self.emit_key_path(&place.keys, place.span)?;
-            let site = match place.target {
+            self.emit_key_path(&address.keys, address.span)?;
+            let site = match address.target {
                 DurTarget::Entry { handle, .. } | DurTarget::Field { handle, .. } => self
                     .site_operand(&handle)
                     .ok_or(LoweringFailure::Recoverable)?,
@@ -1403,10 +1433,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     return Err(LoweringFailure::Recoverable);
                 }
             };
-            self.push(Instr::DurExists(site), place.span)?;
+            self.push(Instr::DurExists(site), address.span)?;
             return Ok(LTy::bare_scalar(ScalarType::Bool));
         }
-        // A poisoned `const`/`place` was already reported at its binding, so its `exists`
+        // A poisoned `const`/`ref` was already reported at its binding, so its `exists`
         // use adds no diagnostic.
         if let Expression::Name { segments, .. } = &arg.value
             && let [name] = &segments[..]
@@ -1424,7 +1454,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 self.file,
                 arg.value.span(),
                 format!(
-                    "`exists` takes a store place such as `^root(key)`, a field, a store root, \
+                    "`exists` takes a store address such as `^root[key]`, a field, a store root, \
                      a keyed branch family, or an optional value; found {}",
                     ty.spelling(self.records)
                 ),
@@ -1528,36 +1558,36 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// group, or group-leaf write on an entry a presence proof covers.
     pub(super) fn lower_durable_assign(
         &mut self,
-        place: DurablePlace<'a, '_>,
+        address: DurableAddress<'a, '_>,
         value: &Expression,
     ) -> ConstructResult<()> {
-        let family = place.family;
-        match &place.target {
+        let family = address.family;
+        match &address.target {
             DurTarget::Entry { node, handle } => {
                 let (handle, record) = (handle.clone(), node.record());
-                self.lower_upsert(&place.keys, &handle, record, value, place.span)?;
-                // A whole-entry assignment through a place leaves the entry present on
+                self.lower_upsert(&address.keys, &handle, record, value, address.span)?;
+                // A whole-entry assignment through an address leaves the entry present on
                 // every path from here, so the rest of the block may write through it.
-                if let Some(key_slots) = place.bound_key_path() {
+                if let Some(key_slots) = address.bound_key_path() {
                     self.mark_present(family, key_slots);
                 }
             }
             DurTarget::Field { handle, ty, .. } => {
                 let ty = *ty;
-                let key_slots = place.bound_key_path();
+                let key_slots = address.bound_key_path();
                 let site = self
                     .site_operand(handle)
                     .ok_or(LoweringFailure::Recoverable)?;
-                self.lower_definite_field_value(value, garg_to_lty(ty), place.span)?;
-                let key_slots = self.require_present(family, key_slots, place.span)?;
-                self.push(Instr::DurSetField { site, key_slots }, place.span)?;
+                self.lower_definite_field_value(value, garg_to_lty(ty), address.span)?;
+                let key_slots = self.require_present(family, key_slots, address.span)?;
+                self.push(Instr::DurSetField { site, key_slots }, address.span)?;
             }
             // `p.group = R.group(…)`: an exact whole-group replacement, group-scoped — the
             // entry's other groups, top-level fields, and branches are untouched. The key
             // slots are captured before the RHS; proof use follows its effects.
             DurTarget::Group { handle, record, .. } => {
                 let record = *record;
-                let key_slots = place.bound_key_path();
+                let key_slots = address.bound_key_path();
                 let site = self
                     .site_operand(handle)
                     .ok_or(LoweringFailure::Recoverable)?;
@@ -1568,8 +1598,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         optional: false,
                     },
                 )?;
-                let key_slots = self.require_present(family, key_slots, place.span)?;
-                self.push(Instr::DurReplaceGroup { site, key_slots }, place.span)?;
+                let key_slots = self.require_present(family, key_slots, address.span)?;
+                self.push(Instr::DurReplaceGroup { site, key_slots }, address.span)?;
             }
             // `p.group.leaf = value`: a whole-group read-modify-write over the proven entry.
             DurTarget::GroupLeaf {
@@ -1577,12 +1607,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             } => {
                 let (handle, slot, ty) = (handle.clone(), *slot, *ty);
                 self.lower_group_leaf_set(
-                    (family, place.bound_key_path()),
+                    (family, address.bound_key_path()),
                     &handle,
                     slot,
                     value,
                     ty,
-                    place.span,
+                    address.span,
                 )?;
             }
         }
@@ -1655,7 +1685,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             self.fail(unsupported(self.file, span, "this delete target"));
             return Ok(());
         }
-        let Some(place) = self.resolve_durable(path) else {
+        let Some(address) = self.resolve_durable(path) else {
             return Ok(());
         };
         // A group-leaf clear is a whole-group read-modify-write (its key-path is evaluated
@@ -1665,44 +1695,44 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             slot,
             required,
             ..
-        } = &place.target
+        } = &address.target
         {
             if *required {
                 self.fail(SourceDiagnostic::at(
                     Code::CheckType,
                     self.file,
-                    place.span,
+                    address.span,
                     "a required group leaf cannot be deleted".to_string(),
                 ));
                 return Ok(());
             }
-            let (handle, slot, span) = (handle.clone(), *slot, place.span);
-            self.lower_group_leaf_unset(&place.keys, &handle, slot, span)?;
+            let (handle, slot, span) = (handle.clone(), *slot, address.span);
+            self.lower_group_leaf_unset(&address.keys, &handle, slot, span)?;
             return Ok(());
         }
-        let family = place.family;
+        let family = address.family;
         // A group holding a required leaf is part of every present entry; it is erased
         // only with its entry. Refused before any key operand is evaluated.
         if let DurTarget::Group {
             holds_required: true,
             ..
-        } = &place.target
+        } = &address.target
         {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType,
                 self.file,
-                place.span,
+                address.span,
                 "a group with a required leaf is erased only with its entry".to_string(),
             ));
             return Ok(());
         }
-        self.emit_key_path(&place.keys, place.span)?;
-        match place.target {
+        self.emit_key_path(&address.keys, address.span)?;
+        match address.target {
             DurTarget::Entry { handle, .. } => {
                 let site = self
                     .site_operand(&handle)
                     .ok_or(LoweringFailure::Recoverable)?;
-                self.push(Instr::DurEraseEntry(site), place.span)?;
+                self.push(Instr::DurEraseEntry(site), address.span)?;
                 // The erased entry may be any entry of the family a proof covers, so every
                 // proof over the family ends here.
                 self.erase_family(family);
@@ -1714,7 +1744,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     self.fail(SourceDiagnostic::at(
                         Code::CheckType,
                         self.file,
-                        place.span,
+                        address.span,
                         "a required field cannot be deleted".to_string(),
                     ));
                     return Ok(());
@@ -1722,7 +1752,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 let site = self
                     .site_operand(&handle)
                     .ok_or(LoweringFailure::Recoverable)?;
-                self.push(Instr::DurEraseField(site), place.span)?;
+                self.push(Instr::DurEraseField(site), address.span)?;
             }
             // `delete p.group` over all-sparse leaves: erase only that group's leaves; the
             // entry's other groups, top-level fields, and branches are untouched.
@@ -1730,7 +1760,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 let site = self
                     .site_operand(&handle)
                     .ok_or(LoweringFailure::Recoverable)?;
-                self.push(Instr::DurEraseGroup(site), place.span)?;
+                self.push(Instr::DurEraseGroup(site), address.span)?;
             }
             #[expect(
                 clippy::unreachable,

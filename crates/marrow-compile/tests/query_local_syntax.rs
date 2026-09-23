@@ -653,6 +653,36 @@ fn identity(path: &str) -> marrow_compile::ProjectFile {
     )
 }
 
+#[test]
+fn entry_reference_completion_scope_starts_after_its_else_arm() {
+    let source = "resource Entry { required value: int }\nstore ^entries[id: int]: Entry\nfn read(id: int): int {\n    const outer = 1\n    ref entry = ^entries[id] else {\n        const missing = outer\n        return missing\n    }\n    const after = outer\n    return entry.value\n}\n";
+    let snapshot = snapshot(vec![("src/main.mw", source.as_bytes().to_vec())]);
+    let file = identity("src/main.mw");
+    for (needle, entry_visible, missing_visible) in [
+        ("return missing", false, true),
+        ("const after = outer", true, false),
+    ] {
+        let offset = source.find(needle).expect("completion probe") + needle.len();
+        let outcome = snapshot
+            .completions(&file, offset)
+            .unwrap_or_else(|_| panic!("known file and offset at {needle}"));
+        let CompletionOutcome::Ready(Fact::Present(completions)) = outcome else {
+            panic!("completion unavailable at {needle}");
+        };
+        assert_eq!(completions.class(), PositionClass::ExpressionName);
+        let has = |name| {
+            completions
+                .candidates()
+                .iter()
+                .any(|candidate| candidate.label() == name)
+        };
+        assert!(has("outer"), "outer local remains visible at {needle}");
+        assert!(has("id"), "parameter remains visible at {needle}");
+        assert_eq!(has("entry"), entry_visible, "{needle}");
+        assert_eq!(has("missing"), missing_visible, "{needle}");
+    }
+}
+
 /// A stable rendering of one completion outcome, so an agreement assertion compares
 /// exact classifications and candidate sets rather than a summary.
 fn render_completions(outcome: Result<CompletionOutcome, QueryError>) -> String {
@@ -1209,6 +1239,7 @@ fn nested_statements(statement: &Statement) -> usize {
             out_of_range.as_ref().map_or(0, block_statements)
                 + zero_divisor.as_ref().map_or(0, block_statements)
         }
+        Statement::EntryBinding { else_block, .. } => block_statements(else_block),
         Statement::Const {
             name: _,
             name_span: _,
@@ -1237,13 +1268,7 @@ fn nested_statements(statement: &Statement) -> usize {
             span: _,
         }
         | Statement::Delete { path: _, span: _ }
-        | Statement::PlaceBinding {
-            name: _,
-            name_span: _,
-            place: _,
-            span: _,
-        }
-        | Statement::Unset { place: _, span: _ }
+        | Statement::Unset { target: _, span: _ }
         | Statement::Return { value: _, span: _ }
         | Statement::Break { span: _ }
         | Statement::Continue { span: _ }

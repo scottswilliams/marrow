@@ -49,6 +49,7 @@ fn borrowed_bodies_require_the_actual_function_and_every_instruction_span() {
         unwrapped_calls: Vec::new(),
         erased_families: Vec::new(),
         presence_obligations: Vec::new(),
+        presence_calls: Vec::new(),
         has_direct_durable_op: false,
         code_spans: vec![SourceSpan::default()],
     };
@@ -949,19 +950,13 @@ resource Book {
 store ^a[id: int]: Book
 
 pub fn readText(id: int, noteId: int): string {
-    place note = ^a[id].notes[noteId]
-    if exists(note) {
-        return note.text
-    }
-    return ""
+    ref note = ^a[id].notes[noteId] else { return "" }
+    return note.text
 }
 
 pub fn readElapsed(id: int, noteId: int): duration? {
-    place note = ^a[id].notes[noteId]
-    if exists(note) {
-        return note.elapsed
-    }
-    return absent
+    ref note = ^a[id].notes[noteId] else { return absent }
+    return note.elapsed
 }
 
 pub fn readPinned(id: int, noteId: int): bool? {

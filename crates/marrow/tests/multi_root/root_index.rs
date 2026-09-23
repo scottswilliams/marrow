@@ -217,7 +217,7 @@ fn a_unique_index_lookup_resolves_within_its_own_root() {
 }
 
 /// A nonunique index is per-root: a `*ByShelf` bounded scan on one root counts only that
-/// root's entries, even though both roots place every entry on the same shelf "A". A scan
+/// root's entries, even though both roots reference every entry on the same shelf "A". A scan
 /// that saw the other root's cells would over-count.
 #[test]
 fn a_nonunique_index_scan_counts_only_its_own_root() {

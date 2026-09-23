@@ -36,7 +36,7 @@ use crate::konst::ConstRegistry;
 use crate::lower::{
     BindingScope, BodyOutcome, BodyRole, DeclaredFn, FnLowerer, FunctionRegistry, GenericRegistry,
     LoweredFn, ModuleBinding, ModuleLedger, ModuleScope, Resolution, SignatureOutcome,
-    dotted_module_path, is_durable_place_op, is_mutation_instr, refused_binding_name,
+    dotted_module_path, is_durable_address_op, is_mutation_instr, refused_binding_name,
 };
 use crate::types::BuildError;
 use crate::types::{
@@ -2520,7 +2520,7 @@ fn reject_transaction_ownership(
             by_index
                 .get(index)
                 .and_then(Option::as_ref)
-                .is_some_and(|function| function.code.iter().any(is_durable_place_op))
+                .is_some_and(|function| function.code.iter().any(is_durable_address_op))
         },
         visit_callees,
     );
@@ -2696,7 +2696,7 @@ fn owner_lattice_violation(
                 ));
             }
             _ => {
-                let durable_here = is_durable_place_op(instr)
+                let durable_here = is_durable_address_op(instr)
                     || matches!(instr, Instr::Call(t) if (*t as usize) < count && durable[*t as usize]);
                 if durable_here && state == TxnState::AfterCommit {
                     return Some((

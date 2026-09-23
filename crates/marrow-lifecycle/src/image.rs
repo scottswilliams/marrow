@@ -89,11 +89,11 @@ pub enum PinDisagreement {
     /// Physical address coverage, uniqueness or high-water validation failed.
     Numbering(NumberingError),
     /// A projection node has no distinct image occurrence at its `^root.member` spelling.
-    Unnamed { place: String },
+    Unnamed { path: String },
     /// The projection and image disagree on a node's kind at the same semantic path.
     /// Matching physical numbers cannot establish matching layout.
     Kind {
-        place: String,
+        path: String,
         image: SemanticNodeKind,
         store: SemanticNodeKind,
     },
@@ -101,7 +101,7 @@ pub enum PinDisagreement {
     /// so another root sharing a declaration identity cannot satisfy this occurrence.
     Uncovered {
         ledger_id: LedgerIdBytes,
-        place: Option<String>,
+        path: Option<String>,
     },
 }
 
@@ -160,24 +160,20 @@ impl std::fmt::Display for HeadMapPinMismatch {
                 write!(f, " which the projection does not reach")?;
             }
             PinDisagreement::Numbering(error) => write!(f, "invalid physical numbering: {error}")?,
-            PinDisagreement::Unnamed { place } => write!(
+            PinDisagreement::Unnamed { path } => write!(
                 f,
-                "the store node {place} cannot be paired with a distinct durable identity from \
+                "the store node {path} cannot be paired with a distinct durable identity from \
                  the program image"
             )?,
-            PinDisagreement::Kind {
-                place,
-                image,
-                store,
-            } => write!(
+            PinDisagreement::Kind { path, image, store } => write!(
                 f,
-                "the store shape declares {place} as a {} where the program image declares a {}",
+                "the store shape declares {path} as a {} where the program image declares a {}",
                 kind_noun(*store),
                 kind_noun(*image),
             )?,
-            PinDisagreement::Uncovered { ledger_id, place } => {
-                match place {
-                    Some(place) => write!(f, "the program's durable node {place} (ledger id ")?,
+            PinDisagreement::Uncovered { ledger_id, path } => {
+                match path {
+                    Some(path) => write!(f, "the program's durable node {path} (ledger id ")?,
                     None => write!(f, "the program's durable node with ledger id ")?,
                 }
                 write_ledger_id(f, ledger_id)?;
@@ -259,14 +255,14 @@ pub(crate) fn derive_projection_nodes(
         .filter(|(_, node)| node.kind != SemanticNodeKind::Index)
         .find(|&(index, _)| !covered[index])
     {
-        let place = named
+        let path = named
             .iter()
             .find(|named| named.semantic_index == index)
-            .map(|named| spell_place(&named.path));
+            .map(|named| spell_path(&named.path));
         return Err(HeadMapPinMismatch {
             disagreement: PinDisagreement::Uncovered {
                 ledger_id: node.path.node_id(),
-                place,
+                path,
             },
         });
     }
@@ -305,7 +301,7 @@ impl Pairing<'_> {
         if node.kind != kind {
             return Err(HeadMapPinMismatch {
                 disagreement: PinDisagreement::Kind {
-                    place: spell_place(&self.path),
+                    path: spell_path(&self.path),
                     image: node.kind,
                     store: kind,
                 },
@@ -344,13 +340,13 @@ impl Pairing<'_> {
 fn unnamed(path: &[String]) -> HeadMapPinMismatch {
     HeadMapPinMismatch {
         disagreement: PinDisagreement::Unnamed {
-            place: spell_place(path),
+            path: spell_path(path),
         },
     }
 }
 
 /// A durable node's `^root.member` source spelling from its name path.
-fn spell_place(path: &[String]) -> String {
+fn spell_path(path: &[String]) -> String {
     let mut out = String::new();
     for (index, segment) in path.iter().enumerate() {
         out.push(if index == 0 { '^' } else { '.' });

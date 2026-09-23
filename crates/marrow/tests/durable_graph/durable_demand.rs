@@ -84,8 +84,7 @@ fn atom_shape(image: &VerifiedImage, export: &SealedExport) -> Vec<([u8; 16], Op
 }
 
 /// A two-export program: `readValue` reads the `value` field of an entry, `bump`
-/// reads then writes it inside a transaction, through a place the `exists` guard
-/// proves. Optional extra lines let a test insert a pure body change or an added read.
+/// reads then writes it inside a transaction, through a checked reference. Optional extra lines let a test insert a pure body change or an added read.
 fn two_export_source(read_body_extra: &str, bump_body_extra: &str) -> String {
     format!(
         "{HEADER}pub fn readValue(n: int): int {{\n\
@@ -94,7 +93,7 @@ fn two_export_source(read_body_extra: &str, bump_body_extra: &str) -> String {
          \n\
          pub fn bump(n: int) {{\n\
          \x20   transaction {{\n\
-         \x20       place c = ^counters[n]\n\
+         \x20       ref c = ^counters[n] else {{ return }}\n\
          \x20       if exists(c) {{\n\
          \x20           {bump_body_extra}const current = c.value\n\
          \x20           c.value = current + 1\n\

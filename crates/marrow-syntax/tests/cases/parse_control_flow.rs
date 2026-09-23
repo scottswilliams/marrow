@@ -135,7 +135,7 @@ fn parses_a_branch_traversal_head_with_from() {
     else {
         panic!("expected for, got {:?}", run.body.statements[0]);
     };
-    // The traversed place is a branch field access `^books(lo).notes` (no branch key).
+    // The traversed path is a branch field access `^books(lo).notes` (no branch key).
     assert!(matches!(iterable, Expression::Field { .. }), "{iterable:?}");
     let bound = bound
         .as_ref()

@@ -12,7 +12,7 @@ publishes facts the parser owns and defines none of its own.
 |---|---|---|
 | Command outcomes | `marrow run` and `marrow test` with `--format jsonl` | One canonical JSON object per line. A `run` record's `outcome` is `value`, `diagnostic`, `artifact_rejected`, `fault`, `incomplete`, `outcome_unknown`, or `error`; a `test` record's is `passed`, `failed`, `errored`, or `incomplete`, followed by one `summary` object. The [failure kinds](../language/errors-and-transactions.md#failure-kinds) stay distinct. |
 | Diagnostics | every command | A dotted code (`check.type`, `parse.syntax`) with a 1-based source span; the closed registry is the [error code reference](../error-codes.md). |
-| Durable access demand | `marrow check` | Exports grouped by module, each naming every durable place its call graph reads and writes, in source spelling: `reads ^books` and `writes ^books` under `put`. |
+| Durable access demand | `marrow check` | Exports grouped by module, each naming every durable address its call graph reads and writes, in source spelling: `reads ^books` and `writes ^books` under `put`. |
 | Editor facts | `marrow-lsp` | Diagnostics, formatting, hover, definition, completion, signature help, and document symbols over the Language Server Protocol, from the [language server](lsp.md). |
 | Wire interface | `marrow client typescript` | A generated strict client whose method signatures and transfer types come from the verified image, described under [TypeScript client](typescript-client.md). |
 
@@ -34,7 +34,7 @@ A reserved word means only that the lexer treats it as a keyword.
 ```text
 absent alias and assert bool break bytes checked const continue date decimal
 declassify delete duration else enum false fn for Id if in index instant int is
-journal lock match merge module not or place pub reads require required resource
+journal lock match merge module not or pub reads ref require required resource
 return sensitive store string struct supports test transaction true try type
 unique unset use var while writes
 ```

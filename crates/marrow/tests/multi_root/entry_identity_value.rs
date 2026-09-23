@@ -85,11 +85,9 @@ fn construct_dereference_reads_the_named_entry() {
     assert_eq!(session.call("titleVia", vec![id]), some_text("hyperion"));
 }
 
-// A `place` bound to an identity operand `^books[id]`: the identity spreads into the
-// root's key columns at the binding, so a whole-entry write and a field read through the
-// place both key off the one pre-evaluated address, exactly as an inline `^books[id]`
-// operation does; see the named-places reference.
-const PLACE_SOURCE: &str = r#"resource Book {
+// An identity operand projects into the root's key columns for both whole-entry
+// creation and an optional field read.
+const IDENTITY_SOURCE: &str = r#"resource Book {
     required title: string
 }
 
@@ -99,32 +97,30 @@ pub fn make(id: int): Id(^books) {
     return Id(^books, id)
 }
 
-pub fn shelveViaPlace(bid: Id(^books), title: string) {
+pub fn shelveViaIdentity(bid: Id(^books), title: string) {
     transaction {
-        place p = ^books[bid]
-        p = Book(title: title)
+        ^books[bid] = Book(title: title)
     }
 }
 
-pub fn titleViaPlace(bid: Id(^books)): string? {
-    place p = ^books[bid]
-    return p.title
+pub fn titleViaIdentity(bid: Id(^books)): string? {
+    return ^books[bid].title
 }
 "#;
 
 #[test]
-fn a_place_bound_to_an_identity_operand_writes_and_reads_the_entry() {
-    let mut session = open(PLACE_SOURCE);
+fn an_identity_operand_addresses_entry_creation_and_optional_reads() {
+    let mut session = open(IDENTITY_SOURCE);
 
     let id = session
         .call("make", vec![Value::Int(3)])
         .expect("identity value");
     session.call(
-        "shelveViaPlace",
+        "shelveViaIdentity",
         vec![id.clone(), Value::Text("neuromancer".into())],
     );
     assert_eq!(
-        session.call("titleViaPlace", vec![id]),
+        session.call("titleViaIdentity", vec![id]),
         some_text("neuromancer"),
     );
 }

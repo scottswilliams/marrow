@@ -1193,6 +1193,19 @@ fn format_block_statement(
             else_block,
             ..
         } => format_let_else(ctx, *is_var, name, ty.as_deref(), value, else_block),
+        Statement::EntryBinding {
+            name,
+            address,
+            else_block,
+            ..
+        } => {
+            let mut out = format!(
+                "{pad}ref {name} = {} else",
+                format_expression_at(address, ctx.level)
+            );
+            append_clause_block(&mut out, ctx.source, pad, else_block, ctx.level);
+            out
+        }
         _ => unreachable!("the caller routes only brace-bodied statements here"),
     }
 }
@@ -1257,11 +1270,8 @@ fn format_statement_with_comments(
         Statement::Delete { path, .. } => {
             format!("{pad}delete {}", format_expression_at(path, level))
         }
-        Statement::PlaceBinding { name, place, .. } => {
-            format!("{pad}place {name} = {}", format_expression_at(place, level))
-        }
-        Statement::Unset { place, .. } => {
-            format!("{pad}unset {}", format_expression_at(place, level))
+        Statement::Unset { target, .. } => {
+            format!("{pad}unset {}", format_expression_at(target, level))
         }
         Statement::Return { value, .. } => match value {
             Some(value) => format!("{pad}return {}", format_expression_at(value, level)),
@@ -1290,7 +1300,8 @@ fn format_statement_with_comments(
         | Statement::Match { .. }
         | Statement::Checked { .. }
         | Statement::IfConstChain { .. }
-        | Statement::LetElse { .. } => return format_block_statement(ctx, statement, &pad),
+        | Statement::LetElse { .. }
+        | Statement::EntryBinding { .. } => return format_block_statement(ctx, statement, &pad),
         // Reachable only in a best-effort `format_source` over input that failed to
         // parse (emission is gated on `!has_errors`). Echo the unstructured span
         // verbatim rather than dropping it, so no source is silently lost.

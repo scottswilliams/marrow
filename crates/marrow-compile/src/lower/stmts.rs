@@ -50,11 +50,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             return Ok(Flow::Rejected);
         }
         let mark = self.locals.len();
-        let place_mark = self.places.len();
+        let reference_mark = self.entry_refs.len();
         // Presence facts established inside this block (e.g. after an upsert) do not
         // outlive it; facts the caller established for the block (a guard) sit below
         // this mark and are preserved here, dropped by the caller.
-        let present_mark = self.present_places.len();
+        let present_mark = self.present_entries.len();
         let mut flow = Flow::Fallthrough;
         for statement in &block.statements {
             if flow == Flow::Terminates {
@@ -79,8 +79,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
         }
         self.locals.truncate(mark);
-        self.places.truncate(place_mark);
-        self.present_places.truncate(present_mark);
+        self.entry_refs.truncate(reference_mark);
+        self.present_entries.truncate(present_mark);
         Ok(flow)
     }
 
@@ -310,17 +310,15 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 self.lower_durable_delete(path, *span)?;
                 Ok(Flow::Fallthrough)
             }
-            Statement::PlaceBinding {
+            Statement::EntryBinding {
                 name,
                 name_span,
-                place,
+                address,
+                else_block,
                 span: _,
-            } => {
-                self.lower_place_binding(name, *name_span, place)?;
-                Ok(Flow::Fallthrough)
-            }
-            Statement::Unset { place, span } => {
-                self.lower_unset(place, *span)?;
+            } => self.lower_entry_binding(name, *name_span, address, else_block),
+            Statement::Unset { target, span } => {
+                self.lower_unset(target, *span)?;
                 Ok(Flow::Fallthrough)
             }
             Statement::Assert { value, span } => {
@@ -363,14 +361,14 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             self.fail(row);
             return Ok(());
         }
-        // A `const`/`var` never reuses an in-scope `place` name: the place and its
+        // A `const`/`var` never reuses an in-scope `ref` name: the address and its
         // designation stay distinct, so a name resolves to exactly one of them.
-        if self.lookup_place(name).is_some() {
+        if self.lookup_entry_ref(name).is_some() {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType,
                 self.file,
                 value.span(),
-                format!("`{name}` is already bound as a place in this scope"),
+                format!("`{name}` is already bound as an address in this scope"),
             ));
             return Ok(());
         }
@@ -430,8 +428,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
         };
         if access.is_some() {
-            if let Some(place) = self.resolve_durable(target) {
-                self.lower_durable_assign(place, value)?;
+            if let Some(address) = self.resolve_durable(target) {
+                self.lower_durable_assign(address, value)?;
             }
             return Ok(());
         }
@@ -453,7 +451,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             self.lower_local_bracket_write(base, keys, *span, value)?;
             return Ok(());
         }
-        let Some((slot, ty, mutable, span, name)) = self.resolve_place(target) else {
+        let Some((slot, ty, mutable, span, name)) = self.resolve_address(target) else {
             return Ok(());
         };
         if !mutable {
@@ -482,7 +480,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         span: SourceSpan,
         value: &Expression,
     ) -> ConstructResult<()> {
-        let Some(chain) = self.resolve_place_chain(base) else {
+        let Some(chain) = self.resolve_access_chain(base) else {
             return Ok(());
         };
         if !chain.mutable {
@@ -502,18 +500,18 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         else {
             return Ok(());
         };
-        self.push_place_containers(chain.slot, &chain.indices, span)?;
+        self.push_address_containers(chain.slot, &chain.indices, span)?;
         self.lower_as(value, garg_to_lty(leaf_ty))?;
         self.push(Instr::FieldSet(leaf_index), span)?;
-        self.writeback_place_containers(chain.slot, &chain.indices, span)
+        self.writeback_address_containers(chain.slot, &chain.indices, span)
     }
 
     /// Push the container stack for a nested field mutation: the local at `slot` and each
     /// ancestor container reached by descending `indices`. Every descended field is
     /// present (a required group slot), so each `FieldGet` yields a bare record. Leaves
     /// the containers on the stack for the leaf write and a matching
-    /// [`Self::writeback_place_containers`].
-    fn push_place_containers(
+    /// [`Self::writeback_address_containers`].
+    fn push_address_containers(
         &mut self,
         slot: u16,
         indices: &[u16],
@@ -529,8 +527,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Write each mutated container back into its parent (innermost first) and store the
-    /// updated local. Pairs with [`Self::push_place_containers`].
-    fn writeback_place_containers(
+    /// updated local. Pairs with [`Self::push_address_containers`].
+    fn writeback_address_containers(
         &mut self,
         slot: u16,
         indices: &[u16],
@@ -544,20 +542,20 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// Lower `unset local.field` or `unset m[k]`: clear a sparse field of a local product
     /// to absent, or remove a key from a local map. A required field cannot be unset; a
-    /// durable place uses `delete`; a list has no keyed removal.
-    fn lower_unset(&mut self, place: &Expression, span: SourceSpan) -> ConstructResult<()> {
-        if Self::durable_shape(place).is_some() {
+    /// durable address uses `delete`; a list has no keyed removal.
+    fn lower_unset(&mut self, address: &Expression, span: SourceSpan) -> ConstructResult<()> {
+        if Self::durable_shape(address).is_some() {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType,
                 self.file,
                 span,
-                "`unset` clears a local field; use `delete` for a durable place".to_string(),
+                "`unset` clears a local field; use `delete` for a durable address".to_string(),
             ));
             return Ok(());
         }
         if let Expression::Keyed {
             base, keys, span, ..
-        } = place
+        } = address
         {
             self.lower_local_bracket_unset(base, keys, *span)?;
             return Ok(());
@@ -567,12 +565,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             name,
             span: field_span,
             ..
-        } = place
+        } = address
         else {
             self.fail(unsupported(self.file, span, "this `unset` target"));
             return Ok(());
         };
-        let Some(chain) = self.resolve_place_chain(base) else {
+        let Some(chain) = self.resolve_access_chain(base) else {
             return Ok(());
         };
         if !chain.mutable {
@@ -598,9 +596,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             ));
             return Ok(());
         }
-        self.push_place_containers(chain.slot, &chain.indices, span)?;
+        self.push_address_containers(chain.slot, &chain.indices, span)?;
         self.push(Instr::FieldUnset(leaf_index), span)?;
-        self.writeback_place_containers(chain.slot, &chain.indices, span)
+        self.writeback_address_containers(chain.slot, &chain.indices, span)
     }
 
     fn lower_compound_assign(
@@ -609,7 +607,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         op: BinaryOp,
         value: &Expression,
     ) -> ConstructResult<()> {
-        let Some((slot, ty, mutable, span, name)) = self.resolve_place(target) else {
+        let Some((slot, ty, mutable, span, name)) = self.resolve_address(target) else {
             return Ok(());
         };
         if !mutable {
@@ -649,8 +647,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Ok(())
     }
 
-    /// Resolve an assignment target to a mutable-checked local place.
-    fn resolve_place(
+    /// Resolve an assignment target to a mutable-checked local address.
+    fn resolve_address(
         &mut self,
         target: &Expression,
     ) -> Option<(u16, LTy, bool, SourceSpan, String)> {
@@ -684,11 +682,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Some((local.slot, local.ty, local.mutable, *span, name.to_string()))
     }
 
-    /// Resolve a place expression to its chain of present composite containers rooted at
+    /// Resolve an address expression to its chain of present composite containers rooted at
     /// a local: a bare local, or a local descended through one or more group members.
     /// Each intervening member must be a present (required) composite so a
     /// read-modify-write reaches it; a possibly-absent member is a `check.type` rejection.
-    fn resolve_place_chain(&mut self, target: &Expression) -> Option<PlaceChain> {
+    fn resolve_access_chain(&mut self, target: &Expression) -> Option<AccessChain> {
         match target {
             Expression::Name { segments, span, .. } => {
                 let [name] = &segments[..] else {
@@ -710,7 +708,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     }
                     return None;
                 };
-                Some(PlaceChain {
+                Some(AccessChain {
                     slot: local.slot,
                     mutable: local.mutable,
                     root_span: *span,
@@ -722,7 +720,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             Expression::Field {
                 base, name, span, ..
             } => {
-                let mut chain = self.resolve_place_chain(base)?;
+                let mut chain = self.resolve_access_chain(base)?;
                 let (index, field_ty, required) =
                     self.resolve_product_field(chain.ty, name, base.span(), *span)?;
                 if !required {
@@ -733,7 +731,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         format!(
                             "cannot assign through the possibly-absent member `{name}`. A member \
                              that is not `required` is absent until it holds a value, and a \
-                             read-modify-write cannot begin from an absent place. Assign `{name}` \
+                             read-modify-write cannot begin from an absent target. Assign `{name}` \
                              a present value first."
                         ),
                     ));
@@ -920,17 +918,17 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let mut all_terminate = else_block.is_some();
 
         for (cond, block) in branches {
-            // `exists(p)` over a named place proves the entry present in the guarded
+            // `exists(p)` over an entry reference proves the entry present in the guarded
             // block, so a write through `p` there is admitted.
             let guard = self.exists_guard_fact(cond);
             self.lower_condition(cond)?;
             let jif = self.push_jif(cond.span())?;
-            let present_mark = self.present_places.len();
+            let present_mark = self.present_entries.len();
             if let Some((family, key_slots)) = guard {
                 self.mark_present(family, key_slots);
             }
             let flow = self.lower_block(block)?;
-            self.present_places.truncate(present_mark);
+            self.present_entries.truncate(present_mark);
             if flow == Flow::Rejected {
                 return Ok(Flow::Rejected);
             }
@@ -1020,14 +1018,14 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             return Ok(Flow::Rejected);
         }
         let mark = self.locals.len();
-        let present_mark = self.present_places.len();
+        let present_mark = self.present_entries.len();
 
         // Each `BranchPresent`/`JumpIfFalse` pops its own operand, so every failure edge
         // reaches the shared absent tail with a balanced stack.
         let fail_jumps = match self.lower_if_const_head(bindings, condition) {
             Ok(jumps) => jumps,
             Err(LoweringFailure::Recoverable) => {
-                self.present_places.truncate(present_mark);
+                self.present_entries.truncate(present_mark);
                 self.locals.truncate(mark);
                 return Err(LoweringFailure::Recoverable);
             }
@@ -1037,7 +1035,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
 
         let then_flow = self.lower_block(then_block)?;
-        self.present_places.truncate(present_mark);
+        self.present_entries.truncate(present_mark);
         self.locals.truncate(mark);
         if then_flow == Flow::Rejected {
             return Ok(Flow::Rejected);
@@ -1087,8 +1085,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 return Err(LoweringFailure::Recoverable);
             }
             // A whole durable entry address reads the entry here and proves it present on
-            // the guarded edge, so a write through the same place in the then block is
-            // admitted; a bare place name is otherwise not a value.
+            // the guarded edge, so a write through the same reference in the then block is
+            // admitted; a bare address name is otherwise not a value.
             let mut guard: Option<(&'a Family, Vec<u16>)> = None;
             let access = match self.durable_access(value) {
                 Ok(shape) => shape,
@@ -1098,11 +1096,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 }
             };
             let optional = if matches!(access, Some(DurShape::Entry)) {
-                let place = self
+                let address = self
                     .resolve_durable(value)
                     .ok_or(LoweringFailure::Recoverable)?;
-                guard = place.bound_key_path().map(|slots| (place.family, slots));
-                self.lower_durable_read(place)?
+                guard = address
+                    .bound_key_path()
+                    .map(|slots| (address.family, slots));
+                self.lower_durable_read(address)?
             } else {
                 self.lower_expr(value)?
             };
@@ -1196,12 +1196,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             return Ok(Flow::Rejected);
         }
         let mark = self.locals.len();
-        let present_mark = self.present_places.len();
+        let present_mark = self.present_entries.len();
         let fail_jumps = match self.lower_if_const_head(&[binding], None) {
             Ok(jumps) => jumps,
             Err(LoweringFailure::Recoverable) => {
                 self.locals.truncate(mark);
-                self.present_places.truncate(present_mark);
+                self.present_entries.truncate(present_mark);
                 // The head's read did not resolve (for example a dropped durable root); its
                 // own diagnostic already fired. Poison the name so its later uses are silent.
                 self.poisoned_bindings.insert(name.to_string());
@@ -1216,7 +1216,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // established. Lift them out so a reference in the `else` is a scoped unknown name
         // rather than an uninitialized-slot image rejection, then restore them.
         let mut bound_locals = self.locals.split_off(mark);
-        let mut bound_present = self.present_places.split_off(present_mark);
+        let mut bound_present = self.present_entries.split_off(present_mark);
         if mutability == Mutability::Var {
             for local in &mut bound_locals {
                 local.mutable = true;
@@ -1228,7 +1228,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let to_after = self.push_jump(value.span())?;
         let absent = self.here();
         self.patch_all(fail_jumps, absent);
-        let else_flow = self.lower_block(else_block)?;
+        let else_flow = self.lower_absence_block(else_block)?;
         if else_flow == Flow::Rejected {
             return Ok(Flow::Rejected);
         }
@@ -1238,7 +1238,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 self.file,
                 else_block.span,
                 "the `else` of a let-else binding must diverge, for example with \
-                 `return`, `throw`, or `unreachable`"
+                 `return` or `unreachable`"
                     .to_string(),
             ));
         }
@@ -1249,11 +1249,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // statement `x` is always present, because the absent edge diverged.
         self.locals.extend(bound_locals);
         for fact in &mut bound_present {
-            if let PresenceState::Live { call_start, .. } = &mut fact.state {
-                *call_start = self.calls.len();
+            if let PresenceState::Live { call_head, .. } = &mut fact.state {
+                *call_head = self.presence_call_head;
             }
         }
-        self.present_places.extend(bound_present);
+        self.present_entries.extend(bound_present);
         Ok(Flow::Fallthrough)
     }
 
@@ -1532,7 +1532,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
     }
 
-    /// Lower a `for` loop. A durable root/branch traversal place takes the bounded
+    /// Lower a `for` loop. A durable root/branch traversal address takes the bounded
     /// freeze-then-run path; a range or local `List`/`Map` iterable takes the collection
     /// path. Reversed order and a range step apply only to the latter.
     fn lower_for(&mut self, statement: ForLoop<'_>) -> ConstructResult<Flow> {
@@ -1602,27 +1602,27 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
             return self.lower_index_scan(binding, read, bound, body, span);
         }
-        // A durable traversal place iterates the store; it is always bounded.
-        if self.is_traversal_place(iterable) {
+        // A durable traversal address iterates the store; it is always bounded.
+        if self.is_traversal_address(iterable) {
             if order != marrow_syntax::LoopOrder::Forward {
                 self.fail(unsupported(self.file, span, "reversed durable traversal"));
                 return Ok(Flow::Fallthrough);
             }
-            let Some(target) = self.resolve_traversal_place(iterable) else {
+            let Some(target) = self.resolve_traversal_path(iterable) else {
                 return Ok(Flow::Fallthrough);
             };
             return self.lower_bounded_traversal(binding, target, bound, body, span);
         }
-        // A bare `place`/pin name is one durable entry, not a family: it is not a
+        // A bare entry reference name is one durable entry, not a family: it is not a
         // traversal base. Steer to the branch family beneath it rather than falling to the
         // generic collection refusal.
-        if self.is_place_name(iterable) {
+        if self.is_address_name(iterable) {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType,
                 self.file,
                 span,
-                "a `place` names one durable entry, not a family to iterate. Traverse a \
-                 keyed branch beneath it with `for k in <place>.branch at most N`, or \
+                "a `ref` names one durable entry, not a family to iterate. Traverse a \
+                 keyed branch beneath it with `for k in <address>.branch at most N`, or \
                  iterate the store root directly (`for k in ^root at most N`)."
                     .to_string(),
             ));
@@ -1736,7 +1736,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // The loop variable reads the counter slot directly; it is immutable to the body,
         // and the advance between iterations updates it.
         let mark = self.locals.len();
-        let place_mark = self.places.len();
+        let reference_mark = self.entry_refs.len();
         self.locals.push(Local {
             name: name.name.clone(),
             ty: int,
@@ -1752,7 +1752,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let ctx = self.loops.pop().expect("loop was pushed");
         let break_jumps = self.close_loop(ctx);
         self.locals.truncate(mark);
-        self.places.truncate(place_mark);
+        self.entry_refs.truncate(reference_mark);
         if body_flow == Flow::Rejected {
             return Ok(Flow::Rejected);
         }
@@ -1797,15 +1797,15 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         None
     }
 
-    /// Whether `iterable` names a durable traversal place syntactically: a bare store root
+    /// Whether `iterable` names a durable traversal address syntactically: a bare store root
     /// `^root`, an entry address extended by a bare branch-layer name
     /// `^root(key)….branch` at any depth, or a bare branch selection on an in-scope
-    /// `place`/pin name. The resolver rechecks the store, place, and branch names; this
+    /// entry reference name. The resolver rechecks the store, address, and branch names; this
     /// only routes the head to the durable path.
-    fn is_traversal_place(&self, iterable: &Expression) -> bool {
+    fn is_traversal_address(&self, iterable: &Expression) -> bool {
         match iterable {
             Expression::SavedRoot { .. } => true,
-            Expression::Field { base, .. } => is_entry_address(base) || self.is_place_name(base),
+            Expression::Field { base, .. } => is_entry_address(base) || self.is_address_name(base),
             _ => false,
         }
     }
@@ -1818,7 +1818,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Ok(match expr {
             Expression::SavedRoot { .. } => true,
             // A keyed branch family, addressed from an inline entry address or a named
-            // `place`/pin base. The place base is recognized here so `exists(b.notes)`
+            // entry reference base. The address base is recognized here so `exists(b.notes)`
             // routes to the family-populated probe rather than misreporting the branch as
             // a missing field.
             Expression::Field { base, name, .. } => self
@@ -1828,13 +1828,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         })
     }
 
-    /// Resolve a durable traversal place into the traversed layer's entry site, its
+    /// Resolve a durable traversal address into the traversed layer's entry site, its
     /// immediate key type, and the ancestor key-path locating its parent entry (empty for
     /// a root family, deeper for each branch level). The branch chain before the layer
     /// resolves through the recursive entry-address walker, so an inner branch layer
     /// iterates under a full ancestor key-path. Reports a precise diagnostic and returns
     /// `None` on a missing store, a wrong store name, or an unknown branch.
-    pub(super) fn resolve_traversal_place<'e>(
+    pub(super) fn resolve_traversal_path<'e>(
         &mut self,
         iterable: &'e Expression,
     ) -> Option<TraversalTarget<'a, 'e>> {
@@ -1856,11 +1856,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 ..
             } => {
-                // A bare branch selection on an in-scope `place`/pin name iterates the
-                // branch family beneath the entry the place already addresses; its ancestor
-                // key-path is the place's pre-evaluated key slots.
-                if self.is_place_name(base) {
-                    return self.resolve_traversal_through_place(
+                // A bare branch selection on an in-scope entry reference name iterates the
+                // branch family beneath the entry the address already addresses; its ancestor
+                // key-path is the address's pre-evaluated key slots.
+                if self.is_address_name(base) {
+                    return self.resolve_traversal_through_address(
                         base,
                         layer_name,
                         *layer_span,
@@ -1895,33 +1895,33 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
     }
 
-    /// Resolve `<place>.branch` into the traversed branch layer's entry site, its
+    /// Resolve `<address>.branch` into the traversed branch layer's entry site, its
     /// immediate key type, and the ancestor key-path locating its parent entry. The parent
-    /// is the entry the `place`/pin already addresses, so the ancestor key-path is the
-    /// place's pre-evaluated key slots (`bound_keys`), root-first. The branch is found
-    /// beneath the place's recorded durable node, so resolution never re-parses the
+    /// is the entry the entry reference already addresses, so the ancestor key-path is the
+    /// address's pre-evaluated key slots (`bound_keys`), root-first. The branch is found
+    /// beneath the address's recorded durable node, so resolution never re-parses the
     /// address. Returns `None` when that node declares no keyed branch by that name.
-    fn resolve_traversal_through_place<'e>(
+    fn resolve_traversal_through_address<'e>(
         &mut self,
-        place_base: &Expression,
+        address_base: &Expression,
         layer_name: &str,
         layer_span: SourceSpan,
         span: SourceSpan,
     ) -> Option<TraversalTarget<'a, 'e>> {
-        let Expression::Name { segments, .. } = place_base else {
+        let Expression::Name { segments, .. } = address_base else {
             return None;
         };
         let [name] = &segments[..] else {
             return None;
         };
-        let place = self.lookup_place(name.text())?;
-        // The place's key-path — evaluated once at its binding — is the traversal's
+        let address = self.lookup_entry_ref(name.text())?;
+        // The address's key-path — evaluated once at its binding — is the traversal's
         // ancestor path. An identity-captured slot carries its root as a typed identity
         // column, which the bounded-traversal ancestor pop re-proves like any other.
-        let ancestor_keys = place.bound_keys();
+        let ancestor_keys = address.bound_keys();
         // The node borrows the registry (`'a`), not `&self`, so a diagnostic may still
         // borrow `self` mutably.
-        let node = place.node;
+        let node = address.node;
         let Some(branch) = node.branch(layer_name) else {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType,
@@ -1963,7 +1963,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
     }
 
-    /// Lower a bounded durable traversal `for k in <place> at most N [from f] on more`:
+    /// Lower a bounded durable traversal `for k in <address> at most N [from f] on more`:
     /// freeze the first `N` immediate keys of the traversed layer (after an inclusive
     /// `from`), run the body once per frozen key in order, then run `on more` when an
     /// `(N+1)`th key existed and every frozen body completed normally.
@@ -1987,20 +1987,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             ));
             return Ok(Flow::Fallthrough);
         };
-        // A durable traversal binds the immediate key, and optionally a second name: a
-        // per-iteration address pin (`place` semantics) over the entry at that key. More
-        // than two names has no durable meaning.
-        let (var, place_var) = match binding.names.as_slice() {
-            [key] => (key, None),
-            [key, address] => (key, Some(address)),
-            _ => {
-                self.fail(unsupported(
-                    self.file,
-                    span,
-                    "binding more than a key and a per-iteration address in a traversal",
-                ));
-                return Ok(Flow::Fallthrough);
-            }
+        let [var] = binding.names.as_slice() else {
+            self.fail(unsupported(
+                self.file,
+                span,
+                "durable traversal binds one key; bind an entry with `ref` inside the body",
+            ));
+            return Ok(Flow::Fallthrough);
         };
         let Some(on_more) = &bound.on_more else {
             self.fail(SourceDiagnostic::at(
@@ -2026,46 +2019,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             return Ok(Flow::Rejected);
         };
 
-        // Evaluate the ancestor key-path (root-first) then the inclusive `from` key, so
-        // the opcode pops `from` (top) then the ancestor path. Keys are captured once,
-        // before any body runs. A two-binding traversal captures the ancestor keys into
-        // slots first, because its per-iteration address pin reads them alongside the
-        // loop key.
-        let ancestor_slots: Vec<(u16, ScalarType)> = if place_var.is_some() {
-            let mut slots = Vec::with_capacity(target.ancestor_keys.len());
-            for column in &target.ancestor_keys {
-                match column.key {
-                    // A place/pin base supplies its ancestor columns as slots evaluated
-                    // once at the place binding, reused rather than re-evaluated.
-                    PlaceKey::Bound(slot) => slots.push((slot, column.key_ty)),
-                    // An inline `^root(k)….branch` base evaluates each ancestor key once here
-                    // into a fresh slot, so the pin and the opcode read one evaluation.
-                    PlaceKey::Expr(key_expr) => {
-                        let Some(slot) = self.alloc_slot(key_expr.span()) else {
-                            return Ok(Flow::Rejected);
-                        };
-                        self.lower_as(key_expr, LTy::bare_scalar(column.key_ty))?;
-                        self.push(Instr::LocalSet(slot), target.span)?;
-                        slots.push((slot, column.key_ty));
-                    }
-                    // An inline `^root[Id(…)].branch` base spreads the one identity operand
-                    // into the addressed root's key columns, captured once into a slot per
-                    // column (root-first).
-                    PlaceKey::Identity { expr, root, cols } => {
-                        let columns =
-                            self.capture_identity_key_columns(expr, root, cols, target.span)?;
-                        slots.extend(columns);
-                    }
-                }
-            }
-            for (slot, _) in &slots {
-                self.push(Instr::LocalGet(*slot), target.span)?;
-            }
-            slots
-        } else {
-            self.emit_key_path(&target.ancestor_keys, target.span)?;
-            Vec::new()
-        };
+        // Ancestor keys are evaluated once before the frozen key list is created.
+        self.emit_key_path(&target.ancestor_keys, target.span)?;
         let Some(site) = self.entry_site_operand(target.node) else {
             return Ok(Flow::Rejected);
         };
@@ -2082,9 +2037,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             },
             span,
         )?;
-        let node = target.node;
         let key_name = var.name.clone();
-        let place_name = place_var.map(|name| name.name.clone());
         self.lower_frozen_walk(body, on_more, span, move |lower| {
             let key_slot = lower
                 .alloc_slot(var.span)
@@ -2101,20 +2054,6 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 mutable: false,
                 slot: key_slot,
             });
-            // The optional second binding is a per-iteration address pin: a `place`
-            // over the entry at the current key, keyed by the captured ancestor slots
-            // followed by this iteration's key slot. It reads nothing and establishes
-            // no presence fact, so a write through it is an ordinary sparse set unless
-            // a dominating `exists` proves the entry present.
-            if let Some(place_name) = place_name {
-                let mut key_slots = ancestor_slots;
-                key_slots.push((key_slot, key_ty));
-                lower.places.push(PlaceLocal {
-                    name: place_name,
-                    key_slots,
-                    node,
-                });
-            }
             Ok(())
         })
     }
@@ -2212,7 +2151,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// identity component as the source `Id(^root)`: the frozen raw identity keys
     /// materialize as one `List[K]`, each wrapped into an `Id(^root)` at the binding. It
     /// requires a single-column identity root, so the yielded component is a whole
-    /// identity, and admits no `from` cursor or per-iteration address pin.
+    /// identity and admits no `from` cursor.
     fn lower_index_scan(
         &mut self,
         binding: &ForBinding,
@@ -2583,12 +2522,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let exit = self.push_jif(span)?;
 
         let mark = self.locals.len();
-        let place_mark = self.places.len();
+        let reference_mark = self.entry_refs.len();
         match bind(self, index_slot) {
             Ok(()) => {}
             Err(LoweringFailure::Recoverable) => {
                 self.locals.truncate(mark);
-                self.places.truncate(place_mark);
+                self.entry_refs.truncate(reference_mark);
                 return Err(LoweringFailure::Recoverable);
             }
             Err(LoweringFailure::CodeLimitReached) => {
@@ -2604,9 +2543,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let ctx = self.loops.pop().expect("loop was pushed");
         let break_jumps = self.close_loop(ctx);
         self.locals.truncate(mark);
-        // A two-binding durable traversal binds a per-iteration address pin as a place;
-        // drop it with the loop-variable locals so it does not escape the body.
-        self.places.truncate(place_mark);
+        self.entry_refs.truncate(reference_mark);
         if body_flow == Flow::Rejected {
             return Ok(PositionalWalkOutcome::Rejected);
         }

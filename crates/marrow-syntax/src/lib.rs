@@ -1067,7 +1067,8 @@ mod statement_recursion_depth {
                 value: _,
                 else_block,
                 span: _,
-            } => block_depth(else_block),
+            }
+            | Statement::EntryBinding { else_block, .. } => block_depth(else_block),
             Statement::While {
                 condition: _,
                 body,
@@ -1151,13 +1152,7 @@ mod statement_recursion_depth {
                 span: _,
             }
             | Statement::Delete { path: _, span: _ }
-            | Statement::PlaceBinding {
-                name: _,
-                name_span: _,
-                place: _,
-                span: _,
-            }
-            | Statement::Unset { place: _, span: _ }
+            | Statement::Unset { target: _, span: _ }
             | Statement::Return { value: _, span: _ }
             | Statement::Break { span: _ }
             | Statement::Continue { span: _ }

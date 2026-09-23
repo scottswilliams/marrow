@@ -24,7 +24,7 @@ use crate::product::{BindRefusal, BoundDemand, OccurrenceSiteDemandKey};
 /// occurrence and declaration rows the binder validated it against. There is no public or
 /// raw key-to-handle constructor and no rebinding step: the sole mint is
 /// [`crate::ImageDraft::bind_occurrence_site`], so a handle is evidence that this draft
-/// answered for this place, not a value a caller can assert.
+/// answered for this path, not a value a caller can assert.
 ///
 /// It is `Clone` but not `Copy`, for the same reason a selector is not.
 #[derive(Clone)]
@@ -76,7 +76,7 @@ pub(crate) enum SitePlanState {
     /// The row a selector, handle, or operand names is gone, or a later row reused its
     /// ordinal.
     StaleBinding,
-    /// The occurrence, path, and target do not name a place of this graph.
+    /// The occurrence, path, and target do not name a path of this graph.
     InvalidDemand,
 }
 
@@ -233,9 +233,9 @@ impl SiteRow {
 pub(crate) struct SiteDemandPlan {
     /// The retained site rows, in emission order. A row's index is its [`SiteId`].
     rows: Vec<SiteRow>,
-    /// The retained demands, so a repeated reference to one place returns the id already
+    /// The retained demands, so a repeated reference to one path returns the id already
     /// minted for it. The rows vector stays the sole table authority and emission order;
-    /// this only makes the table carry a site per *demanded* place rather than one per
+    /// this only makes the table carry a site per *demanded* path rather than one per
     /// declared graph node.
     retained: HashMap<OccurrenceSiteDemandKey, SiteId>,
     /// The earliest crossing, recorded once. With the rows it is the whole logical demand

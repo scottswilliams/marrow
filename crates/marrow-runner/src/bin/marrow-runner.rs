@@ -1023,7 +1023,7 @@ fn render_audit(audit: &marrow_lifecycle::StoreAudit, store: &Path) -> String {
                 out,
                 "  {} at {}",
                 finding.code.as_str(),
-                audit.place(&finding.site)
+                audit.path(&finding.site)
             );
         }
         let unlisted = summary.findings - findings.len() as u64;
@@ -1071,7 +1071,7 @@ fn audit_records(
         .chain(findings.iter().map(|finding| {
             Receipt::kind("finding")
                 .text("code", finding.code.as_str())
-                .text("place", audit.place(&finding.site))
+                .text("path", audit.path(&finding.site))
         }))
         .collect())
 }

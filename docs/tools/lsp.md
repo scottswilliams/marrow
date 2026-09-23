@@ -145,4 +145,4 @@ Server**.
 
 Today, the server serves the eight capabilities above. References, rename,
 workspace symbols, semantic tokens, inlay hints, code actions, keyword completion,
-and durable place or authority facts are future work ([status](../status.md)).
+and durable address or authority facts are future work ([status](../status.md)).

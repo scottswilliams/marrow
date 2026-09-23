@@ -80,19 +80,15 @@ pub fn addFullTag(id: int, nid: string, tid: int, w: int, h: bool) {
 
 pub fn setTagWeight(id: int, nid: string, tid: int, w: int) {
     transaction {
-        place tag = ^books[id].notes[nid].tags[tid]
-        if exists(tag) {
-            tag.weight = w
-        }
+        ref tag = ^books[id].notes[nid].tags[tid] else { return }
+        tag.weight = w
     }
 }
 
 pub fn setTagHot(id: int, nid: string, tid: int, h: bool) {
     transaction {
-        place tag = ^books[id].notes[nid].tags[tid]
-        if exists(tag) {
-            tag.hot = h
-        }
+        ref tag = ^books[id].notes[nid].tags[tid] else { return }
+        tag.hot = h
     }
 }
 

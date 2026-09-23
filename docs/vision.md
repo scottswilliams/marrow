@@ -2,12 +2,12 @@
 
 Marrow is a statically typed compiled language in which durable data is ordinary
 program state. A program declares the shape of its data once and reads and
-writes a durable place the way it reads and writes a local value. Where work is
+writes a durable address the way it reads and writes a local value. Where work is
 atomic, bounded, or able to fail, the program says so. The aim is a
 general-purpose language whose programs keep that shape from a command-line tool
 to a served system.
 
-A local value and a durable place are written the same way:
+A local value and a durable address are written the same way:
 
 ```mw
 module docs::vision::books
@@ -39,7 +39,7 @@ test "a durable write outlives the call" {
 ```
 
 `book.read = read` changes a local value. `^books[id] = book` copies it to a
-durable place, and the copy is still there after `record` returns. Both use the
+durable address, and the copy is still there after `record` returns. Both use the
 declared resource type; the durable write also requires a transaction.
 `isRead` reads the field as `bool?` and supplies a default, because the entry may
 be absent. The test runs against a fresh in-memory store.
@@ -49,9 +49,9 @@ be absent. The test runs against a fresh in-memory store.
 Durable data differs from local data in five ways, and the language shows each
 difference where it occurs.
 
-A read can find nothing. Untested and sparse durable reads are optional, and the
-program handles absence explicitly. Required fields read through a proved named
-place have their declared types ([durable places](language/durable-places.md#named-places)).
+A read can find nothing. Direct and sparse durable reads are optional, and the
+program handles absence explicitly. Required fields read through a checked
+entry reference have their declared types ([durable paths](language/durable-data.md#entry-references)).
 
 The data can be larger than memory. A loop over a root, a branch, or an index
 says how many keys it visits with `at most N` and what to do when more remain
@@ -70,7 +70,7 @@ fields to populated data while preserving existing values and representations
 evolution of stored data is described under
 [durable programming](future/durable-programming.md).
 
-Running code needs authority. `marrow check` lists the durable places each
+Running code needs authority. `marrow check` lists the durable paths each
 export reads and writes. That demand describes; it grants nothing. Attaching
 deployment authority to the same paths is described under
 [path effects and authority](future/path-effects-and-authority.md).
@@ -80,7 +80,7 @@ deployment authority to the same paths is described under
 Data is navigated, not queried. A program reads or changes one durable element by
 its path and walks a subtree with an ordinary loop, the same way it works with
 local state. The `resource` declaration is the only description of the data. The
-compiler knows the program's types, durable places, and effects, and it reports
+compiler knows the program's types, durable paths, and effects, and it reports
 them; no schema file, serializer, or access layer repeats them. Compiling opens
 no store; attaching a compiled program to a store is a separate step.
 

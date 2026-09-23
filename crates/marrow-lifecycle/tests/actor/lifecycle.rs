@@ -317,8 +317,7 @@ return ^counters[n].extra ?? -1
 }
 pub fn setExtra(n: int, v: int): bool {
 transaction {
-    place counter = ^counters[n]
-    if not exists(counter) {
+    ref counter = ^counters[n] else {
         return false
     }
     counter.extra = v

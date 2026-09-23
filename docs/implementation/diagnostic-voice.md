@@ -46,11 +46,11 @@ for reading.
 ### Presence
 
 An assignment through a sparse member of a local value (`book.note.text = …`
-where `note` is not `required`) has no present place to modify. The message
+where `note` is not `required`) has no present target to modify. The message
 names the member in source spelling and states the fix.
 
 ```text
-src/main.mw:14:5: check.type: cannot assign through the possibly-absent member `note`. A member that is not `required` is absent until it holds a value, and a read-modify-write cannot begin from an absent place. Assign `note` a present value first.
+src/main.mw:14:5: check.type: cannot assign through the possibly-absent member `note`. A member that is not `required` is absent until it holds a value, and a read-modify-write cannot begin from an absent target. Assign `note` a present value first.
 ```
 
 ### Bound

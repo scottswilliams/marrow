@@ -8,6 +8,33 @@
 use crate::common::Project;
 use marrow_test_support::broken_output;
 
+#[test]
+fn entry_binding_captures_keys_and_handles_absence() {
+    let output = Project::single(
+        r#"resource Counter { required value: int }
+store ^counters[id: int]: Counter
+
+pub fn update(): int {
+    transaction {
+        ^counters[1] = Counter(value: 4)
+        var id = 1
+        ref counter = ^counters[id] else { return -1 }
+        id = 2
+        counter.value = counter.value + 3
+        ref missing = ^counters[id] else { return counter.value }
+        return missing.value
+    }
+}
+
+test "captured address survives key mutation and absence runs its arm" {
+    assert update() == 7
+}
+"#,
+    )
+    .run_cli("entry-binding", &["test", "--format", "jsonl"]);
+    assert!(output.status.success(), "{output:?}");
+}
+
 /// Ordinary invocation controls use the same source and format as failed output.
 #[test]
 fn test_output_failure_returns_io_write_without_panicking() {
@@ -222,7 +249,7 @@ test "present on empty" {
 /// Binding guards retain both present and absent branches. The isolation case
 /// checks its own key 88 sentinel while key 77 from the companion case stays absent.
 #[test]
-fn flat_durable_place_behaviors_run_as_source_tests() {
+fn flat_durable_entry_behaviors_run_as_source_tests() {
     let output = Project::single(
         r#"resource Counter {
     required value: int
@@ -239,16 +266,16 @@ pub fn seed(id: int, value: int) {
 
 pub fn replaceValue(value: int) {
     transaction {
-        place c = ^counters[1]
-        c = Counter(value: 1)
+        ^counters[1] = Counter(value: 1)
+        ref c = ^counters[1] else { unreachable("created") }
         c.value = value
     }
 }
 
 pub fn writeLabel() {
     transaction {
-        place c = ^counters[1]
-        c = Counter(value: 1)
+        ^counters[1] = Counter(value: 1)
+        ref c = ^counters[1] else { unreachable("created") }
         c.label = "hi"
     }
 }

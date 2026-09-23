@@ -178,7 +178,7 @@ pub enum Expression {
     /// A saved-data root such as `^books`. Postfix key lookups and field access
     /// build the rest of a saved path on top of this.
     SavedRoot { name: Box<str>, span: SourceSpan },
-    /// The empty-optional primary value `absent`: assignable to any `T?` place and
+    /// The empty-optional primary value `absent`: assignable to any `T?` target and
     /// inert until resolved.
     Absent { span: SourceSpan },
     /// A parenthesized application: invocation or construction. The checker
@@ -929,22 +929,18 @@ pub enum Statement {
         path: Expression,
         span: SourceSpan,
     },
-    /// `place name = ^root(key...)`: a function-local binding naming one concrete
-    /// durable entry address. The key tuple is evaluated exactly once at the binding;
-    /// the binding is immutable and is not a first-class value, and later uses resolve
-    /// through the pre-evaluated address. The checker rejects a non-durable or
-    /// field-projected target.
-    PlaceBinding {
+    /// A checked entry reference. Its address is captured once; absence takes a
+    /// diverging block in which the reference is not in scope.
+    EntryBinding {
         name: String,
         name_span: SourceSpan,
-        place: Expression,
+        address: Expression,
+        else_block: Block,
         span: SourceSpan,
     },
-    /// `unset place`: clear a local product's sparse field to absent. The `place`
-    /// is a field access on a local (`r.note`); the checker rejects a required
-    /// field, a non-field place, and a durable place.
+    /// Clear a local product's sparse field. The target must be a sparse local field.
     Unset {
-        place: Expression,
+        target: Expression,
         span: SourceSpan,
     },
     Return {
@@ -975,8 +971,8 @@ pub enum Statement {
         else_block: Option<Block>,
         span: SourceSpan,
     },
-    /// `if const name [: type] = place`: a saved-read existence guard that binds
-    /// `name` only in the then block when `place` is present. The binding's type
+    /// `if const name [: type] = value`: a saved-read existence guard that binds
+    /// `name` only in the then block when `value` is present. The binding's type
     /// is the saved read's type; the optional annotation, parsed exactly as on
     /// `const`/`var`, names that type when written.
     IfConst {
@@ -1041,7 +1037,7 @@ pub enum Statement {
         step: Option<Expression>,
         /// The bounded durable-traversal clause `at most N [from f]` with its
         /// mandatory `on more` block, present only when the head carried `at most`.
-        /// The checker requires it for a durable root/branch place and rejects it on a
+        /// The checker requires it for a durable root/branch path and rejects it on a
         /// range or local-collection iterable.
         bound: Option<Box<TraversalBound>>,
         body: Block,
@@ -1170,7 +1166,7 @@ pub enum LoopOrder {
 /// `on more` runs when a further key existed beyond the frozen `N` and every frozen body
 /// completed normally. The checker enforces that `N` is a positive compile-time literal
 /// within the traversal ceiling, that `on more` is present, and that the iterable is a
-/// durable root or single-level branch place.
+/// durable root or single-level branch path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TraversalBound {
     /// The `at most N` limit expression.
@@ -1190,7 +1186,7 @@ impl Statement {
             | Self::Assign { span, .. }
             | Self::CompoundAssign { span, .. }
             | Self::Delete { span, .. }
-            | Self::PlaceBinding { span, .. }
+            | Self::EntryBinding { span, .. }
             | Self::Unset { span, .. }
             | Self::Return { span, .. }
             | Self::Break { span, .. }

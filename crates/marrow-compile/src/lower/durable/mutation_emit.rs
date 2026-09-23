@@ -72,7 +72,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let entry_site = self
             .site_operand(handle)
             .ok_or(LoweringFailure::Recoverable)?;
-        // Every column lands in a slot evaluated exactly once — a bound (place) column
+        // Every column lands in a slot evaluated exactly once — a bound (address) column
         // reuses the slot it already holds, so the verifier's presence lattice recognizes
         // a root create as establishing that slot's entry; an inline column gets a fresh
         // slot; an entry-identity root column spreads into the root's key columns. The

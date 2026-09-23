@@ -12,9 +12,8 @@ store ^books[id: int]: Book
 
 pub fn createBook(title: string): int {
     transaction {
-        place seq = ^idseq["book"]
-        const next = (seq.value ?? 0) + 1
-        seq = Counter(value: next)
+        const next = (^idseq["book"].value ?? 0) + 1
+        ^idseq["book"] = Counter(value: next)
         ^books[next] = Book(title: title)
         return next
     }

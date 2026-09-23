@@ -1,7 +1,7 @@
 # Modules and functions
 
 A module is one source file with a name. A function takes its arguments by
-value and may read or write durable places.
+value and may read or write durable paths.
 
 A shelf module and a program that imports it:
 
@@ -117,7 +117,7 @@ by entry into a local collection.
 A module has one function per name (`check.name_conflict`). A function cannot
 call itself, directly or through other functions (`check.recursion`).
 
-There is one kind of function. Any body may read or write a durable place. A
+There is one kind of function. Any body may read or write a durable address. A
 function that writes runs inside a `transaction` block, its own or a caller's;
 a call outside one is a `check.requires_transaction` error ([errors and
 transactions](errors-and-transactions.md#transactions)). A handled failure is

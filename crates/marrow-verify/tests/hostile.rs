@@ -2472,7 +2472,7 @@ fn flow_double_commit_rejects() {
 /// returns (indices 4–5); the absent edge writes, then commits at the closing brace and
 /// returns (indices 9–10). The flow lattice admits this because every return is reached
 /// in the `AfterCommit` state — it verifies the commit-before-return ordering the
-/// lowering places rather than trusting it. The sibling
+/// lowering addresses rather than trusting it. The sibling
 /// [`flow_return_without_commit_rejects`] pins the tamper: a return that skips the
 /// commit is refused.
 #[test]
@@ -2752,7 +2752,7 @@ fn a_strict_sparse_set_without_a_presence_fact_rejects() {
 
 /// The presence fact is proven for the guarded slot only: a strict set that names a
 /// different, unproven key slot is refused even though that slot is initialized and
-/// key-typed. This is the mutated-place-slot-index gate.
+/// key-typed. This is the mutated-address-slot-index gate.
 #[test]
 fn a_strict_sparse_set_naming_an_unproven_slot_rejects() {
     let mut draft_owner = ImageDraft::new();

@@ -44,7 +44,8 @@ fn tracer_subset_programs() -> Vec<String> {
         "module app\n\nfn label(s: Status) {\n    match s {\n        active => print(\"a\")\n        archived => print(\"b\")\n    }\n}\n",
         "module app\n\nfn area(s: Shape): int {\n    match s {\n        dot => return 0\n        circle(r) => return r\n        rect(w, h) => return w\n    }\n}\n",
         "module app\n\nfn commit(id: Id(^books)) {\n    transaction {\n        ^books[id].title = title\n    }\n}\n",
-        "module app\n\nfn edit(id: int) {\n    transaction {\n        place b = ^books[id]\n        b.title = \"x\"\n        b = Book(title: \"y\")\n        delete b\n    }\n}\n",
+        "module app\n\nfn edit(id: int) {\n    transaction {\n        ref b = ^books[id] else { return }\n        b.title = \"x\"\n        b = Book(title: \"y\")\n        delete b\n    }\n}\n",
+        "module app\nfn read(id: int): int {\n    ref entry = ^entries[id] else // absent\n    { return -1 }\n    return entry.value\n}\nfn sibling(): int { return 7 }\n",
         "module app\n\nfn risky(): Result<int, string> {\n    const x = try run()\n    return ok(x)\n}\n",
         "module app\n\nfn nested(o: Option<Option<int>>): int {\n    match o {\n        none => return 0\n        some(inner) => return depth(inner)\n    }\n}\n",
         "module app\n\nfn find(): Result<Option<int>, string> {\n    const x = try lookup()\n    return ok(some(x))\n}\n",
@@ -631,8 +632,12 @@ fn stmt_has_error(stmt: &Statement) -> bool {
             expr_has_error(target) || expr_has_error(value)
         }
         Statement::Delete { path, .. } => expr_has_error(path),
-        Statement::PlaceBinding { place, .. } => expr_has_error(place),
-        Statement::Unset { place, .. } => expr_has_error(place),
+        Statement::EntryBinding {
+            address,
+            else_block,
+            ..
+        } => expr_has_error(address) || block_has_error(else_block),
+        Statement::Unset { target, .. } => expr_has_error(target),
         Statement::If {
             condition,
             then_block,

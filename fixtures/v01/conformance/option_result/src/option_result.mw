@@ -2,7 +2,7 @@ module option_result
 
 // `Option<T>` and `Result<T, E>` are built-in closed enum value types that ride
 // the same machinery as a user `enum`: constructed, matched, and compared by
-// value. They are ordinary values, not the presence primitive — a `T?` place is
+// value. They are ordinary values, not the presence primitive — a `T?` read is
 // still absent-or-present, while an `Option<T>` value is `none` or `some(v)`.
 
 pub fn firstEven(a: int, b: int): Option<int> {

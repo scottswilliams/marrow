@@ -1149,7 +1149,7 @@ impl<'i> Frame<'i> {
     }
 
     /// The key-path of a present-entry op: the containing entry's key columns read from
-    /// the place's pre-evaluated slots (root-first); the verifier proved each slot
+    /// the reference's pre-evaluated slots (root-first); the verifier proved each slot
     /// definitely initialized with its column type here.
     fn place_key_path(&self, key_slots: &[u16]) -> Vec<KeyScalar> {
         key_slots
@@ -1158,7 +1158,7 @@ impl<'i> Frame<'i> {
                 value_to_key(
                     self.locals[*slot as usize]
                         .clone()
-                        .expect("verifier proved definite init of the place key slot"),
+                        .expect("verifier proved definite init of the address key slot"),
                 )
             })
             .collect()

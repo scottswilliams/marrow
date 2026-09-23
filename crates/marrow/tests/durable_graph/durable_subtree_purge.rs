@@ -3,7 +3,7 @@
 //! A whole-entry `delete` is payload-only: it removes the addressed node's own payload
 //! and marker while its keyed `branch` descendants persist at their own addresses — the
 //! *descendant-only ghost* documented on
-//! [Durable Places](../../../docs/language/durable-places.md). Removing an entry *and*
+//! [Durable data](../../../../docs/language/durable-data.md). Removing an entry *and*
 //! every descendant is therefore written as a composition: a bounded nested traversal
 //! deletes each per-iteration pin innermost-first, then deletes the entry's own payload.
 //! These two tests pin the contrast — the composition purge leaves nothing reachable,
@@ -61,8 +61,10 @@ pub fn seed(id: int) {
 
 pub fn purge(id: int) {
     transaction {
-        for noteId, note in ^books[id].notes at most 1000 {
-            for tagId, tag in ^books[id].notes[noteId].tags at most 1000 {
+        for noteId in ^books[id].notes at most 1000 {
+            ref note = ^books[id].notes[noteId] else { continue }
+            for tagId in ^books[id].notes[noteId].tags at most 1000 {
+                ref tag = ^books[id].notes[noteId].tags[tagId] else { continue }
                 delete tag
             } on more {}
             delete note

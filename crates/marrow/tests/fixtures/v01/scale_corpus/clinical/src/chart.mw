@@ -2083,12 +2083,11 @@ store ^charts[mrn: int]: Chart
 
 pub fn recordName(mrn: int, name: string) {
     transaction {
-        place chart = ^charts[mrn]
-        if exists(chart) {
-            chart.name = name
-        } else {
-            chart = Chart(name: name)
+        ref chart = ^charts[mrn] else {
+            ^charts[mrn] = Chart(name: name)
+            return
         }
+        chart.name = name
     }
 }
 
@@ -2098,32 +2097,32 @@ pub fn nameOf(mrn: int): string? {
 
 pub fn setWeight(mrn: int, grams: int) {
     transaction {
-        place chart = ^charts[mrn]
-        if exists(chart) {
-            chart.weightG = grams
+        ref chart = ^charts[mrn] else {
+            return
         }
+        chart.weightG = grams
     }
 }
 
 pub fn setHeight(mrn: int, mm: int) {
     transaction {
-        place chart = ^charts[mrn]
-        if exists(chart) {
-            chart.heightMm = mm
+        ref chart = ^charts[mrn] else {
+            return
         }
+        chart.heightMm = mm
     }
 }
 
-// A group-leaf write goes through the entry's `place`: one presence proof covers
-// the three vitals, each written as `chart.vitals.leaf`.
+// A group-leaf write goes through the checked entry reference: one presence proof
+// covers the three vitals, each written as `chart.vitals.leaf`.
 pub fn setVital(mrn: int, systolic: int, diastolic: int, heartRate: int) {
     transaction {
-        place chart = ^charts[mrn]
-        if exists(chart) {
-            chart.vitals.systolic = systolic
-            chart.vitals.diastolic = diastolic
-            chart.vitals.heartRate = heartRate
+        ref chart = ^charts[mrn] else {
+            return
         }
+        chart.vitals.systolic = systolic
+        chart.vitals.diastolic = diastolic
+        chart.vitals.heartRate = heartRate
     }
 }
 
@@ -2211,19 +2210,19 @@ pub fn glucoseState(mrn: int): string {
 
 pub fn recordGlucose(mrn: int, value: int) {
     transaction {
-        place chart = ^charts[mrn]
-        if exists(chart) {
-            chart.glucoseReading = some(value)
+        ref chart = ^charts[mrn] else {
+            return
         }
+        chart.glucoseReading = some(value)
     }
 }
 
 pub fn recordGlucoseUnmeasurable(mrn: int) {
     transaction {
-        place chart = ^charts[mrn]
-        if exists(chart) {
-            chart.glucoseReading = none
+        ref chart = ^charts[mrn] else {
+            return
         }
+        chart.glucoseReading = none
     }
 }
 
@@ -2237,9 +2236,8 @@ pub fn addObservation(mrn: int, seq: int, code: string, at: instant, value: int)
 // each present entry's sparse `value` (an absent value reads as 0), with a bounded traversal.
 pub fn observationTotal(mrn: int): int {
     var total = 0
-    place chart = ^charts[mrn]
-    for seq, ob in chart.observations at most 1000 {
-        if const got = ob {
+    for seq in ^charts[mrn].observations at most 1000 {
+        if const got = ^charts[mrn].observations[seq] {
             total += got.value ?? 0
         }
     } on more {
@@ -2250,8 +2248,7 @@ pub fn observationTotal(mrn: int): int {
 
 pub fn observationCount(mrn: int): int {
     var count = 0
-    place chart = ^charts[mrn]
-    for seq in chart.observations at most 1000 {
+    for seq in ^charts[mrn].observations at most 1000 {
         count += 1
     } on more {
         return -1
@@ -2273,8 +2270,7 @@ pub fn addDiagnosis(mrn: int, pos: int, code: string) {
 // its one `code` field.
 pub fn diagnosisCount(mrn: int): int {
     var count = 0
-    place chart = ^charts[mrn]
-    for pos in chart.diagnoses at most 1000 {
+    for pos in ^charts[mrn].diagnoses at most 1000 {
         count += 1
     } on more {
         return -1

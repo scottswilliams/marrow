@@ -62,10 +62,10 @@ fn diagnostics(project: &Project) -> Diagnostics {
 /// edit-state points at the real fix instead of the next `pub fn`.
 #[test]
 fn d11_unclosed_brace_names_the_open_site_without_a_cascade() {
-    // Drop the closing brace of `suspendMember`, opened on line 49.
+    // Drop the closing brace of `suspendMember`.
     let project = locker_mutated(
-        "    transaction {\n        place member = ^members[memberId]\n        if exists(member) {\n            member.standing = Standing::suspended\n        }\n    }\n}\n\npub fn reinstateMember",
-        "    transaction {\n        place member = ^members[memberId]\n        if exists(member) {\n            member.standing = Standing::suspended\n        }\n    }\n\npub fn reinstateMember",
+        "    transaction {\n        ref member = ^members[memberId] else {\n            return\n        }\n        member.standing = Standing::suspended\n    }\n}\n\npub fn reinstateMember",
+        "    transaction {\n        ref member = ^members[memberId] else {\n            return\n        }\n        member.standing = Standing::suspended\n    }\n\npub fn reinstateMember",
     );
     let diagnostics = diagnostics(&project);
     assert_eq!(
@@ -77,7 +77,7 @@ fn d11_unclosed_brace_names_the_open_site_without_a_cascade() {
     let unclosed = diagnostics.only("parse.syntax");
     assert_eq!(
         unclosed.line(),
-        49,
+        48,
         "the diagnostic points at the opening brace of the unclosed body: {:?}",
         diagnostics.all()
     );
@@ -127,7 +127,7 @@ fn d13_unbounded_traversal_names_the_bound_law_at_the_head() {
     let unbounded = diagnostics.only("check.type");
     assert_eq!(
         unbounded.line(),
-        84,
+        83,
         "at the `for` head: {:?}",
         diagnostics.all()
     );
@@ -193,14 +193,14 @@ fn d07_a_dropped_root_reports_one_primary_and_one_steer() {
 #[test]
 fn d04_a_failed_binding_does_not_cascade_not_in_scope() {
     let project = locker_mutated(
-        "^idseq[\"member\"]\n        const next = (seq.value ?? 0) + 1",
-        "^idseq[\"member\"]\n        const next = (seq.value) + 1",
+        "const next = (^idseq[\"member\"].value ?? 0) + 1",
+        "const next = (^idseq[\"member\"].value) + 1",
     );
     let diagnostics = diagnostics(&project);
     let primary = diagnostics.only("check.type");
     assert_eq!(
         primary.line(),
-        42,
+        41,
         "at the optional arithmetic: {:?}",
         diagnostics.all()
     );
@@ -238,7 +238,7 @@ fn d08_a_misspelled_root_suggests_the_nearest_store_root() {
     let unknown = diagnostics.only("check.type");
     assert_eq!(
         unknown.line(),
-        68,
+        67,
         "at the reference: {:?}",
         diagnostics.all()
     );

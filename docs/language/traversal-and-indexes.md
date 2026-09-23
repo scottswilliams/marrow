@@ -4,8 +4,7 @@
 or branch, and an index. A durable walk states its bound at the loop head and
 says what happens when more entries remain.
 
-A root, a branch beneath a pin, a branch beneath a named place, and a `from`
-key:
+A root, a branch addressed by its ancestor keys, and a `from` key:
 
 ```mw
 module docs::traversal::walk
@@ -24,8 +23,8 @@ const pageSize = 100
 
 pub fn noteTotal(): Result<int, string> {
     var total = 0
-    for id, book in ^books at most pageSize {
-        for pos in book.notes at most 100 {
+    for id in ^books at most pageSize {
+        for pos in ^books[id].notes at most 100 {
             total += 1
         } on more {
             return err("more than 100 notes")
@@ -38,9 +37,8 @@ pub fn noteTotal(): Result<int, string> {
 
 pub fn notesFrom(id: int, first: int): string {
     var text = ""
-    place book = ^books[id]
-    for pos in book.notes at most 2 from first {
-        text += book.notes[pos].text ?? ""
+    for pos in ^books[id].notes at most 2 from first {
+        text += ^books[id].notes[pos].text ?? ""
     } on more {
         text += "..."
     }
@@ -105,13 +103,11 @@ test "the visited keys are frozen before the body runs" {
 }
 ```
 
-`for id, book in ^books at most pageSize` visits at most `pageSize` books,
-the module constant `100`. `id` is the key
-of each entry and `book` is a pin, an address for the entry at that key.
-`for pos in book.notes` walks the notes beneath the pinned book. In
-`notesFrom`, a named [place](durable-places.md#named-places) is the base
-instead, and `from first` starts the walk at that position. Each `on more`
-block says what the function does when the bound is reached.
+`for id in ^books at most pageSize` visits at most `pageSize` books, the
+module constant `100`. `id` is the key of each entry. The inner loop walks
+`^books[id].notes`. In `notesFrom`, `from first` starts at that position;
+this branch can be traversed even when the book entry is absent. Each
+`on more` block handles reaching the bound.
 
 ## Bounded durable traversal
 
@@ -119,7 +115,7 @@ A durable `for` head names a root or a keyed branch, a bound, an optional
 starting key, and an `on more` block:
 
 ```text
-for k[, p] in <base> at most N [from f] {
+for k in <base> at most N [from f] {
     statements
 } on more {
     statements
@@ -127,9 +123,9 @@ for k[, p] in <base> at most N [from f] {
 ```
 
 The base is a root such as `^books`, a branch beneath one entry such as
-`^books[id].notes`, or a branch beneath a place or a pin such as `book.notes`.
+`^books[id].notes`, or a branch beneath an entry reference such as `book.notes`.
 `k` binds each key in ascending [key order](types-and-values.md#key-types).
-The body reads the entry through the key or the pin. `N` is a positive integer
+The body addresses the entry using its key. A durable loop binds exactly one name. `N` is a positive integer
 literal, or a module `const` of type `int`, of at most 65,536. A durable `for`
 without `at most` or without `on more` is a `check.type` error.
 
@@ -144,15 +140,12 @@ including a key inspected to decide `on more`. These operation checks cover
 the decoded key components; [logical inspection](../operations/README.md#auditing-a-store)
 checks the complete store.
 
-A pin `p` is a [place](durable-places.md#named-places) over the entry at the
-current key, scoped to the body. It reads nothing and proves nothing by
-itself. Untested and sparse reads through the pin are optional; required reads
-through an explicitly proved pin have their declared types. A write
-through it sits inside a `transaction` and needs a proof the body establishes
-before the write, `if exists(p)` or `if const x = p`:
+A frozen key does not establish presence: an earlier iteration may have
+erased that entry. To read required fields or update fields, bind a checked
+[entry reference](durable-data.md#entry-references) in the body:
 
 ```mw
-module docs::traversal::pins
+module docs::traversal::references
 
 resource Book {
     required title: string
@@ -164,11 +157,12 @@ store ^books[id: int]: Book
 pub fn shelveAll(shelf: string): int {
     var moved = 0
     transaction {
-        for id, book in ^books at most 100 {
-            if exists(book) {
-                book.shelf = shelf
-                moved += 1
+        for id in ^books at most 100 {
+            ref book = ^books[id] else {
+                continue
             }
+            book.shelf = shelf
+            moved += 1
         } on more {
             return moved
         }
@@ -186,7 +180,7 @@ pub fn shelfOf(id: int): string? {
     return ^books[id].shelf
 }
 
-test "each iteration proves its pin" {
+test "each iteration checks entry presence" {
     add(1, "Small Gods")
     add(2, "Pyramids")
     assert shelveAll("top") == 2
@@ -194,13 +188,11 @@ test "each iteration proves its pin" {
 }
 ```
 
-`exists(book)` reports whether the entry is still present and proves it for
-the rest of that block. `shelveAll` proves each pin
-on its own iteration. A loop body is one proof region: a protected read or write inside a body
-that was entered after its proof was established is refused when that body,
-or a body nested in it, erases the family or calls a function that erases it,
-and after such a loop the proof is gone
-([named places](durable-places.md#named-places)).
+`shelveAll` checks presence on each iteration and skips an absent entry.
+The reference lives for that iteration. A protected read or write inside a
+loop entered after its proof was established requires the proof to survive
+that repeating region; an erase of the family invalidates it
+([entry references](durable-data.md#entry-references)).
 
 Writes in the body do not change the frozen set. An entry created in the body
 is not visited. An entry erased by an earlier iteration keeps its frozen key,
@@ -234,8 +226,8 @@ so a walk over wide keys can reach `run.collection_limit` before `N` keys.
 not iterated; a `for` head over it is a `check.unsupported` error. Give every
 layer a program needs to walk its own single-key branch.
 
-A place names one entry, so `for k in b` over a place is a `check.type` error.
-Walk a branch beneath the place, `for k in b.notes`, or walk the root.
+An entry reference names one entry, so `for k in b` is a `check.type` error.
+Walk a branch beneath it, `for k in b.notes`, or walk the root.
 
 ## Ranges
 
@@ -335,11 +327,11 @@ pub fn isbnTaken(isbn: string): bool {
 pub fn moveByIsbn(isbn: string, shelf: string): bool {
     transaction {
         if const found = ^books.byIsbn[isbn] {
-            place m = ^books[found]
-            if exists(m) {
-                m.shelf = shelf
-                return true
+            ref m = ^books[found] else {
+                return false
             }
+            m.shelf = shelf
+            return true
         }
         return false
     }
@@ -363,13 +355,13 @@ test "indexes" {
 
 `byShelf[shelf, id]` orders books by shelf, then by key, so two books on one
 shelf stay distinct. `byIsbn[isbn] unique` maps each ISBN to one book. `add`
-writes the entry once; its indexes follow. `moveByIsbn` binds a place over
-the found identity, proves it with `exists(m)`, and changes `shelf`; the last
+writes the entry once; its indexes follow. `moveByIsbn` binds an entry reference over
+the found identity, handles absence in its `else`, and changes `shelf`; the last
 two assertions show `byShelf` moved with it.
 
 Each component names one key of the root or one top-level field of the
 resource, and no component repeats. A root's key names are the store's own and
-a resource field may share one ([keys](durable-places.md#keys)); a component
+a resource field may share one ([keys](durable-data.md#keys)); a component
 whose spelling names both is refused, because it resolves neither. A component
 has type `int`, `string`, `bool`, `bytes`, `date`, or `instant`
 ([key types](types-and-values.md#key-types)). A field inside a group or a
@@ -377,7 +369,7 @@ branch is not a component. A non-unique index ends with every key of the root
 in declaration order, with no key before that final suffix. A `unique` index may omit the
 keys. An index name is distinct from the root's key names and the resource's
 field names. A root declares at most 8 indexes. A singleton root declares no index, and
-operating on one is future work ([durable places](durable-places.md#access-demand)).
+operating on one is future work ([durable paths](durable-data.md#access-demand)).
 Each of these rules is a `check.type` error at the declaration.
 
 The runtime maintains an index inside the same transaction as the entry it
@@ -422,7 +414,7 @@ uses this form. Empty brackets remain a `parse.syntax` error.
 
 `^books[bookId]` reads the entry the identity names. The walk freezes its
 identities and runs `on more` exactly as a root walk does. The root's key is
-one component, and the walk takes no `from` and no pin; each of those forms is
+one component, and the walk takes no `from`; violating either restriction is
 a `check.unsupported` error ([known gaps](README.md#known-gaps)).
 
 A `unique` index is read with brackets holding the whole value,
@@ -436,7 +428,7 @@ index has no `exists`; the `for` head is its only read, and `exists` over it
 is a `check.type` error.
 
 A found identity is an address and supplies no automatic presence proof. Inside a `transaction`,
-`place m = ^books[found]` binds it, `m.shelf = shelf` under `if exists(m)`
+`ref m = ^books[found] else { return false }` checks presence, and `m.shelf = shelf`
 writes one field of the entry the lookup found, and `^books[found] = Book(...)`
 replaces it, exactly as a key in brackets would
-([named places](durable-places.md#named-places)).
+([entry references](durable-data.md#entry-references)).

@@ -22,8 +22,13 @@ a test-inclusive image without publishing editor facts. The compiler
 opens no store and cannot mint a verified image.
 
 [`lower/presence.rs`](../../crates/marrow-compile/src/lower/presence.rs) owns
-named-place guard recognition and proof lifetimes. Statement lowering reuses
-these facts for conditional blocks, early-return guards and `require`; image
+entry-presence proof lifetimes and guard recognition.
+It retains shared call-history paths across diverging arms and loop joins;
+[`compile/presence_calls.rs`](../../crates/marrow-compile/src/compile/presence_calls.rs)
+checks protected uses against callee erasures in bounded family stripes.
+[`lower/durable.rs`](../../crates/marrow-compile/src/lower/durable.rs) lowers
+checked entry bindings using that owner. Statement lowering reuses these facts
+for conditional blocks, early-return guards and `require`; image
 verification independently reconstructs presence from their control flow.
 
 **Image.** `marrow-image` owns the container: the draft that validates as it is
@@ -124,7 +129,7 @@ captured bytes into a `ProjectInput` whose every file carries its origin.
 `marrow-compile` checks every module and lowers a
 test image, which `marrow-image` encodes and `marrow-verify` seals.
 `marrow-lifecycle` prepares the sealed image once and selects each `test` block
-from it; `marrow-vm` runs the body. A body that touches a `^` place runs against
+from it; `marrow-vm` runs the body. A body that touches durable data runs against
 a store the lifecycle mints in memory from the prepared image, through
 `marrow-kernel` over the in-memory engine in `marrow-store`. The store is
 dropped when the test returns.

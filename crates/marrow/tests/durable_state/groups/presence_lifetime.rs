@@ -6,13 +6,15 @@ use super::{
 };
 use crate::common::Project;
 
-fn assert_requires_presence(body: &str, place: &str) {
-    assert_requires_presence_with_schema(SCHEMA, body, place);
+fn assert_requires_presence(body: &str, reference: &str) {
+    assert_requires_presence_with_schema(SCHEMA, body, reference);
 }
 
-fn assert_requires_presence_with_schema(schema: &str, body: &str, place: &str) {
+fn assert_requires_presence_with_schema(schema: &str, body: &str, reference: &str) {
     let source = format!("{schema}\n{body}");
-    let start = source.find(place).expect("the fixture contains the write");
+    let start = source
+        .find(reference)
+        .expect("the fixture contains the write");
     let line = source[..start]
         .bytes()
         .filter(|byte| *byte == b'\n')
@@ -37,7 +39,7 @@ fn assert_requires_presence_with_schema(schema: &str, body: &str, place: &str) {
             span.start_byte,
             span.end_byte,
         ),
-        (line, column, start, start + place.len()),
+        (line, column, start, start + reference.len()),
     );
 }
 
@@ -45,12 +47,9 @@ fn assert_requires_presence_with_schema(schema: &str, body: &str, place: &str) {
 fn an_invalidated_required_group_leaf_refuses_an_optional_context() {
     let body = r#"pub fn pages(shelf: int, id: int): int? {
     transaction {
-        place b = ^books[shelf, id]
-        if exists(b) {
-            delete b
-            return b.details.pages
-        }
-        return absent
+        ref b = ^books[shelf, id] else { return absent }
+        delete b
+        return b.details.pages
     }
 }
 "#;
@@ -66,10 +65,8 @@ fn a_whole_group_constructor_argument_erase_requires_fresh_presence() {
 
 pub fn put(shelf: int, id: int) {
     transaction {
-        place b = ^books[shelf, id]
-        if exists(b) {
-            b.details = Book.details(pages: eraseAndPages(shelf, id))
-        }
+        ref b = ^books[shelf, id] else { return }
+        b.details = Book.details(pages: eraseAndPages(shelf, id))
     }
 }
 "#;
@@ -85,10 +82,8 @@ fn a_group_leaf_rhs_erase_requires_fresh_presence() {
 
 pub fn put(shelf: int, id: int) {
     transaction {
-        place b = ^books[shelf, id]
-        if exists(b) {
-            b.details.pages = eraseAndPages(shelf, id)
-        }
+        ref b = ^books[shelf, id] else { return }
+        b.details.pages = eraseAndPages(shelf, id)
     }
 }
 "#;
@@ -109,19 +104,15 @@ fn replacement_only_group_rhs_runs_once_and_preserves_current_siblings() {
 
 pub fn replaceWhole(shelf: int, id: int) {
     transaction {
-        place b = ^books[shelf, id]
-        if exists(b) {
-            b.details = Book.details(pages: replaceAndPages(shelf, id), language: "assigned")
-        }
+        ref b = ^books[shelf, id] else { return }
+        b.details = Book.details(pages: replaceAndPages(shelf, id), language: "assigned")
     }
 }
 
 pub fn replaceLeaf(shelf: int, id: int) {
     transaction {
-        place b = ^books[shelf, id]
-        if exists(b) {
-            b.details.pages = replaceAndPages(shelf, id)
-        }
+        ref b = ^books[shelf, id] else { return }
+        b.details.pages = replaceAndPages(shelf, id)
     }
 }
 "#

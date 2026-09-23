@@ -658,7 +658,7 @@ mod opcode_bijection {
     }
 
     #[test]
-    fn strict_place_tags_retain_site_and_ordered_key_slots() {
+    fn strict_entry_tags_retain_site_and_ordered_key_slots() {
         assert_eq!(
             [
                 OP_DUR_SET_FIELD,
@@ -701,7 +701,7 @@ mod opcode_bijection {
             let bytes = [
                 opcode, 0x12, 0x34, 0x00, 0x03, 0x00, 0x07, 0x00, 0xA5, 0x00, 0xFE, OP_RETURN,
             ];
-            let decoded = decode_code(&bytes).expect("complete strict-place operands decode");
+            let decoded = decode_code(&bytes).expect("complete strict-entry operands decode");
             assert_eq!(decoded.len(), 2);
             assert_eq!(decoded[0].offset, 0);
             assert_eq!(decoded[0].instr, expected);
@@ -711,7 +711,7 @@ mod opcode_bijection {
     }
 
     #[test]
-    fn every_truncated_strict_place_operand_is_refused() {
+    fn every_truncated_strict_entry_operand_is_refused() {
         for opcode in [0xB9, 0xBA, 0xBB, 0xBC] {
             let bytes = [
                 opcode, 0x12, 0x34, 0x00, 0x03, 0x00, 0x07, 0x00, 0xA5, 0x00, 0xFE,
@@ -732,7 +732,7 @@ mod opcode_bijection {
     }
 
     #[test]
-    fn strict_place_key_counts_accept_the_limit_and_refuse_zero_or_excess() {
+    fn strict_entry_key_counts_accept_the_limit_and_refuse_zero_or_excess() {
         let limit =
             marrow_image::bounds::MAX_KEY_COLUMNS * marrow_image::bounds::MAX_SITE_PATH_STEPS;
         for opcode in [0xB9, 0xBA, 0xBB, 0xBC] {
@@ -754,7 +754,7 @@ mod opcode_bijection {
                         | SealedInstr::DurReadFieldPresent { site, key_slots } => {
                             (*site, key_slots)
                         }
-                        other => panic!("unexpected strict-place variant: {other:?}"),
+                        other => panic!("unexpected strict-entry variant: {other:?}"),
                     };
                     assert_eq!(site, SiteId::from_index(0x1234));
                     assert_eq!(key_slots.as_slice(), vec![0; limit]);

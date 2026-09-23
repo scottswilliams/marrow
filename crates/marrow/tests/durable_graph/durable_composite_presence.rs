@@ -1,11 +1,11 @@
-//! Composite-root `place` presence shortcuts, executed end to end.
+//! Composite-root `reference` presence shortcuts, executed end to end.
 //!
-//! A `place` bound to a composite-key root (`place e = ^t[a, b]`) carries several key
+//! A `reference` bound to a composite-key root (`reference e = ^t[a, b]`) carries several key
 //! slots yet is still a root. Its presence shortcuts run through the
 //! whole production path — capture -> compile -> verify -> attach -> VM — over one
 //! persistent ephemeral attachment:
 //!
-//! - `if exists(e) { e.f = v }` is a guarded (strict) sparse set through the place;
+//! - `if exists(e) { e.f = v }` is a guarded (strict) sparse set through the reference;
 //! - `if const e = ^t[a, b] { … }` binds the whole entry through the composite root;
 //! - `exists(^t[a, b])` probes a composite-root entry inline.
 
@@ -41,10 +41,8 @@ pub fn enroll(s: string, c: string, g: int) {
 
 pub fn setNoteIfPresent(s: string, c: string, note: string) {
     transaction {
-        place e = ^enrollments[s, c]
-        if exists(e) {
-            e.note = note
-        }
+        ref e = ^enrollments[s, c] else { return }
+        e.note = note
     }
 }
 
@@ -65,7 +63,7 @@ fn s(v: &str) -> Value {
 }
 
 #[test]
-fn composite_root_place_presence_shortcuts_run_end_to_end() {
+fn composite_root_reference_presence_shortcuts_run_end_to_end() {
     let mut session = Project::single(SOURCE).ids(IDS).session();
 
     // Seed one composite-key entry.
@@ -82,7 +80,7 @@ fn composite_root_place_presence_shortcuts_run_end_to_end() {
         Some(Value::Bool(false))
     );
 
-    // The guarded (strict) sparse set through the composite-root place writes only where the
+    // The guarded (strict) sparse set through the composite-root reference writes only where the
     // entry is present.
     session.call("setNoteIfPresent", vec![s("ada"), s("cs"), s("top")]);
     // A guarded set against an absent composite entry is a no-op: it neither writes the note

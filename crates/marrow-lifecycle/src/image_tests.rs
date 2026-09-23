@@ -172,7 +172,7 @@ fn a_group_respelled_as_a_branch_projection_is_refused_by_kind() {
         Err(refusal) => assert_eq!(
             refusal.disagreement,
             PinDisagreement::Kind {
-                place: "^books.details".to_string(),
+                path: "^books.details".to_string(),
                 image: marrow_verify::SemanticNodeKind::Group,
                 store: marrow_verify::SemanticNodeKind::Branch,
             },
@@ -220,7 +220,7 @@ fn a_projection_that_under_covers_the_image_is_refused_as_uncovered() {
             refusal.disagreement,
             PinDisagreement::Uncovered {
                 ledger_id: marrow_image::LedgerIdBytes::from_bytes([0x20; 16]),
-                place: Some("^books.details".to_string()),
+                path: Some("^books.details".to_string()),
             },
         ),
         Ok(()) => panic!("an under-covering projection must refuse"),
@@ -244,7 +244,7 @@ fn coverage_is_decided_over_occurrence_identity_not_declaration_identity() {
     .expect("the root-only map assigns");
 
     // Each case gives `^a` the parts left of the bar and `^b` those right of it.
-    for (kind, split, ledger, place) in [
+    for (kind, split, ledger, path) in [
         ("a flat field", "v meta notes replies|", 0x51, "^b.v"),
         ("a keyed branch", "v meta|notes replies", 0x58, "^a.notes"),
         ("a nested branch", "v meta notes|", 0x5b, "^a.notes.replies"),
@@ -260,7 +260,7 @@ fn coverage_is_decided_over_occurrence_identity_not_declaration_identity() {
                 refusal.disagreement,
                 PinDisagreement::Uncovered {
                     ledger_id: marrow_image::LedgerIdBytes::from_bytes([ledger; 16]),
-                    place: Some(place.to_string()),
+                    path: Some(path.to_string()),
                 },
                 "{kind}: the first unreached occurrence",
             ),
@@ -289,7 +289,7 @@ fn an_unnamed_store_node_is_a_typed_refusal() {
         Err(refusal) => assert_eq!(
             refusal.disagreement,
             PinDisagreement::Unnamed {
-                place: "^phantom".to_string()
+                path: "^phantom".to_string()
             },
         ),
         Ok(()) => panic!("an unnamed store node must refuse"),

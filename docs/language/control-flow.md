@@ -52,7 +52,7 @@ and `else` clauses follow the block, and the first true condition wins.
 `if const name = subject { ... }` evaluates an optional subject once. The block
 runs when the subject is present, with `name` bound to the value; the else
 branch runs for `absent`. The subject is any `T?`: a local optional, a
-collection read, a [durable read](durable-places.md#reading), or a function
+collection read, a [durable read](durable-data.md#reading), or a function
 result. An `else if condition` clause may follow an `if const` block. An
 `else if const` head is not a form; chain further bindings with `and` in one
 head instead.
@@ -136,13 +136,13 @@ test "digits counts decimal digits" {
 ```
 
 The condition is evaluated before every iteration. A `while` body is one proof
-region for durable writes ([named places](durable-places.md#named-places)).
+region for durable writes ([entry references](durable-data.md#entry-references)).
 `while` has no bound of its own. A loop that does not terminate exhausts the invocation's instruction budget
 and stops with `run.budget` ([execution limits](execution-limits.md#limits)).
 
 ## For
 
-`for` walks an integer range, a list, a map, or a durable place:
+`for` walks an integer range, a list, a map, or a durable address:
 
 ```mw
 module docs::control::loops
@@ -188,7 +188,7 @@ A durable `for` states its bound:
 `for id in ^books at most 100 { ... } on more { ... }`.
 [Traversal and indexes](traversal-and-indexes.md#bounded-durable-traversal)
 defines it. A `for` body is one proof region for durable writes
-([named places](durable-places.md#named-places)).
+([entry references](durable-data.md#entry-references)).
 
 ## Loop exits
 
@@ -387,9 +387,9 @@ the body below them runs with both established. `require` originates a
 failure; `try` propagates one. The [guard prelude](idioms.md#guard-prelude)
 shows the guard forms together.
 
-`require exists(p) else value` over a named durable place also establishes its
-[presence proof](durable-places.md#named-places) for the rest of the block. The
-proof has the same scope and erasure rules as the explicit early-return guard.
+`require exists(p) else value` can re-establish an existing entry reference's
+[presence proof](durable-data.md#entry-references) after an erase. The proof
+has the same scope and erasure rules as the original `ref` binding.
 
 A failed `require` follows the enclosing function's
 [transaction exit rule](errors-and-transactions.md#guards-inside-a-block):

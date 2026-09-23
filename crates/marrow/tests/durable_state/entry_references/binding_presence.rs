@@ -1,22 +1,22 @@
-//! Require guards share the named-place proof's scope and invalidation rules.
+//! Entry bindings preserve lazy failure, proof scope and erasure invalidation.
 
 use super::{HEADER, IDS, compile_diagnostics, compile_verify, position_of};
 use crate::common::Project;
 use marrow_codes::Code;
 use marrow_vm::Value;
 
-const REQUIRE: &str = "require exists(p) else failure(n)";
-const EXPLICIT: &str = "if not exists(p) { return err(failure(n)) }";
+const BINDING: &str = "ref p = ^counters[n] else { return err(failure(n)) }";
+const EXPLICIT: &str = "if not exists(^counters[n]) { return err(failure(n)) }\nref p = ^counters[n] else { unreachable(\"guarded entry missing\") }";
 
 fn program(body: &str) -> String {
     format!(
-        "{HEADER}\nfn failure(n: int): string {{\n    delete ^counters[n]\n    ^counters[98] = Counter(value: 9)\n    return \"missing\"\n}}\n\npub fn put(n: int, again: bool): Result<int, string> {{\n    transaction {{\n        place p = ^counters[n]\n        place other = ^counters[99]\n        var repeat = again\n        {body}\n        return ok(7)\n    }}\n}}\n"
+        "{HEADER}\nfn failure(n: int): string {{\n    delete ^counters[n]\n    ^counters[98] = Counter(value: 9)\n    return \"missing\"\n}}\n\npub fn put(n: int, again: bool): Result<int, string> {{\n    transaction {{\n        var repeat = again\n        {body}\n        return ok(7)\n    }}\n}}\n"
     )
 }
 
 #[test]
-fn require_presence_preserves_lazy_failure_and_committed_results() {
-    for guard in [EXPLICIT, REQUIRE] {
+fn entry_binding_preserves_lazy_failure_and_committed_results() {
+    for guard in [EXPLICIT, BINDING] {
         let source = format!(
             "{}\npub fn seed() {{ transaction {{ ^counters[1] = Counter(value: 1) }} }}\npub fn read(n: int): int? {{ return ^counters[n].value }}\n",
             program(&format!(
@@ -63,16 +63,16 @@ fn require_presence_preserves_lazy_failure_and_committed_results() {
 }
 
 #[test]
-fn require_presence_ends_at_erasure_loop_and_scope_boundaries() {
+fn entry_presence_ends_at_erasure_loop_and_scope_boundaries() {
     let bodies = [
         "GUARD\n delete p\n USE",
-        "GUARD\n delete other\n USE",
+        "GUARD\n delete ^counters[99]\n USE",
         "GUARD\n const ignored = failure(n)\n USE",
         "GUARD\n while repeat { USE\n delete p\n repeat = false }",
         "GUARD\n while repeat { USE\n const ignored = failure(n)\n repeat = false }",
         "GUARD\n while repeat { delete p\n repeat = false }\n USE",
     ];
-    for guard in [EXPLICIT, REQUIRE] {
+    for guard in [EXPLICIT, BINDING] {
         for body in bodies {
             for protected in ["p.value = 7", "const value: int? = p.value"] {
                 let source = program(&body.replace("GUARD", guard).replace("USE", protected));
@@ -88,8 +88,8 @@ fn require_presence_ends_at_erasure_loop_and_scope_boundaries() {
                 );
             }
         }
-        let source = program(&format!("if again {{ {guard} }}\n p.value = 7"));
-        let (line, column) = position_of(&source, "p.value");
+        let source = program(&format!("if again {{ {guard} }}\n ^counters[n].value = 7"));
+        let (line, column) = position_of(&source, "^counters[n].value");
         assert_eq!(
             compile_diagnostics(&source),
             vec![(
@@ -102,8 +102,8 @@ fn require_presence_ends_at_erasure_loop_and_scope_boundaries() {
 }
 
 #[test]
-fn require_presence_can_be_renewed_inside_a_repeating_region() {
-    for guard in [EXPLICIT, REQUIRE] {
+fn entry_presence_can_be_renewed_inside_a_repeating_region() {
+    for guard in [EXPLICIT, BINDING] {
         let source = program(&format!(
             "while repeat {{ {guard}\n p.value = 7\n const value: int = p.value\n delete p\n repeat = false }}"
         ));
@@ -112,16 +112,16 @@ fn require_presence_can_be_renewed_inside_a_repeating_region() {
 }
 
 #[test]
-fn require_presence_does_not_refine_a_different_place_or_inline_path() {
+fn require_presence_does_not_refine_direct_addresses() {
     for condition in [
-        "exists(other)",
+        "exists(^counters[99])",
         "exists(^counters[n])",
-        "exists(p) and again",
+        "exists(^counters[n]) and again",
     ] {
         let source = program(&format!(
-            "require {condition} else \"missing\"\n p.value = 7"
+            "require {condition} else \"missing\"\n ^counters[n].value = 7"
         ));
-        let (line, column) = position_of(&source, "p.value");
+        let (line, column) = position_of(&source, "^counters[n].value");
         assert_eq!(
             compile_diagnostics(&source),
             vec![(

@@ -62,7 +62,7 @@ fn a_singleton_root_compiles_and_completes_its_identity() {
 }
 
 #[test]
-fn a_singleton_root_missing_its_placement_identity_fails_precisely() {
+fn a_singleton_root_missing_its_referencement_identity_fails_precisely() {
     let without_root =
         SETTINGS_IDS.replace("id root settings 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n", "");
     let diagnostics = rejection(SETTINGS_SOURCE, &without_root, "incomplete identity");

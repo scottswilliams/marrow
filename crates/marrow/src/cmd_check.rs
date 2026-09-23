@@ -25,7 +25,7 @@ Usage:
 
 Capture and check a project's source, reporting every diagnostic with its span. A
 project that checks clean prints its durable access demand grouped by module: every
-durable place each exported function reads and writes, in source spelling. Adjacent
+durable path each exported function reads and writes, in source spelling. Adjacent
 exports that share an identical demand are listed once, and storeless exports collapse
 to one note per module. Demand describes access and never grants it. `check` opens no store
 and runs no code. It exits 0 when the project checks clean, 1 when any diagnostic is

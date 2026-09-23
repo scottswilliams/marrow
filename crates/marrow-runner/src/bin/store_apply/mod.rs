@@ -128,8 +128,8 @@ pub(super) fn run(command: Command) -> io::Result<ExitCode> {
                                         .text("export", effect.export.clone())
                                         .text("effect", effect.effect.word())
                                         .field(
-                                            "place",
-                                            effect.place.clone().map_or(Json::Null, Json::Str),
+                                            "path",
+                                            effect.path.clone().map_or(Json::Null, Json::Str),
                                         )
                                         .into_json()
                                 })
@@ -183,7 +183,7 @@ mod tests {
                 Json::Array(vec![Json::Object(vec![
                     ("export".into(), Json::Str("main.bump".into())),
                     ("effect".into(), Json::Str("write".into())),
-                    ("place".into(), Json::Null),
+                    ("path".into(), Json::Null),
                 ])]),
             ),
         ]);
@@ -197,7 +197,7 @@ mod tests {
                  outcome: ceiling_unaccepted_outcome\n\
                  code: store.ceiling_unaccepted\n\
                  old_ceiling: {}\n\
-                 added_effects: [{{\"effect\":\"write\",\"export\":\"main.bump\",\"place\":null}}]\n",
+                 added_effects: [{{\"effect\":\"write\",\"export\":\"main.bump\",\"path\":null}}]\n",
                 "ab".repeat(32)
             )
         );

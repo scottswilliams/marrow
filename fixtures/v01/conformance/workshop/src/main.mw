@@ -41,7 +41,7 @@ resource Tally {
     required count: int
 }
 
-// places ---------------------------------------------------------------------
+// roots ----------------------------------------------------------------------
 
 store ^assets[id: int]: Asset {
     index byCategory[category, id]
@@ -60,8 +60,7 @@ pub fn add(id: int, tag: string, name: string, category: string, at: instant): b
         if exists(^assets[id]) {
             return false
         }
-        place catalogued = ^tallies["catalogued"]
-        catalogued = Tally(count: (catalogued.count ?? 0) + 1)
+        ^tallies["catalogued"] = Tally(count: (^tallies["catalogued"].count ?? 0) + 1)
         ^assets[id] = Asset(tag: tag, name: name, category: category)
         ^assets[id].log[1] = Asset.log(text: "catalogued", at: at)
     }
@@ -114,22 +113,20 @@ pub fn moveCount(): int {
 // never happened.
 pub fn recordMove(id: int, location: string) {
     transaction {
-        place slot = ^assets[id]
-        if exists(slot) {
-            slot.location = location
-            place moves = ^tallies["moves"]
-            moves = Tally(count: (moves.count ?? 0) + 1)
+        ref slot = ^assets[id] else {
+            return
         }
+        slot.location = location
+        ^tallies["moves"] = Tally(count: (^tallies["moves"].count ?? 0) + 1)
     }
 }
 
-// A guarded single-root setter: the `place` proves the asset present, then updates the
+// A guarded single-root setter: the `ref` binding checks the asset present, then updates the
 // one field of an entry known to exist without materializing the record or touching
 // another root.
 pub fn setLocation(id: int, location: string): bool {
     transaction {
-        place slot = ^assets[id]
-        if not exists(slot) {
+        ref slot = ^assets[id] else {
             return false
         }
         slot.location = location
@@ -137,12 +134,11 @@ pub fn setLocation(id: int, location: string): bool {
     return true
 }
 
-// A guarded field-exact update: the `place` proves the asset present, so the set
+// A guarded field-exact update: the `ref` binding checks the asset present, so the set
 // updates the one field of an entry known to exist without materializing the record.
 pub fn setCondition(id: int, note: string): bool {
     transaction {
-        place slot = ^assets[id]
-        if not exists(slot) {
+        ref slot = ^assets[id] else {
             return false
         }
         slot.conditionNote = note
@@ -152,8 +148,7 @@ pub fn setCondition(id: int, note: string): bool {
 
 pub fn checkout(id: int, holder: string): bool {
     transaction {
-        place slot = ^assets[id]
-        if not exists(slot) {
+        ref slot = ^assets[id] else {
             return false
         }
         slot.checkedOutTo = holder
@@ -163,8 +158,7 @@ pub fn checkout(id: int, holder: string): bool {
 
 pub fn checkin(id: int): bool {
     transaction {
-        place slot = ^assets[id]
-        if not exists(slot) {
+        ref slot = ^assets[id] else {
             return false
         }
         delete slot.checkedOutTo
@@ -275,21 +269,22 @@ pub fn hasLog(id: int): bool {
 
 // acts: bounded traversal and index reads -------------------------------------
 
-// A two-level bounded walk with a presence check at each level and a place-pinned
-// body address: the root pin proves the asset, and the log pin binds each entry.
+// A two-level bounded walk with a checked entry reference at each level.
 pub fn pinnedCount(): int {
     var total = 0
-    for id, asset in ^assets at most 4096 {
-        if exists(asset) {
-            for seq, entry in ^assets[id].log at most 4096 {
-                if const e = entry {
-                    if e.pinned ?? false {
-                        total += 1
-                    }
-                }
-            } on more {
-                return -1
+    for id in ^assets at most 4096 {
+        ref asset = ^assets[id] else {
+            continue
+        }
+        for seq in asset.log at most 4096 {
+            ref entry = ^assets[id].log[seq] else {
+                continue
             }
+            if entry.pinned ?? false {
+                total += 1
+            }
+        } on more {
+            return -1
         }
     } on more {
         return -1

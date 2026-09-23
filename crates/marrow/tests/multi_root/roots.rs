@@ -611,7 +611,7 @@ pub fn putX(id: int, t: string) {
 }
 
 /// Two occurrences of one Product execute independently: a write through `^a` is not
-/// observable through `^b`. One declaration is one shape, not one place.
+/// observable through `^b`. One declaration is one shape, not one reference.
 #[test]
 fn two_roots_over_one_product_execute_independently() {
     let source = r#"resource R {
@@ -741,14 +741,14 @@ pub fn readB(id: int): string? {
 "#;
     let mut session = open(source, SHARED_IDS);
     // The branch entry record is a declaration fact shared by both occurrences, so a
-    // whole-entry write must be routed by the occurrence its place names, never by the
+    // whole-entry write must be routed by the occurrence its reference names, never by the
     // record type it constructs.
     session.call("putB", vec![Value::Int(1), Value::Text("b".into())]);
     assert_eq!(session.call("readB", vec![Value::Int(1)]), some_text("b"));
     assert_eq!(
         session.call("readA", vec![Value::Int(1)]),
         Some(Value::Optional(None)),
-        "the write landed in the occurrence its place named, not the declaration's first"
+        "the write landed in the occurrence its reference named, not the declaration's first"
     );
     session.call("putA", vec![Value::Int(1), Value::Text("a".into())]);
     assert_eq!(session.call("readA", vec![Value::Int(1)]), some_text("a"));
@@ -777,11 +777,11 @@ const SHARED_NESTED_IDS: &str = "marrow ids v0\n\
      end\n";
 
 /// A `Book` with a `notes` branch that itself holds a `tags` branch, projected by two
-/// roots. Every export addresses `^b` through a `place` bound to `^b`'s branch entry, so
+/// roots. Every export addresses `^b` through a `reference` bound to `^b`'s branch entry, so
 /// the branch's own materialized record type — a Product declaration fact both
 /// occurrences share — is never enough to decide which root an operation lands on. The
 /// text setters create the entry whole when it is absent and write the field through
-/// the proven place when it is present, so a repeated call takes the field-write path.
+/// the proven reference when it is present, so a repeated call takes the field-write path.
 const SHARED_NESTED_SOURCE: &str = r#"resource Book {
     required title: string
     notes[noteId: int] {
@@ -795,31 +795,32 @@ const SHARED_NESTED_SOURCE: &str = r#"resource Book {
 store ^a[id: int]: Book
 store ^b[id: int]: Book
 
-pub fn placeSetTextB(id: int, n: int, t: string) {
+pub fn referenceSetTextB(id: int, n: int, t: string) {
     transaction {
-        place p = ^b[id].notes[n]
-        if exists(p) {
-            p.text = t
-        } else {
-            p = Book.notes(text: t)
+        ref p = ^b[id].notes[n] else {
+            ^b[id].notes[n] = Book.notes(text: t)
+            return
         }
+        p.text = t
     }
 }
 
-pub fn placeSetTextA(id: int, n: int, t: string) {
+pub fn referenceSetTextA(id: int, n: int, t: string) {
     transaction {
-        place p = ^a[id].notes[n]
-        if exists(p) {
-            p.text = t
-        } else {
-            p = Book.notes(text: t)
+        ref p = ^a[id].notes[n] else {
+            ^a[id].notes[n] = Book.notes(text: t)
+            return
         }
+        p.text = t
     }
 }
 
-pub fn placeAddTagB(id: int, n: int, g: int, w: int) {
+pub fn referenceAddTagB(id: int, n: int, g: int, w: int) {
     transaction {
-        place p = ^b[id].notes[n]
+        ref p = ^b[id].notes[n] else {
+            ^b[id].notes[n].tags[g] = Book.notes.tags(weight: w)
+            return
+        }
         p.tags[g] = Book.notes.tags(weight: w)
     }
 }
@@ -841,28 +842,28 @@ pub fn tagWeightB(id: int, n: int, g: int): int? {
 }
 "#;
 
-/// A `place` bound to a branch entry of the **second** occurrence of a shared Product
+/// A `reference` bound to a branch entry of the **second** occurrence of a shared Product
 /// addresses that occurrence. A branch's materialized entry record is a declaration fact
 /// — one record for the Product however many roots project it — so recovering the
 /// addressed branch from that record type answers with whichever occurrence was declared
-/// first. A field write through the place must land in the root the place named.
+/// first. A field write through the reference must land in the root the reference named.
 #[test]
-fn a_place_bound_branch_addresses_its_own_occurrence() {
+fn a_reference_bound_branch_addresses_its_own_occurrence() {
     let mut session = open(SHARED_NESTED_SOURCE, SHARED_NESTED_IDS);
     // The first call creates `^b`'s note whole; the second is the field write through
-    // the proven place, and its value is the one read back.
+    // the proven reference, and its value is the one read back.
     session.call(
-        "placeSetTextB",
+        "referenceSetTextB",
         vec![Value::Int(1), Value::Int(2), Value::Text("seed".into())],
     );
     session.call(
-        "placeSetTextB",
+        "referenceSetTextB",
         vec![Value::Int(1), Value::Int(2), Value::Text("b".into())],
     );
     assert_eq!(
         session.call("textB", vec![Value::Int(1), Value::Int(2)]),
         some_text("b"),
-        "the write landed in the occurrence the place named"
+        "the write landed in the occurrence the reference named"
     );
     assert_eq!(
         session.call("textA", vec![Value::Int(1), Value::Int(2)]),
@@ -870,7 +871,7 @@ fn a_place_bound_branch_addresses_its_own_occurrence() {
         "and not in the declaration's first occurrence"
     );
     session.call(
-        "placeSetTextA",
+        "referenceSetTextA",
         vec![Value::Int(1), Value::Int(2), Value::Text("a".into())],
     );
     assert_eq!(
@@ -884,13 +885,13 @@ fn a_place_bound_branch_addresses_its_own_occurrence() {
     );
 }
 
-/// The same law one level deeper: a nested branch reached *through* a place bound to the
+/// The same law one level deeper: a nested branch reached *through* a reference bound to the
 /// second occurrence's branch entry addresses that occurrence's nested branch.
 #[test]
-fn a_nested_branch_through_a_place_addresses_its_own_occurrence() {
+fn a_nested_branch_through_a_reference_addresses_its_own_occurrence() {
     let mut session = open(SHARED_NESTED_SOURCE, SHARED_NESTED_IDS);
     session.call(
-        "placeAddTagB",
+        "referenceAddTagB",
         vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(11)],
     );
     assert_eq!(
@@ -899,7 +900,7 @@ fn a_nested_branch_through_a_place_addresses_its_own_occurrence() {
             vec![Value::Int(1), Value::Int(2), Value::Int(3)]
         ),
         some_int(11),
-        "the nested-branch write landed in the occurrence the place named"
+        "the nested-branch write landed in the occurrence the reference named"
     );
     assert_eq!(
         session.call(
@@ -908,6 +909,35 @@ fn a_nested_branch_through_a_place_addresses_its_own_occurrence() {
         ),
         Some(Value::Optional(None)),
         "and not in the declaration's first occurrence"
+    );
+    assert_eq!(
+        session.call("textB", vec![Value::Int(1), Value::Int(2)]),
+        Some(Value::Optional(None)),
+        "creating the child through a direct path leaves its parent absent",
+    );
+    session.call(
+        "referenceSetTextB",
+        vec![Value::Int(1), Value::Int(2), Value::Text("parent".into())],
+    );
+    session.call(
+        "referenceAddTagB",
+        vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(12)],
+    );
+    assert_eq!(
+        session.call(
+            "tagWeightB",
+            vec![Value::Int(1), Value::Int(2), Value::Int(3)]
+        ),
+        some_int(12),
+        "the checked-reference branch updates the same nested entry",
+    );
+    assert_eq!(
+        session.call(
+            "tagWeightA",
+            vec![Value::Int(1), Value::Int(2), Value::Int(3)]
+        ),
+        Some(Value::Optional(None)),
+        "the checked-reference update still leaves the other occurrence absent",
     );
 }
 
@@ -934,21 +964,17 @@ store ^b[id: int]: R
 
 pub fn setA(id: int, v: int) {
     transaction {
-        place m = ^a[id]
-        if exists(m) {
-            m.v = v
-            m.v = v
-        }
+        ref m = ^a[id] else { return }
+        m.v = v
+        m.v = v
     }
 }
 
 pub fn setB(id: int, v: int) {
     transaction {
-        place m = ^b[id]
-        if exists(m) {
-            m.v = v
-            m.v = v
-        }
+        ref m = ^b[id] else { return }
+        m.v = v
+        m.v = v
     }
 }
 
@@ -970,21 +996,17 @@ store ^b[id: int]: R
 
 pub fn setB(id: int, v: int) {
     transaction {
-        place m = ^b[id]
-        if exists(m) {
-            m.v = v
-            m.v = v
-        }
+        ref m = ^b[id] else { return }
+        m.v = v
+        m.v = v
     }
 }
 
 pub fn setA(id: int, v: int) {
     transaction {
-        place m = ^a[id]
-        if exists(m) {
-            m.v = v
-            m.v = v
-        }
+        ref m = ^a[id] else { return }
+        m.v = v
+        m.v = v
     }
 }
 
@@ -1035,11 +1057,9 @@ store ^a[id: int]: R
 
 pub fn setA(id: int, v: int) {
     transaction {
-        place m = ^a[id]
-        if exists(m) {
-            m.v = v
-            m.v = v
-        }
+        ref m = ^a[id] else { return }
+        m.v = v
+        m.v = v
     }
 }
 
@@ -1068,7 +1088,7 @@ pub fn readA(id: int): int? {
     // field operand and strict field-write encoding along with the site numbering.
     assert_eq!(
         control.image_id().to_hex(),
-        "97d3be509a21df04b2bee178ad330564aa5df6edb873fb989d2fdcb19ed6b1c9",
+        "6af37a2cb358bdb3439dcbebe942ac1015b5eeb911ec6da870de202a729bd6e7",
         "the fitting single-root image is byte-exact outside the repeated-Product domain",
     );
 }
@@ -1115,10 +1135,8 @@ pub fn addA(id: int, t: string) {
 
 pub fn setB(id: int, t: string) {
     transaction {
-        place m = ^b[id]
-        if exists(m) {
-            m.title = t
-        }
+        ref m = ^b[id] else { return }
+        m.title = t
     }
 }
 "#;
@@ -1190,10 +1208,8 @@ store ^a[id: int]: Book
 
 pub fn setA(id: int, t: string) {
     transaction {
-        place m = ^a[id]
-        if exists(m) {
-            m.title = t
-        }
+        ref m = ^a[id] else { return }
+        m.title = t
     }
 }
 "#;

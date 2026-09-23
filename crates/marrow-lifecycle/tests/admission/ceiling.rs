@@ -4,7 +4,7 @@
 //! standing maximum authority — and the atom-granular admission check enforces it at attach:
 //! an image whose verified demand *exceeds* the accepted ceiling (a read-only export broadened
 //! to also mutate, its deployment authority not yet updated) is refused before any engine
-//! call, naming the exceeding export, effect, and place; an image whose demand fits *within*
+//! call, naming the exceeding export, effect, and path; an image whose demand fits *within*
 //! the ceiling (even when narrower than a prior image's) is admitted.
 
 use marrow_codes::Code;
@@ -16,7 +16,7 @@ use marrow_test_support::Scratch;
 
 /// The MUST-WIN: a store provisioned under the read-only image refuses the broadened image —
 /// the demand now exceeds the accepted ceiling — naming the export, the new effect, and the
-/// place in source vocabulary, before any engine call, leaving the store intact and usable.
+/// path in source vocabulary, before any engine call, leaving the store intact and usable.
 #[test]
 fn a_broadened_demand_is_refused_naming_the_exceeding_place() {
     let scratch = Scratch::new("refuse");
@@ -39,14 +39,14 @@ fn a_broadened_demand_is_refused_naming_the_exceeding_place() {
     };
 
     assert_eq!(refusal.code(), Code::StoreDemandExceedsCeiling);
-    // The refusal carries the export, the new effect, and the place as typed atoms.
+    // The refusal carries the export, the new effect, and the path as typed atoms.
     assert!(
         refusal
             .exceeding
             .iter()
             .any(|atom| atom.export == "readValue"
                 && atom.effect == marrow_image::OperationClass::Write
-                && atom.place.as_deref() == Some("^counters.label")),
+                && atom.path.as_deref() == Some("^counters.label")),
         "a typed exceeding atom names readValue's write of ^counters.label: {:?}",
         refusal.exceeding,
     );
@@ -97,7 +97,7 @@ fn a_demand_beyond_the_ceiling_preempts_the_contract_refusal() {
     }
 }
 
-/// The naming join spells the Workshop catalog's places correctly through the recursive
+/// The naming join spells the Workshop catalog's paths correctly through the recursive
 /// walk: a store provisioned under a Workshop variant with one export refuses a variant
 /// broadened to touch a two-root spread — the refusal spells the second root (`^tallies`) and
 /// its field (`^tallies.count`) exactly, proving the join is not a single-root special case.
@@ -136,7 +136,7 @@ store ^tallies[name: string]: Tally
         "{TWO_ROOT_SHAPE}\npub fn assetName(id: int): string? {{\n    \
          var found: string? = absent\n    transaction {{\n        \
          found = ^assets[id].name\n        \
-         place tally = ^tallies[\"reads\"]\n        \
+         ref tally = ^tallies[\"reads\"] else {{ return found }}\n        \
          if exists(tally) {{\n            \
          tally.count = tally.count + 1\n        }}\n    }}\n    return found\n}}\n"
     );
@@ -163,7 +163,7 @@ store ^tallies[name: string]: Tally
             .exceeding
             .iter()
             .any(|atom| atom.effect == marrow_image::OperationClass::Write
-                && atom.place.as_deref() == Some("^tallies.count")),
+                && atom.path.as_deref() == Some("^tallies.count")),
         "a typed atom spells the second root's written field: {:?}",
         refusal.exceeding,
     );

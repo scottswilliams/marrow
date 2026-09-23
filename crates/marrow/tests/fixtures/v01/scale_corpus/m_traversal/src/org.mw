@@ -57,11 +57,10 @@ pub fn addMember(orgId: int, deptId: int, teamId: int, memberId: int, name: stri
 // abandons the count with -1.
 pub fn activeMemberCount(orgId: int): int {
     var count = 0
-    place org = ^orgs[orgId]
-    for deptId, dept in org.departments at most 1000 {
-        for teamId, team in dept.teams at most 1000 {
-            for memberId, member in team.members at most 1000 {
-                if const got = member {
+    for deptId in ^orgs[orgId].departments at most 1000 {
+        for teamId in ^orgs[orgId].departments[deptId].teams at most 1000 {
+            for memberId in ^orgs[orgId].departments[deptId].teams[teamId].members at most 1000 {
+                if const got = ^orgs[orgId].departments[deptId].teams[teamId].members[memberId] {
                     if got.active ?? false {
                         count += 1
                     }
@@ -109,20 +108,19 @@ pub fn lookupMemberName(orgId: int, deptId: int, teamId: int, memberId: int): Re
 
 // A whole-entry `delete` is payload-only, so removing an org and every descendant
 // is a bounded innermost-first composition: each traversal descends one branch
-// layer and deletes the per-iteration pin, then the entry's own payload last.
+// layer and deletes the entry at each key, then the entry's own payload last.
 pub fn purgeOrg(orgId: int) {
     transaction {
-        place org = ^orgs[orgId]
-        for deptId, dept in org.departments at most 1000 {
-            for teamId, team in dept.teams at most 1000 {
-                for memberId, member in team.members at most 1000 {
-                    delete member
+        for deptId in ^orgs[orgId].departments at most 1000 {
+            for teamId in ^orgs[orgId].departments[deptId].teams at most 1000 {
+                for memberId in ^orgs[orgId].departments[deptId].teams[teamId].members at most 1000 {
+                    delete ^orgs[orgId].departments[deptId].teams[teamId].members[memberId]
                 } on more {}
-                delete team
+                delete ^orgs[orgId].departments[deptId].teams[teamId]
             } on more {}
-            delete dept
+            delete ^orgs[orgId].departments[deptId]
         } on more {}
-        delete org
+        delete ^orgs[orgId]
     }
 }
 

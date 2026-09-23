@@ -99,7 +99,7 @@ fn parses_return_absent_as_a_return_of_the_absent_value() {
 
 #[test]
 fn if_const_accepts_a_type_annotation() {
-    // `if const name: T = place` accepts the annotation the same way `const`/`var`
+    // `if const name: T = path` accepts the annotation the same way `const`/`var`
     // do, rather than dead-ending in a generic "expected an expression" error.
     let parsed = parse_source(
         "module app\nfn title(id: Id(^books)) {\n    if const pages: int = ^books[id].pages {\n        print(pages)\n    }\n}\n",
@@ -950,12 +950,12 @@ fn checked_form_formats_idempotently() {
     assert!(parse_source(&once).diagnostics.complete().is_empty());
 }
 
-/// `place name = ^root[key]` parses to a `PlaceBinding` naming the entry-address
+/// `ref name = ^root[key] else { return }` parses to an entry binding naming the address
 /// expression; the compiler owns the durable checks, the parser only structures it.
 #[test]
-fn parses_a_place_binding() {
+fn parses_an_entry_binding() {
     let parsed = parse_source(
-        "module app\nfn main(id: int) {\n    place book = ^books[id]\n    book.title = \"x\"\n}\n",
+        "module app\nfn main(id: int) {\n    ref book = ^books[id] else { return }\n    book.title = \"x\"\n}\n",
     );
     assert!(
         parsed.diagnostics.complete().is_empty(),
@@ -966,7 +966,7 @@ fn parses_a_place_binding() {
     assert!(
         matches!(
             &main.body.statements[0],
-            Statement::PlaceBinding { name, place: Expression::Keyed { .. }, .. }
+            Statement::EntryBinding { name, address: Expression::Keyed { .. }, .. }
                 if &**name == "book"
         ),
         "stmt 0: {:?}",
@@ -974,26 +974,86 @@ fn parses_a_place_binding() {
     );
 }
 
-/// `place` in name position is a keyword, so a missing name or missing `=` is a
-/// single bounded parse error rather than a dropped or cascading line.
+/// Missing names and assignment tokens are rejected at the parser boundary.
 #[test]
-fn a_malformed_place_binding_is_one_parse_error() {
-    let missing_name = parse_source("module app\nfn main() {\n    place = 1\n}\n");
+fn a_malformed_entry_binding_reports_a_parse_error() {
+    let missing_name = parse_source("module app\nfn main() {\n    ref = 1 else { return }\n}\n");
     assert!(!missing_name.diagnostics.complete().is_empty());
 
-    let missing_equals =
-        parse_source("module app\nfn main(id: int) {\n    place book ^books[id]\n}\n");
+    let missing_equals = parse_source(
+        "module app\nfn main(id: int) {\n    ref book ^books[id] else { return }\n}\n",
+    );
     assert!(!missing_equals.diagnostics.complete().is_empty());
 }
 
 #[test]
-fn place_binding_formats_idempotently() {
-    let source = "module app\nfn main(id: int) {\n    place book = ^books[id]\n    book.title = \"x\"\n    delete book\n}\n";
+fn entry_binding_formats_idempotently() {
+    let source = "module app\nfn main(id: int) {\n    ref book = ^books[id] else { return }\n    book.title = \"x\"\n    delete book\n}\n";
     let once = format_source(source).expect("a complete parse formats");
     let twice = format_source(&once).expect("a complete parse formats");
     assert_eq!(once, twice, "formatting is a fixed point:\n{once}");
-    assert!(once.contains("place book = ^books[id]"), "{once}");
+    assert!(once.contains("ref book = ^books[id] else"), "{once}");
     assert!(parse_source(&once).diagnostics.complete().is_empty());
+}
+
+#[test]
+fn entry_binding_else_comments_preserve_the_arm_and_following_statements() {
+    for arm in [
+        "else // absent\n    { return -1 }",
+        "else\n    // absent\n    { return -1 }",
+        "else return -1",
+    ] {
+        let source = format!(
+            "module app\nfn read(id: int): int {{\n    ref entry = ^entries[id] {arm}\n    return entry.value\n}}\nfn sibling(): int {{ return 7 }}\n"
+        );
+        let parsed = parse_source(&source);
+        assert!(
+            parsed.diagnostics.complete().is_empty(),
+            "{arm}: {:?}",
+            parsed.diagnostics
+        );
+        let read = parsed.file.function("read").expect("read function");
+        assert_eq!(read.body.statements.len(), 2, "{arm}");
+        let Statement::EntryBinding { else_block, .. } = &read.body.statements[0] else {
+            panic!("expected the entry binding: {arm}");
+        };
+        assert!(
+            matches!(else_block.statements.as_slice(), [Statement::Return { .. }]),
+            "{arm}"
+        );
+        assert!(
+            matches!(read.body.statements[1], Statement::Return { .. }),
+            "{arm}"
+        );
+        assert!(parsed.file.function("sibling").is_some(), "{arm}");
+        let once = format_source(&source).expect("entry binding formats");
+        if arm.contains("// absent") {
+            assert_eq!(once.matches("// absent").count(), 1, "{once}");
+        }
+        assert_eq!(
+            format_source(&once).expect("formatted binding parses"),
+            once
+        );
+    }
+}
+
+#[test]
+fn an_entry_binding_without_else_reports_one_error_and_keeps_its_sibling() {
+    let parsed = parse_source(
+        "module app\nfn read(id: int): int {\n    ref entry = ^entries[id]\n    return 0\n}\nfn sibling(): int { return 7 }\n",
+    );
+    assert_eq!(
+        parsed.diagnostics.complete().len(),
+        1,
+        "{:?}",
+        parsed.diagnostics
+    );
+    assert!(parsed.file.function("sibling").is_some());
+    let read = parsed.file.function("read").expect("read function");
+    assert!(matches!(
+        read.body.statements.last(),
+        Some(Statement::Return { .. })
+    ));
 }
 
 // ---------------------------------------------------------------------------

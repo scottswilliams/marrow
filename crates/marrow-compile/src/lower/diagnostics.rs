@@ -265,7 +265,7 @@ pub(super) fn name_not_in_scope(
 }
 
 /// The single declared name within edit distance two of `target`, or `None` when none
-/// is that close or two candidates tie for nearest: a did-you-mean earns its place only
+/// is that close or two candidates tie for nearest: a did-you-mean earns its address only
 /// as one unambiguous suggestion, never a list. A candidate must also be closer than a
 /// full rewrite (`distance < target length`), so a short name matches nothing unrelated.
 pub(super) fn nearest_name<'n>(
@@ -386,7 +386,7 @@ pub(crate) fn requires_presence(
         file,
         span,
         format!(
-            "this use requires a present entry, but {detail}. Bind `place m = ^root[key]` and use \
+            "this use requires a present entry, but {detail}. Bind `address m = ^root[key]` and use \
              through `m` inside `if exists(m) {{ … }}`, after `if not exists(m) {{ return … }}`, \
              or after a whole-entry assignment `m = Resource(…)`; a proof ends at its block's \
              end, at a `delete` of any entry in the same family, and at a call that erases \

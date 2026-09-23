@@ -7,7 +7,7 @@
 //! accepted ceiling is admitted (even when its demand is *narrower* than a prior image's),
 //! and an image whose demand exceeds it is **refused** — [`DemandExceedsCeiling`] — naming,
 //! for each exceeding atom, the export that demands it, the new effect, and the durable
-//! place, in the program's own source vocabulary, so the owner can consciously expand the
+//! path, in the program's own source vocabulary, so the owner can consciously expand the
 //! ceiling to admit exactly the new demand and nothing more.
 //!
 //! Demand never grants. This owner only checks: it computes `demand \ ceiling` over the
@@ -18,7 +18,7 @@
 //! *presented* image's own demand atoms, so the presented image spells them: this module
 //! reconstructs a ledger-id → `^root.member` naming join from the verified image's sealed
 //! roots, fields, groups, and branches (the same facts the schema derivation consumes),
-//! degrading a step it cannot spell to an unnamed place rather than risking a wrong name.
+//! degrading a step it cannot spell to an unnamed path rather than risking a wrong name.
 
 use std::collections::HashMap;
 
@@ -30,7 +30,7 @@ use marrow_image::{
 use marrow_verify::{SealedBranch, SealedRoot, VerifiedImage};
 
 /// One durable-access atom a presented image demands that the store's accepted ceiling does
-/// not admit: which export demands it, the new effect, and the durable place it names.
+/// not admit: which export demands it, the new effect, and the durable path it names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExceedingDemand {
     /// The export whose reconstructed demand reaches this atom, by source name. When several
@@ -41,10 +41,10 @@ pub struct ExceedingDemand {
     /// rendered in source vocabulary (`reads`, `writes`, `probes`, `erases`, `iterates`) at
     /// the display edge.
     pub effect: OperationClass,
-    /// The durable place the atom names, spelled `^root.member`, or `None` when a step of its
+    /// The durable path the atom names, spelled `^root.member`, or `None` when a step of its
     /// path cannot be spelled from the image (a defensive degrade — the export and effect
     /// still name the refused authority).
-    pub place: Option<String>,
+    pub path: Option<String>,
 }
 
 /// The presented image's verified demand exceeds the accepted deployment ceiling.
@@ -52,7 +52,7 @@ pub struct ExceedingDemand {
 /// Its named effects also describe the expansion required by explicit apply.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DemandExceedsCeiling {
-    /// Every exceeding atom, in a stable order (by place spelling, then effect), so the
+    /// Every exceeding atom, in a stable order (by path spelling, then effect), so the
     /// rendered refusal is a deterministic function of the delta.
     pub exceeding: Vec<ExceedingDemand>,
 }
@@ -76,9 +76,9 @@ impl std::fmt::Display for DemandExceedsCeiling {
                 write!(f, "; ")?;
             }
             let verb = effect_verb(atom.effect);
-            match &atom.place {
-                Some(place) => write!(f, "export `{}` {verb} {place}", atom.export)?,
-                None => write!(f, "export `{}` {verb} a durable place", atom.export)?,
+            match &atom.path {
+                Some(path) => write!(f, "export `{}` {verb} {path}", atom.export)?,
+                None => write!(f, "export `{}` {verb} a durable path", atom.export)?,
             }
         }
         write!(
@@ -126,21 +126,21 @@ pub(crate) fn admit_demand(
         .map(|atom| ExceedingDemand {
             export: export_for(&by_atom, atom),
             effect: atom.class(),
-            place: naming.spell(atom),
+            path: naming.spell(atom),
         })
         .collect();
     exceeding.sort_by(|a, b| {
-        a.place
-            .cmp(&b.place)
+        a.path
+            .cmp(&b.path)
             .then_with(|| a.effect.cmp(&b.effect))
             .then_with(|| a.export.cmp(&b.export))
     });
     Err(DemandExceedsCeiling { exceeding })
 }
 
-/// The map from a demanded atom (its place and class) to the source names of the exports that
+/// The map from a demanded atom (its path and class) to the source names of the exports that
 /// reach it, built from the verifier's demand incidence — the published fact of which export
-/// touches which node with which class. Keyed by `(place, class)` so a match is exact.
+/// touches which node with which class. Keyed by `(path, class)` so a match is exact.
 fn exports_by_atom(image: &VerifiedImage) -> HashMap<(SemanticPath, OperationClass), Vec<String>> {
     let mut by_atom: HashMap<(SemanticPath, OperationClass), Vec<String>> = HashMap::new();
     for node in image.demand_incidence() {
@@ -180,7 +180,7 @@ enum Sigil {
 /// The compiler-free source-spelling join from a durable node's stable ledger id to its
 /// `^root.member` spelling, reconstructed from the verified image's sealed structure. Every id
 /// here belongs to a node whose name the image publishes; a step outside the join (for example
-/// a managed-index step, whose name the image does not carry) makes the whole place unspellable
+/// a managed-index step, whose name the image does not carry) makes the whole path unspellable
 /// and the refusal degrades to naming the export and effect only.
 struct Naming {
     by_id: HashMap<LedgerIdBytes, (Sigil, String)>,
@@ -212,7 +212,7 @@ pub(crate) struct NamedDurableNode {
 /// path beside the ledger id its semantic node carries, matched per level by declaration
 /// order and node kind. A count mismatch at a level omits that level's nodes rather than
 /// risking a misaligned name; each consumer chooses its own posture toward an omission (the
-/// authority refusal degrades that place to unnamed, the head-map pin refuses fail-closed).
+/// authority refusal degrades that path to unnamed, the head-map pin refuses fail-closed).
 pub(crate) fn named_durable_nodes(image: &VerifiedImage) -> Vec<NamedDurableNode> {
     let nodes = image.semantic_nodes();
     // Children of each container, keyed by the container's full step chain, in the order

@@ -601,7 +601,7 @@ impl DurableRegistry {
     }
 
     /// The executable root whose declaration-ordered RootId is `root_id` — the root an
-    /// entry identity `Id(^root)` carries, so a `place` bound to an identity operand can
+    /// entry identity `Id(^root)` carries, so a reference bound to an identity operand can
     /// recover the root's ordered key scalars for the columns the identity spreads into.
     ///
     /// A root's index in the executable list *is* its RootId, so this is a keyed lookup

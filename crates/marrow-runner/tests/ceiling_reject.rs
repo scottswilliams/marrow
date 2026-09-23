@@ -47,7 +47,7 @@ fn source_read_only() -> String {
 fn source_broadened() -> String {
     format!(
         "{SHAPE}\npub fn readValue(n: int): int {{\n    var result = 0\n    \
-         transaction {{\n        place slot = ^counters[n]\n        \
+         transaction {{\n        ref slot = ^counters[n] else {{ return 0 }}\n        \
          if exists(slot) {{\n            slot.label = \"seen\"\n        }}\n        \
          result = ^counters[n].value ?? 0\n    }}\n    return result\n}}\n"
     )
