@@ -111,9 +111,9 @@ application on one machine. This is a scope decision, not a readiness claim;
 | Local application lifetime | The same exports serve a terminal and desktop client; tools provision, update code and add a sparse field on populated data, audit, back up, restore and handle interrupted outcomes without automatic replay. |
 
 Graph Report supplies the small storeless example. The external
-`marrow-acceptance` suite maintains Club Locker and EMR with real clients,
-source tests and data journeys. A beta needs qualified installed artifacts and
-sustained maintained use in addition to passing compiler tests.
+`marrow-acceptance` suite maintains Club Locker, EMR and Workbench with real
+clients, source tests and data journeys. A beta needs qualified installed
+artifacts and sustained maintained use in addition to passing compiler tests.
 
 Exact local-path source reuse comes before remote acquisition. Closures,
 decimal, enum grouping, a standard-library portfolio, automatic presence

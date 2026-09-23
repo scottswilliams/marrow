@@ -47,12 +47,14 @@ parent exit remain abrupt
 
 ### Applications
 
-Two complete applications, Club Locker (equipment lending, with a desktop
-shell) and EMR (a change-set tool over a synthetic corpus), live in the
-separate `marrow-acceptance` repository together with their source tests,
+Club Locker (equipment lending, with a desktop shell), EMR (a change-set tool
+over a synthetic corpus), and Workbench (local issues, design attachments and
+Git development workflows) live in the separate `marrow-acceptance` repository
+together with their source tests,
 expectations, and the journeys that run them against a built toolchain through
 the public commands. This repository keeps short reference examples,
-conformance fixtures, and compiler-local regressions.
+conformance fixtures, and compiler-local regressions. Application journeys do
+not establish clean-host installation or sustained maintained use.
 
 Managed-index maintenance includes entry presence independently of sparse
 fields. Key-only indexes follow creation and erasure, including empty entries;

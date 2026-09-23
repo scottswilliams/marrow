@@ -12,14 +12,20 @@ Explicit apply adds sparse scalar fields while preserving old values and
 addresses, with exact acceptance of any standing-ceiling expansion
 ([changing the program](../operations/README.md#changing-the-program)).
 
-## Beta direction
+Sparse-field apply retains an admitted read-only store owner, checks the exact
+old binding, validates the proposed metadata and audits the current values.
+It rechecks the published state before replacing metadata; old values are not
+rewritten. This does not expose a reusable transition witness or implement a
+general data-rewriting protocol.
+
+## Direction
 
 Keep compilation, admission and activation separate. Compilation produces an
-image without opening data. Read-only admission returns an already-active
-verdict, an exact image-and-store-state witness for a supported transition, or a
+image without opening data. For broader transitions, read-only admission should
+return an already-active verdict, an exact image-and-store-state witness for a supported transition, or a
 rejection. It performs no mutation and grants no application authority.
 
-Activation consumes the witness, checks its exact state, and commits data,
+Activation should consume the witness, check its exact state, and commit data,
 accepted schema state and the active-image binding together. A receipt follows
 commit. Stale, mismatched and reused witnesses cannot authorize a write.
 Body-only and binding-only changes follow the same ownership rule.

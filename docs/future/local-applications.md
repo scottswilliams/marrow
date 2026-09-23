@@ -22,11 +22,13 @@ application-specific reconciliation; this does not by itself resolve an unknown
 outcome. Bounded traversal stays inside the program; no runtime cursor or page
 token crosses the channel.
 
-Two programs carry the evidence: a storeless graph report
-(`fixtures/v01/conformance/graph_report`) and an equipment-lending desktop
-application, Club Locker. Club Locker and the EMR change-set tool live in the
-separate `marrow-acceptance` repository, which runs both against a built
-toolchain through the public commands ([status](../status.md#applications)).
+The storeless Graph Report fixture (`fixtures/v01/conformance/graph_report`)
+exercises bounded terminal I/O and local source reuse. Club Locker, the EMR
+change-set tool and Workbench live in the separate `marrow-acceptance`
+repository, which runs their native clients and data journeys against a built
+toolchain through public commands ([status](../status.md#applications)).
+Workbench uses a Node host and browser UI; it does not supply evidence for the
+Electron shell's clean-host requirements.
 
 ## Direction
 

@@ -20,13 +20,13 @@ names an arm for each way the arithmetic can fail
 not catchable ([errors and transactions](../language/errors-and-transactions.md)).
 Checking, compiling, testing, and formatting a storeless project open no store.
 
-## Direction
-
-The beta exposes bounded text input and output through the terminal adapter
+The terminal exposes bounded text input and output through an adapter
 around an ordinary string-taking, string-returning export. Graph Report needs
 no in-language host-call system to read input and emit its report. The adapter
 bounds input before invocation and output at the process boundary; it adds no
 ambient access to the language.
+
+## Direction
 
 In-language terminal or pre-opened text handles, clocks and generalized Rust
 host bindings are deferred. If introduced later, host effects precede durable
@@ -55,11 +55,11 @@ lazy iterators are outside the language.
 
 ## Evidence
 
-Graph Report (`fixtures/v01/conformance/graph_report`) currently takes and
-returns strings. The beta journey extends its terminal adapter to consume bounded input,
-write output and reuse one local source dependency. It must pass init, format,
-check, test, run, edit and offline rebuild without a store. Exact Git acquisition
-and a standard-library package are not required for this evidence.
+Graph Report (`fixtures/v01/conformance/graph_report`) takes and returns strings
+and reuses one local source dependency. Production-path tests exercise its
+terminal adapter's bounded input and output, including multiline standard input,
+without a store. Exact Git acquisition and a standard-library package are not
+required for this evidence.
 
 A source helper is proven when two maintained callers reuse it with fewer
 duplicated rules and unchanged behavior, compiling and testing through ordinary
