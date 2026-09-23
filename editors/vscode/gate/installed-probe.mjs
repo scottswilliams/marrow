@@ -21,6 +21,7 @@ import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { verifyClientCleanup } from "./client-cleanup.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const EXT_ROOT = join(HERE, "..");
@@ -47,6 +48,8 @@ function sha256File(p) {
 
 function staticGates(expectedServerSha256) {
   console.log("[static] artifact presence and thin-host absence");
+  verifyClientCleanup(EXT_ROOT);
+  check("reviewed client cleanup and MIT notice present", true);
   check("out/extension.js present", existsSync(BUNDLE), `${BUNDLE} missing`);
   check("server/marrow-lsp present", existsSync(SERVER), `${SERVER} missing`);
   if (existsSync(SERVER)) {

@@ -68,26 +68,3 @@ jobs:
           name: sbom-cyclonedx
           path: "**/*.cdx.json"
           if-no-files-found: error
-
-  vscode-extension:
-    name: VS Code extension
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: editors/vscode
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-
-      # editors/vscode/.npmrc enforces ignore-scripts, so no dependency
-      # lifecycle script runs during install.
-      - name: Install extension dependencies
-        run: npm ci
-
-      - name: Typecheck (no emit)
-        run: npx tsc --noEmit -p ./

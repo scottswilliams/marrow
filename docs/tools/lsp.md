@@ -137,6 +137,10 @@ MARROW_LSP=/path/to/install/marrow-lsp npm run package
 code --install-extension marrow-0.1.1.vsix
 ```
 
+The extension build carries a pinned client cleanup correction that cancels
+queued document edits when stopping the client. Build and verification details
+are in the [extension reference](../../editors/vscode/README.md#building).
+
 The installed extension is then checked by hand: open a `.mw` file and confirm
 diagnostics, formatting, hover, definition, and **Marrow: Restart Language
 Server**.

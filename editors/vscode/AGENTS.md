@@ -40,13 +40,17 @@ absolute-path `server/marrow-lsp`, launched with a fixed empty argument list.
 
 ## Build and packaging
 
-- Install only with `npm ci`. `.npmrc` sets `ignore-scripts=true`; there are no
-  lifecycle scripts to run. `package-lock.json` is frozen; regenerating it reruns the
-  dependency and license review.
+- Install only with `npm ci`. `.npmrc` sets `ignore-scripts=true`.
+  `npm run compile`, `npm test`, and packaging explicitly apply the reviewed
+  client cleanup patch through `gate/client-cleanup.mjs`; no install hook runs.
+  `package-lock.json` is frozen; regenerating it reruns the dependency and license
+  review. Retain the dependency's MIT notice. Remove the patch when a reviewed
+  upstream version cancels pending document delivery during cleanup and passes
+  the lifecycle tests and installed-host checks.
 
 ## Gates
 
-- CI runs `npm ci` and `tsc --noEmit` on every change.
+- CI runs `npm ci`, `npm test`, and `npm run compile` on every change.
 - `node gate/installed-probe.mjs --expected-server-sha256 <64hex>` checks a packaged
   extension after `npm run package`: the thin host imports only `vscode` and
   `vscode-languageclient`, and the bundled server has the expected digest. Behavior that

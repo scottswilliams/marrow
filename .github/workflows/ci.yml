@@ -9,6 +9,26 @@ permissions:
   contents: read
 
 jobs:
+  vscode-extension:
+    name: VS Code extension
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install extension dependencies without lifecycle scripts
+        run: npm ci
+      - name: Apply and test pinned client cleanup
+        run: npm test
+      - name: Compile extension
+        run: npm run compile
+
   rust:
     name: Rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

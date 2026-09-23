@@ -94,7 +94,9 @@ process; `marrow-lsp` projects compiler snapshot facts and adds no semantics.
 | `marrow-test-programs` | Compiles and verifies shared source fixtures for lifecycle and runner tests. Compiler tests use the input helpers in `marrow-test-support`, avoiding a dependency cycle through their own compiler | [Contributing](../../CONTRIBUTING.md) |
 
 The language server is its own executable. The `marrow` CLI has no `lsp`
-subcommand.
+subcommand. The [VS Code extension](../../editors/vscode/README.md#building)
+bundles that executable; `editors/vscode/gate/client-cleanup.mjs` owns its pinned
+client cleanup correction and payload verification.
 
 ## Production dependency direction
 

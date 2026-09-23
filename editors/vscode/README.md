@@ -50,4 +50,18 @@ extension performs no telemetry, network access, crash reporting, or updates.
 
 ## License
 
-Apache-2.0. See `LICENSE`.
+Apache-2.0. See `LICENSE`. Bundled dependencies retain their own licenses,
+including the MIT notice for `vscode-languageclient`.
+
+## Building
+
+Run `npm ci`, then `npm test` and `npm run compile`. Packaging uses
+`MARROW_LSP=/path/to/marrow-lsp npm run package`.
+
+Compilation and packaging explicitly apply a pinned cleanup correction to
+`vscode-languageclient` 9.0.1: stopping the client cancels queued document edits.
+The build rejects an unexpected dependency version, source content or MIT notice;
+install scripts remain disabled. `gate/client-cleanup.mjs` owns the correction,
+and `gate/installed-probe.mjs` verifies it without modifying the payload. Remove
+the correction when a reviewed upstream version implements equivalent cleanup
+and passes the lifecycle tests and installed-host restart checks.
