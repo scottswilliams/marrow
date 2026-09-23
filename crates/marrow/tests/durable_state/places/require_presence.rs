@@ -20,7 +20,7 @@ fn require_presence_preserves_lazy_failure_and_committed_results() {
         let source = format!(
             "{}\npub fn seed() {{ transaction {{ ^counters[1] = Counter(value: 1) }} }}\npub fn read(n: int): int? {{ return ^counters[n].value }}\n",
             program(&format!(
-                "^counters[99] = Counter(value: 17)\n        {guard}\n        p.value = 7\n        const actual: int = p.value"
+                "^counters[99] = Counter(value: n)\n        {guard}\n        p.value = 7\n        const actual: int = p.value"
             ))
         );
         let mut session = Project::single(&source).ids(IDS).session();
@@ -48,7 +48,7 @@ fn require_presence_preserves_lazy_failure_and_committed_results() {
         };
         assert_eq!(variant, 1, "the absent path returns err");
         assert_eq!(&*payload, &[Value::Text("missing".into())]);
-        for (key, expected) in [(98, 9), (99, 17)] {
+        for (key, expected) in [(98, 9), (99, 2)] {
             assert_eq!(
                 session.call("read", vec![Value::Int(key)]),
                 Some(Value::Optional(Some(Box::new(Value::Int(expected))))),
