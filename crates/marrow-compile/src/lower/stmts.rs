@@ -778,9 +778,19 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         if self.terminal_rejection() {
             return Ok(Flow::Rejected);
         }
+        let guard = self.exists_guard_fact(condition);
         self.lower_condition(condition)?;
-        self.push(Instr::BoolNot, condition.span())?;
-        let jif = self.push_jif(condition.span())?;
+        let to_after = if guard.is_some() {
+            // Preserve the same present/absent edges as the explicit negative guard:
+            // the verifier reconstructs the proof from this branch, not our fact.
+            let to_absent = self.push_jif(condition.span())?;
+            let to_after = self.push_jump(condition.span())?;
+            self.patch(to_absent, self.here());
+            to_after
+        } else {
+            self.push(Instr::BoolNot, condition.span())?;
+            self.push_jif(condition.span())?
+        };
         let ret_id = match self.ret {
             RetType::Value(ty) => ty.bare_enum(),
             RetType::Unit => None,
@@ -817,7 +827,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         )?;
         self.emit_region_return(span)?;
         let next = self.here();
-        self.patch(jif, next);
+        self.patch(to_after, next);
+        if let Some((family, key_slots)) = guard {
+            self.mark_present(family, key_slots);
+        }
         Ok(Flow::Fallthrough)
     }
 

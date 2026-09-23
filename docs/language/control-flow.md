@@ -387,6 +387,10 @@ the body below them runs with both established. `require` originates a
 failure; `try` propagates one. The [guard prelude](idioms.md#guard-prelude)
 shows the guard forms together.
 
+`require exists(p) else value` over a named durable place also establishes its
+[presence proof](durable-places.md#named-places) for the rest of the block. The
+proof has the same scope and erasure rules as the explicit early-return guard.
+
 A failed `require` follows the enclosing function's
 [transaction exit rule](errors-and-transactions.md#guards-inside-a-block):
 inside its owned block, it evaluates the error value, commits, then returns.

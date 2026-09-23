@@ -304,11 +304,11 @@ pub fn subtitleOf(id: int): string? {
     return book.subtitle
 }
 
-pub fn titleOf(id: int): string {
+pub fn titleOf(id: int): Result<string, string> {
     place book = ^books[id]
-    if not exists(book) { return "none" }
+    require exists(book) else "missing book"
     const title: string = book.title
-    return title
+    return ok(title)
 }
 
 test "a place writes one field" {
@@ -316,8 +316,10 @@ test "a place writes one field" {
     assert setSubtitle(1, "A novel")
     assert not setSubtitle(2, "A novel")
     assert subtitleOf(1) ?? "" == "A novel"
-    assert titleOf(1) == "Small Gods"
-    assert titleOf(2) == "none"
+    const title = try titleOf(1)
+    assert title == "Small Gods"
+    const missing: Result<string, string> = err("missing book")
+    assert titleOf(2) == missing
 }
 ```
 
@@ -336,6 +338,7 @@ a presence proof covers. The proof forms are:
 - the rest of the block after `const x = p else { … }`;
 - the rest of the block after `if not exists(p) { … }` when that block returns
   or throws, as in `setSubtitle`;
+- the rest of the block after `require exists(p) else value`, as in `titleOf`;
 - the rest of the block after a whole-entry assignment `p = Book(…)`.
 
 A negative guard whose block falls through proves nothing. A write with no

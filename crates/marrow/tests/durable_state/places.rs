@@ -15,6 +15,9 @@ use marrow_verify::{SealedInstr, VerifiedImage};
 #[path = "places/presence_lifetime.rs"]
 mod presence_lifetime;
 
+#[path = "places/require_presence.rs"]
+mod require_presence;
+
 const IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
      id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\

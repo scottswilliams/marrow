@@ -21,6 +21,11 @@ and never encodes, and `check` collects the complete diagnostic union and encode
 a test-inclusive image without publishing editor facts. The compiler
 opens no store and cannot mint a verified image.
 
+[`lower/presence.rs`](../../crates/marrow-compile/src/lower/presence.rs) owns
+named-place guard recognition and proof lifetimes. Statement lowering reuses
+these facts for conditional blocks, early-return guards and `require`; image
+verification independently reconstructs presence from their control flow.
+
 **Image.** `marrow-image` owns the container: the draft that validates as it is
 built, the instruction set, the canonical encoder, and the `ImageId` digest — but
 no decoder. `IMAGE_FORMAT_VERSION` names the admitted generation and separates
