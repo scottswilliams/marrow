@@ -61,6 +61,9 @@ terminal adapter's bounded input and output, including multiline standard input,
 without a store. Exact Git acquisition and a standard-library package are not
 required for this evidence.
 
+The complete storeless qualification journey still requires init, format,
+check, test, run, edit and offline rebuild without a store.
+
 A source helper is proven when two maintained callers reuse it with fewer
 duplicated rules and unchanged behavior, compiling and testing through ordinary
 tooling with no privileged initialization or host authority.

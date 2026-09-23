@@ -22,8 +22,9 @@ general data-rewriting protocol.
 
 Keep compilation, admission and activation separate. Compilation produces an
 image without opening data. For broader transitions, read-only admission should
-return an already-active verdict, an exact image-and-store-state witness for a supported transition, or a
-rejection. It performs no mutation and grants no application authority.
+return an already-active verdict, an exact image-and-store-state witness for a
+supported transition, or a rejection. It performs no mutation and grants no
+application authority.
 
 Activation should consume the witness, check its exact state, and commit data,
 accepted schema state and the active-image binding together. A receipt follows
