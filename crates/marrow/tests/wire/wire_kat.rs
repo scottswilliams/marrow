@@ -53,15 +53,17 @@ fn assert_driver_passed(output: &Output) {
 /// The driver loads the mirror by path and checks it against both fixtures.
 const DRIVER: &str = r##"
 import process from "node:process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 
 const instrumented = join(process.cwd(), "marrow-supervisor-kat.mjs");
 const supervisorSource = readFileSync(process.env.MARROW_SUPERVISOR, "utf8");
 writeFileSync(
   instrumented,
-  `${supervisorSource}\nexport { FrameReader as __katFrameReader, decodeOneFrame as __katDecodeOneFrame, isLaunchDescriptor as __katIsLaunchDescriptor, isReady as __katIsReady };\n`,
+  `${supervisorSource}\nexport { FrameReader as __katFrameReader, LaunchDescriptorReader as __katDescriptorReader, decodeOneFrame as __katDecodeOneFrame, isLaunchDescriptor as __katIsLaunchDescriptor, isReady as __katIsReady };\n`,
 );
 const M = await import(pathToFileURL(instrumented).href);
 const DIR = process.env.MARROW_KAT_DIR;
@@ -1473,6 +1475,120 @@ for (const boundary of [0n, 0xffff_ffffn]) {
       observed.pump === 1 &&
       !session.dead,
   );
+}
+
+{
+  const bound = 64 * 1024;
+  const descriptor = { interface: validInterface, session: validSession, socket: "" };
+  const overhead = M.encodeCanonical(descriptor).length + 1;
+  descriptor.socket = "p".repeat(bound - overhead);
+  const line = Buffer.concat([M.encodeCanonical(descriptor), Buffer.from("\n")]);
+  for (const chunkSize of [1, 7, line.length]) {
+    const reader = new M.__katDescriptorReader();
+    const concat = Buffer.concat;
+    let copied = 0;
+    Buffer.concat = function(parts, length) {
+      copied += length ?? parts.reduce((sum, part) => sum + part.length, 0);
+      return concat(parts, length);
+    };
+    let completed;
+    let emptyChunksWait = true;
+    try {
+      for (let offset = 0; offset < line.length; offset += chunkSize) {
+        emptyChunksWait &&= reader.push(Buffer.alloc(0)) === undefined;
+        completed = reader.push(line.subarray(offset, offset + chunkSize));
+      }
+    } finally { Buffer.concat = concat; }
+    ok(`descriptor-empty-${chunkSize}`, emptyChunksWait);
+    ok(`descriptor-exact-bound-${chunkSize}`, completed?.line.equals(line.subarray(0, -1)) &&
+      completed.rest.length === 0 && M.__katIsLaunchDescriptor(M.parseCanonical(completed.line)));
+    ok(`descriptor-linear-copy-${chunkSize}`, copied <= line.length, `${copied} copied bytes`);
+    ok(`descriptor-released-${chunkSize}`, reader.bytes === 0 && reader.chunks.length === 0);
+  }
+  for (const bytes of [Buffer.alloc(bound, 120), Buffer.concat([Buffer.alloc(bound, 120), Buffer.from("\n")])]) {
+    for (const split of [0, 1, bound - 1]) {
+      const reader = new M.__katDescriptorReader();
+      try {
+        reader.push(bytes.subarray(0, split));
+        reader.push(bytes.subarray(split));
+        ok(`descriptor-over-bound-${bytes.length}-${split}`, false);
+      } catch (error) {
+        ok(`descriptor-over-bound-${bytes.length}-${split}`, error instanceof RangeError && reader.bytes < bound);
+      }
+    }
+  }
+  const tail = Buffer.alloc(bound * 2, 120);
+  const reader = new M.__katDescriptorReader();
+  const completed = reader.push(Buffer.concat([line, tail]));
+  ok("descriptor-tail-is-log", completed.line.equals(line.subarray(0, -1)) && completed.rest.equals(tail));
+}
+
+{
+  const peer = join(process.cwd(), "descriptor-peer.mjs");
+  writeFileSync(peer, `#!${process.execPath}\nprocess.stdout.write(Buffer.alloc(256 * 1024, 120));\n`);
+  chmodSync(peer, 0o700);
+  for (const native of [false, true]) {
+    const concat = Buffer.concat;
+    let largest = 0;
+    Buffer.concat = function(parts, length) {
+      largest = Math.max(largest, length ?? parts.reduce((sum, part) => sum + part.length, 0));
+      return concat(parts, length);
+    };
+    let failure;
+    try {
+      await M.launch({ runner: peer, image: join(process.cwd(), "unused.image"),
+        ...(native ? { store: join(process.cwd(), "unused-store") } : {}) });
+    } catch (error) { failure = error; }
+    finally { Buffer.concat = concat; }
+    ok(`descriptor-launch-bound-${native}`, largest <= 64 * 1024,
+      `${largest} bytes retained from a peer without LF`);
+    ok(`descriptor-launch-class-${native}`, native
+      ? failure instanceof M.ActivationOutcomeUnknownError : failure instanceof M.LaunchError);
+    ok(`descriptor-launch-natural-exit-${native}`, failure?.cleanup?.kind === "exited" &&
+      failure.cleanup.code === 0 && failure.cleanup.signal === null);
+  }
+}
+
+{
+  // Native refusal may precede child exit. Observe the real child and both pipes,
+  // holding it past cleanup's deadline before giving it permission to finish.
+  const peer = join(process.cwd(), "descriptor-held-peer.mjs");
+  const release = join(process.cwd(), "descriptor-release");
+  writeFileSync(peer, `#!${process.execPath}\nimport { existsSync } from 'node:fs';
+process.stdout.write(Buffer.alloc(256 * 1024, 120));
+const expiry = setTimeout(() => { clearInterval(poll); process.exitCode = 4; }, 8000);
+const poll = setInterval(() => {
+  if (existsSync(${JSON.stringify(release)})) { clearInterval(poll); clearTimeout(expiry); }
+}, 10);\n`);
+  chmodSync(peer, 0o700);
+  const spawn = childProcess.spawn;
+  let child;
+  let closed;
+  childProcess.spawn = function(...args) {
+    child = spawn(...args);
+    closed = new Promise(resolve => child.once("close", (code, signal) => resolve({ code, signal })));
+    return child;
+  };
+  syncBuiltinESMExports();
+  let failure;
+  let terminal;
+  try {
+    try {
+      await M.launch({ runner: peer, image: join(process.cwd(), "unused.image"),
+        store: join(process.cwd(), "unused-store") });
+    } catch (error) { failure = error; }
+    ok("descriptor-native-remains-alive", failure instanceof M.ActivationOutcomeUnknownError &&
+      failure.cleanup?.kind === "unconfirmed" && failure.cleanup.pid === child?.pid &&
+      child?.exitCode === null && child?.signalCode === null);
+  } finally {
+    childProcess.spawn = spawn;
+    syncBuiltinESMExports();
+    writeFileSync(release, "release\n");
+    // Cleanup unrefs the handles on timeout. Keep this controlled observation alive.
+    const keepAlive = setInterval(() => {}, 1000);
+    try { terminal = await closed; } finally { clearInterval(keepAlive); }
+  }
+  ok("descriptor-native-release-observed", terminal?.code === 0 && terminal.signal === null);
 }
 
 if (failures === 0) console.log("DRIVER: all passed");

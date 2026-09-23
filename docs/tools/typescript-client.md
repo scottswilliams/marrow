@@ -204,6 +204,8 @@ store instance. Generated clients always provide their own pin, overriding an
 
 `launch` spawns the runner without a shell, passes a fresh 256-bit launch nonce
 by environment, and reads one launch-descriptor line from the runner's stdout.
+That line is bounded to 64 KiB including its final LF before accumulation;
+bytes after the LF are drained as logs and do not count toward this bound.
 By then the runner has created a mode-0700 private directory and bound a Unix
 socket inside it. The supervisor connects, proves the nonce, and verifies the
 session token and identity the runner sends back. One serial worker serves

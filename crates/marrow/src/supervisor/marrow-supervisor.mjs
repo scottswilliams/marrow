@@ -41,6 +41,8 @@ const I64_MAX = 2n ** 63n - 1n;
 const WIRE_U32_MAX = 0xffff_ffffn;
 
 const MAX_QUEUE = 64;
+// Matches the terminal's startup-line bound, including its final LF.
+const MAX_DESCRIPTOR_BYTES = 64 * 1024;
 const HANDSHAKE_DEADLINE_MS = 2000;
 const REPLY_DEADLINE_MS = 30000;
 
@@ -562,6 +564,29 @@ function decodeOneFrame(frames, chunk) {
     throw protocol("message must contain exactly one complete frame");
   }
   return messages[0];
+}
+
+class LaunchDescriptorReader {
+  constructor() {
+    this.chunks = [];
+    this.bytes = 0;
+  }
+
+  push(chunk) {
+    const newline = chunk.indexOf(0x0a);
+    const count = newline === -1 ? chunk.length : newline + 1;
+    const bytes = this.bytes + count;
+    if (bytes > MAX_DESCRIPTOR_BYTES || (newline === -1 && bytes === MAX_DESCRIPTOR_BYTES)) {
+      throw new RangeError("launch descriptor exceeds its byte limit");
+    }
+    if (count > 0) this.chunks.push(chunk.subarray(0, count));
+    this.bytes = bytes;
+    if (newline === -1) return undefined;
+    const line = Buffer.concat(this.chunks, bytes).subarray(0, -1);
+    this.chunks = [];
+    this.bytes = 0;
+    return { line, rest: chunk.subarray(count) };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1184,7 +1209,7 @@ export function launch(options) {
     });
 
     let settled = false;
-    let stdoutBuffer = Buffer.alloc(0);
+    let descriptorReader = new LaunchDescriptorReader();
     let descriptor = null;
     let socket = null;
     const retirement = childRetirement(child, options.store !== undefined);
@@ -1192,6 +1217,7 @@ export function launch(options) {
     const failLaunch = (detail) => {
       if (settled) return;
       settled = true;
+      descriptorReader = null;
       clearTimeout(deadline);
       const error = options.store !== undefined && retirement.spawned
         ? new ActivationOutcomeUnknownError(detail) : new LaunchError(detail);
@@ -1216,12 +1242,13 @@ export function launch(options) {
         log(chunk); // post-descriptor stdout is drained log bytes
         return;
       }
-      stdoutBuffer = Buffer.concat([stdoutBuffer, chunk]);
-      const newline = stdoutBuffer.indexOf(0x0a);
-      if (newline === -1) return;
-      const line = stdoutBuffer.subarray(0, newline);
-      const rest = stdoutBuffer.subarray(newline + 1);
+      let rest;
       try {
+        const completed = descriptorReader.push(chunk);
+        if (completed === undefined) return;
+        descriptorReader = null;
+        const { line } = completed;
+        rest = completed.rest;
         const parsed = parseCanonical(Buffer.from(line));
         if (!isLaunchDescriptor(parsed)) {
           failLaunch("invalid launch descriptor schema");
