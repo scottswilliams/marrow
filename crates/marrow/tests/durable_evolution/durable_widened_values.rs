@@ -136,7 +136,7 @@ fn id(n: i64) -> Vec<Value> {
 }
 
 #[test]
-fn a_proved_place_reads_required_structs_and_enums_as_values() {
+fn an_entry_reference_reads_required_structs_and_enums_as_values() {
     let source = format!(
         "{SOURCE}{}",
         r#"

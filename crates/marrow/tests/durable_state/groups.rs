@@ -3,7 +3,7 @@
 //! A root-level unkeyed `group` is a markerless value unit of its containing entry: its
 //! presence is the entry's presence, and it is addressed by the root's own key-path. A
 //! whole entry read joins the group's leaves; a group is read and erased whole through
-//! `^root(key).group` and a group leaf is read through `^root(key).group.leaf`. A whole-group
+//! `^root[key].group` and a group leaf is read through `^root[key].group.leaf`. A whole-group
 //! write and a group-leaf write go through a `reference` the compiler has proved present; a
 //! group-leaf write rewrites one leaf, so a sibling leaf survives. Whole-entry and
 //! whole-group replacement are exact — they rewrite the payload's own fields and drop

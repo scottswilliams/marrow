@@ -52,6 +52,24 @@ fn rejected_at(body: &str, code: Code, needle: &str) {
 }
 
 #[test]
+fn presence_guidance_names_the_current_binding() {
+    let rows = diagnostics(
+        r"pub fn change(id: int) {
+    transaction { ^entries[id].value = 1 }
+}",
+    );
+    let row = rows
+        .iter()
+        .find(|row| row.code() == Code::CheckRequiresPresence)
+        .expect("a field write needs a presence proof");
+    assert!(
+        row.message().contains("ref entry = ^root[key] else { … }"),
+        "{}",
+        row.message()
+    );
+}
+
+#[test]
 fn an_entry_binding_proves_required_reads_and_field_writes() {
     accepted(
         r"pub fn increment(id: int): int {

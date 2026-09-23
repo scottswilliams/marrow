@@ -15,7 +15,7 @@ pub(super) enum DurShape {
 #[derive(Clone, Copy)]
 pub(super) enum AddressKey<'e> {
     /// A key operand expression, lowered — and therefore evaluated — at the
-    /// operation site (the inline `^root(key)` form).
+    /// operation site (the inline `^root[key]` form).
     Expr(&'e Expression),
     /// A key already evaluated once into a local slot (an entry reference); each use reads
     /// the slot, so the operand runs exactly once however many operations use the address.
@@ -317,7 +317,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     // --- Durable entry_refs ---
 
     /// Detect the inline durable shape of an address expression: a whole-entry address
-    /// `^root(key)….b(bkey)` at any depth, or a field-exact address
+    /// `^root[key]….b[bkey]` at any depth, or a field-exact address
     /// `<entry-address>.field`. No diagnostics, and it does not see source-local `ref`
     /// bindings; use [`Self::durable_access`] for the full detection.
     pub(super) fn durable_shape(expr: &Expression) -> Option<DurShape> {
@@ -1338,8 +1338,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Lower `exists(address)` or `exists(value)`. A specific entry or field address
-    /// (`^root(key)`, `^root(key).field`, an entry reference) is a keyed presence probe; a
-    /// store root (`^root`) or a keyed branch family (`^root(key).notes`) instead asks
+    /// (`^root[key]`, `^root[key].field`, an entry reference) is a keyed presence probe; a
+    /// store root (`^root`) or a keyed branch family (`^root[key].notes`) instead asks
     /// whether that family has at least one payload-bearing child; any other `T?` value
     /// answers whether it is present, establishing no narrowing.
     pub(super) fn lower_exists(
@@ -1427,7 +1427,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         self.file,
                         arg.value.span(),
                         "`exists` over a group or a group leaf is not supported; probe the \
-                         containing entry `^root(key)`"
+                         containing entry `^root[key]`"
                             .to_string(),
                     ));
                     return Err(LoweringFailure::Recoverable);

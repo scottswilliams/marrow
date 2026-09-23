@@ -100,7 +100,7 @@ pub fn f(): int {
 
 /// `unset` on a durable path is rejected: durable erasure uses `delete`.
 #[test]
-fn unsetting_a_durable_place_is_a_check_type_diagnostic() {
+fn unsetting_a_durable_path_is_a_check_type_diagnostic() {
     let workspace = Project::single(
         r#"resource Box {
     required id: int

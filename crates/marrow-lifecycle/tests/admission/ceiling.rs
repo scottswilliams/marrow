@@ -18,7 +18,7 @@ use marrow_test_support::Scratch;
 /// the demand now exceeds the accepted ceiling — naming the export, the new effect, and the
 /// path in source vocabulary, before any engine call, leaving the store intact and usable.
 #[test]
-fn a_broadened_demand_is_refused_naming_the_exceeding_place() {
+fn a_broadened_demand_is_refused_naming_the_exceeding_path() {
     let scratch = Scratch::new("refuse");
     let read_only = image(&source_read_only());
     let broadened = image(&source_broadened());
@@ -102,7 +102,7 @@ fn a_demand_beyond_the_ceiling_preempts_the_contract_refusal() {
 /// broadened to touch a two-root spread — the refusal spells the second root (`^tallies`) and
 /// its field (`^tallies.count`) exactly, proving the join is not a single-root special case.
 #[test]
-fn the_refusal_spells_places_across_roots() {
+fn the_refusal_spells_paths_across_roots() {
     const WORKSHOP_IDS: &str = "marrow ids v0\n\
          machine-written by marrow; do not edit\n\
          id application . 1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a\n\

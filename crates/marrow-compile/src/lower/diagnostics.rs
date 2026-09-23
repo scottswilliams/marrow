@@ -386,11 +386,12 @@ pub(crate) fn requires_presence(
         file,
         span,
         format!(
-            "this use requires a present entry, but {detail}. Bind `address m = ^root[key]` and use \
-             through `m` inside `if exists(m) {{ … }}`, after `if not exists(m) {{ return … }}`, \
-             or after a whole-entry assignment `m = Resource(…)`; a proof ends at its block's \
-             end, at a `delete` of any entry in the same family, and at a call that erases \
-             an entry of that family. To create an entry, assign the whole record."
+            "this use requires a present entry, but {detail}. Bind \
+             `ref entry = ^root[key] else {{ … }}` with a diverging absence arm. \
+             A proof ends at its block's end, at a `delete` of any entry in the same family, \
+             and at a call that erases that family. After invalidation, bind a fresh \
+             reference or recheck with `if exists(entry) {{ … }}`. To create an entry, \
+             assign the whole record to a direct path."
         ),
     )
 }

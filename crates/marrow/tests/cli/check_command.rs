@@ -39,7 +39,7 @@ const DEMAND_REPORT: &str = "6 exports across 2 modules\n\
 
 /// A clean project prints the module-grouped demand report and exits 0.
 #[test]
-fn check_reports_exact_places_grouped_by_module() {
+fn check_reports_exact_paths_grouped_by_module() {
     let output = Project::from_fixture("bookstore").run_cli("bookstore", &["check"]);
     assert!(
         output.success(),

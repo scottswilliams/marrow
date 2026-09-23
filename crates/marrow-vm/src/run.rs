@@ -1119,7 +1119,7 @@ impl<'i> Frame<'i> {
         key_slots: &[u16],
     ) -> Result<(), DurableExecutionFault> {
         let authorized = durable.site(site.index());
-        let keys = self.place_key_path(key_slots);
+        let keys = self.address_key_path(key_slots);
         let value = durable
             .read_field(&authorized, &keys)
             .and_then(|value| value.ok_or(marrow_kernel::durable::KernelFault::Corruption))
@@ -1151,7 +1151,7 @@ impl<'i> Frame<'i> {
     /// The key-path of a present-entry op: the containing entry's key columns read from
     /// the reference's pre-evaluated slots (root-first); the verifier proved each slot
     /// definitely initialized with its column type here.
-    fn place_key_path(&self, key_slots: &[u16]) -> Vec<KeyScalar> {
+    fn address_key_path(&self, key_slots: &[u16]) -> Vec<KeyScalar> {
         key_slots
             .iter()
             .map(|slot| {
@@ -1172,7 +1172,7 @@ impl<'i> Frame<'i> {
     ) -> Result<(), DurableExecutionFault> {
         let authorized = durable.site(site.index());
         let value = value_to_domain(pop(&mut self.stack));
-        let keys = self.place_key_path(key_slots);
+        let keys = self.address_key_path(key_slots);
         durable
             .set_field(&authorized, &keys, value)
             .map_err(|kf| self.kernel_fault(&kf))?;
@@ -1258,7 +1258,7 @@ impl<'i> Frame<'i> {
     ) -> Result<(), DurableExecutionFault> {
         let image = self.image;
         let authorized = durable.site(site.index());
-        let keys = self.place_key_path(key_slots);
+        let keys = self.address_key_path(key_slots);
         let group = durable
             .read_group_present(&authorized, &keys)
             .map_err(|kf| self.kernel_fault(&kf))?;
@@ -1276,7 +1276,7 @@ impl<'i> Frame<'i> {
     ) -> Result<(), DurableExecutionFault> {
         let authorized = durable.site(site.index());
         let group = record_to_entry(pop(&mut self.stack), 0);
-        let keys = self.place_key_path(key_slots);
+        let keys = self.address_key_path(key_slots);
         durable
             .replace_group(&authorized, &keys, group)
             .map_err(|kf| self.kernel_fault(&kf))?;

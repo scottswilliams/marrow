@@ -90,7 +90,7 @@ fn a_branch_chain_nests_keyed_and_field_nodes() {
 }
 
 #[test]
-fn a_place_relative_keyed_field_parses() {
+fn a_reference_relative_keyed_field_parses() {
     clean("module app\nfn run(visit: int) {\n    const o = visit.obs[oid]\n    return\n}\n");
 }
 

@@ -1799,7 +1799,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// Whether `iterable` names a durable traversal address syntactically: a bare store root
     /// `^root`, an entry address extended by a bare branch-layer name
-    /// `^root(key)….branch` at any depth, or a bare branch selection on an in-scope
+    /// `^root[key]….branch` at any depth, or a bare branch selection on an in-scope
     /// entry reference name. The resolver rechecks the store, address, and branch names; this
     /// only routes the head to the durable path.
     fn is_traversal_address(&self, iterable: &Expression) -> bool {
