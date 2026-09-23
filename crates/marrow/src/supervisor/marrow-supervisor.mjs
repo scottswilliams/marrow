@@ -504,32 +504,61 @@ export function encodeFrame(value) {
 class FrameReader {
   constructor() {
     this.buffer = Buffer.alloc(0);
+    this.pendingBytes = 0;
   }
 
   push(chunk) {
-    this.buffer = Buffer.concat([this.buffer, chunk]);
     const messages = [];
-    for (;;) {
-      if (this.buffer.length < 4) return messages;
-      const bodyLen = this.buffer.readUInt32BE(0);
-      if (bodyLen === 0) throw new WireFormatError("wire.malformed", "empty frame");
-      if (bodyLen > MAX_FRAME) throw new WireFormatError("wire.frame_too_large");
-      if (this.buffer.length < 4 + bodyLen) return messages;
-      const version = this.buffer.readUInt8(4);
-      if (version !== PROTOCOL_VERSION) {
-        throw new WireFormatError("wire.unsupported_version");
+    let offset = 0;
+    while (offset < chunk.length) {
+      if (this.pendingBytes === 0 && chunk.length - offset >= 4) {
+        const length = frameLength(chunk, offset);
+        if (chunk.length - offset >= length) {
+          messages.push(decodeFrame(chunk.subarray(offset, offset + length)));
+          offset += length;
+          continue;
+        }
       }
-      const json = this.buffer.subarray(5, 4 + bodyLen);
-      this.buffer = this.buffer.subarray(4 + bodyLen);
-      messages.push(parseCanonical(Buffer.from(json)));
+      if (this.buffer.length === 0) this.buffer = Buffer.alloc(4);
+      const copied = chunk.copy(this.buffer, this.pendingBytes, offset,
+        offset + Math.min(this.buffer.length - this.pendingBytes, chunk.length - offset));
+      this.pendingBytes += copied;
+      offset += copied;
+      if (this.pendingBytes < this.buffer.length) continue;
+      if (this.buffer.length === 4) {
+        // Allocate once after validating the header; never recopy a partial payload.
+        const frame = Buffer.alloc(frameLength(this.buffer, 0));
+        this.buffer.copy(frame);
+        this.buffer = frame;
+      } else {
+        const frame = this.buffer;
+        this.buffer = Buffer.alloc(0);
+        this.pendingBytes = 0;
+        messages.push(decodeFrame(frame));
+      }
     }
+    return messages;
   }
+}
+
+function frameLength(buffer, offset) {
+  const bodyLen = buffer.readUInt32BE(offset);
+  if (bodyLen === 0) throw new WireFormatError("wire.malformed", "empty frame");
+  if (bodyLen > MAX_FRAME) throw new WireFormatError("wire.frame_too_large");
+  return 4 + bodyLen;
+}
+
+function decodeFrame(frame) {
+  if (frame.readUInt8(4) !== PROTOCOL_VERSION) {
+    throw new WireFormatError("wire.unsupported_version");
+  }
+  return parseCanonical(frame.subarray(5));
 }
 
 function decodeOneFrame(frames, chunk) {
   const messages = frames.push(chunk);
   if (messages.length === 0) return undefined;
-  if (messages.length !== 1 || frames.buffer.length !== 0) {
+  if (messages.length !== 1 || frames.pendingBytes !== 0) {
     throw protocol("message must contain exactly one complete frame");
   }
   return messages[0];

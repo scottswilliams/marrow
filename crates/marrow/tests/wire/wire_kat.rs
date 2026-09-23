@@ -359,7 +359,7 @@ function driveReply(messages, options = {}) {
       : { ...message, turn: options.replyTurn ?? 0n },
   );
   session.frames = {
-    buffer: Buffer.alloc(options.trailingBytes ?? 0),
+    pendingBytes: options.trailingBytes ?? 0,
     push() {
       return withTurn;
     },
@@ -399,7 +399,7 @@ function driveReply(messages, options = {}) {
   let delivered;
   const session = Object.create(M.Session.prototype);
   session.frames = {
-    buffer: Buffer.alloc(0),
+    pendingBytes: 0,
     push() {
       return [delivered];
     },
@@ -456,7 +456,7 @@ function driveReply(messages, options = {}) {
   let delivered;
   const session = Object.create(M.Session.prototype);
   session.frames = {
-    buffer: Buffer.alloc(0),
+    pendingBytes: 0,
     push() {
       return [delivered];
     },
@@ -1346,11 +1346,86 @@ for (const [label, descriptor, accepted] of [
 
 const readyFrame = M.encodeFrame(validReady);
 {
+  const value = "x".repeat(4096);
+  const frame = M.encodeFrame(value);
+  const reader = new M.__katFrameReader();
+  const concat = Buffer.concat;
+  const copy = Buffer.prototype.copy;
+  let copied = 0;
+  Buffer.concat = function(parts, length) {
+    copied += length ?? parts.reduce((sum, part) => sum + part.length, 0);
+    return concat(parts, length);
+  };
+  Buffer.prototype.copy = function(...args) {
+    const bytes = copy.apply(this, args);
+    copied += bytes;
+    return bytes;
+  };
+  let messages = [];
+  try {
+    for (let i = 0; i < frame.length; i += 1) {
+      messages.push(...reader.push(frame.subarray(i, i + 1)));
+    }
+  } finally {
+    Buffer.concat = concat;
+    Buffer.prototype.copy = copy;
+  }
+  ok("bytewise-frame-value", messages.length === 1 && messages[0] === value);
+  ok("bytewise-frame-copy-work", copied <= frame.length * 4,
+    `${copied} copied bytes for ${frame.length} input bytes`);
+}
+for (let split = 0; split <= readyFrame.length; split += 1) {
+  const reader = new M.__katFrameReader();
+  const first = reader.push(readyFrame.subarray(0, split));
+  const empty = reader.push(Buffer.alloc(0));
+  const second = reader.push(readyFrame.subarray(split));
+  const messages = [...first, ...empty, ...second];
+  ok(`frame-split-${split}`, messages.length === 1 && M.__katIsReady(messages[0]));
+}
+{
+  const reader = new M.__katFrameReader();
+  const messages = reader.push(Buffer.concat([readyFrame, readyFrame, readyFrame.subarray(0, 3)]));
+  ok("frame-adjacent-with-partial-header", messages.length === 2 && messages.every(M.__katIsReady));
+  const last = reader.push(readyFrame.subarray(3));
+  ok("frame-after-adjacent", last.length === 1 && M.__katIsReady(last[0]));
+}
+for (const [label, bytes, expected] of [
+  ["zero-length", Buffer.from([0, 0, 0, 0]), "wire.malformed"],
+  ["excess-length", Buffer.from([0, 16, 0, 1]), "wire.frame_too_large"],
+  ["maximum-u32-length", Buffer.from([255, 255, 255, 255]), "wire.frame_too_large"],
+  ["wrong-version", Buffer.from([0, 0, 0, 2, M.PROTOCOL_VERSION + 1, 48]), "wire.unsupported_version"],
+  ["missing-json", Buffer.from([0, 0, 0, 1, M.PROTOCOL_VERSION]), "wire.malformed"],
+  ["malformed-json", Buffer.from([0, 0, 0, 2, M.PROTOCOL_VERSION, 120]), "wire.malformed"],
+  ["noncanonical-json", Buffer.from([0, 0, 0, 3, M.PROTOCOL_VERSION, 32, 48]), "wire.noncanonical"],
+]) {
+  for (const chunkSize of [1, bytes.length]) {
+    const reader = new M.__katFrameReader();
+    try {
+      for (let i = 0; i < bytes.length; i += chunkSize) reader.push(bytes.subarray(i, i + chunkSize));
+      ok(`frame-${label}-${chunkSize}`, false, "accepted invalid frame");
+    } catch (error) {
+      ok(`frame-${label}-${chunkSize}`, error instanceof M.WireFormatError && error.code === expected, String(error));
+    }
+  }
+}
+{
+  // Canonical string-array JSON fills the frame body exactly without exceeding a string bound.
+  const strings = Array(16).fill("x".repeat(M.MAX_STRING_BYTES - 3));
+  strings[15] = "x".repeat(M.MAX_STRING_BYTES - 5);
+  const frame = M.encodeFrame(strings);
+  ok("frame-exact-maximum-fixture", frame.length === M.MAX_FRAME + 4);
+  const reader = new M.__katFrameReader();
+  const first = reader.push(frame.subarray(0, 4));
+  const last = reader.push(frame.subarray(4));
+  ok("frame-exact-maximum-value", first.length === 0 && last.length === 1 &&
+    last[0].length === strings.length && last[0].every((value, i) => value === strings[i]));
+}
+{
   const reader = new M.__katFrameReader();
   const ready = M.__katDecodeOneFrame(reader, readyFrame);
   ok(
     "ready-exactly-one-frame",
-    M.__katIsReady(ready) && reader.buffer.length === 0,
+    M.__katIsReady(ready) && reader.pendingBytes === 0,
   );
 }
 for (const [label, bytes] of [
@@ -1374,12 +1449,12 @@ for (const [label, bytes] of [
   const waiting = M.__katDecodeOneFrame(reader, readyFrame.subarray(0, 3));
   ok(
     "ready-partial-current-frame-waits",
-    waiting === undefined && reader.buffer.length === 3,
+    waiting === undefined && reader.pendingBytes === 3,
   );
   const ready = M.__katDecodeOneFrame(reader, readyFrame.subarray(3));
   ok(
     "ready-split-frame-completes-exactly-once",
-    M.__katIsReady(ready) && reader.buffer.length === 0,
+    M.__katIsReady(ready) && reader.pendingBytes === 0,
   );
 }
 
