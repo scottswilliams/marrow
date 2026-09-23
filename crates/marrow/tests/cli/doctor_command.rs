@@ -70,11 +70,25 @@ pub fn seed() {
     }
 }
 
-pub fn retained(): int { return ^books[-1].notes["n"].tags[0].weight ?? -1 }
-pub fn rootPresent(): bool { return exists(^books[-1]) }
-pub fn notePresent(): bool { return exists(^books[-1].notes["n"]) }
-pub fn pages(): int { return ^books[0].details.pages ?? -1 }
-pub fn lookup(): string {
+struct Snapshot {
+    retained: int
+    rootPresent: bool
+    notePresent: bool
+    pages: int
+    lookup: string
+}
+
+pub fn snapshot(): Snapshot {
+    return Snapshot(
+        retained: ^books[-1].notes["n"].tags[0].weight ?? -1,
+        rootPresent: exists(^books[-1]),
+        notePresent: exists(^books[-1].notes["n"]),
+        pages: ^books[0].details.pages ?? -1,
+        lookup: lookup(),
+    )
+}
+
+fn lookup(): string {
     if const id = ^books.byIsbn["zero"] {
         if const book = ^books[id] { return book.title }
     }
@@ -108,6 +122,29 @@ fn run_ok(cx: Journey<'_>, name: &str, dir: &Path, args: &[&str]) -> Output {
     output
 }
 
+/// One fresh companion reads every observation of an unchanged store state.
+fn assert_snapshot(cx: Journey<'_>, name: &str, store: &str, expected: serde_json::Value) {
+    let output = run_ok(
+        cx,
+        name,
+        cx.project,
+        &[
+            "run",
+            "main.snapshot",
+            "--store",
+            store,
+            "--format",
+            "jsonl",
+        ],
+    );
+    let record: serde_json::Value = serde_json::from_slice(&output.stdout).expect("snapshot");
+    assert_eq!(
+        record,
+        serde_json::json!({"data": expected, "kind": "run", "outcome": "value"}),
+        "{name}"
+    );
+}
+
 /// Write the deployment image at `name`, proving the ceiling refusal first: `marrow
 /// image` publishes the id only on that refusal, so the accepted write must follow it.
 fn build_image(cx: Journey<'_>, name: &str) -> (PathBuf, String) {
@@ -138,6 +175,36 @@ struct Journey<'a> {
     project: &'a Path,
 }
 
+const APPLIED_OPERATIONS: &str = r#"
+pub fn writeExtra() {
+    transaction {
+        place counter = ^counters[0]
+        if exists(counter) { counter.extra = 77 }
+        place note = ^counters[0].notes[1]
+        if exists(note) { note.noteExtra = 99 }
+    }
+}
+struct Snapshot {
+    value: int
+    tag: int
+    note: int
+    extraPresent: bool
+    extra: int
+    noteExtra: int
+}
+
+pub fn snapshot(): Snapshot {
+    return Snapshot(
+        value: oldValue(),
+        tag: ^counters[0].details.tag ?? -1,
+        note: ^counters[0].notes[1].note ?? -1,
+        extraPresent: exists(^counters[0].extra),
+        extra: ^counters[0].extra ?? -1,
+        noteExtra: ^counters[0].notes[1].noteExtra ?? -1,
+    )
+}
+"#;
+
 // Inserting before a populated field exercises accepted physical numbering through
 // the compiler, explicit image operation and ordinary companion-backed reads.
 fn populated_apply_preserves_old_values_and_leaves_new_fields_absent(toolchain: &Path) {
@@ -166,8 +233,6 @@ pub fn seed() {
     }
 }
 pub fn oldValue(): int { return ^counters[0].value ?? -1 }
-pub fn tag(): int { return ^counters[0].details.tag ?? -1 }
-pub fn note(): int { return ^counters[0].notes[1].note ?? -1 }
 "#;
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(&project.join("src/main.mw"), source);
@@ -221,19 +286,7 @@ pub fn note(): int { return ^counters[0].notes[1].note ?? -1 }
     let new_source = source
         .replace("    required value", "    extra: int\n    required value")
         .replace("required note", "noteExtra: int\nrequired note")
-        + r#"
-pub fn extraPresent(): bool { return exists(^counters[0].extra) }
-pub fn writeExtra() {
-    transaction {
-        place counter = ^counters[0]
-        if exists(counter) { counter.extra = 77 }
-        place note = ^counters[0].notes[1]
-        if exists(note) { note.noteExtra = 99 }
-    }
-}
-pub fn extraValue(): int { return ^counters[0].extra ?? -1 }
-pub fn noteExtra(): int { return ^counters[0].notes[1].noteExtra ?? -1 }
-"#;
+        + APPLIED_OPERATIONS;
     write(&project.join("src/main.mw"), &new_source);
     write(&temp.path().join("new.mw"), &new_source);
     run_ok(cx, "new-bootstrap", &project, &["run", "main.bootstrap"]);
@@ -298,30 +351,24 @@ pub fn noteExtra(): int { return ^counters[0].notes[1].noteExtra ?? -1 }
 /// until it is written, and writing it leaves every sibling untouched.
 fn the_inserted_field_reads_absent_then_written(cx: Journey<'_>, store_arg: &str) {
     let project = cx.project;
-    for (name, export, expected) in [
-        ("old-value-after", "main.oldValue", "42"),
-        ("extra-absent", "main.extraPresent", "false"),
-        ("nested-extra-absent", "main.noteExtra", "-1"),
-    ] {
-        let result = run_ok(cx, name, project, &["run", export, "--store", store_arg]);
-        assert_eq!(text(&result.stdout).trim(), expected);
-    }
+    assert_snapshot(
+        cx,
+        "after-apply",
+        store_arg,
+        serde_json::json!({"value": 42, "tag": 7, "note": 9, "extraPresent": false, "extra": -1, "noteExtra": -1}),
+    );
     run_ok(
         cx,
         "write-extra",
         project,
         &["run", "main.writeExtra", "--store", store_arg],
     );
-    for (name, export, expected) in [
-        ("extra-value", "main.extraValue", "77"),
-        ("old-value-final", "main.oldValue", "42"),
-        ("old-group-final", "main.tag", "7"),
-        ("old-note-final", "main.note", "9"),
-        ("new-note-final", "main.noteExtra", "99"),
-    ] {
-        let result = run_ok(cx, name, project, &["run", export, "--store", store_arg]);
-        assert_eq!(text(&result.stdout).trim(), expected);
-    }
+    assert_snapshot(
+        cx,
+        "after-write",
+        store_arg,
+        serde_json::json!({"value": 42, "tag": 7, "note": 9, "extraPresent": true, "extra": 77, "noteExtra": 99}),
+    );
 }
 
 /// The applied store backs up and restores byte-identically: the receipt names the new
@@ -441,16 +488,12 @@ fn the_applied_store_backs_up_restores_and_recovers(
         applied_head
     );
     write(&project.join("src/main.mw"), new_source);
-    for (name, export, expected) in [
-        ("restored-old", "main.oldValue", "42"),
-        ("restored-extra", "main.extraValue", "77"),
-        ("restored-group", "main.tag", "7"),
-        ("restored-note", "main.note", "9"),
-        ("restored-note-extra", "main.noteExtra", "99"),
-    ] {
-        let result = run_ok(cx, name, project, &["run", export, "--store", restored_arg]);
-        assert_eq!(text(&result.stdout).trim(), expected);
-    }
+    assert_snapshot(
+        cx,
+        "after-recovery",
+        restored_arg,
+        serde_json::json!({"value": 42, "tag": 7, "note": 9, "extraPresent": true, "extra": 77, "noteExtra": 99}),
+    );
 }
 
 fn backup_from_image_preserves_bytes_and_refuses_invalid_inputs(
@@ -696,19 +739,16 @@ fn backup_restores_absent_ancestor_descendants_without_a_project(toolchain: &Pat
     assert_eq!(backed["content_digest"], restored_receipt["content_digest"]);
     assert_eq!(fs::read(restored.join("head")).unwrap(), head);
     write(&project.join("src/main.mw"), BACKUP_SOURCE);
-    for (export, expected) in [
-        ("main.retained", "91"),
-        ("main.rootPresent", "false"),
-        ("main.notePresent", "false"),
-        ("main.pages", "37"),
-        ("main.lookup", "kept"),
-    ] {
-        let result = run(
-            &project,
-            &["run", export, "--store", restored.to_str().unwrap()],
-        );
-        assert_eq!(text(&result.stdout).trim(), expected, "{export}");
-    }
+    assert_snapshot(
+        Journey {
+            toolchain,
+            temp: temp.path(),
+            project: &project,
+        },
+        "after-restore",
+        restored.to_str().expect("restored path"),
+        serde_json::json!({"retained": 91, "rootPresent": false, "notePresent": false, "pages": 37, "lookup": "kept"}),
+    );
     // Only the successful fixture is retired; failure unwinding keeps its original bytes.
     drop(std::mem::ManuallyDrop::into_inner(temp));
 }
