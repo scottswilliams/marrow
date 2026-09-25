@@ -115,7 +115,7 @@ state. Waiting for stream closure does not establish a finite process lifetime.
 
 ## Type projection
 
-The wire carries the closed transfer graph. Its TypeScript projection:
+The wire carries the transfer graph. Its TypeScript projection:
 
 | Marrow | TypeScript | Wire spelling |
 |---|---|---|
@@ -148,23 +148,27 @@ nominal integer arguments use the compiled function's range guard and can fault
 leaves with `check.unsupported`, before client generation; transfer shapes do
 not retain nominal intervals
 ([nominal ints](../language/types-and-values.md#aliases-and-nominal-ints)).
+
 A wire value nests at most 64 levels, a string carries at most 64 KiB, and a
-frame body, including its protocol version byte, is at most 1 MiB. The supervision module exports these as
-`MAX_DEPTH`, `MAX_STRING_BYTES`, and `MAX_FRAME`. The runner checks outbound
-frame growth before appending, including the message envelope and version byte.
-Only a completed frame is passed to channel I/O. Encoding failure after dispatch closes the
-channel without a reply or another dispatch; the caller cannot confirm the
+frame body, including its protocol version byte, is at most 1 MiB. The
+supervision module exports these as `MAX_DEPTH`, `MAX_STRING_BYTES`, and
+`MAX_FRAME`. The runner checks outbound frame growth before appending,
+including the message envelope and version byte. Only a completed frame is
+passed to channel I/O. Encoding failure after dispatch closes the channel
+without a reply or another dispatch; the caller cannot confirm the
 invocation's outcome.
 
 A [recursive type](../language/types-and-values.md#recursive-types) expands
 without end, so its signature never fits the budget: `marrow client typescript`
 and a storeless runner refuse the whole program with
 `cli.interface_unbuildable`. `marrow run --store` builds no interface and runs
-such an export. It returns a result whose wire encoding nests at most 64
-levels; a struct that holds its children in a `List` spends two levels for each
-level of the value. A deeper result is reported as `run.outcome_unknown` after
-the export has run, including after its transaction committed. This is a
-current limitation ([status](../status.md#not-yet-available)).
+such an export. The reply envelope takes one of the 64 wire levels, so a
+result nests at most 63; a struct that holds its children in a `List` spends
+two levels for each level of the value. A deeper result is reported as
+`run.outcome_unknown` after the export has run, including after its transaction
+committed. A result tens of thousands of levels deep stops the runner with a
+native stack overflow before it replies. These are current limitations
+([status](../status.md#not-yet-available)).
 
 The runner also checks [collection limits](../language/execution-limits.md#collection-limits)
 on List and Map arguments, including nested collections. An excess produces

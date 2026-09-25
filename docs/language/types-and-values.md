@@ -525,8 +525,8 @@ the toolchain's generic types over this mechanism, and their names are reserved.
 A struct or enum may hold its own type, at the same type arguments, only inside
 a `List` or `Map`. A path back to itself through fields, payloads, `Option`, or
 `Result` is a `check.recursion`. An enum payload cannot be a collection, so an
-enum reaches its own type through a struct payload that holds the `List` or
-`Map`.
+enum reaches its own type through a struct payload, directly or inside `Option`
+or `Result`, that holds the `List` or `Map`.
 
 ```mw
 module docs::types::recursive
@@ -561,14 +561,15 @@ test "a tree holds its children in a list" {
 A struct contains the type of each of its fields, and an enum contains the type
 of each payload field. `Option<T>` contains `T`, and `Result<T, E>` contains
 both `T` and `E`. A `List` does not contain its element type and a `Map` does
-not contain its value type, because a collection may be empty. A struct or enum
-that contains itself has no finite value. The `check.recursion` is reported at
-each declaration on the cycle, and the message names the cycle, such as
-`A -> Option<A> -> A`.
+not contain its value type. A struct or enum that contains itself is a
+`check.recursion`, reported at each declaration on the cycle, and the message
+names the cycle, such as `A -> Option<A> -> A`.
 
-A generic type is checked per application: `Box<int>` with a field of type
-`Box<int>` is refused at `Box`, `Node<T>` with a field `kids: List<Node<T>>` is
-admitted, and a template that is never applied is not checked. A generic type
+Recursion in a generic type is checked per application, for each application
+in non-generic code or in a generic function that is called. `Box<int>` with a
+field of type `Box<int>` is refused at `Box`, `Node<T>` with a field
+`kids: List<Node<T>>` is admitted, and a template that is never applied is not
+checked for recursion. A generic type
 that holds itself at an ever-larger argument, such as `child: Box<Option<T>>`
 inside `Box<T>` or `kids: List<Node<List<T>>>` inside `Node<T>`, has no finite
 set of instances, even inside a collection. The compiler reaches its
@@ -578,8 +579,7 @@ application, such as `Box<int>`.
 A function cannot call itself ([functions](modules-and-functions.md#functions)),
 so a recursive value is walked with a loop over a list of pending values, as
 `size` shows. Every subtree appended to `pending` counts in full toward the
-[collection bound](#lists-and-maps). A recursive value is never stored, because
-a store cannot bind a resource whose fields hold a `List` or `Map`
+[collection bound](#lists-and-maps). A recursive value is never stored
 ([lists and maps](#lists-and-maps)).
 
 `marrow check`, `marrow test`, and `marrow run` without a store accept a program

@@ -88,12 +88,13 @@ above 65,536 is reported at the number in the `for` head.
 
 Call depth counts active calls in one invocation. A function cannot call
 itself, directly or through other functions, so the depth limit is reached only
-by a very deep chain of distinct calls. The text limit applies to text built by concatenation, `join`, or
-`string(...)`, including conversion of interpolation holes. It counts UTF-8
-bytes of the complete canonical text, including punctuation and hex expansion.
-A conversion that would exceed the limit faults with `run.text_limit` at its
-source expression before appending excess text. This is a result-length limit,
-not a bound on total invocation memory or on aggregate CLI output.
+by a very deep chain of distinct calls. The text limit applies to text built by
+concatenation, `join`, or `string(...)`, including conversion of interpolation
+holes. It counts UTF-8 bytes of the complete canonical text, including
+punctuation and hex expansion. A conversion that would exceed the limit faults
+with `run.text_limit` at its source expression before appending excess text.
+This is a result-length limit, not a bound on total invocation memory or on
+aggregate CLI output.
 
 The same 65,536 bytes bound an argument a caller supplies. One text bound holds
 for the whole language, so admission does not depend on how an export is

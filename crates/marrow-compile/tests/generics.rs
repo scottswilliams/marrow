@@ -1678,34 +1678,6 @@ pub fn f(): Result<int, int> {
     );
 }
 
-/// A generic type recursing over an ever-growing argument (`Grow[T]` whose field is
-/// `Grow[List[T]]`) diverges under monomorphization and hits the shared
-/// instantiation bound rather than looping.
-#[test]
-fn a_divergent_generic_type_hits_the_instantiation_bound() {
-    let diagnostics = compile_err(
-        r#"module main
-
-struct Grow<T> {
-    value: T
-    next: Grow<List<T>>
-}
-
-fn useGrow(g: Grow<int>): int {
-    return g.value
-}
-
-pub fn run(): int {
-    return 0
-}
-"#,
-    );
-    assert!(
-        has_code(&diagnostics, Code::CheckInstantiationLimit),
-        "{diagnostics:#?}"
-    );
-}
-
 /// `Option` and `Result` are ordinary generic enums the toolchain registers, not a
 /// built-in special case: a user cannot redeclare their reserved names.
 #[test]

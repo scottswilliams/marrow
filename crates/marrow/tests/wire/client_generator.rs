@@ -45,6 +45,31 @@ fn nominal_aggregate_inputs_publish_neither_client_nor_image() {
     }
 }
 
+/// A recursive type expands without end, so its export signature never fits the
+/// interface budget: client generation refuses the program, names the export, and
+/// writes no client, while a storeless `marrow run` of the same export returns its
+/// value.
+#[test]
+fn a_recursive_export_signature_generates_no_client() {
+    let temp = Scratch::new("recursive-export");
+    write(&temp.path().join("marrow.toml"), "edition = \"2026\"\n");
+    write(
+        &temp.path().join("src/main.mw"),
+        "module main\nstruct Tree {\n    v: int\n    kids: List<Tree>\n}\npub fn f(): Tree {\n    return Tree(v: 1, kids: List(Tree(v: 2, kids: List())))\n}\n",
+    );
+    let client = marrow_in(temp.path(), &["client", "typescript", "--out", "gen"]);
+    assert_eq!(client.status.code(), Some(1));
+    let stderr = client.stderr_text();
+    assert!(
+        stderr.starts_with("cli.interface_unbuildable: `main.f`:"),
+        "{stderr}"
+    );
+    assert!(!temp.path().join("gen/client.mts").exists());
+
+    let run = marrow_in(temp.path(), &["run", "f"]);
+    assert!(run.status.success(), "{}", run.stderr_text());
+}
+
 /// The stable fixture: scalars, a record, an enum, a grouped resource, and a
 /// unit return.
 const FIXTURE: &str = r#"struct Point {

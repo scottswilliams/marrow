@@ -10,7 +10,9 @@
 //! carries it yet, and the error-code registry promises that the message names the
 //! cycle. That is this module's one exception to the harness's no-prose rule.
 
-use crate::common::{Diagnostics, Project};
+use crate::common::{CallOutcome, Diagnostics, Project};
+use marrow_codes::Code;
+use marrow_vm::Value;
 
 /// One expected diagnostic: its code, line, column, and for `check.recursion` the cycle
 /// path the message names.
@@ -52,8 +54,14 @@ fn assert_refused(label: &str, source: &str, expected: &[Row]) {
     assert_eq!(located(&diagnostics), expected, "{label}");
 }
 
+fn assert_admitted(label: &str, source: &str) {
+    if let Err(diagnostics) = Project::single(source).try_image() {
+        panic!("{label}: must verify, got {:?}", diagnostics.all());
+    }
+}
+
 #[test]
-fn a_type_containing_itself_other_than_through_a_collection_is_refused() {
+fn self_containing_types_are_refused_at_their_sites() {
     let cases: &[(&str, &str, &[Row])] = &[
         (
             "a field of its own type",
@@ -102,6 +110,11 @@ fn a_type_containing_itself_other_than_through_a_collection_is_refused() {
             &[(RECURSION, 1, 8, Some("Box<int> -> Box<int>"))],
         ),
         (
+            "a generic struct applied in a generic function that is called",
+            "struct Box<T> {\n    v: T\n    child: Box<T>\n}\n\nfn g<U>(x: U): int {\n    const xs: List<Box<int>> = List()\n    return length(xs)\n}\n\npub fn f(): int {\n    return g(1)\n}\n",
+            &[(RECURSION, 1, 8, Some("Box<int> -> Box<int>"))],
+        ),
+        (
             "a generic enum applied to the same argument",
             "enum Tree<T> {\n    leaf(v: T)\n    node(l: Tree<T>, r: Tree<T>)\n}\n\nfn useIt(t: Tree<int>): int {\n    return 0\n}\n\npub fn f(): int {\n    return 1\n}\n",
             &[(RECURSION, 1, 6, Some("Tree<int> -> Tree<int>"))],
@@ -117,8 +130,8 @@ fn a_type_containing_itself_other_than_through_a_collection_is_refused() {
             )],
         ),
         (
-            // Current behavior: `Wrap` is also reported (forward plan F1); a fix that
-            // drops the 1:8 row is intended.
+            // `Wrap<T>` alone is not recursive but is also reported through the `A`
+            // cycle; a checker fix that drops the 1:8 row is intended.
             "a struct through a generic argument",
             "struct Wrap<T> {\n    inner: T\n}\n\nstruct A {\n    w: Wrap<A>\n}\n\npub fn f(): int {\n    return 1\n}\n",
             &[
@@ -126,6 +139,15 @@ fn a_type_containing_itself_other_than_through_a_collection_is_refused() {
                 (RECURSION, 5, 8, Some("A -> Wrap<A> -> A")),
             ],
         ),
+    ];
+    for (label, source, expected) in cases {
+        assert_refused(label, source, expected);
+    }
+}
+
+#[test]
+fn an_application_holding_itself_at_a_growing_argument_reaches_the_instantiation_limit() {
+    let cases: &[(&str, &str, &[Row])] = &[
         (
             "an application of a type holding itself at a growing argument inside a list",
             "struct Node<T> {\n    value: T\n    kids: List<Node<List<T>>>\n}\n\nfn useIt(n: Node<int>): int {\n    return n.value\n}\n\npub fn f(): int {\n    return 1\n}\n",
@@ -136,15 +158,19 @@ fn a_type_containing_itself_other_than_through_a_collection_is_refused() {
             "struct Box<T> {\n    child: Box<Option<T>>\n}\n\nfn useIt(b: Box<int>): int {\n    return 1\n}\n\npub fn f(): int {\n    return 1\n}\n",
             &[("check.instantiation_limit", 5, 13, None)],
         ),
-        (
-            "an enum payload cannot be a collection, even of the enum",
-            "enum E {\n    leaf\n    node(kids: List<E>)\n}\n\npub fn f(): int {\n    return 1\n}\n",
-            &[("check.unsupported", 3, 16, None)],
-        ),
     ];
     for (label, source, expected) in cases {
         assert_refused(label, source, expected);
     }
+}
+
+#[test]
+fn an_enum_payload_cannot_be_a_collection_even_of_the_enum() {
+    assert_refused(
+        "a list of the enum as a payload",
+        "enum E {\n    leaf\n    node(kids: List<E>)\n}\n\npub fn f(): int {\n    return 1\n}\n",
+        &[("check.unsupported", 3, 16, None)],
+    );
 }
 
 #[test]
@@ -179,6 +205,14 @@ fn a_list_or_map_ends_a_type_cycle() {
             "enum Expr {\n    num(v: int)\n    sum(args: Args)\n}\n\nstruct Args {\n    items: List<Expr>\n}\n\npub fn f(): int {\n    const e = Expr::sum(args: Args(items: List(Expr::num(v: 2))))\n    return 1\n}\n",
         ),
         (
+            "an enum through an optional struct payload holding a list of the enum",
+            "enum E {\n    leaf\n    node(o: Option<Args>)\n}\n\nstruct Args {\n    items: List<E>\n}\n\npub fn f(): int {\n    const e = E::node(o: some(Args(items: List(E::leaf))))\n    return 1\n}\n",
+        ),
+        (
+            "an enum through a result payload holding a list of the enum",
+            "enum E {\n    leaf\n    node(r: Result<Args, int>)\n}\n\nstruct Args {\n    items: List<E>\n}\n\npub fn f(): int {\n    const e = E::node(r: ok(Args(items: List(E::leaf))))\n    return 1\n}\n",
+        ),
+        (
             "two structs whose cycle passes through a list",
             "struct A {\n    bs: List<B>\n}\n\nstruct B {\n    a: A\n}\n\npub fn f(): int {\n    const b = B(a: A(bs: List()))\n    return length(b.a.bs)\n}\n",
         ),
@@ -190,8 +224,25 @@ fn a_list_or_map_ends_a_type_cycle() {
             "a resource field of a list-recursive struct, as a local value",
             "struct Tree {\n    v: int\n    kids: List<Tree>\n}\n\nresource R {\n    t: Tree\n}\n\npub fn f(): int {\n    const r = R(t: Tree(v: 1, kids: List(Tree(v: 2, kids: List()))))\n    const t = r.t else {\n        return 0\n    }\n    return length(t.kids)\n}\n",
         ),
-        // A template is checked per application, so an unapplied self-reference is
-        // admitted, at the same argument or a growing one.
+        (
+            "an export taking and returning a list-recursive struct",
+            "struct Tree {\n    v: int\n    kids: List<Tree>\n}\n\npub fn f(root: Tree): Tree {\n    return root\n}\n",
+        ),
+    ] {
+        assert_admitted(label, source);
+    }
+}
+
+/// Recursion is checked per application in non-generic code or in a called generic
+/// function; a template that is never applied there is not checked for recursion, at
+/// the same argument or a growing one.
+#[test]
+fn an_unapplied_self_referencing_template_is_not_checked_for_recursion() {
+    for (label, source) in [
+        (
+            "an application only in a generic function that is never called",
+            "struct Box<T> {\n    v: T\n    child: Box<T>\n}\n\nfn g<U>(x: U): int {\n    const xs: List<Box<int>> = List()\n    return length(xs)\n}\n\npub fn f(): int {\n    return 1\n}\n",
+        ),
         (
             "an unapplied template holding itself",
             "struct Box<T> {\n    v: T\n    child: Box<T>\n}\n\npub fn f(): int {\n    return 1\n}\n",
@@ -205,18 +256,53 @@ fn a_list_or_map_ends_a_type_cycle() {
             "struct Box<T> {\n    child: Box<Option<T>>\n}\n\npub fn f(): int {\n    return 1\n}\n",
         ),
     ] {
-        if let Err(diagnostics) = Project::single(source).try_image() {
-            panic!("{label}: must verify, got {:?}", diagnostics.all());
-        }
+        assert_admitted(label, source);
     }
 }
 
-/// A collection is a local value: a resource field cannot be one.
+/// A struct appended to a list is charged its full structural size, including every
+/// list it holds. `inner` holds 20 leaves of 32 KiB labels, about 640 KiB, so one copy
+/// fits under the 1 MiB collection bound and a second does not. Charging a held list
+/// as its framing alone would admit both.
 #[test]
-fn a_resource_field_cannot_be_a_list_or_map() {
-    assert_refused(
-        "a resource field of list type",
-        "resource R {\n    l: List<int>\n}\n\npub fn f(): int {\n    return 1\n}\n",
-        &[("check.unsupported", 2, 8, None)],
+fn an_appended_subtree_counts_in_full_toward_the_collection_bound() {
+    let mut session = Project::single(
+        "struct Tree {
+    label: string
+    kids: List<Tree>
+}
+
+pub fn pendingOf(copies: int): int {
+    var label: string = \"x\"
+    var doublings: int = 0
+    while doublings < 15 {
+        label += label
+        doublings += 1
+    }
+    var leaves: List<Tree> = List()
+    while length(leaves) < 20 {
+        leaves = append(leaves, Tree(label: label, kids: List()))
+    }
+    const inner = Tree(label: \"\", kids: leaves)
+    var pending: List<Tree> = List()
+    while length(pending) < copies {
+        pending = append(pending, inner)
+    }
+    return length(pending)
+}
+",
+    )
+    .session();
+    assert_eq!(
+        session.try_call("pendingOf", vec![Value::Int(1)]),
+        CallOutcome::Value(Some(Value::Int(1)))
+    );
+    assert_eq!(
+        session.try_call("pendingOf", vec![Value::Int(2)]),
+        CallOutcome::Fault {
+            code: Code::RunCollectionLimit,
+            line: 20,
+            column: 19,
+        }
     );
 }

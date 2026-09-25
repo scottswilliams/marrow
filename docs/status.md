@@ -123,11 +123,7 @@ missing or cyclic bodies and their callers; an unfilled function slot cannot enc
 - Path authority: principals and grants finer than read and write
   ([path effects and authority](future/path-effects-and-authority.md)).
 - Signed releases and a release promise ([compatibility](compatibility.md)).
-- A depth bound on a returned value. Under `marrow run --store`, a result whose
-  wire encoding nests past 64 levels, which a recursive or deeply nested value
-  type allows, is reported as `run.outcome_unknown` after the export has run,
-  including after its transaction committed. A result tens of thousands of
-  levels deep stops the runner with a native stack overflow before it replies
+- A depth bound on a value returned under `marrow run --store`
   ([type projection](tools/typescript-client.md#type-projection)).
 
 ## Bounds and platform
