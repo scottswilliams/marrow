@@ -40,7 +40,7 @@ pub struct ProvisionReport {
 }
 
 impl ProvisionReport {
-    /// Render the report for provisioning the prepared image at `destination`. The roots are
+    /// Build the report for provisioning the prepared image at `destination`. The roots are
     /// named from the image's store projection (source spelling); the effects and ceiling
     /// are the image's demand union in reads/writes terms. An image whose durable shape is
     /// not executable has no store to provision, so it has no report.

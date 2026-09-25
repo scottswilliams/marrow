@@ -561,7 +561,7 @@ mod tests {
             session, interface, ..
         } = message
         else {
-            panic!("decoded an activation uncertainty");
+            panic!("expected an activation uncertainty");
         };
         for instance in ["12".to_owned(), "AB".repeat(16), "zz".repeat(16)] {
             let invalid = ServerMessage::ActivationUncertain {

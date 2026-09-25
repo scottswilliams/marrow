@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use marrow_codes::Code;
 use marrow_lifecycle::{
     AttachOutcome, PreparedImage, ProvisionApproval, ProvisionImageError, ProvisionReport,
-    StoreInstanceId, accepted_ceiling, attach, prepare, provision_image,
+    accepted_ceiling, attach, prepare, provision_image,
 };
 use marrow_verify::VerifiedImage;
 
@@ -64,6 +64,34 @@ fn the_report_renders_no_identity_hash() {
             run = 0;
         }
     }
+}
+
+/// An image with no executable durable shape has no store to provision, so it has no report,
+/// and without a report there is no approval: building the report is where such an image is
+/// refused, before any filesystem access.
+#[test]
+fn an_image_without_a_store_shape_has_no_report() {
+    const IDS: &str = "marrow ids v0\nmachine-written by marrow; do not edit\nhigh-water 0\nend\n";
+    let image =
+        marrow_test_programs::program::compile("pub fn two(): int {\n    return 2\n}\n", IDS);
+    let prepared = prepare(image);
+    assert!(prepared.projection().is_none(), "no store shape");
+
+    let scratch = Scratch::new("provision-approval");
+    match ProvisionReport::new(scratch.store(), &prepared) {
+        Err(error @ ProvisionImageError::NotExecutable) => {
+            assert_eq!(error.code(), Code::CliDurableUnsupported);
+        }
+        Err(other) => panic!("expected a not-executable refusal, got {other:?}"),
+        Ok(report) => panic!(
+            "an image with no store shape built a report: {}",
+            report.render()
+        ),
+    }
+    assert!(
+        !scratch.store().exists(),
+        "a refused report writes no store"
+    );
 }
 
 /// Asserts a typed provision refusal that published nothing at any of `destinations`.
@@ -200,7 +228,6 @@ fn an_accepted_provision_round_trips_through_attach() {
         32,
         "the instance renders as 32 hex characters",
     );
-    let _ = StoreInstanceId::from_bytes(*provisioned.instance.bytes());
 }
 
 /// Two destinations that differ only in a non-UTF-8 byte, where the platform can spell one.
