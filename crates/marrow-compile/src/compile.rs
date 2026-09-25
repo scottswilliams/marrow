@@ -2692,14 +2692,15 @@ fn first_marker_span(body: &LoweredBody<'_>) -> Option<SourceSpan> {
 /// report a return while the region is open or a durable operation after its commit;
 /// every entry state is then exactly the one the verifier computes.
 ///
-/// Each of the verifier's transaction-flow kinds has one compiler owner:
+/// Each of the verifier's transaction-flow kinds is reported by a named compiler owner or
+/// excluded by lowering's construction:
 ///
 /// | Verifier kind | Compiler owner |
 /// |---|---|
 /// | `EmptyTransaction`, `OwnerCalled`, `MarkerOutsideOwner` | `reject_transaction_ownership`: `check.transaction_empty`, `check.transaction_owner_called`, `check.transaction_misplaced` |
 /// | `BeginTwice` | this walk: `check.transaction_reopened` |
 /// | `TransactionMerge` | this walk: `check.transaction_conditional`, `check.transaction_reopened` for a begin on a cycle; `check.transaction_uncommitted` when one side is still open, which from source only lowering's `jump_leaves_transaction` reaches (see below), so this arm is its defensive mirror |
-/// | `ReturnWithoutCommit` | this walk: `check.transaction_uncommitted` |
+/// | `ReturnWithoutCommit` | this walk: `check.transaction_uncommitted`; lowering's `emit_region_return` commits before every in-region return, so this arm is its defensive mirror |
 /// | `OperationAfterCommit` | this walk: `check.durable_after_commit` |
 /// | `MutationOutsideRegion` | `reject_missing_transaction` (`check.requires_transaction`) at depth zero; above it, see below |
 /// | `CommitOutsideRegion` | lowering, see below |

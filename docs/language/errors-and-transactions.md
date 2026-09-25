@@ -67,8 +67,9 @@ function exit inside it, including `return`, `try` failure and `require` failure
 An exit inside the block evaluates its value, then commits, then returns, so
 `return ^books[id].loans` returns the staged value. An export begins its region
 at most once on any path (`check.transaction_reopened`), the block touches at
-least one durable address (`check.transaction_empty`), and no durable read or
-write follows the commit (`check.durable_after_commit`).
+least one durable address (`check.transaction_empty`), and no durable read
+follows the commit (`check.durable_after_commit`). A write after the commit has
+no transaction (`check.requires_transaction`).
 
 Paths that meet agree on whether the block has run. A block in one arm of an
 `if` or `match` whose arm continues past it is `check.transaction_conditional`;

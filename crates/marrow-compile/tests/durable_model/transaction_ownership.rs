@@ -80,7 +80,7 @@ fn span_of(ops: &str, needle: &str) -> SourceSpan {
     SourceSpan {
         start_byte: start,
         end_byte: start + needle.len(),
-        line: line_of(ops, needle),
+        line: (source[..start].bytes().filter(|&b| b == b'\n').count() as u32) + 1,
         column: (start - line_start + 1) as u32,
     }
 }
