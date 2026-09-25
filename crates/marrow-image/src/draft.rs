@@ -37,7 +37,7 @@ use crate::site_plan::{
     SitePolicyReceipt,
 };
 use crate::ty::{ImageType, Scalar};
-use crate::value_dag::{CanonicalValueShapeDag, ImageByteSink, NamedLeaf, ValueShapeNodeId};
+use crate::value_dag::{CanonicalValueShapeDag, ImageByteSink, ValueShapeLeaf, ValueShapeNodeId};
 
 /// The strong identity of one draft and its site demand plan.
 ///
@@ -1182,7 +1182,7 @@ impl<'d> DraftTxn<'d> {
     /// presence stay the arena's own decisions. No refusal mutates the arena.
     pub fn value_struct(
         &mut self,
-        leaves: Vec<NamedLeaf>,
+        leaves: Vec<ValueShapeLeaf>,
     ) -> Result<ValueShapeNodeId, DraftStateError> {
         if leaves.len() > bounds::MAX_STRUCT_LEAVES {
             return Err(DraftStateError::CarrierDomain);
@@ -1196,7 +1196,7 @@ impl<'d> DraftTxn<'d> {
     pub fn value_enum(
         &mut self,
         identity: LedgerIdBytes,
-        members: Vec<(LedgerIdBytes, Vec<NamedLeaf>)>,
+        members: Vec<(LedgerIdBytes, Vec<ValueShapeLeaf>)>,
     ) -> Result<ValueShapeNodeId, DraftStateError> {
         if members.len() > bounds::MAX_VARIANTS {
             return Err(DraftStateError::CarrierDomain);

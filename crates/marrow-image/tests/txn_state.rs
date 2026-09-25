@@ -9,7 +9,8 @@ use marrow_image::bounds::{
 use marrow_image::{
     CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, DraftStateError, DraftTxn,
     EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr,
-    LedgerIdBytes, RecordTypeDef, ReferenceKind, RootOccurrenceDef, Scalar, VariantDef,
+    LedgerIdBytes, RecordTypeDef, ReferenceKind, RootOccurrenceDef, Scalar, ValueShapeLeaf,
+    VariantDef,
 };
 use marrow_test_support::admitted_plan;
 
@@ -72,8 +73,11 @@ fn a_rolled_back_transaction_restores_the_exact_bytes() {
         })
         .expect("a within-domain mint");
         let int = txn.value_scalar(Scalar::Int).expect("the test arena mints");
-        txn.value_struct(vec![("x".into(), int), ("y".into(), int)])
-            .expect("a within-bounds shape appends");
+        txn.value_struct(vec![
+            ValueShapeLeaf::new("x", int),
+            ValueShapeLeaf::new("y", int),
+        ])
+        .expect("a within-bounds shape appends");
     }
     let after = owner.encode().expect("the restored draft encodes").bytes;
     assert_eq!(before, after, "the armed inverse is byte-exact");

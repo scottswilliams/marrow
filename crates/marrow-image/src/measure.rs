@@ -1034,7 +1034,7 @@ mod decisive_saturation {
             .expect("the test arena mints");
         for _ in 0..31 {
             value = draft
-                .value_struct(vec![("v".into(), value); 64])
+                .value_struct(vec![ValueShapeLeaf::new("v", value); 64])
                 .expect("sixty-four leaves fit the checked surface");
         }
         let type_name = draft.intern_string("R").expect("a within-domain mint");

@@ -19,8 +19,8 @@ use marrow_image::{
     AdmittedGraphInputPlan, CanonicalDeclarationPathSelector, CanonicalValueShapeDag,
     DeclarationMember, DeclarationMemberDef, DeclarationMemberShape, DraftTxn,
     DurableIndexComponent, DurableIndexShape, FieldDef, ImageDraft, ImageType, KeyColumn,
-    LedgerIdBytes, NamedLeaf, RecordTypeDef, RootOccurrenceDef, RootOccurrenceSelector, Scalar,
-    SemanticTarget, ValueShapeNodeId, ValueShapeView, bounds,
+    LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, RootOccurrenceSelector, Scalar,
+    SemanticTarget, ValueShapeLeaf, ValueShapeNodeId, ValueShapeView, bounds,
 };
 use marrow_project::{IdentityAnchor, IdentityKind, IdentityLedger, ProjectInput, SourceOrigin};
 use marrow_syntax::{FieldDecl, ResourceDecl, SourceSpan, StoreDecl};
@@ -1771,7 +1771,7 @@ impl<'a> IdentityResolver<'a> {
                             .iter()
                             .map(|field| {
                                 self.build_value_shape(values, records, metadata, field.ty)
-                                    .map(|shape| (field.name.as_str().into(), shape))
+                                    .map(|shape| ValueShapeLeaf::new(field.name.as_str(), shape))
                             })
                             .collect::<Option<Vec<_>>>();
                         self.value_path.pop();
@@ -1888,13 +1888,17 @@ impl<'a> IdentityResolver<'a> {
         let sum = self.resolve_declared(IdentityKind::Sum, &spelling);
         let members = variants
             .iter()
-            .map(|(name, payload)| {
-                let id = self.resolve_declared(IdentityKind::Member, &format!("{spelling}.{name}"));
-                let payload = payload
+            .map(|variant| {
+                let id = self.resolve_declared(
+                    IdentityKind::Member,
+                    &format!("{spelling}.{}", variant.name),
+                );
+                let payload = variant
+                    .payload
                     .iter()
                     .map(|(leaf, arg)| {
                         self.build_value_shape(values, records, metadata, *arg)
-                            .map(|shape| (leaf.as_str().into(), shape))
+                            .map(|shape| ValueShapeLeaf::new(leaf.as_str(), shape))
                     })
                     .collect::<Option<Vec<_>>>();
                 payload.map(|payload| (id, payload))
@@ -1909,7 +1913,7 @@ impl<'a> IdentityResolver<'a> {
     fn append_value_struct(
         &mut self,
         values: &mut DraftTxn<'_>,
-        leaves: Vec<NamedLeaf>,
+        leaves: Vec<ValueShapeLeaf>,
     ) -> Option<ValueShapeNodeId> {
         self.checked_mint(values.value_struct(leaves))
     }

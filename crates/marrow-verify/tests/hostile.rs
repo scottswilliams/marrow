@@ -12,7 +12,8 @@ use marrow_image::{
     AdmittedRoot, CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, DraftTxn,
     DurableIndexComponent, DurableIndexShape, EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef,
     ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, PlannedSiteRef, RecordTypeDef,
-    RootOccurrenceDef, Scalar, SemanticStepKind, SemanticTarget, SpanEntry, TypeId, VariantDef,
+    RootOccurrenceDef, Scalar, SemanticStepKind, SemanticTarget, SpanEntry, TypeId, ValueShapeLeaf,
+    VariantDef,
 };
 use marrow_test_support::{admitted_plan, rehash, site};
 use marrow_verify::{
@@ -1661,8 +1662,8 @@ fn widened_field_indexed_draft() -> ImageDraft {
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     // A dense struct value of two text leaves, minted into this draft's own arena.
     let owner_value = ok(draft.value_struct(vec![
-        ("first".into(), shapes.text),
-        ("last".into(), shapes.text),
+        ValueShapeLeaf::new("first", shapes.text),
+        ValueShapeLeaf::new("last", shapes.text),
     ]));
     draft
         .declare_product(

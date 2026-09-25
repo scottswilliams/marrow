@@ -1506,23 +1506,11 @@ impl TypeMetadataSession<'_> {
     pub(crate) fn durable_enum_shape_and_anchor(
         &mut self,
         id: EnumId,
-    ) -> Result<Option<(DurableEnumVariants, String)>, GenericInvariant> {
+    ) -> Result<Option<(Vec<InstVariant>, String)>, GenericInvariant> {
         self.ensure_healthy()?;
         let result = (|| {
             if let Some(info) = self.view.registry.enum_by_id(id) {
-                let variants = info
-                    .variants
-                    .iter()
-                    .map(|variant| {
-                        let payload = variant
-                            .payload
-                            .iter()
-                            .map(|leaf| (leaf.name.clone(), leaf.ty))
-                            .collect();
-                        (variant.name.clone(), payload)
-                    })
-                    .collect();
-                return Ok(Some((variants, info.name.clone())));
+                return Ok(Some((info.durable_variants(), info.name.clone())));
             }
             let inst_id = TypeInstId::Enum(id);
             let Some((_, body)) = self.view.ready_inst_by_id(inst_id, &mut self.metadata)? else {
@@ -1534,10 +1522,7 @@ impl TypeMetadataSession<'_> {
                     body: TypeInstKind::Struct,
                 });
             };
-            let variants = variants
-                .iter()
-                .map(|variant| (variant.name.clone(), variant.payload.clone()))
-                .collect();
+            let variants = variants.to_vec();
             let spelling = self
                 .view
                 .registry

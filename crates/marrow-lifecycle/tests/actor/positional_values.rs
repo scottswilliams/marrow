@@ -17,7 +17,7 @@ use marrow_test_support::Scratch;
 use marrow_verify::{VerifiedImage, verify};
 use marrow_vm::{DurableRun, Value, run_export};
 
-use crate::support::store::provision_from;
+use crate::support::store::{provision_from, store_files};
 
 /// One ledger for every program below: a `markers` root whose `Marker` resource stores
 /// `at` (or the top-level pair `x`/`y`), and every enum anchor those programs reach.
@@ -40,6 +40,8 @@ const IDS: &str = "marrow ids v0\n\
      id sum Result[Pos,int] 70707070707070707070707070707070\n\
      id member Result[Pos,int].ok 71717171717171717171717171717171\n\
      id member Result[Pos,int].err 72727272727272727272727272727272\n\
+     id sum Pair[int] 80808080808080808080808080808080\n\
+     id member Pair[int].two 81818181818181818181818181818181\n\
      high-water 0\n\
      end\n";
 
@@ -47,6 +49,8 @@ const POS: &str = "struct Pos {\n    x: int\n    y: int\n}\n";
 const POS_SWAPPED: &str = "struct Pos {\n    y: int\n    x: int\n}\n";
 const SHAPE: &str = "enum Shape {\n    rect(width: int, height: int)\n}\n";
 const SHAPE_SWAPPED: &str = "enum Shape {\n    rect(height: int, width: int)\n}\n";
+const PAIR: &str = "enum Pair<T> {\n    two(a: T, b: T)\n}\n";
+const PAIR_SWAPPED: &str = "enum Pair<T> {\n    two(b: T, a: T)\n}\n";
 
 /// A program storing `value: ty` in `Marker.at`, written by `put` and read by `read`.
 fn program(decls: &str, ty: &str, value: &str) -> String {
@@ -115,20 +119,6 @@ fn provision_and_put(dir: &Path, image: &VerifiedImage) {
     ));
 }
 
-/// Every file in a store directory with its bytes, sorted by name.
-fn snapshot(dir: &Path) -> Vec<(std::ffi::OsString, Vec<u8>)> {
-    let mut files: Vec<_> = std::fs::read_dir(dir)
-        .expect("list store")
-        .map(|entry| {
-            let entry = entry.expect("store entry");
-            let bytes = std::fs::read(entry.path()).expect("read store artifact");
-            (entry.file_name(), bytes)
-        })
-        .collect();
-    files.sort_by(|left, right| left.0.cmp(&right.0));
-    files
-}
-
 /// Swapping the leaves of a stored struct would make every existing cell read its `x` as
 /// `y`, so ordinary attach refuses it as a durable-contract change before touching the
 /// store. The old image stays active and reads what it wrote, and a code-only edit of the
@@ -138,7 +128,7 @@ fn attach_refuses_a_reordered_positional_leaf_as_a_contract_change() {
     let scratch = Scratch::new("positional-attach");
     let image = compile(&stored_struct(POS));
     provision_and_put(scratch.store(), &image);
-    let before = snapshot(scratch.store());
+    let before = store_files(scratch.store());
 
     match attach(
         scratch.store(),
@@ -153,9 +143,8 @@ fn attach_refuses_a_reordered_positional_leaf_as_a_contract_change() {
         }
         Ok(AttachOutcome::AlreadyActive(_)) => panic!("a changed image is not already active"),
     }
-    assert_eq!(
-        snapshot(scratch.store()),
-        before,
+    assert!(
+        store_files(scratch.store()) == before,
         "a refused attach changes no store file"
     );
 
@@ -261,13 +250,18 @@ fn sparse_apply_refuses_changed_positional_leaves_without_store_changes() {
             program(POS, "Result<Pos, int>", "ok(Pos(x: x, y: 2))"),
             program(POS_SWAPPED, "Result<Pos, int>", "ok(Pos(x: x, y: 2))"),
         ),
+        (
+            "generic payload swap",
+            program(PAIR, "Pair<int>", "Pair::two(a: x, b: 2)"),
+            program(PAIR_SWAPPED, "Pair<int>", "Pair::two(a: x, b: 2)"),
+        ),
     ];
     let mut applied = Vec::new();
     for (label, old_source, new_source) in &rows {
         let (old, new) = (compile(old_source), compile(new_source));
         let scratch = Scratch::new("apply-positional");
         provision_and_put(scratch.store(), &old);
-        let before = snapshot(scratch.store());
+        let before = store_files(scratch.store());
         let error = match apply(scratch.store(), prepare(old.clone()), prepare(new), None) {
             Ok(_) => {
                 applied.push(*label);
@@ -287,7 +281,7 @@ fn sparse_apply_refuses_changed_positional_leaves_without_store_changes() {
             ),
             "{label}: {error:?}"
         );
-        assert_eq!(snapshot(scratch.store()), before, "{label}");
+        assert!(store_files(scratch.store()) == before, "{label}");
         let head =
             LogicalHead::decode(&std::fs::read(scratch.store().join(HEAD_FILE)).expect("Head"))
                 .expect("decode Head");

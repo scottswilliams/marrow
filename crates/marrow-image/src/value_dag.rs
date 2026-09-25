@@ -109,6 +109,15 @@ pub struct ValueShapeLeaf {
 }
 
 impl ValueShapeLeaf {
+    /// A leaf with its declared name and an already-minted shape. The arena refuses an
+    /// empty name when the leaf is minted.
+    pub fn new(name: impl Into<Box<str>>, shape: ValueShapeNodeId) -> Self {
+        Self {
+            name: name.into(),
+            shape,
+        }
+    }
+
     /// The leaf's declared name.
     pub fn name(&self) -> &str {
         &self.name
@@ -139,9 +148,6 @@ impl ValueShapeEnumMember {
         &self.payload
     }
 }
-
-/// A leaf as a caller mints it: the declared name and an already-minted shape.
-pub type NamedLeaf = (Box<str>, ValueShapeNodeId);
 
 /// One node of a [`CanonicalValueShapeDag`], as a reader sees it: the shape's kind and
 /// its direct references, never an owned subshape. A caller that needs a nested shape
@@ -351,9 +357,9 @@ impl CanonicalValueShapeDag {
     /// no declaration spells one, and a nameless leaf would identify nothing.
     pub fn struct_shape(
         &mut self,
-        leaves: Vec<NamedLeaf>,
+        leaves: Vec<ValueShapeLeaf>,
     ) -> Result<ValueShapeNodeId, DraftStateError> {
-        let leaves = named_leaves(leaves)?;
+        refuse_unnamed(&leaves)?;
         self.intern(ValueShapeNode::Struct(leaves))
     }
 
@@ -364,17 +370,15 @@ impl CanonicalValueShapeDag {
     pub fn enum_shape(
         &mut self,
         sum: LedgerIdBytes,
-        members: Vec<(LedgerIdBytes, Vec<NamedLeaf>)>,
+        members: Vec<(LedgerIdBytes, Vec<ValueShapeLeaf>)>,
     ) -> Result<ValueShapeNodeId, DraftStateError> {
+        for (_, payload) in &members {
+            refuse_unnamed(payload)?;
+        }
         let members = members
             .into_iter()
-            .map(|(id, payload)| {
-                Ok(ValueShapeEnumMember {
-                    id,
-                    payload: named_leaves(payload)?,
-                })
-            })
-            .collect::<Result<_, DraftStateError>>()?;
+            .map(|(id, payload)| ValueShapeEnumMember { id, payload })
+            .collect();
         self.intern(ValueShapeNode::Enum { sum, members })
     }
 
@@ -516,17 +520,12 @@ impl CanonicalValueShapeDag {
     }
 }
 
-/// Caller leaves as arena leaves, refusing an empty name before anything is interned.
-fn named_leaves(leaves: Vec<NamedLeaf>) -> Result<Vec<ValueShapeLeaf>, DraftStateError> {
-    leaves
-        .into_iter()
-        .map(|(name, shape)| {
-            if name.is_empty() {
-                return Err(DraftStateError::CarrierDomain);
-            }
-            Ok(ValueShapeLeaf { name, shape })
-        })
-        .collect()
+/// Refuse a leaf with an empty name before anything is interned.
+fn refuse_unnamed(leaves: &[ValueShapeLeaf]) -> Result<(), DraftStateError> {
+    if leaves.iter().any(|leaf| leaf.name.is_empty()) {
+        return Err(DraftStateError::CarrierDomain);
+    }
+    Ok(())
 }
 
 use node_store::ValueShapeNodeStore;
@@ -864,12 +863,16 @@ mod tests {
     use super::*;
     use crate::fixtures::id;
 
+    fn leaf(name: &str, shape: ValueShapeNodeId) -> ValueShapeLeaf {
+        ValueShapeLeaf::new(name, shape)
+    }
+
     /// Leaves named `f0`, `f1`, … by position, for tests whose subject is not the names.
-    fn named(shapes: Vec<ValueShapeNodeId>) -> Vec<NamedLeaf> {
+    fn named(shapes: Vec<ValueShapeNodeId>) -> Vec<ValueShapeLeaf> {
         shapes
             .into_iter()
             .enumerate()
-            .map(|(index, shape)| (format!("f{index}").into(), shape))
+            .map(|(index, shape)| leaf(&format!("f{index}"), shape))
             .collect()
     }
 
@@ -1372,10 +1375,6 @@ mod tests {
         assert_eq!(payload[1], IDREF_SUM);
         assert_eq!(section[0], VSHAPE_ENUM);
         assert_eq!(&section[1..17], id(1).bytes());
-    }
-
-    fn leaf(name: &str, shape: ValueShapeNodeId) -> NamedLeaf {
-        (name.into(), shape)
     }
 
     /// A stored leaf is identified by its declared name at its position, so the

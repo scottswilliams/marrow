@@ -652,7 +652,7 @@ impl fmt::Display for RejectionKind {
             Self::SpanBoundary => "a span offset off an instruction boundary",
             Self::KeyNotOrderable => "a key column that is not an orderable durable-key scalar",
             Self::EnumIdentityReused => {
-                "a durable enum identity reused with a different member set"
+                "a durable enum identity reused with different members or payload names"
             }
             Self::ValueArenaExhausted => "a durable value shape outside the value arena's domain",
             Self::EmptyLeafName => "a durable struct or payload leaf with an empty name",

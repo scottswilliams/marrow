@@ -6,7 +6,7 @@
 //! budgets.
 
 use super::super::reject;
-use super::super::tables::decode_bare_scalar;
+use super::super::tables::{decode_bare_scalar, read_bounded_str};
 use crate::reader::Reader;
 use crate::reject::{
     Bound, Duplicate, Flag, Projection, Ref, Region, RejectionKind as Kind, Tag, TieFault, TieNode,
@@ -16,8 +16,8 @@ use crate::sealed::{SealedEnumType, SealedField, SealedRecordType};
 use marrow_image::{
     CanonicalValueShapeDag, DeclarationMemberDef, DeclarationMemberShape, DurableContractGraph,
     DurableIndexComponent, DurableIndexShape, DurableMemberViewKind, DurableMemberViews,
-    DurableProductGraph, ImageType, KeyColumn, LedgerIdBytes, NamedLeaf, Scalar, StrId, TypeId,
-    ValueShapeNodeId, ValueShapeView,
+    DurableProductGraph, ImageType, KeyColumn, LedgerIdBytes, Scalar, StrId, TypeId,
+    ValueShapeLeaf, ValueShapeNodeId, ValueShapeView,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -46,9 +46,12 @@ pub(super) struct LedgerScope {
     pub(super) placements: BTreeSet<LedgerIdBytes>,
 }
 
-/// One member of a recorded durable enum identity: its member id and its payload leaf
-/// names in order.
-pub(super) type RecordedMember = (LedgerIdBytes, Vec<Box<str>>);
+/// One member of a recorded durable enum identity.
+#[derive(Clone)]
+pub(super) struct RecordedMember {
+    id: LedgerIdBytes,
+    payload_names: Vec<Box<str>>,
+}
 
 /// Whether a member tree is being decoded as a Product declaration's first occurrence,
 /// which claims each declaration id it reads, or as a later reference to an already
@@ -819,12 +822,12 @@ fn decode_value_shape(
                 Some(_) => {}
                 None => claim_distinct(scope, sum)?,
             }
-            let mut members: Vec<(LedgerIdBytes, Vec<NamedLeaf>)> =
+            let mut members: Vec<(LedgerIdBytes, Vec<ValueShapeLeaf>)> =
                 Vec::with_capacity(member_count);
             for index in 0..member_count {
                 let id = read_id(reader)?;
                 match &recorded {
-                    Some(recorded_ids) if recorded_ids[index].0 != id => {
+                    Some(recorded_ids) if recorded_ids[index].id != id => {
                         return Err(reject(VerifyPhase::Table, Kind::EnumIdentityReused));
                     }
                     Some(_) => {}
@@ -846,9 +849,10 @@ fn decode_value_shape(
                 }
                 if let Some(recorded_ids) = &recorded
                     && !recorded_ids[index]
-                        .1
+                        .payload_names
                         .iter()
-                        .eq(payload.iter().map(|(name, _)| name))
+                        .map(|name| &**name)
+                        .eq(payload.iter().map(ValueShapeLeaf::name))
                 {
                     return Err(reject(VerifyPhase::Table, Kind::EnumIdentityReused));
                 }
@@ -857,8 +861,9 @@ fn decode_value_shape(
             if recorded.is_none() {
                 let identity = members
                     .iter()
-                    .map(|(id, payload)| {
-                        (*id, payload.iter().map(|(name, _)| name.clone()).collect())
+                    .map(|(id, payload)| RecordedMember {
+                        id: *id,
+                        payload_names: payload.iter().map(|leaf| leaf.name().into()).collect(),
                     })
                     .collect();
                 scope.enums.insert(sum, identity);
@@ -870,34 +875,27 @@ fn decode_value_shape(
 }
 
 /// Decode one struct or payload leaf: `0x03 ‖ u16(name_len) ‖ name ‖ value`. The name is
-/// read like a string-table entry — bounded by `MAX_STRING_BYTES` and valid UTF-8 — and
-/// must not be empty; each fault is refused with its own kind before anything is minted,
-/// so the arena's own refusal of an empty name is never reported as exhaustion.
+/// read exactly like a string-table entry and must not be empty; each fault is refused
+/// with its own kind before anything is minted, so the arena's own refusal of an empty
+/// name is never reported as exhaustion.
 fn decode_leaf(
     reader: &mut Reader<'_>,
     depth: usize,
     scope: &mut LedgerScope,
     values: &mut CanonicalValueShapeDag,
-) -> Result<NamedLeaf, VerifyRejection> {
-    let truncated = || reject(VerifyPhase::Table, Kind::Truncated(Region::Durable));
-    if reader.u8().ok_or_else(truncated)? != 0x03 {
+) -> Result<ValueShapeLeaf, VerifyRejection> {
+    let marker = reader
+        .u8()
+        .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Durable)))?;
+    if marker != 0x03 {
         return Err(reject(VerifyPhase::Table, Kind::Unknown(Tag::DurableLeaf)));
     }
-    let len = reader.u16().ok_or_else(truncated)? as usize;
-    if len > marrow_image::bounds::MAX_STRING_BYTES {
-        return Err(reject(
-            VerifyPhase::Table,
-            Kind::OverBound(Bound::StringBytes),
-        ));
-    }
-    if len == 0 {
+    let name = read_bounded_str(reader, Region::Durable)?;
+    if name.is_empty() {
         return Err(reject(VerifyPhase::Table, Kind::EmptyLeafName));
     }
-    let raw = reader.take(len).ok_or_else(truncated)?;
-    let name =
-        std::str::from_utf8(raw).map_err(|_| reject(VerifyPhase::Table, Kind::InvalidUtf8))?;
-    let name = Box::from(name);
-    Ok((name, decode_value_shape(reader, depth, scope, values)?))
+    let shape = decode_value_shape(reader, depth, scope, values)?;
+    Ok(ValueShapeLeaf::new(name, shape))
 }
 
 /// Whether a decoded durable field value shape structurally matches the materialized

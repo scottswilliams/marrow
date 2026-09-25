@@ -18,7 +18,7 @@ use marrow_image::bounds::{MAX_FUNCTIONS, MAX_IMAGE_BYTES, MAX_STRING_BYTES, MAX
 use marrow_image::{
     DeclarationMemberDef, DeclarationMemberShape, ExportId, FunctionDef, ImageBuildError,
     ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef,
-    Scalar, SpanEntry,
+    Scalar, SpanEntry, ValueShapeLeaf,
 };
 use marrow_test_support::admitted_plan;
 
@@ -288,7 +288,7 @@ fn the_compact_expansion_regression_is_refused_decisively() {
             .expect("the test arena mints");
         for _ in 0..31 {
             level = draft
-                .value_struct(vec![("v".into(), level); 64])
+                .value_struct(vec![ValueShapeLeaf::new("v", level); 64])
                 .expect("a within-bounds shape appends");
         }
         level

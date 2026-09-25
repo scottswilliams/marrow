@@ -1493,18 +1493,27 @@ mod tests {
         let int = values.scalar(Scalar::Int).expect("the test arena mints");
         let text = values.scalar(Scalar::Text).expect("the test arena mints");
         let text_int = values
-            .struct_shape(vec![("label".into(), text), ("count".into(), int)])
+            .struct_shape(vec![
+                ValueShapeLeaf::new("label", text),
+                ValueShapeLeaf::new("count", int),
+            ])
             .expect("the test arena mints");
         let int_text = values
-            .struct_shape(vec![("count".into(), int), ("label".into(), text)])
+            .struct_shape(vec![
+                ValueShapeLeaf::new("count", int),
+                ValueShapeLeaf::new("label", text),
+            ])
             .expect("the test arena mints");
         let renamed_text_int = values
-            .struct_shape(vec![("name".into(), text), ("count".into(), int)])
+            .struct_shape(vec![
+                ValueShapeLeaf::new("name", text),
+                ValueShapeLeaf::new("count", int),
+            ])
             .expect("the test arena mints");
         let option_members = || {
             vec![
                 (id(0x51), Vec::new()),
-                (id(0x52), vec![("value".into(), int)]),
+                (id(0x52), vec![ValueShapeLeaf::new("value", int)]),
             ]
         };
         let option_int = values
@@ -1517,7 +1526,7 @@ mod tests {
             vec![
                 (first, Vec::new()),
                 (second, Vec::new()),
-                (id(0x56), vec![("note".into(), payload)]),
+                (id(0x56), vec![ValueShapeLeaf::new("note", payload)]),
             ]
         };
         let user_enum = values
@@ -1538,7 +1547,7 @@ mod tests {
                 vec![
                     (id(0x54), Vec::new()),
                     (id(0x55), Vec::new()),
-                    (id(0x56), vec![("remark".into(), text)]),
+                    (id(0x56), vec![ValueShapeLeaf::new("remark", text)]),
                 ],
             )
             .expect("the test arena mints");
@@ -1847,7 +1856,7 @@ mod tests {
                 let mut level = values.scalar(Scalar::Int).expect("the test arena mints");
                 for _ in 0..16 {
                     level = values
-                        .struct_shape(vec![("v".into(), level); 4])
+                        .struct_shape(vec![ValueShapeLeaf::new("v", level); 4])
                         .expect("the test arena mints");
                 }
                 assert_eq!(values.len(), 17, "the stated graph is seventeen nodes");
@@ -1873,7 +1882,7 @@ mod tests {
                 let mut level = values.scalar(Scalar::Int).expect("the test arena mints");
                 for _ in 0..7 {
                     level = values
-                        .struct_shape(vec![("v".into(), level); 4])
+                        .struct_shape(vec![ValueShapeLeaf::new("v", level); 4])
                         .expect("the test arena mints");
                 }
                 vec![field_cmd(None, 0x0e, true, level)]
@@ -1981,12 +1990,12 @@ mod tests {
                 move |draft| {
                     let values = draft.value_shapes_mut();
                     let int = values.scalar(Scalar::Int).expect("the test arena mints");
-                    let leaves = |count: usize| vec![("v".into(), int); count];
+                    let leaves = |count: usize| vec![ValueShapeLeaf::new("v", int); count];
                     let wide = values
                         .struct_shape(leaves(WIDE_LEAVES))
                         .expect("the test arena mints");
                     let mut tuning = leaves(tuning_leaves);
-                    tuning[0].0 = first_name.into();
+                    tuning[0] = ValueShapeLeaf::new(first_name, int);
                     let tuned = values.struct_shape(tuning).expect("the test arena mints");
                     let mut members: Vec<_> = (0..WIDE_FIELDS)
                         .map(|_| field_cmd(None, 0x0e, true, wide))

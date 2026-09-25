@@ -430,7 +430,7 @@ receipt's `reason` names the first such change:
 | `member_removed` | An old field, group, or branch is absent. |
 | `member_changed` | A member's kind, a field's requiredness, or a branch's keys changed. |
 | `stored_value` | An old field's stored value would be read differently: a retyped field, a changed enum member, or a reordered, renamed, added, removed, or retyped field of a stored struct or enum payload ([durable identity](../language/durable-data.md#durable-identity)). |
-| `member_added` | An added member is not an optional scalar field. |
+| `member_added` | An added member is not a sparse scalar field. |
 
 The store retains its standing authority ceiling. If NEW demands additional
 authority, apply proposes exactly the union of that demand and the standing

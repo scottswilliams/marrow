@@ -219,7 +219,9 @@ fn sparse_apply_rejects_incompatible_graphs_without_store_changes() {
         "high-water",
         "id field Counter.extra 0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\nid index counters.byValue 10101010101010101010101010101010\nid sum Option[int] 11111111111111111111111111111111\nid member Option[int].none 12121212121212121212121212121212\nid member Option[int].some 13131313131313131313131313131313\nhigh-water",
     );
-    use UnsupportedChange::{Index, MemberAdded, MemberChanged, MemberRemoved, Root, StoredValue};
+    use UnsupportedChange::{
+        Application, Index, MemberAdded, MemberChanged, MemberRemoved, Root, StoredValue,
+    };
     for (label, fields, key, suffix, reason) in [
         (
             "changed value",
@@ -271,6 +273,77 @@ fn sparse_apply_rejects_incompatible_graphs_without_store_changes() {
             "{label}: {refused:?}"
         );
         assert_eq!(store_bytes(scratch.store()), before, "{label}");
+    }
+
+    // The application and root-set sites, over a second resource that can own a root.
+    let resources =
+        "resource Counter { required value: int }\nresource Other { required value: int }\n";
+    let counters = "store ^counters[id: int]: Counter\n";
+    let others = "store ^others[id: int]: Other\n";
+    let two_roots = IDS.replace(
+        "high-water",
+        "id product Other 1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d\nid field Other.value 1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e\nid root others 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b\nid key others.id 1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c\nhigh-water",
+    );
+    let other_application = two_roots.replace(
+        "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+    );
+    for (label, roots, ids, reason) in [
+        (
+            "changed application",
+            counters.to_string(),
+            &other_application,
+            Application,
+        ),
+        (
+            "added root",
+            format!("{counters}{others}"),
+            &two_roots,
+            Root,
+        ),
+        ("removed root", others.to_string(), &two_roots, Root),
+    ] {
+        let source = format!("{resources}{roots}pub fn bootstrap(): int {{ return 0 }}\n");
+        let new =
+            marrow_verify::verify(&marrow_test_programs::program::compile_bytes(&source, ids))
+                .unwrap_or_else(|error| panic!("{label}: {error:?}"));
+        let refused = apply(scratch.store(), prepare(old.clone()), prepare(new), None);
+        assert!(
+            matches!(refused, Err(ApplyError::Unsupported(found)) if found == reason),
+            "{label}: {refused:?}"
+        );
+        assert_eq!(store_bytes(scratch.store()), before, "{label}");
+    }
+}
+
+/// Every refusal reason's receipt word has a row in the `marrow apply` reason table,
+/// which is where the reference and the `store.apply_unsupported` text send a reader.
+#[test]
+fn every_apply_reason_word_is_documented() {
+    use UnsupportedChange::*;
+    let every = [
+        Application,
+        Root,
+        Index,
+        MemberRemoved,
+        MemberChanged,
+        StoredValue,
+        MemberAdded,
+    ];
+    for change in every {
+        // A new reason fails to compile here until it joins `every` and the table.
+        match change {
+            Application | Root | Index | MemberRemoved | MemberChanged | StoredValue
+            | MemberAdded => {}
+        }
+    }
+    let cli = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/tools/cli.md"),
+    )
+    .expect("cli reference");
+    for change in every {
+        let row = format!("\n| `{}` | ", change.as_str());
+        assert!(cli.contains(&row), "no reason row for {change:?}");
     }
 }
 

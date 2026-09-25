@@ -16,7 +16,7 @@ use marrow_image::{
     DraftStateError, DraftTxn, DurableContractGraph, DurableGraphInputRefusal,
     DurableIndexComponent, DurableIndexShape, EnumTypeDef, ExportId, FunctionDef, ImageBuildError,
     ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef,
-    Scalar, SpanEntry, TypeId, VariantDef,
+    Scalar, SpanEntry, TypeId, ValueShapeLeaf, VariantDef,
 };
 use marrow_test_support::admitted_plan;
 
@@ -102,7 +102,7 @@ fn members_with_struct_field(draft: &mut DraftTxn<'_>, leaves: usize) -> Vec<Dec
         .value_scalar(Scalar::Int)
         .expect("the test arena mints");
     let value = draft
-        .value_struct(vec![("v".into(), int); leaves])
+        .value_struct(vec![ValueShapeLeaf::new("v", int); leaves])
         .expect("a within-bounds shape appends");
     vec![DeclarationMemberDef {
         parent: None,
@@ -138,10 +138,10 @@ fn members_with_leaf_named(
     let value = if payload {
         draft.value_enum(
             seeded_id(0x50, 0),
-            vec![(seeded_id(0x51, 0), vec![(name.into(), int)])],
+            vec![(seeded_id(0x51, 0), vec![ValueShapeLeaf::new(name, int)])],
         )
     } else {
-        draft.value_struct(vec![(name.into(), int)])
+        draft.value_struct(vec![ValueShapeLeaf::new(name, int)])
     }
     .expect("a within-bounds shape appends");
     vec![DeclarationMemberDef {
@@ -204,7 +204,7 @@ fn a_dense_struct_one_leaf_over_the_limit_is_refused_at_the_surface() {
         .value_scalar(Scalar::Int)
         .expect("the test arena mints");
     assert_eq!(
-        draft.value_struct(vec![("v".into(), int); MAX_STRUCT_LEAVES + 1]),
+        draft.value_struct(vec![ValueShapeLeaf::new("v", int); MAX_STRUCT_LEAVES + 1]),
         Err(DraftStateError::CarrierDomain),
         "one leaf past the dense-composite limit is the surface refusal",
     );
@@ -226,7 +226,7 @@ fn an_over_wide_shape_is_refused_whether_or_not_a_declaration_references_it() {
                     .value_scalar(Scalar::Int)
                     .expect("the test arena mints");
                 assert_eq!(
-                    draft.value_struct(vec![("v".into(), int); MAX_STRUCT_LEAVES + 1]),
+                    draft.value_struct(vec![ValueShapeLeaf::new("v", int); MAX_STRUCT_LEAVES + 1]),
                     Err(DraftStateError::CarrierDomain),
                     "the unreferenced over-wide shape is refused at the surface",
                 );

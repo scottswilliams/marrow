@@ -677,6 +677,8 @@ const POSITIONAL_IDS: &str = "marrow ids v0\n\
      id sum Result[Pos,int] 70707070707070707070707070707070\n\
      id member Result[Pos,int].ok 71717171717171717171717171717171\n\
      id member Result[Pos,int].err 72727272727272727272727272727272\n\
+     id sum Pair[int] 80808080808080808080808080808080\n\
+     id member Pair[int].two 81818181818181818181818181818181\n\
      high-water 0\n\
      end\n";
 
@@ -692,6 +694,7 @@ const POS_SWAPPED: &str = "struct Pos {\n    y: int\n    x: int\n}\n";
 const POS_RENAMED: &str = "struct Pos {\n    z: int\n    y: int\n}\n";
 const SHAPE: &str = "enum Shape {\n    rect(width: int, height: int)\n}\n";
 const INNER: &str = "struct Inner {\n    a: int\n    b: int\n}\n";
+const PAIR: &str = "enum Pair<T> {\n    two(a: T, b: T)\n}\n";
 const TOP_LEVEL: &str = "resource Marker {\n    required x: int\n    required y: int\n}\n\nstore ^markers[id: int]: Marker\n";
 
 /// A stored struct or enum payload value lives positionally in one cell, so each leaf's
@@ -742,6 +745,11 @@ fn reordering_or_renaming_a_stored_positional_leaf_changes_the_contract() {
             "Result<Pos, int> swap",
             marker_program(POS, "Result<Pos, int>"),
             marker_program(POS_SWAPPED, "Result<Pos, int>"),
+        ),
+        (
+            "generic payload swap",
+            marker_program(PAIR, "Pair<int>"),
+            marker_program(&PAIR.replace("a: T, b: T", "b: T, a: T"), "Pair<int>"),
         ),
         (
             "top-level field swap",
@@ -856,7 +864,7 @@ fn stored_enum_payload_names_follow_the_declared_payload_in_lowering_order() {
             vec![("width".into(), int()), ("height".into(), int())],
         )
     };
-    let cases: [(&str, String, Vec<StoredMember>); 6] = [
+    let cases: [(&str, String, Vec<StoredMember>); 7] = [
         (
             "payload",
             marker_program(SHAPE, "Shape"),
@@ -907,6 +915,18 @@ fn stored_enum_payload_names_follow_the_declared_payload_in_lowering_order() {
             vec![(
                 "Shape".into(),
                 "rect".into(),
+                vec![("label".into(), "string".into()), ("n".into(), int())],
+            )],
+        ),
+        (
+            "generic user enum",
+            marker_program(
+                "enum Pair<T> {\n    two(label: string, n: T)\n}\n",
+                "Pair<int>",
+            ),
+            vec![(
+                "Pair".into(),
+                "two".into(),
                 vec![("label".into(), "string".into()), ("n".into(), int())],
             )],
         ),

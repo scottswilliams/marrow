@@ -13,7 +13,7 @@ use marrow_image::{
     AdmittedGraphInputPlan, AdmittedRoot, CollectionTypeDef, DeclarationMemberDef,
     DeclarationMemberShape, DraftStateError, DraftTxn, DurableIndexShape, EnumTypeDef, ExportId,
     FieldDef, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr, LedgerIdBytes,
-    RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, TypeId,
+    RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, TypeId, ValueShapeLeaf,
 };
 use marrow_test_support::admitted_plan;
 
@@ -411,7 +411,7 @@ fn an_over_wide_or_foreign_typed_arena_append_is_refused_and_mutates_nothing() {
         .value_scalar(Scalar::Int)
         .expect("the test arena mints");
     assert_eq!(
-        draft.value_struct(vec![("v".into(), int); MAX_STRUCT_LEAVES + 1]),
+        draft.value_struct(vec![ValueShapeLeaf::new("v", int); MAX_STRUCT_LEAVES + 1]),
         Err(DraftStateError::CarrierDomain),
         "the over-wide append is the typed carrier-domain refusal",
     );
@@ -433,7 +433,7 @@ fn an_over_wide_or_foreign_typed_arena_append_is_refused_and_mutates_nothing() {
             .expect("the test arena mints")
     };
     assert_eq!(
-        draft.value_struct(vec![("v".into(), foreign)]),
+        draft.value_struct(vec![ValueShapeLeaf::new("v", foreign)]),
         Err(DraftStateError::ForeignDraft),
         "the foreign leaf is the typed refusal, never a panic",
     );
@@ -442,7 +442,7 @@ fn an_over_wide_or_foreign_typed_arena_append_is_refused_and_mutates_nothing() {
             LedgerIdBytes::from_bytes([0x50; 16]),
             vec![(
                 LedgerIdBytes::from_bytes([0x51; 16]),
-                vec![("v".into(), foreign)]
+                vec![ValueShapeLeaf::new("v", foreign)]
             )],
         ),
         Err(DraftStateError::ForeignDraft),

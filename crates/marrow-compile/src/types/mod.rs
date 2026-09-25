@@ -696,8 +696,6 @@ struct TemplateVariant {
 
 type TemplateVariantPayload = (usize, Vec<(String, TypeExpr)>);
 pub(crate) type ResolvedEnumVariants = Vec<(String, Vec<GArg>)>;
-/// An enum's members with their payload leaves named, for the durable value shape.
-pub(crate) type DurableEnumVariants = Vec<(String, Vec<(String, GArg)>)>;
 
 /// The member shape of a generic type template: a `struct`'s named fields or an
 /// `enum`'s variants, each carried as a type expression over the template's type
@@ -779,8 +777,9 @@ impl InstBody {
     }
 }
 
-/// One resolved variant of a minted enum instantiation: its name and the concrete
-/// value types its payload fields carry, in declaration order.
+/// One resolved enum variant: its name and the concrete value types its named payload
+/// fields carry, in declaration order. A minted instantiation's body holds these, and
+/// a declared enum projects to them for its durable value shape.
 #[derive(Clone)]
 pub(crate) struct InstVariant {
     pub(crate) name: String,
@@ -1235,6 +1234,23 @@ impl EnumInfo {
                     variant.name.clone(),
                     variant.payload.iter().map(|field| field.ty).collect(),
                 )
+            })
+            .collect()
+    }
+
+    /// This declared enum's members with their payload leaves named, in declaration
+    /// order. The durable value shape keeps the payload names that
+    /// [`Self::resolved_variants`] drops for the `match` reader.
+    pub(crate) fn durable_variants(&self) -> Vec<InstVariant> {
+        self.variants
+            .iter()
+            .map(|variant| InstVariant {
+                name: variant.name.clone(),
+                payload: variant
+                    .payload
+                    .iter()
+                    .map(|leaf| (leaf.name.clone(), leaf.ty))
+                    .collect(),
             })
             .collect()
     }

@@ -201,13 +201,17 @@ fields of every stored struct value and enum payload. No current transition
 rewrites stored data.
 Explicit [`marrow apply`](../tools/cli.md#marrow-apply) accepts verified OLD and NEW
 artifacts when every old stored representation is unchanged and the only
-additions are optional scalar fields. It may reorder a resource's own fields,
+additions are sparse scalar fields. It may reorder a resource's own fields,
 because each is stored under its id. A stored struct or enum payload is read
 by position from one cell, so a reorder, rename, addition, removal, or retype of
 one of its fields is refused with `store.apply_unsupported` and reason
 `stored_value`, as are a retyped field and a changed enum member
 ([durable identity](../language/durable-data.md#durable-identity)). Stored values
 are never converted; keep the old declaration, or provision a fresh store.
+A store written by an earlier toolchain whose resources hold a stored struct or
+a payload-carrying enum, including `Option` and `Result`, reports
+`store.contract_changed` after an upgrade
+([compatibility](../compatibility.md#unstable-interfaces)).
 New fields start absent; ordinary NEW exports can subsequently write them.
 The operation verifies OLD against the actual accepted Head, audits its logical
 contents read-only, and publishes NEW through the same Pending/Head/Active owner.

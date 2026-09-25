@@ -6,10 +6,11 @@
 //! `marrow apply` with a typed reason. The store is left byte-for-byte as it was, and the
 //! old program still reads what it wrote.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::common::{CliOutcome, stage_toolchain, staged_marrow_in, unaccepted_ceiling_id, write};
+use crate::common::{
+    CliOutcome, stage_toolchain, staged_marrow_in, store_files, unaccepted_ceiling_id, write,
+};
 use marrow_test_support::Scratch;
 
 const SOURCE: &str = r#"struct Pos {
@@ -80,22 +81,6 @@ fn image(toolchain: &Path, project: &Path) -> PathBuf {
     project.join("img/program.image")
 }
 
-/// Every file in the store directory with its bytes, sorted by name.
-fn snapshot(store: &Path) -> Vec<(std::ffi::OsString, Vec<u8>)> {
-    let mut files: Vec<_> = fs::read_dir(store)
-        .expect("list store")
-        .map(|entry| {
-            let entry = entry.expect("store entry");
-            (
-                entry.file_name(),
-                fs::read(entry.path()).expect("store file"),
-            )
-        })
-        .collect();
-    files.sort_by(|left, right| left.0.cmp(&right.0));
-    files
-}
-
 #[test]
 fn a_positional_leaf_swap_is_refused_and_the_old_binding_reads_back() {
     let toolchain = stage_toolchain();
@@ -132,19 +117,22 @@ fn a_positional_leaf_swap_is_refused_and_the_old_binding_reads_back() {
         ),
         "put",
     );
-    let before = snapshot(&store);
+    let before = store_files(&store);
 
     let swapped = staged_marrow_in(
         toolchain,
         &new,
         &["run", "main.read", "--store", store_arg, "--", "1"],
     );
-    let said = format!("{}{}", swapped.stdout_text(), swapped.stderr_text());
-    assert_eq!(swapped.code(), Some(1), "{said}");
-    assert!(said.contains("store.contract_changed"), "{said}");
+    let refusal = swapped.stderr_text();
+    assert_eq!(swapped.code(), Some(1), "{refusal}");
     assert_eq!(
-        snapshot(&store),
-        before,
+        refusal.split_once(':').map(|(code, _)| code),
+        Some("store.contract_changed"),
+        "{refusal}"
+    );
+    assert!(
+        store_files(&store) == before,
         "a refused attach changes no store file"
     );
 
@@ -170,9 +158,8 @@ fn a_positional_leaf_swap_is_refused_and_the_old_binding_reads_back() {
     assert_eq!(receipt["outcome"], "refused");
     assert_eq!(receipt["code"], "store.apply_unsupported");
     assert_eq!(receipt["reason"], "stored_value");
-    assert_eq!(
-        snapshot(&store),
-        before,
+    assert!(
+        store_files(&store) == before,
         "a refused apply changes no store file"
     );
 

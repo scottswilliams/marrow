@@ -93,7 +93,7 @@ pub use ty::{
     TAG_ENUM, TAG_IDENTITY, TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT, TAG_UNIT,
 };
 pub use value_dag::{
-    CanonicalValueShapeDag, NamedLeaf, ValueShapeComparison, ValueShapeEnumMember, ValueShapeLeaf,
+    CanonicalValueShapeDag, ValueShapeComparison, ValueShapeEnumMember, ValueShapeLeaf,
     ValueShapeNodeId, ValueShapeView,
 };
 

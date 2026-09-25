@@ -20,7 +20,7 @@ use marrow_image::bounds::{MAX_DURABLE_DEPTH, MAX_DURABLE_VALUE_DEPTH, MAX_SITE_
 use marrow_image::{
     DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId, FieldDef, FunctionDef,
     ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, PlannedSiteRef, RecordTypeDef,
-    RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, TypeId, ValueShapeNodeId,
+    RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, TypeId, ValueShapeLeaf, ValueShapeNodeId,
 };
 use marrow_test_support::{admitted_plan, site};
 use marrow_verify::{VERIFY_STACK_BYTES, verify};
@@ -75,7 +75,7 @@ fn deepest_value(draft: &mut DraftTxn<'_>) -> Level {
             .expect("a within-domain mint");
         level = Level {
             shape: draft
-                .value_struct(vec![("inner".into(), level.shape)])
+                .value_struct(vec![ValueShapeLeaf::new("inner", level.shape)])
                 .expect("a within-bounds shape appends"),
             record,
             ty: record_type(record),

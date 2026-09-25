@@ -12,7 +12,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use crate::common::{MARROW_BIN, stage_toolchain, staged_marrow_in, unaccepted_ceiling_id, write};
+use crate::common::{
+    MARROW_BIN, stage_toolchain, staged_marrow_in, store_files, unaccepted_ceiling_id, write,
+};
 use marrow_test_support::Scratch;
 
 const SOURCE: &str = r#"resource Counter {
@@ -751,19 +753,6 @@ fn backup_restores_absent_ancestor_descendants_without_a_project(toolchain: &Pat
     );
     // Only the successful fixture is retired; failure unwinding keeps its original bytes.
     drop(std::mem::ManuallyDrop::into_inner(temp));
-}
-
-fn store_files(dir: &Path) -> std::collections::BTreeMap<std::ffi::OsString, Vec<u8>> {
-    fs::read_dir(dir)
-        .expect("store entries")
-        .map(|entry| {
-            let entry = entry.expect("store entry");
-            (
-                entry.file_name(),
-                fs::read(entry.path()).expect("store file"),
-            )
-        })
-        .collect()
 }
 
 /// A durable project at `dir` with its ledger, and a provisioned store beside it

@@ -18,7 +18,7 @@ use marrow_image::{
     DraftStateError, DraftTxn, DurableIndexComponent, DurableIndexShape, EnumId, EnumTypeDef,
     ExportId, FieldDef, FuncId, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr,
     KeyColumn, LedgerIdBytes, RecordTypeDef, ReferenceKind, RootId, Scalar, SemanticTarget,
-    SpanEntry, StrId, TypeId, ValueShapeNodeId, VariantDef,
+    SpanEntry, StrId, TypeId, ValueShapeLeaf, ValueShapeNodeId, VariantDef,
 };
 use marrow_test_support::admitted_plan;
 
@@ -261,7 +261,7 @@ impl Fixture {
             let mut level = int;
             for _ in 0..10 {
                 level = draft
-                    .value_struct(vec![("v".into(), level); 4])
+                    .value_struct(vec![ValueShapeLeaf::new("v", level); 4])
                     .expect("a within-bounds shape appends");
             }
             return level;
@@ -270,7 +270,7 @@ impl Fixture {
             let mut level = int;
             for _ in 0..MAX_DURABLE_VALUE_DEPTH {
                 level = draft
-                    .value_struct(vec![("v".into(), level)])
+                    .value_struct(vec![ValueShapeLeaf::new("v", level)])
                     .expect("a within-bounds shape appends");
             }
             return level;
@@ -760,7 +760,10 @@ fn apply_policy(policy: Overflow, draft: &mut DraftTxn<'_>) {
                 .value_scalar(Scalar::Int)
                 .expect("the test arena mints");
             draft
-                .value_struct(vec![("x".repeat(MAX_STRING_BYTES + 1).into(), int)])
+                .value_struct(vec![ValueShapeLeaf::new(
+                    "x".repeat(MAX_STRING_BYTES + 1),
+                    int,
+                )])
                 .expect("the arena itself does not bound a name");
         }
         // Zero is already interned by the base draft, so the pool ends one past the cap.
@@ -1374,7 +1377,7 @@ fn an_over_wide_struct_append_is_refused_at_the_surface() {
         .value_scalar(Scalar::Int)
         .expect("the test arena mints");
     assert_eq!(
-        draft.value_struct(vec![("v".into(), int); MAX_STRUCT_LEAVES + 1]),
+        draft.value_struct(vec![ValueShapeLeaf::new("v", int); MAX_STRUCT_LEAVES + 1]),
         Err(DraftStateError::CarrierDomain),
     );
     assert_eq!(draft.value_shapes().len(), 1, "the refusal mutated nothing");

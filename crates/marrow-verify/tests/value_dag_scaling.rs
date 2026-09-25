@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use marrow_image::{
     CanonicalValueShapeDag, DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId,
     FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
-    RootOccurrenceDef, Scalar, SpanEntry, TypeId, ValueShapeNodeId,
+    RootOccurrenceDef, Scalar, SpanEntry, TypeId, ValueShapeLeaf, ValueShapeNodeId,
 };
 use marrow_test_support::admitted_plan;
 use marrow_verify::verify;
@@ -77,7 +77,10 @@ fn base_level(draft: &mut DraftTxn<'_>) -> Level {
         .expect("the test arena mints");
     Level {
         shape: draft
-            .value_struct(vec![("v".into(), int), ("w".into(), text)])
+            .value_struct(vec![
+                ValueShapeLeaf::new("v", int),
+                ValueShapeLeaf::new("w", text),
+            ])
             .expect("a within-bounds shape appends"),
         ty: record_type(record),
     }
@@ -102,7 +105,7 @@ fn enclosing_level(draft: &mut DraftTxn<'_>, ordinal: usize, inner: Level) -> Le
         .expect("a within-domain mint");
     Level {
         shape: draft
-            .value_struct(vec![("inner".into(), inner.shape)])
+            .value_struct(vec![ValueShapeLeaf::new("inner", inner.shape)])
             .expect("a within-bounds shape appends"),
         ty: record_type(record),
     }
@@ -279,18 +282,24 @@ fn a_shared_value_shape_is_one_node_however_many_fields_reference_it() {
     let int = values.scalar(Scalar::Int).expect("the test arena mints");
     let text = values.scalar(Scalar::Text).expect("the test arena mints");
     let base = values
-        .struct_shape(vec![("v".into(), int), ("w".into(), text)])
+        .struct_shape(vec![
+            ValueShapeLeaf::new("v", int),
+            ValueShapeLeaf::new("w", text),
+        ])
         .expect("the test arena mints");
     let mut level = base;
     for _ in 0..24 {
         level = values
-            .struct_shape(vec![("inner".into(), level)])
+            .struct_shape(vec![ValueShapeLeaf::new("inner", level)])
             .expect("the test arena mints");
     }
     let before = values.len();
     for _ in 0..1024 {
         let repeat = values
-            .struct_shape(vec![("v".into(), int), ("w".into(), text)])
+            .struct_shape(vec![
+                ValueShapeLeaf::new("v", int),
+                ValueShapeLeaf::new("w", text),
+            ])
             .expect("the test arena mints");
         assert_eq!(repeat, base);
     }

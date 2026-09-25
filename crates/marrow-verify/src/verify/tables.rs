@@ -118,35 +118,37 @@ pub(super) fn decode_strings(body: &[u8]) -> Result<Vec<Rc<str>>, VerifyRejectio
         return Err(reject(VerifyPhase::Table, Kind::OverBound(Bound::Strings)));
     }
     let mut strings: Vec<Rc<str>> = Vec::with_capacity(count);
-    let mut previous: Option<Vec<u8>> = None;
+    let mut previous: Option<&str> = None;
     for _ in 0..count {
-        let len = reader
-            .u16()
-            .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Strings)))?
-            as usize;
-        if len > marrow_image::bounds::MAX_STRING_BYTES {
-            return Err(reject(
-                VerifyPhase::Table,
-                Kind::OverBound(Bound::StringBytes),
-            ));
-        }
-        let raw = reader
-            .take(len)
-            .ok_or(reject(VerifyPhase::Table, Kind::Truncated(Region::Strings)))?;
-        if let Some(prev) = &previous
-            && raw <= prev.as_slice()
-        {
+        let text = read_bounded_str(&mut reader, Region::Strings)?;
+        if previous.is_some_and(|prev| text.as_bytes() <= prev.as_bytes()) {
             return Err(reject(VerifyPhase::Table, Kind::Unsorted(Region::Strings)));
         }
-        previous = Some(raw.to_vec());
-        let text =
-            std::str::from_utf8(raw).map_err(|_| reject(VerifyPhase::Table, Kind::InvalidUtf8))?;
+        previous = Some(text);
         strings.push(Rc::from(text));
     }
     if !reader.is_empty() {
         return Err(reject(VerifyPhase::Table, Kind::Trailing(Region::Strings)));
     }
     Ok(strings)
+}
+
+/// Read one `u16`-length-prefixed UTF-8 string of at most `MAX_STRING_BYTES`, the one
+/// encoding every image string uses. A short read is truncation of `region`.
+pub(super) fn read_bounded_str<'a>(
+    reader: &mut Reader<'a>,
+    region: Region,
+) -> Result<&'a str, VerifyRejection> {
+    let truncated = || reject(VerifyPhase::Table, Kind::Truncated(region));
+    let len = reader.u16().ok_or_else(truncated)? as usize;
+    if len > marrow_image::bounds::MAX_STRING_BYTES {
+        return Err(reject(
+            VerifyPhase::Table,
+            Kind::OverBound(Bound::StringBytes),
+        ));
+    }
+    let raw = reader.take(len).ok_or_else(truncated)?;
+    std::str::from_utf8(raw).map_err(|_| reject(VerifyPhase::Table, Kind::InvalidUtf8))
 }
 
 pub(super) fn decode_bare_scalar(tag: u8) -> Option<Scalar> {

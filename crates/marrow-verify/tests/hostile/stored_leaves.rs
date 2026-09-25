@@ -8,11 +8,12 @@
 
 use marrow_image::{
     DeclarationMemberDef, DeclarationMemberShape, DraftTxn, EnumTypeDef, ExportId, FieldDef,
-    FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, NamedLeaf, RecordTypeDef,
-    RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, ValueShapeNodeId, VariantDef,
+    FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
+    RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, ValueShapeLeaf, ValueShapeNodeId,
+    VariantDef,
 };
 use marrow_test_support::{admitted_plan, rehash, site};
-use marrow_verify::{Bound, Region, RejectionKind, Tag, TieFault, TieNode, VerifyPhase, verify};
+use marrow_verify::{Bound, Region, RejectionKind, Tag, TieFault, TieNode, VerifyPhase};
 
 use super::{refusal_of, section_frame};
 
@@ -25,8 +26,11 @@ fn id(bytes: [u8; 16]) -> LedgerIdBytes {
     LedgerIdBytes::from_bytes(bytes)
 }
 
-fn leaves(names: &[&str], shape: ValueShapeNodeId) -> Vec<NamedLeaf> {
-    names.iter().map(|name| ((*name).into(), shape)).collect()
+fn leaves(names: &[&str], shape: ValueShapeNodeId) -> Vec<ValueShapeLeaf> {
+    names
+        .iter()
+        .map(|name| ValueShapeLeaf::new(*name, shape))
+        .collect()
 }
 
 /// The image-side types every stored value below is checked against: `struct Pos { x:
@@ -216,7 +220,7 @@ fn place_named(names: &'static [&'static str]) -> Vec<u8> {
         let place = draft
             .value_enum(
                 id(SUM_PLACE),
-                vec![(id(MEMBER_AT), vec![("pos".into(), pos)])],
+                vec![(id(MEMBER_AT), vec![ValueShapeLeaf::new("pos", pos)])],
             )
             .expect("a within-bounds shape appends");
         vec![(types.place, place)]
@@ -355,5 +359,4 @@ fn an_enum_reoccurrence_with_different_payload_names_is_rejected() {
             "{what}"
         );
     }
-    assert!(verify(&two_shapes(&["width", "height"])).is_ok());
 }

@@ -660,22 +660,52 @@ on disk refuses the edited program with `store.contract_changed`, and
 `store.apply_unsupported` and reason `stored_value`. No stored value is
 converted.
 
-```text
-struct Pos {          struct Pos {
-    x: int                y: int
-    y: int                x: int
-}                     }
+```mw
+module docs::durable::positional
+
+struct Pos {
+    x: int
+    y: int
+}
 
 resource Marker {
     required at: Pos
 }
 
+store ^markers[id: int]: Marker
+
+pub fn place(id: int, x: int, y: int) {
+    transaction {
+        ^markers[id] = Marker(at: Pos(x: x, y: y))
+    }
+}
+
+pub fn xOf(id: int): int {
+    if const marker = ^markers[id] {
+        return marker.at.x
+    }
+    return -1
+}
+
+test "a stored struct reads back by field name" {
+    place(1, 7, 2)
+    assert xOf(1) == 7
+}
+```
+
+Declaring `Pos` as `y: int` followed by `x: int` leaves every use in the source
+valid, but a cell written as `Pos(x: 7, y: 2)` would then read `x` as 2. After
+`place(1, 7, 2)` has written a store, `marrow run docs.durable.positional.xOf
+--store <store> -- 1` with the reordered `Pos` refuses before it reads an entry:
+
+```text
 store.contract_changed: the supplied image differs in the durable contract from the binding required by this operation; the current binding was not changed
 ```
 
-A resource's own fields and its group fields are stored under their ids. Their
-order is part of the contract as well, so an attached store refuses a reorder,
-but `marrow apply` accepts one: each existing value stays under its id.
+A resource's own fields, its group fields and its branch fields are stored under
+their ids. Their order is part of the contract as well, so an attached store
+refuses a reorder, but `marrow apply` accepts one: each existing value stays
+under its id.
 
 Today, keyed roots, their groups, and their branches read and write end to end.
 A singleton root such as `store ^settings: Settings` and a group inside another

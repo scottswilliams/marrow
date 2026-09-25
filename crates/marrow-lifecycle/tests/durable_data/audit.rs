@@ -172,25 +172,12 @@ fn populated_backup_restores_fresh_identity_head_index_and_executable_values() {
     drop(std::mem::ManuallyDrop::into_inner(scratch));
 }
 
-use crate::support::store::provision_from;
+use crate::support::store::{provision_from, store_files};
 use marrow_test_support::Scratch;
 
 use marrow_codes::Code;
 
 use marrow_test_programs::program::{compile, compile_bytes};
-
-fn store_files(dir: &Path) -> std::collections::BTreeMap<std::ffi::OsString, Vec<u8>> {
-    std::fs::read_dir(dir)
-        .expect("store entries")
-        .map(|entry| {
-            let entry = entry.expect("store entry");
-            (
-                entry.file_name(),
-                std::fs::read(entry.path()).expect("store file"),
-            )
-        })
-        .collect()
-}
 
 /// Create `people[id]` with `name` and, when given, `email`, through the kernel on the
 /// active image's own attachment.

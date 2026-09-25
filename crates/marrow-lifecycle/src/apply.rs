@@ -98,8 +98,8 @@ impl std::fmt::Display for UnsupportedChange {
                  and names of its struct and enum payload fields, or provision a fresh store"
             }
             Self::MemberAdded => {
-                "apply adds only optional scalar fields; declare the new field optional and \
-                 scalar, or provision a fresh store"
+                "apply adds only sparse scalar fields; declare the new field scalar and not \
+                 `required`, or provision a fresh store"
             }
         })
     }
