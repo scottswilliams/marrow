@@ -169,11 +169,10 @@ fn confirmed_commit_then_fault_is_known_new_and_keeps_the_session() {
     );
 }
 
-/// After the handshake, a second `Hello` and a mid-session `Provision` are typed handshake
-/// rejects, never a served call: the attached session admits only `Request`s once running,
-/// and stays open for them.
+/// After the handshake, a second `Hello` is a typed handshake reject, never a served call:
+/// the attached session admits only `Request`s once running, and stays open for them.
 #[test]
-fn post_handshake_hello_and_provision_are_rejected_by_the_attached_session() {
+fn post_handshake_hello_is_rejected_by_the_attached_session() {
     let fixture = program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes());
     let scratch = Scratch::new("commit-outcome-handshake");
     let mut service = attached(&fixture, &scratch);
@@ -184,16 +183,6 @@ fn post_handshake_hello_and_provision_are_rejected_by_the_attached_session() {
         decoded(service.handle(
             ClientMessage::Hello {
                 nonce: Id32::from_bytes([2; 32]),
-            },
-            Some(0),
-        )),
-        handshake,
-    );
-    assert_eq!(
-        decoded(service.handle(
-            ClientMessage::Provision {
-                store: "/tmp/x".into(),
-                approval: "ab".into(),
             },
             Some(0),
         )),

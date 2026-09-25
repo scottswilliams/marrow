@@ -505,7 +505,8 @@ pub(crate) fn connect_and_handshake(
 }
 
 /// Map a server reply to one call's outcome, decoding a returned value against the export's
-/// declared return type. `Ready`/`Provisioned` are out of protocol once a session is running.
+/// declared return type. `Ready` and `ActivationUncertain` are out of protocol once a session
+/// is running.
 pub(crate) fn reply_to_outcome(
     image: &VerifiedImage,
     export_id: [u8; 32],
@@ -529,11 +530,9 @@ pub(crate) fn reply_to_outcome(
             column: span.column,
         }),
         ServerMessage::Reject { code } => Ok(CallOutcome::Reject { code }),
-        ServerMessage::Ready { .. }
-        | ServerMessage::Provisioned { .. }
-        | ServerMessage::ProvisionUncertain { .. }
-        | ServerMessage::ProvisionFailed { .. }
-        | ServerMessage::ActivationUncertain { .. } => Err(ClientError::Handshake),
+        ServerMessage::Ready { .. } | ServerMessage::ActivationUncertain { .. } => {
+            Err(ClientError::Handshake)
+        }
     }
 }
 

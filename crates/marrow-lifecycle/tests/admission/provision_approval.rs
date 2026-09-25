@@ -1,12 +1,14 @@
 //! The provision report and approval over a real compiled durable image: the report names
-//! the destination and the roots, carries no identity hash, provision refuses without a
-//! matching approval, and an accepted provision round-trips through open.
+//! the destination and the roots and renders no identity hash, an approval binds the exact
+//! image and destination spelling it was accepted for, and an accepted provision round-trips
+//! through open.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use marrow_codes::Code;
 use marrow_lifecycle::{
     AttachOutcome, PreparedImage, ProvisionApproval, ProvisionImageError, ProvisionReport,
-    StoreInstanceId, attach, prepare, provision_image,
+    StoreInstanceId, accepted_ceiling, attach, prepare, provision_image,
 };
 use marrow_verify::VerifiedImage;
 
@@ -43,7 +45,7 @@ fn the_report_names_the_destination_the_roots_and_the_effects() {
 /// The absence gate for the "never a raw hash a human would retype" rule: nothing the report
 /// renders is a 32- or 64-character hex identity string.
 #[test]
-fn the_report_carries_no_identity_hash() {
+fn the_report_renders_no_identity_hash() {
     let image = compile(&source_read_only());
     let dest = Path::new("/tmp/notes-store");
     let report = ProvisionReport::new(dest, &prepared(&image)).expect("report");
@@ -64,24 +66,121 @@ fn the_report_carries_no_identity_hash() {
     }
 }
 
-/// Provision refuses when the approval token does not match the report it would write — a
-/// store is never provisioned without an auditable acceptance of the exact report.
+/// Asserts a typed provision refusal that published nothing at any of `destinations`.
+fn assert_unapproved(
+    refused: Result<marrow_lifecycle::Provisioned, ProvisionImageError>,
+    destinations: &[&Path],
+) {
+    match refused {
+        Err(error @ ProvisionImageError::Unapproved) => {
+            assert_eq!(error.code(), Code::StoreProvisionUnapproved);
+            assert_eq!(error.code().as_str(), "store.provision_unapproved");
+        }
+        Err(other) => panic!("expected an unapproved refusal, got {other:?}"),
+        Ok(_) => panic!("a mismatched approval provisioned a store"),
+    }
+    for dest in destinations {
+        assert!(
+            !dest.exists(),
+            "a refused provision writes no store at {dest:?}"
+        );
+    }
+}
+
+/// An approval binds the exact image it was accepted for. Each pair renders a byte-identical
+/// report at the same destination, yet the images differ: in body only, and in which field
+/// inside the same root the program writes (a different accepted ceiling). The approval for
+/// A is refused for B, and no store is published.
 #[test]
-fn provision_refuses_without_a_matching_approval() {
+fn an_approval_for_one_image_is_refused_for_another_with_the_same_report() {
+    let read_only = source_read_only();
+    let body_b = read_only.replace("?? 0", "?? 1");
+    let broadened = source_broadened();
+    let effects_b = broadened.replace("slot.label = \"seen\"", "slot.value = 7");
+    assert_ne!(
+        read_only, body_b,
+        "the body variant differs from its source"
+    );
+    assert_ne!(
+        broadened, effects_b,
+        "the effects variant differs from its source"
+    );
+
+    for (case, a_source, b_source) in [
+        ("body", &read_only, &body_b),
+        ("effects-within-roots", &broadened, &effects_b),
+    ] {
+        let scratch = Scratch::new("provision-approval");
+        let (a_image, b_image) = (compile(a_source), compile(b_source));
+        let (a, b) = (prepared(&a_image), prepared(&b_image));
+        let report_a = ProvisionReport::new(scratch.store(), &a).expect("report A");
+        let report_b = ProvisionReport::new(scratch.store(), &b).expect("report B");
+        assert_eq!(
+            report_a.render(),
+            report_b.render(),
+            "{case}: the reports read alike"
+        );
+        assert_ne!(
+            a_image.image_id(),
+            b_image.image_id(),
+            "{case}: the images differ"
+        );
+        if case == "effects-within-roots" {
+            assert_ne!(
+                accepted_ceiling(&a_image),
+                accepted_ceiling(&b_image),
+                "{case}: the accepted ceilings differ",
+            );
+        }
+
+        let approval_a = ProvisionApproval::accept(&report_a);
+        assert_unapproved(
+            provision_image(scratch.store(), &b, &approval_a),
+            &[scratch.store()],
+        );
+    }
+}
+
+/// An approval binds the exact destination spelling it was accepted for, compared byte for
+/// byte. The sibling row refuses another directory; the trailing-separator row kills a
+/// component-normalized (`Path`) comparison; the non-UTF-8 row kills a lossy comparison
+/// through a display or UTF-8 spelling, under which the two destinations read alike.
+#[test]
+fn an_approval_is_refused_at_any_other_destination_spelling() {
     let image = compile(&source_read_only());
+    let prepared = prepared(&image);
     let scratch = Scratch::new("provision-approval");
 
-    let wrong = ProvisionApproval::from_token("not-the-right-token");
-    let refused = provision_image(scratch.store(), &prepared(&image), &wrong);
-    assert!(
-        matches!(refused, Err(ProvisionImageError::Unapproved)),
-        "a mismatched approval is refused",
-    );
-    // Nothing was published.
-    assert!(
-        !scratch.store().exists(),
-        "a refused provision writes no store"
-    );
+    let mut trailing = scratch.store().as_os_str().to_os_string();
+    trailing.push("/");
+    let mut rows: Vec<(PathBuf, PathBuf)> = vec![
+        (scratch.path().join("a"), scratch.path().join("b")),
+        (scratch.store().to_path_buf(), PathBuf::from(trailing)),
+    ];
+    #[cfg(unix)]
+    {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        rows.push((
+            scratch
+                .path()
+                .join(OsStr::from_bytes(b"\xff"))
+                .join("store"),
+            scratch
+                .path()
+                .join(OsStr::from_bytes(b"\xfe"))
+                .join("store"),
+        ));
+    }
+
+    for (accepted_at, presented_at) in &rows {
+        let report = ProvisionReport::new(accepted_at, &prepared).expect("report");
+        let approval = ProvisionApproval::accept(&report);
+        assert_unapproved(
+            provision_image(presented_at, &prepared, &approval),
+            &[accepted_at, presented_at],
+        );
+    }
 }
 
 /// An accepted provision publishes the store and round-trips: attaching the same image reads

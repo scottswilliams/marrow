@@ -9,8 +9,9 @@
 //!
 //! The lifecycle commands (`provision`, `audit`, `recover`, `import`) open no channel. They
 //! render in source vocabulary — destination, durable roots by name, effects and ceiling in
-//! demand terms — never an identity hash, and a first provision writes nothing without the
-//! explicit `--yes` acceptance of the exact report it printed.
+//! demand terms — never an identity hash. `provision` renders the report and publishes only
+//! with `--yes`; `import` into an absent destination provisions without rendering it, because
+//! the explicit import is the acceptance.
 //!
 //! Every report leaves through a fallible writer, so a closed pipe is an `io.write` failure
 //! rather than a panic; the print macros are refused at compile time.

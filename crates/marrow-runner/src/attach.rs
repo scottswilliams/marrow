@@ -62,9 +62,9 @@ impl AttachedService {
 }
 
 impl Handler for AttachedService {
-    /// Serve one request against the attached store. `Hello` after the handshake and
-    /// `Provision` (a separate one-shot command, never a mid-session operation) are protocol
-    /// rejects; a `Request` dispatches to the image's export against a fresh durable session.
+    /// Serve one request against the attached store. `Hello` after the handshake is a
+    /// protocol reject; a `Request` dispatches to the image's export against a fresh durable
+    /// session.
     fn handle(
         &mut self,
         message: ClientMessage,
@@ -72,7 +72,7 @@ impl Handler for AttachedService {
     ) -> Result<EncodedFrame, WireError> {
         let turn = turn.unwrap_or(0);
         match message {
-            ClientMessage::Hello { .. } | ClientMessage::Provision { .. } => {
+            ClientMessage::Hello { .. } => {
                 dispatch::reject(Code::RunnerHandshake).encode_frame(turn)
             }
             ClientMessage::Request { export, args } => {

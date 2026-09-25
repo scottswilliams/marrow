@@ -29,12 +29,6 @@ pub enum ClientMessage {
     /// Invoke `export` with positional `args`, each an already-encoded transfer
     /// value. The runner decodes them against the export's verified signature.
     Request { export: Id32, args: Vec<Json> },
-    /// Provision a fresh persistent store for the launched image at the `store`
-    /// destination, gated by `approval` — the token of the exact rendered provision
-    /// report the owner accepted. The runner rebuilds the report for its image and
-    /// destination and refuses a token that does not match, so a store is never
-    /// provisioned without an auditable acceptance.
-    Provision { store: String, approval: String },
 }
 
 /// A message from the runner to the caller.
@@ -65,21 +59,6 @@ pub enum ServerMessage {
     /// mismatch, or a durable export the stock runner will not execute). The
     /// `code` is the runner's typed reason.
     Reject { code: Code },
-    /// A store was provisioned: `instance` is the fresh store instance identity
-    /// (lowercase hex). The receipt of a completed provision.
-    Provisioned { instance: String },
-    /// Provision reached an unconfirmed publication or activation barrier.
-    ProvisionUncertain {
-        reason: marrow_codes::StoreUncertainty,
-        instance: String,
-    },
-    /// Provision failed before publication and cleanup of its private stage also failed.
-    /// `stage` is a generated sibling component of the requested destination, not a child.
-    ProvisionFailed {
-        code: Code,
-        stage: String,
-        os_error: Option<i32>,
-    },
 }
 
 impl ClientMessage {
@@ -89,8 +68,8 @@ impl ClientMessage {
         self.encode_with_turn(0)
     }
 
-    /// Encode this message as a full frame, assigning `turn` to a request. Handshake and
-    /// provisioning messages have no call turn and therefore ignore the argument.
+    /// Encode this message as a full frame, assigning `turn` to a request. The handshake
+    /// message has no call turn and therefore ignores the argument.
     pub fn encode_with_turn(&self, turn: u32) -> Result<Vec<u8>, WireError> {
         frame::encode(|slot| {
             slot.object(|object| match self {
@@ -111,11 +90,6 @@ impl ClientMessage {
                     object.field("kind", |slot| slot.string("request"))?;
                     object.field("turn", |slot| slot.integer(i64::from(turn)))
                 }
-                ClientMessage::Provision { store, approval } => {
-                    object.field("approval", |slot| slot.string(approval))?;
-                    object.field("kind", |slot| slot.string("provision"))?;
-                    object.field("store", |slot| slot.string(store))
-                }
             })
         })
         .map(EncodedFrame::into_bytes)
@@ -129,7 +103,7 @@ impl ClientMessage {
     }
 
     /// Decode a client message and its call turn. `Some(turn)` is returned exactly for a
-    /// request; handshake and provisioning messages return `None`.
+    /// request; the handshake message returns `None`.
     pub fn decode_with_turn(body: &[u8]) -> Result<(Self, Option<u32>), WireError> {
         let value = json::parse_strict(frame::body_json(body)?)?;
         let object = Fields::new(&value)?;
@@ -153,16 +127,6 @@ impl ClientMessage {
                     Some(object.u32("turn")?),
                 ))
             }
-            "provision" => {
-                object.exact(&["approval", "kind", "store"])?;
-                Ok((
-                    ClientMessage::Provision {
-                        store: object.string("store")?,
-                        approval: object.string("approval")?,
-                    },
-                    None,
-                ))
-            }
             _ => Err(WireError::Malformed),
         }
     }
@@ -175,21 +139,16 @@ impl ServerMessage {
         self.encode_with_turn(0)
     }
 
-    /// Encode this message as a full frame, assigning `turn` to a call reply. `Ready` and
-    /// provision outcomes are not call replies and therefore carry no turn.
+    /// Encode this message as a full frame, assigning `turn` to a call reply. The handshake
+    /// responses are not call replies and therefore carry no turn.
     pub fn encode_with_turn(&self, turn: u32) -> Result<Vec<u8>, WireError> {
         self.encode_frame(turn).map(EncodedFrame::into_bytes)
     }
 
     /// Encode a complete bounded frame, borrowing the message payload.
-    /// Handshake and provision receipts carry no turn.
+    /// Handshake responses carry no turn.
     pub fn encode_frame(&self, turn: u32) -> Result<EncodedFrame, WireError> {
-        if let Self::ProvisionFailed { stage, .. } = self {
-            validate_provision_stage(stage)?;
-        }
-        if let Self::ProvisionUncertain { instance, .. }
-        | Self::ActivationUncertain { instance, .. } = self
-        {
+        if let Self::ActivationUncertain { instance, .. } = self {
             validate_store_instance(instance)?;
         }
         frame::encode(|slot| {
@@ -237,33 +196,6 @@ impl ServerMessage {
                     object.field("kind", |slot| slot.string("reject"))?;
                     object.field("turn", |slot| slot.integer(i64::from(turn)))
                 }
-                ServerMessage::Provisioned { instance } => {
-                    object.field("instance", |slot| slot.string(instance))?;
-                    object.field("kind", |slot| slot.string("provisioned"))
-                }
-                ServerMessage::ProvisionUncertain { reason, instance } => {
-                    object.field("code", |slot| slot.string(reason.code().as_str()))?;
-                    object.field("instance", |slot| slot.string(instance))?;
-                    object.field("kind", |slot| slot.string("provision_uncertain"))
-                }
-                ServerMessage::ProvisionFailed {
-                    code,
-                    stage,
-                    os_error,
-                } => {
-                    object.field("cleanup", |slot| {
-                        slot.object(|cleanup| {
-                            cleanup.field("code", |slot| slot.string(Code::StoreIo.as_str()))?;
-                            cleanup.field("os_error", |slot| match os_error {
-                                Some(value) => slot.integer(i64::from(*value)),
-                                None => slot.json(&Json::Null),
-                            })?;
-                            cleanup.field("stage", |slot| slot.string(stage))
-                        })
-                    })?;
-                    object.field("code", |slot| slot.string(code.as_str()))?;
-                    object.field("kind", |slot| slot.string("provision_failed"))
-                }
             })
         })
     }
@@ -275,7 +207,7 @@ impl ServerMessage {
     }
 
     /// Decode a server message and its call turn. `Some(turn)` is returned exactly for call
-    /// replies; the handshake and provisioning receipt return `None`.
+    /// replies; the handshake responses return `None`.
     pub fn decode_with_turn(body: &[u8]) -> Result<(Self, Option<u32>), WireError> {
         let value = json::parse_strict(frame::body_json(body)?)?;
         let object = Fields::new(&value)?;
@@ -345,48 +277,6 @@ impl ServerMessage {
                     Some(object.u32("turn")?),
                 ))
             }
-            "provisioned" => {
-                object.exact(&["instance", "kind"])?;
-                Ok((
-                    ServerMessage::Provisioned {
-                        instance: object.string("instance")?,
-                    },
-                    None,
-                ))
-            }
-            "provision_uncertain" => {
-                object.exact(&["code", "instance", "kind"])?;
-                let reason = marrow_codes::StoreUncertainty::from_code(object.code("code")?)
-                    .ok_or(WireError::Malformed)?;
-                let instance = object.string("instance")?;
-                validate_store_instance(&instance)?;
-                Ok((ServerMessage::ProvisionUncertain { reason, instance }, None))
-            }
-            "provision_failed" => {
-                object.exact(&["cleanup", "code", "kind"])?;
-                let cleanup = Fields::new(object.get("cleanup")?)?;
-                cleanup.exact(&["code", "os_error", "stage"])?;
-                if cleanup.code("code")? != Code::StoreIo {
-                    return Err(WireError::Malformed);
-                }
-                let stage = cleanup.string("stage")?;
-                validate_provision_stage(&stage)?;
-                let os_error = match cleanup.get("os_error")? {
-                    Json::Null => None,
-                    Json::Int(value) => {
-                        Some(i32::try_from(*value).map_err(|_| WireError::Malformed)?)
-                    }
-                    _ => return Err(WireError::Malformed),
-                };
-                Ok((
-                    ServerMessage::ProvisionFailed {
-                        code: object.code("code")?,
-                        stage,
-                        os_error,
-                    },
-                    None,
-                ))
-            }
             _ => Err(WireError::Malformed),
         }
     }
@@ -401,19 +291,6 @@ impl EncodedFrame {
     ) -> Result<Self, WireError> {
         frame::encode(|slot| slot.object(|object| write_value_response(object, turn, write)))
     }
-}
-
-fn validate_provision_stage(stage: &str) -> Result<(), WireError> {
-    let (pid, counter) = stage
-        .strip_prefix(".marrow-provisioning.")
-        .and_then(|suffix| suffix.split_once('.'))
-        .ok_or(WireError::Malformed)?;
-    let pid_value = pid.parse::<u32>().map_err(|_| WireError::Malformed)?;
-    let counter_value = counter.parse::<u64>().map_err(|_| WireError::Malformed)?;
-    if pid_value.to_string() != pid || counter_value.to_string() != counter {
-        return Err(WireError::Malformed);
-    }
-    Ok(())
 }
 
 fn validate_store_instance(instance: &str) -> Result<(), WireError> {
@@ -495,8 +372,7 @@ impl<'a> Fields<'a> {
         }
     }
 
-    /// An arbitrary JSON string field (a destination path or a report/instance token). The
-    /// wire carries it opaquely; the runner interprets it against its image and filesystem.
+    /// A JSON string field: a store instance identity, which the caller validates.
     fn string(&self, key: &str) -> Result<String, WireError> {
         match self.get(key)? {
             Json::Str(s) => Ok(s.clone()),
@@ -541,6 +417,7 @@ impl<'a> Fields<'a> {
 #[cfg(test)]
 mod tests {
     use super::{ClientMessage, Code, DurableCommitState, ServerMessage};
+    use crate::error::WireError;
     use crate::id::Id32;
     use crate::json::{self, Json};
     use crate::span::Span;
@@ -552,65 +429,6 @@ mod tests {
     fn json_of(frame: &[u8]) -> String {
         // Skip the 4-byte length prefix and the version byte.
         String::from_utf8(frame[5..].to_vec()).expect("utf8 json")
-    }
-
-    #[test]
-    fn provision_cleanup_failure_round_trips_without_a_call_turn() {
-        for errno in ["null", "-2147483648", "2147483647"] {
-            let text = format!(
-                "{{\"cleanup\":{{\"code\":\"store.io\",\"os_error\":{errno},\"stage\":\".marrow-provisioning.4294967295.18446744073709551615\"}},\"code\":\"store.locked\",\"kind\":\"provision_failed\"}}"
-            );
-            let mut body = vec![crate::PROTOCOL_VERSION];
-            body.extend_from_slice(text.as_bytes());
-            let (message, turn) = ServerMessage::decode_with_turn(&body)
-                .expect("preserve the complete primary and cleanup failure");
-            assert_eq!(turn, None);
-            assert_eq!(json_of(&message.encode_with_turn(42).unwrap()), text);
-        }
-    }
-
-    #[test]
-    fn provision_cleanup_failure_rejects_unbounded_or_ambiguous_records() {
-        let valid = r#"{"cleanup":{"code":"store.io","os_error":null,"stage":".marrow-provisioning.123.0"},"code":"store.locked","kind":"provision_failed"}"#;
-        let invalid = [
-            valid.replace(".marrow-provisioning.123.0", "../stage"),
-            valid.replace(".marrow-provisioning.123.0", ".marrow-provisioning.0123.0"),
-            valid.replace(
-                ".marrow-provisioning.123.0",
-                ".marrow-provisioning.4294967296.0",
-            ),
-            valid.replace(
-                ".marrow-provisioning.123.0",
-                ".marrow-provisioning.1.18446744073709551616",
-            ),
-            valid.replace("null", "2147483648"),
-            valid.replace("null", "-2147483649"),
-            valid.replace("null", "true"),
-            valid.replace("store.io", "store.locked"),
-            valid.replace("\"os_error\":null,", ""),
-            valid.replace(
-                "\"code\":\"store.locked\"",
-                "\"code\":\"store.locked\",\"instance\":\"00000000000000000000000000000000\"",
-            ),
-            valid.replace(
-                "\"kind\":\"provision_failed\"",
-                "\"kind\":\"provision_failed\",\"turn\":0",
-            ),
-        ];
-        for text in invalid {
-            let mut body = vec![crate::PROTOCOL_VERSION];
-            body.extend_from_slice(text.as_bytes());
-            assert!(ServerMessage::decode(&body).is_err(), "accepted {text}");
-        }
-        assert!(
-            ServerMessage::ProvisionFailed {
-                code: Code::StoreIo,
-                stage: "../stage".into(),
-                os_error: None,
-            }
-            .encode()
-            .is_err()
-        );
     }
 
     /// Frozen canonical spellings for each message kind.
@@ -706,27 +524,6 @@ mod tests {
             ),
             r#"{"code":"runner.unknown_export","kind":"reject","turn":0}"#
         );
-        assert_eq!(
-            json_of(
-                &ClientMessage::Provision {
-                    store: "/data/notes".to_string(),
-                    approval: "0123456789abcdef".to_string(),
-                }
-                .encode()
-                .unwrap()
-            ),
-            r#"{"approval":"0123456789abcdef","kind":"provision","store":"/data/notes"}"#
-        );
-        assert_eq!(
-            json_of(
-                &ServerMessage::Provisioned {
-                    instance: "00112233445566778899aabbccddeeff".to_string(),
-                }
-                .encode()
-                .unwrap()
-            ),
-            r#"{"instance":"00112233445566778899aabbccddeeff","kind":"provisioned"}"#
-        );
     }
 
     fn client_round_trip(msg: ClientMessage) {
@@ -760,65 +557,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn provision_uncertainty_round_trips_without_an_invocation_turn() {
-        for reason in [
-            marrow_codes::StoreUncertainty::Publication,
-            marrow_codes::StoreUncertainty::Activation,
-        ] {
-            let message = ServerMessage::ProvisionUncertain {
-                reason,
-                instance: "12".repeat(16),
-            };
-            let encoded = message.encode_with_turn(19).expect("encode uncertainty");
-            assert_eq!(
-                &encoded[5..],
-                format!(
-                    "{{\"code\":\"{}\",\"instance\":\"{}\",\"kind\":\"provision_uncertain\"}}",
-                    reason.code().as_str(),
-                    "12".repeat(16)
-                )
-                .as_bytes()
-            );
-            let (decoded, turn) =
-                ServerMessage::decode_with_turn(&encoded[4..]).expect("decode uncertainty");
-            assert_eq!(decoded, message);
-            assert_eq!(turn, None);
-        }
-    }
-
-    #[test]
-    fn provision_uncertainty_rejects_invalid_identity_and_envelope() {
-        for instance in [
-            "",
-            "12",
-            "ABABABABABABABABABABABABABABABAB",
-            "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
-        ] {
-            assert!(
-                ServerMessage::ProvisionUncertain {
-                    reason: marrow_codes::StoreUncertainty::Publication,
-                    instance: instance.into()
-                }
-                .encode()
-                .is_err()
-            );
-        }
-        let valid = r#"{"code":"store.publication_uncertain","instance":"12121212121212121212121212121212","kind":"provision_uncertain"}"#;
-        for invalid in [
-            valid.replace("store.publication_uncertain", "store.io"),
-            valid.replace(
-                "12121212121212121212121212121212",
-                "ABABABABABABABABABABABABABABABAB",
-            ),
-            valid.replace("12121212121212121212121212121212", "12"),
-            valid.replace("uncertain\"}", "uncertain\",\"turn\":0}"),
-        ] {
-            let body = [&[crate::PROTOCOL_VERSION], invalid.as_bytes()].concat();
-            assert!(ServerMessage::decode(&body).is_err(), "accepted {invalid}");
-        }
-    }
-
     fn server_round_trip(msg: ServerMessage) {
         let frame = msg.encode().expect("encode");
         let body = &frame[4..];
@@ -833,13 +571,6 @@ mod tests {
         client_round_trip(ClientMessage::Request {
             export: Id32::from_bytes([3; 32]),
             args: vec![Json::Null, Json::Str("x".to_string())],
-        });
-        client_round_trip(ClientMessage::Provision {
-            store: "/data/notes".to_string(),
-            approval: "0123456789abcdef".to_string(),
-        });
-        server_round_trip(ServerMessage::Provisioned {
-            instance: "00112233445566778899aabbccddeeff".to_string(),
         });
         server_round_trip(ServerMessage::Ready {
             session: Id32::from_bytes([1; 32]),
@@ -931,21 +662,31 @@ mod tests {
         assert!(ServerMessage::decode(&hello[4..]).is_err());
         let value = ServerMessage::Value { data: Json::Null }.encode().unwrap();
         assert!(ClientMessage::decode(&value[4..]).is_err());
-        // A provision request is a client message; a provisioned receipt is a server
-        // message. Neither decodes in the other direction.
-        let provision = ClientMessage::Provision {
-            store: "/data/x".to_string(),
-            approval: "abc".to_string(),
+    }
+
+    /// The grammar is closed: a kind outside it decodes to `Malformed` in either direction,
+    /// even when its fields are otherwise well-formed. The bodies are frozen spellings of
+    /// kinds the protocol does not carry, so re-adding any of them fails here.
+    #[test]
+    fn unknown_message_kinds_are_malformed() {
+        let body = |json: &str| [&[crate::PROTOCOL_VERSION], json.as_bytes()].concat();
+        let client = r#"{"approval":"0123456789abcdef","kind":"provision","store":"/data/notes"}"#;
+        assert_eq!(
+            ClientMessage::decode_with_turn(&body(client)),
+            Err(WireError::Malformed),
+            "{client}"
+        );
+        for server in [
+            r#"{"instance":"00112233445566778899aabbccddeeff","kind":"provisioned"}"#,
+            r#"{"code":"store.publication_uncertain","instance":"12121212121212121212121212121212","kind":"provision_uncertain"}"#,
+            r#"{"cleanup":{"code":"store.io","os_error":null,"stage":".marrow-provisioning.123.0"},"code":"store.locked","kind":"provision_failed"}"#,
+        ] {
+            assert_eq!(
+                ServerMessage::decode_with_turn(&body(server)),
+                Err(WireError::Malformed),
+                "{server}"
+            );
         }
-        .encode()
-        .unwrap();
-        assert!(ServerMessage::decode(&provision[4..]).is_err());
-        let provisioned = ServerMessage::Provisioned {
-            instance: "00".to_string(),
-        }
-        .encode()
-        .unwrap();
-        assert!(ClientMessage::decode(&provisioned[4..]).is_err());
     }
 
     /// An extra or missing field is malformed even when the JSON is canonical.

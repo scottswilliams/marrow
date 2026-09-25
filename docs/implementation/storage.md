@@ -85,6 +85,7 @@ therefore hold no raw key, engine handle, or transaction object.
 | Admit and publish a code-only rebind | `marrow-lifecycle/src/actor.rs`: `attach`, `rewrite_atomically` |
 | Admit and publish sparse-field apply | `marrow-lifecycle/src/apply.rs`: `apply`, `extend_head` |
 | Publish a new store and complete activation | `marrow-lifecycle/src/durable_fs.rs`: `Publication`; `marrow-lifecycle/src/provision.rs`: `provision`, `complete_publication` |
+| Build the provision report and gate a first provision on its approval | `marrow-lifecycle/src/report.rs`: `ProvisionReport`, `ProvisionApproval`, `provision_image` |
 | Admit the logical-head generation before engine open | `marrow-lifecycle/src/head.rs`: `file_ceiling`, `LogicalHead::decode_with_digest`; `marrow-lifecycle/src/provision.rs`: `LockedStore::open` |
 
 [Changing the program](../operations/README.md#changing-the-program) owns

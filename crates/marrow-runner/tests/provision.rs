@@ -1,13 +1,10 @@
-//! The runner's provision dispatch: a `ClientMessage::Provision` over the session provisions
-//! the launched image's store, gated by the accepted-report token. The server (runner) is one
-//! caller of the wire `Provision` DTO; the encoder here is the other. No socket is bound.
+//! The runner's one-shot `provision` and first-import provisioning commands, and the lifecycle
+//! provision they drive, over real compiled images.
 
 use marrow_test_programs::program;
 use marrow_test_support::Scratch;
 
 use marrow_lifecycle::ProvisionReport;
-use marrow_local_wire::{ClientMessage, ServerMessage};
-use marrow_runner::{Handler, Service};
 use marrow_test_support::broken_output;
 
 const SOURCE: &str = r#"resource Counter {
@@ -32,82 +29,6 @@ const IDS: &str = "marrow ids v0\n\
      id key counters.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
      high-water 0\n\
      end\n";
-
-/// The report token the owner accepts: derived from the same image the service serves.
-fn approval_token(store: &std::path::Path) -> String {
-    let image =
-        marrow_verify::verify(&program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes)
-            .expect("verify");
-    ProvisionReport::new(store, &marrow_lifecycle::prepare(image))
-        .expect("flat-executable")
-        .token()
-}
-
-/// A `Provision` with a matching approval token provisions the store and receipts the
-/// instance; opening the destination confirms the store is complete.
-#[test]
-fn a_provision_request_with_a_matching_approval_provisions() {
-    let base = Scratch::new("runner-provision");
-    let store = base.path().join("store");
-    let mut service = Service::build(
-        marrow_verify::verify(&program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes)
-            .expect("verify"),
-    )
-    .expect("service builds");
-
-    let response = service
-        .handle(
-            ClientMessage::Provision {
-                store: store.display().to_string(),
-                approval: approval_token(&store),
-            },
-            None,
-        )
-        .expect("provision response fits");
-    let (response, turn) =
-        ServerMessage::decode_with_turn(&response.as_bytes()[4..]).expect("response decodes");
-    assert_eq!(turn, None);
-
-    match response {
-        ServerMessage::Provisioned { instance } => {
-            assert_eq!(instance.len(), 32, "the instance is 32 hex characters");
-            assert!(store.is_dir(), "the store directory was published");
-        }
-        other => panic!("expected Provisioned, got {other:?}"),
-    }
-}
-
-/// A `Provision` whose approval token does not match the report the runner rebuilds is
-/// rejected, and no store is published.
-#[test]
-fn a_provision_request_with_a_wrong_approval_is_rejected() {
-    let base = Scratch::new("runner-provision");
-    let store = base.path().join("store");
-    let mut service = Service::build(
-        marrow_verify::verify(&program::build(SOURCE.as_bytes().to_vec(), IDS.as_bytes()).bytes)
-            .expect("verify"),
-    )
-    .expect("service builds");
-
-    let response = service
-        .handle(
-            ClientMessage::Provision {
-                store: store.display().to_string(),
-                approval: "0000000000000000".to_string(),
-            },
-            None,
-        )
-        .expect("reject response fits");
-    let (response, turn) =
-        ServerMessage::decode_with_turn(&response.as_bytes()[4..]).expect("response decodes");
-    assert_eq!(turn, Some(0));
-
-    assert!(
-        matches!(response, ServerMessage::Reject { .. }),
-        "a mismatched approval is rejected, got {response:?}",
-    );
-    assert!(!store.exists(), "a rejected provision publishes no store");
-}
 
 #[test]
 fn provision_receipt_failure_preserves_the_published_store() {
@@ -419,7 +340,7 @@ fn restore_command_refuses_incomplete_input_without_a_usable_destination() {
 }
 
 fn import_with_closed_stream(destination: ImportStore, closed: ClosedStream) {
-    use marrow_local_wire::{Id32, Json};
+    use marrow_local_wire::{ClientMessage, Id32, Json, ServerMessage};
     use marrow_runner::{AttachedService, Handler};
     use std::process::{Command, Stdio};
 

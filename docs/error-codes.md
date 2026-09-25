@@ -234,4 +234,5 @@ program does not reach them.
 |---|---|
 | `cli.compiler_invariant` | The compiler detected an internal state inconsistency and failed closed without producing a program image or source diagnostic. |
 | `run.enum_variant` | A bytecode enum-payload read named a member the value did not select. The compiler dispatches on the tag before reading a payload, so a compiled program does not reach this; it guards a hand-built or corrupted image. |
+| `store.provision_unapproved` | Provisioning was refused because the presented approval was accepted for a different program image or destination spelling. The runner's `provision` command and `marrow import` accept the report they build for the same image and destination, so they do not reach this; it fails closed before any store is written. An approval records consent and does not authenticate. |
 | `runner.reply_encode` | A served export's return value failed to encode for the wire. Interface build excludes an export whose return shape is not transferable, so a served program does not reach this; the request fails closed. |

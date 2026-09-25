@@ -85,8 +85,16 @@ directory, not a symbolic link, with owner read, write and search permissions.
 These constraints are checked before staging begins. A single-component
 relative destination uses the current directory as its parent.
 
-The runner writes and flushes the provisioning report before publishing the
-store. If the destination no longer names the retained store or synchronizing
+The runner's `provision` command, which the supervisor's `provision(options)`
+runs, writes the provisioning report to standard error and flushes it before
+anything is written to the destination. The report names the destination, the
+durable roots and whether the program reads or writes durable data. Without
+`--yes` the command exits `2` and writes nothing. `--yes` accepts the report
+that the same invocation rendered for that exact image and destination.
+`marrow import` into an absent destination provisions without showing the
+report; the explicit import command is the acceptance.
+
+If the destination no longer names the retained store or synchronizing
 the parent directory fails after rename, the runner
 reports `store.publication_uncertain` with the published instance identity and
 leaves the destination in place. Import stops before reading the corpus. The
