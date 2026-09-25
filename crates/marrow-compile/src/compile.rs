@@ -2453,51 +2453,46 @@ fn reject_missing_transaction(
     reported
 }
 
-/// The three-state ownership lattice a mutating export's region walks.
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// A reached instruction's position on the three-state ownership lattice a mutating
+/// export's region walks. A state past `BeforeBegin` carries the `TxnBegin` that opened
+/// the region on the path that first reached the instruction, so a report can anchor at
+/// the block. Merges compare the phase alone, as the verifier does.
+#[derive(Clone, Copy)]
 enum TxnState {
     BeforeBegin,
-    InTxn,
-    AfterCommit,
+    InTxn { begin: usize },
+    AfterCommit { begin: usize },
 }
 
-/// A reached instruction's entry on the owner-lattice walk: its region state, and the
-/// `TxnBegin` that opened the region on the path that first reached it. `begin` is
-/// `Some` exactly when `state` is not `BeforeBegin`, because a begin reached from
-/// `BeforeBegin` is the only transfer that leaves it. Merges compare `state` alone, as
-/// the verifier does; `begin` only anchors a report at a block.
-#[derive(Clone, Copy)]
-struct TxnEntry {
-    state: TxnState,
-    begin: Option<u32>,
-}
-
-impl TxnEntry {
-    const BEFORE_BEGIN: Self = Self {
-        state: TxnState::BeforeBegin,
-        begin: None,
-    };
-
-    /// The instruction index of the begin that opened this path's region.
-    fn opened_by(self) -> usize {
-        #[expect(
-            clippy::expect_used,
-            reason = "a TxnEntry past BeforeBegin carries its begin by construction, and callers ask only such entries"
-        )]
-        let begin = self
-            .begin
-            .expect("a region state past BeforeBegin carries its begin");
-        begin as usize
+impl TxnState {
+    /// The violation two paths form when they meet at `at` in `self` and `other`, or
+    /// `None` when they agree on the phase. A side still inside the region names the
+    /// block a path leaves open; otherwise the committed side names the block that runs
+    /// on only some of the paths.
+    fn disagreement(self, other: Self, at: usize) -> Option<RegionShape> {
+        match (self, other) {
+            (Self::BeforeBegin, Self::BeforeBegin)
+            | (Self::InTxn { .. }, Self::InTxn { .. })
+            | (Self::AfterCommit { .. }, Self::AfterCommit { .. }) => None,
+            (Self::InTxn { begin }, _) | (_, Self::InTxn { begin }) => {
+                Some(RegionShape::LeftOpen { at, begin })
+            }
+            (Self::AfterCommit { begin }, Self::BeforeBegin)
+            | (Self::BeforeBegin, Self::AfterCommit { begin }) => {
+                Some(RegionShape::RanOnSomePaths { at, begin })
+            }
+        }
     }
 }
 
 /// A path-shape violation the owner-lattice walk finds before it reads returns or
 /// durable operations: a begin reached with the region already begun, or two paths that
-/// meet in different region states.
+/// meet in different region states, each naming the begin of the block it concerns.
 #[derive(Clone, Copy)]
 enum RegionShape {
     Reopen { begin: usize },
-    Conflict { at: usize, sides: [TxnEntry; 2] },
+    LeftOpen { at: usize, begin: usize },
+    RanOnSomePaths { at: usize, begin: usize },
 }
 
 impl RegionShape {
@@ -2506,7 +2501,7 @@ impl RegionShape {
     /// point reports the same construct whichever path the worklist reached first.
     fn order(self) -> (usize, u8) {
         match self {
-            Self::Conflict { at, .. } => (at, 0),
+            Self::LeftOpen { at, .. } | Self::RanOnSomePaths { at, .. } => (at, 0),
             Self::Reopen { begin } => (begin, 1),
         }
     }
@@ -2724,8 +2719,8 @@ fn owner_lattice_violation(
     if code.is_empty() {
         return None;
     }
-    let mut entry: Vec<Option<TxnEntry>> = vec![None; code.len()];
-    entry[0] = Some(TxnEntry::BEFORE_BEGIN);
+    let mut entry: Vec<Option<TxnState>> = vec![None; code.len()];
+    entry[0] = Some(TxnState::BeforeBegin);
     let mut worklist = vec![0usize];
     let mut first_shape: Option<RegionShape> = None;
     let mut record = |shape: RegionShape| {
@@ -2736,19 +2731,13 @@ fn owner_lattice_violation(
     while let Some(index) = worklist.pop() {
         // The worklist only enqueues instructions whose entry state is set.
         let Some(at) = entry[index] else { continue };
-        let next = match (&code[index], at.state) {
-            (Instr::TxnBegin, TxnState::BeforeBegin) => TxnEntry {
-                state: TxnState::InTxn,
-                begin: Some(index as u32),
-            },
+        let next = match (&code[index], at) {
+            (Instr::TxnBegin, TxnState::BeforeBegin) => TxnState::InTxn { begin: index },
             (Instr::TxnBegin, _) => {
                 record(RegionShape::Reopen { begin: index });
                 continue;
             }
-            (Instr::TxnCommit, TxnState::InTxn) => TxnEntry {
-                state: TxnState::AfterCommit,
-                ..at
-            },
+            (Instr::TxnCommit, TxnState::InTxn { begin }) => TxnState::AfterCommit { begin },
             _ => at,
         };
         for successor in code[index].successors(index) {
@@ -2760,11 +2749,11 @@ fn owner_lattice_violation(
                     entry[successor] = Some(next);
                     worklist.push(successor);
                 }
-                Some(prior) if prior.state == next.state => {}
-                Some(prior) => record(RegionShape::Conflict {
-                    at: successor,
-                    sides: [prior, next],
-                }),
+                Some(prior) => {
+                    if let Some(shape) = prior.disagreement(next, successor) {
+                        record(shape);
+                    }
+                }
             }
         }
     }
@@ -2773,11 +2762,11 @@ fn owner_lattice_violation(
     }
 
     for (idx, instr) in code.iter().enumerate() {
-        let Some(TxnEntry { state, .. }) = entry[idx] else {
+        let Some(state) = entry[idx] else {
             continue;
         };
         match instr {
-            Instr::Return if state == TxnState::InTxn => {
+            Instr::Return if matches!(state, TxnState::InTxn { .. }) => {
                 return Some((
                     Code::CheckTransactionUncommitted,
                     function.code_spans[idx],
@@ -2790,7 +2779,7 @@ fn owner_lattice_violation(
             _ => {
                 let durable_here = is_durable_address_op(instr)
                     || matches!(instr, Instr::Call(t) if (*t as usize) < count && durable[*t as usize]);
-                if durable_here && state == TxnState::AfterCommit {
+                if durable_here && matches!(state, TxnState::AfterCommit { .. }) {
                     return Some((
                         Code::CheckDurableAfterCommit,
                         function.code_spans[idx],
@@ -2828,39 +2817,27 @@ fn region_shape_report(body: &LoweredBody<'_>, shape: RegionShape) -> (Code, Sou
     };
     match shape {
         RegionShape::Reopen { begin } => reopened(begin),
-        RegionShape::Conflict { sides: [a, b], .. } => {
-            // The states differ, so at least one side is past `BeforeBegin`; a side still
-            // inside the region names the block a path leaves open.
-            let side = if b.state == TxnState::InTxn || a.state == TxnState::BeforeBegin {
-                b
-            } else {
-                a
-            };
-            let begin = side.opened_by();
-            if side.state == TxnState::InTxn {
-                return (
-                    Code::CheckTransactionUncommitted,
-                    spans[begin],
-                    "a path leaves this `transaction` block before it commits and meets a \
-                     path outside the block. Every exit from an entered region commits its \
-                     staged writes. End the block on every path before the paths meet."
-                        .to_string(),
-                );
-            }
-            if begin_on_cycle(body.code, begin) {
-                return reopened(begin);
-            }
-            (
-                Code::CheckTransactionConditional,
-                spans[begin],
-                format!(
-                    "this `transaction` block runs on some paths through `{name}` and not on \
-                     others that meet them later. Paths that meet agree on whether the \
-                     export's block has run. Return before the block when its work does not \
-                     apply, or end the arm with `return` after the block."
-                ),
-            )
+        RegionShape::LeftOpen { begin, .. } => (
+            Code::CheckTransactionUncommitted,
+            spans[begin],
+            "a path leaves this `transaction` block before it commits and meets a path \
+             outside the block. Every exit from an entered region commits its staged \
+             writes. End the block on every path before the paths meet."
+                .to_string(),
+        ),
+        RegionShape::RanOnSomePaths { begin, .. } if begin_on_cycle(body.code, begin) => {
+            reopened(begin)
         }
+        RegionShape::RanOnSomePaths { begin, .. } => (
+            Code::CheckTransactionConditional,
+            spans[begin],
+            format!(
+                "this `transaction` block runs on some paths through `{name}` and not on \
+                 others that meet them later. Paths that meet agree on whether the \
+                 export's block has run. Return before the block when its work does not \
+                 apply, or end the arm with `return` after the block."
+            ),
+        ),
     }
 }
 

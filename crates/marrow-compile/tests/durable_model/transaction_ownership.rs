@@ -13,6 +13,7 @@
 
 use marrow_codes::Code;
 use marrow_compile::{CompileFailure, SourceDiagnostic, compile, compile_with_tests};
+use marrow_syntax::SourceSpan;
 
 use super::project;
 
@@ -62,6 +63,27 @@ fn line_of(ops: &str, needle: &str) -> u32 {
     (source[..index].bytes().filter(|&b| b == b'\n').count() as u32) + 1
 }
 
+/// The complete source span of `needle` in `SCHEMA` + `ops`; `needle` names exactly one
+/// construct.
+fn span_of(ops: &str, needle: &str) -> SourceSpan {
+    let source = format!("{SCHEMA}{ops}");
+    let start = source
+        .find(needle)
+        .unwrap_or_else(|| panic!("`{needle}` present"));
+    assert_eq!(
+        source.matches(needle).count(),
+        1,
+        "`{needle}` names one construct"
+    );
+    let line_start = source[..start].rfind('\n').map_or(0, |at| at + 1);
+    SourceSpan {
+        start_byte: start,
+        end_byte: start + needle.len(),
+        line: line_of(ops, needle),
+        column: (start - line_start + 1) as u32,
+    }
+}
+
 #[test]
 fn borrowed_instruction_bodies_keep_complete_transaction_coordinates() {
     let prelude = "fn padding(v: int): int {\n    var n = v\n    n = n + 1\n    n = n + 2\n    return n\n}\nfn identity<T>(v: T): T { return v }\n";
@@ -85,19 +107,11 @@ fn borrowed_instruction_bodies_keep_complete_transaction_coordinates() {
     for (code, body, needle) in cases {
         let ops = format!("{prelude}{body}");
         let diagnostic = only(&ops);
-        let source = format!("{SCHEMA}{ops}");
-        let start = source.find(needle).expect("offending construct exists");
-        let line_start = source[..start].rfind('\n').map_or(0, |at| at + 1);
         assert_eq!(diagnostic.code(), code);
         assert_eq!(diagnostic.file().as_str(), "src/main.mw");
         assert_eq!(
             diagnostic.span(),
-            marrow_syntax::SourceSpan {
-                start_byte: start,
-                end_byte: start + needle.len(),
-                line: line_of(&ops, needle),
-                column: (start - line_start + 1) as u32,
-            },
+            span_of(&ops, needle),
             "{code:?} must keep its complete source coordinate"
         );
     }
@@ -151,18 +165,6 @@ fn an_empty_transaction_is_rejected_at_the_block() {
     assert!(
         diagnostic.message().contains("no durable operation"),
         "steers to the empty-region remedy: {}",
-        diagnostic.message()
-    );
-}
-
-#[test]
-fn a_second_region_reopens_an_owned_transaction() {
-    let ops = "pub fn twoRegions(id: int, v: int) {\n    transaction {\n        ^counters[id] = Counter(value: v)\n    }\n    transaction {\n        ^counters[id] = Counter(value: v + 1)\n    }\n}\n";
-    let diagnostic = only(ops);
-    assert_eq!(diagnostic.code(), Code::CheckTransactionReopened);
-    assert!(
-        diagnostic.message().contains("exactly once") || diagnostic.message().contains("single"),
-        "steers to the one-region remedy: {}",
         diagnostic.message()
     );
 }
@@ -244,15 +246,6 @@ fn a_require_before_an_owned_region_compiles() {
     assert!(diagnostics(ops).is_empty());
 }
 
-/// The earliest offending construct wins, so the reopened-region rule fires ahead of any
-/// require diagnostic.
-#[test]
-fn a_require_inside_a_nested_region_is_still_refused() {
-    let ops = "pub fn setChecked(id: int, v: int): Result<int, string> {\n    transaction {\n        transaction {\n            require v > 0 else \"value must be positive\"\n            ^counters[id] = Counter(value: v)\n            return ok(v)\n        }\n    }\n}\n";
-    let diagnostic = only(ops);
-    assert_eq!(diagnostic.code(), Code::CheckTransactionReopened);
-}
-
 /// Either propagated exit commits; success continues to the explicit return.
 #[test]
 fn try_then_require_inside_a_region_compile() {
@@ -325,53 +318,12 @@ fn a_mutating_helper_inside_the_owners_region_compiles() {
     );
 }
 
-/// The line and column where `needle` starts in `SCHEMA` + `ops`.
-fn coordinate(ops: &str, needle: &str) -> (u32, u32) {
-    let source = format!("{SCHEMA}{ops}");
-    let start = source
-        .find(needle)
-        .unwrap_or_else(|| panic!("`{needle}` present"));
-    assert_eq!(
-        source.matches(needle).count(),
-        1,
-        "`{needle}` names one construct"
-    );
-    let line_start = source[..start].rfind('\n').map_or(0, |at| at + 1);
-    (line_of(ops, needle), (start - line_start + 1) as u32)
-}
+/// One region-shape row: a label, the export source after `SCHEMA`, and the ordered
+/// diagnostics it receives, each named by the exact construct it is reported at.
+type RegionRow = (&'static str, String, Vec<(Code, &'static str)>);
 
-/// A block in a one-armed `if` runs on one path and not on the other, and the two
-/// paths meet after the `if`. The compiler reports it at the block rather than
-/// emitting an image the verifier refuses at `image.flow`.
-#[test]
-fn a_transaction_in_a_one_armed_if_is_refused_at_the_block() {
-    let block = "{\n            ^counters[id] = Counter(value: 7)\n        }";
-    let ops = format!(
-        "pub fn maybe(id: int, go: bool) {{\n    if go {{\n        transaction {block}\n    }}\n}}\n"
-    );
-    let diagnostic = only(&ops);
-    let source = format!("{SCHEMA}{ops}");
-    let start = source.find(block).expect("block present");
-    let (line, column) = coordinate(&ops, block);
-    assert_eq!(diagnostic.code(), Code::CheckTransactionConditional);
-    assert_eq!(diagnostic.file().as_str(), "src/main.mw");
-    assert_eq!(
-        diagnostic.span(),
-        marrow_syntax::SourceSpan {
-            start_byte: start,
-            end_byte: start + block.len(),
-            line,
-            column,
-        }
-    );
-}
-
-/// Every control-flow shape that places a `transaction` block where paths disagree on
-/// whether it has run, begins it twice, or leaves it open, paired with the exact
-/// ordered diagnostics it receives. `diagnostics` panics on a compiler invariant, so
-/// every row also pins that no such source reaches one.
-#[test]
-fn transaction_region_family_is_refused_at_its_construct() {
+/// The rows of [`transaction_region_family_is_refused_at_its_construct`].
+fn transaction_region_rows() -> Vec<RegionRow> {
     use Code::{
         CheckTransactionConditional as Conditional, CheckTransactionMisplaced as Misplaced,
         CheckTransactionOwnerCalled as OwnerCalled, CheckTransactionReopened as Reopened,
@@ -379,7 +331,17 @@ fn transaction_region_family_is_refused_at_its_construct() {
     };
     const W1: &str = "{ ^counters[id] = Counter(value: 1) }";
     const W2: &str = "{ ^counters[id] = Counter(value: 2) }";
-    let rows = [
+    vec![
+        (
+            "one-armed if",
+            format!("pub fn f(id: int, go: bool) {{\n    if go {{\n        transaction {W1}\n    }}\n}}\n"),
+            vec![(Conditional, W1)],
+        ),
+        (
+            "two sequential blocks",
+            format!("pub fn f(id: int) {{\n    transaction {W1}\n    transaction {W2}\n}}\n"),
+            vec![(Reopened, W2)],
+        ),
         (
             "else only",
             format!("pub fn f(id: int, go: bool) {{\n    if go {{\n    }} else {{\n        transaction {W1}\n    }}\n}}\n"),
@@ -453,9 +415,24 @@ fn transaction_region_family_is_refused_at_its_construct() {
             vec![(Uncommitted, "continue")],
         ),
         (
+            "break out of the block in a range for",
+            "pub fn f(id: int) {\n    for i in 0..3 {\n        transaction {\n            ^counters[i] = Counter(value: i)\n            break\n        }\n    }\n}\n".to_string(),
+            vec![(Uncommitted, "break")],
+        ),
+        (
+            "continue out of the block in a list for",
+            "pub fn f(xs: List<int>) {\n    for x in xs {\n        transaction {\n            ^counters[x] = Counter(value: x)\n            continue\n        }\n    }\n}\n".to_string(),
+            vec![(Uncommitted, "continue")],
+        ),
+        (
             "conditional block nested in the region",
             format!("pub fn f(id: int, go: bool) {{\n    transaction {{\n        if go {{\n            transaction {W1}\n        }}\n        ^counters[id + 1] = Counter(value: 8)\n    }}\n}}\n"),
             vec![(Reopened, W1)],
+        ),
+        (
+            "block with a require nested in the region",
+            "pub fn f(id: int, v: int): Result<int, string> {\n    transaction {\n        transaction {\n            require v > 0 else \"value must be positive\"\n            ^counters[id] = Counter(value: v)\n            return ok(v)\n        }\n    }\n}\n".to_string(),
+            vec![(Reopened, "{\n            require v > 0 else \"value must be positive\"\n            ^counters[id] = Counter(value: v)\n            return ok(v)\n        }")],
         ),
         (
             "block nested in the region",
@@ -475,32 +452,39 @@ fn transaction_region_family_is_refused_at_its_construct() {
         (
             "helper owning a block reached through another helper",
             format!("fn inner(id: int) {{\n    transaction {W1}\n}}\nfn middle(id: int) {{\n    inner(id)\n}}\npub fn outer(id: int) {{\n    middle(id)\n}}\n"),
-            vec![(Misplaced, W1), (OwnerCalled, "inner(id)\n")],
+            vec![(Misplaced, W1), (OwnerCalled, "inner(id)")],
         ),
         (
             "helper whose block breaks out of its loop",
             "fn h(id: int) {\n    var i = 0\n    while i < 3 {\n        transaction {\n            ^counters[i] = Counter(value: i)\n            break\n        }\n    }\n}\npub fn f(id: int) {\n    transaction {\n        h(id)\n    }\n}\n".to_string(),
-            vec![(Misplaced, "{\n            ^counters[i]"), (OwnerCalled, "h(id)\n")],
+            vec![(Misplaced, "{\n            ^counters[i] = Counter(value: i)\n            break\n        }"), (OwnerCalled, "h(id)")],
         ),
         (
             "helper whose block continues its loop",
             "fn h(id: int) {\n    var i = 0\n    while i < 3 {\n        i += 1\n        transaction {\n            ^counters[i] = Counter(value: i)\n            continue\n        }\n    }\n}\npub fn f(id: int) {\n    h(id)\n}\n".to_string(),
-            vec![(Misplaced, "{\n            ^counters[i]"), (OwnerCalled, "h(id)\n")],
+            vec![(Misplaced, "{\n            ^counters[i] = Counter(value: i)\n            continue\n        }"), (OwnerCalled, "h(id)")],
         ),
-    ];
-    let mismatches: Vec<String> = rows
+    ]
+}
+
+/// A matrix of control-flow shapes that place a `transaction` block where paths disagree
+/// on whether it has run, begin it twice, or leave it open, each paired with the exact
+/// ordered diagnostics it receives at their complete source spans. A block in a
+/// one-armed `if` is reported at the block rather than emitted as an image the verifier
+/// refuses at `image.flow`. `diagnostics` panics on a compiler invariant, so every row
+/// also pins that no such source reaches one.
+#[test]
+fn transaction_region_family_is_refused_at_its_construct() {
+    let mismatches: Vec<String> = transaction_region_rows()
         .into_iter()
         .filter_map(|(label, ops, expected)| {
-            let got: Vec<(Code, u32, u32)> = diagnostics(&ops)
+            let got: Vec<(Code, String, SourceSpan)> = diagnostics(&ops)
                 .iter()
-                .map(|d| (d.code(), d.line(), d.column()))
+                .map(|d| (d.code(), d.file().as_str().to_string(), d.span()))
                 .collect();
-            let want: Vec<(Code, u32, u32)> = expected
+            let want: Vec<(Code, String, SourceSpan)> = expected
                 .iter()
-                .map(|&(code, needle)| {
-                    let (line, column) = coordinate(&ops, needle);
-                    (code, line, column)
-                })
+                .map(|&(code, needle)| (code, "src/main.mw".to_string(), span_of(&ops, needle)))
                 .collect();
             (got != want).then(|| format!("{label}: got {got:?}, want {want:?}"))
         })

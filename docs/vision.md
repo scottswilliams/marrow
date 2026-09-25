@@ -57,9 +57,9 @@ The data can be larger than memory. A loop over a root, a branch, or an index
 says how many keys it visits with `at most N` and what to do when more remain
 with `on more`. Larger work is repeated bounded batches.
 
-Related writes commit together. A mutating export owns one `transaction` block,
-and every durable write sits inside it. When the block ends, its writes commit as
-one change. If it faults, none of them apply, and the report names the
+Related writes commit together. A mutating export's durable writes sit inside a
+`transaction` block, which it begins at most once on any path. When the block
+ends, its writes commit as one change. If it faults, none of them apply, and the report names the
 [durable outcome](language/errors-and-transactions.md#interrupted-invocations).
 
 A code change meets stored data. A change to a function body reopens an existing

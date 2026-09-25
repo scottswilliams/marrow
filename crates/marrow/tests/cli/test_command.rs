@@ -467,8 +467,7 @@ test "mixed body" {
 /// and never publishes the image.
 #[test]
 fn a_conditional_transaction_is_a_check_diagnostic_not_an_image_rejection() {
-    let output = Project::single(
-        r#"resource Counter {
+    const SOURCE: &str = r#"resource Counter {
     required value: int
     label: string
 }
@@ -491,21 +490,24 @@ test "conditional writer" {
     maybe(1, true)
     assert valueOf(1) ?? 0 == 7
 }
-"#,
-    )
-    .ids(COUNTERS_IDS)
-    .run_cli("conditional-transaction", &["test", "--format", "jsonl"]);
+"#;
+    const BLOCK: &str = "{\n            ^counters[id] = Counter(value: 7)\n        }";
+    let output = Project::single(SOURCE)
+        .ids(COUNTERS_IDS)
+        .run_cli("conditional-transaction", &["test", "--format", "jsonl"]);
     assert!(!output.status.success(), "{output:?}");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let record = stdout
+    let record: serde_json::Value = stdout
         .lines()
-        .find(|l| l.contains("check.transaction_conditional"))
+        .map(|line| serde_json::from_str(line).expect("each stdout line is one JSON record"))
+        .find(|record: &serde_json::Value| record["code"] == "check.transaction_conditional")
         .unwrap_or_else(|| panic!("no conditional-transaction diagnostic: {stdout}"));
-    assert!(record.contains(r#""outcome":"diagnostic""#), "{record}");
-    assert!(
-        record.contains(r#""span":{"column":21,"line":14}"#),
-        "{record}"
-    );
+    let start = SOURCE.find(BLOCK).expect("the block is in the source");
+    let line = SOURCE[..start].matches('\n').count() + 1;
+    let column = start - SOURCE[..start].rfind('\n').map_or(0, |at| at + 1) + 1;
+    assert_eq!(record["outcome"], "diagnostic", "{record}");
+    assert_eq!(record["span"]["line"], line, "{record}");
+    assert_eq!(record["span"]["column"], column, "{record}");
     assert!(!stdout.contains("image.flow"), "{stdout}");
 }
 

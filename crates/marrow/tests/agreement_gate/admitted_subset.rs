@@ -708,6 +708,14 @@ fn transaction_flow_admitted_rows() -> Vec<Row> {
             "pub fn maybe(id: int, go: bool) {\n    if not go {\n        return\n    }\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn titleOf(id: int): string? {\n    return ^books[id].title\n}\n\ntest \"the skipped path returns before the block\" {\n    maybe(1, false)\n    maybe(2, true)\n    assert titleOf(1) ?? \"none\" == \"none\"\n    assert titleOf(2) ?? \"none\" == \"t\"\n}",
         ),
         runs(
+            "while with break and continue inside the block / driver test",
+            "pub fn upTo(n: int, stop: int) {\n    transaction {\n        var i = 0\n        while i < n {\n            i += 1\n            if i == 2 {\n                continue\n            }\n            if i == stop {\n                break\n            }\n            ^books[i].notes[\"n\"] = Book.notes(text: \"t\")\n        }\n    }\n}\n\npub fn noteOf(id: int): string? {\n    return ^books[id].notes[\"n\"].text\n}\n\ntest \"a while loop inside the block breaks and continues within it\" {\n    upTo(5, 4)\n    assert noteOf(1) ?? \"none\" == \"t\"\n    assert noteOf(2) ?? \"none\" == \"none\"\n    assert noteOf(3) ?? \"none\" == \"t\"\n    assert noteOf(4) ?? \"none\" == \"none\"\n}",
+        ),
+        runs(
+            "range for with break and continue inside the block / driver test",
+            "pub fn upTo(stop: int) {\n    transaction {\n        for i in 0..5 {\n            if i == 1 {\n                continue\n            }\n            if i == stop {\n                break\n            }\n            ^books[i].notes[\"n\"] = Book.notes(text: \"t\")\n        }\n    }\n}\n\npub fn noteOf(id: int): string? {\n    return ^books[id].notes[\"n\"].text\n}\n\ntest \"a range loop inside the block breaks and continues within it\" {\n    upTo(3)\n    assert noteOf(0) ?? \"none\" == \"t\"\n    assert noteOf(1) ?? \"none\" == \"none\"\n    assert noteOf(2) ?? \"none\" == \"t\"\n    assert noteOf(3) ?? \"none\" == \"none\"\n}",
+        ),
+        runs(
             "bounded for with continue inside the block / driver test",
             "pub fn seed(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn markAll() {\n    transaction {\n        for id in ^books at most 10 {\n            ref m = ^books[id] else { continue }\n            m.subtitle = \"x\"\n        } on more {\n        }\n    }\n}\n\npub fn subtitleOf(id: int): string? {\n    return ^books[id].subtitle\n}\n\ntest \"a loop inside the block continues within it\" {\n    seed(1)\n    markAll()\n    assert subtitleOf(1) ?? \"none\" == \"x\"\n}",
         ),

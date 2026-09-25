@@ -9,7 +9,7 @@ on its own. Concurrent execution is future work
 
 ## Transactions
 
-A mutating export owns one `transaction` block:
+A mutating export groups its durable writes in a `transaction` block:
 
 ```mw
 module docs::errors::bump
@@ -64,11 +64,11 @@ export that owns a block is called only from a [test](tests.md) body
 The block stages its writes. A read inside the block sees writes staged earlier
 in the same block. The block commits at its closing brace and every normal
 function exit inside it, including `return`, `try` failure and `require` failure.
-An exit inside the block evaluates its
-value, then commits, then returns, so `return ^books[id].loans` returns the
-staged value. An export opens its block once (`check.transaction_reopened`), the
-block touches at least one durable address (`check.transaction_empty`), and no
-durable read or write follows the commit (`check.durable_after_commit`).
+An exit inside the block evaluates its value, then commits, then returns, so
+`return ^books[id].loans` returns the staged value. An export begins its region
+at most once on any path (`check.transaction_reopened`), the block touches at
+least one durable address (`check.transaction_empty`), and no durable read or
+write follows the commit (`check.durable_after_commit`).
 
 Paths that meet agree on whether the block has run. A block in one arm of an
 `if` or `match` whose arm continues past it is `check.transaction_conditional`;
@@ -78,6 +78,61 @@ again is `check.transaction_reopened`; move the loop inside the block. A path
 that returns, inside or after the block, meets no other path, so an arm that
 ends with `return` after its block is legal. A `break` or `continue` that leaves
 the block before it commits is `check.transaction_uncommitted`.
+
+```mw
+module docs::errors::paths
+
+resource Book {
+    required title: string
+    loans: int
+}
+
+store ^books[id: int]: Book
+
+pub fn shelve(id: int, title: string, restock: bool): string {
+    if restock {
+        transaction {
+            ^books[id] = Book(title: title, loans: 0)
+        }
+        return "restocked"
+    }
+    transaction {
+        ^books[id] = Book(title: title)
+    }
+    return "added"
+}
+
+pub fn lend(id: int, allowed: bool): bool {
+    if not allowed {
+        return false
+    }
+    transaction {
+        ref m = ^books[id] else {
+            return false
+        }
+        m.loans = (m.loans ?? 0) + 1
+    }
+    return true
+}
+
+pub fn loans(id: int): int? {
+    return ^books[id].loans
+}
+
+test "each path begins the region at most once" {
+    assert shelve(1, "Mort", true) == "restocked"
+    assert shelve(2, "Eric", false) == "added"
+    assert lend(1, false) == false
+    assert lend(1, true)
+    assert loans(1) ?? 0 == 1
+    assert loans(2) ?? 0 == 0
+}
+```
+
+`shelve` holds two blocks, and each path through it begins one: the `restock`
+arm returns after its block, so it never meets the path that reaches the second
+block. `lend` returns before its block when lending is not allowed, so every path
+that continues past the `if` has not yet begun the region.
 
 ## Guards inside a block
 

@@ -80,6 +80,102 @@ fn borrowed_bodies_require_the_actual_function_and_every_instruction_span() {
     );
 }
 
+/// `owner_lattice_violation` over a hand-built export tape, one distinct span per
+/// instruction so a report names the instruction it anchors at.
+fn owner_lattice_report(code: &[marrow_image::Instr]) -> Option<(Code, SourceSpan)> {
+    use marrow_image::{FunctionDef, ImageDraft, ImageType, Instr};
+
+    let mut draft = ImageDraft::new();
+    let mut txn = admitted(&mut draft);
+    let name = txn.intern_string("owner").expect("name fits");
+    let source = txn.intern_string("src/main.mw").expect("source fits");
+    let func = txn
+        .add_function(FunctionDef {
+            name,
+            source,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            code: vec![Instr::Return],
+            spans: Vec::new(),
+        })
+        .expect("append a body without sites");
+    txn.commit();
+    let function = super::LoweredFn {
+        func,
+        file: crate::test_file("src/main.mw").clone(),
+        name: "owner".to_string(),
+        span: SourceSpan::default(),
+        callees: Vec::new(),
+        role: BodyRole::Export,
+        unwrapped_mutations: Vec::new(),
+        unwrapped_calls: Vec::new(),
+        erased_families: Vec::new(),
+        presence_obligations: Vec::new(),
+        presence_calls: Vec::new(),
+        has_direct_durable_op: false,
+        code_spans: (1..=code.len() as u32)
+            .map(|line| SourceSpan {
+                line,
+                ..SourceSpan::default()
+            })
+            .collect(),
+    };
+    let body = super::LoweredBody {
+        function: &function,
+        code,
+    };
+    super::owner_lattice_violation(&body, &[], 0).map(|(code, span, _)| (code, span))
+}
+
+fn line(line: u32) -> SourceSpan {
+    SourceSpan {
+        line,
+        ..SourceSpan::default()
+    }
+}
+
+/// Lowering refuses every source jump that leaves an export's open block, so these
+/// shapes reach the walk only from a lowering change that adds a boundary-crossing
+/// jump. The walk still reports the path left open at its block's begin, whichever side
+/// of the merge the worklist reaches first, and a return reached inside the region at
+/// the return.
+#[test]
+fn the_owner_walk_reports_a_region_left_open_at_its_block() {
+    use marrow_image::Instr;
+
+    // The path outside the block reaches the merge first; the open path arrives second.
+    let outside_first = [
+        Instr::JumpIfFalse(3),
+        Instr::TxnBegin,
+        Instr::Jump(3),
+        Instr::Return,
+    ];
+    // The open path reaches the merge first; the path outside the block arrives second.
+    let open_first = [
+        Instr::JumpIfFalse(3),
+        Instr::TxnBegin,
+        Instr::Jump(4),
+        Instr::Jump(4),
+        Instr::Return,
+    ];
+    for tape in [&outside_first[..], &open_first[..]] {
+        assert_eq!(
+            owner_lattice_report(tape),
+            Some((Code::CheckTransactionUncommitted, line(2))),
+            "{tape:?}"
+        );
+    }
+    assert_eq!(
+        owner_lattice_report(&[Instr::TxnBegin, Instr::Return]),
+        Some((Code::CheckTransactionUncommitted, line(2)))
+    );
+    assert_eq!(
+        owner_lattice_report(&[Instr::TxnBegin, Instr::TxnCommit, Instr::Return]),
+        None
+    );
+}
+
 /// The minting guard rejects every input class whose dotted join would break the
 /// ExportId payload's injectivity, even though no current capture path produces them.
 #[test]

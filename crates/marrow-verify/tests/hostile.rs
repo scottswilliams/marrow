@@ -2704,12 +2704,11 @@ fn flow_mutating_helper_inside_transaction_verifies() {
 }
 
 /// A transaction owner may not be called, isolated to the call rule. Unlike
-/// [`flow_transaction_owner_may_not_be_called_rejects`], whose owner is a non-export
-/// (so the marker-outside-owning-export rule could also fire), here both functions
-/// are exports and `owner` is a fully valid owner — its own region opens once and
-/// commits on every path. The only violation is that `caller` invokes it, so the
-/// rejection pins the call rule alone: a mutating export owns exactly one region and
-/// is never re-entered through a call.
+/// [`flow_a_helper_owning_a_transaction_rejects`], whose owner is a non-export and is
+/// refused for the misplaced marker, here both functions are exports and `owner` is a
+/// fully valid owner: its own region opens once and commits on every path. The only
+/// violation is that `caller` invokes it, so the rejection pins the call rule alone: an
+/// owning export is never re-entered through a call.
 #[test]
 fn flow_calling_a_valid_owner_export_rejects() {
     let mut draft_owner = ImageDraft::new();
@@ -2753,8 +2752,8 @@ fn flow_calling_a_valid_owner_export_rejects() {
     draft.add_export(ExportId::of_local("", "owner"), owner);
     draft.add_export(ExportId::of_local("", "caller"), caller);
     assert_eq!(
-        verdict_of(&draft.encode().unwrap().bytes),
-        Refused(VerifyPhase::Flow)
+        refusal_of(&draft.encode().unwrap().bytes),
+        Some((VerifyPhase::Flow, RejectionKind::OwnerCalled))
     );
 }
 
@@ -3302,9 +3301,10 @@ fn a_two_slot_branch_strict_set_without_a_presence_fact_rejects() {
 }
 
 #[test]
-fn flow_transaction_owner_may_not_be_called_rejects() {
-    // A helper owns a transaction (contains TxnBegin); an export that calls it is a
-    // flow violation — helpers cannot own the transaction.
+fn flow_a_helper_owning_a_transaction_rejects() {
+    // A helper that is not an export holds a TxnBegin. Only an export owns a region, so
+    // the marker is refused where it sits, before the export's call to the helper is
+    // weighed.
     let mut draft_owner = ImageDraft::new();
     let mut draft = draft_owner.begin_transaction();
     let sites = durable_schema(&mut draft);
@@ -3335,8 +3335,8 @@ fn flow_transaction_owner_may_not_be_called_rejects() {
     );
     draft.add_export(ExportId::of_local("", "main"), main);
     assert_eq!(
-        verdict_of(&draft.encode().unwrap().bytes),
-        Refused(VerifyPhase::Flow)
+        refusal_of(&draft.encode().unwrap().bytes),
+        Some((VerifyPhase::Flow, RejectionKind::MarkerOutsideOwner))
     );
 }
 
@@ -3615,8 +3615,8 @@ fn transaction_marker_in_a_test_entry_rejects_at_flow() {
     let func = add_fn(&mut draft, "holds", Vec::new(), ImageType::Unit, 0, code);
     draft.add_test_entry(title, func);
     assert_eq!(
-        verdict_of(&draft.encode().unwrap().bytes),
-        Refused(VerifyPhase::Flow)
+        refusal_of(&draft.encode().unwrap().bytes),
+        Some((VerifyPhase::Flow, RejectionKind::MarkerOutsideOwner))
     );
 }
 
