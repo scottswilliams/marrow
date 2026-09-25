@@ -12,10 +12,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use crate::common::{
-    MARROW_BIN, stage_toolchain, staged_marrow_in, store_files, unaccepted_ceiling_id, write,
-};
-use marrow_test_support::Scratch;
+use crate::common::{MARROW_BIN, stage_toolchain, staged_marrow_in, unaccepted_ceiling_id, write};
+use marrow_test_support::{Scratch, store_files};
 
 const SOURCE: &str = r#"resource Counter {
     required value: int

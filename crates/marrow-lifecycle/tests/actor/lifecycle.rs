@@ -53,8 +53,8 @@ fn projection_of(image: &VerifiedImage) -> marrow_kernel::durable::StoreProjecti
 
 use marrow_codes::Code;
 
-use crate::support::store::{provision_from, store_files};
-use marrow_test_support::Scratch;
+use crate::support::store::provision_from;
+use marrow_test_support::{Scratch, store_files};
 
 #[test]
 fn refused_attach_preserves_absent_owner_marker() {

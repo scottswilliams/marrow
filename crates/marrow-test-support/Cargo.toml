@@ -1,6 +1,6 @@
 [package]
 name = "marrow-test-support"
-description = "The test scaffolding more than one binary builds over: the one scratch directory, the image draft seam and forger, the ledger-id fixtures, the engine doubles, and the verifier's tracer corpus."
+description = "The test scaffolding more than one binary builds over: the one scratch directory, the image draft seam and forger, the ledger-id and positional-value fixtures, the store snapshot, the engine doubles, and the verifier's tracer corpus."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

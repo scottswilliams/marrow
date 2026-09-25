@@ -8,10 +8,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::common::{
-    CliOutcome, stage_toolchain, staged_marrow_in, store_files, unaccepted_ceiling_id, write,
-};
-use marrow_test_support::Scratch;
+use crate::common::{CliOutcome, stage_toolchain, staged_marrow_in, unaccepted_ceiling_id, write};
+use marrow_test_support::{Scratch, store_files};
 
 const SOURCE: &str = r#"struct Pos {
     x: int

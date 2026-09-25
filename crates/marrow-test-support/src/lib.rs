@@ -1,6 +1,7 @@
 //! The test scaffolding more than one binary builds over: the one scratch directory, the
-//! image draft seam and forger, the ledger-id fixtures, the engine doubles and the
-//! verifier's tracer corpus, plus captured project inputs and their ledger writer.
+//! image draft seam and forger, the ledger-id and positional-value fixtures, the store
+//! snapshot, the engine doubles and the verifier's tracer corpus, plus captured project
+//! inputs and their ledger writer.
 //! It does not depend on the compiler. Every production crate reaches it only through
 //! `[dev-dependencies]`, so nothing here reaches a production build.
 
@@ -15,8 +16,10 @@ pub mod ledger_ids;
 mod mode;
 mod output;
 pub mod owned_heap;
+pub mod positional;
 pub mod project;
 mod scratch;
+mod store_snapshot;
 pub mod tracer_schema;
 
 pub use counting_engine::{Counters, CountingEngine};
@@ -26,3 +29,4 @@ pub use ledger_ids::id;
 pub use mode::{mode_of, require_mode_bits_bind, set_mode};
 pub use output::broken_output;
 pub use scratch::{MANIFEST, Scratch, file_uri};
+pub use store_snapshot::store_files;

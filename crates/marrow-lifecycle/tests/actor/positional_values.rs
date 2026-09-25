@@ -13,44 +13,14 @@ use marrow_lifecycle::{
     LogicalHead, UnsupportedChange, active_binding, apply, attach, prepare,
 };
 use marrow_test_programs::program::{compile_bytes, export_id};
-use marrow_test_support::Scratch;
+use marrow_test_support::positional::{
+    IDS, PAIR, PAIR_SWAPPED, POS, POS_SWAPPED, SHAPE, SHAPE_SWAPPED,
+};
+use marrow_test_support::{Scratch, store_files};
 use marrow_verify::{VerifiedImage, verify};
 use marrow_vm::{DurableRun, Value, run_export};
 
-use crate::support::store::{provision_from, store_files};
-
-/// One ledger for every program below: a `markers` root whose `Marker` resource stores
-/// `at` (or the top-level pair `x`/`y`), and every enum anchor those programs reach.
-const IDS: &str = "marrow ids v0\n\
-     machine-written by marrow; do not edit\n\
-     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
-     id product Marker 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
-     id root markers 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
-     id key markers.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
-     id field Marker.at 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
-     id field Marker.x 1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a\n\
-     id field Marker.y 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b\n\
-     id sum Shape 50505050505050505050505050505050\n\
-     id member Shape.rect 51515151515151515151515151515151\n\
-     id sum Place 52525252525252525252525252525252\n\
-     id member Place.at 53535353535353535353535353535353\n\
-     id sum Option[Pos] 60606060606060606060606060606060\n\
-     id member Option[Pos].none 61616161616161616161616161616161\n\
-     id member Option[Pos].some 62626262626262626262626262626262\n\
-     id sum Result[Pos,int] 70707070707070707070707070707070\n\
-     id member Result[Pos,int].ok 71717171717171717171717171717171\n\
-     id member Result[Pos,int].err 72727272727272727272727272727272\n\
-     id sum Pair[int] 80808080808080808080808080808080\n\
-     id member Pair[int].two 81818181818181818181818181818181\n\
-     high-water 0\n\
-     end\n";
-
-const POS: &str = "struct Pos {\n    x: int\n    y: int\n}\n";
-const POS_SWAPPED: &str = "struct Pos {\n    y: int\n    x: int\n}\n";
-const SHAPE: &str = "enum Shape {\n    rect(width: int, height: int)\n}\n";
-const SHAPE_SWAPPED: &str = "enum Shape {\n    rect(height: int, width: int)\n}\n";
-const PAIR: &str = "enum Pair<T> {\n    two(a: T, b: T)\n}\n";
-const PAIR_SWAPPED: &str = "enum Pair<T> {\n    two(b: T, a: T)\n}\n";
+use crate::support::store::provision_from;
 
 /// A program storing `value: ty` in `Marker.at`, written by `put` and read by `read`.
 fn program(decls: &str, ty: &str, value: &str) -> String {

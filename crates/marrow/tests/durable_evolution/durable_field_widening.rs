@@ -16,6 +16,9 @@ use marrow_image::{
     CanonicalValueShapeDag, DurableMemberViewKind, ImageType, Scalar, ValueShapeNodeId,
     ValueShapeView,
 };
+use marrow_test_support::positional::{
+    IDS, PAIR, PAIR_SWAPPED, POS, POS_SWAPPED, SHAPE, SHAPE_SWAPPED,
+};
 use marrow_verify::{DurableContractId, VerifiedImage};
 
 use crate::common::{Diagnostics, Project};
@@ -655,33 +658,6 @@ fn the_nested_option_reached_through_the_result_mints_its_own_anchor() {
 
 // --- Stored positional leaves: struct leaves and enum payload leaves. ---
 
-/// One ledger for every positional-leaf program below: a `markers` root whose `Marker`
-/// resource stores `at` (or the top-level pair `x`/`y`), plus the sum and member anchors
-/// each stored enum needs.
-const POSITIONAL_IDS: &str = "marrow ids v0\n\
-     machine-written by marrow; do not edit\n\
-     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
-     id product Marker 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
-     id root markers 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
-     id key markers.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
-     id field Marker.at 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
-     id field Marker.x 1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a\n\
-     id field Marker.y 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b\n\
-     id sum Shape 50505050505050505050505050505050\n\
-     id member Shape.rect 51515151515151515151515151515151\n\
-     id sum Place 52525252525252525252525252525252\n\
-     id member Place.at 53535353535353535353535353535353\n\
-     id sum Option[Pos] 60606060606060606060606060606060\n\
-     id member Option[Pos].none 61616161616161616161616161616161\n\
-     id member Option[Pos].some 62626262626262626262626262626262\n\
-     id sum Result[Pos,int] 70707070707070707070707070707070\n\
-     id member Result[Pos,int].ok 71717171717171717171717171717171\n\
-     id member Result[Pos,int].err 72727272727272727272727272727272\n\
-     id sum Pair[int] 80808080808080808080808080808080\n\
-     id member Pair[int].two 81818181818181818181818181818181\n\
-     high-water 0\n\
-     end\n";
-
 /// A program storing `field` in `Marker.at`, beside the declarations `decls`.
 fn marker_program(decls: &str, field: &str) -> String {
     format!(
@@ -689,18 +665,15 @@ fn marker_program(decls: &str, field: &str) -> String {
     )
 }
 
-const POS: &str = "struct Pos {\n    x: int\n    y: int\n}\n";
-const POS_SWAPPED: &str = "struct Pos {\n    y: int\n    x: int\n}\n";
 const POS_RENAMED: &str = "struct Pos {\n    z: int\n    y: int\n}\n";
-const SHAPE: &str = "enum Shape {\n    rect(width: int, height: int)\n}\n";
 const INNER: &str = "struct Inner {\n    a: int\n    b: int\n}\n";
-const PAIR: &str = "enum Pair<T> {\n    two(a: T, b: T)\n}\n";
 const TOP_LEVEL: &str = "resource Marker {\n    required x: int\n    required y: int\n}\n\nstore ^markers[id: int]: Marker\n";
 
 /// A stored struct or enum payload value lives positionally in one cell, so each leaf's
 /// declared name and position is part of what its bytes mean: any edit to them moves the
-/// durable contract. Top-level fields keep their ledger identity (their reorder moves the
-/// contract too, as a control), and a code-only edit moves nothing.
+/// durable contract. A top-level field reorder also moves the contract, although
+/// `marrow apply` accepts it because each value stays under its own ledger id; a code-only
+/// edit moves nothing.
 #[test]
 fn reordering_or_renaming_a_stored_positional_leaf_changes_the_contract() {
     let nested = |inner: &str| format!("{inner}struct Pos {{\n    i: Inner\n    c: int\n}}\n");
@@ -718,10 +691,7 @@ fn reordering_or_renaming_a_stored_positional_leaf_changes_the_contract() {
         (
             "payload swap",
             marker_program(SHAPE, "Shape"),
-            marker_program(
-                &SHAPE.replace("width: int, height: int", "height: int, width: int"),
-                "Shape",
-            ),
+            marker_program(SHAPE_SWAPPED, "Shape"),
         ),
         (
             "payload rename",
@@ -749,7 +719,7 @@ fn reordering_or_renaming_a_stored_positional_leaf_changes_the_contract() {
         (
             "generic payload swap",
             marker_program(PAIR, "Pair<int>"),
-            marker_program(&PAIR.replace("a: T, b: T", "b: T, a: T"), "Pair<int>"),
+            marker_program(PAIR_SWAPPED, "Pair<int>"),
         ),
         (
             "top-level field swap",
@@ -762,9 +732,7 @@ fn reordering_or_renaming_a_stored_positional_leaf_changes_the_contract() {
     ];
     let unchanged: Vec<_> = cases
         .iter()
-        .filter(|(_, before, after)| {
-            contract_of(before, POSITIONAL_IDS) == contract_of(after, POSITIONAL_IDS)
-        })
+        .filter(|(_, before, after)| contract_of(before, IDS) == contract_of(after, IDS))
         .map(|(label, _, _)| *label)
         .collect();
     assert!(
@@ -774,8 +742,8 @@ fn reordering_or_renaming_a_stored_positional_leaf_changes_the_contract() {
     let stored = marker_program(POS, "Pos");
     let code_only = format!("{stored}\npub fn one(): int {{\n    return 1\n}}\n");
     assert_eq!(
-        contract_of(&stored, POSITIONAL_IDS),
-        contract_of(&code_only, POSITIONAL_IDS),
+        contract_of(&stored, IDS),
+        contract_of(&code_only, IDS),
         "a code-only edit keeps the durable contract"
     );
 }
@@ -932,7 +900,7 @@ fn stored_enum_payload_names_follow_the_declared_payload_in_lowering_order() {
         ),
     ];
     for (label, source, expected) in cases {
-        let image = project(&source, POSITIONAL_IDS).image();
+        let image = project(&source, IDS).image();
         let graph = image.durable_graph();
         let root = graph.roots().next().expect("the markers root");
         let DurableMemberViewKind::Field(field) =

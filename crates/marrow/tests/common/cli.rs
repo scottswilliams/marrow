@@ -4,8 +4,6 @@
 //! the suites drive in place.
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
-use std::ffi::OsString;
 use std::fs;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
@@ -14,21 +12,6 @@ use std::process::{Command, Output};
 use marrow_test_support::Scratch;
 
 use super::project::Project;
-
-/// Every file in a store directory with its bytes, keyed by name, so two snapshots are
-/// equal exactly when no store artifact changed.
-pub fn store_files(dir: &Path) -> BTreeMap<OsString, Vec<u8>> {
-    fs::read_dir(dir)
-        .expect("store entries")
-        .map(|entry| {
-            let entry = entry.expect("store entry");
-            (
-                entry.file_name(),
-                fs::read(entry.path()).expect("store file"),
-            )
-        })
-        .collect()
-}
 
 /// The built `marrow` binary under test.
 pub const MARROW_BIN: &str = env!("CARGO_BIN_EXE_marrow");

@@ -172,8 +172,8 @@ fn populated_backup_restores_fresh_identity_head_index_and_executable_values() {
     drop(std::mem::ManuallyDrop::into_inner(scratch));
 }
 
-use crate::support::store::{provision_from, store_files};
-use marrow_test_support::Scratch;
+use crate::support::store::provision_from;
+use marrow_test_support::{Scratch, store_files};
 
 use marrow_codes::Code;
 

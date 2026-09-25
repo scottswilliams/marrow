@@ -7,8 +7,6 @@
 //! binding, ceiling, or pin fact at a time. Both live here so a suite cannot quietly grow a
 //! third.
 
-use std::collections::BTreeMap;
-use std::ffi::OsString;
 use std::path::Path;
 
 use marrow_lifecycle::{
@@ -17,21 +15,6 @@ use marrow_lifecycle::{
     accepted_ceiling, active_binding, attach, head_map, prepare, provision, provision_image,
 };
 use marrow_verify::VerifiedImage;
-
-/// Every file in a store directory with its bytes, keyed by name, so two snapshots are
-/// equal exactly when no store artifact changed.
-pub fn store_files(dir: &Path) -> BTreeMap<OsString, Vec<u8>> {
-    std::fs::read_dir(dir)
-        .expect("store entries")
-        .map(|entry| {
-            let entry = entry.expect("store entry");
-            (
-                entry.file_name(),
-                std::fs::read(entry.path()).expect("store file"),
-            )
-        })
-        .collect()
-}
 
 /// A fresh envelope for a store this suite is about to publish.
 pub fn envelope(instance: StoreInstanceId) -> StoreEnvelope {
