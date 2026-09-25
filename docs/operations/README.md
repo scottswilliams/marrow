@@ -196,9 +196,18 @@ refuses a pending transition. Recovery requires the program matching the head
 actually present; it does not replay the missing update. A third head is refused.
 
 The durable contract is the set of resources, store roots, keys, fields, and
-indexes the program declares. No current transition rewrites stored data.
+indexes the program declares, including the declared names and order of the
+fields of every stored struct value and enum payload. No current transition
+rewrites stored data.
 Explicit [`marrow apply`](../tools/cli.md#marrow-apply) accepts verified OLD and NEW
-artifacts, preserves all old representations and adds sparse scalar fields.
+artifacts when every old stored representation is unchanged and the only
+additions are optional scalar fields. It may reorder a resource's own fields,
+because each is stored under its id. A stored struct or enum payload is read
+by position from one cell, so a reorder, rename, addition, removal, or retype of
+one of its fields is refused with `store.apply_unsupported` and reason
+`stored_value`, as are a retyped field and a changed enum member
+([durable identity](../language/durable-data.md#durable-identity)). Stored values
+are never converted; keep the old declaration, or provision a fresh store.
 New fields start absent; ordinary NEW exports can subsequently write them.
 The operation verifies OLD against the actual accepted Head, audits its logical
 contents read-only, and publishes NEW through the same Pending/Head/Active owner.

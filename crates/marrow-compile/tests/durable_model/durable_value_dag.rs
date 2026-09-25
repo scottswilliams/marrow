@@ -596,28 +596,30 @@ fn a_fitting_diamond_keeps_its_exact_bytes_and_contract_identity() {
 }
 
 /// The exact DURABLE section bytes of [`small_diamond`], as the occurrence-tree
-/// encoder produced them.
+/// encoder produced them: every occurrence of `Leaf` spells its leaves `v` and `w`, and
+/// `Mid` spells `a` and `b`, each behind the `0x03` leaf marker.
 const DIAMOND_DURABLE_SECTION: &str = concat!(
     "0001000000000000000000000000000000010003000101000000000000000000000000000000050000000000",
     "0000000000000000000000000400000000000000000000000000000002000200000000000000000000000000",
-    "0000000301010002000100030000000000000000000000000000000006010100020100020001000301000200",
-    "01000300000001020000000000000000000000000000000001030000000000000000000000000000000400ff",
-    "c27d314dbabc963ab14259d0a2da35e46c8e7537840a97a971cb2683a8094b",
+    "0000000301010002030001760001030001770003000000000000000000000000000000000601010002030001",
+    "6101000203000176000103000177000303000162010002030001760001030001770003000000010200000000",
+    "00000000000000000000000001030000000000000000000000000000000400083794d6be9c9485f31ceff1b3",
+    "1c069ace76574c4659f63c3f772b0f4fd38ee3",
 );
 
 /// The exact durable-contract identity of [`small_diamond`], as the occurrence-tree
 /// encoder produced it.
 const DIAMOND_CONTRACT_ID: &str =
-    "ffc27d314dbabc963ab14259d0a2da35e46c8e7537840a97a971cb2683a8094b";
+    "083794d6be9c9485f31ceff1b31c069ace76574c4659f63c3f772b0f4fd38ee3";
 
 /// The current-generation whole-image identity of [`small_diamond`].
-const DIAMOND_IMAGE_ID: &str = "151aea50ca5b088757436d4705353175560ebc64c67d3a2fcd102ecf8c1faa32";
+const DIAMOND_IMAGE_ID: &str = "c0889ab8ceb5249cb79a9a0f563a7f748d25e3a6300fa5e8e97f5dd5fb7af071";
 
 /// The full-image digest of [`small_diamond`]: `image_id` applied to EVERY emitted byte
 /// — magic, version, the embedded `ImageId` slot, and all sections — so a header rewrite
 /// or a digest-slot forgery of equal length cannot hide behind the pins above.
 const DIAMOND_FULL_IMAGE_DIGEST: &str =
-    "03396a4c9a3175bca34e8c2bf4d8b5c551e786b493e0876b0d871c4d5d093222";
+    "586cf5b2b3b8a00738804799f1399bf61ea3245f8c200a062e361aaf132777b3";
 
 /// The over-wide row the struct-leaf bound reports, at the store declaration's own line.
 fn over_wide_row(line: u32) -> String {

@@ -89,3 +89,17 @@ uses a versioned bounded transfer containing the exact image, head and canonical
 entry/index cells. It is not an enduring format-support promise or a schema
 conversion. Evolution beyond explicit sparse scalar additions remains future
 work ([status](status.md#not-yet-available)).
+
+The durable contract records the declared names and order of the fields of
+every stored struct value and enum payload. Earlier revisions recorded only
+their order, and their images spell these fields without names. A store, image,
+or backup from such a revision whose resources hold a stored struct, a
+payload-carrying enum, an `Option`, or a `Result` therefore does not carry over:
+running the unchanged program against the store reports `store.contract_changed`,
+and `marrow apply` with such an image or `marrow restore` of such a backup
+reports `image.table`, creating nothing. Such data stays usable with the toolchain
+that wrote it; to move forward, provision a fresh store with the current
+toolchain and write the entries through the program. Stores whose resources
+hold only scalar fields and payloadless enums keep their contract and image
+bytes. How stored struct and payload fields are identified is not yet a stable
+format, so a later revision may change these contracts again.

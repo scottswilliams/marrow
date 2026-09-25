@@ -8,7 +8,8 @@
 
 use marrow_image::bounds::{
     MAX_ADMITTED_DECLARATION_COMMANDS, MAX_ADMITTED_PRODUCT_DECLARATIONS,
-    MAX_ADMITTED_ROOT_OCCURRENCES, MAX_DURABLE_DEPTH, MAX_INDEX_COMPONENTS, MAX_STRUCT_LEAVES,
+    MAX_ADMITTED_ROOT_OCCURRENCES, MAX_DURABLE_DEPTH, MAX_INDEX_COMPONENTS, MAX_STRING_BYTES,
+    MAX_STRUCT_LEAVES,
 };
 use marrow_image::{
     AdmittedGraphInputPlan, CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape,
@@ -101,7 +102,7 @@ fn members_with_struct_field(draft: &mut DraftTxn<'_>, leaves: usize) -> Vec<Dec
         .value_scalar(Scalar::Int)
         .expect("the test arena mints");
     let value = draft
-        .value_struct(vec![int; leaves])
+        .value_struct(vec![("v".into(), int); leaves])
         .expect("a within-bounds shape appends");
     vec![DeclarationMemberDef {
         parent: None,
@@ -122,6 +123,62 @@ fn indexes_with_components(components: usize) -> Vec<DurableIndexShape> {
             .map(|n| DurableIndexComponent::Field(component_id(n)))
             .collect(),
     }]
+}
+
+/// A Product whose single field stores a struct with one leaf named `name`, or an enum
+/// whose one member carries one payload leaf named `name`.
+fn members_with_leaf_named(
+    draft: &mut DraftTxn<'_>,
+    name: &str,
+    payload: bool,
+) -> Vec<DeclarationMemberDef> {
+    let int = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
+    let value = if payload {
+        draft.value_enum(
+            seeded_id(0x50, 0),
+            vec![(seeded_id(0x51, 0), vec![(name.into(), int)])],
+        )
+    } else {
+        draft.value_struct(vec![(name.into(), int)])
+    }
+    .expect("a within-bounds shape appends");
+    vec![DeclarationMemberDef {
+        parent: None,
+        shape: DeclarationMemberShape::Field {
+            id: LedgerIdBytes::from_bytes(FIELD_ID),
+            required: false,
+            value,
+        },
+    }]
+}
+
+/// A leaf name is an image string spelled in the DURABLE section, so it has the string
+/// bound: a struct leaf or payload leaf name of exactly `MAX_STRING_BYTES` encodes, and
+/// one byte more is the string-length refusal rather than a compiler invariant.
+#[test]
+fn a_leaf_name_at_the_string_bound_encodes_and_one_past_is_string_too_long() {
+    for payload in [false, true] {
+        let at = "n".repeat(MAX_STRING_BYTES);
+        assert_eq!(
+            encode_root(
+                |draft| members_with_leaf_named(draft, &at, payload),
+                Vec::new()
+            ),
+            Ok(()),
+            "payload leaf: {payload}",
+        );
+        let past = "n".repeat(MAX_STRING_BYTES + 1);
+        assert_eq!(
+            encode_root(
+                |draft| members_with_leaf_named(draft, &past, payload),
+                Vec::new()
+            ),
+            Err(ImageBuildError::StringTooLong),
+            "payload leaf: {payload}",
+        );
+    }
 }
 
 #[test]
@@ -147,7 +204,7 @@ fn a_dense_struct_one_leaf_over_the_limit_is_refused_at_the_surface() {
         .value_scalar(Scalar::Int)
         .expect("the test arena mints");
     assert_eq!(
-        draft.value_struct(vec![int; MAX_STRUCT_LEAVES + 1]),
+        draft.value_struct(vec![("v".into(), int); MAX_STRUCT_LEAVES + 1]),
         Err(DraftStateError::CarrierDomain),
         "one leaf past the dense-composite limit is the surface refusal",
     );
@@ -169,7 +226,7 @@ fn an_over_wide_shape_is_refused_whether_or_not_a_declaration_references_it() {
                     .value_scalar(Scalar::Int)
                     .expect("the test arena mints");
                 assert_eq!(
-                    draft.value_struct(vec![int; MAX_STRUCT_LEAVES + 1]),
+                    draft.value_struct(vec![("v".into(), int); MAX_STRUCT_LEAVES + 1]),
                     Err(DraftStateError::CarrierDomain),
                     "the unreferenced over-wide shape is refused at the surface",
                 );

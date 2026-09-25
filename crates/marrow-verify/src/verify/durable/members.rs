@@ -16,7 +16,7 @@ use crate::sealed::{SealedEnumType, SealedField, SealedRecordType};
 use marrow_image::{
     CanonicalValueShapeDag, DeclarationMemberDef, DeclarationMemberShape, DurableContractGraph,
     DurableIndexComponent, DurableIndexShape, DurableMemberViewKind, DurableMemberViews,
-    DurableProductGraph, ImageType, KeyColumn, LedgerIdBytes, Scalar, StrId, TypeId,
+    DurableProductGraph, ImageType, KeyColumn, LedgerIdBytes, NamedLeaf, Scalar, StrId, TypeId,
     ValueShapeNodeId, ValueShapeView,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -27,10 +27,10 @@ use std::collections::{BTreeMap, BTreeSet};
 /// enum's sum and member ids on the enum's first durable occurrence — which must be
 /// pairwise distinct because entropy-minted ids are distinct by construction. `enums`
 /// records each durable enum identity by its sum id: the ordered member ids claimed at
-/// its first occurrence. A later value shape carrying an already-recorded sum id — the
-/// shape a second durable field of that enum emits — is a *reference* to that one
-/// per-declaration identity, so it reclaims nothing and must carry the identical member
-/// ids in order.
+/// its first occurrence, each with its payload leaf names in order. A later value shape
+/// carrying an already-recorded sum id — the shape a second durable field of that enum
+/// emits — is a *reference* to that one per-declaration identity, so it reclaims nothing
+/// and must carry the identical member ids and payload names in order.
 ///
 /// `products` records which durable Product identities a root has already declared. A
 /// later root carrying an already-recorded Product id is a *reference* to that one
@@ -41,10 +41,14 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Default)]
 pub(super) struct LedgerScope {
     pub(super) seen: BTreeSet<LedgerIdBytes>,
-    pub(super) enums: BTreeMap<LedgerIdBytes, Vec<LedgerIdBytes>>,
+    pub(super) enums: BTreeMap<LedgerIdBytes, Vec<RecordedMember>>,
     pub(super) products: BTreeSet<LedgerIdBytes>,
     pub(super) placements: BTreeSet<LedgerIdBytes>,
 }
+
+/// One member of a recorded durable enum identity: its member id and its payload leaf
+/// names in order.
+pub(super) type RecordedMember = (LedgerIdBytes, Vec<Box<str>>);
 
 /// Whether a member tree is being decoded as a Product declaration's first occurrence,
 /// which claims each declaration id it reads, or as a later reference to an already
@@ -738,17 +742,18 @@ fn mint(
 
 /// Decode a durable field's stored value shape into `values`, returning a reference to
 /// the node it minted: `u8(value_tag) ‖ body`. A scalar is tag `0x00` (a bare scalar); a
-/// dense struct is tag `0x01` (`u16(count) ‖ value*`); a closed enum is tag `0x02`
-/// (`sum id ‖ u16(count) ‖ [member id ‖ u16(payload) ‖ value*]*`). Leaves are minted
+/// dense struct is tag `0x01` (`u16(count) ‖ leaf*`); a closed enum is tag `0x02`
+/// (`sum id ‖ u16(count) ‖ [member id ‖ u16(payload) ‖ leaf*]*`); each leaf is
+/// `0x03 ‖ u16(name_len) ‖ name ‖ value` (see [`decode_leaf`]). Leaves are minted
 /// before the shape that references them, so the wire tree is consumed without ever
 /// being materialized as one — a shape the image spells twice is decoded into the one
 /// node the arena already holds. An enum's sum and member ids are the identity of the
 /// enum *declaration*. The first occurrence of a given sum id claims it and its member
 /// ids as fresh pairwise-distinct ids; a later occurrence carrying an already-claimed sum
 /// id — the shape a second durable field of that enum emits — is a reference that
-/// reclaims nothing and must carry the identical member ids in order. `depth` bounds
-/// nesting so a hostile image cannot drive unbounded recursion before the value shape is
-/// rechecked.
+/// reclaims nothing and must carry the identical member ids and payload names in order.
+/// `depth` bounds nesting so a hostile image cannot drive unbounded recursion before the
+/// value shape is rechecked.
 fn decode_value_shape(
     reader: &mut Reader<'_>,
     depth: usize,
@@ -786,7 +791,7 @@ fn decode_value_shape(
             }
             let mut leaves = Vec::with_capacity(count);
             for _ in 0..count {
-                leaves.push(decode_value_shape(reader, depth + 1, scope, values)?);
+                leaves.push(decode_leaf(reader, depth + 1, scope, values)?);
             }
             mint(values.struct_shape(leaves))
         }
@@ -801,11 +806,11 @@ fn decode_value_shape(
             }
             // An enum reached before (by its sum id) is a reference to that one
             // per-declaration identity: it reclaims neither the sum nor any member id,
-            // and must present the identical member ids in the identical order. The
-            // recorded identity is the ordered member ids only; each occurrence's payload
-            // shapes are tied to the field's own enum-table entry by
-            // `value_shape_matches`, so a payload divergence is caught there rather than
-            // against the first occurrence.
+            // and must present the identical member ids and payload names in the
+            // identical order. The recorded identity is the ordered member ids and each
+            // member's payload names; each occurrence's payload shapes are tied to the
+            // field's own enum-table entry by `value_shape_matches`, so a payload shape
+            // divergence is caught there rather than against the first occurrence.
             let recorded = scope.enums.get(&sum).cloned();
             match &recorded {
                 Some(recorded_ids) if recorded_ids.len() != member_count => {
@@ -814,11 +819,12 @@ fn decode_value_shape(
                 Some(_) => {}
                 None => claim_distinct(scope, sum)?,
             }
-            let mut members = Vec::with_capacity(member_count);
+            let mut members: Vec<(LedgerIdBytes, Vec<NamedLeaf>)> =
+                Vec::with_capacity(member_count);
             for index in 0..member_count {
                 let id = read_id(reader)?;
                 match &recorded {
-                    Some(recorded_ids) if recorded_ids[index] != id => {
+                    Some(recorded_ids) if recorded_ids[index].0 != id => {
                         return Err(reject(VerifyPhase::Table, Kind::EnumIdentityReused));
                     }
                     Some(_) => {}
@@ -836,14 +842,26 @@ fn decode_value_shape(
                 }
                 let mut payload = Vec::with_capacity(payload_count);
                 for _ in 0..payload_count {
-                    payload.push(decode_value_shape(reader, depth + 1, scope, values)?);
+                    payload.push(decode_leaf(reader, depth + 1, scope, values)?);
+                }
+                if let Some(recorded_ids) = &recorded
+                    && !recorded_ids[index]
+                        .1
+                        .iter()
+                        .eq(payload.iter().map(|(name, _)| name))
+                {
+                    return Err(reject(VerifyPhase::Table, Kind::EnumIdentityReused));
                 }
                 members.push((id, payload));
             }
             if recorded.is_none() {
-                scope
-                    .enums
-                    .insert(sum, members.iter().map(|(id, _)| *id).collect());
+                let identity = members
+                    .iter()
+                    .map(|(id, payload)| {
+                        (*id, payload.iter().map(|(name, _)| name.clone()).collect())
+                    })
+                    .collect();
+                scope.enums.insert(sum, identity);
             }
             mint(values.enum_shape(sum, members))
         }
@@ -851,14 +869,45 @@ fn decode_value_shape(
     }
 }
 
+/// Decode one struct or payload leaf: `0x03 ‖ u16(name_len) ‖ name ‖ value`. The name is
+/// read like a string-table entry — bounded by `MAX_STRING_BYTES` and valid UTF-8 — and
+/// must not be empty; each fault is refused with its own kind before anything is minted,
+/// so the arena's own refusal of an empty name is never reported as exhaustion.
+fn decode_leaf(
+    reader: &mut Reader<'_>,
+    depth: usize,
+    scope: &mut LedgerScope,
+    values: &mut CanonicalValueShapeDag,
+) -> Result<NamedLeaf, VerifyRejection> {
+    let truncated = || reject(VerifyPhase::Table, Kind::Truncated(Region::Durable));
+    if reader.u8().ok_or_else(truncated)? != 0x03 {
+        return Err(reject(VerifyPhase::Table, Kind::Unknown(Tag::DurableLeaf)));
+    }
+    let len = reader.u16().ok_or_else(truncated)? as usize;
+    if len > marrow_image::bounds::MAX_STRING_BYTES {
+        return Err(reject(
+            VerifyPhase::Table,
+            Kind::OverBound(Bound::StringBytes),
+        ));
+    }
+    if len == 0 {
+        return Err(reject(VerifyPhase::Table, Kind::EmptyLeafName));
+    }
+    let raw = reader.take(len).ok_or_else(truncated)?;
+    let name =
+        std::str::from_utf8(raw).map_err(|_| reject(VerifyPhase::Table, Kind::InvalidUtf8))?;
+    let name = Box::from(name);
+    Ok((name, decode_value_shape(reader, depth, scope, values)?))
+}
+
 /// Whether a decoded durable field value shape structurally matches the materialized
 /// record field type it claims, recursing through the record and enum tables. The
 /// ledger ids a value shape carries (a struct records none; an enum a sum and per-
 /// member id) are durable identity, verified by pairwise distinctness and the
-/// contract-id recomputation — this match ties the *structure* to the executable
-/// record so a hostile image cannot claim one durable identity while its record
-/// carries a different value shape. A nominal field erases to its base scalar, so it
-/// matches a bare scalar exactly like a plain scalar field.
+/// contract-id recomputation — this match ties the *structure*, and each struct leaf's
+/// declared name, to the executable record so a hostile image cannot claim one durable
+/// identity while its record carries a different value shape. A nominal field erases to
+/// its base scalar, so it matches a bare scalar exactly like a plain scalar field.
 fn value_shape_matches(
     values: &CanonicalValueShapeDag,
     shape: ValueShapeNodeId,
@@ -890,11 +939,13 @@ fn value_shape_matches(
             let Some(record) = types.get(idx.index() as usize) else {
                 return false;
             };
-            // A durable struct value is dense: every leaf is a required bare field,
-            // matched positionally.
+            // A durable struct value is dense: every leaf is a required bare field, and
+            // leaf and field agree on name and shape position by position.
             record.fields.len() == leaves.len()
                 && record.fields.iter().zip(leaves).all(|(field, leaf)| {
-                    field.required && value_shape_matches(values, *leaf, field.ty, types, enums)
+                    field.required
+                        && *field.name == *leaf.name()
+                        && value_shape_matches(values, leaf.shape(), field.ty, types, enums)
                 })
         }
         (
@@ -916,7 +967,13 @@ fn value_shape_matches(
                         variant.payload.len() == member.payload().len()
                             && variant.payload.iter().zip(member.payload()).all(
                                 |(leaf_ty, leaf)| {
-                                    value_shape_matches(values, *leaf, *leaf_ty, types, enums)
+                                    value_shape_matches(
+                                        values,
+                                        leaf.shape(),
+                                        *leaf_ty,
+                                        types,
+                                        enums,
+                                    )
                                 },
                             )
                     })

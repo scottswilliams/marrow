@@ -288,7 +288,7 @@ fn the_compact_expansion_regression_is_refused_decisively() {
             .expect("the test arena mints");
         for _ in 0..31 {
             level = draft
-                .value_struct(vec![level; 64])
+                .value_struct(vec![("v".into(), level); 64])
                 .expect("a within-bounds shape appends");
         }
         level

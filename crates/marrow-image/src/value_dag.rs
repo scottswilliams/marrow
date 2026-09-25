@@ -2,12 +2,19 @@
 //! stored value shape.
 //!
 //! A [`CanonicalValueShapeDag`] holds each distinct shape — a scalar, a dense `struct` of
-//! positional leaves, or a closed `enum` with a sum identity and one member identity per
-//! variant — once, as an interned node, and every nested position holds a
-//! [`ValueShapeNodeId`] carrying the node's arena-local ordinal plus an exact-node stamp.
-//! A node is minted only from ids that already exist, so every reference points strictly
-//! backwards and the arena cannot state a cycle; no node owns a nested node, so it cannot
-//! state an occurrence tree.
+//! named leaves, or a closed `enum` with a sum identity and, per variant, one member
+//! identity and its named payload leaves — once, as an interned node, and every nested
+//! position holds a [`ValueShapeNodeId`] carrying the node's arena-local ordinal plus an
+//! exact-node stamp. A node is minted only from ids that already exist, so every
+//! reference points strictly backwards and the arena cannot state a cycle; no node owns a
+//! nested node, so it cannot state an occurrence tree.
+//!
+//! A stored struct or enum payload value occupies one cell, and its leaves are encoded by
+//! position. Declarations are identified by ledger ids; a positional stored leaf is
+//! identified by its declared name in declaration order. The name therefore belongs to the
+//! shape: two structs with the same leaf types but different leaf names or order are
+//! different shapes, so an edit that would read an existing cell's bytes with a different
+//! meaning always changes the durable contract.
 //!
 //! Depth is a property of a path, so each node carries the longest path from itself down
 //! to a scalar, and a field value rooted at `n` fits exactly when
@@ -85,12 +92,32 @@ impl ValueShapeFingerprintPredecessor {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum ValueShapeNode {
     Scalar(Scalar),
-    /// A dense struct's leaves, positionally. Names are not identity.
-    Struct(Vec<ValueShapeNodeId>),
+    /// A dense struct's leaves in declaration order, each identified by its declared name.
+    Struct(Vec<ValueShapeLeaf>),
     Enum {
         sum: LedgerIdBytes,
         members: Vec<ValueShapeEnumMember>,
     },
+}
+
+/// One positional leaf of a stored struct or enum payload: its declared name and its
+/// shape. The arena mints a leaf only with a non-empty name.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ValueShapeLeaf {
+    name: Box<str>,
+    shape: ValueShapeNodeId,
+}
+
+impl ValueShapeLeaf {
+    /// The leaf's declared name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The leaf's value shape.
+    pub fn shape(&self) -> ValueShapeNodeId {
+        self.shape
+    }
 }
 
 /// One variant of a closed enum value: its `Member` ledger identity and its dense
@@ -98,7 +125,7 @@ enum ValueShapeNode {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ValueShapeEnumMember {
     id: LedgerIdBytes,
-    payload: Vec<ValueShapeNodeId>,
+    payload: Vec<ValueShapeLeaf>,
 }
 
 impl ValueShapeEnumMember {
@@ -108,10 +135,13 @@ impl ValueShapeEnumMember {
     }
 
     /// This variant's dense payload leaves, in declaration order.
-    pub fn payload(&self) -> &[ValueShapeNodeId] {
+    pub fn payload(&self) -> &[ValueShapeLeaf] {
         &self.payload
     }
 }
+
+/// A leaf as a caller mints it: the declared name and an already-minted shape.
+pub type NamedLeaf = (Box<str>, ValueShapeNodeId);
 
 /// One node of a [`CanonicalValueShapeDag`], as a reader sees it: the shape's kind and
 /// its direct references, never an owned subshape. A caller that needs a nested shape
@@ -119,7 +149,7 @@ impl ValueShapeEnumMember {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValueShapeView<'a> {
     Scalar(Scalar),
-    Struct(&'a [ValueShapeNodeId]),
+    Struct(&'a [ValueShapeLeaf]),
     Enum {
         sum: LedgerIdBytes,
         members: &'a [ValueShapeEnumMember],
@@ -155,8 +185,8 @@ pub struct ValueShapeComparison<'a, 'b> {
 
 enum ValuePairFrame<'a, 'b> {
     Struct {
-        old: &'a [ValueShapeNodeId],
-        new: &'b [ValueShapeNodeId],
+        old: &'a [ValueShapeLeaf],
+        new: &'b [ValueShapeLeaf],
         next: usize,
     },
     Enum {
@@ -167,11 +197,13 @@ enum ValuePairFrame<'a, 'b> {
     },
 }
 
-impl ValuePairFrame<'_, '_> {
-    fn next(&mut self) -> Option<(ValueShapeNodeId, ValueShapeNodeId)> {
+impl<'a, 'b> ValuePairFrame<'a, 'b> {
+    /// The next pair of leaves at the same position. Arities were compared when the frame
+    /// was pushed, so the new side always has the position the old side has.
+    fn next(&mut self) -> Option<(&'a ValueShapeLeaf, &'b ValueShapeLeaf)> {
         match self {
             Self::Struct { old, new, next } => {
-                let pair = (*old.get(*next)?, new[*next]);
+                let pair = (old.get(*next)?, &new[*next]);
                 *next += 1;
                 Some(pair)
             }
@@ -182,8 +214,8 @@ impl ValuePairFrame<'_, '_> {
                 next,
             } => {
                 while let Some(variant) = old.get(*member) {
-                    if let Some(&value) = variant.payload.get(*next) {
-                        let pair = (value, new[*member].payload[*next]);
+                    if let Some(leaf) = variant.payload.get(*next) {
+                        let pair = (leaf, &new[*member].payload[*next]);
                         *next += 1;
                         return Some(pair);
                     }
@@ -197,14 +229,16 @@ impl ValuePairFrame<'_, '_> {
 }
 
 impl<'a, 'b> ValueShapeComparison<'a, 'b> {
-    /// Compare exact scalar, positional struct, or identified enum representation.
+    /// Compare exact scalar, named-leaf struct, or identified enum representation: every
+    /// struct and payload leaf must carry the same declared name at the same position.
     /// `None` means foreign IDs, excessive depth, or exhausted image-work allowance.
     ///
     /// Each preserved field occurrence must be paired once by the caller. Verified
-    /// DURABLE wire spells every nested value occurrence in full: each visited node
-    /// and enum-member header consumes at least one distinct old wire byte. Thus one
-    /// image's byte cap bounds their aggregate work, including shared DAG revisits.
-    /// The guard also refuses arbitrary constructed DAGs whose expansion cannot fit.
+    /// DURABLE wire spells every nested value occurrence in full: each visited node and
+    /// enum-member header consumes at least one distinct old wire byte, and each leaf
+    /// pair is charged its old name's bytes plus one for its marker. Thus one image's
+    /// byte cap bounds their aggregate work, including shared DAG revisits. The guard
+    /// also refuses arbitrary constructed DAGs whose expansion cannot fit.
     pub fn same(&mut self, old: ValueShapeNodeId, new: ValueShapeNodeId) -> Option<bool> {
         self.frames.clear();
         if self.old.depth(old)? > crate::bounds::MAX_DURABLE_VALUE_DEPTH
@@ -260,8 +294,12 @@ impl<'a, 'b> ValueShapeComparison<'a, 'b> {
                 let Some(frame) = self.frames.last_mut() else {
                     return Some(true);
                 };
-                if let Some(next) = frame.next() {
-                    pair = next;
+                if let Some((old, new)) = frame.next() {
+                    self.remaining = self.remaining.checked_sub(1 + old.name.len())?;
+                    if old.name != new.name {
+                        return Some(false);
+                    }
+                    pair = (old.shape, new.shape);
                     break;
                 }
                 self.frames.pop();
@@ -304,32 +342,39 @@ impl CanonicalValueShapeDag {
         self.intern(ValueShapeNode::Scalar(scalar))
     }
 
-    /// The node for a dense struct value over already-minted leaves, in positional
-    /// order.
+    /// The node for a dense struct value over already-minted leaves, each with its
+    /// declared name, in declaration order.
     ///
     /// A leaf outside this arena's preserved provenance — an id from an independently
     /// minted arena or invalidated by truncation — is [`DraftStateError::ForeignDraft`],
-    /// never an out-of-range index.
+    /// never an out-of-range index. An empty leaf name is [`DraftStateError::CarrierDomain`]:
+    /// no declaration spells one, and a nameless leaf would identify nothing.
     pub fn struct_shape(
         &mut self,
-        leaves: Vec<ValueShapeNodeId>,
+        leaves: Vec<NamedLeaf>,
     ) -> Result<ValueShapeNodeId, DraftStateError> {
+        let leaves = named_leaves(leaves)?;
         self.intern(ValueShapeNode::Struct(leaves))
     }
 
     /// The node for a closed enum value: its sum identity and, per variant in
-    /// declaration order, its member identity and already-minted payload leaves.
+    /// declaration order, its member identity and already-minted, named payload leaves.
     ///
     /// Checked exactly like [`Self::struct_shape`] over every payload leaf.
     pub fn enum_shape(
         &mut self,
         sum: LedgerIdBytes,
-        members: Vec<(LedgerIdBytes, Vec<ValueShapeNodeId>)>,
+        members: Vec<(LedgerIdBytes, Vec<NamedLeaf>)>,
     ) -> Result<ValueShapeNodeId, DraftStateError> {
         let members = members
             .into_iter()
-            .map(|(id, payload)| ValueShapeEnumMember { id, payload })
-            .collect();
+            .map(|(id, payload)| {
+                Ok(ValueShapeEnumMember {
+                    id,
+                    payload: named_leaves(payload)?,
+                })
+            })
+            .collect::<Result<_, DraftStateError>>()?;
         self.intern(ValueShapeNode::Enum { sum, members })
     }
 
@@ -458,17 +503,30 @@ impl CanonicalValueShapeDag {
         }
     }
 
-    fn max_depth(&self, references: &[ValueShapeNodeId]) -> Result<u32, DraftStateError> {
+    fn max_depth(&self, leaves: &[ValueShapeLeaf]) -> Result<u32, DraftStateError> {
         let mut deepest = 0;
-        for reference in references {
+        for leaf in leaves {
             let depth = self
                 .store
-                .depth_of(*reference)
+                .depth_of(leaf.shape)
                 .ok_or(DraftStateError::ForeignDraft)?;
             deepest = deepest.max(depth);
         }
         Ok(deepest)
     }
+}
+
+/// Caller leaves as arena leaves, refusing an empty name before anything is interned.
+fn named_leaves(leaves: Vec<NamedLeaf>) -> Result<Vec<ValueShapeLeaf>, DraftStateError> {
+    leaves
+        .into_iter()
+        .map(|(name, shape)| {
+            if name.is_empty() {
+                return Err(DraftStateError::CarrierDomain);
+            }
+            Ok(ValueShapeLeaf { name, shape })
+        })
+        .collect()
 }
 
 use node_store::ValueShapeNodeStore;
@@ -484,7 +542,8 @@ use node_store::ValueShapeNodeStore;
 /// out-of-range abort reachable through the safe public surface.
 mod node_store {
     use super::{
-        ValueShapeFingerprintPredecessor, ValueShapeNode, ValueShapeNodeId, ValueShapeNodeStamp,
+        ValueShapeFingerprintPredecessor, ValueShapeLeaf, ValueShapeNode, ValueShapeNodeId,
+        ValueShapeNodeStamp,
     };
 
     #[derive(Debug, Clone, Default)]
@@ -606,12 +665,11 @@ mod node_store {
         }
     }
 
-    fn same_references(left: &[ValueShapeNodeId], right: &[ValueShapeNodeId]) -> bool {
+    fn same_references(left: &[ValueShapeLeaf], right: &[ValueShapeLeaf]) -> bool {
         left.len() == right.len()
-            && left
-                .iter()
-                .zip(right)
-                .all(|(left, right)| left.index() == right.index())
+            && left.iter().zip(right).all(|(left, right)| {
+                left.name == right.name && left.shape.index() == right.shape.index()
+            })
     }
 
     #[cfg(test)]
@@ -619,8 +677,8 @@ mod node_store {
         use super::ValueShapeNodeStore;
 
         /// Exhaustively name the private store fields. Adding a field requires this
-        /// destructure to change and the [`super::super::VALUE_SHAPE_NODE_BYTES`]
-        /// pricing to be reviewed.
+        /// destructure to change, so the retained per-node representation is reviewed
+        /// with it.
         #[test]
         fn the_priced_store_names_all_of_its_fields() {
             let _ = |value: &ValueShapeNodeStore| {
@@ -686,6 +744,10 @@ pub(crate) enum ValueShapeWireForm {
 const VSHAPE_SCALAR: u8 = 0;
 const VSHAPE_STRUCT: u8 = 1;
 const VSHAPE_ENUM: u8 = 2;
+/// The marker before each struct leaf and payload leaf. It sits where the name-free
+/// grammar placed a value tag, and it is outside the value-tag set, so no leaf position
+/// parses under both grammars.
+const VSHAPE_LEAF: u8 = 3;
 
 /// One unit of pending expansion work.
 ///
@@ -696,6 +758,7 @@ const VSHAPE_ENUM: u8 = 2;
 /// length depends on fan-out and scheduling as well as nesting.
 enum ExpandTask<'a> {
     Node(ValueShapeNodeId),
+    Leaf(&'a ValueShapeLeaf),
     EnumMember(&'a ValueShapeEnumMember),
 }
 
@@ -731,7 +794,7 @@ pub(crate) fn expand(
                 ValueShapeNode::Struct(leaves) => {
                     sink.push(VSHAPE_STRUCT);
                     push_u16(sink, wire_count(leaves.len())?);
-                    tasks.extend(leaves.iter().rev().map(|leaf| ExpandTask::Node(*leaf)));
+                    tasks.extend(leaves.iter().rev().map(ExpandTask::Leaf));
                 }
                 ValueShapeNode::Enum { sum, members } => {
                     sink.push(VSHAPE_ENUM);
@@ -740,29 +803,30 @@ pub(crate) fn expand(
                     tasks.extend(members.iter().rev().map(ExpandTask::EnumMember));
                 }
             },
+            ExpandTask::Leaf(leaf) => {
+                sink.push(VSHAPE_LEAF);
+                push_u16(sink, wire_count(leaf.name.len())?);
+                sink.extend_bytes(leaf.name.as_bytes());
+                tasks.push(ExpandTask::Node(leaf.shape));
+            }
             ExpandTask::EnumMember(member) => {
                 push_identity(sink, form, IDREF_MEMBER, &member.id);
                 push_u16(sink, wire_count(member.payload.len())?);
-                tasks.extend(
-                    member
-                        .payload
-                        .iter()
-                        .rev()
-                        .map(|leaf| ExpandTask::Node(*leaf)),
-                );
+                tasks.extend(member.payload.iter().rev().map(ExpandTask::Leaf));
             }
         }
     }
     Ok(())
 }
 
-/// The wire's `u16` count for a value shape's `count` positions, or [`DurableGraphTooLarge`]
-/// for an arity no v0 wire form can spell.
+/// The wire's `u16` count for a value shape's `count` positions or a leaf name's byte
+/// length, or [`DurableGraphTooLarge`] for a length no v0 wire form can spell.
 ///
 /// Every arity a durable program states is bounded far below the wire's width —
 /// [`crate::bounds::MAX_STRUCT_LEAVES`], [`crate::bounds::MAX_VARIANTS`], and
-/// [`crate::bounds::MAX_PAYLOAD_FIELDS`] are all at most 256, and the whole arena is
-/// rechecked against them before anything is encoded. An arena is public, though, so a
+/// [`crate::bounds::MAX_PAYLOAD_FIELDS`] are all at most 256, a leaf name is at most
+/// [`crate::bounds::MAX_STRING_BYTES`], and the whole arena is rechecked against them
+/// before anything is encoded. An arena is public, though, so a
 /// caller can state a wider shape and ask the identity owner for its identity directly. A
 /// wrapping cast would then give that shape the arity of a narrower one, so two distinct
 /// shapes would share one durable-contract identity; refusing keeps the answer typed, and
@@ -800,6 +864,15 @@ mod tests {
     use super::*;
     use crate::fixtures::id;
 
+    /// Leaves named `f0`, `f1`, … by position, for tests whose subject is not the names.
+    fn named(shapes: Vec<ValueShapeNodeId>) -> Vec<NamedLeaf> {
+        shapes
+            .into_iter()
+            .enumerate()
+            .map(|(index, shape)| (format!("f{index}").into(), shape))
+            .collect()
+    }
+
     #[test]
     fn paired_values_authenticate_arenas_and_compare_late_enum_payloads() {
         let mut old = CanonicalValueShapeDag::new();
@@ -808,13 +881,13 @@ mod tests {
         let right = new.scalar(Scalar::Int).expect("independent scalar");
         let changed = new.scalar(Scalar::Bool).expect("changed scalar");
         let before = old
-            .enum_shape(id(1), vec![(id(2), vec![]), (id(3), vec![left])])
+            .enum_shape(id(1), vec![(id(2), vec![]), (id(3), named(vec![left]))])
             .expect("enum");
         let same = new
-            .enum_shape(id(1), vec![(id(2), vec![]), (id(3), vec![right])])
+            .enum_shape(id(1), vec![(id(2), vec![]), (id(3), named(vec![right]))])
             .expect("enum");
         let after = new
-            .enum_shape(id(1), vec![(id(2), vec![]), (id(3), vec![changed])])
+            .enum_shape(id(1), vec![(id(2), vec![]), (id(3), named(vec![changed]))])
             .expect("changed enum");
         let mut compare = old.compare_with(&new);
         assert_eq!(compare.same(before, same), Some(true));
@@ -831,10 +904,12 @@ mod tests {
         let mut graph = CanonicalValueShapeDag::new();
         let mut value = graph.scalar(Scalar::Int).expect("scalar");
         for _ in 1..crate::bounds::MAX_DURABLE_VALUE_DEPTH {
-            value = graph.struct_shape(vec![value]).expect("nested value");
+            value = graph
+                .struct_shape(named(vec![value]))
+                .expect("nested value");
         }
         let too_deep = graph
-            .struct_shape(vec![value])
+            .struct_shape(named(vec![value]))
             .expect("caller can state excess depth");
         let mut compare = graph.compare_with(&graph);
         let storage = compare.frames.as_ptr();
@@ -904,9 +979,9 @@ mod tests {
         assert_eq!(replacement_text.index(), stale_text.index());
     }
 
-    /// Exhaustively name the arena and node fields. Adding a field requires these
-    /// destructures to change and the [`VALUE_SHAPE_NODE_BYTES`] pricing to be reviewed.
-    /// The private backing store has its own exhaustive destructure beside its owner.
+    /// Exhaustively name the arena, node, and leaf fields. Adding a field requires these
+    /// destructures to change, so the retained per-node representation is reviewed with
+    /// it. The private backing store has its own exhaustive destructure beside its owner.
     #[test]
     fn the_priced_arena_and_node_name_all_of_their_fields() {
         let _ = |value: &CanonicalValueShapeDag| {
@@ -928,6 +1003,10 @@ mod tests {
             let ValueShapeEnumMember { id, payload } = value;
             let _ = (id, payload);
         };
+        let _ = |value: &ValueShapeLeaf| {
+            let ValueShapeLeaf { name, shape } = value;
+            let _ = (name, shape);
+        };
     }
 
     /// An id from one independently minted arena names no node in another, and an arena
@@ -942,11 +1021,11 @@ mod tests {
 
         let mut empty = CanonicalValueShapeDag::new();
         assert_eq!(
-            empty.struct_shape(vec![foreign]),
+            empty.struct_shape(named(vec![foreign])),
             Err(DraftStateError::ForeignDraft),
         );
         assert_eq!(
-            empty.enum_shape(id(1), vec![(id(2), vec![foreign])]),
+            empty.enum_shape(id(1), vec![(id(2), named(vec![foreign]))]),
             Err(DraftStateError::ForeignDraft),
         );
         assert_eq!(empty, CanonicalValueShapeDag::new(), "no node was minted");
@@ -960,7 +1039,7 @@ mod tests {
             .scalar(Scalar::Text)
             .expect("the test arena mints");
         assert_eq!(
-            populated.struct_shape(vec![foreign]),
+            populated.struct_shape(named(vec![foreign])),
             Err(DraftStateError::ForeignDraft),
         );
         assert_eq!(populated.len(), 1, "the foreign leaf minted no composite");
@@ -992,7 +1071,7 @@ mod tests {
         assert_eq!(dag.view(stale_int), None);
         assert!(!dag.contains(stale_int));
         assert_eq!(
-            dag.struct_shape(vec![stale_int]),
+            dag.struct_shape(named(vec![stale_int])),
             Err(DraftStateError::ForeignDraft),
         );
         assert_eq!(dag.len(), 1, "the stale leaf minted no composite");
@@ -1016,15 +1095,21 @@ mod tests {
         let mut minting = CanonicalValueShapeDag::new();
         let int = minting.scalar(Scalar::Int).expect("the test arena mints");
         let foreign = minting
-            .struct_shape(vec![int, int])
+            .struct_shape(named(vec![int, int]))
             .expect("the test arena mints");
 
         // The positive arm first: against its own arena every lookup answers, so no arm
         // below can pass by refusing everything.
         assert_eq!(minting.depth(foreign), Some(2));
+        let Some(ValueShapeView::Struct(leaves)) = minting.view(foreign) else {
+            panic!("the struct node reads back as a struct");
+        };
         assert_eq!(
-            minting.view(foreign),
-            Some(ValueShapeView::Struct(&[int, int])),
+            leaves
+                .iter()
+                .map(|leaf| (leaf.name(), leaf.shape()))
+                .collect::<Vec<_>>(),
+            [("f0", int), ("f1", int)],
         );
         assert!(minting.contains(foreign));
         let mut written: Vec<u8> = Vec::new();
@@ -1042,7 +1127,7 @@ mod tests {
         let mut target = CanonicalValueShapeDag::new();
         let text = target.scalar(Scalar::Text).expect("the target mints");
         let local = target
-            .struct_shape(vec![text, text])
+            .struct_shape(named(vec![text, text]))
             .expect("the target mints the same ordinal");
         assert_eq!(foreign.index(), local.index());
         assert_eq!(target.depth(foreign), None);
@@ -1068,11 +1153,11 @@ mod tests {
         let mut dag = CanonicalValueShapeDag::new();
         let int = dag.scalar(Scalar::Int).expect("the test arena mints");
         let first = dag
-            .struct_shape(vec![int, int])
+            .struct_shape(named(vec![int, int]))
             .expect("the test arena mints");
         let again = dag.scalar(Scalar::Int).expect("the test arena mints");
         let second = dag
-            .struct_shape(vec![again, int])
+            .struct_shape(named(vec![again, int]))
             .expect("the test arena mints");
         assert_eq!(first, second);
         assert_eq!(dag.len(), 2, "one scalar node and one struct node");
@@ -1082,7 +1167,7 @@ mod tests {
             .scalar(Scalar::Int)
             .expect("the second arena mints");
         independently_built
-            .struct_shape(vec![other_int, other_int])
+            .struct_shape(named(vec![other_int, other_int]))
             .expect("the second arena mints");
         assert_eq!(
             dag, independently_built,
@@ -1097,12 +1182,12 @@ mod tests {
         let int = dag.scalar(Scalar::Int).expect("the test arena mints");
         assert_eq!(dag.depth(int), Some(1));
         let pair = dag
-            .struct_shape(vec![int, int])
+            .struct_shape(named(vec![int, int]))
             .expect("the test arena mints");
         assert_eq!(dag.depth(pair), Some(2));
         // A struct holding both the scalar and the pair measures the longer branch.
         let mixed = dag
-            .struct_shape(vec![int, pair])
+            .struct_shape(named(vec![int, pair]))
             .expect("the test arena mints");
         assert_eq!(dag.depth(mixed), Some(3));
     }
@@ -1113,10 +1198,14 @@ mod tests {
     fn a_shared_node_carries_one_depth_whatever_reaches_it() {
         let mut dag = CanonicalValueShapeDag::new();
         let int = dag.scalar(Scalar::Int).expect("the test arena mints");
-        let shared = dag.struct_shape(vec![int]).expect("the test arena mints");
+        let shared = dag
+            .struct_shape(named(vec![int]))
+            .expect("the test arena mints");
         let mut deep = shared;
         for _ in 0..10 {
-            deep = dag.struct_shape(vec![deep]).expect("the test arena mints");
+            deep = dag
+                .struct_shape(named(vec![deep]))
+                .expect("the test arena mints");
         }
         assert_eq!(
             dag.depth(shared),
@@ -1136,12 +1225,12 @@ mod tests {
             .scalar(Scalar::Int)
             .expect("the test arena mints");
         let shared = deep_first
-            .struct_shape(vec![int])
+            .struct_shape(named(vec![int]))
             .expect("the test arena mints");
         let mut chain = shared;
         for _ in 0..5 {
             chain = deep_first
-                .struct_shape(vec![chain])
+                .struct_shape(named(vec![chain]))
                 .expect("the test arena mints");
         }
         let deep_first_pair = (deep_first.depth(shared), deep_first.depth(chain));
@@ -1151,13 +1240,13 @@ mod tests {
             .scalar(Scalar::Int)
             .expect("the test arena mints");
         let shared = shallow_first
-            .struct_shape(vec![int])
+            .struct_shape(named(vec![int]))
             .expect("the test arena mints");
         let _ = shallow_first.depth(shared);
         let mut chain = shared;
         for _ in 0..5 {
             chain = shallow_first
-                .struct_shape(vec![chain])
+                .struct_shape(named(vec![chain]))
                 .expect("the test arena mints");
         }
         assert_eq!(
@@ -1174,7 +1263,7 @@ mod tests {
         let mut level = dag.scalar(Scalar::Int).expect("the test arena mints");
         for _ in 0..14 {
             level = dag
-                .struct_shape(vec![level; 4])
+                .struct_shape(named(vec![level; 4]))
                 .expect("the test arena mints");
         }
         assert_eq!(dag.len(), 15, "one scalar plus fourteen struct levels");
@@ -1209,7 +1298,7 @@ mod tests {
         let mut level = dag.scalar(Scalar::Int).expect("the test arena mints");
         for _ in 0..14 {
             level = dag
-                .struct_shape(vec![level; 4])
+                .struct_shape(named(vec![level; 4]))
                 .expect("the test arena mints");
         }
         let mut sink = Ceiling {
@@ -1236,7 +1325,7 @@ mod tests {
         let mut dag = CanonicalValueShapeDag::new();
         let int = dag.scalar(Scalar::Int).expect("the test arena mints");
         let wide = dag
-            .struct_shape(vec![int; u16::MAX as usize + 1])
+            .struct_shape(named(vec![int; u16::MAX as usize + 1]))
             .expect("the test arena mints");
 
         let mut bytes = Vec::new();
@@ -1258,7 +1347,7 @@ mod tests {
         let mut dag = CanonicalValueShapeDag::new();
         let int = dag.scalar(Scalar::Int).expect("the test arena mints");
         let shape = dag
-            .enum_shape(id(1), vec![(id(2), vec![int])])
+            .enum_shape(id(1), vec![(id(2), named(vec![int]))])
             .expect("the test arena mints");
 
         let mut payload = Vec::new();
@@ -1283,5 +1372,161 @@ mod tests {
         assert_eq!(payload[1], IDREF_SUM);
         assert_eq!(section[0], VSHAPE_ENUM);
         assert_eq!(&section[1..17], id(1).bytes());
+    }
+
+    fn leaf(name: &str, shape: ValueShapeNodeId) -> NamedLeaf {
+        (name.into(), shape)
+    }
+
+    /// A stored leaf is identified by its declared name at its position, so the
+    /// comparison refuses a swapped or renamed struct leaf or payload leaf even when every
+    /// leaf has the same scalar type, and accepts an identically named shape.
+    #[test]
+    fn comparison_distinguishes_leaf_names_and_order() {
+        let mut old = CanonicalValueShapeDag::new();
+        let mut new = CanonicalValueShapeDag::new();
+        let old_int = old.scalar(Scalar::Int).expect("scalar");
+        let new_int = new.scalar(Scalar::Int).expect("scalar");
+        let pos = old
+            .struct_shape(vec![leaf("x", old_int), leaf("y", old_int)])
+            .expect("struct");
+        let rect = old
+            .enum_shape(
+                id(1),
+                vec![(id(2), vec![leaf("width", old_int), leaf("height", old_int)])],
+            )
+            .expect("enum");
+        let same_pos = new
+            .struct_shape(vec![leaf("x", new_int), leaf("y", new_int)])
+            .expect("struct");
+        let swapped_pos = new
+            .struct_shape(vec![leaf("y", new_int), leaf("x", new_int)])
+            .expect("struct");
+        let renamed_pos = new
+            .struct_shape(vec![leaf("z", new_int), leaf("y", new_int)])
+            .expect("struct");
+        let same_rect = new
+            .enum_shape(
+                id(1),
+                vec![(id(2), vec![leaf("width", new_int), leaf("height", new_int)])],
+            )
+            .expect("enum");
+        let swapped_rect = new
+            .enum_shape(
+                id(1),
+                vec![(id(2), vec![leaf("height", new_int), leaf("width", new_int)])],
+            )
+            .expect("enum");
+        let mut compare = old.compare_with(&new);
+        assert_eq!(compare.same(pos, same_pos), Some(true));
+        assert_eq!(compare.same(pos, swapped_pos), Some(false));
+        assert_eq!(compare.same(pos, renamed_pos), Some(false));
+        assert_eq!(compare.same(rect, same_rect), Some(true));
+        assert_eq!(compare.same(rect, swapped_rect), Some(false));
+    }
+
+    /// Each leaf pair costs its old name's bytes plus one, so the allowance keeps
+    /// counting old wire bytes: one unit short of a long name's cost is no verdict.
+    #[test]
+    fn comparison_charges_name_bytes_to_the_allowance() {
+        let name = "n".repeat(100);
+        let mut dag = CanonicalValueShapeDag::new();
+        let int = dag.scalar(Scalar::Int).expect("scalar");
+        let shape = dag.struct_shape(vec![leaf(&name, int)]).expect("struct");
+        // The struct node, its leaf (marker plus name), and the scalar node.
+        let cost = 1 + (1 + name.len()) + 1;
+        let mut compare = dag.compare_with(&dag);
+        compare.remaining = cost;
+        assert_eq!(compare.same(shape, shape), Some(true));
+        compare.remaining = cost - 1;
+        assert_eq!(compare.same(shape, shape), None);
+    }
+
+    /// Interning is by name as well as shape: two structs over the same leaf types with
+    /// different names or order are distinct nodes.
+    #[test]
+    fn interning_keeps_differently_named_structs_distinct() {
+        let mut dag = CanonicalValueShapeDag::new();
+        let int = dag.scalar(Scalar::Int).expect("scalar");
+        let xy = dag
+            .struct_shape(vec![leaf("x", int), leaf("y", int)])
+            .expect("struct");
+        let yx = dag
+            .struct_shape(vec![leaf("y", int), leaf("x", int)])
+            .expect("struct");
+        let again = dag
+            .struct_shape(vec![leaf("x", int), leaf("y", int)])
+            .expect("struct");
+        assert_ne!(xy, yx);
+        assert_eq!(xy, again);
+        assert_eq!(dag.len(), 3);
+    }
+
+    /// A nameless leaf identifies nothing, so neither composite mint accepts one, and the
+    /// refusal mints no node.
+    #[test]
+    fn an_empty_leaf_name_is_refused_at_the_mint() {
+        let mut dag = CanonicalValueShapeDag::new();
+        let int = dag.scalar(Scalar::Int).expect("scalar");
+        assert_eq!(
+            dag.struct_shape(vec![leaf("x", int), leaf("", int)]),
+            Err(DraftStateError::CarrierDomain),
+        );
+        assert_eq!(
+            dag.enum_shape(id(1), vec![(id(2), vec![leaf("", int)])]),
+            Err(DraftStateError::CarrierDomain),
+        );
+        assert_eq!(dag.len(), 1, "no composite was minted");
+    }
+
+    /// A leaf name longer than the wire's `u16` length is refused, never narrowed.
+    #[test]
+    fn expansion_refuses_a_leaf_name_the_wire_length_cannot_spell() {
+        let mut dag = CanonicalValueShapeDag::new();
+        let int = dag.scalar(Scalar::Int).expect("scalar");
+        let shape = dag
+            .struct_shape(vec![leaf(&"n".repeat(u16::MAX as usize + 1), int)])
+            .expect("the arena itself does not bound a name");
+        let mut bytes = Vec::new();
+        assert_eq!(
+            expand(&dag, shape, ValueShapeWireForm::DurableSection, &mut bytes),
+            Err(DurableGraphTooLarge),
+        );
+        assert_eq!(bytes, vec![VSHAPE_STRUCT, 0, 1, VSHAPE_LEAF]);
+    }
+
+    /// Each leaf is spelled as its marker, its name's length and bytes, then its value,
+    /// identically in both wire forms.
+    #[test]
+    fn a_leaf_spells_its_marker_and_name_before_its_value() {
+        let mut dag = CanonicalValueShapeDag::new();
+        let int = dag.scalar(Scalar::Int).expect("scalar");
+        let shape = dag
+            .struct_shape(vec![leaf("x", int), leaf("yy", int)])
+            .expect("struct");
+        let mut bytes = Vec::new();
+        expand(&dag, shape, ValueShapeWireForm::ContractPayload, &mut bytes).expect("expand");
+        let int_tag = Scalar::Int.tag();
+        assert_eq!(
+            bytes,
+            [
+                VSHAPE_STRUCT,
+                0,
+                2,
+                VSHAPE_LEAF,
+                0,
+                1,
+                b'x',
+                VSHAPE_SCALAR,
+                int_tag,
+                VSHAPE_LEAF,
+                0,
+                2,
+                b'y',
+                b'y',
+                VSHAPE_SCALAR,
+                int_tag,
+            ],
+        );
     }
 }

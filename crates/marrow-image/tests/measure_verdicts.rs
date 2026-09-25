@@ -65,6 +65,9 @@ enum Overflow {
     Strings,
     /// One interned string one byte past `MAX_STRING_BYTES`.
     StringBytes,
+    /// One stored struct leaf name one byte past `MAX_STRING_BYTES`, in a value shape no
+    /// field references: the string bound covers every leaf name the arena holds.
+    LeafNameBytes,
     /// One distinct constant past `MAX_CONSTS`.
     Consts,
     /// One record type past `MAX_TYPES`.
@@ -258,7 +261,7 @@ impl Fixture {
             let mut level = int;
             for _ in 0..10 {
                 level = draft
-                    .value_struct(vec![level; 4])
+                    .value_struct(vec![("v".into(), level); 4])
                     .expect("a within-bounds shape appends");
             }
             return level;
@@ -267,7 +270,7 @@ impl Fixture {
             let mut level = int;
             for _ in 0..MAX_DURABLE_VALUE_DEPTH {
                 level = draft
-                    .value_struct(vec![level])
+                    .value_struct(vec![("v".into(), level)])
                     .expect("a within-bounds shape appends");
             }
             return level;
@@ -752,6 +755,14 @@ fn apply_policy(policy: Overflow, draft: &mut DraftTxn<'_>) {
                 .intern_string(&"x".repeat(MAX_STRING_BYTES + 1))
                 .expect("a within-domain mint");
         }
+        Overflow::LeafNameBytes => {
+            let int = draft
+                .value_scalar(Scalar::Int)
+                .expect("the test arena mints");
+            draft
+                .value_struct(vec![("x".repeat(MAX_STRING_BYTES + 1).into(), int)])
+                .expect("the arena itself does not bound a name");
+        }
         // Zero is already interned by the base draft, so the pool ends one past the cap.
         Overflow::Consts => {
             for value in 1..=MAX_CONSTS as i64 {
@@ -958,6 +969,14 @@ const CASES: &[(&[Fault], ImageBuildError)] = &[
     (
         &[Fault::Policy(Overflow::StringBytes)],
         ImageBuildError::StringTooLong,
+    ),
+    (
+        &[Fault::Policy(Overflow::LeafNameBytes)],
+        ImageBuildError::StringTooLong,
+    ),
+    (
+        &[Fault::Policy(Overflow::LeafNameBytes), Fault::OverWideKey],
+        ImageBuildError::TooManyKeyColumns,
     ),
     (
         &[Fault::Policy(Overflow::Types)],
@@ -1355,7 +1374,7 @@ fn an_over_wide_struct_append_is_refused_at_the_surface() {
         .value_scalar(Scalar::Int)
         .expect("the test arena mints");
     assert_eq!(
-        draft.value_struct(vec![int; MAX_STRUCT_LEAVES + 1]),
+        draft.value_struct(vec![("v".into(), int); MAX_STRUCT_LEAVES + 1]),
         Err(DraftStateError::CarrierDomain),
     );
     assert_eq!(draft.value_shapes().len(), 1, "the refusal mutated nothing");

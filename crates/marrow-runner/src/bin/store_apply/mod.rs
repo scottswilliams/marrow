@@ -95,8 +95,28 @@ pub(super) fn run(command: Command) -> io::Result<ExitCode> {
         Err(code) => return Ok(code),
     };
     let result = marrow_lifecycle::apply(&command.store, old, new, command.accepted);
-    let receipt = Receipt::kind("apply").text("outcome", Outcome::of(&result).word());
-    let receipt = match &result {
+    if let Err(error) = &result {
+        let _ = writeln!(io::stderr(), "{}: {error}", error.code().as_str());
+    }
+    let receipt = apply_receipt(&result);
+    deliver(
+        &mut io::stdout().lock(),
+        &mut io::stderr().lock(),
+        &receipt.into_json(),
+        command.format,
+    )?;
+    Ok(if result.is_ok() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+/// The receipt one apply result reports: the outcome word, then either the applied
+/// identities or the refusal's code and the facts that name it.
+fn apply_receipt(result: &Result<marrow_lifecycle::ApplyReceipt, ApplyError>) -> Receipt {
+    let receipt = Receipt::kind("apply").text("outcome", Outcome::of(result).word());
+    match result {
         Ok(applied) => receipt
             .text("instance", applied.instance.to_hex())
             .text("old_image", applied.old_image.to_hex())
@@ -104,9 +124,9 @@ pub(super) fn run(command: Command) -> io::Result<ExitCode> {
             .text("old_ceiling", applied.old_ceiling.to_hex())
             .text("ceiling", applied.ceiling.to_hex()),
         Err(error) => {
-            let _ = writeln!(io::stderr(), "{}: {error}", error.code().as_str());
             let receipt = receipt.text("code", error.code().as_str());
             match error {
+                ApplyError::Unsupported(change) => receipt.text("reason", change.as_str()),
                 ApplyError::Lifecycle(marrow_lifecycle::LifecycleError::ActivationUncertain {
                     instance,
                     ..
@@ -139,18 +159,7 @@ pub(super) fn run(command: Command) -> io::Result<ExitCode> {
                 _ => receipt,
             }
         }
-    };
-    deliver(
-        &mut io::stdout().lock(),
-        &mut io::stderr().lock(),
-        &receipt.into_json(),
-        command.format,
-    )?;
-    Ok(if result.is_ok() {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
-    })
+    }
 }
 
 #[cfg(test)]
@@ -200,6 +209,18 @@ mod tests {
                  added_effects: [{{\"effect\":\"write\",\"export\":\"main.bump\",\"path\":null}}]\n",
                 "ab".repeat(32)
             )
+        );
+    }
+
+    /// A refused apply's receipt carries the typed reason beside the code, so a caller can
+    /// tell a reinterpreting change from every other refusal without reading prose.
+    #[test]
+    fn a_refused_apply_names_its_typed_reason() {
+        use marrow_lifecycle::UnsupportedChange;
+        let refused = Err(ApplyError::Unsupported(UnsupportedChange::StoredValue));
+        assert_eq!(
+            encode(&apply_receipt(&refused).into_json()),
+            r#"{"code":"store.apply_unsupported","kind":"apply","outcome":"refused","reason":"stored_value"}"#,
         );
     }
 

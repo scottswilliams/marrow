@@ -1,8 +1,10 @@
-//! The command-line surface: project scaffolding, check, test, image, doctor, argument
-//! and resource limits, published ids, and the Cargo-graph boundary.
+//! The command-line surface: project scaffolding, check, test, image, doctor, apply
+//! refusals, argument and resource limits, published ids, and the Cargo-graph boundary.
 
 pub mod common;
 
+#[path = "cli/apply_refusal.rs"]
+mod apply_refusal;
 #[path = "cli/argument_bound.rs"]
 mod argument_bound;
 #[path = "cli/check_command.rs"]

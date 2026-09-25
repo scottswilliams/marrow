@@ -32,7 +32,7 @@ use crate::product::{
 };
 use crate::remap::{ConstRemap, SectionSink, StringRemap};
 use crate::ty::ImageType;
-use crate::value_dag::{CanonicalValueShapeDag, ImageByteSink, ValueShapeView};
+use crate::value_dag::{CanonicalValueShapeDag, ImageByteSink, ValueShapeLeaf, ValueShapeView};
 
 /// The policy-clean `u16` narrowing of one owned wide logical ordinal — the one
 /// sanctioned narrowing direction for an owned pre-seal id.
@@ -94,6 +94,13 @@ impl<'d> CoherentDraft<'d> {
             if text.len() > bounds::MAX_STRING_BYTES {
                 return Err(ImageBuildError::StringTooLong);
             }
+        }
+        let values = self.0.value_shapes();
+        if values
+            .nodes()
+            .any(|node| values.view(node).is_some_and(leaf_names_over_bound))
+        {
+            return Err(ImageBuildError::StringTooLong);
         }
         if self.consts().len() > bounds::MAX_CONSTS {
             return Err(ImageBuildError::TooManyConsts);
@@ -466,6 +473,23 @@ fn validate_value_shapes(values: &CanonicalValueShapeDag) -> Result<(), ImageBui
         }
     }
     Ok(())
+}
+
+/// Whether one value shape spells a leaf name past the string bound. A leaf name is
+/// written into the DURABLE section like any other image string, so it shares the
+/// `StringBytes` policy; a payload leaf name reaches the image only through the shape,
+/// never through a string-table row.
+fn leaf_names_over_bound(view: ValueShapeView<'_>) -> bool {
+    let over = |leaves: &[ValueShapeLeaf]| {
+        leaves
+            .iter()
+            .any(|leaf| leaf.name().len() > bounds::MAX_STRING_BYTES)
+    };
+    match view {
+        ValueShapeView::Scalar(_) => false,
+        ValueShapeView::Struct(leaves) => over(leaves),
+        ValueShapeView::Enum { members, .. } => members.iter().any(|member| over(member.payload())),
+    }
 }
 
 // ---- The application anchor, the site projection, and operand provenance.
@@ -1010,7 +1034,7 @@ mod decisive_saturation {
             .expect("the test arena mints");
         for _ in 0..31 {
             value = draft
-                .value_struct(vec![value; 64])
+                .value_struct(vec![("v".into(), value); 64])
                 .expect("sixty-four leaves fit the checked surface");
         }
         let type_name = draft.intern_string("R").expect("a within-domain mint");

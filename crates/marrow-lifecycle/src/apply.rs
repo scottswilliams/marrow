@@ -31,12 +31,86 @@ pub struct ApplyReceipt {
     pub ceiling: CeilingId,
 }
 
+/// Why apply refuses a change: the first difference between OLD's and NEW's durable
+/// graphs that apply cannot publish without rewriting or reinterpreting stored data.
+/// Apply adds sparse scalar fields and nothing else, so every other difference is one of
+/// these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnsupportedChange {
+    /// The application identity changed.
+    Application,
+    /// A root was added or removed, or its product or key columns changed.
+    Root,
+    /// A managed index was added, removed or changed.
+    Index,
+    /// An old field, group or branch is absent from NEW.
+    MemberRemoved,
+    /// A field, group or branch changed kind, requiredness or branch keys.
+    MemberChanged,
+    /// An old field's stored value representation changed: a scalar was retyped, a stored
+    /// struct or enum payload leaf was reordered, renamed, retyped, added or removed, or an
+    /// enum member changed. Existing cells would be read with a different meaning.
+    StoredValue,
+    /// An added member is not a sparse scalar field.
+    MemberAdded,
+}
+
+impl UnsupportedChange {
+    /// The stable receipt word for this reason.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Application => "application",
+            Self::Root => "root",
+            Self::Index => "index",
+            Self::MemberRemoved => "member_removed",
+            Self::MemberChanged => "member_changed",
+            Self::StoredValue => "stored_value",
+            Self::MemberAdded => "member_added",
+        }
+    }
+}
+
+impl std::fmt::Display for UnsupportedChange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Application => {
+                "apply cannot change the application identity; provision a fresh store"
+            }
+            Self::Root => {
+                "apply cannot add or remove a root or change its product or key columns; keep \
+                 the old roots, or provision a fresh store"
+            }
+            Self::Index => {
+                "apply cannot add, remove or change a managed index; keep the old indexes, or \
+                 provision a fresh store"
+            }
+            Self::MemberRemoved => {
+                "apply cannot remove a stored field, group or branch; keep it, or provision a \
+                 fresh store"
+            }
+            Self::MemberChanged => {
+                "apply cannot change a stored field's requiredness, a member's kind or a \
+                 branch's keys; keep the old declaration, or provision a fresh store"
+            }
+            Self::StoredValue => {
+                "apply does not convert stored values, and this change would read existing \
+                 values with a different meaning; keep the old field type and the old order \
+                 and names of its struct and enum payload fields, or provision a fresh store"
+            }
+            Self::MemberAdded => {
+                "apply adds only optional scalar fields; declare the new field optional and \
+                 scalar, or provision a fresh store"
+            }
+        })
+    }
+}
+
 /// Refusal or failure of explicit apply. Publication failures preserve the
 /// lifecycle owner's distinction between failed metadata and uncertain activation.
 #[derive(Debug)]
 pub enum ApplyError {
-    /// The change does not preserve all old representations with sparse scalar additions.
-    Unsupported,
+    /// NEW changes the durable graph in a way apply cannot publish over existing data.
+    Unsupported(UnsupportedChange),
     /// The bounded comparison of old and new field values stopped before reaching a verdict.
     /// This is a resource stop, not a judgement about the change: apply must not report an
     /// examination it never finished as an unsupported change.
@@ -58,7 +132,7 @@ pub enum ApplyError {
 impl ApplyError {
     pub fn code(&self) -> Code {
         match self {
-            Self::Unsupported => Code::StoreApplyUnsupported,
+            Self::Unsupported(_) => Code::StoreApplyUnsupported,
             Self::ComparisonExhausted | Self::CeilingTooLarge => Code::StoreLimit,
             Self::CeilingUnaccepted { .. } => Code::StoreCeilingUnaccepted,
             Self::HeadMap(error) => error.code(),
@@ -70,10 +144,7 @@ impl ApplyError {
 impl std::fmt::Display for ApplyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Unsupported => write!(
-                f,
-                "apply requires unchanged old durable representations and only sparse scalar field additions"
-            ),
+            Self::Unsupported(change) => change.fmt(f),
             Self::ComparisonExhausted => write!(
                 f,
                 "comparing the old and new durable value representations exhausted its bounded work allowance"
@@ -128,9 +199,9 @@ pub(crate) fn apply_observed(
         return Err(ApplyError::Lifecycle(LifecycleError::NotExecutable));
     };
     match preserves(old.durable_graph(), new.durable_graph()) {
-        Ok(true) => {}
-        Ok(false) => return Err(ApplyError::Unsupported),
-        Err(ComparisonExhausted) => return Err(ApplyError::ComparisonExhausted),
+        Ok(()) => {}
+        Err(Refusal::Unsupported(change)) => return Err(ApplyError::Unsupported(change)),
+        Err(Refusal::Exhausted) => return Err(ApplyError::ComparisonExhausted),
     }
     let admission = ImageAdmission::derive(&old, old_projection);
     let names = admission.audit_names();
@@ -259,51 +330,60 @@ fn extend_head(
     })
 }
 
-/// A bounded value comparison stopped before reaching a verdict.
-struct ComparisonExhausted;
+/// Why the durable graph comparison stopped without accepting NEW.
+enum Refusal {
+    /// NEW changes something apply cannot publish.
+    Unsupported(UnsupportedChange),
+    /// A bounded value comparison ran out of work, which is not a verdict.
+    Exhausted,
+}
 
-/// Whether NEW preserves every old durable representation, adding only absent sparse scalar
-/// fields. `Err` means a bounded value comparison ran out of work, which is not a verdict.
-fn preserves(
-    old: DurableContractView<'_>,
-    new: DurableContractView<'_>,
-) -> Result<bool, ComparisonExhausted> {
-    if old.application() != new.application() {
-        return Ok(false);
+/// Refuse with `change` unless `preserved` holds.
+fn require(preserved: bool, change: UnsupportedChange) -> Result<(), Refusal> {
+    if preserved {
+        Ok(())
+    } else {
+        Err(Refusal::Unsupported(change))
     }
+}
+
+/// Accept NEW when it preserves every old durable representation, adding only absent
+/// sparse scalar fields; otherwise name the first change it makes. The duplicate-identity
+/// arms are unreachable for a verified image, whose placement, member and index ids are
+/// pairwise distinct, so they fold into their family's reason.
+fn preserves(old: DurableContractView<'_>, new: DurableContractView<'_>) -> Result<(), Refusal> {
+    use UnsupportedChange::{Application, Index, Root};
+    require(old.application() == new.application(), Application)?;
     let mut roots = BTreeMap::new();
     for root in new.roots() {
-        if roots.insert(root.placement(), root).is_some() {
-            return Ok(false);
-        }
+        require(roots.insert(root.placement(), root).is_none(), Root)?;
     }
     let mut values = old.value_shapes().compare_with(new.value_shapes());
     for before in old.roots() {
         let Some(after) = roots.remove(&before.placement()) else {
-            return Ok(false);
+            return Err(Refusal::Unsupported(Root));
         };
-        if before.product() != after.product() || before.keys() != after.keys() {
-            return Ok(false);
-        }
+        require(
+            before.product() == after.product() && before.keys() == after.keys(),
+            Root,
+        )?;
         let mut indexes = BTreeMap::new();
         for index in after.indexes() {
-            if indexes.insert(index.id, index).is_some() {
-                return Ok(false);
-            }
+            require(indexes.insert(index.id, index).is_none(), Index)?;
         }
         for index in before.indexes() {
             let Some(other) = indexes.remove(&index.id) else {
-                return Ok(false);
+                return Err(Refusal::Unsupported(Index));
             };
-            if index.unique != other.unique || index.components != other.components {
-                return Ok(false);
-            }
+            require(
+                index.unique == other.unique && index.components == other.components,
+                Index,
+            )?;
         }
-        if !indexes.is_empty() || !members(before.members(), after.members(), new, &mut values)? {
-            return Ok(false);
-        }
+        require(indexes.is_empty(), Index)?;
+        members(before.members(), after.members(), new, &mut values)?;
     }
-    Ok(roots.is_empty())
+    require(roots.is_empty(), Root)
 }
 
 fn identity(member: DurableMemberView<'_>) -> LedgerIdBytes {
@@ -319,47 +399,45 @@ fn members<'a, 'b>(
     new: DurableMemberViews<'b>,
     graph: DurableContractView<'b>,
     values: &mut ValueShapeComparison<'a, 'b>,
-) -> Result<bool, ComparisonExhausted> {
+) -> Result<(), Refusal> {
+    use UnsupportedChange::{MemberAdded, MemberChanged, MemberRemoved, StoredValue};
     let mut remaining = BTreeMap::new();
     for member in new {
-        if remaining.insert(identity(member), member).is_some() {
-            return Ok(false);
-        }
+        require(
+            remaining.insert(identity(member), member).is_none(),
+            MemberChanged,
+        )?;
     }
     for before in old {
         let Some(after) = remaining.remove(&identity(before)) else {
-            return Ok(false);
+            return Err(Refusal::Unsupported(MemberRemoved));
         };
         match (before.kind(), after.kind()) {
             (DurableMemberViewKind::Field(left), DurableMemberViewKind::Field(right)) => {
-                if left.required() != right.required() {
-                    return Ok(false);
-                }
-                match values.same(left.value(), right.value()) {
-                    Some(true) => {}
-                    Some(false) => return Ok(false),
-                    None => return Err(ComparisonExhausted),
-                }
+                require(left.required() == right.required(), MemberChanged)?;
+                let same = values
+                    .same(left.value(), right.value())
+                    .ok_or(Refusal::Exhausted)?;
+                require(same, StoredValue)?;
             }
             (DurableMemberViewKind::Group(_), DurableMemberViewKind::Group(_)) => {}
             (DurableMemberViewKind::Branch(left), DurableMemberViewKind::Branch(right)) => {
-                if left.keys() != right.keys() {
-                    return Ok(false);
-                }
+                require(left.keys() == right.keys(), MemberChanged)?;
             }
-            _ => return Ok(false),
+            _ => return Err(Refusal::Unsupported(MemberChanged)),
         }
         // Verified declaration nesting is bounded before a view can reach here.
-        if !members(before.members(), after.members(), graph, values)? {
-            return Ok(false);
-        }
+        members(before.members(), after.members(), graph, values)?;
     }
-    Ok(remaining.values().all(|member| matches!(
-        member.kind(),
-        DurableMemberViewKind::Field(field)
-            if !field.required()
-                && matches!(graph.value_shapes().view(field.value()), Some(ValueShapeView::Scalar(_)))
-    )))
+    require(
+        remaining.values().all(|member| matches!(
+            member.kind(),
+            DurableMemberViewKind::Field(field)
+                if !field.required()
+                    && matches!(graph.value_shapes().view(field.value()), Some(ValueShapeView::Scalar(_)))
+        )),
+        MemberAdded,
+    )
 }
 
 #[cfg(test)]

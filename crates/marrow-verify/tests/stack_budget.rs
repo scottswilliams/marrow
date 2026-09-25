@@ -75,7 +75,7 @@ fn deepest_value(draft: &mut DraftTxn<'_>) -> Level {
             .expect("a within-domain mint");
         level = Level {
             shape: draft
-                .value_struct(vec![level.shape])
+                .value_struct(vec![("inner".into(), level.shape)])
                 .expect("a within-bounds shape appends"),
             record,
             ty: record_type(record),

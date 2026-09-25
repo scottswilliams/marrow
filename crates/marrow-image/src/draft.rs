@@ -37,7 +37,7 @@ use crate::site_plan::{
     SitePolicyReceipt,
 };
 use crate::ty::{ImageType, Scalar};
-use crate::value_dag::{CanonicalValueShapeDag, ImageByteSink, ValueShapeNodeId};
+use crate::value_dag::{CanonicalValueShapeDag, ImageByteSink, NamedLeaf, ValueShapeNodeId};
 
 /// The strong identity of one draft and its site demand plan.
 ///
@@ -1174,14 +1174,15 @@ impl<'d> DraftTxn<'d> {
         self.draft.durable.value_shapes_mut().scalar(scalar)
     }
 
-    /// Mint one dense composite durable value shape into the draft's one arena.
+    /// Mint one dense composite durable value shape, its leaves named in declaration
+    /// order, into the draft's one arena.
     ///
     /// An arity past [`crate::bounds::MAX_STRUCT_LEAVES`] is the carrier-domain refusal,
-    /// a logical-domain decision rather than a policy kind. Leaf provenance stays the
-    /// arena's own decision. Neither refusal mutates the arena.
+    /// a logical-domain decision rather than a policy kind. Leaf provenance and leaf-name
+    /// presence stay the arena's own decisions. No refusal mutates the arena.
     pub fn value_struct(
         &mut self,
-        leaves: Vec<ValueShapeNodeId>,
+        leaves: Vec<NamedLeaf>,
     ) -> Result<ValueShapeNodeId, DraftStateError> {
         if leaves.len() > bounds::MAX_STRUCT_LEAVES {
             return Err(DraftStateError::CarrierDomain);
@@ -1195,7 +1196,7 @@ impl<'d> DraftTxn<'d> {
     pub fn value_enum(
         &mut self,
         identity: LedgerIdBytes,
-        members: Vec<(LedgerIdBytes, Vec<ValueShapeNodeId>)>,
+        members: Vec<(LedgerIdBytes, Vec<NamedLeaf>)>,
     ) -> Result<ValueShapeNodeId, DraftStateError> {
         if members.len() > bounds::MAX_VARIANTS {
             return Err(DraftStateError::CarrierDomain);

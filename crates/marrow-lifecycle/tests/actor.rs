@@ -11,3 +11,5 @@ mod commit_outcome;
 mod graph_bounds;
 #[path = "actor/lifecycle.rs"]
 mod lifecycle;
+#[path = "actor/positional_values.rs"]
+mod positional_values;

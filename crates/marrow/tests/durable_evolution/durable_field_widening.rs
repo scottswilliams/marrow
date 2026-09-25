@@ -2,7 +2,7 @@
 //!
 //! A durable field's stored value is drawn from the closed acyclic durable value
 //! set: a scalar, a dense `struct` (its leaves
-//! recorded positionally as shape bytes, minting no per-leaf id), a closed `enum`
+//! carry their declared names in the contract, minting no per-leaf id), a closed `enum`
 //! (`Option`/`Result`/a user `enum`), or an `Option` of one. The field anchors the
 //! ledger id; a durable-reachable enum additionally carries a sum identity (kind 5)
 //! and one member identity (kind 6) per variant, so append-only member evolution has
@@ -12,8 +12,11 @@
 //! in `durable_widened_values.rs`). Nominal-bearing store bindings and collection
 //! fields report `check.unsupported`.
 
-use marrow_image::{ImageType, Scalar};
-use marrow_verify::DurableContractId;
+use marrow_image::{
+    CanonicalValueShapeDag, DurableMemberViewKind, ImageType, Scalar, ValueShapeNodeId,
+    ValueShapeView,
+};
+use marrow_verify::{DurableContractId, VerifiedImage};
 
 use crate::common::{Diagnostics, Project};
 
@@ -65,8 +68,9 @@ pub fn label(): string {
 "#;
 
 // The full ledger. Note the struct `Name`'s leaves (`first`/`last`) mint no ids —
-// they are shape bytes — while each durable-reachable enum carries a sum id and one
-// member id per variant, anchored at its canonical (space-free) spelling.
+// their declared names are part of the value shape — while each durable-reachable enum
+// carries a sum id and one member id per variant, anchored at its canonical
+// (space-free) spelling.
 const ACCOUNT_IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
      id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
@@ -647,4 +651,278 @@ fn the_nested_option_reached_through_the_result_mints_its_own_anchor() {
         "{:?}",
         diagnostics.all()
     );
+}
+
+// --- Stored positional leaves: struct leaves and enum payload leaves. ---
+
+/// One ledger for every positional-leaf program below: a `markers` root whose `Marker`
+/// resource stores `at` (or the top-level pair `x`/`y`), plus the sum and member anchors
+/// each stored enum needs.
+const POSITIONAL_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Marker 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id root markers 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id key markers.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     id field Marker.at 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id field Marker.x 1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a\n\
+     id field Marker.y 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b\n\
+     id sum Shape 50505050505050505050505050505050\n\
+     id member Shape.rect 51515151515151515151515151515151\n\
+     id sum Place 52525252525252525252525252525252\n\
+     id member Place.at 53535353535353535353535353535353\n\
+     id sum Option[Pos] 60606060606060606060606060606060\n\
+     id member Option[Pos].none 61616161616161616161616161616161\n\
+     id member Option[Pos].some 62626262626262626262626262626262\n\
+     id sum Result[Pos,int] 70707070707070707070707070707070\n\
+     id member Result[Pos,int].ok 71717171717171717171717171717171\n\
+     id member Result[Pos,int].err 72727272727272727272727272727272\n\
+     high-water 0\n\
+     end\n";
+
+/// A program storing `field` in `Marker.at`, beside the declarations `decls`.
+fn marker_program(decls: &str, field: &str) -> String {
+    format!(
+        "{decls}\nresource Marker {{\n    required at: {field}\n}}\n\nstore ^markers[id: int]: Marker\n"
+    )
+}
+
+const POS: &str = "struct Pos {\n    x: int\n    y: int\n}\n";
+const POS_SWAPPED: &str = "struct Pos {\n    y: int\n    x: int\n}\n";
+const POS_RENAMED: &str = "struct Pos {\n    z: int\n    y: int\n}\n";
+const SHAPE: &str = "enum Shape {\n    rect(width: int, height: int)\n}\n";
+const INNER: &str = "struct Inner {\n    a: int\n    b: int\n}\n";
+const TOP_LEVEL: &str = "resource Marker {\n    required x: int\n    required y: int\n}\n\nstore ^markers[id: int]: Marker\n";
+
+/// A stored struct or enum payload value lives positionally in one cell, so each leaf's
+/// declared name and position is part of what its bytes mean: any edit to them moves the
+/// durable contract. Top-level fields keep their ledger identity (their reorder moves the
+/// contract too, as a control), and a code-only edit moves nothing.
+#[test]
+fn reordering_or_renaming_a_stored_positional_leaf_changes_the_contract() {
+    let nested = |inner: &str| format!("{inner}struct Pos {{\n    i: Inner\n    c: int\n}}\n");
+    let cases = [
+        (
+            "struct swap",
+            marker_program(POS, "Pos"),
+            marker_program(POS_SWAPPED, "Pos"),
+        ),
+        (
+            "struct rename",
+            marker_program(POS, "Pos"),
+            marker_program(POS_RENAMED, "Pos"),
+        ),
+        (
+            "payload swap",
+            marker_program(SHAPE, "Shape"),
+            marker_program(
+                &SHAPE.replace("width: int, height: int", "height: int, width: int"),
+                "Shape",
+            ),
+        ),
+        (
+            "payload rename",
+            marker_program(SHAPE, "Shape"),
+            marker_program(&SHAPE.replace("width:", "wide:"), "Shape"),
+        ),
+        (
+            "nested struct swap",
+            marker_program(&nested(INNER), "Pos"),
+            marker_program(
+                &nested(&INNER.replace("    a: int\n    b: int\n", "    b: int\n    a: int\n")),
+                "Pos",
+            ),
+        ),
+        (
+            "Option<Pos> swap",
+            marker_program(POS, "Option<Pos>"),
+            marker_program(POS_SWAPPED, "Option<Pos>"),
+        ),
+        (
+            "Result<Pos, int> swap",
+            marker_program(POS, "Result<Pos, int>"),
+            marker_program(POS_SWAPPED, "Result<Pos, int>"),
+        ),
+        (
+            "top-level field swap",
+            TOP_LEVEL.to_string(),
+            TOP_LEVEL.replace(
+                "    required x: int\n    required y: int\n",
+                "    required y: int\n    required x: int\n",
+            ),
+        ),
+    ];
+    let unchanged: Vec<_> = cases
+        .iter()
+        .filter(|(_, before, after)| {
+            contract_of(before, POSITIONAL_IDS) == contract_of(after, POSITIONAL_IDS)
+        })
+        .map(|(label, _, _)| *label)
+        .collect();
+    assert!(
+        unchanged.is_empty(),
+        "these edits must change the durable contract: {unchanged:?}"
+    );
+    let stored = marker_program(POS, "Pos");
+    let code_only = format!("{stored}\npub fn one(): int {{\n    return 1\n}}\n");
+    assert_eq!(
+        contract_of(&stored, POSITIONAL_IDS),
+        contract_of(&code_only, POSITIONAL_IDS),
+        "a code-only edit keeps the durable contract"
+    );
+}
+
+/// One stored enum member as an image states it: the enum's name, the member's name, and
+/// each payload leaf's DURABLE name paired with the enum table's payload type.
+type StoredMember = (String, String, Vec<(String, String)>);
+
+/// A readable spelling of a payload leaf type: a scalar by its source name, an enum by
+/// its name, and a record by its fields.
+fn type_word(image: &VerifiedImage, ty: ImageType) -> String {
+    match ty {
+        ImageType::Scalar {
+            scalar: Scalar::Int,
+            ..
+        } => "int".into(),
+        ImageType::Scalar {
+            scalar: Scalar::Text,
+            ..
+        } => "string".into(),
+        ImageType::Record { idx, .. } => {
+            let fields: Vec<_> = image
+                .record_type(idx)
+                .fields()
+                .iter()
+                .map(|field| format!("{}: {}", field.name(), type_word(image, field.ty())))
+                .collect();
+            format!("{{{}}}", fields.join(", "))
+        }
+        ImageType::Enum { idx, .. } => image.enums()[idx.index() as usize].name().into(),
+        other => format!("{other:?}"),
+    }
+}
+
+/// Walk a verified stored value beside its sealed type, collecting every enum member it
+/// reaches with its DURABLE payload names paired, position by position, with the enum
+/// table's payload types.
+fn stored_members(
+    image: &VerifiedImage,
+    values: &CanonicalValueShapeDag,
+    shape: ValueShapeNodeId,
+    ty: ImageType,
+    out: &mut Vec<StoredMember>,
+) {
+    match (values.view(shape).expect("a verified shape"), ty) {
+        (ValueShapeView::Struct(leaves), ImageType::Record { idx, .. }) => {
+            for (leaf, field) in leaves.iter().zip(image.record_type(idx).fields()) {
+                stored_members(image, values, leaf.shape(), field.ty(), out);
+            }
+        }
+        (ValueShapeView::Enum { members, .. }, ImageType::Enum { idx, .. }) => {
+            let sealed = &image.enums()[idx.index() as usize];
+            for (member, variant) in members.iter().zip(sealed.variants()) {
+                assert_eq!(member.payload().len(), variant.payload().len());
+                out.push((
+                    sealed.name().into(),
+                    variant.name().to_string(),
+                    member
+                        .payload()
+                        .iter()
+                        .zip(variant.payload())
+                        .map(|(leaf, ty)| (leaf.name().into(), type_word(image, *ty)))
+                        .collect(),
+                ));
+                for (leaf, ty) in member.payload().iter().zip(variant.payload()) {
+                    stored_members(image, values, leaf.shape(), *ty, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The compiler takes a stored enum's DURABLE payload names from the declaration, in the
+/// order lowering gives the payload, so each name sits beside the payload type the VM
+/// reads at that position. A row whose leaves have distinct types makes a misordered
+/// name observable.
+#[test]
+fn stored_enum_payload_names_follow_the_declared_payload_in_lowering_order() {
+    let int = || "int".to_string();
+    let pos = || "{x: int, y: int}".to_string();
+    let rect = |name: &str| {
+        (
+            name.to_string(),
+            "rect".to_string(),
+            vec![("width".into(), int()), ("height".into(), int())],
+        )
+    };
+    let cases: [(&str, String, Vec<StoredMember>); 6] = [
+        (
+            "payload",
+            marker_program(SHAPE, "Shape"),
+            vec![rect("Shape")],
+        ),
+        (
+            "struct in payload",
+            marker_program(
+                &format!("{POS}enum Place {{\n    at(pos: Pos)\n}}\n"),
+                "Place",
+            ),
+            vec![("Place".into(), "at".into(), vec![("pos".into(), pos())])],
+        ),
+        (
+            "enum in struct",
+            marker_program(
+                &format!("{SHAPE}struct Box {{\n    s: Shape\n    n: int\n}}\n"),
+                "Box",
+            ),
+            vec![rect("Shape")],
+        ),
+        (
+            "Option<Pos>",
+            marker_program(POS, "Option<Pos>"),
+            vec![
+                ("Option".into(), "none".into(), vec![]),
+                (
+                    "Option".into(),
+                    "some".into(),
+                    vec![("value".into(), pos())],
+                ),
+            ],
+        ),
+        (
+            "Result<Pos, int>",
+            marker_program(POS, "Result<Pos, int>"),
+            vec![
+                ("Result".into(), "ok".into(), vec![("value".into(), pos())]),
+                ("Result".into(), "err".into(), vec![("value".into(), int())]),
+            ],
+        ),
+        (
+            "distinct payload types",
+            marker_program(
+                "enum Shape {\n    rect(label: string, n: int)\n}\n",
+                "Shape",
+            ),
+            vec![(
+                "Shape".into(),
+                "rect".into(),
+                vec![("label".into(), "string".into()), ("n".into(), int())],
+            )],
+        ),
+    ];
+    for (label, source, expected) in cases {
+        let image = project(&source, POSITIONAL_IDS).image();
+        let graph = image.durable_graph();
+        let root = graph.roots().next().expect("the markers root");
+        let DurableMemberViewKind::Field(field) =
+            root.members().next().expect("the stored field").kind()
+        else {
+            panic!("{label}: `at` is a field");
+        };
+        let ty = image.record_type(image.roots()[0].record()).fields()[0].ty();
+        let mut found = Vec::new();
+        stored_members(&image, graph.value_shapes(), field.value(), ty, &mut found);
+        assert_eq!(found, expected, "{label}");
+    }
 }

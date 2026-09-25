@@ -34,6 +34,9 @@ mod required_reads;
 #[path = "hostile/legacy_artifact.rs"]
 mod legacy_artifact;
 
+#[path = "hostile/stored_leaves.rs"]
+mod stored_leaves;
+
 use Verdict::{Refused, Verified};
 use marrow_test_support::tracer_schema;
 use tracer_schema::*;
@@ -1657,7 +1660,10 @@ fn widened_field_indexed_draft() -> ImageDraft {
     let root = ok(draft.intern_string("counters"));
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     // A dense struct value of two text leaves, minted into this draft's own arena.
-    let owner_value = ok(draft.value_struct(vec![shapes.text; 2]));
+    let owner_value = ok(draft.value_struct(vec![
+        ("first".into(), shapes.text),
+        ("last".into(), shapes.text),
+    ]));
     draft
         .declare_product(
             &admitted_plan(),

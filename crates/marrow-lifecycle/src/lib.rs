@@ -57,7 +57,7 @@ pub use actor::{
     AdmissionRefusal, AttachOutcome, ChangedFact, ContractChanged, LifecycleError, RebindReceipt,
     attach,
 };
-pub use apply::{ApplyError, ApplyReceipt, apply};
+pub use apply::{ApplyError, ApplyReceipt, UnsupportedChange, apply};
 pub use attachment::{
     Attachment, EphemeralOutcome, FreshTest, MemoryAttachment, MemoryEngine, MintOutcome,
     NativeAttachment, PreparedImage, TestExecution, TestHost, fresh_test, mint_ephemeral, prepare,

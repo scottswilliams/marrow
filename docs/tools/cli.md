@@ -418,9 +418,19 @@ define the data, validation, synchronization and retained-stage behavior.
 project, compiling source or minting identities. OLD must match the store's exact
 active binding. The operation preserves every old durable representation and
 physical address and permits new sparse scalar fields beneath existing supported
-structure. Existing values remain in place; new fields start absent. Changed
-keys, old field requiredness or value representation, new roots, groups, branches
-or indexes, and required-field additions are refused as `store.apply_unsupported`.
+structure. Existing values remain in place; new fields start absent. Anything
+else is refused as `store.apply_unsupported` before the store opens, and the
+receipt's `reason` names the first such change:
+
+| `reason` | Change |
+|---|---|
+| `application` | The application identity changed. |
+| `root` | A root was added or removed, or its product or key columns changed. |
+| `index` | A managed index was added, removed, or changed. |
+| `member_removed` | An old field, group, or branch is absent. |
+| `member_changed` | A member's kind, a field's requiredness, or a branch's keys changed. |
+| `stored_value` | An old field's stored value would be read differently: a retyped field, a changed enum member, or a reordered, renamed, added, removed, or retyped field of a stored struct or enum payload ([durable identity](../language/durable-data.md#durable-identity)). |
+| `member_added` | An added member is not an optional scalar field. |
 
 The store retains its standing authority ceiling. If NEW demands additional
 authority, apply proposes exactly the union of that demand and the standing
@@ -438,7 +448,8 @@ replay apply.
 
 JSONL output has `kind: "apply"`. Success has `outcome: "applied"`, `instance`,
 `old_image`, `new_image`, `old_ceiling` and `ceiling`. Failure has `code` and an
-`outcome` of `refused`, `metadata_failed` or `activation_uncertain`. Ceiling
+`outcome` of `refused`, `metadata_failed` or `activation_uncertain`.
+`store.apply_unsupported` adds `reason`. Ceiling
 refusal adds `old_ceiling`, proposed `ceiling` and `added_effects` containing
 `export`, `effect` and nullable `path`. Activation uncertainty retains `instance`.
 Default text output displays these same fields.

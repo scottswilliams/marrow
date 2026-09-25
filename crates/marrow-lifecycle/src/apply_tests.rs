@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use super::{ApplyError, apply, apply_observed};
+use super::{ApplyError, UnsupportedChange, apply, apply_observed};
 use crate::envelope::{EnvelopeRecord, EnvelopeState};
 use crate::recovery::{RecoveryFault, recover};
 use crate::seam::Step;
@@ -171,7 +171,7 @@ fn sparse_apply_refusals_preserve_populated_store_bytes() {
             prepare(changed),
             None
         ),
-        Err(ApplyError::Unsupported)
+        Err(ApplyError::Unsupported(UnsupportedChange::MemberChanged))
     ));
     assert_eq!(store_bytes(scratch.store()), before);
     let receipt = apply(
@@ -219,28 +219,44 @@ fn sparse_apply_rejects_incompatible_graphs_without_store_changes() {
         "high-water",
         "id field Counter.extra 0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\nid index counters.byValue 10101010101010101010101010101010\nid sum Option[int] 11111111111111111111111111111111\nid member Option[int].none 12121212121212121212121212121212\nid member Option[int].some 13131313131313131313131313131313\nhigh-water",
     );
-    for (label, fields, key, suffix) in [
-        ("changed value", "required value: bool", "int", ""),
-        ("removed field", "", "int", ""),
-        ("changed requiredness", "value: int", "int", ""),
+    use UnsupportedChange::{Index, MemberAdded, MemberChanged, MemberRemoved, Root, StoredValue};
+    for (label, fields, key, suffix, reason) in [
+        (
+            "changed value",
+            "required value: bool",
+            "int",
+            "",
+            StoredValue,
+        ),
+        ("removed field", "", "int", "", MemberRemoved),
+        (
+            "changed requiredness",
+            "value: int",
+            "int",
+            "",
+            MemberChanged,
+        ),
         (
             "new required field",
             "required value: int\nrequired extra: int",
             "int",
             "",
+            MemberAdded,
         ),
         (
             "new composite field",
             "required value: int\nextra: Option<int>",
             "int",
             "",
+            MemberAdded,
         ),
-        ("changed key", "required value: int", "string", ""),
+        ("changed key", "required value: int", "string", "", Root),
         (
             "new index",
             "required value: int",
             "int",
             "{ index byValue[value] unique }",
+            Index,
         ),
     ] {
         let source = format!(
@@ -249,12 +265,10 @@ fn sparse_apply_rejects_incompatible_graphs_without_store_changes() {
         let new =
             marrow_verify::verify(&marrow_test_programs::program::compile_bytes(&source, &ids))
                 .unwrap_or_else(|error| panic!("{label}: {error:?}"));
+        let refused = apply(scratch.store(), prepare(old.clone()), prepare(new), None);
         assert!(
-            matches!(
-                apply(scratch.store(), prepare(old.clone()), prepare(new), None),
-                Err(ApplyError::Unsupported)
-            ),
-            "{label}"
+            matches!(refused, Err(ApplyError::Unsupported(found)) if found == reason),
+            "{label}: {refused:?}"
         );
         assert_eq!(store_bytes(scratch.store()), before, "{label}");
     }
@@ -301,7 +315,7 @@ fn sparse_apply_rejects_changed_index_meaning_without_store_changes() {
         assert!(
             matches!(
                 apply(scratch.store(), prepare(old.clone()), prepare(new), None),
-                Err(ApplyError::Unsupported)
+                Err(ApplyError::Unsupported(UnsupportedChange::Index))
             ),
             "{replacement}"
         );

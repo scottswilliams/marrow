@@ -398,12 +398,12 @@ fn a_widened_durable_image() -> Vec<u8> {
             ledger([0x50; 16]),
             vec![
                 (ledger([0x51; 16]), Vec::new()),
-                (ledger([0x52; 16]), vec![int_value]),
+                (ledger([0x52; 16]), vec![("value".into(), int_value)]),
             ],
         )
         .expect("a within-bounds shape appends");
     let struct_value = draft
-        .value_struct(vec![int_value, text_value])
+        .value_struct(vec![("x".into(), int_value), ("y".into(), text_value)])
         .expect("a within-bounds shape appends");
     draft
         .declare_product(

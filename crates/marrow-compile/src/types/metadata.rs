@@ -1500,14 +1500,29 @@ impl TypeMetadataSession<'_> {
         self.remember(result)
     }
 
+    /// A stored enum's members, each with its payload leaves named in declaration order,
+    /// and its canonical anchor spelling. The payload names are part of the stored value
+    /// shape, so this durable reader keeps them where the `match` reader drops them.
     pub(crate) fn durable_enum_shape_and_anchor(
         &mut self,
         id: EnumId,
-    ) -> Result<Option<(ResolvedEnumVariants, String)>, GenericInvariant> {
+    ) -> Result<Option<(DurableEnumVariants, String)>, GenericInvariant> {
         self.ensure_healthy()?;
         let result = (|| {
             if let Some(info) = self.view.registry.enum_by_id(id) {
-                return Ok(Some((info.resolved_variants(), info.name.clone())));
+                let variants = info
+                    .variants
+                    .iter()
+                    .map(|variant| {
+                        let payload = variant
+                            .payload
+                            .iter()
+                            .map(|leaf| (leaf.name.clone(), leaf.ty))
+                            .collect();
+                        (variant.name.clone(), payload)
+                    })
+                    .collect();
+                return Ok(Some((variants, info.name.clone())));
             }
             let inst_id = TypeInstId::Enum(id);
             let Some((_, body)) = self.view.ready_inst_by_id(inst_id, &mut self.metadata)? else {
@@ -1519,7 +1534,10 @@ impl TypeMetadataSession<'_> {
                     body: TypeInstKind::Struct,
                 });
             };
-            let variants = ready_enum_variants(variants);
+            let variants = variants
+                .iter()
+                .map(|variant| (variant.name.clone(), variant.payload.clone()))
+                .collect();
             let spelling = self
                 .view
                 .registry

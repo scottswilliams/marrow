@@ -19,7 +19,7 @@ use marrow_image::{
     AdmittedGraphInputPlan, CanonicalDeclarationPathSelector, CanonicalValueShapeDag,
     DeclarationMember, DeclarationMemberDef, DeclarationMemberShape, DraftTxn,
     DurableIndexComponent, DurableIndexShape, FieldDef, ImageDraft, ImageType, KeyColumn,
-    LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, RootOccurrenceSelector, Scalar,
+    LedgerIdBytes, NamedLeaf, RecordTypeDef, RootOccurrenceDef, RootOccurrenceSelector, Scalar,
     SemanticTarget, ValueShapeNodeId, ValueShapeView, bounds,
 };
 use marrow_project::{IdentityAnchor, IdentityKind, IdentityLedger, ProjectInput, SourceOrigin};
@@ -1722,9 +1722,11 @@ impl<'a> IdentityResolver<'a> {
 
     /// Build a durable field's stored value shape from its resolved value type, over
     /// the closed acyclic durable value set. A nominal scalar erases to its base
-    /// `int`; a dense struct records its leaves positionally with no per-leaf ledger
-    /// id (the containing field is the renamable durable declaration); a closed enum
-    /// resolves its sum (kind 5) and per-member (kind 6) identities. A collection or
+    /// `int`; a dense struct records each leaf under its declared name, in declaration
+    /// order, with no per-leaf ledger id (the containing field is the renamable durable
+    /// declaration, while the leaves are read by position from its one cell); a closed
+    /// enum resolves its sum (kind 5) and per-member (kind 6) identities and names its
+    /// payload leaves the same way. A collection or
     /// abstract type parameter is not a durable value leaf — it is a precise
     /// `check.unsupported` that marks the graph incomplete, so the placeholder shape
     /// is discarded with the graph.
@@ -1769,6 +1771,7 @@ impl<'a> IdentityResolver<'a> {
                             .iter()
                             .map(|field| {
                                 self.build_value_shape(values, records, metadata, field.ty)
+                                    .map(|shape| (field.name.as_str().into(), shape))
                             })
                             .collect::<Option<Vec<_>>>();
                         self.value_path.pop();
@@ -1889,7 +1892,10 @@ impl<'a> IdentityResolver<'a> {
                 let id = self.resolve_declared(IdentityKind::Member, &format!("{spelling}.{name}"));
                 let payload = payload
                     .iter()
-                    .map(|arg| self.build_value_shape(values, records, metadata, *arg))
+                    .map(|(leaf, arg)| {
+                        self.build_value_shape(values, records, metadata, *arg)
+                            .map(|shape| (leaf.as_str().into(), shape))
+                    })
                     .collect::<Option<Vec<_>>>();
                 payload.map(|payload| (id, payload))
             })
@@ -1903,7 +1909,7 @@ impl<'a> IdentityResolver<'a> {
     fn append_value_struct(
         &mut self,
         values: &mut DraftTxn<'_>,
-        leaves: Vec<ValueShapeNodeId>,
+        leaves: Vec<NamedLeaf>,
     ) -> Option<ValueShapeNodeId> {
         self.checked_mint(values.value_struct(leaves))
     }

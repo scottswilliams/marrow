@@ -98,8 +98,14 @@ mod generic_enum_shape_tests {
         assert_eq!(members.len(), 2);
         assert!(members[0].payload().is_empty());
         assert_eq!(members[1].payload().len(), 1);
+        let some = &members[1].payload()[0];
         assert_eq!(
-            values.value_shapes().view(members[1].payload()[0]),
+            some.name(),
+            "value",
+            "the built-in payload keeps its declared name"
+        );
+        assert_eq!(
+            values.value_shapes().view(some.shape()),
             Some(ValueShapeView::Scalar(ScalarType::Int.image()))
         );
         assert!(

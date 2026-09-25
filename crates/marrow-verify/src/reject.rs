@@ -254,6 +254,7 @@ pub enum Tag {
     CollectionKind,
     DurableMember,
     DurableValue,
+    DurableLeaf,
     ValueScalar,
     SiteStep,
     SiteTarget,
@@ -270,6 +271,7 @@ impl fmt::Display for Tag {
             Tag::CollectionKind => "collection kind",
             Tag::DurableMember => "durable member tag",
             Tag::DurableValue => "durable value tag",
+            Tag::DurableLeaf => "durable value leaf marker",
             Tag::ValueScalar => "durable value scalar",
             Tag::SiteStep => "site path step kind",
             Tag::SiteTarget => "site target",
@@ -551,6 +553,7 @@ pub enum RejectionKind {
     IndexProjection(Projection),
     EnumIdentityReused,
     ValueArenaExhausted,
+    EmptyLeafName,
     Site(SiteFault),
     IndexReadKind,
     ContractUnidentifiable,
@@ -652,6 +655,7 @@ impl fmt::Display for RejectionKind {
                 "a durable enum identity reused with a different member set"
             }
             Self::ValueArenaExhausted => "a durable value shape outside the value arena's domain",
+            Self::EmptyLeafName => "a durable struct or payload leaf with an empty name",
             Self::IndexReadKind => "an index read kind disagreeing with the index's unique flag",
             Self::ContractUnidentifiable => "a durable graph too large to identify",
             Self::ContractMismatch => "a durable contract id that does not match the durable graph",

@@ -167,9 +167,12 @@ fallible and retains known results in a best-effort diagnostic on failure.
 `marrow apply` bypasses project capture through `cmd_store`. The runner's
 `store_apply` module loads and verifies the explicit OLD and NEW artifacts
 sequentially, then calls lifecycle apply once. Lifecycle compares the retained
-verified graphs, extends the accepted physical map and standing ceiling, audits
-OLD read-only, and publishes through the existing metadata owner. Receipt
-delivery is fallible and retains the known outcome in a best-effort diagnostic.
+verified graphs, including each stored struct and payload leaf's name through
+`marrow-image`'s `ValueShapeComparison`, and names the first unsupported change as
+an `UnsupportedChange`, which the runner writes as the receipt's `reason`. It then
+extends the accepted physical map and standing ceiling, audits OLD read-only, and
+publishes through the existing metadata owner. Receipt delivery is fallible and
+retains the known outcome in a best-effort diagnostic.
 
 `marrow recover --store <dir>` shares companion dispatch with doctor through
 `cmd_store`. An explicit `--image` bypasses project capture and compilation;

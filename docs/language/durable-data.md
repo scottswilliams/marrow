@@ -649,6 +649,34 @@ before it runs the program
 ([identity ledger](../tools/projects.md#identity-ledger),
 [changing the program](../operations/README.md#changing-the-program)).
 
+A stored `struct` value, and the payload of a stored `enum` member (including
+`Option` and `Result`), is held in its field's single cell, and its fields are
+read by position. The fields of a stored struct or payload have no ids of their
+own: their declared names and order are part of the durable contract. Reordering,
+renaming, adding, removing, or retyping such a field is a representation change,
+because existing cells would otherwise be read with a different meaning. A store
+on disk refuses the edited program with `store.contract_changed`, and
+[`marrow apply`](../tools/cli.md#marrow-apply) refuses it with
+`store.apply_unsupported` and reason `stored_value`. No stored value is
+converted.
+
+```text
+struct Pos {          struct Pos {
+    x: int                y: int
+    y: int                x: int
+}                     }
+
+resource Marker {
+    required at: Pos
+}
+
+store.contract_changed: the supplied image differs in the durable contract from the binding required by this operation; the current binding was not changed
+```
+
+A resource's own fields and its group fields are stored under their ids. Their
+order is part of the contract as well, so an attached store refuses a reorder,
+but `marrow apply` accepts one: each existing value stays under its id.
+
 Today, keyed roots, their groups, and their branches read and write end to end.
 A singleton root such as `store ^settings: Settings` and a group inside another
 group or a branch are future work

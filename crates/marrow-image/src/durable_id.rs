@@ -2,8 +2,12 @@
 //!
 //! A [`DurableContractId`] is the stable 32-byte identity of a program's whole durable
 //! graph — the application, the roots, their key columns, and each root's member tree and
-//! managed indexes — computed over the graph's entropy-minted **ledger ids**, never its
-//! names: a rename preserves it and every semantic graph change moves it. It crosses the
+//! managed indexes. Declarations are identified by their entropy-minted **ledger ids**, so
+//! renaming a declaration preserves the identity. Positional stored leaves — the leaves of
+//! a stored struct and the payload leaves of a stored enum member, which one cell holds by
+//! position — are identified by their declared names in order, so renaming, reordering,
+//! adding, removing or retyping one moves the identity, as does every other semantic graph
+//! change. It crosses the
 //! compiler → image → verifier boundary as a domain-separated SHA-256 over a
 //! length-delimited canonical payload, and trust comes only from the verifier recomputing
 //! it over its own decoded view. Operation sites are excluded: they are derivable access
@@ -38,11 +42,20 @@
 //!   key     = u8(key_scalar_tag) ‖ IDREF(0x04, key)
 //!   value   = u8(value_tag) ‖ value_body                       (a durable field's stored value shape)
 //!     scalar(0) = u8(scalar_tag)                               (a nominal erases to its base scalar)
-//!     struct(1) = u16_be(leaf_count) ‖ value*                  (dense struct leaves, all required; names are not identity)
+//!     struct(1) = u16_be(leaf_count) ‖ leaf*                   (dense struct leaves, all required, in declaration order)
 //!     enum(2)   = IDREF(0x05, sum) ‖ u16_be(member_count) ‖ evalue*
-//!   evalue  = IDREF(0x06, member) ‖ u16_be(payload_count) ‖ value*   (one enum member: its id and dense payload leaves)
+//!   evalue  = IDREF(0x06, member) ‖ u16_be(payload_count) ‖ leaf*    (one enum member: its id and dense payload leaves)
+//!   leaf    = u8(0x03) ‖ u16_be(name_len) ‖ name ‖ value      (the declared name, UTF-8, 1..=MAX_STRING_BYTES)
 //!   IDREF(k, id) = u8(k) ‖ u64_be(16) ‖ id                     (kind-tagged, LP 16 bytes)
 //! ```
+//!
+//! The leaf marker `0x03` sits where an earlier, name-free grammar placed a value tag
+//! from `{0, 1, 2}`. The two grammars are therefore positionally disjoint: a payload
+//! containing any struct or payload leaf parses under at most one of them, and a payload
+//! containing none (scalars and payloadless enums only) is byte-identical under both and
+//! denotes the same graph. Byte `0x03` is reserved at every leaf position: a successor
+//! grammar that changes how a leaf is identified must stay positionally disjoint from both
+//! grammars or advance `marrow.durable.v0`.
 //!
 //! The `IDREF` kind tags mirror the ledger's frozen kind space (application 0, product 1,
 //! field 2, root/branch placement 3, key 4, group 7, index 8; 5-6 durable enum
@@ -377,8 +390,9 @@ pub enum DurableMemberViewKind<'a> {
 
 /// One stored field of a durable resource, group, or branch: its ledger id, whether it is
 /// required, and a reference to its stored value shape in the graph's one arena. The
-/// field's *name* is not part of the identity — a rename preserves it — but its value
-/// shape is.
+/// field's own *name* is not part of the identity — a rename preserves it — but its value
+/// shape is, including the declared names and order of any stored struct or enum payload
+/// leaves inside it.
 ///
 /// Every fact it carries is a small copied value, so it takes no lifetime: a caller may
 /// keep one past the walk that produced it.
@@ -900,7 +914,9 @@ mod tests {
         DeclarationMemberDef, DeclarationMemberShape, DeclarationNode, DurableContractGraph,
     };
     use crate::ty::Scalar;
-    use crate::value_dag::{CanonicalValueShapeDag, ValueShapeNodeId, ValueShapeView};
+    use crate::value_dag::{
+        CanonicalValueShapeDag, ValueShapeLeaf, ValueShapeNodeId, ValueShapeView,
+    };
     use sha2::{Digest, Sha256};
 
     /// The construction budget these graphs are stated under. Every graph below is built
@@ -1130,6 +1146,12 @@ mod tests {
                 idref(out, 4, &column.id);
             }
         }
+        fn leaf(out: &mut Vec<u8>, values: &CanonicalValueShapeDag, leaf: &ValueShapeLeaf) {
+            out.push(3);
+            out.extend_from_slice(&(leaf.name().len() as u16).to_be_bytes());
+            out.extend_from_slice(leaf.name().as_bytes());
+            value(out, values, leaf.shape());
+        }
         fn value(out: &mut Vec<u8>, values: &CanonicalValueShapeDag, shape: ValueShapeNodeId) {
             match values.view(shape).expect("a shape minted by this arena") {
                 ValueShapeView::Scalar(scalar) => {
@@ -1139,8 +1161,8 @@ mod tests {
                 ValueShapeView::Struct(leaves) => {
                     out.push(1);
                     out.extend_from_slice(&(leaves.len() as u16).to_be_bytes());
-                    for leaf in leaves {
-                        value(out, values, *leaf);
+                    for each in leaves {
+                        leaf(out, values, each);
                     }
                 }
                 ValueShapeView::Enum { sum, members } => {
@@ -1150,8 +1172,8 @@ mod tests {
                     for member in members {
                         idref(out, 6, &member.id());
                         out.extend_from_slice(&(member.payload().len() as u16).to_be_bytes());
-                        for leaf in member.payload() {
-                            value(out, values, *leaf);
+                        for each in member.payload() {
+                            leaf(out, values, each);
                         }
                     }
                 }
@@ -1445,9 +1467,11 @@ mod tests {
     /// one in place.
     struct Shapes {
         int: ValueShapeNodeId,
-        /// `struct { text, int }` and the same leaves in the other order.
+        /// `struct { label: text, count: int }` and the same leaves in the other order.
         text_int: ValueShapeNodeId,
         int_text: ValueShapeNodeId,
+        /// `struct { name: text, count: int }`: `text_int` with its first leaf renamed.
+        renamed_text_int: ValueShapeNodeId,
         /// An `Option[int]`-shaped enum: `none` (empty) then `some` (int).
         option_int: ValueShapeNodeId,
         /// The same enum with a re-minted sum id.
@@ -1460,6 +1484,8 @@ mod tests {
         user_enum_reordered: ValueShapeNodeId,
         /// The same enum with its payload leaf retyped to int.
         user_enum_retyped: ValueShapeNodeId,
+        /// The same enum with its payload leaf renamed.
+        user_enum_payload_renamed: ValueShapeNodeId,
     }
 
     fn mint_shapes(draft: &mut DurableContractGraph) -> Shapes {
@@ -1467,12 +1493,20 @@ mod tests {
         let int = values.scalar(Scalar::Int).expect("the test arena mints");
         let text = values.scalar(Scalar::Text).expect("the test arena mints");
         let text_int = values
-            .struct_shape(vec![text, int])
+            .struct_shape(vec![("label".into(), text), ("count".into(), int)])
             .expect("the test arena mints");
         let int_text = values
-            .struct_shape(vec![int, text])
+            .struct_shape(vec![("count".into(), int), ("label".into(), text)])
             .expect("the test arena mints");
-        let option_members = || vec![(id(0x51), Vec::new()), (id(0x52), vec![int])];
+        let renamed_text_int = values
+            .struct_shape(vec![("name".into(), text), ("count".into(), int)])
+            .expect("the test arena mints");
+        let option_members = || {
+            vec![
+                (id(0x51), Vec::new()),
+                (id(0x52), vec![("value".into(), int)]),
+            ]
+        };
         let option_int = values
             .enum_shape(id(0x50), option_members())
             .expect("the test arena mints");
@@ -1483,7 +1517,7 @@ mod tests {
             vec![
                 (first, Vec::new()),
                 (second, Vec::new()),
-                (id(0x56), vec![payload]),
+                (id(0x56), vec![("note".into(), payload)]),
             ]
         };
         let user_enum = values
@@ -1498,23 +1532,35 @@ mod tests {
         let user_enum_retyped = values
             .enum_shape(id(0x53), user(id(0x54), id(0x55), int))
             .expect("the test arena mints");
+        let user_enum_payload_renamed = values
+            .enum_shape(
+                id(0x53),
+                vec![
+                    (id(0x54), Vec::new()),
+                    (id(0x55), Vec::new()),
+                    (id(0x56), vec![("remark".into(), text)]),
+                ],
+            )
+            .expect("the test arena mints");
         Shapes {
             int,
             text_int,
             int_text,
+            renamed_text_int,
             option_int,
             option_int_resummed,
             user_enum,
             user_enum_re_membered,
             user_enum_reordered,
             user_enum_retyped,
+            user_enum_payload_renamed,
         }
     }
 
     /// A graph whose resource stores widened value shapes: a dense `struct` leaf, an
     /// `Option`-shaped enum, and a user enum. Enum members carry sum (kind 5) and
-    /// member (kind 6) ids; the struct records its leaves positionally with no
-    /// per-leaf id. `pick` states the three widened shapes, so a variant is a fresh
+    /// member (kind 6) ids; the struct and each payload record their leaves by declared
+    /// name in order. `pick` states the three widened shapes, so a variant is a fresh
     /// graph rather than an edited one.
     fn widened_graph_with(
         pick: impl FnOnce(&Shapes) -> [ValueShapeNodeId; 3],
@@ -1541,7 +1587,8 @@ mod tests {
 
     /// Known-answer test for a durable graph with widened value shapes. Freezing
     /// this hex pins the value-shape tag bytes (scalar 0, struct 1, enum 2), the sum
-    /// (5) and member (6) IDREF tags, and the payload layout.
+    /// (5) and member (6) IDREF tags, the leaf marker (3) with its declared name, and the
+    /// payload layout.
     #[test]
     fn durable_contract_id_with_widened_values_known_answer() {
         let widened = widened_graph();
@@ -1551,7 +1598,7 @@ mod tests {
         );
         assert_eq!(
             cid(widened.contract_view()).to_hex(),
-            "9e2b73b8c9e5f26ca656ed4c05b0468683b36b2753a483da8f960fc94cbd045e",
+            "cae180acddfd4d14c5bd5765c1f04e7057c56ba481a6e86d6104439d67e2d4dc",
         );
         assert_ne!(
             cid(widened.contract_view()),
@@ -1559,9 +1606,44 @@ mod tests {
         );
     }
 
-    /// Enum member identity is part of the durable identity: a rename preserves it
+    /// Known-answer test for a graph whose only enum carries no payload. No struct or
+    /// payload leaf occurs, so its canonical payload is spelled identically under the
+    /// name-free grammar and the named-leaf grammar: the hex is the one the name-free
+    /// grammar produced, and a store bound to such a graph keeps its contract.
+    #[test]
+    fn durable_contract_id_with_payloadless_enum_known_answer() {
+        let graph = one_root(
+            |draft| {
+                let values = draft.value_shapes_mut();
+                let int = values.scalar(Scalar::Int).expect("the test arena mints");
+                let access = values
+                    .enum_shape(
+                        id(0x50),
+                        vec![(id(0x51), Vec::new()), (id(0x52), Vec::new())],
+                    )
+                    .expect("the test arena mints");
+                vec![
+                    field_cmd(None, 0x0e, true, int),
+                    field_cmd(None, 0x0f, false, access),
+                ]
+            },
+            vec![key(Scalar::Int, 0x0c)],
+            Vec::new(),
+        );
+        assert_eq!(
+            cid(graph.contract_view()).to_hex(),
+            independent_id(graph.contract_view())
+        );
+        assert_eq!(
+            cid(graph.contract_view()).to_hex(),
+            "920e559647f96124634130cb57eae9171abdd97c63d4a3f15fadc69e49b9ff57",
+        );
+    }
+
+    /// Enum member identity is part of the durable identity: a member rename preserves it
     /// (ids unchanged), while re-minting a member, reordering members (append is
-    /// positional), or re-typing a member payload changes it.
+    /// positional), or re-typing a member payload changes it. Renaming or reordering a
+    /// payload leaf or a struct leaf changes it too.
     #[test]
     fn enum_member_identity_follows_the_ledger_ids() {
         let widened = widened_graph();
@@ -1586,9 +1668,19 @@ mod tests {
         let retyped = widened_graph_with(|s| [s.text_int, s.option_int, s.user_enum_retyped]);
         assert_ne!(base, cid(retyped.contract_view()));
 
+        // Renaming a payload leaf changes the id (a payload leaf is its declared name).
+        let payload_renamed =
+            widened_graph_with(|s| [s.text_int, s.option_int, s.user_enum_payload_renamed]);
+        assert_ne!(base, cid(payload_renamed.contract_view()));
+
         // Re-ordering a struct leaf changes the id (leaf order is load-bearing).
         let struct_swapped = widened_graph_with(|s| [s.int_text, s.option_int, s.user_enum]);
         assert_ne!(base, cid(struct_swapped.contract_view()));
+
+        // Renaming a struct leaf changes the id.
+        let struct_renamed =
+            widened_graph_with(|s| [s.renamed_text_int, s.option_int, s.user_enum]);
+        assert_ne!(base, cid(struct_renamed.contract_view()));
     }
 
     /// A singleton root (empty key tuple) and a composite root (two key columns)
@@ -1755,7 +1847,7 @@ mod tests {
                 let mut level = values.scalar(Scalar::Int).expect("the test arena mints");
                 for _ in 0..16 {
                     level = values
-                        .struct_shape(vec![level; 4])
+                        .struct_shape(vec![("v".into(), level); 4])
                         .expect("the test arena mints");
                 }
                 assert_eq!(values.len(), 17, "the stated graph is seventeen nodes");
@@ -1781,7 +1873,7 @@ mod tests {
                 let mut level = values.scalar(Scalar::Int).expect("the test arena mints");
                 for _ in 0..7 {
                     level = values
-                        .struct_shape(vec![level; 4])
+                        .struct_shape(vec![("v".into(), level); 4])
                         .expect("the test arena mints");
                 }
                 vec![field_cmd(None, 0x0e, true, level)]
@@ -1853,20 +1945,22 @@ mod tests {
     ///
     /// The boundary is stated in the graph's own member costs rather than in a copied
     /// number, so it moves with the bound: a keyless root frames 83 payload bytes; a field
-    /// carrying a bare scalar costs 29 and one carrying a struct of `leaves` costs
-    /// `30 + 2 * leaves`; a static `group` with no members costs 28. Swapping that group
-    /// for one more scalar field is therefore exactly one byte, which is the only reason
-    /// the pair below can straddle the bound rather than step over it.
+    /// carrying a bare scalar costs 29 and one carrying a struct of `leaves` scalar leaves
+    /// with one-byte names costs `30 + 6 * leaves` (each leaf is its marker, a two-byte
+    /// name length, the name, and the scalar); a static `group` with no members costs 28.
+    /// Swapping that group for one more scalar field is therefore exactly one byte, which
+    /// is the only reason the pair below can straddle the bound rather than step over it.
     #[test]
     fn a_preimage_one_byte_past_the_fitting_bound_is_refused_and_the_one_below_mints() {
         const ROOT_FRAME_BYTES: usize = 83;
         const SCALAR_FIELD_BYTES: usize = 29;
         const EMPTY_GROUP_BYTES: usize = 28;
         const STRUCT_FIELD_FRAME_BYTES: usize = 30;
+        const LEAF_BYTES: usize = 6;
         // The widest struct arity the payload's `u16` leaf count can spell.
         const WIDE_LEAVES: usize = u16::MAX as usize;
-        const WIDE_FIELDS: usize = 6;
-        let wide_field_bytes = STRUCT_FIELD_FRAME_BYTES + 2 * WIDE_LEAVES;
+        const WIDE_FIELDS: usize = 2;
+        let wide_field_bytes = STRUCT_FIELD_FRAME_BYTES + LEAF_BYTES * WIDE_LEAVES;
         // What is left for the one tuning field once the frame, the wide fields, the
         // scalar field, and the group have been spent.
         let tuning = super::MAX_FITTING_CONTRACT_PREIMAGE_BYTES
@@ -1875,8 +1969,10 @@ mod tests {
             - SCALAR_FIELD_BYTES
             - EMPTY_GROUP_BYTES
             - STRUCT_FIELD_FRAME_BYTES;
-        assert_eq!(tuning % 2, 0, "a struct leaf is two payload bytes");
-        let tuning_leaves = tuning / 2;
+        // The tuning struct's first leaf name absorbs the bytes a whole leaf cannot.
+        let tuning_leaves = tuning / LEAF_BYTES;
+        let first_name = "v".repeat(1 + tuning % LEAF_BYTES);
+        let first_name = first_name.as_str();
 
         // `extra` is the member that straddles the bound: a group is 28 bytes and a scalar
         // field is 29, so the two graphs differ by exactly one payload byte.
@@ -1885,12 +1981,13 @@ mod tests {
                 move |draft| {
                     let values = draft.value_shapes_mut();
                     let int = values.scalar(Scalar::Int).expect("the test arena mints");
+                    let leaves = |count: usize| vec![("v".into(), int); count];
                     let wide = values
-                        .struct_shape(vec![int; WIDE_LEAVES])
+                        .struct_shape(leaves(WIDE_LEAVES))
                         .expect("the test arena mints");
-                    let tuned = values
-                        .struct_shape(vec![int; tuning_leaves])
-                        .expect("the test arena mints");
+                    let mut tuning = leaves(tuning_leaves);
+                    tuning[0].0 = first_name.into();
+                    let tuned = values.struct_shape(tuning).expect("the test arena mints");
                     let mut members: Vec<_> = (0..WIDE_FIELDS)
                         .map(|_| field_cmd(None, 0x0e, true, wide))
                         .collect();

@@ -411,7 +411,7 @@ fn an_over_wide_or_foreign_typed_arena_append_is_refused_and_mutates_nothing() {
         .value_scalar(Scalar::Int)
         .expect("the test arena mints");
     assert_eq!(
-        draft.value_struct(vec![int; MAX_STRUCT_LEAVES + 1]),
+        draft.value_struct(vec![("v".into(), int); MAX_STRUCT_LEAVES + 1]),
         Err(DraftStateError::CarrierDomain),
         "the over-wide append is the typed carrier-domain refusal",
     );
@@ -433,14 +433,17 @@ fn an_over_wide_or_foreign_typed_arena_append_is_refused_and_mutates_nothing() {
             .expect("the test arena mints")
     };
     assert_eq!(
-        draft.value_struct(vec![foreign]),
+        draft.value_struct(vec![("v".into(), foreign)]),
         Err(DraftStateError::ForeignDraft),
         "the foreign leaf is the typed refusal, never a panic",
     );
     assert_eq!(
         draft.value_enum(
             LedgerIdBytes::from_bytes([0x50; 16]),
-            vec![(LedgerIdBytes::from_bytes([0x51; 16]), vec![foreign])],
+            vec![(
+                LedgerIdBytes::from_bytes([0x51; 16]),
+                vec![("v".into(), foreign)]
+            )],
         ),
         Err(DraftStateError::ForeignDraft),
         "the foreign payload leaf is the typed refusal, never a panic",
