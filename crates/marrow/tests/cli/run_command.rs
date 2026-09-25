@@ -2,8 +2,11 @@
 //! the command-line surface every subcommand shares — usage on `--help`, and one
 //! usage-error form — and store-attached runs of exports.
 
-use crate::common::{MARROW_BIN, Project, marrow_in, stage_toolchain, staged_marrow_in, write};
+use crate::common::{
+    CliOutcome, MARROW_BIN, Project, marrow_in, stage_toolchain, staged_marrow_in, write,
+};
 use marrow_test_support::Scratch;
+use std::path::PathBuf;
 
 const HALF: &str = "\
 pub fn half(n: int): Result<int, string> {
@@ -236,6 +239,11 @@ resource Counter {
 
 store ^counters[id: int]: Counter
 
+struct Tree {
+    v: int
+    kids: List<Tree>
+}
+
 pub fn setOdd(id: int, v: int): Result<int, string> {
     transaction {
         ^counters[id] = Counter(value: v)
@@ -253,6 +261,19 @@ pub fn divide(id: int, d: int): int {
     }
 }
 
+pub fn deepWrite(id: int, n: int): Tree {
+    transaction {
+        ^counters[id] = Counter(value: n)
+    }
+    var t = Tree(v: 0, kids: List())
+    var i = 0
+    while i < n {
+        t = Tree(v: i, kids: List(t))
+        i += 1
+    }
+    return t
+}
+
 pub fn valueOf(id: int): int? {
     return ^counters[id].value
 }
@@ -268,38 +289,65 @@ const COUNTER_IDS: &str = "marrow ids v0\n\
      high-water 0\n\
      end\n";
 
-/// A durable export whose transaction block exits with `err` has committed: the run
-/// reports `error: e` on standard error and exits 1, the written value is readable
-/// afterwards, and JSONL carries the exact `value` record with `member` `err`. A fault
-/// inside the block is the contrast: a `fault` record, and the write is discarded.
-#[test]
-fn a_durable_top_level_err_commits_and_exits_one() {
-    let toolchain = stage_toolchain();
-    let temp = Scratch::new("durable-err");
-    let project = temp.path().join("app");
-    write(&project.join("marrow.toml"), "edition = \"2026\"\n");
-    write(&project.join("src/main.mw"), COUNTER_SOURCE);
-    write(&project.join(".marrow/ids"), COUNTER_IDS);
-    write(&project.join("seed.jsonl"), "{\"id\":1,\"value\":0}\n");
-    let store = temp.path().join("store");
-    let store = store.to_str().expect("store path");
-    let imported = staged_marrow_in(
-        toolchain.path(),
-        &project,
-        &[
+/// A `COUNTER_SOURCE` project beside a store seeded with counter 1 at 0, imported
+/// through a staged toolchain; `run` drives that toolchain's `marrow` in the project.
+struct CounterStore {
+    toolchain: Scratch,
+    _temp: Scratch,
+    project: PathBuf,
+    store: String,
+}
+
+impl CounterStore {
+    fn provision(name: &str) -> Self {
+        let toolchain = stage_toolchain();
+        let temp = Scratch::new(name);
+        let project = temp.path().join("app");
+        write(&project.join("marrow.toml"), "edition = \"2026\"\n");
+        write(&project.join("src/main.mw"), COUNTER_SOURCE);
+        write(&project.join(".marrow/ids"), COUNTER_IDS);
+        write(&project.join("seed.jsonl"), "{\"id\":1,\"value\":0}\n");
+        let store = temp
+            .path()
+            .join("store")
+            .to_str()
+            .expect("store path")
+            .to_string();
+        let counters = Self {
+            toolchain,
+            _temp: temp,
+            project,
+            store,
+        };
+        let imported = counters.run(&[
             "import",
             "--store",
-            store,
+            &counters.store,
             "--jsonl",
             "seed.jsonl",
             "--root",
             "counters",
             "--keys",
             "id",
-        ],
-    );
-    assert!(imported.success(), "{}", imported.stderr_text());
-    let run = |args: &[&str]| staged_marrow_in(toolchain.path(), &project, args);
+        ]);
+        assert!(imported.success(), "{}", imported.stderr_text());
+        counters
+    }
+
+    fn run(&self, args: &[&str]) -> CliOutcome {
+        staged_marrow_in(self.toolchain.path(), &self.project, args)
+    }
+}
+
+/// A durable export whose transaction block exits with `err` has committed: the run
+/// reports `error: e` on standard error and exits 1, the written value is readable
+/// afterwards, and JSONL carries the exact `value` record with `member` `err`. A fault
+/// inside the block is the contrast: a `fault` record, and the write is discarded.
+#[test]
+fn a_durable_top_level_err_commits_and_exits_one() {
+    let counters = CounterStore::provision("durable-err");
+    let store = counters.store.as_str();
+    let run = |args: &[&str]| counters.run(args);
 
     let err = run(&["run", "setOdd", "--store", store, "--", "1", "3"]);
     assert_eq!(err.code(), Some(1), "{err:?}");
@@ -329,78 +377,17 @@ fn a_durable_top_level_err_commits_and_exits_one() {
     assert_eq!(discarded.stdout_text(), "5\n", "{discarded:?}");
 }
 
-const DEEP_SOURCE: &str = "\
-resource Book {
-    title: string
-}
-
-store ^books[id: int]: Book
-
-struct Tree {
-    v: int
-    kids: List<Tree>
-}
-
-pub fn deepWrite(id: int, n: int): Tree {
-    transaction {
-        ^books[id] = Book(title: \"written\")
-    }
-    var t = Tree(v: 0, kids: List())
-    var i = 0
-    while i < n {
-        t = Tree(v: i, kids: List(t))
-        i += 1
-    }
-    return t
-}
-
-pub fn has(id: int): bool {
-    return exists(^books[id])
-}
-";
-
-const DEEP_IDS: &str = "marrow ids v0\n\
-     machine-written by marrow; do not edit\n\
-     id application . 1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a\n\
-     id product Book 1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d\n\
-     id field Book.title 1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e\n\
-     id root books 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b\n\
-     id key books.id 1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c\n\
-     high-water 0\n\
-     end\n";
-
 /// `marrow run --store` builds no interface, so it runs an export whose result type is
-/// recursive and returns the value. A `Tree` spends two wire levels per level of the
-/// value and the reply envelope takes one of 64, so a 31-level result does not fit:
-/// the call is `run.outcome_unknown` after its transaction committed, and the write is
-/// readable afterwards.
+/// recursive and returns the value. `deepWrite(_, n)` returns `n + 1` nested `Tree`s;
+/// each spends two wire levels (the struct and its `List`) and the reply envelope one
+/// more, against a limit of 64. At `n = 31` the 32 trees take 64 levels and 65 with the
+/// envelope, so the call is `run.outcome_unknown` after its transaction committed, and
+/// the committed write is readable afterwards.
 #[test]
 fn a_recursive_export_runs_attached_and_a_result_past_the_wire_depth_is_an_unknown_outcome() {
-    let toolchain = stage_toolchain();
-    let temp = Scratch::new("recursive-attached");
-    let project = temp.path().join("app");
-    write(&project.join("marrow.toml"), "edition = \"2026\"\n");
-    write(&project.join("src/main.mw"), DEEP_SOURCE);
-    write(&project.join(".marrow/ids"), DEEP_IDS);
-    write(
-        &project.join("seed.jsonl"),
-        "{\"id\":1,\"title\":\"seed\"}\n",
-    );
-    let store = temp.path().join("store");
-    let store = store.to_str().expect("store path");
-    let run = |args: &[&str]| staged_marrow_in(toolchain.path(), &project, args);
-    let imported = run(&[
-        "import",
-        "--store",
-        store,
-        "--jsonl",
-        "seed.jsonl",
-        "--root",
-        "books",
-        "--keys",
-        "id",
-    ]);
-    assert!(imported.success(), "{}", imported.stderr_text());
+    let counters = CounterStore::provision("recursive-attached");
+    let store = counters.store.as_str();
+    let run = |args: &[&str]| counters.run(args);
 
     let shallow = run(&["run", "deepWrite", "--store", store, "--", "7", "2"]);
     assert_eq!(shallow.code(), Some(0), "{shallow:?}");
@@ -425,6 +412,6 @@ fn a_recursive_export_runs_attached_and_a_result_past_the_wire_depth_is_an_unkno
         deep.stdout_text(),
         "{\"cause\":\"wire\",\"cause_code\":\"wire.depth_limit\",\"code\":\"run.outcome_unknown\",\"kind\":\"run\",\"outcome\":\"outcome_unknown\"}\n"
     );
-    let committed = run(&["run", "has", "--store", store, "--", "8"]);
-    assert_eq!(committed.stdout_text(), "true\n", "{committed:?}");
+    let committed = run(&["run", "valueOf", "--store", store, "--", "8"]);
+    assert_eq!(committed.stdout_text(), "31\n", "{committed:?}");
 }

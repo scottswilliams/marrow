@@ -575,11 +575,14 @@ recursion.
 A generic type that holds itself at an ever-larger argument, such as
 `child: Box<Option<T>>` inside `Box<T>` or `kids: List<Node<List<T>>>` inside
 `Node<T>`, has no finite set of instances, even inside a collection. For an
-application written in a function body, whether or not the function is called,
-or in a non-generic declaration, the compiler reaches its instantiation bound
-first and reports `check.instantiation_limit` at that application, such as
-`Box<int>`. An application written only in the field of a template that is never
-applied reaches neither the recursion check nor the instantiation bound.
+application written anywhere in a function, whether or not the function is
+called, in a non-generic declaration, or in the field of an applied generic
+type, the compiler reaches its instantiation bound first. It reports
+`check.instantiation_limit` at the outermost type written at that position: at
+`List` in `xs: List<Box<int>>`, and at `Other<int>` when the application is in a
+field of `Other<U>`. An application written only in the field of a template
+that is never applied reaches neither the recursion check nor the instantiation
+bound.
 
 A function cannot call itself ([functions](modules-and-functions.md#functions)),
 so a recursive value is walked with a loop over a list of pending values, as

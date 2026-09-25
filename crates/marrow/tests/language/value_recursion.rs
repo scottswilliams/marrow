@@ -6,6 +6,9 @@
 //! every admitted row must reach a verified image, so a verifier that disagreed with the
 //! checker would fail here rather than at a runner.
 //!
+//! The module also pins the runtime charge the same reference section states: a
+//! subtree appended to a worklist counts in full toward the collection bound.
+//!
 //! The cycle path of a `check.recursion` is read from the message suffix: no typed fact
 //! carries it yet, and the error-code registry promises that the message names the
 //! cycle. That is this module's one exception to the harness's no-prose rule.
@@ -164,9 +167,21 @@ fn an_application_holding_itself_at_a_growing_argument_reaches_the_instantiation
             &[("check.instantiation_limit", 6, 13, None)],
         ),
         (
-            "an application of a type holding itself at a growing argument",
-            "struct Box<T> {\n    child: Box<Option<T>>\n}\n\nfn useIt(b: Box<int>): int {\n    return 1\n}\n\npub fn f(): int {\n    return 1\n}\n",
-            &[("check.instantiation_limit", 5, 13, None)],
+            "a growing application in the body of a generic function that is never called, \
+             reported at the enclosing written type",
+            "struct Box<T> {\n    child: Box<Option<T>>\n}\n\nfn g<U>(x: U): int {\n    const xs: List<Box<int>> = List()\n    return length(xs)\n}\n\npub fn f(): int {\n    return 1\n}\n",
+            &[("check.instantiation_limit", 6, 15, None)],
+        ),
+        (
+            "a growing application in the signature of a generic function that is never called",
+            "struct Box<T> {\n    child: Box<Option<T>>\n}\n\nfn g<U>(x: U, bs: List<Box<int>>): int {\n    return length(bs)\n}\n\npub fn f(): int {\n    return 1\n}\n",
+            &[("check.instantiation_limit", 5, 19, None)],
+        ),
+        (
+            "a growing application in the field of an applied template, reported at the \
+             template's application",
+            "struct Box<T> {\n    child: Box<Option<T>>\n}\n\nstruct Other<U> {\n    u: U\n    b: List<Box<int>>\n}\n\nfn useIt(o: Other<int>): int {\n    return o.u\n}\n\npub fn f(): int {\n    return 1\n}\n",
+            &[("check.instantiation_limit", 10, 13, None)],
         ),
     ];
     for (label, source, expected) in cases {
