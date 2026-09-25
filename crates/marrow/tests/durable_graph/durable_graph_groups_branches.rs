@@ -353,3 +353,81 @@ fn a_retired_group_anchor_cannot_be_reused() {
         diagnostics.messages()
     );
 }
+
+// Two stored resources whose member orders differ from key order: `Book` writes
+// `title` before `author` and its `details` leaves `year` before `edition`, and
+// `Booklet` — a name with `Book` as a prefix — shares the field name `title`.
+const ORDER_SOURCE: &str = r#"resource Book {
+    required title: string
+    author: string
+
+    details {
+        year: int
+        edition: int
+    }
+}
+
+resource Booklet {
+    required title: string
+    pages: int
+}
+
+store ^books[id: int]: Book
+store ^booklets[id: int]: Booklet
+
+pub fn label(): string {
+    return "books"
+}
+"#;
+
+const ORDER_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Book 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field Book.title 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id field Book.author 0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\n\
+     id root books 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id key books.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     id group Book.details 20202020202020202020202020202020\n\
+     id field Book.details.year 21212121212121212121212121212121\n\
+     id field Book.details.edition 22222222222222222222222222222222\n\
+     id product Booklet 40404040404040404040404040404040\n\
+     id field Booklet.title 41414141414141414141414141414141\n\
+     id field Booklet.pages 42424242424242424242424242424242\n\
+     id root booklets 43434343434343434343434343434343\n\
+     id key booklets.id 44444444444444444444444444444444\n\
+     high-water 0\n\
+     end\n";
+
+/// A record's field list and its group's leaf list are each its own members in
+/// declaration order, read through the independently verified image: no member of
+/// another record or of the record's group joins a list, and none is reordered.
+#[test]
+fn a_record_and_its_group_keep_declared_member_order() {
+    let image = Project::single(ORDER_SOURCE).ids(ORDER_IDS).image();
+    let names = |record| -> Vec<String> {
+        image
+            .record_type(record)
+            .fields()
+            .iter()
+            .map(|field| field.name().to_string())
+            .collect()
+    };
+    let root = |name: &str| {
+        image
+            .roots()
+            .iter()
+            .find(|root| root.name() == name)
+            .unwrap_or_else(|| panic!("root {name}"))
+    };
+
+    let books = root("books");
+    assert_eq!(names(books.record()), ["title", "author", "details"]);
+    assert_eq!(
+        books.groups().len(),
+        1,
+        "the group is executable, so sealed"
+    );
+    assert_eq!(names(books.groups()[0].record()), ["year", "edition"]);
+    assert_eq!(names(root("booklets").record()), ["title", "pages"]);
+}

@@ -556,10 +556,11 @@ pub(crate) enum GenericInvariant {
     /// rendered.
     DurableConstructionRefused,
     /// A declaration ledger's lookup index and its occurrence list disagree: a
-    /// refusal handle addresses a position that holds no refusal, or one namespace's
-    /// handle was presented to another's ledger. The two layers name one declaration
-    /// and must agree about it; a wrong summary would steer a reader to a cause that
-    /// is not the one their code hit.
+    /// refusal handle addresses a position that holds no refusal, an index entry
+    /// addresses an occurrence of another key, or one namespace's handle was presented
+    /// to another's ledger. The two layers name one declaration and must agree about
+    /// it; a wrong summary would steer a reader to a cause that is not the one their
+    /// code hit.
     DeclarationIndexDrift,
 }
 
@@ -1285,28 +1286,15 @@ fn field_index<'f>(fields: &'f [FieldInfo], name: &str) -> Option<(u16, &'f Fiel
 /// The owner is scoped to the tree that declared it: two trees may each declare a
 /// resource of one name, and a bare-name key would merge their members into one
 /// record and steer a refused member to the wrong declaration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The derived order is load-bearing: `owner` compares first, so one owner's keys are
+/// adjacent in the ledger index and [`Self::run`] reads them as one contiguous run.
+/// An order that compared the member name first would end that run at the first key
+/// of another owner, and records would read truncated field lists.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct MemberKey {
     owner: ScopedName,
     member: String,
-}
-
-/// Every member of one record shares that record's owner, so the member name is the
-/// discriminating half of the key. Ordering on it first keeps a ledger probe from
-/// comparing the same origin and record spelling at every step of its search — a
-/// resource declaring thousands of fields is the shape this ledger is sized for.
-impl Ord for MemberKey {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.member
-            .cmp(&other.member)
-            .then_with(|| self.owner.cmp(&other.owner))
-    }
-}
-
-impl PartialOrd for MemberKey {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
 }
 
 impl MemberKey {
@@ -1319,8 +1307,10 @@ impl MemberKey {
         }
     }
 
-    fn owns(&self, owner: &ScopedName) -> bool {
-        self.owner == *owner
+    /// The run of `owner`'s keys in the ledger index: its least key, and the
+    /// predicate that holds exactly for the keys `owner` owns.
+    fn run(owner: &ScopedName) -> (Self, impl Fn(&Self) -> bool + '_) {
+        (Self::new(owner, ""), move |key: &Self| key.owner == *owner)
     }
 
     fn member(&self) -> &str {
@@ -1403,10 +1393,10 @@ pub(crate) struct TypeRegistry {
     /// accepted or refused, in declaration order.
     ///
     /// This is the authority for which members survived and in what order:
-    /// `RecordInfo::fields` and `GroupInfo::fields` are read out of `accepted()`,
-    /// so the record cannot hold a member the ledger does not, and a member the
-    /// compiler refused answers `Refused` at the lookups that would otherwise
-    /// report the record as having no such field.
+    /// `RecordInfo::fields` and `GroupInfo::fields` are each read out of their
+    /// owner's run of this ledger, so the record cannot hold a member the ledger does
+    /// not, and a member the compiler refused answers `Refused` at the lookups that
+    /// would otherwise report the record as having no such field.
     members: DeclarationLedger<MemberKey, FieldInfo>,
     /// Supported aliases share globally bound terminal names and optionality.
     aliases: AliasTable,
@@ -3450,13 +3440,20 @@ impl TypeRegistry {
     ///
     /// `owner` is a resource record's name, or the `Record.group` anchor of one of
     /// its unkeyed groups. This is what a record's field list is built from, so
-    /// the record and the ledger cannot disagree about which members survived.
-    fn accepted_members(&self, owner: &ScopedName) -> Vec<FieldInfo> {
-        self.members
-            .accepted()
-            .filter(|(key, _)| key.owns(owner))
+    /// the record and the ledger cannot disagree about which members survived. It
+    /// reads only `owner`'s own run of the ledger, so building every record's list
+    /// is linear in the program's members.
+    fn accepted_members(
+        &self,
+        owner: &ScopedName,
+    ) -> Result<Vec<FieldInfo>, DeclarationIndexDrift> {
+        let (from, within) = MemberKey::run(owner);
+        Ok(self
+            .members
+            .accepted_run(&from, within)?
+            .into_iter()
             .map(|(_, info)| info.clone())
-            .collect()
+            .collect())
     }
 
     /// The members `owner` declared and the compiler refused, in declaration order.
@@ -3465,12 +3462,17 @@ impl TypeRegistry {
     /// resource's declared members — the durable identity anchors, above all —
     /// reads this beside `accepted_members` rather than narrowing to the accepted
     /// set alone.
-    pub(crate) fn refused_members(&self, owner: &ScopedName) -> Vec<&str> {
-        self.members
-            .refused()
-            .filter(|(key, _)| key.owns(owner))
-            .map(|(key, _)| key.member())
-            .collect()
+    pub(crate) fn refused_members(
+        &self,
+        owner: &ScopedName,
+    ) -> Result<Vec<&str>, DeclarationIndexDrift> {
+        let (from, within) = MemberKey::run(owner);
+        Ok(self
+            .members
+            .refused_run(&from, within)?
+            .into_iter()
+            .map(MemberKey::member)
+            .collect())
     }
 
     /// What the member `member` of `owner` binds: an accepted member, the refusal
@@ -4271,6 +4273,9 @@ mod owner_txn_tests;
 
 #[cfg(test)]
 mod value_cycle_coords_tests;
+
+#[cfg(test)]
+mod member_run_tests;
 
 #[cfg(test)]
 mod constraint_table_tests {

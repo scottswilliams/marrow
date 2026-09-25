@@ -771,6 +771,42 @@ fn a_refused_member_does_not_narrow_the_identity_gap_set() {
     );
 }
 
+/// The refused members of one resource feed the identity-gap walk in declaration
+/// order, not in member-name order: `z` before `a`.
+#[test]
+fn refused_members_anchor_in_declaration_order() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         resource W {\n\
+         \x20   b: int\n\
+         \x20   z: Nope\n\
+         \x20   a: Nope\n\
+         \x20   b: string\n\
+         }\n\n\
+         store ^ws[id: int]: W\n",
+    );
+    assert_eq!(
+        rows(&diagnostics),
+        [
+            ("src/main.mw", Code::CheckUnsupported, 5, 8),
+            ("src/main.mw", Code::CheckUnsupported, 6, 8),
+            ("src/main.mw", Code::CheckNameConflict, 7, 5),
+            ("src/main.mw", Code::CheckDurableIdentity, 10, 7),
+            ("src/main.mw", Code::CheckDurableIdentity, 10, 7),
+            ("src/main.mw", Code::CheckDurableIdentity, 10, 7),
+            ("src/main.mw", Code::CheckDurableIdentity, 10, 7),
+            ("src/main.mw", Code::CheckDurableIdentity, 10, 7),
+            ("src/main.mw", Code::CheckDurableIdentity, 10, 7),
+            ("src/main.mw", Code::CheckDurableIdentity, 10, 7),
+        ]
+    );
+    let anchors: Vec<String> = diagnostics
+        .iter()
+        .flat_map(|row| row.identity_gaps().iter().map(|gap| gap.anchor().path))
+        .collect();
+    assert_eq!(anchors, [".", "ws", "W", "ws.id", "W.b", "W.z", "W.a"]);
+}
+
 // ---------------------------------------------------------------------------
 // Named types
 //

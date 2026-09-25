@@ -1644,7 +1644,7 @@ fn seal_record_slots(
     group_slot_defs: Vec<FieldDef>,
 ) -> Result<(), BuildError> {
     let type_id = registry.records[index].type_id;
-    let fields = registry.accepted_members(owner);
+    let fields = registry.accepted_members(owner)?;
     let mut field_defs: Vec<FieldDef> = fields
         .iter()
         .map(|field| {
@@ -1840,7 +1840,7 @@ fn build_group_leaves(
             .members
             .declare(MemberKey::new(&anchor, &field.name), occurrence)?;
     }
-    let fields = registry.accepted_members(&anchor);
+    let fields = registry.accepted_members(&anchor)?;
     let field_defs = fields
         .iter()
         .map(|leaf| {

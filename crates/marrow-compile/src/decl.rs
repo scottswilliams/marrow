@@ -620,10 +620,11 @@ struct KeyOccurrences {
 
 /// Every occurrence of every declared key in one namespace, in declaration order.
 ///
-/// Layer 1 (`occurrences`) is the sole authority for source order and identity;
-/// `index` is lookup-only, appended in lockstep, and never iterated to select a cause
-/// or to emit bytes. A divergence between the two is [`DeclarationIndexDrift`], not a
-/// silent wrong answer.
+/// Layer 1 (`occurrences`, `refusals`) is the sole authority for source order and
+/// identity; `index` is appended in lockstep and answers lookups. It may also select
+/// the keys of one contiguous run, but order and payload are always read from layer 1
+/// and checked against the selecting key. A divergence between the two is
+/// [`DeclarationIndexDrift`], not a silent wrong answer.
 pub(crate) struct DeclarationLedger<K, T> {
     namespace: DeclarationNamespace,
     occurrences: Vec<(K, DeclarationOccurrence<T>)>,
@@ -635,8 +636,9 @@ pub(crate) struct DeclarationLedger<K, T> {
 }
 
 /// Layer 1 and the lookup index disagree: a `DeclarationRefusalId` addresses a
-/// position that does not hold a refusal, or an index entry names a position
-/// outside the occurrence list.
+/// position that does not hold a refusal, an index entry names a position outside the
+/// occurrence list, or an index entry or refusal slot addresses an occurrence of
+/// another key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DeclarationIndexDrift;
 
@@ -791,9 +793,10 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
     /// The refused declarations in source order, one per refused key, whether or not
     /// an accepted duplicate of the same name answers the lookup.
     ///
-    /// A namespace whose *declared* set is observed reads it from here and
-    /// `accepted()` together: a derivation that walks only the accepted set silently
-    /// narrows what it derives.
+    /// A namespace whose *declared* set is observed reads its refused set beside its
+    /// accepted one ([`Self::refused_run`] beside [`Self::accepted_run`] for a keyed
+    /// run): a derivation that walks only the accepted set silently narrows what it
+    /// derives.
     pub(crate) fn refused(&self) -> impl Iterator<Item = (&K, &DeclarationRefusalSummary)> {
         self.refusals
             .iter()
@@ -803,27 +806,96 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
             })
     }
 
-    /// The accepted declarations in source order, one per key, and only where the key's
-    /// first occurrence is that acceptance: exactly the occurrences [`Self::lookup`]
-    /// answers with, so a namespace built from this iterator and a use site resolving
-    /// against the ledger cannot disagree. A namespace whose order is observed — image
-    /// slot order, field order — reads it from here rather than accumulating a parallel
-    /// vector, which keeps the ledger the single authority.
-    pub(crate) fn accepted(&self) -> impl Iterator<Item = (&K, &T)> {
-        self.occurrences
-            .iter()
-            .enumerate()
-            .filter_map(move |(at, (key, occurrence))| match occurrence {
-                DeclarationOccurrence::Accepted(value)
-                    if matches!(
-                        self.index.get(key).map(|entry| entry.first),
-                        Some(Selected::Accepted(first)) if first == at
-                    ) =>
-                {
-                    Some((key, value))
-                }
-                _ => None,
+    /// The index entries of one contiguous run of keys: every key from `from` onward,
+    /// while `within` holds.
+    ///
+    /// Precondition: `K`'s order keeps every key satisfying `within` adjacent, and
+    /// `from` is at or below the least of them. A key outside the run that sorted
+    /// between two of its keys would end the run early and silently drop the rest, so
+    /// the key type that states `within` also owns that order.
+    fn run<'a, W: Fn(&K) -> bool>(
+        &'a self,
+        from: &K,
+        within: W,
+    ) -> impl Iterator<Item = (&'a K, &'a KeyOccurrences)> + use<'a, K, T, W> {
+        self.index
+            .range(from..)
+            .take_while(move |(key, _)| within(key))
+    }
+
+    /// Layer 1's occurrence at `at`, which must be an occurrence of `key`: the index
+    /// selected the key, so an occurrence of any other key is drift, not its value.
+    fn occurrence_of(
+        &self,
+        key: &K,
+        at: usize,
+    ) -> Result<&DeclarationOccurrence<T>, DeclarationIndexDrift> {
+        match self.occurrences.get(at) {
+            Some((declared, occurrence)) if declared == key => Ok(occurrence),
+            _ => Err(DeclarationIndexDrift),
+        }
+    }
+
+    /// The accepted declarations of one run of keys (see [`Self::run`]) in source
+    /// order, one per key, and only where the key's first occurrence is that
+    /// acceptance: exactly the occurrences [`Self::lookup`] answers with, so a
+    /// namespace built from this read and a use site resolving against the ledger
+    /// cannot disagree. A namespace whose order is observed — image slot order, field
+    /// order — reads it from here rather than accumulating a parallel vector, which
+    /// keeps the ledger the single authority.
+    ///
+    /// The cost is one index seek plus the run's own keys: a read never walks another
+    /// run's declarations.
+    pub(crate) fn accepted_run(
+        &self,
+        from: &K,
+        within: impl Fn(&K) -> bool,
+    ) -> Result<Vec<(&K, &T)>, DeclarationIndexDrift> {
+        let mut firsts: Vec<(usize, &K)> = self
+            .run(from, within)
+            .filter_map(|(key, entry)| match entry.first {
+                Selected::Accepted(at) => Some((at, key)),
+                Selected::Refused(_) => None,
             })
+            .collect();
+        firsts.sort_unstable_by_key(|(at, _)| *at);
+        firsts
+            .into_iter()
+            .map(|(at, key)| match self.occurrence_of(key, at)? {
+                DeclarationOccurrence::Accepted(value) => Ok((key, value)),
+                DeclarationOccurrence::Refused(_) => Err(DeclarationIndexDrift),
+            })
+            .collect()
+    }
+
+    /// The refused keys of one run of keys (see [`Self::run`]), one per key, in the
+    /// source order of each key's first refusal — the rows [`Self::refused`] yields for
+    /// those keys, in the same order. The key alone is returned: a caller that needs the
+    /// retained cause reads it through [`Self::lookup`] or [`Self::refusal`].
+    pub(crate) fn refused_run(
+        &self,
+        from: &K,
+        within: impl Fn(&K) -> bool,
+    ) -> Result<Vec<&K>, DeclarationIndexDrift> {
+        let mut refused: Vec<(DeclarationRefusalId, &K)> = self
+            .run(from, within)
+            .filter_map(|(key, entry)| entry.refused.map(|id| (id, key)))
+            .collect();
+        // Ids are minted in position order, so id order is first-refusal order.
+        refused.sort_unstable_by_key(|(id, _)| id.index);
+        refused
+            .into_iter()
+            .map(|(id, key)| {
+                let at = *self
+                    .refusals
+                    .get(id.index as usize)
+                    .ok_or(DeclarationIndexDrift)?;
+                match self.occurrence_of(key, at)? {
+                    DeclarationOccurrence::Refused(_) => Ok(key),
+                    DeclarationOccurrence::Accepted(_) => Err(DeclarationIndexDrift),
+                }
+            })
+            .collect()
     }
 }
 
@@ -1041,28 +1113,128 @@ mod tests {
         assert_eq!(keys, vec!["a", "b"]);
     }
 
-    /// `accepted()` is what an order-observing namespace builds from, so it must
-    /// answer exactly what `lookup` does: source order, refusals skipped, and one
-    /// row per key even when a key is declared twice.
-    #[test]
-    fn accepted_is_source_order_one_row_per_key() {
-        let mut ledger = ledger();
-        for (key, occurrence) in [
-            ("b".to_string(), DeclarationOccurrence::Accepted(1)),
-            (
-                "a".to_string(),
-                DeclarationOccurrence::Refused(refusal("a")),
-            ),
-            ("c".to_string(), DeclarationOccurrence::Accepted(2)),
-            ("b".to_string(), DeclarationOccurrence::Accepted(3)),
-        ] {
-            ledger.declare(key, occurrence).expect("within budget");
+    /// One step of a declaration script: which key, and whether it is accepted with
+    /// a value or refused.
+    #[derive(Clone, Copy)]
+    enum Step {
+        Accept(u32),
+        Refuse,
+    }
+
+    type OwnedKey = (u32, String);
+
+    fn owned_ledger() -> DeclarationLedger<OwnedKey, u32> {
+        DeclarationLedger::new(
+            DeclarationNamespace::ResourceMember,
+            DeclarationBudget::default(),
+        )
+    }
+
+    fn declare_script(script: &[(u32, &str, Step)]) -> DeclarationLedger<OwnedKey, u32> {
+        let mut ledger = owned_ledger();
+        for (owner, member, step) in script {
+            let occurrence = match step {
+                Step::Accept(value) => DeclarationOccurrence::Accepted(*value),
+                Step::Refuse => DeclarationOccurrence::Refused(refusal(member)),
+            };
+            ledger
+                .declare((*owner, member.to_string()), occurrence)
+                .expect("within budget");
         }
-        let accepted: Vec<(&str, u32)> = ledger
-            .accepted()
-            .map(|(key, value)| (key.as_str(), *value))
-            .collect();
-        assert_eq!(accepted, vec![("b", 1), ("c", 2)]);
+        ledger
+    }
+
+    fn owner_run(owner: u32) -> (OwnedKey, impl Fn(&OwnedKey) -> bool) {
+        ((owner, String::new()), move |key: &OwnedKey| key.0 == owner)
+    }
+
+    /// Each owner's run reads answer exactly what a whole-script oracle derives:
+    /// accepted rows are each key's first occurrence, kept when it is an acceptance,
+    /// in position order; refused rows are one per key with any refusal, ordered by
+    /// that key's first refusal. Owners interleave, member names are declared out of
+    /// lexical order, and owner 1 refuses `z` before `a`, so neither read can fall
+    /// back to key order unnoticed.
+    #[test]
+    fn a_run_read_matches_the_first_occurrence_oracle() {
+        use Step::{Accept, Refuse};
+        let script = [
+            (1, "m", Accept(10)),
+            (2, "b", Accept(20)),
+            (1, "c", Accept(11)),
+            (1, "m", Accept(12)),
+            (1, "z", Refuse),
+            (2, "a", Refuse),
+            (1, "a", Refuse),
+            (2, "a", Accept(21)),
+            (1, "c", Refuse),
+            (1, "z", Refuse),
+            (3, "q", Accept(30)),
+            (2, "d", Accept(22)),
+            (1, "b", Accept(13)),
+        ];
+        let ledger = declare_script(&script);
+        for owner in 0..=4 {
+            let mut first: Vec<(&str, Step)> = Vec::new();
+            let mut refused: Vec<&str> = Vec::new();
+            for (_, member, step) in script.iter().filter(|(o, ..)| *o == owner) {
+                if !first.iter().any(|(seen, _)| seen == member) {
+                    first.push((member, *step));
+                }
+                if matches!(step, Refuse) && !refused.contains(member) {
+                    refused.push(member);
+                }
+            }
+            let accepted_oracle: Vec<(&str, u32)> = first
+                .iter()
+                .filter_map(|(member, step)| match step {
+                    Accept(value) => Some((*member, *value)),
+                    Refuse => None,
+                })
+                .collect();
+
+            let (from, within) = owner_run(owner);
+            let accepted: Vec<(&str, u32)> = ledger
+                .accepted_run(&from, &within)
+                .expect("a coherent ledger")
+                .into_iter()
+                .map(|(key, value)| (key.1.as_str(), *value))
+                .collect();
+            let refused_read: Vec<&str> = ledger
+                .refused_run(&from, &within)
+                .expect("a coherent ledger")
+                .into_iter()
+                .map(|key| key.1.as_str())
+                .collect();
+            assert_eq!(accepted, accepted_oracle, "accepted run of owner {owner}");
+            assert_eq!(refused_read, refused, "refused run of owner {owner}");
+        }
+    }
+
+    /// A run read takes its key from the index and its value from layer 1, so an index
+    /// entry or refusal slot that addresses another key's occurrence is drift, not
+    /// that key's value. Only `declare` writes the two layers, in step, so the state
+    /// is built here by reaching into them.
+    #[test]
+    fn a_run_read_reports_an_occurrence_of_another_key_as_drift() {
+        let (from, within) = owner_run(1);
+
+        let mut accepted = declare_script(&[(1, "a", Step::Accept(1)), (1, "b", Step::Accept(2))]);
+        accepted
+            .index
+            .get_mut(&(1, "a".to_string()))
+            .expect("declared")
+            .first = Selected::Accepted(1);
+        assert_eq!(
+            accepted.accepted_run(&from, &within).map(|rows| rows.len()),
+            Err(DeclarationIndexDrift)
+        );
+
+        let mut refused = declare_script(&[(1, "a", Step::Refuse), (1, "b", Step::Refuse)]);
+        refused.refusals[0] = 1;
+        assert_eq!(
+            refused.refused_run(&from, &within).map(|rows| rows.len()),
+            Err(DeclarationIndexDrift)
+        );
     }
 
     #[test]

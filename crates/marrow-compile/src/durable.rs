@@ -2048,7 +2048,14 @@ impl<'a> IdentityResolver<'a> {
         // value shape and contributes no node. Without it the mint action that consumes
         // these reports would write a ledger missing the anchor the corrected program
         // needs.
-        for member in records.refused_members(&resource.record.scoped_name()) {
+        let refused = match records.refused_members(&resource.record.scoped_name()) {
+            Ok(refused) => refused,
+            Err(drift) => {
+                self.remember_invariant(drift.into());
+                return None;
+            }
+        };
+        for member in refused {
             self.resolve_declared(IdentityKind::Field, &format!("{product}.{member}"));
         }
         self.build_extras(
