@@ -44,7 +44,8 @@ pub(super) fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejec
     ))?;
     // Recompute the digest over the payload (every byte after the digest slot).
     let payload = &bytes[DIGEST_SLOT_END..];
-    if image_id(payload).0.as_slice() != stored_digest {
+    let digest = image_id(payload);
+    if digest.0.as_slice() != stored_digest {
         return Err(reject(VerifyPhase::Envelope, Kind::DigestMismatch));
     }
 
@@ -121,7 +122,7 @@ pub(super) fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejec
 
     Ok(DecodedImage {
         durable_graph,
-        image_id: image_id(payload),
+        image_id: digest,
         strings,
         types,
         enums,

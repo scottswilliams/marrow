@@ -13,10 +13,15 @@ use crate::sealed::{
 };
 use crate::vtype::VType;
 use marrow_image::{CollTypeId, EnumId, ImageType, OpClass, RootId, Scalar, TypeId};
+use stack::{OperandStack, StackId};
 
+#[path = "flow/stack.rs"]
+mod stack;
 #[cfg(test)]
 #[path = "flow/flow_tests.rs"]
 mod tests;
+#[path = "flow/work.rs"]
+mod work;
 
 /// The control transfer an instruction performs, in tape indices. Successor
 /// indices are derived from this by `check_flow`.
@@ -39,22 +44,35 @@ enum Control {
     CheckedResult { target: usize, result: VType },
 }
 
-/// The abstract machine state at a program point: the typed operand stack and the
-/// definite-init/type state of each local slot.
-#[derive(Clone)]
+/// The one working abstract machine state of a function's flow check: the typed
+/// operand stack and the definite-init/type state of each local slot.
 struct Frame {
-    stack: Vec<VType>,
+    stack: OperandStack,
     /// Per-slot type when definitely initialized on every path reaching this point,
     /// else `None`. Reading an uninitialized slot rejects.
     locals: Vec<Option<VType>>,
 }
 
+impl Frame {
+    fn resume(&mut self, boundary: &Boundary) {
+        self.stack.resume(boundary.stack);
+        self.locals.clone_from(&boundary.locals);
+    }
+}
+
+/// The state retained at entry zero or a queued boundary, which later predecessors meet:
+/// the operand stack as a shared handle, and the local slots.
+struct Boundary {
+    stack: StackId,
+    locals: Vec<Option<VType>>,
+}
+
 enum Entry {
     Unreached,
-    /// A linear interior: reachability survives without an incoming frame copy.
+    /// A linear interior: reachability survives without a retained state.
     Reached,
     /// Entry zero or a queued boundary; future predecessors meet this state.
-    Retained(Frame),
+    Retained(Boundary),
 }
 
 /// Phase-3 structural, type, and local-init checks. Linear interiors share one
@@ -79,29 +97,34 @@ pub(super) fn check_flow(
             Some(VType::from_image(*param).expect("a parameter type is never unit"));
     }
     let mut entry: Vec<Entry> = (0..code.len()).map(|_| Entry::Unreached).collect();
-    entry[0] = Entry::Retained(Frame {
-        stack: Vec::new(),
+    entry[0] = Entry::Retained(Boundary {
+        stack: StackId::EMPTY,
         locals: initial_locals,
     });
     let mut max_stack = 0usize;
     let mut worklist = vec![0usize];
+    let mut frame = Frame {
+        stack: OperandStack::new(),
+        locals: Vec::new(),
+    };
 
     while let Some(mut index) = worklist.pop() {
         let Entry::Retained(incoming) = &entry[index] else {
             unreachable!("worklist only enqueues retained boundaries");
         };
-        let mut frame = incoming.clone();
+        work::run();
+        frame.resume(incoming);
         loop {
             let control = apply(function, ctx, &code[index].instr, consts, &mut frame)?;
-            check_stack_depth(&frame, &mut max_stack)?;
+            check_stack_depth(&frame.stack, &mut max_stack)?;
             let successor = match control {
                 Control::Return => break,
                 Control::Fallthrough => index + 1,
                 Control::Jump(target) => target,
                 Control::Branch(target) => {
-                    propagate(&mut entry, &mut worklist, target, frame.clone())?;
+                    let stack = frame.stack.freeze();
+                    propagate(&mut entry, &mut worklist, target, stack, &frame.locals)?;
                     if target == index + 1 {
-                        propagate(&mut entry, &mut worklist, index + 1, frame)?;
                         break;
                     }
                     index + 1
@@ -114,16 +137,16 @@ pub(super) fn check_flow(
                     target,
                     result: pushed,
                 } => {
-                    let mut fallthrough = frame.clone();
-                    fallthrough.stack.push(pushed);
+                    let absent = frame.stack.freeze();
+                    frame.stack.push(pushed);
                     // Refuse an over-depth success edge before propagating either edge.
-                    check_stack_depth(&fallthrough, &mut max_stack)?;
-                    propagate(&mut entry, &mut worklist, target, frame)?;
+                    check_stack_depth(&frame.stack, &mut max_stack)?;
+                    propagate(&mut entry, &mut worklist, target, absent, &frame.locals)?;
                     if target == index + 1 {
-                        propagate(&mut entry, &mut worklist, index + 1, fallthrough)?;
+                        let present = frame.stack.freeze();
+                        propagate(&mut entry, &mut worklist, index + 1, present, &frame.locals)?;
                         break;
                     }
-                    frame = fallthrough;
                     index + 1
                 }
             };
@@ -136,7 +159,8 @@ pub(super) fn check_flow(
                 entry[successor] = Entry::Reached;
                 index = successor;
             } else {
-                propagate(&mut entry, &mut worklist, successor, frame)?;
+                let stack = frame.stack.freeze();
+                propagate(&mut entry, &mut worklist, successor, stack, &frame.locals)?;
                 break;
             }
         }
@@ -150,48 +174,57 @@ pub(super) fn check_flow(
     Ok((instrs, max_stack))
 }
 
-fn check_stack_depth(frame: &Frame, max_stack: &mut usize) -> Result<(), VerifyRejection> {
-    if frame.stack.len() > marrow_image::bounds::MAX_STACK_DEPTH {
+fn check_stack_depth(stack: &OperandStack, max_stack: &mut usize) -> Result<(), VerifyRejection> {
+    let depth = stack.depth();
+    if depth > marrow_image::bounds::MAX_STACK_DEPTH {
         return Err(reject(
             VerifyPhase::Function,
             Kind::OverBound(Bound::StackDepth),
         ));
     }
-    *max_stack = (*max_stack).max(frame.stack.len());
+    *max_stack = (*max_stack).max(depth);
     Ok(())
 }
 
-/// Merge `frame` into the entry state of `successor`, enqueueing it when its state
-/// changes. Stacks must agree exactly; locals meet per slot (init on both paths
-/// with the same type stays init, otherwise the slot becomes uninit).
+/// Merge the state `(stack, locals)` into the entry state of `successor`, enqueueing it
+/// when its state changes. Stacks must agree exactly, which interning makes one handle
+/// comparison; locals meet per slot (init on both paths with the same type stays init,
+/// otherwise the slot becomes uninit). A boundary is queued on first reach and when a
+/// slot weakens; under the LIFO worklist it is never queued while already waiting.
 fn propagate(
     entry: &mut [Entry],
     worklist: &mut Vec<usize>,
     successor: usize,
-    frame: Frame,
+    stack: StackId,
+    locals: &[Option<VType>],
 ) -> Result<(), VerifyRejection> {
     let Some(state) = entry.get_mut(successor) else {
         return Err(reject(VerifyPhase::Function, Kind::FallsOffEnd));
     };
     match state {
         Entry::Unreached => {
-            *state = Entry::Retained(frame);
+            *state = Entry::Retained(Boundary {
+                stack,
+                locals: locals.to_vec(),
+            });
+            work::queued(worklist, successor);
             worklist.push(successor);
             Ok(())
         }
         Entry::Reached => unreachable!("linear interiors cannot receive a merge edge"),
         Entry::Retained(existing) => {
-            if existing.stack != frame.stack {
+            if existing.stack != stack {
                 return Err(reject(VerifyPhase::Function, Kind::StackMerge));
             }
             let mut changed = false;
-            for (cell, incoming) in existing.locals.iter_mut().zip(frame.locals) {
-                if cell.is_some() && *cell != incoming {
+            for (cell, incoming) in existing.locals.iter_mut().zip(locals) {
+                if cell.is_some() && cell != incoming {
                     *cell = None;
                     changed = true;
                 }
             }
             if changed {
+                work::queued(worklist, successor);
                 worklist.push(successor);
             }
             Ok(())
@@ -470,9 +503,9 @@ fn int_neg_checked(frame: &mut Frame, target: usize) -> Result<Control, VerifyRe
 /// Peeks the guarded value: the top of the stack must be a bare int, which the guard
 /// leaves in place (fault or fall through).
 fn range_guard(frame: &mut Frame) -> Result<Control, VerifyRejection> {
-    let top = *frame
+    let top = frame
         .stack
-        .last()
+        .top()
         .ok_or(reject(VerifyPhase::Function, Kind::StackUnderflow))?;
     expect_scalar(top, Scalar::Int)?;
     Ok(Control::Fallthrough)
@@ -1657,7 +1690,7 @@ fn apply_index_read(
 /// types in stack-pop order — the branch key then the root key for a branch entry
 /// site, the single root key otherwise).
 fn pop_key_path(
-    stack: &mut Vec<VType>,
+    stack: &mut OperandStack,
     key_path: &[VType],
     site_root: RootId,
 ) -> Result<(), VerifyRejection> {
@@ -1706,7 +1739,7 @@ fn require_key_slots(
 /// bounded-traversal ancestor pop, and the family-probe ancestor pop admit an
 /// identity-keyed parent identically rather than through forked checks.
 fn pop_key_column(
-    stack: &mut Vec<VType>,
+    stack: &mut OperandStack,
     want: VType,
     site_root: RootId,
 ) -> Result<(), VerifyRejection> {
@@ -1861,7 +1894,7 @@ pub(super) fn expect(value: VType, want: VType) -> Result<(), VerifyRejection> {
 }
 
 /// Pop the top operand, rejecting an empty stack (a verifier-internal shape error).
-pub(super) fn pop(stack: &mut Vec<VType>) -> Result<VType, VerifyRejection> {
+fn pop(stack: &mut OperandStack) -> Result<VType, VerifyRejection> {
     stack
         .pop()
         .ok_or(reject(VerifyPhase::Function, Kind::StackUnderflow))
@@ -1882,7 +1915,7 @@ fn expect_scalar(value: VType, scalar: Scalar) -> Result<(), VerifyRejection> {
 /// Pop two bare `operand`-typed scalars (right then left), push a bare `result`, and
 /// fall through.
 fn binary(
-    stack: &mut Vec<VType>,
+    stack: &mut OperandStack,
     operand: Scalar,
     result: Scalar,
 ) -> Result<Control, VerifyRejection> {

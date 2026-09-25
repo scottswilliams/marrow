@@ -157,9 +157,19 @@ packaged, or downloadable build.
   ([execution limits](language/execution-limits.md#limits)).
 - Verification declares the machine stack it needs, 128 KiB, whatever image it
   is given, and `crates/marrow-verify/tests/stack_budget.rs` holds it to that
-  bound on the deepest image the bounds admit. Heap and work are bounded per
-  pass and per instruction only: there is still no total verifier memory or
-  work budget ([execution pipeline](implementation/README.md#pipeline)).
+  bound on the deepest image the bounds admit.
+- Flow verification of one function executes at most (local count + 1) ×
+  code-length instruction steps. It keeps the operand stack at each jump target
+  as a shared interned prefix, so the stack memory it retains is bounded by the
+  cells pushed on first runs. Neither bound depends on the operand-stack depth
+  limit. The stack bounds are conformance-tested by the work-budget tests in
+  `crates/marrow-verify/src/verify/flow/flow_tests.rs`; the step bound and the
+  local-slot state kept per jump target, at most 256 slots, follow from the
+  worklist rule and are tested only on those shapes. These are not
+  verifier-wide bounds: presence verification still keeps one fact set per jump
+  target, other heap and work are bounded per pass and per instruction only,
+  and there is still no total verifier memory or work budget
+  ([execution pipeline](implementation/README.md#pipeline)).
 - The verifier and the store admission fence accept only the supported image and
   logical-head generations, and refuse anything else before the engine opens.
   Older artifacts and data require their matching tools

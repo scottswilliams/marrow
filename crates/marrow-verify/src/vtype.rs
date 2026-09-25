@@ -4,7 +4,7 @@ use marrow_image::{CollTypeId, EnumId, ImageType, RootId, Scalar, TypeId};
 
 /// A verified operand-stack slot type. Optionals are tracked distinctly from bare
 /// values, so a `T?` can never reach a bare-`T` consumer on any path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum VType {
     Scalar {
         scalar: Scalar,

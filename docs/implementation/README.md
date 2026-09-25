@@ -49,6 +49,9 @@ becomes an acceptance-set change a version or capability descriptor must record.
 — types, control flow, transaction structure, durable demand, presence proofs — from
 the image bytes alone, without consulting compiler state, and seals a
 `VerifiedImage`. A retired encoding rejects here and requires recompilation.
+Flow checking keeps, at each jump target, an interned operand-stack prefix and
+the local-slot state; a merge compares prefix handles, so its cost does not grow
+with the stack-depth limit.
 
 **VM.** `marrow-vm` executes the instruction tape of a function selected from a
 sealed image, and owns runtime faults mapped back to source spans, the
