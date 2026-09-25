@@ -1853,3 +1853,7 @@ fn build_group_leaves(
         .collect::<Result<_, BuildError>>()?;
     Ok((fields, field_defs))
 }
+
+#[cfg(test)]
+#[path = "build_drift_tests.rs"]
+mod drift_tests;

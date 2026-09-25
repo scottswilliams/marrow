@@ -4,8 +4,8 @@
 //! run of the ledger index. This module declares owners whose keys would interleave
 //! under any order that does not compare the whole owner first — a group anchor
 //! `R.g`, names with `R` as a prefix, and the same spelling in two dependency trees,
-//! one sorting directly after the other — and holds every owner's reads to its own members, first occurrence per name, in
-//! declaration order.
+//! one sorting directly after the other — and holds every owner's reads to its own
+//! members, first occurrence per name, in declaration order.
 
 use super::test_fixtures::test_registry;
 use super::*;
@@ -104,4 +104,35 @@ fn each_owner_reads_exactly_its_own_members() {
             "refused members of {owner:?}"
         );
     }
+}
+
+/// Only `declare` writes the ledger's two layers, so a misaddressed ledger is the drift a
+/// broken `declare` would leave. Both member reads report it rather than answering an
+/// owner with no members.
+#[test]
+fn a_member_read_over_a_misaddressed_ledger_is_drift() {
+    let record = ScopedName::new(&SourceOrigin::Root, "R");
+    let mut registry = test_registry(vec![]);
+    let accepted = DeclarationOccurrence::Accepted(FieldInfo {
+        name: "a".to_string(),
+        ty: GArg::Scalar(crate::scalar::ScalarType::Int),
+        required: false,
+    });
+    let refused =
+        DeclarationOccurrence::Refused(test_refusal("z", &mut DiagnosticCollector::new()));
+    for (member, occurrence) in [("a", accepted), ("z", refused)] {
+        registry
+            .members
+            .declare(MemberKey::new(&record, member), occurrence)
+            .expect("within budget");
+    }
+    registry.misaddress_members();
+    assert!(matches!(
+        registry.accepted_members(&record),
+        Err(DeclarationIndexDrift)
+    ));
+    assert!(matches!(
+        registry.refused_members(&record),
+        Err(DeclarationIndexDrift)
+    ));
 }

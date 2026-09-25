@@ -555,12 +555,13 @@ pub(crate) enum GenericInvariant {
     /// owner's error is opaque by construction, so no cause is carried and none is
     /// rendered.
     DurableConstructionRefused,
-    /// A declaration ledger's lookup index and its occurrence list disagree: a
-    /// refusal handle addresses a position that holds no refusal, an index entry
-    /// addresses an occurrence of another key, or one namespace's handle was presented
-    /// to another's ledger. The two layers name one declaration and must agree about
-    /// it; a wrong summary would steer a reader to a cause that is not the one their
-    /// code hit.
+    /// A declaration ledger's lookup index and its occurrence list disagree: an index
+    /// entry, refusal slot or refusal handle addresses no occurrence of its key and
+    /// kind — a position outside the occurrence list, an occurrence of another key, an
+    /// acceptance where a refusal belongs or the reverse — or one namespace's handle
+    /// was presented to another's ledger. The two layers name one declaration and must
+    /// agree about it; a wrong summary would steer a reader to a cause that is not the
+    /// one their code hit.
     DeclarationIndexDrift,
 }
 
@@ -3480,6 +3481,14 @@ impl TypeRegistry {
             .into_iter()
             .map(MemberKey::member)
             .collect())
+    }
+
+    /// Misaddress every member occurrence (see
+    /// [`DeclarationLedger::misaddress_every_occurrence`]), for a test outside this
+    /// module that pins how a build reading the member ledger reports drift.
+    #[cfg(test)]
+    pub(crate) fn misaddress_members(&mut self) {
+        self.members.misaddress_every_occurrence();
     }
 
     /// What the member `member` of `owner` binds: an accepted member, the refusal

@@ -677,10 +677,11 @@ pub(crate) struct DeclarationLedger<K, T> {
     budget: DeclarationBudget,
 }
 
-/// Layer 1 and the lookup index disagree: a `DeclarationRefusalId` addresses a
-/// position that does not hold a refusal, an index entry names a position outside the
-/// occurrence list, or an index entry or refusal slot addresses an occurrence of
-/// another key.
+/// Layer 1 and the lookup index disagree: an index entry, refusal slot or
+/// [`DeclarationRefusalId`] addresses no occurrence of its key and kind — a position
+/// outside the occurrence list, an occurrence of another key, an acceptance where a
+/// refusal belongs or the reverse — or a refusal id minted by another namespace's
+/// ledger is presented to this one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DeclarationIndexDrift;
 
@@ -937,6 +938,23 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
                 }
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+impl<K, T> DeclarationLedger<K, T> {
+    /// Point every accepted index entry and every refusal slot past the occurrence
+    /// list: the drift only a broken [`Self::declare`] could build, so a test can pin
+    /// how a caller of a ledger read handles it.
+    pub(crate) fn misaddress_every_occurrence(&mut self) {
+        for entry in self.index.values_mut() {
+            if let Selected::Accepted(at) = &mut entry.first {
+                *at = usize::MAX;
+            }
+        }
+        for at in &mut self.refusals {
+            *at = usize::MAX;
+        }
     }
 }
 

@@ -876,3 +876,66 @@ mod post_staging_custody_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod member_ledger_drift_tests {
+    use super::super::*;
+    use marrow_image::ImageDraft;
+    use marrow_syntax::{Declaration, parse_source};
+
+    /// A member the type registry refused still anchors a durable identity, so the
+    /// Product graph reads the refused members from the member ledger. A ledger whose
+    /// index has drifted from its occurrences fails that read, and the build reports the
+    /// drift rather than building the graph without the refused members' anchors.
+    #[test]
+    fn a_product_graph_over_a_drifted_member_ledger_reports_the_drift() {
+        let parsed =
+            parse_source("resource W {\n    b: int\n    z: Nope\n}\n\nstore ^ws[id: int]: W\n");
+        assert!(!parsed.has_errors(), "the fixture parses");
+        let file = crate::test_file("src/main.mw").clone();
+        let at = FileRef::admitted(0);
+        let mut resources = Vec::new();
+        let mut stores = Vec::new();
+        for declaration in &parsed.file.declarations {
+            match declaration {
+                Declaration::Resource(d) => resources.push((at, file.clone(), d)),
+                Declaration::Store(d) => stores.push((at, file.clone(), d)),
+                other => panic!("the fixture declares only a resource and a store: {other:?}"),
+            }
+        }
+
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = admitted(&mut draft_owner);
+        let mut diagnostics = DiagnosticCollector::new();
+        let mut records = TypeRegistry::build(
+            &mut draft,
+            crate::source::CapturedOrigins::of(crate::test_input()),
+            &[],
+            &[],
+            &[],
+            &[],
+            &resources,
+            &mut diagnostics,
+            DeclarationBudget::default(),
+        )
+        .expect("the fixture registry stays within the ledger budget");
+        draft.commit();
+        records.misaddress_members();
+
+        let outcome = DurableRegistry::build(
+            &mut draft_owner,
+            &records,
+            &resources,
+            &stores,
+            &crate::durable::OriginLedgers::of(crate::test_input()),
+            &mut diagnostics,
+            DeclarationBudget::default(),
+        );
+        assert!(matches!(
+            outcome,
+            Err(BuildError::Invariant(
+                GenericInvariant::DeclarationIndexDrift
+            ))
+        ));
+    }
+}
