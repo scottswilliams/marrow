@@ -138,6 +138,12 @@ pub struct ValueShapeEnumMember {
 }
 
 impl ValueShapeEnumMember {
+    /// A variant with its `Member` ledger identity and already-minted payload leaves in
+    /// declaration order. The arena refuses an unnamed leaf when the enum is minted.
+    pub fn new(id: LedgerIdBytes, payload: Vec<ValueShapeLeaf>) -> Self {
+        Self { id, payload }
+    }
+
     /// This variant's `Member` ledger identity.
     pub fn id(&self) -> LedgerIdBytes {
         self.id
@@ -370,15 +376,11 @@ impl CanonicalValueShapeDag {
     pub fn enum_shape(
         &mut self,
         sum: LedgerIdBytes,
-        members: Vec<(LedgerIdBytes, Vec<ValueShapeLeaf>)>,
+        members: Vec<ValueShapeEnumMember>,
     ) -> Result<ValueShapeNodeId, DraftStateError> {
-        for (_, payload) in &members {
-            refuse_unnamed(payload)?;
+        for member in &members {
+            refuse_unnamed(&member.payload)?;
         }
-        let members = members
-            .into_iter()
-            .map(|(id, payload)| ValueShapeEnumMember { id, payload })
-            .collect();
         self.intern(ValueShapeNode::Enum { sum, members })
     }
 
@@ -884,13 +886,31 @@ mod tests {
         let right = new.scalar(Scalar::Int).expect("independent scalar");
         let changed = new.scalar(Scalar::Bool).expect("changed scalar");
         let before = old
-            .enum_shape(id(1), vec![(id(2), vec![]), (id(3), named(vec![left]))])
+            .enum_shape(
+                id(1),
+                vec![
+                    ValueShapeEnumMember::new(id(2), vec![]),
+                    ValueShapeEnumMember::new(id(3), named(vec![left])),
+                ],
+            )
             .expect("enum");
         let same = new
-            .enum_shape(id(1), vec![(id(2), vec![]), (id(3), named(vec![right]))])
+            .enum_shape(
+                id(1),
+                vec![
+                    ValueShapeEnumMember::new(id(2), vec![]),
+                    ValueShapeEnumMember::new(id(3), named(vec![right])),
+                ],
+            )
             .expect("enum");
         let after = new
-            .enum_shape(id(1), vec![(id(2), vec![]), (id(3), named(vec![changed]))])
+            .enum_shape(
+                id(1),
+                vec![
+                    ValueShapeEnumMember::new(id(2), vec![]),
+                    ValueShapeEnumMember::new(id(3), named(vec![changed])),
+                ],
+            )
             .expect("changed enum");
         let mut compare = old.compare_with(&new);
         assert_eq!(compare.same(before, same), Some(true));
@@ -1028,7 +1048,10 @@ mod tests {
             Err(DraftStateError::ForeignDraft),
         );
         assert_eq!(
-            empty.enum_shape(id(1), vec![(id(2), named(vec![foreign]))]),
+            empty.enum_shape(
+                id(1),
+                vec![ValueShapeEnumMember::new(id(2), named(vec![foreign]))]
+            ),
             Err(DraftStateError::ForeignDraft),
         );
         assert_eq!(empty, CanonicalValueShapeDag::new(), "no node was minted");
@@ -1176,6 +1199,13 @@ mod tests {
             dag, independently_built,
             "arena equality ignores provenance stamps"
         );
+
+        let mut renamed = CanonicalValueShapeDag::new();
+        let renamed_int = renamed.scalar(Scalar::Int).expect("the third arena mints");
+        renamed
+            .struct_shape(vec![leaf("f0", renamed_int), leaf("g", renamed_int)])
+            .expect("the third arena mints");
+        assert_ne!(dag, renamed, "arena equality compares leaf names");
     }
 
     /// Depth is the longest path down to a scalar, counting the node itself.
@@ -1350,7 +1380,10 @@ mod tests {
         let mut dag = CanonicalValueShapeDag::new();
         let int = dag.scalar(Scalar::Int).expect("the test arena mints");
         let shape = dag
-            .enum_shape(id(1), vec![(id(2), named(vec![int]))])
+            .enum_shape(
+                id(1),
+                vec![ValueShapeEnumMember::new(id(2), named(vec![int]))],
+            )
             .expect("the test arena mints");
 
         let mut payload = Vec::new();
@@ -1392,7 +1425,10 @@ mod tests {
         let rect = old
             .enum_shape(
                 id(1),
-                vec![(id(2), vec![leaf("width", old_int), leaf("height", old_int)])],
+                vec![ValueShapeEnumMember::new(
+                    id(2),
+                    vec![leaf("width", old_int), leaf("height", old_int)],
+                )],
             )
             .expect("enum");
         let same_pos = new
@@ -1407,13 +1443,19 @@ mod tests {
         let same_rect = new
             .enum_shape(
                 id(1),
-                vec![(id(2), vec![leaf("width", new_int), leaf("height", new_int)])],
+                vec![ValueShapeEnumMember::new(
+                    id(2),
+                    vec![leaf("width", new_int), leaf("height", new_int)],
+                )],
             )
             .expect("enum");
         let swapped_rect = new
             .enum_shape(
                 id(1),
-                vec![(id(2), vec![leaf("height", new_int), leaf("width", new_int)])],
+                vec![ValueShapeEnumMember::new(
+                    id(2),
+                    vec![leaf("height", new_int), leaf("width", new_int)],
+                )],
             )
             .expect("enum");
         let mut compare = old.compare_with(&new);
@@ -1472,7 +1514,10 @@ mod tests {
             Err(DraftStateError::CarrierDomain),
         );
         assert_eq!(
-            dag.enum_shape(id(1), vec![(id(2), vec![leaf("", int)])]),
+            dag.enum_shape(
+                id(1),
+                vec![ValueShapeEnumMember::new(id(2), vec![leaf("", int)])]
+            ),
             Err(DraftStateError::CarrierDomain),
         );
         assert_eq!(dag.len(), 1, "no composite was minted");

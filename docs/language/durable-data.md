@@ -696,7 +696,8 @@ test "a stored struct reads back by field name" {
 Declaring `Pos` as `y: int` followed by `x: int` leaves every use in the source
 valid, but a cell written as `Pos(x: 7, y: 2)` would then read `x` as 2. After
 `place(1, 7, 2)` has written a store, `marrow run docs.durable.positional.xOf
---store <store> -- 1` with the reordered `Pos` refuses before it reads an entry:
+--store <store> -- 1` with the reordered `Pos` refuses before it reads an entry
+and prints this line on standard error:
 
 ```text
 store.contract_changed: the supplied image differs in the durable contract from the binding required by this operation; the current binding was not changed

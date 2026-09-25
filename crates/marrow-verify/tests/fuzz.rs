@@ -9,7 +9,7 @@
 use marrow_image::{
     DeclarationMemberDef, DeclarationMemberShape, EnumId, EnumTypeDef, ExportId, FieldDef,
     ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef,
-    Scalar, SemanticTarget, TypeId, ValueShapeLeaf, VariantDef, image_id,
+    Scalar, SemanticTarget, TypeId, ValueShapeEnumMember, ValueShapeLeaf, VariantDef, image_id,
 };
 use marrow_test_support::{admitted_plan, site};
 use marrow_verify::verify;
@@ -397,8 +397,8 @@ fn a_widened_durable_image() -> Vec<u8> {
         .value_enum(
             ledger([0x50; 16]),
             vec![
-                (ledger([0x51; 16]), Vec::new()),
-                (
+                ValueShapeEnumMember::new(ledger([0x51; 16]), Vec::new()),
+                ValueShapeEnumMember::new(
                     ledger([0x52; 16]),
                     vec![ValueShapeLeaf::new("value", int_value)],
                 ),

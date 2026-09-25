@@ -126,6 +126,8 @@ fn a_positional_leaf_swap_is_refused_and_the_old_binding_reads_back() {
     );
     let refusal = swapped.stderr_text();
     assert_eq!(swapped.code(), Some(1), "{refusal}");
+    // `run --format jsonl` reports this refusal as an activation record without its
+    // code, so the typed code is read from the `code:` prefix of the stderr line.
     assert_eq!(
         refusal.split_once(':').map(|(code, _)| code),
         Some("store.contract_changed"),

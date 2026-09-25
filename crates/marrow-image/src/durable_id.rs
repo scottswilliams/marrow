@@ -915,7 +915,8 @@ mod tests {
     };
     use crate::ty::Scalar;
     use crate::value_dag::{
-        CanonicalValueShapeDag, ValueShapeLeaf, ValueShapeNodeId, ValueShapeView,
+        CanonicalValueShapeDag, ValueShapeEnumMember, ValueShapeLeaf, ValueShapeNodeId,
+        ValueShapeView,
     };
     use sha2::{Digest, Sha256};
 
@@ -1512,8 +1513,8 @@ mod tests {
             .expect("the test arena mints");
         let option_members = || {
             vec![
-                (id(0x51), Vec::new()),
-                (id(0x52), vec![ValueShapeLeaf::new("value", int)]),
+                ValueShapeEnumMember::new(id(0x51), Vec::new()),
+                ValueShapeEnumMember::new(id(0x52), vec![ValueShapeLeaf::new("value", int)]),
             ]
         };
         let option_int = values
@@ -1524,9 +1525,9 @@ mod tests {
             .expect("the test arena mints");
         let user = |first: LedgerIdBytes, second: LedgerIdBytes, payload: ValueShapeNodeId| {
             vec![
-                (first, Vec::new()),
-                (second, Vec::new()),
-                (id(0x56), vec![ValueShapeLeaf::new("note", payload)]),
+                ValueShapeEnumMember::new(first, Vec::new()),
+                ValueShapeEnumMember::new(second, Vec::new()),
+                ValueShapeEnumMember::new(id(0x56), vec![ValueShapeLeaf::new("note", payload)]),
             ]
         };
         let user_enum = values
@@ -1545,9 +1546,9 @@ mod tests {
             .enum_shape(
                 id(0x53),
                 vec![
-                    (id(0x54), Vec::new()),
-                    (id(0x55), Vec::new()),
-                    (id(0x56), vec![ValueShapeLeaf::new("remark", text)]),
+                    ValueShapeEnumMember::new(id(0x54), Vec::new()),
+                    ValueShapeEnumMember::new(id(0x55), Vec::new()),
+                    ValueShapeEnumMember::new(id(0x56), vec![ValueShapeLeaf::new("remark", text)]),
                 ],
             )
             .expect("the test arena mints");
@@ -1628,7 +1629,10 @@ mod tests {
                 let access = values
                     .enum_shape(
                         id(0x50),
-                        vec![(id(0x51), Vec::new()), (id(0x52), Vec::new())],
+                        vec![
+                            ValueShapeEnumMember::new(id(0x51), Vec::new()),
+                            ValueShapeEnumMember::new(id(0x52), Vec::new()),
+                        ],
                     )
                     .expect("the test arena mints");
                 vec![

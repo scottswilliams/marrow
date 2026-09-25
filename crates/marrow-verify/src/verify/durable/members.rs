@@ -17,7 +17,7 @@ use marrow_image::{
     CanonicalValueShapeDag, DeclarationMemberDef, DeclarationMemberShape, DurableContractGraph,
     DurableIndexComponent, DurableIndexShape, DurableMemberViewKind, DurableMemberViews,
     DurableProductGraph, ImageType, KeyColumn, LedgerIdBytes, Scalar, StrId, TypeId,
-    ValueShapeLeaf, ValueShapeNodeId, ValueShapeView,
+    ValueShapeEnumMember, ValueShapeLeaf, ValueShapeNodeId, ValueShapeView,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -822,8 +822,7 @@ fn decode_value_shape(
                 Some(_) => {}
                 None => claim_distinct(scope, sum)?,
             }
-            let mut members: Vec<(LedgerIdBytes, Vec<ValueShapeLeaf>)> =
-                Vec::with_capacity(member_count);
+            let mut members: Vec<ValueShapeEnumMember> = Vec::with_capacity(member_count);
             for index in 0..member_count {
                 let id = read_id(reader)?;
                 match &recorded {
@@ -856,14 +855,18 @@ fn decode_value_shape(
                 {
                     return Err(reject(VerifyPhase::Table, Kind::EnumIdentityReused));
                 }
-                members.push((id, payload));
+                members.push(ValueShapeEnumMember::new(id, payload));
             }
             if recorded.is_none() {
                 let identity = members
                     .iter()
-                    .map(|(id, payload)| RecordedMember {
-                        id: *id,
-                        payload_names: payload.iter().map(|leaf| leaf.name().into()).collect(),
+                    .map(|member| RecordedMember {
+                        id: member.id(),
+                        payload_names: member
+                            .payload()
+                            .iter()
+                            .map(|leaf| leaf.name().into())
+                            .collect(),
                     })
                     .collect();
                 scope.enums.insert(sum, identity);

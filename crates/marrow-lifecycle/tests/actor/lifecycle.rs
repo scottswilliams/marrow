@@ -53,7 +53,7 @@ fn projection_of(image: &VerifiedImage) -> marrow_kernel::durable::StoreProjecti
 
 use marrow_codes::Code;
 
-use crate::support::store::provision_from;
+use crate::support::store::{provision_from, store_files};
 use marrow_test_support::Scratch;
 
 #[test]
@@ -74,15 +74,7 @@ fn refused_attach_preserves_marker(marker: Option<&[u8]>) {
     if let Some(marker) = marker {
         std::fs::write(scratch.store().join("lock"), marker).expect("seed marker");
     }
-    let mut before = std::fs::read_dir(scratch.store())
-        .expect("list provisioned store")
-        .map(|entry| {
-            let entry = entry.expect("store entry");
-            let bytes = std::fs::read(entry.path()).expect("read store artifact");
-            (entry.file_name(), bytes)
-        })
-        .collect::<Vec<_>>();
-    before.sort_by(|left, right| left.0.cmp(&right.0));
+    let before = store_files(scratch.store());
 
     let changed = compile(
         &BASE_SOURCE.replace("    label: string\n", "    required label: string\n"),
@@ -95,19 +87,10 @@ fn refused_attach_preserves_marker(marker: Option<&[u8]>) {
         Err(error) => panic!("expected contract refusal, got {}", error.code().as_str()),
         Ok(_) => panic!("an incompatible image was attached"),
     }
-    for (name, bytes) in &before {
-        assert!(
-            std::fs::read(scratch.store().join(name)).expect("read refused store") == *bytes,
-            "admission changed {name:?}",
-        );
-    }
-    let mut after = std::fs::read_dir(scratch.store())
-        .expect("list refused store")
-        .map(|entry| entry.expect("store entry").file_name())
-        .collect::<Vec<_>>();
-    after.sort();
-    let names = before.into_iter().map(|(name, _)| name).collect::<Vec<_>>();
-    assert_eq!(after, names, "refused admission changed store membership");
+    assert!(
+        store_files(scratch.store()) == before,
+        "a refused admission changes no store file and no store membership",
+    );
 }
 
 #[test]

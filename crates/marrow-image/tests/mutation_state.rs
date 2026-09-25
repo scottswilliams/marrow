@@ -13,7 +13,8 @@ use marrow_image::{
     AdmittedGraphInputPlan, AdmittedRoot, CollectionTypeDef, DeclarationMemberDef,
     DeclarationMemberShape, DraftStateError, DraftTxn, DurableIndexShape, EnumTypeDef, ExportId,
     FieldDef, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr, LedgerIdBytes,
-    RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, TypeId, ValueShapeLeaf,
+    RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, TypeId, ValueShapeEnumMember,
+    ValueShapeLeaf,
 };
 use marrow_test_support::admitted_plan;
 
@@ -440,9 +441,9 @@ fn an_over_wide_or_foreign_typed_arena_append_is_refused_and_mutates_nothing() {
     assert_eq!(
         draft.value_enum(
             LedgerIdBytes::from_bytes([0x50; 16]),
-            vec![(
+            vec![ValueShapeEnumMember::new(
                 LedgerIdBytes::from_bytes([0x51; 16]),
-                vec![ValueShapeLeaf::new("v", foreign)]
+                vec![ValueShapeLeaf::new("v", foreign)],
             )],
         ),
         Err(DraftStateError::ForeignDraft),

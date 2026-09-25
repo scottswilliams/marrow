@@ -12,8 +12,8 @@ use marrow_image::{
     AdmittedRoot, CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, DraftTxn,
     DurableIndexComponent, DurableIndexShape, EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef,
     ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, PlannedSiteRef, RecordTypeDef,
-    RootOccurrenceDef, Scalar, SemanticStepKind, SemanticTarget, SpanEntry, TypeId, ValueShapeLeaf,
-    VariantDef,
+    RootOccurrenceDef, Scalar, SemanticStepKind, SemanticTarget, SpanEntry, TypeId,
+    ValueShapeEnumMember, ValueShapeLeaf, VariantDef,
 };
 use marrow_test_support::{admitted_plan, rehash, site};
 use marrow_verify::{
@@ -261,6 +261,44 @@ const POKES: &[Poke] = &[
         rehash: true,
         phase: VerifyPhase::Table,
         kind: RejectionKind::Duplicate(Duplicate::ExportFunction),
+    },
+    // STRINGS (id 1): count(u16), then per string len(u16) + UTF-8 bytes, strictly
+    // ascending by bytes. The functions `a` and `b` are adjacent one-byte entries.
+    Poke {
+        what: "string table entries out of ascending order",
+        image: two_export_image,
+        poke: |bytes| {
+            let at = adjacent_strings(bytes, b"a", b"b");
+            bytes[at + 2] = b'b';
+            bytes[at + 5] = b'a';
+        },
+        rehash: true,
+        phase: VerifyPhase::Table,
+        kind: RejectionKind::Unsorted(Region::Strings),
+    },
+    Poke {
+        what: "a string table entry repeated",
+        image: two_export_image,
+        poke: |bytes| {
+            let at = adjacent_strings(bytes, b"a", b"b");
+            bytes[at + 5] = b'a';
+        },
+        rehash: true,
+        phase: VerifyPhase::Table,
+        kind: RejectionKind::Unsorted(Region::Strings),
+    },
+    // Each entry is checked as UTF-8 before its order, so an out-of-order entry that is
+    // also malformed is refused as malformed.
+    Poke {
+        what: "a malformed string table entry out of ascending order",
+        image: two_export_image,
+        poke: |bytes| {
+            let at = adjacent_strings(bytes, b"a", b"b");
+            bytes[at + 2] = 0xFF;
+        },
+        rehash: true,
+        phase: VerifyPhase::Table,
+        kind: RejectionKind::InvalidUtf8,
     },
     // CONSTS (id 4): count(u16), then per const tag(u8) + payload.
     Poke {
@@ -653,6 +691,20 @@ fn two_export_image() -> Vec<u8> {
     draft.add_export(ExportId::of_local("", "a"), a);
     draft.add_export(ExportId::of_local("", "b"), b);
     draft.encode().expect("encode").bytes
+}
+
+/// The offset of the string-table entry `first` immediately followed by the entry
+/// `second`, each written as `len(u16)` then its bytes.
+fn adjacent_strings(bytes: &[u8], first: &[u8], second: &[u8]) -> usize {
+    let (body, len) = section_frame(bytes, 1);
+    let mut needle = (first.len() as u16).to_be_bytes().to_vec();
+    needle.extend_from_slice(first);
+    needle.extend_from_slice(&(second.len() as u16).to_be_bytes());
+    needle.extend_from_slice(second);
+    body + bytes[body..body + len]
+        .windows(needle.len())
+        .position(|window| window == needle.as_slice())
+        .expect("the two strings are adjacent table entries")
 }
 
 /// Patch a table section's leading `u16` count to `bound + 1` and revalidate the
@@ -4100,7 +4152,9 @@ fn widened_draft(members: Vec<[u8; 16]>) -> ImageDraft {
             LedgerIdBytes::from_bytes([0x50; 16]),
             members
                 .iter()
-                .map(|member| (LedgerIdBytes::from_bytes(*member), Vec::new()))
+                .map(|member| {
+                    ValueShapeEnumMember::new(LedgerIdBytes::from_bytes(*member), Vec::new())
+                })
                 .collect(),
         )
         .expect("a within-bounds shape appends");

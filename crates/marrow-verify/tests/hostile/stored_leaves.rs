@@ -9,8 +9,8 @@
 use marrow_image::{
     DeclarationMemberDef, DeclarationMemberShape, DraftTxn, EnumTypeDef, ExportId, FieldDef,
     FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
-    RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, ValueShapeLeaf, ValueShapeNodeId,
-    VariantDef,
+    RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, ValueShapeEnumMember, ValueShapeLeaf,
+    ValueShapeNodeId, VariantDef,
 };
 use marrow_test_support::{admitted_plan, rehash, site};
 use marrow_verify::{Bound, Region, RejectionKind, Tag, TieFault, TieNode, VerifyPhase};
@@ -220,7 +220,10 @@ fn place_named(names: &'static [&'static str]) -> Vec<u8> {
         let place = draft
             .value_enum(
                 id(SUM_PLACE),
-                vec![(id(MEMBER_AT), vec![ValueShapeLeaf::new("pos", pos)])],
+                vec![ValueShapeEnumMember::new(
+                    id(MEMBER_AT),
+                    vec![ValueShapeLeaf::new("pos", pos)],
+                )],
             )
             .expect("a within-bounds shape appends");
         vec![(types.place, place)]
@@ -235,7 +238,13 @@ fn two_shapes(second: &'static [&'static str]) -> Vec<u8> {
             .expect("the test arena mints");
         let mut shape = |names: &[&str]| {
             draft
-                .value_enum(id(SUM_SHAPE), vec![(id(MEMBER_RECT), leaves(names, int))])
+                .value_enum(
+                    id(SUM_SHAPE),
+                    vec![ValueShapeEnumMember::new(
+                        id(MEMBER_RECT),
+                        leaves(names, int),
+                    )],
+                )
                 .expect("a within-bounds shape appends")
         };
         let first = shape(&["width", "height"]);

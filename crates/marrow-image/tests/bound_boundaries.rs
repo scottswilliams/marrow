@@ -16,7 +16,7 @@ use marrow_image::{
     DraftStateError, DraftTxn, DurableContractGraph, DurableGraphInputRefusal,
     DurableIndexComponent, DurableIndexShape, EnumTypeDef, ExportId, FunctionDef, ImageBuildError,
     ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef,
-    Scalar, SpanEntry, TypeId, ValueShapeLeaf, VariantDef,
+    Scalar, SpanEntry, TypeId, ValueShapeEnumMember, ValueShapeLeaf, VariantDef,
 };
 use marrow_test_support::admitted_plan;
 
@@ -138,7 +138,10 @@ fn members_with_leaf_named(
     let value = if payload {
         draft.value_enum(
             seeded_id(0x50, 0),
-            vec![(seeded_id(0x51, 0), vec![ValueShapeLeaf::new(name, int)])],
+            vec![ValueShapeEnumMember::new(
+                seeded_id(0x51, 0),
+                vec![ValueShapeLeaf::new(name, int)],
+            )],
         )
     } else {
         draft.value_struct(vec![ValueShapeLeaf::new(name, int)])

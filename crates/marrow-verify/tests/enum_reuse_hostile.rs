@@ -14,7 +14,8 @@
 use marrow_image::{
     DeclarationMemberDef, DeclarationMemberShape, DraftTxn, EnumTypeDef, ExportId, FieldDef,
     FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
-    RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, ValueShapeNodeId, VariantDef,
+    RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, ValueShapeEnumMember, ValueShapeNodeId,
+    VariantDef,
 };
 use marrow_test_support::{admitted_plan, site};
 use marrow_verify::{Duplicate, RejectionKind, VerifyPhase, verify};
@@ -85,7 +86,10 @@ fn access_shape(draft: &mut DraftTxn<'_>, (sum, members): AccessShape) -> ValueS
     draft
         .value_enum(
             id(sum),
-            members.iter().map(|m| (id(*m), Vec::new())).collect(),
+            members
+                .iter()
+                .map(|m| ValueShapeEnumMember::new(id(*m), Vec::new()))
+                .collect(),
         )
         .expect("a within-bounds shape appends")
 }

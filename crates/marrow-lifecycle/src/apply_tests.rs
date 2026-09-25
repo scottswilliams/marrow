@@ -320,8 +320,19 @@ fn sparse_apply_rejects_incompatible_graphs_without_store_changes() {
 /// which is where the reference and the `store.apply_unsupported` text send a reader.
 #[test]
 fn every_apply_reason_word_is_documented() {
-    use UnsupportedChange::*;
-    let every = [
+    // One list feeds both the exhaustive match and the array, so a reason missing from
+    // the list fails to compile here, and every listed reason must have a table row.
+    macro_rules! every_reason {
+        ($($reason:ident),* $(,)?) => {{
+            fn _exhaustive(change: UnsupportedChange) {
+                match change {
+                    $(UnsupportedChange::$reason)|* => {}
+                }
+            }
+            [$(UnsupportedChange::$reason),*]
+        }};
+    }
+    let every = every_reason![
         Application,
         Root,
         Index,
@@ -330,17 +341,7 @@ fn every_apply_reason_word_is_documented() {
         StoredValue,
         MemberAdded,
     ];
-    for change in every {
-        // A new reason fails to compile here until it joins `every` and the table.
-        match change {
-            Application | Root | Index | MemberRemoved | MemberChanged | StoredValue
-            | MemberAdded => {}
-        }
-    }
-    let cli = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/tools/cli.md"),
-    )
-    .expect("cli reference");
+    let cli = include_str!("../../../docs/tools/cli.md");
     for change in every {
         let row = format!("\n| `{}` | ", change.as_str());
         assert!(cli.contains(&row), "no reason row for {change:?}");

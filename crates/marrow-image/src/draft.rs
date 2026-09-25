@@ -37,7 +37,9 @@ use crate::site_plan::{
     SitePolicyReceipt,
 };
 use crate::ty::{ImageType, Scalar};
-use crate::value_dag::{CanonicalValueShapeDag, ImageByteSink, ValueShapeLeaf, ValueShapeNodeId};
+use crate::value_dag::{
+    CanonicalValueShapeDag, ImageByteSink, ValueShapeEnumMember, ValueShapeLeaf, ValueShapeNodeId,
+};
 
 /// The strong identity of one draft and its site demand plan.
 ///
@@ -1196,13 +1198,13 @@ impl<'d> DraftTxn<'d> {
     pub fn value_enum(
         &mut self,
         identity: LedgerIdBytes,
-        members: Vec<(LedgerIdBytes, Vec<ValueShapeLeaf>)>,
+        members: Vec<ValueShapeEnumMember>,
     ) -> Result<ValueShapeNodeId, DraftStateError> {
         if members.len() > bounds::MAX_VARIANTS {
             return Err(DraftStateError::CarrierDomain);
         }
-        for (_, payload) in &members {
-            if payload.len() > bounds::MAX_PAYLOAD_FIELDS {
+        for member in &members {
+            if member.payload().len() > bounds::MAX_PAYLOAD_FIELDS {
                 return Err(DraftStateError::CarrierDomain);
             }
         }

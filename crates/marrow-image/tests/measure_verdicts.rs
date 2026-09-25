@@ -18,7 +18,7 @@ use marrow_image::{
     DraftStateError, DraftTxn, DurableIndexComponent, DurableIndexShape, EnumId, EnumTypeDef,
     ExportId, FieldDef, FuncId, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr,
     KeyColumn, LedgerIdBytes, RecordTypeDef, ReferenceKind, RootId, Scalar, SemanticTarget,
-    SpanEntry, StrId, TypeId, ValueShapeLeaf, ValueShapeNodeId, VariantDef,
+    SpanEntry, StrId, TypeId, ValueShapeEnumMember, ValueShapeLeaf, ValueShapeNodeId, VariantDef,
 };
 use marrow_test_support::admitted_plan;
 
@@ -386,7 +386,9 @@ impl Fixture {
             // The append surface is where an over-wide value node is refused: nothing
             // enters the arena, whether or not any field would have referenced it.
             let members = (0..=MAX_VARIANTS)
-                .map(|index| (seeded_id(tag::ENUM_MEMBER, index), Vec::new()))
+                .map(|index| {
+                    ValueShapeEnumMember::new(seeded_id(tag::ENUM_MEMBER, index), Vec::new())
+                })
                 .collect();
             assert_eq!(
                 draft.value_enum(seeded_id(tag::ENUM_NODE, 0), members),

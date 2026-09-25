@@ -20,7 +20,7 @@ use marrow_image::{
     DeclarationMember, DeclarationMemberDef, DeclarationMemberShape, DraftTxn,
     DurableIndexComponent, DurableIndexShape, FieldDef, ImageDraft, ImageType, KeyColumn,
     LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, RootOccurrenceSelector, Scalar,
-    SemanticTarget, ValueShapeLeaf, ValueShapeNodeId, ValueShapeView, bounds,
+    SemanticTarget, ValueShapeEnumMember, ValueShapeLeaf, ValueShapeNodeId, ValueShapeView, bounds,
 };
 use marrow_project::{IdentityAnchor, IdentityKind, IdentityLedger, ProjectInput, SourceOrigin};
 use marrow_syntax::{FieldDecl, ResourceDecl, SourceSpan, StoreDecl};
@@ -1901,7 +1901,7 @@ impl<'a> IdentityResolver<'a> {
                             .map(|shape| ValueShapeLeaf::new(leaf.as_str(), shape))
                     })
                     .collect::<Option<Vec<_>>>();
-                payload.map(|payload| (id, payload))
+                payload.map(|payload| ValueShapeEnumMember::new(id, payload))
             })
             .collect::<Option<Vec<_>>>()?;
         self.checked_mint(values.value_enum(sum, members))
