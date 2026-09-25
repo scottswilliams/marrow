@@ -229,11 +229,6 @@ pub fn provision_image(
     prepared: &PreparedImage,
     approval: &ProvisionApproval,
 ) -> Result<Provisioned, ProvisionImageError> {
-    // An approval exists only for an image with a projection, so this check never fires once
-    // the approval matches; it keeps a parked image's refusal ahead of an approval mismatch.
-    prepared
-        .projection()
-        .ok_or(ProvisionImageError::NotExecutable)?;
     let image = prepared.image();
     // `OsStr` equality is byte-exact; `Path` equality would compare normalized components.
     if approval.image != image.image_id() || approval.destination.as_os_str() != dest.as_os_str() {

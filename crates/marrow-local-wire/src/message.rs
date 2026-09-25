@@ -372,7 +372,7 @@ impl<'a> Fields<'a> {
         }
     }
 
-    /// A JSON string field: a store instance identity, which the caller validates.
+    /// A JSON string field; the caller validates its contents.
     fn string(&self, key: &str) -> Result<String, WireError> {
         match self.get(key)? {
             Json::Str(s) => Ok(s.clone()),
@@ -548,12 +548,28 @@ mod tests {
         for invalid in [
             json.replace("store.activation_uncertain", "store.publication_uncertain"),
             json.replace(&"12".repeat(16), "12"),
+            json.replace(&"12".repeat(16), &"AB".repeat(16)),
+            json.replace(&"12".repeat(16), &"zz".repeat(16)),
             json.replace(&"34".repeat(32), "34"),
             json.replace(&"56".repeat(32), &"AB".repeat(32)),
             json.replace("}", ",\"turn\":0}"),
         ] {
             let body = [&[crate::PROTOCOL_VERSION], invalid.as_bytes()].concat();
             assert!(ServerMessage::decode(&body).is_err());
+        }
+        let ServerMessage::ActivationUncertain {
+            session, interface, ..
+        } = message
+        else {
+            panic!("decoded an activation uncertainty");
+        };
+        for instance in ["12".to_owned(), "AB".repeat(16), "zz".repeat(16)] {
+            let invalid = ServerMessage::ActivationUncertain {
+                session,
+                interface,
+                instance,
+            };
+            assert_eq!(invalid.encode(), Err(WireError::Malformed));
         }
     }
 

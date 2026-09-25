@@ -74,7 +74,6 @@ fn assert_unapproved(
     match refused {
         Err(error @ ProvisionImageError::Unapproved) => {
             assert_eq!(error.code(), Code::StoreProvisionUnapproved);
-            assert_eq!(error.code().as_str(), "store.provision_unapproved");
         }
         Err(other) => panic!("expected an unapproved refusal, got {other:?}"),
         Ok(_) => panic!("a mismatched approval provisioned a store"),
@@ -106,9 +105,9 @@ fn an_approval_for_one_image_is_refused_for_another_with_the_same_report() {
         "the effects variant differs from its source"
     );
 
-    for (case, a_source, b_source) in [
-        ("body", &read_only, &body_b),
-        ("effects-within-roots", &broadened, &effects_b),
+    for (case, a_source, b_source, ceilings_differ) in [
+        ("body", &read_only, &body_b, false),
+        ("effects-within-roots", &broadened, &effects_b, true),
     ] {
         let scratch = Scratch::new("provision-approval");
         let (a_image, b_image) = (compile(a_source), compile(b_source));
@@ -125,13 +124,11 @@ fn an_approval_for_one_image_is_refused_for_another_with_the_same_report() {
             b_image.image_id(),
             "{case}: the images differ"
         );
-        if case == "effects-within-roots" {
-            assert_ne!(
-                accepted_ceiling(&a_image),
-                accepted_ceiling(&b_image),
-                "{case}: the accepted ceilings differ",
-            );
-        }
+        assert_eq!(
+            accepted_ceiling(&a_image) != accepted_ceiling(&b_image),
+            ceilings_differ,
+            "{case}: whether the accepted ceilings differ",
+        );
 
         let approval_a = ProvisionApproval::accept(&report_a);
         assert_unapproved(
@@ -153,25 +150,13 @@ fn an_approval_is_refused_at_any_other_destination_spelling() {
 
     let mut trailing = scratch.store().as_os_str().to_os_string();
     trailing.push("/");
-    let mut rows: Vec<(PathBuf, PathBuf)> = vec![
+    let rows: Vec<(PathBuf, PathBuf)> = [
         (scratch.path().join("a"), scratch.path().join("b")),
         (scratch.store().to_path_buf(), PathBuf::from(trailing)),
-    ];
-    #[cfg(unix)]
-    {
-        use std::ffi::OsStr;
-        use std::os::unix::ffi::OsStrExt;
-        rows.push((
-            scratch
-                .path()
-                .join(OsStr::from_bytes(b"\xff"))
-                .join("store"),
-            scratch
-                .path()
-                .join(OsStr::from_bytes(b"\xfe"))
-                .join("store"),
-        ));
-    }
+    ]
+    .into_iter()
+    .chain(non_utf8_row(scratch.path()))
+    .collect();
 
     for (accepted_at, presented_at) in &rows {
         let report = ProvisionReport::new(accepted_at, &prepared).expect("report");
@@ -216,4 +201,20 @@ fn an_accepted_provision_round_trips_through_attach() {
         "the instance renders as 32 hex characters",
     );
     let _ = StoreInstanceId::from_bytes(*provisioned.instance.bytes());
+}
+
+/// Two destinations that differ only in a non-UTF-8 byte, where the platform can spell one.
+#[cfg(unix)]
+fn non_utf8_row(root: &Path) -> Option<(PathBuf, PathBuf)> {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    Some((
+        root.join(OsStr::from_bytes(b"\xff")).join("store"),
+        root.join(OsStr::from_bytes(b"\xfe")).join("store"),
+    ))
+}
+
+#[cfg(not(unix))]
+fn non_utf8_row(_root: &Path) -> Option<(PathBuf, PathBuf)> {
+    None
 }

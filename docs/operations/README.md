@@ -91,6 +91,8 @@ anything is written to the destination. The report names the destination, the
 durable roots and whether the program reads or writes durable data. Without
 `--yes` the command exits `2` and writes nothing. `--yes` accepts the report
 that the same invocation rendered for that exact image and destination.
+The supervisor's `provision(options)` always passes `--yes`, and the report
+reaches only its optional `log` callback.
 `marrow import` into an absent destination provisions without showing the
 report; the explicit import command is the acceptance.
 

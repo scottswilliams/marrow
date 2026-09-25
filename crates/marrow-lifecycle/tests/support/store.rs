@@ -1,7 +1,7 @@
 //! The one store-publication path the lifecycle suites share.
 //!
 //! Two publication mechanisms exist and they test different things. The approval path
-//! ([`try_provision_approved`]) is what a tool calls: it renders the report, accepts it, and
+//! ([`try_provision_approved`]) is what a tool calls: it builds the report, accepts it, and
 //! publishes. The request path ([`provision_from`], [`provision_with_head`]) hands
 //! `provision` a head the caller built, which is how the admission matrices forge one
 //! binding, ceiling, or pin fact at a time. Both live here so a suite cannot quietly grow a
@@ -62,8 +62,8 @@ pub fn provision_with_head(dir: &Path, head: LogicalHead) {
     .expect("provision");
 }
 
-/// The tool's path: render the report, accept exactly it, publish. The approval is accepted
-/// from the report this call itself renders, so nothing but the image decides the result.
+/// The tool's path: build the report, accept exactly it, publish. The approval is accepted
+/// from the report this call itself builds, so nothing but the image decides the result.
 pub fn try_provision_approved(
     dir: &Path,
     image: &VerifiedImage,
