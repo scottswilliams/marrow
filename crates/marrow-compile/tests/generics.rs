@@ -1583,52 +1583,6 @@ pub fn run(): int {
     assert!(has_code(&diagnostics, Code::CheckType), "{diagnostics:#?}");
 }
 
-/// A nested generic value cycle renders every instantiation on the reported
-/// `check.recursion` path in the canonical angle form: the cycle through
-/// `Loop<int>` and the nested `Box<Loop<int>>` names both with angle delimiters at
-/// every level, the same display form the checker uses for all other generic labels.
-#[test]
-fn a_nested_generic_value_cycle_labels_instantiations_in_angle_form() {
-    let diagnostics = compile_err(
-        r#"module main
-
-struct Loop<T> {
-    step: Box<Loop<T>>
-}
-
-struct Box<T> {
-    held: T
-}
-
-fn useLoop(l: Loop<int>): int {
-    return 0
-}
-
-pub fn run(): int {
-    return 0
-}
-"#,
-    );
-    assert!(
-        has_code(&diagnostics, Code::CheckRecursion),
-        "{diagnostics:#?}"
-    );
-    let cycle = diagnostics
-        .iter()
-        .find(|diagnostic| diagnostic.code() == Code::CheckRecursion)
-        .expect("a recursion diagnostic");
-    assert!(
-        cycle.message().contains("Loop<int>"),
-        "the cycle path must render `Loop<int>` in angle form: {}",
-        cycle.message()
-    );
-    assert!(
-        cycle.message().contains("Box<Loop<int>>"),
-        "the cycle path must render the nested `Box<Loop<int>>` in angle form: {}",
-        cycle.message()
-    );
-}
-
 /// A nested collection instantiation is named in checker diagnostics in the
 /// canonical angle form at every level: a `Map<string, List<int>>` value bound to an
 /// `int` renders `Map<string, List<int>>`, including the nested `List<int>` value

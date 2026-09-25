@@ -68,6 +68,7 @@ fn a_recursive_export_signature_generates_no_client() {
 
     let run = marrow_in(temp.path(), &["run", "f"]);
     assert!(run.status.success(), "{}", run.stderr_text());
+    assert_eq!(run.stdout_text(), "{v: 1, kids: [{v: 2, kids: []}]}\n");
 }
 
 /// The stable fixture: scalars, a record, an enum, a grouped resource, and a

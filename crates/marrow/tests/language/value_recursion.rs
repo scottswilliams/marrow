@@ -115,6 +115,16 @@ fn self_containing_types_are_refused_at_their_sites() {
             &[(RECURSION, 1, 8, Some("Box<int> -> Box<int>"))],
         ),
         (
+            "a generic struct applied in a generic function reached through another",
+            "struct Box<T> {\n    v: T\n    child: Box<T>\n}\n\nfn g<U>(x: U): int {\n    const xs: List<Box<int>> = List()\n    return length(xs)\n}\n\nfn h<V>(y: V): int {\n    return g(1)\n}\n\npub fn f(): int {\n    return h(true)\n}\n",
+            &[(RECURSION, 1, 8, Some("Box<int> -> Box<int>"))],
+        ),
+        (
+            "a generic struct applied in the field of an applied generic type",
+            "struct Box<T> {\n    v: T\n    child: Box<T>\n}\n\nstruct Other<U> {\n    u: U\n    b: List<Box<int>>\n}\n\nfn useIt(o: Other<int>): int {\n    return o.u\n}\n\npub fn f(): int {\n    return 1\n}\n",
+            &[(RECURSION, 1, 8, Some("Box<int> -> Box<int>"))],
+        ),
+        (
             "a generic enum applied to the same argument",
             "enum Tree<T> {\n    leaf(v: T)\n    node(l: Tree<T>, r: Tree<T>)\n}\n\nfn useIt(t: Tree<int>): int {\n    return 0\n}\n\npub fn f(): int {\n    return 1\n}\n",
             &[(RECURSION, 1, 6, Some("Tree<int> -> Tree<int>"))],
@@ -233,15 +243,25 @@ fn a_list_or_map_ends_a_type_cycle() {
     }
 }
 
-/// Recursion is checked per application in non-generic code or in a called generic
-/// function; a template that is never applied there is not checked for recursion, at
-/// the same argument or a growing one.
+/// Recursion is checked for each application reached from non-generic code, directly
+/// or through the generic functions it calls and the generic types it applies; a
+/// template never applied from there is not checked for recursion, at the same
+/// argument or a growing one. A growing application in the field of a template that is
+/// never applied does not reach the instantiation limit either.
 #[test]
-fn an_unapplied_self_referencing_template_is_not_checked_for_recursion() {
+fn a_template_not_applied_from_checked_code_is_not_checked_for_recursion() {
     for (label, source) in [
         (
             "an application only in a generic function that is never called",
             "struct Box<T> {\n    v: T\n    child: Box<T>\n}\n\nfn g<U>(x: U): int {\n    const xs: List<Box<int>> = List()\n    return length(xs)\n}\n\npub fn f(): int {\n    return 1\n}\n",
+        ),
+        (
+            "an application only in a generic function called only from an uncalled one",
+            "struct Box<T> {\n    v: T\n    child: Box<T>\n}\n\nfn g<U>(x: U): int {\n    const xs: List<Box<int>> = List()\n    return length(xs)\n}\n\nfn h<V>(y: V): int {\n    return g(1)\n}\n\npub fn f(): int {\n    return 1\n}\n",
+        ),
+        (
+            "a growing application only in the field of a template that is never applied",
+            "struct Box<T> {\n    child: Box<Option<T>>\n}\n\nstruct Other<U> {\n    b: List<Box<int>>\n}\n\npub fn f(): int {\n    return 1\n}\n",
         ),
         (
             "an unapplied template holding itself",

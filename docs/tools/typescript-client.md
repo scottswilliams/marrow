@@ -146,8 +146,7 @@ is sent, and again by the runner. These checks validate transfer shapes. Bare
 nominal integer arguments use the compiled function's range guard and can fault
 `run.range`. The compiler refuses public aggregate inputs containing nominal
 leaves with `check.unsupported`, before client generation; transfer shapes do
-not retain nominal intervals
-([nominal ints](../language/types-and-values.md#aliases-and-nominal-ints)).
+not retain nominal intervals ([nominal ints](../language/types-and-values.md#aliases-and-nominal-ints)).
 
 A wire value nests at most 64 levels, a string carries at most 64 KiB, and a
 frame body, including its protocol version byte, is at most 1 MiB. The

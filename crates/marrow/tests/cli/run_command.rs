@@ -1,6 +1,6 @@
 //! `marrow run`: the text rendering of a returned `Result`, the one diagnostic form,
-//! and the command-line surface every subcommand shares — usage on `--help`, and one
-//! usage-error form.
+//! the command-line surface every subcommand shares — usage on `--help`, and one
+//! usage-error form — and store-attached runs of exports.
 
 use crate::common::{MARROW_BIN, Project, marrow_in, stage_toolchain, staged_marrow_in, write};
 use marrow_test_support::Scratch;
@@ -327,4 +327,104 @@ fn a_durable_top_level_err_commits_and_exits_one() {
     );
     let discarded = run(&["run", "valueOf", "--store", store, "--", "1"]);
     assert_eq!(discarded.stdout_text(), "5\n", "{discarded:?}");
+}
+
+const DEEP_SOURCE: &str = "\
+resource Book {
+    title: string
+}
+
+store ^books[id: int]: Book
+
+struct Tree {
+    v: int
+    kids: List<Tree>
+}
+
+pub fn deepWrite(id: int, n: int): Tree {
+    transaction {
+        ^books[id] = Book(title: \"written\")
+    }
+    var t = Tree(v: 0, kids: List())
+    var i = 0
+    while i < n {
+        t = Tree(v: i, kids: List(t))
+        i += 1
+    }
+    return t
+}
+
+pub fn has(id: int): bool {
+    return exists(^books[id])
+}
+";
+
+const DEEP_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a\n\
+     id product Book 1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d\n\
+     id field Book.title 1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e\n\
+     id root books 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b\n\
+     id key books.id 1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c\n\
+     high-water 0\n\
+     end\n";
+
+/// `marrow run --store` builds no interface, so it runs an export whose result type is
+/// recursive and returns the value. A `Tree` spends two wire levels per level of the
+/// value and the reply envelope takes one of 64, so a 31-level result does not fit:
+/// the call is `run.outcome_unknown` after its transaction committed, and the write is
+/// readable afterwards.
+#[test]
+fn a_recursive_export_runs_attached_and_a_result_past_the_wire_depth_is_an_unknown_outcome() {
+    let toolchain = stage_toolchain();
+    let temp = Scratch::new("recursive-attached");
+    let project = temp.path().join("app");
+    write(&project.join("marrow.toml"), "edition = \"2026\"\n");
+    write(&project.join("src/main.mw"), DEEP_SOURCE);
+    write(&project.join(".marrow/ids"), DEEP_IDS);
+    write(
+        &project.join("seed.jsonl"),
+        "{\"id\":1,\"title\":\"seed\"}\n",
+    );
+    let store = temp.path().join("store");
+    let store = store.to_str().expect("store path");
+    let run = |args: &[&str]| staged_marrow_in(toolchain.path(), &project, args);
+    let imported = run(&[
+        "import",
+        "--store",
+        store,
+        "--jsonl",
+        "seed.jsonl",
+        "--root",
+        "books",
+        "--keys",
+        "id",
+    ]);
+    assert!(imported.success(), "{}", imported.stderr_text());
+
+    let shallow = run(&["run", "deepWrite", "--store", store, "--", "7", "2"]);
+    assert_eq!(shallow.code(), Some(0), "{shallow:?}");
+    assert_eq!(
+        shallow.stdout_text(),
+        "{v: 1, kids: [{v: 0, kids: [{v: 0, kids: []}]}]}\n"
+    );
+
+    let deep = run(&[
+        "run",
+        "deepWrite",
+        "--store",
+        store,
+        "--format",
+        "jsonl",
+        "--",
+        "8",
+        "31",
+    ]);
+    assert_eq!(deep.code(), Some(1), "{deep:?}");
+    assert_eq!(
+        deep.stdout_text(),
+        "{\"cause\":\"wire\",\"cause_code\":\"wire.depth_limit\",\"code\":\"run.outcome_unknown\",\"kind\":\"run\",\"outcome\":\"outcome_unknown\"}\n"
+    );
+    let committed = run(&["run", "has", "--store", store, "--", "8"]);
+    assert_eq!(committed.stdout_text(), "true\n", "{committed:?}");
 }

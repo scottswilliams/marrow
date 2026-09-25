@@ -566,15 +566,20 @@ not contain its value type. A struct or enum that contains itself is a
 names the cycle, such as `A -> Option<A> -> A`.
 
 Recursion in a generic type is checked per application, for each application
-in non-generic code or in a generic function that is called. `Box<int>` with a
-field of type `Box<int>` is refused at `Box`, `Node<T>` with a field
-`kids: List<Node<T>>` is admitted, and a template that is never applied is not
-checked for recursion. A generic type
-that holds itself at an ever-larger argument, such as `child: Box<Option<T>>`
-inside `Box<T>` or `kids: List<Node<List<T>>>` inside `Node<T>`, has no finite
-set of instances, even inside a collection. The compiler reaches its
-instantiation bound first and reports `check.instantiation_limit` at the
-application, such as `Box<int>`.
+reached from non-generic code, directly or through the generic functions it
+calls and the generic types it applies. `Box<int>` with a field of type
+`Box<int>` is refused at `Box`, `Node<T>` with a field `kids: List<Node<T>>` is
+admitted, and a template that is never applied from there is not checked for
+recursion.
+
+A generic type that holds itself at an ever-larger argument, such as
+`child: Box<Option<T>>` inside `Box<T>` or `kids: List<Node<List<T>>>` inside
+`Node<T>`, has no finite set of instances, even inside a collection. For an
+application written in a function body, whether or not the function is called,
+or in a non-generic declaration, the compiler reaches its instantiation bound
+first and reports `check.instantiation_limit` at that application, such as
+`Box<int>`. An application written only in the field of a template that is never
+applied reaches neither the recursion check nor the instantiation bound.
 
 A function cannot call itself ([functions](modules-and-functions.md#functions)),
 so a recursive value is walked with a loop over a list of pending values, as
