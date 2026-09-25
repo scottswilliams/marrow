@@ -4,16 +4,16 @@
 //! run of the ledger index. These tests declare owners whose keys would interleave
 //! under any order that does not compare the whole owner first — a group anchor
 //! `R.g`, names with `R` as a prefix, and the same spelling in a dependency tree —
-//! and hold every owner's reads to what the whole ledger says about that owner.
+//! and hold every owner's reads to its own members, first occurrence per name, in
+//! declaration order.
 
 use super::test_fixtures::test_registry;
 use super::*;
 
-use crate::decl::{DeclarationOccurrence, DeclarationSite, refuse};
+use crate::decl::{DeclarationOccurrence, test_refusal};
 use crate::diag::DiagnosticCollector;
 use marrow_project::DependencyAlias;
 
-#[derive(Clone, Copy)]
 enum Step {
     /// Accepted; the flag rides on `FieldInfo::required` so a second acceptance of
     /// one key is distinguishable from its first.
@@ -21,20 +21,8 @@ enum Step {
     Refuse,
 }
 
-fn refusal(member: &str) -> DeclarationRefusalSummary {
-    let file = crate::test_file("src/main.mw").clone();
-    refuse(
-        &mut DiagnosticCollector::new(),
-        DeclarationSite {
-            name: member,
-            file: &file,
-            at: crate::analysis::FileRef::admitted(0),
-            span: SourceSpan::default(),
-        },
-        marrow_codes::Code::CheckType,
-        "refused".to_string(),
-    )
-}
+/// One owner, its accepted members as (name, required), and its refused members.
+type OwnerReads<'a> = (&'a ScopedName, &'a [(&'a str, bool)], &'a [&'a str]);
 
 #[test]
 fn each_owner_reads_exactly_its_own_members() {
@@ -47,7 +35,6 @@ fn each_owner_reads_exactly_its_own_members() {
     let prefixed = ScopedName::new(&root, "Ra");
     let dashed = ScopedName::new(&root, "R-x");
     let foreign = ScopedName::new(&dependency, "R");
-    let owners = [&record, &group, &prefixed, &dashed, &foreign];
 
     let script: Vec<(&ScopedName, &str, Step)> = vec![
         (&record, "title", Accept(true)),
@@ -74,7 +61,10 @@ fn each_owner_reads_exactly_its_own_members() {
                 ty: GArg::Scalar(crate::scalar::ScalarType::Int),
                 required: *required,
             }),
-            Refuse => DeclarationOccurrence::Refused(refusal(member)),
+            Refuse => DeclarationOccurrence::Refused(test_refusal(
+                member,
+                &mut DiagnosticCollector::new(),
+            )),
         };
         registry
             .members
@@ -82,44 +72,30 @@ fn each_owner_reads_exactly_its_own_members() {
             .expect("within budget");
     }
 
-    for owner in owners {
-        let mut first: Vec<(&str, Step)> = Vec::new();
-        for (_, member, step) in script.iter().filter(|(o, ..)| *o == owner) {
-            if !first.iter().any(|(seen, _)| seen == member) {
-                first.push((member, *step));
-            }
-        }
-        let accepted_oracle: Vec<(&str, bool)> = first
-            .iter()
-            .filter_map(|(member, step)| match step {
-                Accept(required) => Some((*member, *required)),
-                Refuse => None,
-            })
-            .collect();
-        let refused_oracle: Vec<&str> = registry
-            .members
-            .refused()
-            .filter(|(key, _)| key.owner == *owner)
-            .map(|(key, _)| key.member.as_str())
-            .collect();
-
-        let accepted = registry.accepted_members(owner).expect("a coherent ledger");
-        let accepted: Vec<(&str, bool)> = accepted
+    // `R` declares `title` twice; the first occurrence answers. Its refusals read in
+    // declaration order, `zz` before `bb`.
+    let expected: [OwnerReads; 5] = [
+        (
+            &record,
+            &[("title", true), ("author", false), ("middle", true)],
+            &["zz", "bb"],
+        ),
+        (&group, &[("year", false), ("edition", true)], &[]),
+        (&prefixed, &[("pages", false), ("alpha", true)], &[]),
+        (&dashed, &[("m", true), ("b", false)], &[]),
+        (&foreign, &[("title", false), ("about", true)], &[]),
+    ];
+    for (owner, accepted, refused) in expected {
+        let fields = registry.accepted_members(owner).expect("a coherent ledger");
+        let fields: Vec<(&str, bool)> = fields
             .iter()
             .map(|field| (field.name.as_str(), field.required))
             .collect();
-        assert_eq!(accepted, accepted_oracle, "accepted members of {owner:?}");
+        assert_eq!(fields, accepted, "accepted members of {owner:?}");
         assert_eq!(
             registry.refused_members(owner).expect("a coherent ledger"),
-            refused_oracle,
+            refused,
             "refused members of {owner:?}"
         );
     }
-    assert_eq!(
-        registry
-            .refused_members(&record)
-            .expect("a coherent ledger"),
-        ["zz", "bb"],
-        "refused members keep declaration order, not key order"
-    );
 }

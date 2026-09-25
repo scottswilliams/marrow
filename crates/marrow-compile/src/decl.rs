@@ -261,6 +261,32 @@ pub(crate) fn refuse(
     )
 }
 
+/// A `check.type` refusal of `name` in the crate's test file, minted through
+/// [`refuse`] into `diagnostics` so the pushed row and the retained cause stay coupled
+/// in tests too.
+#[cfg(test)]
+pub(crate) fn test_refusal(
+    name: &str,
+    diagnostics: &mut DiagnosticCollector,
+) -> DeclarationRefusalSummary {
+    refuse(
+        diagnostics,
+        DeclarationSite {
+            name,
+            file: crate::test_file("src/main.mw"),
+            at: FileRef::admitted(0),
+            span: SourceSpan {
+                start_byte: 0,
+                end_byte: 1,
+                line: 1,
+                column: 1,
+            },
+        },
+        Code::CheckType,
+        "refused".to_string(),
+    )
+}
+
 /// The same coupling for a refusal whose row a shared renderer already built: the
 /// summary's code is read off the row that is pushed in the same statement, never
 /// restated by the caller.
@@ -618,6 +644,22 @@ struct KeyOccurrences {
     refused: Option<DeclarationRefusalId>,
 }
 
+/// A ledger key whose order groups the keys of one owner into one contiguous run of
+/// the index, so [`DeclarationLedger::accepted_run`] and
+/// [`DeclarationLedger::refused_run`] read an owner's keys with one seek.
+///
+/// The key type states its runs next to the order that makes them contiguous: every
+/// key `in_run` of an owner sorts between `run_start(owner)` and the owner's last key,
+/// with no other owner's key between them. A key outside the run that sorted inside it
+/// would end the read early and silently drop the rest of the run.
+pub(crate) trait RunKey: Ord {
+    type Owner;
+    /// A key at or below every key of `owner`'s run.
+    fn run_start(owner: &Self::Owner) -> Self;
+    /// Whether this key belongs to `owner`'s run.
+    fn in_run(&self, owner: &Self::Owner) -> bool;
+}
+
 /// Every occurrence of every declared key in one namespace, in declaration order.
 ///
 /// Layer 1 (`occurrences`, `refusals`) is the sole authority for source order and
@@ -806,21 +848,18 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
             })
     }
 
-    /// The index entries of one contiguous run of keys: every key from `from` onward,
-    /// while `within` holds.
-    ///
-    /// Precondition: `K`'s order keeps every key satisfying `within` adjacent, and
-    /// `from` is at or below the least of them. A key outside the run that sorted
-    /// between two of its keys would end the run early and silently drop the rest, so
-    /// the key type that states `within` also owns that order.
-    fn run<'a, W: Fn(&K) -> bool>(
+    /// The index entries of `owner`'s run: one seek to the run's start, then only the
+    /// run's own keys and the one key that ends it.
+    fn run<'a, 'o>(
         &'a self,
-        from: &K,
-        within: W,
-    ) -> impl Iterator<Item = (&'a K, &'a KeyOccurrences)> + use<'a, K, T, W> {
+        owner: &'o K::Owner,
+    ) -> impl Iterator<Item = (&'a K, &'a KeyOccurrences)> + use<'a, 'o, K, T>
+    where
+        K: RunKey,
+    {
         self.index
-            .range(from..)
-            .take_while(move |(key, _)| within(key))
+            .range(K::run_start(owner)..)
+            .take_while(move |(key, _)| key.in_run(owner))
     }
 
     /// Layer 1's occurrence at `at`, which must be an occurrence of `key`: the index
@@ -836,7 +875,7 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
         }
     }
 
-    /// The accepted declarations of one run of keys (see [`Self::run`]) in source
+    /// The accepted declarations of `owner`'s run of keys (see [`RunKey`]) in source
     /// order, one per key, and only where the key's first occurrence is that
     /// acceptance: exactly the occurrences [`Self::lookup`] answers with, so a
     /// namespace built from this read and a use site resolving against the ledger
@@ -844,15 +883,18 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
     /// order — reads it from here rather than accumulating a parallel vector, which
     /// keeps the ledger the single authority.
     ///
-    /// The cost is one index seek plus the run's own keys: a read never walks another
-    /// run's declarations.
+    /// The cost is O(log N + k log k) for a ledger of N keys and a run of k: one index
+    /// seek, then a sort of the run's accepted keys back into source order. A read never
+    /// walks another run's declarations.
     pub(crate) fn accepted_run(
         &self,
-        from: &K,
-        within: impl Fn(&K) -> bool,
-    ) -> Result<Vec<(&K, &T)>, DeclarationIndexDrift> {
+        owner: &K::Owner,
+    ) -> Result<Vec<(&K, &T)>, DeclarationIndexDrift>
+    where
+        K: RunKey,
+    {
         let mut firsts: Vec<(usize, &K)> = self
-            .run(from, within)
+            .run(owner)
             .filter_map(|(key, entry)| match entry.first {
                 Selected::Accepted(at) => Some((at, key)),
                 Selected::Refused(_) => None,
@@ -868,17 +910,16 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
             .collect()
     }
 
-    /// The refused keys of one run of keys (see [`Self::run`]), one per key, in the
+    /// The refused keys of `owner`'s run of keys (see [`RunKey`]), one per key, in the
     /// source order of each key's first refusal — the rows [`Self::refused`] yields for
     /// those keys, in the same order. The key alone is returned: a caller that needs the
     /// retained cause reads it through [`Self::lookup`] or [`Self::refusal`].
-    pub(crate) fn refused_run(
-        &self,
-        from: &K,
-        within: impl Fn(&K) -> bool,
-    ) -> Result<Vec<&K>, DeclarationIndexDrift> {
+    pub(crate) fn refused_run(&self, owner: &K::Owner) -> Result<Vec<&K>, DeclarationIndexDrift>
+    where
+        K: RunKey,
+    {
         let mut refused: Vec<(DeclarationRefusalId, &K)> = self
-            .run(from, within)
+            .run(owner)
             .filter_map(|(key, entry)| entry.refused.map(|id| (id, key)))
             .collect();
         // Ids are minted in position order, so id order is first-refusal order.
@@ -903,38 +944,8 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
 mod tests {
     use super::*;
 
-    fn span() -> SourceSpan {
-        SourceSpan {
-            start_byte: 0,
-            end_byte: 1,
-            line: 1,
-            column: 1,
-        }
-    }
-
-    fn file() -> FileRef {
-        FileRef::admitted(0)
-    }
-
-    /// Minted through the one production constructor, so the pushed row and the
-    /// retained cause stay coupled in tests too.
     fn refusal(name: &str) -> DeclarationRefusalSummary {
-        refused(name, &mut DiagnosticCollector::new())
-    }
-
-    fn refused(name: &str, diagnostics: &mut DiagnosticCollector) -> DeclarationRefusalSummary {
-        let identity = crate::test_file("src/main.mw").clone();
-        refuse(
-            diagnostics,
-            DeclarationSite {
-                name,
-                file: &identity,
-                at: file(),
-                span: span(),
-            },
-            Code::CheckType,
-            "refused".to_string(),
-        )
+        test_refusal(name, &mut DiagnosticCollector::new())
     }
 
     fn ledger() -> DeclarationLedger<String, u32> {
@@ -1123,15 +1134,29 @@ mod tests {
 
     type OwnedKey = (u32, String);
 
-    fn owned_ledger() -> DeclarationLedger<OwnedKey, u32> {
-        DeclarationLedger::new(
-            DeclarationNamespace::ResourceMember,
-            DeclarationBudget::default(),
-        )
+    thread_local! {
+        /// How many keys this thread's run reads have tested for membership.
+        static RUN_PROBES: Cell<usize> = const { Cell::new(0) };
+    }
+
+    impl RunKey for OwnedKey {
+        type Owner = u32;
+
+        fn run_start(owner: &u32) -> Self {
+            (*owner, String::new())
+        }
+
+        fn in_run(&self, owner: &u32) -> bool {
+            RUN_PROBES.with(|probes| probes.set(probes.get() + 1));
+            self.0 == *owner
+        }
     }
 
     fn declare_script(script: &[(u32, &str, Step)]) -> DeclarationLedger<OwnedKey, u32> {
-        let mut ledger = owned_ledger();
+        let mut ledger = DeclarationLedger::new(
+            DeclarationNamespace::ResourceMember,
+            DeclarationBudget::default(),
+        );
         for (owner, member, step) in script {
             let occurrence = match step {
                 Step::Accept(value) => DeclarationOccurrence::Accepted(*value),
@@ -1142,10 +1167,6 @@ mod tests {
                 .expect("within budget");
         }
         ledger
-    }
-
-    fn owner_run(owner: u32) -> (OwnedKey, impl Fn(&OwnedKey) -> bool) {
-        ((owner, String::new()), move |key: &OwnedKey| key.0 == owner)
     }
 
     /// Each owner's run reads answer exactly what a whole-script oracle derives:
@@ -1192,15 +1213,14 @@ mod tests {
                 })
                 .collect();
 
-            let (from, within) = owner_run(owner);
             let accepted: Vec<(&str, u32)> = ledger
-                .accepted_run(&from, &within)
+                .accepted_run(&owner)
                 .expect("a coherent ledger")
                 .into_iter()
                 .map(|(key, value)| (key.1.as_str(), *value))
                 .collect();
             let refused_read: Vec<&str> = ledger
-                .refused_run(&from, &within)
+                .refused_run(&owner)
                 .expect("a coherent ledger")
                 .into_iter()
                 .map(|key| key.1.as_str())
@@ -1210,29 +1230,74 @@ mod tests {
         }
     }
 
-    /// A run read takes its key from the index and its value from layer 1, so an index
-    /// entry or refusal slot that addresses another key's occurrence is drift, not
-    /// that key's value. Only `declare` writes the two layers, in step, so the state
-    /// is built here by reaching into them.
+    /// A run read seeks to its owner's run and stops at the first key past it, so its
+    /// cost is the run's own keys, not the ledger's: owner 7's three keys plus the one
+    /// key that ends the run, among 64 owners' keys. A read that filtered the index
+    /// instead of ending at the run's end would test every key from the run onward.
     #[test]
-    fn a_run_read_reports_an_occurrence_of_another_key_as_drift() {
-        let (from, within) = owner_run(1);
+    fn a_run_read_visits_only_its_own_keys() {
+        let script: Vec<(u32, String)> = (0..64)
+            .flat_map(|owner| ["a", "b", "c"].map(|member| (owner, member.to_string())))
+            .collect();
+        let script: Vec<(u32, &str, Step)> = script
+            .iter()
+            .map(|(owner, member)| (*owner, member.as_str(), Step::Accept(*owner)))
+            .collect();
+        let ledger = declare_script(&script);
+        let probes = |read: &dyn Fn() -> usize| {
+            RUN_PROBES.with(|probes| probes.set(0));
+            let rows = read();
+            (rows, RUN_PROBES.with(Cell::get))
+        };
 
-        let mut accepted = declare_script(&[(1, "a", Step::Accept(1)), (1, "b", Step::Accept(2))]);
-        accepted
-            .index
-            .get_mut(&(1, "a".to_string()))
-            .expect("declared")
-            .first = Selected::Accepted(1);
+        let accepted = probes(&|| ledger.accepted_run(&7).expect("a coherent ledger").len());
+        assert_eq!(accepted, (3, 4), "accepted rows and keys tested");
+        let refused = probes(&|| ledger.refused_run(&7).expect("a coherent ledger").len());
+        assert_eq!(refused, (0, 4), "refused rows and keys tested");
+    }
+
+    /// A run read takes its key from the index and its value from layer 1, so an index
+    /// entry or refusal slot that addresses another key's occurrence, an occurrence of
+    /// the wrong kind, or no occurrence at all is drift, not that key's value. Only
+    /// `declare` writes the two layers, in step, so each state is built here by
+    /// reaching into them.
+    #[test]
+    fn a_run_read_reports_an_incoherent_occurrence_as_drift() {
+        use Step::{Accept, Refuse};
+        let a = (1, "a".to_string());
+
+        let mut other_key = declare_script(&[(1, "a", Accept(1)), (1, "b", Accept(2))]);
+        other_key.index.get_mut(&a).expect("declared").first = Selected::Accepted(1);
         assert_eq!(
-            accepted.accepted_run(&from, &within).map(|rows| rows.len()),
+            other_key.accepted_run(&1).map(|rows| rows.len()),
             Err(DeclarationIndexDrift)
         );
 
-        let mut refused = declare_script(&[(1, "a", Step::Refuse), (1, "b", Step::Refuse)]);
-        refused.refusals[0] = 1;
+        let mut other_refusal = declare_script(&[(1, "a", Refuse), (1, "b", Refuse)]);
+        other_refusal.refusals[0] = 1;
         assert_eq!(
-            refused.refused_run(&from, &within).map(|rows| rows.len()),
+            other_refusal.refused_run(&1).map(|rows| rows.len()),
+            Err(DeclarationIndexDrift)
+        );
+
+        let mut accepted_refusal = declare_script(&[(1, "a", Refuse), (1, "a", Accept(1))]);
+        accepted_refusal.index.get_mut(&a).expect("declared").first = Selected::Accepted(0);
+        assert_eq!(
+            accepted_refusal.accepted_run(&1).map(|rows| rows.len()),
+            Err(DeclarationIndexDrift)
+        );
+
+        let mut refused_acceptance = declare_script(&[(1, "a", Accept(1)), (1, "a", Refuse)]);
+        refused_acceptance.refusals[0] = 0;
+        assert_eq!(
+            refused_acceptance.refused_run(&1).map(|rows| rows.len()),
+            Err(DeclarationIndexDrift)
+        );
+
+        let mut missing_slot = declare_script(&[(1, "a", Refuse)]);
+        missing_slot.refusals.clear();
+        assert_eq!(
+            missing_slot.refused_run(&1).map(|rows| rows.len()),
             Err(DeclarationIndexDrift)
         );
     }
@@ -1246,7 +1311,7 @@ mod tests {
         let mut declared = 0usize;
         loop {
             let key = format!("{wide}{declared}");
-            let summary = refused(&key, &mut diagnostics);
+            let summary = test_refusal(&key, &mut diagnostics);
             match ledger.declare(key, DeclarationOccurrence::Refused(summary)) {
                 Ok(()) => declared += 1,
                 Err(DeclareError::LedgerFull(DeclarationLedgerFull)) => break,

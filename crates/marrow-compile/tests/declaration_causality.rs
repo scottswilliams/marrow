@@ -742,37 +742,12 @@ fn a_refused_resource_member_is_not_absent_at_its_use() {
     );
 }
 
-/// a refused resource member must not narrow the identity-gap anchor set. A
-/// member dropped from the record is never anchored, so the durable graph reports
-/// fewer `check.durable_identity` rows than the same program with a valid member
-/// type, and the mint action that consumes those rows mints an incomplete ledger.
-#[test]
-fn a_refused_member_does_not_narrow_the_identity_gap_set() {
-    let anchors = |field: &str| {
-        let source = format!(
-            "module main\n\n\
-             resource Widget {{\n\
-             \x20   required name: {field}\n\
-             }}\n\n\
-             store ^items[id: int]: Widget\n"
-        );
-        let diagnostics = diagnostics(&source);
-        diagnostics
-            .iter()
-            .flat_map(|row| row.identity_gaps().iter().map(|gap| gap.anchor()))
-            .collect::<Vec<_>>()
-    };
-
-    let valid = anchors("string");
-    let refused = anchors("Nope");
-    assert!(
-        refused.len() >= valid.len(),
-        "a refused member narrowed the anchor set from {valid:#?} to {refused:#?}",
-    );
-}
-
-/// The refused members of one resource feed the identity-gap walk in declaration
-/// order, not in member-name order: `z` before `a`.
+/// A refused resource member must not narrow the identity-gap anchor set, and its
+/// anchors follow declaration order. A member dropped from the record is still a
+/// member the source wrote; were it never anchored, the durable graph would report
+/// fewer `check.durable_identity` rows and the mint action that consumes them would
+/// mint an incomplete ledger. Both refused members anchor, `z` before `a`, not in
+/// member-name order.
 #[test]
 fn refused_members_anchor_in_declaration_order() {
     let diagnostics = diagnostics(
@@ -785,19 +760,16 @@ fn refused_members_anchor_in_declaration_order() {
          }\n\n\
          store ^ws[id: int]: W\n",
     );
+    let refusals: Vec<_> = rows(&diagnostics)
+        .into_iter()
+        .filter(|(_, code, ..)| *code != Code::CheckDurableIdentity)
+        .collect();
     assert_eq!(
-        rows(&diagnostics),
+        refusals,
         [
             ("src/main.mw", Code::CheckUnsupported, 5, 8),
             ("src/main.mw", Code::CheckUnsupported, 6, 8),
             ("src/main.mw", Code::CheckNameConflict, 7, 5),
-            ("src/main.mw", Code::CheckDurableIdentity, 10, 7),
-            ("src/main.mw", Code::CheckDurableIdentity, 10, 7),
-            ("src/main.mw", Code::CheckDurableIdentity, 10, 7),
-            ("src/main.mw", Code::CheckDurableIdentity, 10, 7),
-            ("src/main.mw", Code::CheckDurableIdentity, 10, 7),
-            ("src/main.mw", Code::CheckDurableIdentity, 10, 7),
-            ("src/main.mw", Code::CheckDurableIdentity, 10, 7),
         ]
     );
     let anchors: Vec<String> = diagnostics

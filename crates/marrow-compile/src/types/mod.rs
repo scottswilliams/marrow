@@ -34,8 +34,8 @@ use crate::analysis::FileRef;
 use crate::decl::{
     Binding, DeclarationBudget, DeclarationIndexDrift, DeclarationLedger, DeclarationLedgerFull,
     DeclarationNamespace, DeclarationOccurrence, DeclarationRefusalId, DeclarationRefusalSummary,
-    DeclarationSite, DeclareError, MemberNamespace, declaration_refused, placeholder_declared,
-    refuse, refuse_covered, refuse_first, refuse_row,
+    DeclarationSite, DeclareError, MemberNamespace, RunKey, declaration_refused,
+    placeholder_declared, refuse, refuse_covered, refuse_first, refuse_row,
 };
 use crate::diag::{BoundedDiagnostics, DiagnosticCollector, SourceDiagnostic, unsupported};
 use crate::scalar::ScalarType;
@@ -1288,9 +1288,11 @@ fn field_index<'f>(fields: &'f [FieldInfo], name: &str) -> Option<(u16, &'f Fiel
 /// record and steer a refused member to the wrong declaration.
 ///
 /// The derived order is load-bearing: `owner` compares first, so one owner's keys are
-/// adjacent in the ledger index and [`Self::run`] reads them as one contiguous run.
-/// An order that compared the member name first would end that run at the first key
-/// of another owner, and records would read truncated field lists.
+/// adjacent in the ledger index and the ledger reads them as one contiguous
+/// [run](RunKey). An order that compared the member name first would end that run at
+/// the first key of another owner, and records would read truncated field lists;
+/// `member_run_tests::each_owner_reads_exactly_its_own_members` and the multi-root image
+/// test `a_flat_site_seals_its_entry_record_and_group_count` fail on such an order.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct MemberKey {
     owner: ScopedName,
@@ -1307,14 +1309,20 @@ impl MemberKey {
         }
     }
 
-    /// The run of `owner`'s keys in the ledger index: its least key, and the
-    /// predicate that holds exactly for the keys `owner` owns.
-    fn run(owner: &ScopedName) -> (Self, impl Fn(&Self) -> bool + '_) {
-        (Self::new(owner, ""), move |key: &Self| key.owner == *owner)
-    }
-
     fn member(&self) -> &str {
         &self.member
+    }
+}
+
+impl RunKey for MemberKey {
+    type Owner = ScopedName;
+
+    fn run_start(owner: &ScopedName) -> Self {
+        Self::new(owner, "")
+    }
+
+    fn in_run(&self, owner: &ScopedName) -> bool {
+        self.owner == *owner
     }
 }
 
@@ -3447,10 +3455,9 @@ impl TypeRegistry {
         &self,
         owner: &ScopedName,
     ) -> Result<Vec<FieldInfo>, DeclarationIndexDrift> {
-        let (from, within) = MemberKey::run(owner);
         Ok(self
             .members
-            .accepted_run(&from, within)?
+            .accepted_run(owner)?
             .into_iter()
             .map(|(_, info)| info.clone())
             .collect())
@@ -3466,10 +3473,9 @@ impl TypeRegistry {
         &self,
         owner: &ScopedName,
     ) -> Result<Vec<&str>, DeclarationIndexDrift> {
-        let (from, within) = MemberKey::run(owner);
         Ok(self
             .members
-            .refused_run(&from, within)?
+            .refused_run(owner)?
             .into_iter()
             .map(MemberKey::member)
             .collect())
