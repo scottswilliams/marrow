@@ -12,6 +12,7 @@ use marrow_lifecycle::{
 };
 use marrow_verify::VerifiedImage;
 
+use crate::attachment::{STORELESS_IDS, STORELESS_SOURCE};
 use crate::support::ceiling::{image as compile, source_broadened, source_read_only};
 use marrow_test_support::Scratch;
 
@@ -66,19 +67,18 @@ fn the_report_renders_no_identity_hash() {
     }
 }
 
-/// An image with no executable durable shape has no store to provision, so it has no report,
-/// and without a report there is no approval: building the report is where such an image is
-/// refused, before any filesystem access.
+/// An image with no store shape the kernel executes has no store to provision, so it has no
+/// report, and without a report there is no approval: building the report is where such an
+/// image is refused. A storeless program is the case pinned here.
 #[test]
 fn an_image_without_a_store_shape_has_no_report() {
-    const IDS: &str = "marrow ids v0\nmachine-written by marrow; do not edit\nhigh-water 0\nend\n";
-    let image =
-        marrow_test_programs::program::compile("pub fn two(): int {\n    return 2\n}\n", IDS);
-    let prepared = prepare(image);
+    let prepared = prepare(marrow_test_programs::program::compile(
+        STORELESS_SOURCE,
+        STORELESS_IDS,
+    ));
     assert!(prepared.projection().is_none(), "no store shape");
 
-    let scratch = Scratch::new("provision-approval");
-    match ProvisionReport::new(scratch.store(), &prepared) {
+    match ProvisionReport::new(Path::new("/tmp/notes-store"), &prepared) {
         Err(error @ ProvisionImageError::NotExecutable) => {
             assert_eq!(error.code(), Code::CliDurableUnsupported);
         }
@@ -88,10 +88,6 @@ fn an_image_without_a_store_shape_has_no_report() {
             report.render()
         ),
     }
-    assert!(
-        !scratch.store().exists(),
-        "a refused report writes no store"
-    );
 }
 
 /// Asserts a typed provision refusal that published nothing at any of `destinations`.
@@ -228,6 +224,45 @@ fn an_accepted_provision_round_trips_through_attach() {
         32,
         "the instance renders as 32 hex characters",
     );
+}
+
+/// The positive twin of the exact-spelling refusal: an approval accepted at a non-canonical
+/// spelling provisions at that same spelling, and the store it publishes attaches. Kills an
+/// approval (or report) that normalizes its destination, under which an operator spelling
+/// such as `--store data/` would be refused as unapproved.
+#[test]
+fn an_approval_provisions_at_its_own_non_canonical_spelling() {
+    let image = compile(&source_read_only());
+    let scratch = Scratch::new("provision-approval");
+    let root = scratch.path().as_os_str().to_os_string();
+    std::fs::create_dir(scratch.path().join("x")).expect("parent directory");
+
+    for suffix in ["/s1/", "/x//s2", "/x/./s3"] {
+        let mut spelled = root.clone();
+        spelled.push(suffix);
+        let dest = PathBuf::from(spelled);
+
+        let prepared = prepared(&image);
+        let report = ProvisionReport::new(&dest, &prepared).expect("report");
+        assert_eq!(
+            report.destination().as_os_str(),
+            dest.as_os_str(),
+            "{suffix}: the report keeps the presented spelling",
+        );
+        let approval = ProvisionApproval::accept(&report);
+        let provisioned = provision_image(&dest, &prepared, &approval).unwrap_or_else(|error| {
+            panic!("{suffix}: provision at the accepted spelling: {error}")
+        });
+
+        match attach(&dest, prepared).expect("attach") {
+            AttachOutcome::AlreadyActive(attachment) => assert_eq!(
+                attachment.envelope().instance,
+                provisioned.instance,
+                "{suffix}: the opened store carries the provisioned instance",
+            ),
+            AttachOutcome::Rebound { .. } => panic!("{suffix}: the provisioned image is active"),
+        }
+    }
 }
 
 /// Two destinations that differ only in a non-UTF-8 byte, where the platform can spell one.

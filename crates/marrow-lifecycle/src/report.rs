@@ -42,8 +42,9 @@ pub struct ProvisionReport {
 impl ProvisionReport {
     /// Build the report for provisioning the prepared image at `destination`. The roots are
     /// named from the image's store projection (source spelling); the effects and ceiling
-    /// are the image's demand union in reads/writes terms. An image whose durable shape is
-    /// not executable has no store to provision, so it has no report.
+    /// are the image's demand union in reads/writes terms. An image with no store shape the
+    /// kernel executes (a storeless program or a parked durable shape) has no store to
+    /// provision, so it has no report.
     pub fn new(destination: &Path, prepared: &PreparedImage) -> Result<Self, ProvisionImageError> {
         let projection = prepared
             .projection()
@@ -142,8 +143,8 @@ impl ProvisionApproval {
 /// Why a provision from an image failed before or during the write.
 #[derive(Debug)]
 pub enum ProvisionImageError {
-    /// The image's durable shape is not executable by the store kernel (a parked shape), so no
-    /// schema could be derived.
+    /// The image has no store shape the kernel executes (a storeless program or a parked
+    /// durable shape), so there is no store to provision.
     NotExecutable,
     /// The approval was accepted for a different image or destination than this provision.
     /// No store is written.
@@ -198,7 +199,7 @@ impl std::fmt::Display for ProvisionImageError {
         match self {
             ProvisionImageError::NotExecutable => write!(
                 f,
-                "the program's durable shape is not yet executable by the store, so it cannot be \
+                "the program has no durable shape the store can execute, so it cannot be \
                  provisioned"
             ),
             ProvisionImageError::Unapproved => write!(

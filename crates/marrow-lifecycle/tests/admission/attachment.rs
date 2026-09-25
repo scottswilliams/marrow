@@ -78,10 +78,10 @@ pub fn readB(id: int): int {
 }
 "#;
 
-const STORELESS_IDS: &str =
+pub(crate) const STORELESS_IDS: &str =
     "marrow ids v0\nmachine-written by marrow; do not edit\nhigh-water 0\nend\n";
 
-const STORELESS_SOURCE: &str = r#"pub fn two(): int {
+pub(crate) const STORELESS_SOURCE: &str = r#"pub fn two(): int {
     return 2
 }
 

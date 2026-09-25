@@ -26,14 +26,6 @@ impl StoreUncertainty {
             Self::Activation => Code::StoreActivationUncertain,
         }
     }
-
-    pub const fn from_code(code: Code) -> Option<Self> {
-        match code {
-            Code::StorePublicationUncertain => Some(Self::Publication),
-            Code::StoreActivationUncertain => Some(Self::Activation),
-            _ => None,
-        }
-    }
 }
 
 /// The durable state of an invocation that did not complete. This is independent of
