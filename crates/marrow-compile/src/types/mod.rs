@@ -3449,8 +3449,9 @@ impl TypeRegistry {
     /// `owner` is a resource record's name, or the `Record.group` anchor of one of
     /// its unkeyed groups. This is what a record's field list is built from, so
     /// the record and the ledger cannot disagree about which members survived. It
-    /// reads only `owner`'s own run of the ledger, so building every record's list
-    /// is linear in the program's members.
+    /// reads only `owner`'s own run of the ledger, so no owner's read walks another
+    /// owner's members and building every record's list is linear in the program's
+    /// members up to log factors.
     fn accepted_members(
         &self,
         owner: &ScopedName,

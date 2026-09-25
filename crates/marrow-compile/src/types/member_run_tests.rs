@@ -1,10 +1,10 @@
 //! Per-owner member reads against the whole member ledger.
 //!
 //! A record's field list and its refused members are read as one owner's contiguous
-//! run of the ledger index. These tests declare owners whose keys would interleave
+//! run of the ledger index. This module declares owners whose keys would interleave
 //! under any order that does not compare the whole owner first — a group anchor
-//! `R.g`, names with `R` as a prefix, and the same spelling in a dependency tree —
-//! and hold every owner's reads to its own members, first occurrence per name, in
+//! `R.g`, names with `R` as a prefix, and the same spelling in two dependency trees,
+//! one sorting directly after the other — and holds every owner's reads to its own members, first occurrence per name, in
 //! declaration order.
 
 use super::test_fixtures::test_registry;
@@ -35,6 +35,9 @@ fn each_owner_reads_exactly_its_own_members() {
     let prefixed = ScopedName::new(&root, "Ra");
     let dashed = ScopedName::new(&root, "R-x");
     let foreign = ScopedName::new(&dependency, "R");
+    let second_dependency =
+        SourceOrigin::Dependency(DependencyAlias::parse("dep2").expect("a valid alias"));
+    let foreign_next = ScopedName::new(&second_dependency, "R");
 
     let script: Vec<(&ScopedName, &str, Step)> = vec![
         (&record, "title", Accept(true)),
@@ -51,6 +54,7 @@ fn each_owner_reads_exactly_its_own_members() {
         (&prefixed, "alpha", Accept(true)),
         (&dashed, "b", Accept(false)),
         (&record, "middle", Accept(true)),
+        (&foreign_next, "x", Accept(true)),
     ];
 
     let mut registry = test_registry(vec![]);
@@ -73,8 +77,9 @@ fn each_owner_reads_exactly_its_own_members() {
     }
 
     // `R` declares `title` twice; the first occurrence answers. Its refusals read in
-    // declaration order, `zz` before `bb`.
-    let expected: [OwnerReads; 5] = [
+    // declaration order, `zz` before `bb`. `dep2`'s `R` is the owner directly after
+    // `dep`'s, so `dep`'s run ends where the origin changes, not the name.
+    let expected: [OwnerReads; 6] = [
         (
             &record,
             &[("title", true), ("author", false), ("middle", true)],
@@ -84,6 +89,7 @@ fn each_owner_reads_exactly_its_own_members() {
         (&prefixed, &[("pages", false), ("alpha", true)], &[]),
         (&dashed, &[("m", true), ("b", false)], &[]),
         (&foreign, &[("title", false), ("about", true)], &[]),
+        (&foreign_next, &[("x", true)], &[]),
     ];
     for (owner, accepted, refused) in expected {
         let fields = registry.accepted_members(owner).expect("a coherent ledger");

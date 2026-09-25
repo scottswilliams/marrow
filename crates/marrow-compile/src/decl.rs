@@ -1236,12 +1236,8 @@ mod tests {
     /// instead of ending at the run's end would test every key from the run onward.
     #[test]
     fn a_run_read_visits_only_its_own_keys() {
-        let script: Vec<(u32, String)> = (0..64)
-            .flat_map(|owner| ["a", "b", "c"].map(|member| (owner, member.to_string())))
-            .collect();
-        let script: Vec<(u32, &str, Step)> = script
-            .iter()
-            .map(|(owner, member)| (*owner, member.as_str(), Step::Accept(*owner)))
+        let script: Vec<(u32, &str, Step)> = (0..64)
+            .flat_map(|owner| ["a", "b", "c"].map(|member| (owner, member, Step::Accept(owner))))
             .collect();
         let ledger = declare_script(&script);
         let probes = |read: &dyn Fn() -> usize| {
