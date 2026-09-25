@@ -197,6 +197,8 @@ fn matrix() -> Vec<Row> {
     rows.extend(reference_composition_rows());
     rows.extend(identity_parent_rows());
     rows.extend(shared_enum_rows());
+    rows.extend(transaction_flow_refused_rows());
+    rows.extend(transaction_flow_admitted_rows());
     rows
 }
 
@@ -549,6 +551,169 @@ fn shared_enum_rows() -> Vec<Row> {
     ]
 }
 
+/// Transaction regions under control flow. Paths that meet agree on whether the
+/// export's block has run, and no path runs it twice; every shape that breaks either
+/// rule is refused at check time with a `check.*` code.
+fn transaction_flow_refused_rows() -> Vec<Row> {
+    let refused = |label, ops, code| Row {
+        label,
+        ops,
+        expect: Expect::CheckerRejects { code },
+    };
+    vec![
+        refused(
+            "block in a one-armed if / driver test",
+            "pub fn maybe(id: int, go: bool) {\n    if go {\n        transaction {\n            ^books[id] = Book(title: \"t\", isbn: \"i\")\n        }\n    }\n}\n\npub fn titleOf(id: int): string? {\n    return ^books[id].title\n}\n\ntest \"conditional writer\" {\n    maybe(1, true)\n    assert titleOf(1) ?? \"none\" == \"t\"\n}",
+            Code::CheckTransactionConditional,
+        ),
+        refused(
+            "block in an else arm only",
+            "pub fn elseOnly(id: int, go: bool) {\n    if go {\n    } else {\n        transaction {\n            ^books[id] = Book(title: \"t\", isbn: \"i\")\n        }\n    }\n}",
+            Code::CheckTransactionConditional,
+        ),
+        refused(
+            "block in a nested one-armed if",
+            "pub fn nestedIf(id: int, a: bool, b: bool) {\n    if a {\n        if b {\n            transaction {\n                ^books[id] = Book(title: \"t\", isbn: \"i\")\n            }\n        }\n    }\n}",
+            Code::CheckTransactionConditional,
+        ),
+        refused(
+            "block in an if-const arm",
+            "pub fn retitle(id: int) {\n    if const b = ^books[id] {\n        transaction {\n            ^books[id] = Book(title: b.isbn, isbn: b.isbn)\n        }\n    }\n}",
+            Code::CheckTransactionConditional,
+        ),
+        refused(
+            "block in one match arm",
+            "enum Mode {\n    write\n    skip\n}\n\npub fn byMode(id: int, m: Mode) {\n    match m {\n        write => {\n            transaction {\n                ^books[id] = Book(title: \"t\", isbn: \"i\")\n            }\n        }\n        skip => {}\n    }\n}",
+            Code::CheckTransactionConditional,
+        ),
+        refused(
+            "read-only block in a one-armed if",
+            "pub fn peek(id: int, go: bool): string? {\n    var out: string? = absent\n    if go {\n        transaction {\n            out = ^books[id].title\n        }\n    }\n    return out\n}",
+            Code::CheckTransactionConditional,
+        ),
+        refused(
+            "break after the block commits",
+            "pub fn breakAfter(id: int, go: bool) {\n    var i = 0\n    while go and i < 3 {\n        transaction {\n            ^books[id] = Book(title: \"t\", isbn: \"i\")\n        }\n        break\n    }\n}",
+            Code::CheckTransactionConditional,
+        ),
+        refused(
+            "conditional block then an unconditional block",
+            "pub fn twice(id: int, go: bool) {\n    if go {\n        transaction {\n            ^books[id] = Book(title: \"t\", isbn: \"i\")\n        }\n    }\n    transaction {\n        ^books[id + 1] = Book(title: \"u\", isbn: \"j\")\n    }\n}",
+            Code::CheckTransactionConditional,
+        ),
+        refused(
+            "block in one arm of an if-else then an unconditional block",
+            "pub fn armThenBlock(id: int, go: bool) {\n    var n = 0\n    if go {\n        transaction {\n            ^books[id] = Book(title: \"t\", isbn: \"i\")\n        }\n    } else {\n        n += 1\n    }\n    transaction {\n        ^books[id + 1] = Book(title: \"u\", isbn: \"j\")\n    }\n}",
+            Code::CheckTransactionConditional,
+        ),
+        refused(
+            "block in an on-more arm",
+            "pub fn onMore(id: int) {\n    for k in ^books at most 2 {\n    } on more {\n        transaction {\n            ^books[id] = Book(title: \"t\", isbn: \"i\")\n        }\n    }\n}",
+            Code::CheckTransactionConditional,
+        ),
+        refused(
+            "block in a while body",
+            "pub fn many(n: int) {\n    var i = 0\n    while i < n {\n        transaction {\n            ^books[i] = Book(title: \"t\", isbn: \"i\")\n        }\n        i += 1\n    }\n}",
+            Code::CheckTransactionReopened,
+        ),
+        refused(
+            "block in a bounded for body",
+            "pub fn each() {\n    for id in ^books at most 10 {\n        transaction {\n            ^books[id] = Book(title: \"t\", isbn: \"i\")\n        }\n    } on more {\n    }\n}",
+            Code::CheckTransactionReopened,
+        ),
+        refused(
+            "block in a one-armed if inside a loop",
+            "pub fn someOf(n: int, go: bool) {\n    var i = 0\n    while i < n {\n        i += 1\n        if go {\n            transaction {\n                ^books[i] = Book(title: \"t\", isbn: \"i\")\n            }\n        }\n    }\n}",
+            Code::CheckTransactionReopened,
+        ),
+        refused(
+            "conditional block nested in the region",
+            "pub fn nestedConditional(id: int, go: bool) {\n    transaction {\n        if go {\n            transaction {\n                ^books[id] = Book(title: \"t\", isbn: \"i\")\n            }\n        }\n        ^books[id + 1] = Book(title: \"u\", isbn: \"j\")\n    }\n}",
+            Code::CheckTransactionReopened,
+        ),
+        refused(
+            "block nested in the region",
+            "pub fn nested(id: int) {\n    transaction {\n        transaction {\n            ^books[id] = Book(title: \"t\", isbn: \"i\")\n        }\n    }\n}",
+            Code::CheckTransactionReopened,
+        ),
+        refused(
+            "nested block then a write",
+            "pub fn nestedThenWrite(id: int) {\n    transaction {\n        transaction {\n            ^books[id] = Book(title: \"t\", isbn: \"i\")\n        }\n        ^books[id + 1] = Book(title: \"u\", isbn: \"j\")\n    }\n}",
+            Code::CheckTransactionReopened,
+        ),
+        refused(
+            "break out of the block",
+            "pub fn once(n: int) {\n    var i = 0\n    while i < n {\n        transaction {\n            ^books[i] = Book(title: \"t\", isbn: \"i\")\n            break\n        }\n    }\n}",
+            Code::CheckTransactionUncommitted,
+        ),
+        refused(
+            "continue out of the block",
+            "pub fn each(n: int) {\n    var i = 0\n    while i < n {\n        i += 1\n        transaction {\n            ^books[i] = Book(title: \"t\", isbn: \"i\")\n            continue\n        }\n    }\n}",
+            Code::CheckTransactionUncommitted,
+        ),
+        refused(
+            "write after the block commits",
+            "pub fn writeAfter(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n    ^books[id + 1] = Book(title: \"u\", isbn: \"j\")\n}",
+            Code::CheckRequiresTransaction,
+        ),
+        refused(
+            "mutating helper call after the block commits",
+            "fn put(id: int) {\n    ^books[id] = Book(title: \"u\", isbn: \"j\")\n}\n\npub fn callAfter(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n    put(id + 1)\n}",
+            Code::CheckRequiresTransaction,
+        ),
+        refused(
+            "helper owning a block reached through another helper",
+            "fn inner(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\nfn middle(id: int) {\n    inner(id)\n}\n\npub fn outer(id: int) {\n    middle(id)\n}",
+            Code::CheckTransactionMisplaced,
+        ),
+    ]
+}
+
+/// The admitted transaction-region shapes beside [`transaction_flow_refused_rows`]:
+/// every path that meets another agrees on whether the block has run, so each
+/// verifies and its driver test runs.
+fn transaction_flow_admitted_rows() -> Vec<Row> {
+    let runs = |label, ops| Row {
+        label,
+        ops,
+        expect: Expect::RoundTrips { run: true },
+    };
+    vec![
+        runs(
+            "block in an arm that returns after it / driver test",
+            "pub fn maybe(id: int, go: bool): int {\n    if go {\n        transaction {\n            ^books[id] = Book(title: \"t\", isbn: \"i\")\n        }\n        return 1\n    }\n    return 0\n}\n\npub fn titleOf(id: int): string? {\n    return ^books[id].title\n}\n\ntest \"the committing arm returns\" {\n    assert maybe(1, true) == 1\n    assert maybe(2, false) == 0\n    assert titleOf(1) ?? \"none\" == \"t\"\n    assert titleOf(2) ?? \"none\" == \"none\"\n}",
+        ),
+        runs(
+            "block in each arm of an if / driver test",
+            "pub fn either(id: int, go: bool) {\n    if go {\n        transaction {\n            ^books[id] = Book(title: \"yes\", isbn: \"i\")\n        }\n    } else {\n        transaction {\n            ^books[id] = Book(title: \"no\", isbn: \"i\")\n        }\n    }\n}\n\npub fn titleOf(id: int): string? {\n    return ^books[id].title\n}\n\ntest \"each arm commits its own block\" {\n    either(1, false)\n    assert titleOf(1) ?? \"none\" == \"no\"\n}",
+        ),
+        runs(
+            "block in every match arm / driver test",
+            "enum Shelf {\n    front\n    back\n}\n\npub fn shelve(id: int, s: Shelf) {\n    match s {\n        front => {\n            transaction {\n                ^books[id] = Book(title: \"front\", isbn: \"i\")\n            }\n        }\n        back => {\n            transaction {\n                ^books[id] = Book(title: \"back\", isbn: \"i\")\n            }\n        }\n    }\n}\n\npub fn titleOf(id: int): string? {\n    return ^books[id].title\n}\n\ntest \"every arm commits its own block\" {\n    shelve(1, Shelf::back)\n    assert titleOf(1) ?? \"none\" == \"back\"\n}",
+        ),
+        runs(
+            "condition inside the block / driver test",
+            "pub fn maybe(id: int, go: bool) {\n    transaction {\n        if go {\n            ^books[id] = Book(title: \"t\", isbn: \"i\")\n        }\n    }\n}\n\npub fn titleOf(id: int): string? {\n    return ^books[id].title\n}\n\ntest \"the guarded write commits\" {\n    maybe(1, true)\n    assert titleOf(1) ?? \"none\" == \"t\"\n}",
+        ),
+        runs(
+            "loop inside the block / driver test",
+            "pub fn many(n: int) {\n    transaction {\n        var i = 0\n        while i < n {\n            ^books[i].notes[\"n\"] = Book.notes(text: \"t\")\n            i += 1\n        }\n    }\n}\n\npub fn noteOf(id: int): string? {\n    return ^books[id].notes[\"n\"].text\n}\n\ntest \"one block commits every iteration's write\" {\n    many(2)\n    assert noteOf(0) ?? \"none\" == \"t\"\n    assert noteOf(1) ?? \"none\" == \"t\"\n}",
+        ),
+        runs(
+            "block in a loop body that always returns / driver test",
+            "pub fn first(n: int): int {\n    var i = 0\n    while i < n {\n        transaction {\n            ^books[i] = Book(title: \"t\", isbn: \"i\")\n            return i\n        }\n    }\n    return -1\n}\n\ntest \"the first iteration commits and returns\" {\n    assert first(2) == 0\n    assert first(0) == -1\n}",
+        ),
+        runs(
+            "return before the block / driver test",
+            "pub fn maybe(id: int, go: bool) {\n    if not go {\n        return\n    }\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn titleOf(id: int): string? {\n    return ^books[id].title\n}\n\ntest \"the skipped path returns before the block\" {\n    maybe(1, false)\n    maybe(2, true)\n    assert titleOf(1) ?? \"none\" == \"none\"\n    assert titleOf(2) ?? \"none\" == \"t\"\n}",
+        ),
+        runs(
+            "bounded for with continue inside the block / driver test",
+            "pub fn seed(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn markAll() {\n    transaction {\n        for id in ^books at most 10 {\n            ref m = ^books[id] else { continue }\n            m.subtitle = \"x\"\n        } on more {\n        }\n    }\n}\n\npub fn subtitleOf(id: int): string? {\n    return ^books[id].subtitle\n}\n\ntest \"a loop inside the block continues within it\" {\n    seed(1)\n    markAll()\n    assert subtitleOf(1) ?? \"none\" == \"x\"\n}",
+        ),
+    ]
+}
+
 /// Run every `test` entry in a verified image through the ephemeral kernel and require
 /// each to run without an artifact rejection, a mint failure, or a runtime fault — the
 /// run-side half of the agreement invariant.
@@ -675,9 +840,10 @@ fn checker_acceptance_implies_verification_over_the_composition_matrix() {
     // counts fail if a checker-rejected row silently changes verdict.
     assert_eq!(known_divergent, 0, "the divergence ledger is empty");
     assert_eq!(
-        checker_rejected, 2,
-        "expected exactly the empty-transaction and unproven-field-write \
-         check-time rejections",
+        checker_rejected, 23,
+        "expected exactly the empty-transaction, unproven-field-write and twenty-one \
+         transaction-flow (conditional, reopened, uncommitted, requires-transaction, \
+         misplaced) check-time rejections",
     );
 }
 

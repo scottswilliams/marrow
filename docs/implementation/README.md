@@ -210,7 +210,14 @@ pairing it with the captured tree that declares it, so two trees may each
 declare `Book` and an origin is never recovered from a spelling.
 
 Independent verification is a separate trust boundary: the verifier reconstructs
-types and demand from image bytes without consulting compiler state. Diagnostic
+types and demand from image bytes without consulting compiler state. Each of the
+verifier's transaction-flow kinds has one named compiler owner, which reports it
+at source; the division of labour on `owner_lattice_violation` in
+[`compile.rs`](../../crates/marrow-compile/src/compile.rs) records it, and the
+agreement gate
+([`admitted_subset.rs`](../../crates/marrow/tests/agreement_gate/admitted_subset.rs))
+pins that checker acceptance implies verification for each control-flow shape
+of a `transaction` block. Diagnostic
 code spellings live in `marrow-codes`. The language server projects compiler
 snapshot facts and owns their protocol representation and document state; a
 missing semantic editor fact belongs in `marrow-compile`.

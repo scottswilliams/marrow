@@ -462,6 +462,53 @@ test "mixed body" {
     assert!(stdout.contains("check.test_durable_operation"), "{stdout}");
 }
 
+/// A `transaction` block in a one-armed `if` is a source diagnostic at the block, not
+/// an image the verifier rejects: `marrow test` reports the typed check code and span
+/// and never publishes the image.
+#[test]
+fn a_conditional_transaction_is_a_check_diagnostic_not_an_image_rejection() {
+    let output = Project::single(
+        r#"resource Counter {
+    required value: int
+    label: string
+}
+
+store ^counters[id: int]: Counter
+
+pub fn valueOf(id: int): int? {
+    return ^counters[id].value
+}
+
+pub fn maybe(id: int, go: bool) {
+    if go {
+        transaction {
+            ^counters[id] = Counter(value: 7)
+        }
+    }
+}
+
+test "conditional writer" {
+    maybe(1, true)
+    assert valueOf(1) ?? 0 == 7
+}
+"#,
+    )
+    .ids(COUNTERS_IDS)
+    .run_cli("conditional-transaction", &["test", "--format", "jsonl"]);
+    assert!(!output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let record = stdout
+        .lines()
+        .find(|l| l.contains("check.transaction_conditional"))
+        .unwrap_or_else(|| panic!("no conditional-transaction diagnostic: {stdout}"));
+    assert!(record.contains(r#""outcome":"diagnostic""#), "{record}");
+    assert!(
+        record.contains(r#""span":{"column":21,"line":14}"#),
+        "{record}"
+    );
+    assert!(!stdout.contains("image.flow"), "{stdout}");
+}
+
 /// `--filter` selects tests by a substring of their name and fails when none match.
 #[test]
 fn filter_selects_a_subset_by_name() {

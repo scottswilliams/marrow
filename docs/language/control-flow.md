@@ -198,9 +198,9 @@ skips even numbers with `continue` and stops at `stop` with `break`; the sum is
 `1 + 3 + 5`. `return` exits the whole function, so a helper function is the
 direct way to leave several nested loops with a result.
 
-`break` and `continue` cannot leave a `transaction` block; a loop written
-inside the block may use them freely
-([transactions](errors-and-transactions.md#transactions)).
+`break` and `continue` cannot leave a `transaction` block
+(`check.transaction_uncommitted`); a loop written inside the block may use them
+freely ([transactions](errors-and-transactions.md#transactions)).
 
 ## Divergence
 

@@ -324,3 +324,186 @@ fn a_mutating_helper_inside_the_owners_region_compiles() {
         "a helper mutating inside the owner's region is admitted"
     );
 }
+
+/// The line and column where `needle` starts in `SCHEMA` + `ops`.
+fn coordinate(ops: &str, needle: &str) -> (u32, u32) {
+    let source = format!("{SCHEMA}{ops}");
+    let start = source
+        .find(needle)
+        .unwrap_or_else(|| panic!("`{needle}` present"));
+    assert_eq!(
+        source.matches(needle).count(),
+        1,
+        "`{needle}` names one construct"
+    );
+    let line_start = source[..start].rfind('\n').map_or(0, |at| at + 1);
+    (line_of(ops, needle), (start - line_start + 1) as u32)
+}
+
+/// A block in a one-armed `if` runs on one path and not on the other, and the two
+/// paths meet after the `if`. The compiler reports it at the block rather than
+/// emitting an image the verifier refuses at `image.flow`.
+#[test]
+fn a_transaction_in_a_one_armed_if_is_refused_at_the_block() {
+    let block = "{\n            ^counters[id] = Counter(value: 7)\n        }";
+    let ops = format!(
+        "pub fn maybe(id: int, go: bool) {{\n    if go {{\n        transaction {block}\n    }}\n}}\n"
+    );
+    let diagnostic = only(&ops);
+    let source = format!("{SCHEMA}{ops}");
+    let start = source.find(block).expect("block present");
+    let (line, column) = coordinate(&ops, block);
+    assert_eq!(diagnostic.code(), Code::CheckTransactionConditional);
+    assert_eq!(diagnostic.file().as_str(), "src/main.mw");
+    assert_eq!(
+        diagnostic.span(),
+        marrow_syntax::SourceSpan {
+            start_byte: start,
+            end_byte: start + block.len(),
+            line,
+            column,
+        }
+    );
+}
+
+/// Every control-flow shape that places a `transaction` block where paths disagree on
+/// whether it has run, begins it twice, or leaves it open, paired with the exact
+/// ordered diagnostics it receives. `diagnostics` panics on a compiler invariant, so
+/// every row also pins that no such source reaches one.
+#[test]
+fn transaction_region_family_is_refused_at_its_construct() {
+    use Code::{
+        CheckTransactionConditional as Conditional, CheckTransactionMisplaced as Misplaced,
+        CheckTransactionOwnerCalled as OwnerCalled, CheckTransactionReopened as Reopened,
+        CheckTransactionUncommitted as Uncommitted,
+    };
+    const W1: &str = "{ ^counters[id] = Counter(value: 1) }";
+    const W2: &str = "{ ^counters[id] = Counter(value: 2) }";
+    let rows = [
+        (
+            "else only",
+            format!("pub fn f(id: int, go: bool) {{\n    if go {{\n    }} else {{\n        transaction {W1}\n    }}\n}}\n"),
+            vec![(Conditional, W1)],
+        ),
+        (
+            "nested if",
+            format!("pub fn f(id: int, a: bool, b: bool) {{\n    if a {{\n        if b {{\n            transaction {W1}\n        }}\n    }}\n}}\n"),
+            vec![(Conditional, W1)],
+        ),
+        (
+            "if const",
+            "pub fn f(id: int) {\n    if const c = ^counters[id] {\n        transaction { ^counters[id] = Counter(value: c.value + 1) }\n    }\n}\n".to_string(),
+            vec![(Conditional, "{ ^counters[id] = Counter(value: c.value + 1) }")],
+        ),
+        (
+            "match arm",
+            format!("enum Mode {{\n    write\n    skip\n}}\n\npub fn f(id: int, m: Mode) {{\n    match m {{\n        write => {{\n            transaction {W1}\n        }}\n        skip => {{}}\n    }}\n}}\n"),
+            vec![(Conditional, W1)],
+        ),
+        (
+            "read-only region in a one-armed if",
+            "pub fn f(id: int, go: bool): int {\n    var out = 0\n    if go {\n        transaction { out = ^counters[id].value ?? 0 }\n    }\n    return out\n}\n".to_string(),
+            vec![(Conditional, "{ out = ^counters[id].value ?? 0 }")],
+        ),
+        (
+            "break after the commit",
+            format!("pub fn f(id: int, go: bool) {{\n    var i = 0\n    while go and i < 3 {{\n        transaction {W1}\n        break\n    }}\n}}\n"),
+            vec![(Conditional, W1)],
+        ),
+        (
+            "conditional block then an unconditional block",
+            format!("pub fn f(id: int, go: bool) {{\n    if go {{\n        transaction {W1}\n    }}\n    transaction {W2}\n}}\n"),
+            vec![(Conditional, W1)],
+        ),
+        // The committed arm reaches the second block before the other arm does, so the
+        // walk sees a reopen and a conflict at one begin; the conflict names the block.
+        (
+            "block in one arm of an if-else then an unconditional block",
+            format!("pub fn f(id: int, go: bool) {{\n    var n = 0\n    if go {{\n        transaction {W1}\n    }} else {{\n        n += 1\n    }}\n    transaction {W2}\n}}\n"),
+            vec![(Conditional, W1)],
+        ),
+        (
+            "block in an on-more arm",
+            format!("pub fn f(id: int) {{\n    for k in ^counters at most 2 {{\n    }} on more {{\n        transaction {W1}\n    }}\n}}\n"),
+            vec![(Conditional, W1)],
+        ),
+        (
+            "while body",
+            format!("pub fn f(id: int) {{\n    var i = 0\n    while i < 3 {{\n        transaction {W1}\n        i += 1\n    }}\n}}\n"),
+            vec![(Reopened, W1)],
+        ),
+        (
+            "bounded for body",
+            "pub fn f() {\n    for k in ^counters at most 10 {\n        transaction { ^counters[k] = Counter(value: 0) }\n    } on more {\n    }\n}\n".to_string(),
+            vec![(Reopened, "{ ^counters[k] = Counter(value: 0) }")],
+        ),
+        (
+            "one-armed if inside a loop",
+            format!("pub fn f(id: int, go: bool) {{\n    var i = 0\n    while i < 3 {{\n        i += 1\n        if go {{\n            transaction {W1}\n        }}\n    }}\n}}\n"),
+            vec![(Reopened, W1)],
+        ),
+        (
+            "break out of the block",
+            "pub fn f(id: int) {\n    var i = 0\n    while i < 3 {\n        transaction {\n            ^counters[i] = Counter(value: i)\n            break\n        }\n    }\n}\n".to_string(),
+            vec![(Uncommitted, "break")],
+        ),
+        (
+            "continue out of the block",
+            "pub fn f(id: int) {\n    var i = 0\n    while i < 3 {\n        i += 1\n        transaction {\n            ^counters[i] = Counter(value: i)\n            continue\n        }\n    }\n}\n".to_string(),
+            vec![(Uncommitted, "continue")],
+        ),
+        (
+            "conditional block nested in the region",
+            format!("pub fn f(id: int, go: bool) {{\n    transaction {{\n        if go {{\n            transaction {W1}\n        }}\n        ^counters[id + 1] = Counter(value: 8)\n    }}\n}}\n"),
+            vec![(Reopened, W1)],
+        ),
+        (
+            "block nested in the region",
+            format!("pub fn f(id: int) {{\n    transaction {{\n        transaction {W1}\n    }}\n}}\n"),
+            vec![(Reopened, W1)],
+        ),
+        (
+            "nested block then a write",
+            format!("pub fn f(id: int) {{\n    transaction {{\n        transaction {W1}\n        ^counters[id + 1] = Counter(value: 8)\n    }}\n}}\n"),
+            vec![(Reopened, W1)],
+        ),
+        (
+            "block in a loop nested in the region",
+            format!("pub fn f(id: int) {{\n    transaction {{\n        var i = 0\n        while i < 3 {{\n            transaction {W1}\n            i += 1\n        }}\n    }}\n}}\n"),
+            vec![(Reopened, W1)],
+        ),
+        (
+            "helper owning a block reached through another helper",
+            format!("fn inner(id: int) {{\n    transaction {W1}\n}}\nfn middle(id: int) {{\n    inner(id)\n}}\npub fn outer(id: int) {{\n    middle(id)\n}}\n"),
+            vec![(Misplaced, W1), (OwnerCalled, "inner(id)\n")],
+        ),
+        (
+            "helper whose block breaks out of its loop",
+            "fn h(id: int) {\n    var i = 0\n    while i < 3 {\n        transaction {\n            ^counters[i] = Counter(value: i)\n            break\n        }\n    }\n}\npub fn f(id: int) {\n    transaction {\n        h(id)\n    }\n}\n".to_string(),
+            vec![(Misplaced, "{\n            ^counters[i]"), (OwnerCalled, "h(id)\n")],
+        ),
+        (
+            "helper whose block continues its loop",
+            "fn h(id: int) {\n    var i = 0\n    while i < 3 {\n        i += 1\n        transaction {\n            ^counters[i] = Counter(value: i)\n            continue\n        }\n    }\n}\npub fn f(id: int) {\n    h(id)\n}\n".to_string(),
+            vec![(Misplaced, "{\n            ^counters[i]"), (OwnerCalled, "h(id)\n")],
+        ),
+    ];
+    let mismatches: Vec<String> = rows
+        .into_iter()
+        .filter_map(|(label, ops, expected)| {
+            let got: Vec<(Code, u32, u32)> = diagnostics(&ops)
+                .iter()
+                .map(|d| (d.code(), d.line(), d.column()))
+                .collect();
+            let want: Vec<(Code, u32, u32)> = expected
+                .iter()
+                .map(|&(code, needle)| {
+                    let (line, column) = coordinate(&ops, needle);
+                    (code, line, column)
+                })
+                .collect();
+            (got != want).then(|| format!("{label}: got {got:?}, want {want:?}"))
+        })
+        .collect();
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
+}

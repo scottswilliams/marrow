@@ -375,6 +375,26 @@ pub(super) fn loop_error(file: &ProjectFile, span: SourceSpan, keyword: &str) ->
     )
 }
 
+/// A `break` or `continue` whose target loop encloses the export's `transaction`
+/// block, so the jump would leave the block before it commits.
+pub(super) fn jump_leaves_transaction(
+    file: &ProjectFile,
+    span: SourceSpan,
+    keyword: &str,
+) -> SourceDiagnostic {
+    SourceDiagnostic::at(
+        Code::CheckTransactionUncommitted,
+        file,
+        span,
+        format!(
+            "this `{keyword}` leaves the `transaction` block before it commits. `break` and \
+             `continue` cannot leave a `transaction` block, because every exit from an entered \
+             region commits its staged writes. Move the loop inside the `transaction` block, \
+             or end the block before the loop exits."
+        ),
+    )
+}
+
 /// The refusal of a presence-dependent use. `detail` names why no proof holds here.
 pub(crate) fn requires_presence(
     file: &ProjectFile,

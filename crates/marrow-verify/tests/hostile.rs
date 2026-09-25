@@ -2446,8 +2446,8 @@ fn flow_mutation_outside_transaction_rejects() {
         ]
     });
     assert_eq!(
-        verdict_of(&draft.encode().unwrap().bytes),
-        Refused(VerifyPhase::Flow)
+        refusal_of(&draft.encode().unwrap().bytes),
+        Some((VerifyPhase::Flow, RejectionKind::MutationOutsideRegion))
     );
 }
 
@@ -2462,8 +2462,8 @@ fn flow_return_without_commit_rejects() {
         ]
     });
     assert_eq!(
-        verdict_of(&draft.encode().unwrap().bytes),
-        Refused(VerifyPhase::Flow)
+        refusal_of(&draft.encode().unwrap().bytes),
+        Some((VerifyPhase::Flow, RejectionKind::ReturnWithoutCommit))
     );
 }
 
@@ -2503,8 +2503,8 @@ fn flow_before_begin_and_after_commit_join_rejects() {
         ]
     });
     assert_eq!(
-        verdict_of(&draft.encode().unwrap().bytes),
-        Refused(VerifyPhase::Flow)
+        refusal_of(&draft.encode().unwrap().bytes),
+        Some((VerifyPhase::Flow, RejectionKind::TransactionMerge))
     );
 }
 
@@ -2521,8 +2521,8 @@ fn flow_double_commit_rejects() {
         ]
     });
     assert_eq!(
-        verdict_of(&draft.encode().unwrap().bytes),
-        Refused(VerifyPhase::Flow)
+        refusal_of(&draft.encode().unwrap().bytes),
+        Some((VerifyPhase::Flow, RejectionKind::CommitOutsideRegion))
     );
 }
 
@@ -2566,8 +2566,8 @@ fn flow_double_begin_rejects() {
         ]
     });
     assert_eq!(
-        verdict_of(&draft.encode().unwrap().bytes),
-        Refused(VerifyPhase::Flow)
+        refusal_of(&draft.encode().unwrap().bytes),
+        Some((VerifyPhase::Flow, RejectionKind::BeginTwice))
     );
 }
 
@@ -2590,8 +2590,8 @@ fn flow_durable_read_after_commit_rejects() {
         ]
     });
     assert_eq!(
-        verdict_of(&draft.encode().unwrap().bytes),
-        Refused(VerifyPhase::Flow)
+        refusal_of(&draft.encode().unwrap().bytes),
+        Some((VerifyPhase::Flow, RejectionKind::OperationAfterCommit))
     );
 }
 
@@ -2613,8 +2613,8 @@ fn flow_mutation_after_commit_rejects() {
         ]
     });
     assert_eq!(
-        verdict_of(&draft.encode().unwrap().bytes),
-        Refused(VerifyPhase::Flow)
+        refusal_of(&draft.encode().unwrap().bytes),
+        Some((VerifyPhase::Flow, RejectionKind::MutationOutsideRegion))
     );
 }
 
@@ -2679,7 +2679,10 @@ fn flow_mutating_helper_called_outside_transaction_rejects() {
             Instr::Return,
         ]
     });
-    assert_eq!(verdict_of(&bytes), Refused(VerifyPhase::Flow));
+    assert_eq!(
+        refusal_of(&bytes),
+        Some((VerifyPhase::Flow, RejectionKind::MutationOutsideRegion))
+    );
 }
 
 /// The positive control: the same helper call wrapped in the caller's own

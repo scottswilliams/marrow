@@ -70,6 +70,15 @@ staged value. An export opens its block once (`check.transaction_reopened`), the
 block touches at least one durable address (`check.transaction_empty`), and no
 durable read or write follows the commit (`check.durable_after_commit`).
 
+Paths that meet agree on whether the block has run. A block in one arm of an
+`if` or `match` whose arm continues past it is `check.transaction_conditional`;
+return before the block when its work does not apply, or end the arm with
+`return` after the block. A block in a loop body that a later iteration reaches
+again is `check.transaction_reopened`; move the loop inside the block. A path
+that returns, inside or after the block, meets no other path, so an arm that
+ends with `return` after its block is legal. A `break` or `continue` that leaves
+the block before it commits is `check.transaction_uncommitted`.
+
 ## Guards inside a block
 
 A guard that intends no change precedes the first write:

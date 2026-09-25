@@ -869,8 +869,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     fn lower_break(&mut self, span: SourceSpan) -> ConstructResult<Flow> {
-        if self.loops.is_empty() {
+        let Some(ctx) = self.loops.last() else {
             self.fail(loop_error(self.file, span, "break"));
+            return Ok(Flow::Terminates);
+        };
+        if self.jump_leaves_owned_region(ctx) {
+            self.fail(jump_leaves_transaction(self.file, span, "break"));
             return Ok(Flow::Terminates);
         }
         let at = self.push_jump(span)?;
@@ -891,9 +895,20 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             self.fail(loop_error(self.file, span, "continue"));
             return Ok(Flow::Terminates);
         };
+        if self.jump_leaves_owned_region(ctx) {
+            self.fail(jump_leaves_transaction(self.file, span, "continue"));
+            return Ok(Flow::Terminates);
+        }
         let target = ctx.continue_target;
         self.push(Instr::Jump(target as u32), span)?;
         Ok(Flow::Terminates)
+    }
+
+    /// Whether a `break` or `continue` to `ctx` would leave an export's `transaction`
+    /// block before it commits. Only an export owns a region; a block in any other body
+    /// is itself refused as `check.transaction_misplaced`, which stays the report there.
+    fn jump_leaves_owned_region(&self, ctx: &LoopCtx<'_>) -> bool {
+        self.role() == BodyRole::Export && ctx.txn_depth < self.txn_depth
     }
 
     /// Lower a chain of conditional branches followed by an optional `else`. Used for
@@ -1743,7 +1758,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             mutable: false,
             slot: counter_slot,
         });
-        self.loops.push(LoopCtx::new(advance, self.calls.len()));
+        self.loops
+            .push(LoopCtx::new(advance, self.calls.len(), self.txn_depth));
         let body_flow = self.lower_block(body)?;
         #[expect(
             clippy::expect_used,
@@ -2534,7 +2550,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 return Err(LoweringFailure::CodeLimitReached);
             }
         }
-        self.loops.push(LoopCtx::new(top, self.calls.len()));
+        self.loops
+            .push(LoopCtx::new(top, self.calls.len(), self.txn_depth));
         let body_flow = self.lower_block(body)?;
         #[expect(
             clippy::expect_used,
@@ -2567,7 +2584,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let call_start = self.calls.len();
         self.lower_condition(condition)?;
         let exit = self.push_jif(condition.span())?;
-        self.loops.push(LoopCtx::new(top, call_start));
+        self.loops
+            .push(LoopCtx::new(top, call_start, self.txn_depth));
         let body_flow = self.lower_block(body)?;
         #[expect(
             clippy::expect_used,

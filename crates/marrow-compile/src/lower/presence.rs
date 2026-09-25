@@ -19,16 +19,20 @@ pub(super) struct LoopCtx<'a> {
     /// Protected uses inside this body through facts established before it was
     /// entered: the use's span and its family, resolved when the loop closes.
     pub(super) obligations: Vec<(SourceSpan, &'a Family)>,
+    /// The `transaction`-block depth the loop was entered at. A `break` or `continue`
+    /// emitted deeper would jump out of an open block.
+    pub(super) txn_depth: u32,
 }
 
 impl<'a> LoopCtx<'a> {
-    pub(super) fn new(continue_target: usize, call_start: usize) -> Self {
+    pub(super) fn new(continue_target: usize, call_start: usize, txn_depth: u32) -> Self {
         Self {
             continue_target,
             break_jumps: Vec::new(),
             erased_families: Vec::new(),
             call_start,
             obligations: Vec::new(),
+            txn_depth,
         }
     }
 }

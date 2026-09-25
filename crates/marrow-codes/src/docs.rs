@@ -123,6 +123,7 @@ Static errors found while checking source.
             Code::CheckTransactionEmpty,
             Code::CheckTransactionReopened,
             Code::CheckTransactionUncommitted,
+            Code::CheckTransactionConditional,
             Code::CheckDurableAfterCommit,
             Code::CheckTransactionMisplaced,
             Code::CheckAssertOutsideTest,
