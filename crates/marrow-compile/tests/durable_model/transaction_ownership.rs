@@ -5,8 +5,9 @@
 //! tampered image (see `marrow-verify` hostiles); these are earlier, friendlier reports.
 //!
 //! The ownership contract:
-//! - a mutating export owns one region, begun at most once and committed on every normal
-//!   exit after begin, with no empty region and no durable operation after commit;
+//! - a mutating export begins its region at most once on any path, with paths that meet
+//!   agreeing on whether it has run, and commits it on every normal exit after begin,
+//!   with no empty region and no durable operation after commit;
 //! - a transaction owner is not called;
 //! - a `transaction` marker sits only in the owning export;
 //! - explicit and propagated returns commit only their own active region.

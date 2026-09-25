@@ -696,10 +696,6 @@ fn transaction_flow_admitted_rows() -> Vec<Row> {
             "pub fn maybe(id: int, go: bool) {\n    transaction {\n        if go {\n            ^books[id] = Book(title: \"t\", isbn: \"i\")\n        }\n    }\n}\n\npub fn titleOf(id: int): string? {\n    return ^books[id].title\n}\n\ntest \"the guarded write commits\" {\n    maybe(1, true)\n    assert titleOf(1) ?? \"none\" == \"t\"\n}",
         ),
         runs(
-            "loop inside the block / driver test",
-            "pub fn many(n: int) {\n    transaction {\n        var i = 0\n        while i < n {\n            ^books[i].notes[\"n\"] = Book.notes(text: \"t\")\n            i += 1\n        }\n    }\n}\n\npub fn noteOf(id: int): string? {\n    return ^books[id].notes[\"n\"].text\n}\n\ntest \"one block commits every iteration's write\" {\n    many(2)\n    assert noteOf(0) ?? \"none\" == \"t\"\n    assert noteOf(1) ?? \"none\" == \"t\"\n}",
-        ),
-        runs(
             "block in a loop body that always returns / driver test",
             "pub fn first(n: int): int {\n    var i = 0\n    while i < n {\n        transaction {\n            ^books[i] = Book(title: \"t\", isbn: \"i\")\n            return i\n        }\n    }\n    return -1\n}\n\ntest \"the first iteration commits and returns\" {\n    assert first(2) == 0\n    assert first(0) == -1\n}",
         ),

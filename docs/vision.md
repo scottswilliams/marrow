@@ -59,8 +59,8 @@ with `on more`. Larger work is repeated bounded batches.
 
 Related writes commit together. A mutating export's durable writes sit inside a
 `transaction` block, which it begins at most once on any path. When the block
-ends, its writes commit as one change. If it faults, none of them apply, and the report names the
-[durable outcome](language/errors-and-transactions.md#interrupted-invocations).
+ends, its writes commit as one change. If it faults, none of them apply, and
+the report names the [durable outcome](language/errors-and-transactions.md#interrupted-invocations).
 
 A code change meets stored data. A change to a function body reopens an existing
 store and keeps every value in it. Ordinary attachment refuses a changed durable

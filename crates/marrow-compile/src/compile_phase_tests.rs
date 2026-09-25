@@ -20,39 +20,10 @@ use std::collections::BTreeMap;
 
 #[test]
 fn borrowed_bodies_require_the_actual_function_and_every_instruction_span() {
-    use marrow_image::{FunctionDef, ImageDraft, ImageType, Instr};
+    use marrow_image::{ImageDraft, Instr};
 
-    let mut draft = ImageDraft::new();
-    let mut txn = admitted(&mut draft);
-    let name = txn.intern_string("body").expect("name fits");
-    let source = txn.intern_string("src/main.mw").expect("source fits");
-    let func = txn
-        .add_function(FunctionDef {
-            name,
-            source,
-            params: Vec::new(),
-            ret: ImageType::Unit,
-            local_count: 0,
-            code: vec![Instr::Return],
-            spans: Vec::new(),
-        })
-        .expect("append a body without sites");
-    txn.commit();
-    let mut function = super::LoweredFn {
-        func,
-        file: crate::test_file("src/main.mw").clone(),
-        name: "body".to_string(),
-        span: SourceSpan::default(),
-        callees: Vec::new(),
-        role: BodyRole::Helper,
-        unwrapped_mutations: Vec::new(),
-        unwrapped_calls: Vec::new(),
-        erased_families: Vec::new(),
-        presence_obligations: Vec::new(),
-        presence_calls: Vec::new(),
-        has_direct_durable_op: false,
-        code_spans: vec![SourceSpan::default()],
-    };
+    let (draft, mut function) = lowered_fn("body", BodyRole::Helper, vec![SourceSpan::default()]);
+    let func = function.func;
 
     assert!(matches!(
         function.borrow_body(&ImageDraft::new()),
@@ -80,18 +51,22 @@ fn borrowed_bodies_require_the_actual_function_and_every_instruction_span() {
     );
 }
 
-/// `owner_lattice_violation` over a hand-built export tape, one distinct span per
-/// instruction so a report names the instruction it anchors at.
-fn owner_lattice_report(code: &[marrow_image::Instr]) -> Option<(Code, SourceSpan)> {
+/// A lowered function over a one-instruction image body, with the given name, role and
+/// per-instruction spans.
+fn lowered_fn(
+    name: &str,
+    role: BodyRole,
+    code_spans: Vec<SourceSpan>,
+) -> (marrow_image::ImageDraft, super::LoweredFn) {
     use marrow_image::{FunctionDef, ImageDraft, ImageType, Instr};
 
     let mut draft = ImageDraft::new();
     let mut txn = admitted(&mut draft);
-    let name = txn.intern_string("owner").expect("name fits");
+    let interned = txn.intern_string(name).expect("name fits");
     let source = txn.intern_string("src/main.mw").expect("source fits");
     let func = txn
         .add_function(FunctionDef {
-            name,
+            name: interned,
             source,
             params: Vec::new(),
             ret: ImageType::Unit,
@@ -104,23 +79,26 @@ fn owner_lattice_report(code: &[marrow_image::Instr]) -> Option<(Code, SourceSpa
     let function = super::LoweredFn {
         func,
         file: crate::test_file("src/main.mw").clone(),
-        name: "owner".to_string(),
+        name: name.to_string(),
         span: SourceSpan::default(),
         callees: Vec::new(),
-        role: BodyRole::Export,
+        role,
         unwrapped_mutations: Vec::new(),
         unwrapped_calls: Vec::new(),
         erased_families: Vec::new(),
         presence_obligations: Vec::new(),
         presence_calls: Vec::new(),
         has_direct_durable_op: false,
-        code_spans: (1..=code.len() as u32)
-            .map(|line| SourceSpan {
-                line,
-                ..SourceSpan::default()
-            })
-            .collect(),
+        code_spans,
     };
+    (draft, function)
+}
+
+/// `owner_lattice_violation` over a hand-built export tape, one distinct span per
+/// instruction so a report names the instruction it anchors at.
+fn owner_lattice_report(code: &[marrow_image::Instr]) -> Option<(Code, SourceSpan)> {
+    let spans = (1..=code.len() as u32).map(line).collect();
+    let (_draft, function) = lowered_fn("owner", BodyRole::Export, spans);
     let body = super::LoweredBody {
         function: &function,
         code,

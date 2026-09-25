@@ -1,12 +1,12 @@
 //! The lexical transaction region and exact mutations, executed end to end.
 //!
-//! A mutating export owns exactly one `transaction` region; its staged writes are
-//! published as a unit only when the region commits. These tests drive the whole
-//! production path — capture -> compile -> verify -> attach -> VM — against a single
-//! *persistent* ephemeral attachment, so a later read invocation observes the
-//! committed effect of an earlier mutating one. That persistence is what makes the
-//! transaction region observable: a committed transaction is visible afterward and a
-//! rolled-back one is not.
+//! A mutating export begins its `transaction` region at most once on any path; its
+//! staged writes are published as a unit only when the region commits. These tests
+//! drive the whole production path — capture -> compile -> verify -> attach -> VM —
+//! against a single *persistent* ephemeral attachment, so a later read invocation
+//! observes the committed effect of an earlier mutating one. That persistence is what
+//! makes the transaction region observable: a committed transaction is visible
+//! afterward and a rolled-back one is not.
 //!
 //! `marrow run --store` dispatches durable exports through the supervised runner.
 //! These tests exercise the same VM transaction semantics directly over an ephemeral

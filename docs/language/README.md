@@ -93,8 +93,9 @@ without a fault.
 
 ## Writes commit together
 
-Every durable write sits inside a `transaction` block, and a mutating export
-owns one such block. When the block ends, its writes commit together:
+Every durable write sits inside a `transaction` block, which a mutating export
+begins at most once on any path. When the block ends, its writes commit
+together:
 
 ```mw
 module docs::tour::commit

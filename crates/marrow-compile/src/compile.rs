@@ -1681,7 +1681,8 @@ fn validate_lowered(
     let unwrapped = reject_missing_transaction(lowered, &acyclic, diagnostics);
     let transactions_closed = !unwrapped.contains(&true);
 
-    // The remaining transaction-ownership laws — exactly one region per mutating export,
+    // The remaining transaction-ownership laws — a mutating export begins its region at
+    // most once on any path, with paths that meet agreeing on whether it has run,
     // committed on every normal exit after begin, with no durable operation after
     // commit; a `transaction` marker only in the export that owns it; and no call to a
     // transaction owner — are reconstructed from the lowered tape and reported at the
@@ -2508,8 +2509,8 @@ impl RegionShape {
 }
 
 /// Report the transaction-ownership laws the verifier reconstructs from the image, at
-/// their source spans: a mutating export owns exactly one region, begun at most once on
-/// any path, with paths that meet agreeing on whether it has run, committed on every
+/// their source spans: a mutating export begins its region at most once on any path,
+/// with paths that meet agreeing on whether it has run, committed on every
 /// normal exit, with no durable operation after the commit and no empty region;
 /// an owner is not called by another function; and a `transaction` marker sits only in
 /// the export that owns it. A function the requires-ambient-transaction pass reported
@@ -2697,7 +2698,7 @@ fn first_marker_span(body: &LoweredBody<'_>) -> Option<SourceSpan> {
 /// |---|---|
 /// | `EmptyTransaction`, `OwnerCalled`, `MarkerOutsideOwner` | `reject_transaction_ownership`: `check.transaction_empty`, `check.transaction_owner_called`, `check.transaction_misplaced` |
 /// | `BeginTwice` | this walk: `check.transaction_reopened` |
-/// | `TransactionMerge` | this walk: `check.transaction_conditional`, `check.transaction_reopened` for a begin on a cycle, `check.transaction_uncommitted` when one side is still open |
+/// | `TransactionMerge` | this walk: `check.transaction_conditional`, `check.transaction_reopened` for a begin on a cycle; `check.transaction_uncommitted` when one side is still open, which from source only lowering's `jump_leaves_transaction` reaches (see below), so this arm is its defensive mirror |
 /// | `ReturnWithoutCommit` | this walk: `check.transaction_uncommitted` |
 /// | `OperationAfterCommit` | this walk: `check.durable_after_commit` |
 /// | `MutationOutsideRegion` | `reject_missing_transaction` (`check.requires_transaction`) at depth zero; above it, see below |
