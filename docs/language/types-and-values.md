@@ -221,9 +221,9 @@ A struct declares each field name once; a repeated name is a
 field once, in any order. A field is read with `.` and yields the field's type.
 A `var` binding assigns a field with `s.to = Point(x: 1, y: 1)`. A field may
 name a struct or enum declared anywhere in the project, including later in the
-same file and in another module. A value type that contains itself, directly or
-through other types, is a `check.recursion` naming the cycle. Two structs have
-no `==`; compare their fields.
+same file and in another module. A struct that contains itself is a
+`check.recursion` ([recursive types](#recursive-types)). Two structs have no
+`==`; compare their fields.
 
 A struct name is project-wide: it is written bare from any module of the project
 that declares it. A resource is the durable counterpart: it adds sparse fields,
@@ -277,11 +277,11 @@ A payload field carries a bare value: a scalar, a nominal int, a struct, another
 enum, or an application of a [generic type](#generic-types) that resolves to one
 of those. An optional payload field, and one that resolves to a collection such
 as `List<int>` or `Option<List<int>>`, is a `check.unsupported`; wrap the
-collection in a struct and carry the struct. A payload whose leaf contains the
-enum itself is a `check.recursion`. Comparing two enum values whose payload is a
-struct compares that struct structurally, although a struct has no `==` of its
-own. An enum declares each
-member once, and a member declares each payload field once; a repeat is a
+collection in a struct and carry the struct. A payload that contains the enum
+itself is a `check.recursion` ([recursive types](#recursive-types)). Comparing
+two enum values whose payload is a struct compares that struct structurally,
+although a struct has no `==` of its own. An enum declares each member once,
+and a member declares each payload field once; a repeat is a
 `check.name_conflict` at the repeated name. An enum name is project-wide, like a
 struct name. An enum refused for exceeding the member limit retains its name:
 a later declaration is a `check.name_conflict`, and type uses retain the
@@ -454,9 +454,10 @@ each key with its value, as `keysJoined` shows.
 
 A collection holds at most 65,536 elements and 1 MiB. An `append` or map insert
 beyond either bound faults `run.collection_limit`. A collection is a local
-value: a resource field and a store key hold no `List` or `Map`, and a keyed
-[branch](durable-data.md#keyed-branches) is the durable shape for many
-children.
+value. A resource field or store key cannot be a `List` or `Map`, and a store
+cannot bind a resource whose fields hold one inside a struct; both are
+`check.unsupported`. A keyed [branch](durable-data.md#keyed-branches) is the
+durable shape for many children.
 
 ## Generic types
 
@@ -515,10 +516,76 @@ argument that lacks the capability is a `check.type` at the construction. An
 unconstrained parameter admits neither.
 
 A generic enum's payload admits exactly what a declared enum's does, described
-under [enums](#enums). Acyclicity applies per
-application: `Tree<int>` whose `child` is a `Tree<int>` is a `check.recursion`,
-and `kids: List<Tree<T>>` is finite. `Option`, `Result`, `List`, and `Map` are
+under [enums](#enums). Recursion is checked per application
+([recursive types](#recursive-types)). `Option`, `Result`, `List`, and `Map` are
 the toolchain's generic types over this mechanism, and their names are reserved.
+
+## Recursive types
+
+A struct or enum may hold its own type, at the same type arguments, only inside
+a `List` or `Map`. A path back to itself through fields, payloads, `Option`, or
+`Result` is a `check.recursion`. An enum payload cannot be a collection, so an
+enum reaches its own type through a struct payload that holds the `List` or
+`Map`.
+
+```mw
+module docs::types::recursive
+
+struct Tree {
+    label: string
+    kids: List<Tree>
+}
+
+fn size(root: Tree): int {
+    var pending = List(root)
+    var next = 1
+    while next <= length(pending) {
+        const tree = pending[next] else {
+            break
+        }
+        for kid in tree.kids {
+            pending = append(pending, kid)
+        }
+        next += 1
+    }
+    return length(pending)
+}
+
+test "a tree holds its children in a list" {
+    const leaf = Tree(label: "leaf", kids: List())
+    const pair = Tree(label: "pair", kids: List(leaf, leaf))
+    assert size(Tree(label: "root", kids: List(pair, leaf))) == 5
+}
+```
+
+A struct contains the type of each of its fields, and an enum contains the type
+of each payload field. `Option<T>` contains `T`, and `Result<T, E>` contains
+both `T` and `E`. A `List` does not contain its element type and a `Map` does
+not contain its value type, because a collection may be empty. A struct or enum
+that contains itself has no finite value. The `check.recursion` is reported at
+each declaration on the cycle, and the message names the cycle, such as
+`A -> Option<A> -> A`.
+
+A generic type is checked per application: `Box<int>` with a field of type
+`Box<int>` is refused at `Box`, `Node<T>` with a field `kids: List<Node<T>>` is
+admitted, and a template that is never applied is not checked. A generic type
+that holds itself at an ever-larger argument, such as `child: Box<Option<T>>`
+inside `Box<T>` or `kids: List<Node<List<T>>>` inside `Node<T>`, has no finite
+set of instances, even inside a collection. The compiler reaches its
+instantiation bound first and reports `check.instantiation_limit` at the
+application, such as `Box<int>`.
+
+A function cannot call itself ([functions](modules-and-functions.md#functions)),
+so a recursive value is walked with a loop over a list of pending values, as
+`size` shows. Every subtree appended to `pending` counts in full toward the
+[collection bound](#lists-and-maps). A recursive value is never stored, because
+a store cannot bind a resource whose fields hold a `List` or `Map`
+([lists and maps](#lists-and-maps)).
+
+`marrow check`, `marrow test`, and `marrow run` without a store accept a program
+whose export names a recursive type. How client generation and the runners
+treat such an export is described under
+[type projection](../tools/typescript-client.md#type-projection).
 
 ## Aliases and nominal ints
 

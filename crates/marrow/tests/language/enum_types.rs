@@ -92,18 +92,6 @@ fn a_refused_payload_shape_keeps_its_own_message() {
             "an optional enum payload field type",
         ),
         (
-            "cycle through a struct",
-            "enum E {\n    m(v: S)\n}\n\nstruct S {\n    e: E\n}\n\npub fn f(): int {\n    return 0\n}\n",
-            "check.recursion",
-            "contains itself through the cycle E -> S -> E",
-        ),
-        (
-            "cycle through the enum alone",
-            "enum E {\n    m(v: E)\n}\n\npub fn f(): int {\n    return 0\n}\n",
-            "check.recursion",
-            "contains itself through the cycle E -> E",
-        ),
-        (
             "nominal boundary",
             "type Age: int in 0..150\n\nenum E {\n    m(a: Age)\n}\n\npub fn f(e: E): int {\n    return 0\n}\n",
             "check.unsupported",

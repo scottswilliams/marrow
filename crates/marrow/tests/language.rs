@@ -33,5 +33,7 @@ mod struct_types;
 mod temporal;
 #[path = "language/traversal_bounds.rs"]
 mod traversal_bounds;
+#[path = "language/value_recursion.rs"]
+mod value_recursion;
 #[path = "language/value_size_boundary.rs"]
 mod value_size_boundary;

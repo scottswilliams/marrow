@@ -86,9 +86,9 @@ nesting counts structs and enums inside a stored field, with a scalar as level
 one. A [traversal bound](traversal-and-indexes.md#bounded-durable-traversal)
 above 65,536 is reported at the number in the `for` head.
 
-Call depth counts active calls in one invocation. Recursion is a compile
-error, so the depth limit is reached only by a very deep chain of distinct
-calls. The text limit applies to text built by concatenation, `join`, or
+Call depth counts active calls in one invocation. A function cannot call
+itself, directly or through other functions, so the depth limit is reached only
+by a very deep chain of distinct calls. The text limit applies to text built by concatenation, `join`, or
 `string(...)`, including conversion of interpolation holes. It counts UTF-8
 bytes of the complete canonical text, including punctuation and hex expansion.
 A conversion that would exceed the limit faults with `run.text_limit` at its

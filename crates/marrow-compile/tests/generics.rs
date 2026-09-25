@@ -1583,34 +1583,6 @@ pub fn run(): int {
     assert!(has_code(&diagnostics, Code::CheckType), "{diagnostics:#?}");
 }
 
-/// A monomorphized generic type cycle (`Tree[int]` directly containing `Tree[int]`)
-/// is an ordinary value cycle per instantiation and is rejected as recursion at the
-/// template's declaration.
-#[test]
-fn a_generic_type_containing_itself_is_a_value_cycle() {
-    let diagnostics = compile_err(
-        r#"module main
-
-struct Tree<T> {
-    value: T
-    child: Tree<T>
-}
-
-fn useTree(t: Tree<int>): int {
-    return t.value
-}
-
-pub fn run(): int {
-    return 0
-}
-"#,
-    );
-    assert!(
-        has_code(&diagnostics, Code::CheckRecursion),
-        "{diagnostics:#?}"
-    );
-}
-
 /// A nested generic value cycle renders every instantiation on the reported
 /// `check.recursion` path in the canonical angle form: the cycle through
 /// `Loop<int>` and the nested `Box<Loop<int>>` names both with angle delimiters at
@@ -1703,28 +1675,6 @@ pub fn f(): Result<int, int> {
     assert!(
         found_spellings(&diagnostics).contains(&"Result<int, string>"),
         "the propagated error operand must be spelled in angle form: {diagnostics:#?}"
-    );
-}
-
-/// A cycle broken by a collection (`struct Node[T]` whose field is `List[Node[T]]`)
-/// is a finite value and is admitted: a list terminates, so it adds no containment
-/// edge.
-#[test]
-fn a_generic_type_cycle_through_a_collection_is_admitted() {
-    compile_ok(
-        r#"module main
-
-struct Node<T> {
-    value: T
-    kids: List<Node<T>>
-}
-
-pub fn run(): int {
-    var kids: List<Node<int>> = List()
-    const n = Node(value: 1, kids: kids)
-    return n.value
-}
-"#,
     );
 }
 

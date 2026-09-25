@@ -22,7 +22,7 @@ features are not prerequisites.
 | Area | Today | Page |
 |---|---|---|
 | Language core | Modules, functions, generics, `const` and `var`, `if` and `if const`, `match`, `while`, bounded `for`, let-else, `require`, prefix `try`, checked arithmetic, and `test` blocks. Braces delimit blocks. | [Source and syntax](language/source-and-syntax.md), [Control flow](language/control-flow.md) |
-| Values and types | Scalars, `date`, `instant`, `duration`, optionals `T?`, structs, enums whose member payload fields carry a scalar, a nominal int, a struct, another enum, or a generic application of one of those, `Option` and `Result`, lists and maps, global name/optional-name aliases and nominal ints, generic types. Every value copies by value. | [Types and values](language/types-and-values.md) |
+| Values and types | Scalars, `date`, `instant`, `duration`, optionals `T?`, structs, enums whose member payload fields carry a scalar, a nominal int, a struct, another enum, or a generic application of one of those, `Option` and `Result`, lists and maps, structs and enums that hold their own type through `List` or `Map`, global name/optional-name aliases and nominal ints, generic types. Every value copies by value. | [Types and values](language/types-and-values.md) |
 | Resources | Required and sparse fields, groups, keyed branches nested to 16 levels, and local resource values. | [Resources](language/resources.md) |
 | Durable data | Keyed store roots with one or several key components, and several roots per project. Whole-entry creation and replacement, so a present entry is complete. Checked entry references, `ref name = ^root[key] else { … }`, capture keys once and handle absence before field or group access; required fields and group leaves read with their declared types, and sparse reads stay optional. Erasing the family, directly or through a call, ends its presence proofs (`check.requires_presence` on a later protected access). Direct paths support optional reads and whole-entry writes. `delete`; `exists`; entry identity `Id(^root)`; key-only bounded durable traversal; and each export's access demand from `marrow check`. | [Durable data](language/durable-data.md) |
 | Transactions | One `transaction` block per mutating export. Every normal function exit inside it commits, including `try` and `require` failure; a fault before commit rolls the block back. | [Errors and transactions](language/errors-and-transactions.md) |
@@ -123,6 +123,12 @@ missing or cyclic bodies and their callers; an unfilled function slot cannot enc
 - Path authority: principals and grants finer than read and write
   ([path effects and authority](future/path-effects-and-authority.md)).
 - Signed releases and a release promise ([compatibility](compatibility.md)).
+- A depth bound on a returned value. Under `marrow run --store`, a result whose
+  wire encoding nests past 64 levels, which a recursive or deeply nested value
+  type allows, is reported as `run.outcome_unknown` after the export has run,
+  including after its transaction committed. A result tens of thousands of
+  levels deep stops the runner with a native stack overflow before it replies
+  ([type projection](tools/typescript-client.md#type-projection)).
 
 ## Bounds and platform
 

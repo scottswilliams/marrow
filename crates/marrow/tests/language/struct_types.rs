@@ -539,56 +539,6 @@ pub fn name(): string {
     assert!(stdout.contains(r#""data":"g""#), "{stdout}");
 }
 
-/// A value type that contains itself directly or transitively is a typed
-/// `check.recursion` at each struct on the cycle (naming the cycle path), never a
-/// silent infinite type or a deferred artifact rejection.
-#[test]
-fn a_value_type_cycle_is_a_check_recursion_diagnostic() {
-    for source in [
-        // Self-reference.
-        r#"struct Node {
-    next: Node
-}
-
-pub fn f(): int {
-    return 1
-}
-"#,
-        // Two-struct cycle.
-        r#"struct A {
-    b: B
-}
-
-struct B {
-    a: A
-}
-
-pub fn f(): int {
-    return 1
-}
-"#,
-        // A cycle routed through an `Option` field (a `some(A)` reaches A).
-        r#"struct A {
-    v: int
-    me: Option<A>
-}
-
-pub fn f(): int {
-    return 1
-}
-"#,
-    ] {
-        let workspace = Project::single(source).materialize("value-cycle");
-        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(!output.status.success(), "{source:?} must fail: {stdout}");
-        assert!(
-            stdout.contains(r#""code":"check.recursion""#),
-            "{source:?}: {stdout}"
-        );
-    }
-}
-
 /// A dense struct and a durable resource coexist: the struct is a value the VM
 /// constructs and reads, while the resource entry is written whole under a
 /// transaction, both verifying in one image.

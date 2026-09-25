@@ -138,23 +138,33 @@ execution and rejects duplicate keys with `runner.arg_mismatch`.
 A returned `Map<K, V>` uses that same ascending order; convert it with
 `new Map(result)` for any key type or `Object.fromEntries(result)` for string keys.
 
-The transfer graph is closed over every value type, so a verified signature
-always projects. Arguments are validated against the export's verified signature
-in the client, as a `TypeError` before any byte is sent, and again by the runner.
-These checks validate transfer shapes. Bare nominal integer arguments use the
-compiled function's range guard and can fault `run.range`. The compiler refuses
-public aggregate inputs containing nominal leaves with `check.unsupported`,
-before client generation; transfer shapes do not retain nominal intervals
+The transfer graph covers every value type. A signature projects when its
+structural expansion fits the fixed interface budget; a signature past it is a
+`cli.interface_unbuildable` error at generation. Arguments are validated against
+the export's verified signature in the client, as a `TypeError` before any byte
+is sent, and again by the runner. These checks validate transfer shapes. Bare
+nominal integer arguments use the compiled function's range guard and can fault
+`run.range`. The compiler refuses public aggregate inputs containing nominal
+leaves with `check.unsupported`, before client generation; transfer shapes do
+not retain nominal intervals
 ([nominal ints](../language/types-and-values.md#aliases-and-nominal-ints)).
-An export signature too complex for the fixed interface budget is a
-`cli.interface_unbuildable` error at generation. A wire value nests at most 64
-levels, a string carries at most 64 KiB, and a frame body, including its protocol
-version byte, is at most 1 MiB. The supervision module exports these as
+A wire value nests at most 64 levels, a string carries at most 64 KiB, and a
+frame body, including its protocol version byte, is at most 1 MiB. The supervision module exports these as
 `MAX_DEPTH`, `MAX_STRING_BYTES`, and `MAX_FRAME`. The runner checks outbound
 frame growth before appending, including the message envelope and version byte.
 Only a completed frame is passed to channel I/O. Encoding failure after dispatch closes the
 channel without a reply or another dispatch; the caller cannot confirm the
 invocation's outcome.
+
+A [recursive type](../language/types-and-values.md#recursive-types) expands
+without end, so its signature never fits the budget: `marrow client typescript`
+and a storeless runner refuse the whole program with
+`cli.interface_unbuildable`. `marrow run --store` builds no interface and runs
+such an export. It returns a result whose wire encoding nests at most 64
+levels; a struct that holds its children in a `List` spends two levels for each
+level of the value. A deeper result is reported as `run.outcome_unknown` after
+the export has run, including after its transaction committed. This is a
+current limitation ([status](../status.md#not-yet-available)).
 
 The runner also checks [collection limits](../language/execution-limits.md#collection-limits)
 on List and Map arguments, including nested collections. An excess produces
