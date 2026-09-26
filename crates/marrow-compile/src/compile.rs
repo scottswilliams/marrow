@@ -2454,8 +2454,8 @@ fn reject_missing_transaction(
     reported
 }
 
-/// A reached instruction's position on the three-state ownership lattice a mutating
-/// export's region walks. A state past `BeforeBegin` carries the `TxnBegin` that opened
+/// A reached instruction's position in a transaction owner's three-state lattice.
+/// A state past `BeforeBegin` carries the `TxnBegin` that opened
 /// the region on the path that first reached the instruction, so a report can anchor at
 /// the block. Merges compare the phase alone, as the verifier does.
 #[derive(Clone, Copy)]
