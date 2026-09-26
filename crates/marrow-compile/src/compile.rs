@@ -1681,7 +1681,7 @@ fn validate_lowered(
     let unwrapped = reject_missing_transaction(lowered, &acyclic, diagnostics);
     let transactions_closed = !unwrapped.contains(&true);
 
-    // The remaining transaction-ownership laws — a mutating export begins its region at
+    // The remaining transaction-ownership laws — an export begins its region at
     // most once on any path, with paths that meet agreeing on whether it has run,
     // committed on every normal exit after begin, with no durable operation after
     // commit; a `transaction` marker only in the export that owns it; and no call to a
@@ -2509,9 +2509,9 @@ impl RegionShape {
 }
 
 /// Report the transaction-ownership laws the verifier reconstructs from the image, at
-/// their source spans: a mutating export begins its region at most once on any path,
+/// their source spans: an export begins its region at most once on any path,
 /// with paths that meet agreeing on whether it has run, committed on every
-/// normal exit, with no durable operation after the commit and no empty region;
+/// normal exit, with no durable operation after the commit and nonempty durable demand;
 /// an owner is not called by another function; and a `transaction` marker sits only in
 /// the export that owns it. A function the requires-ambient-transaction pass reported
 /// (`unwrapped`, by index) is skipped, so one unwrapped mutation does not cascade into a
@@ -2616,17 +2616,16 @@ fn reject_transaction_ownership(
             }
         }
 
-        // A `transaction` whose closure performs no durable operation commits nothing and
-        // opens no session; refuse it at the block.
+        // An export with no durable demand opens no session; refuse its transaction block.
         if function.role == BodyRole::Export && has_begin[i] && !durable[i] {
             if let Some(span) = first_marker_span(body) {
                 diagnostics.push(SourceDiagnostic::at(
                     Code::CheckTransactionEmpty,
                     &function.file,
                     span,
-                    "this `transaction` block performs no durable operation, so it commits \
-                     nothing and opens no store session. Perform the durable read or write \
-                     the transaction is meant to group, or remove the empty block."
+                    "this export performs no durable operation, directly or through a call, \
+                     so its `transaction` block has no store session. Remove the block or add \
+                     the durable work the export is meant to perform."
                         .to_string(),
                 ));
             }
@@ -2811,7 +2810,7 @@ fn region_shape_report(body: &LoweredBody<'_>, shape: RegionShape) -> (Code, Sou
             format!(
                 "this `transaction` block begins `{name}`'s region again on some path: after \
                  an earlier block, inside another block, or on a later iteration of an \
-                 enclosing loop. A mutating export begins its region at most once. Combine \
+                 enclosing loop. An export begins its region at most once. Combine \
                  the durable work into a single `transaction` block, or move the loop inside \
                  the block."
             ),

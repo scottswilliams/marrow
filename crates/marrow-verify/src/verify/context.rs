@@ -269,8 +269,8 @@ impl Effects {
             }
         }
         if kind.is_export() {
-            // A region whose closure performs no durable operation opens no session, so
-            // its commit would have nothing to consume; a read-only region is admitted.
+            // An export with no durable demand opens no session for its region to commit.
+            // Demand before the region, including read-only demand, satisfies this check.
             if self.has_begin[index] && self.demands.get(index).is_empty() {
                 return Err(reject(VerifyPhase::Flow, Kind::EmptyTransaction));
             }
@@ -324,12 +324,8 @@ impl Effects {
                     if mutating_here && state != State::InTxn {
                         return Err(reject(VerifyPhase::Flow, Kind::MutationOutsideRegion));
                     }
-                    // The commit consumes the session's engine transaction, so no
-                    // durable operation — read or write, direct or through a callee's
-                    // closure — may follow it. A mutating export observes the store
-                    // inside its region and returns values it captured there; a read
-                    // after commit is refused here so the runtime never reaches a
-                    // consumed transaction.
+                    // The commit consumes the session's engine transaction. No durable
+                    // operation, directly or through a callee, may follow it.
                     let durable_here = instr.operation_class().is_some()
                         || matches!(instr, SealedInstr::Call(target) if !self.demands.get(usize::from(*target)).is_empty());
                     if durable_here && state == State::AfterCommit {

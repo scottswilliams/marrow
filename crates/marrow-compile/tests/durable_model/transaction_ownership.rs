@@ -5,9 +5,9 @@
 //! tampered image (see `marrow-verify` hostiles); these are earlier, friendlier reports.
 //!
 //! The ownership contract:
-//! - a mutating export begins its region at most once on any path, with paths that meet
+//! - an export begins its region at most once on any path, with paths that meet
 //!   agreeing on whether it has run, and commits it on every normal exit after begin,
-//!   with no empty region and no durable operation after commit;
+//!   with nonempty durable demand and no durable operation after commit;
 //! - a transaction owner is not called;
 //! - a `transaction` marker sits only in the owning export;
 //! - explicit and propagated returns commit only their own active region.
@@ -156,7 +156,7 @@ fn test_and_instance_bodies_answer_to_the_ownership_laws() {
     }
 }
 
-/// An empty region commits nothing and opens no store session.
+/// An export with no durable demand opens no store session for its region to commit.
 #[test]
 fn an_empty_transaction_is_rejected_at_the_block() {
     let ops = "pub fn emptyRegion() {\n    transaction {\n    }\n}\n";
@@ -288,7 +288,7 @@ fn a_require_after_the_regions_commit_compiles() {
     );
 }
 
-/// A region around only reads carries read demand, so it is not an empty region.
+/// An export that reads inside its region has durable demand.
 #[test]
 fn a_read_only_region_compiles() {
     let ops = "pub fn peek(id: int): int? {\n    var out: int? = absent\n    transaction {\n        out = ^counters[id].value\n    }\n    return out\n}\n";

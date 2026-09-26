@@ -352,12 +352,16 @@ fn owned_region_rows() -> Vec<Row> {
             ops: "pub fn addOnce(id: int, title: string): bool {\n    transaction {\n        if exists(^books[id]) {\n            return false\n        }\n        ^books[id] = Book(title: title, isbn: \"i\")\n    }\n    return true\n}\n\npub fn titleOf(id: int): string? {\n    return ^books[id].title\n}\n\ntest \"guard-return adds once and rejects a re-add\" {\n    assert addOnce(9, \"dune\")\n    assert not addOnce(9, \"impostor\")\n    assert titleOf(9) ?? \"none\" == \"dune\"\n}",
             expect: Expect::RoundTrips { run: true },
         },
-        // A `transaction` block with no durable operation is a no-op region the runtime
-        // cannot run (it opens no session). The checker refuses it before an image is
-        // minted, so checker and verifier agree (a tampered image is still refused at
-        // `image.flow`).
         Row {
-            label: "empty transaction — no durable operation (checker-rejected)",
+            label: "read before an empty block / driver test",
+            ops: "pub fn readThenEmpty(id: int): string? {\n    const before = ^books[id].title\n    transaction {}\n    return before\n}\n\ntest \"an earlier read supplies the export demand\" {\n    assert (readThenEmpty(1) ?? \"none\") == \"none\"\n}",
+            expect: Expect::RoundTrips { run: true },
+        },
+        // An export with no durable demand opens no session for its region to commit.
+        // The checker refuses it before an image is minted; a tampered image still
+        // refuses at `image.flow`.
+        Row {
+            label: "transaction owner with no durable demand (checker-rejected)",
             ops: "pub fn emptyRegion() {\n    transaction {\n    }\n}",
             expect: Expect::CheckerRejects {
                 code: Code::CheckTransactionEmpty,
