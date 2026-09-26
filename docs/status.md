@@ -162,10 +162,10 @@ packaged, or downloadable build.
   code-length instruction steps. It keeps the operand stack at each jump target
   as a shared interned prefix, so the stack memory it retains is bounded by the
   cells pushed on first runs. Neither bound depends on the operand-stack depth
-  limit. The stack bounds are conformance-tested by the work-budget tests in
-  `crates/marrow-verify/src/verify/flow/flow_tests.rs`; the step bound and the
-  local-slot state kept per jump target, at most 256 slots, follow from the
-  worklist rule and are tested only on those shapes. These are not
+  limit. These flow bounds follow from the interned representation and worklist
+  rule and are checked on hostile shapes by
+  `crates/marrow-verify/src/verify/flow/flow_tests.rs`. The local-slot state kept
+  per jump target has at most 256 slots. These are not
   verifier-wide bounds: presence verification still keeps one fact set per jump
   target, other heap and work are bounded per pass and per instruction only,
   and there is still no total verifier memory or work budget

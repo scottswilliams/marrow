@@ -661,6 +661,18 @@ fn a_return_sees_cells_in_the_retained_prefix() {
     function_refusal(&fixture.bytes, RejectionKind::ReturnStack);
 }
 
+#[test]
+fn a_range_guard_rejects_an_empty_operand_stack() {
+    let fixture = flow_image(ImageType::scalar(Scalar::Int), 0, |c| {
+        vec![
+            Instr::RangeGuard { lo: 0, hi: 150 },
+            Instr::ConstLoad(c.int),
+            Instr::Return,
+        ]
+    });
+    function_refusal(&fixture.bytes, RejectionKind::StackUnderflow);
+}
+
 /// The `N(x ?? 0)` lowering: the `??` join is a boundary, so the guarded value is the
 /// first cell of the resumed prefix.
 #[test]
@@ -744,18 +756,12 @@ fn equal_stacks_reached_along_different_paths_share_one_handle() {
 }
 
 #[test]
-fn the_stack_depth_check_counts_the_frozen_prefix() {
-    let mut stack = OperandStack::new();
+fn the_stack_depth_limit_is_inclusive() {
     let mut max_stack = 0;
-    stack.push(VType::bare_scalar(Scalar::Int));
-    stack.freeze();
-    for _ in 1..MAX_STACK_DEPTH {
-        stack.push(VType::bare_scalar(Scalar::Int));
-    }
-    check_stack_depth(&stack, &mut max_stack).expect("the bound itself is admitted");
+    check_stack_depth(MAX_STACK_DEPTH, &mut max_stack).expect("the bound itself is admitted");
     assert_eq!(max_stack, MAX_STACK_DEPTH);
-    stack.push(VType::bare_scalar(Scalar::Int));
-    let refusal = check_stack_depth(&stack, &mut max_stack).expect_err("one past the bound");
+    let refusal =
+        check_stack_depth(MAX_STACK_DEPTH + 1, &mut max_stack).expect_err("one past the bound");
     assert_eq!(
         refusal.kind(),
         &RejectionKind::OverBound(crate::Bound::StackDepth)

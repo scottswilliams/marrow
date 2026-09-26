@@ -116,7 +116,7 @@ pub(super) fn check_flow(
         frame.resume(incoming);
         loop {
             let control = apply(function, ctx, &code[index].instr, consts, &mut frame)?;
-            check_stack_depth(&frame.stack, &mut max_stack)?;
+            check_stack_depth(frame.stack.depth(), &mut max_stack)?;
             let successor = match control {
                 Control::Return => break,
                 Control::Fallthrough => index + 1,
@@ -140,7 +140,7 @@ pub(super) fn check_flow(
                     let absent = frame.stack.freeze();
                     frame.stack.push(pushed);
                     // Refuse an over-depth success edge before propagating either edge.
-                    check_stack_depth(&frame.stack, &mut max_stack)?;
+                    check_stack_depth(frame.stack.depth(), &mut max_stack)?;
                     propagate(&mut entry, &mut worklist, target, absent, &frame.locals)?;
                     if target == index + 1 {
                         let present = frame.stack.freeze();
@@ -174,8 +174,7 @@ pub(super) fn check_flow(
     Ok((instrs, max_stack))
 }
 
-fn check_stack_depth(stack: &OperandStack, max_stack: &mut usize) -> Result<(), VerifyRejection> {
-    let depth = stack.depth();
+fn check_stack_depth(depth: usize, max_stack: &mut usize) -> Result<(), VerifyRejection> {
     if depth > marrow_image::bounds::MAX_STACK_DEPTH {
         return Err(reject(
             VerifyPhase::Function,
@@ -191,6 +190,9 @@ fn check_stack_depth(stack: &OperandStack, max_stack: &mut usize) -> Result<(), 
 /// comparison; locals meet per slot (init on both paths with the same type stays init,
 /// otherwise the slot becomes uninit). A boundary is queued on first reach and when a
 /// slot weakens; under the LIFO worklist it is never queued while already waiting.
+/// Successful regions only initialize locals, and local reads do not change their
+/// exits. Together with the weakening meet, this prevents a region from weakening a
+/// pending boundary. Changes to local reads, writes or this meet must preserve it.
 fn propagate(
     entry: &mut [Entry],
     worklist: &mut Vec<usize>,
